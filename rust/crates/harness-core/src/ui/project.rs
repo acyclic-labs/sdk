@@ -15,6 +15,8 @@ pub struct Children<'a> {
 /// Immutable provider cut. Implementations borrow cached/pinned values and do
 /// no IO; `Computed` can supply a server cut without changing the view.
 pub trait Cut {
+    /// Agent whose stream and volume facts this cut selects.
+    fn agent(&self) -> &AgentPath;
     /// Latest status at this cut.
     fn status(&self) -> Result<Cow<'_, StatusRecord>>;
     /// Exclusive conversation tail, or unavailable until demanded.
@@ -70,7 +72,43 @@ pub enum Affected {
 pub struct View {
     pub(super) page_size: u32,
 }
+
+/// One visible agent row resolved from its UI files.
+pub struct AgentRow {
+    /// State glyph, including an authored override.
+    pub glyph: String,
+    /// Authored title or canonical agent identity.
+    pub title: String,
+    /// Authored model label, or an em dash when unknown.
+    pub model: String,
+    /// Authored cost with its original currency or unit.
+    pub cost: String,
+    /// Authored age label, or an em dash when unknown.
+    pub age: String,
+}
+impl AgentRow {
+    /// Exact files needed by a visible row; no directory enumeration.
+    pub const PATHS: [&str; 5] = ["title", "model", "cost", "age", "glyph"];
+}
 impl View {
+    /// Resolves authored labels over the shared default projection without IO.
+    pub fn row<'a>(
+        &self,
+        cut: &impl Cut,
+        file: impl Fn(&str) -> Option<&'a str>,
+    ) -> Result<AgentRow> {
+        let resolve = |path: &str| {
+            let path_ref = UiPath::new(path)?;
+            path_ref.resolve(file(path), || self.project(cut, &path_ref))
+        };
+        Ok(AgentRow {
+            glyph: resolve("glyph")?,
+            title: resolve("title")?,
+            model: resolve("model")?,
+            cost: resolve("cost")?,
+            age: resolve("age")?,
+        })
+    }
     /// Select a nonzero chunk size (the reader owns transport page sizing).
     pub fn new(page_size: u32) -> Result<Self> {
         if page_size == 0 {
@@ -116,19 +154,19 @@ impl View {
                 parent: agent.children()?,
                 index: u32::try_from(cursor >> 32).map_err(|_| Error::Invalid("child cursor"))?,
                 tail: None,
-                witness: Some(agent.status()?),
+                witness: Some(agent.membership()?),
             }),
             "children/pages" => wants.push(Want::Listing {
                 parent: agent.children()?,
                 index: u32::try_from(cursor).map_err(|_| Error::Invalid("child cursor"))?,
                 tail: None,
-                witness: Some(agent.status()?),
+                witness: Some(agent.membership()?),
             }),
             path if path.starts_with("children/pages/") => wants.push(Want::Listing {
                 parent: agent.children()?,
                 index: page_number(path, "children/pages/")?,
                 tail: None,
-                witness: Some(agent.status()?),
+                witness: Some(agent.membership()?),
             }),
             path if path.starts_with("turns/") => {
                 let page: u64 = page_number(path, "turns/")?;
@@ -194,6 +232,11 @@ impl View {
                     ("status.md", false),
                     ("children", true),
                     ("turns", true),
+                    ("title", false),
+                    ("model", false),
+                    ("cost", false),
+                    ("age", false),
+                    ("glyph", false),
                 ];
                 let mut end = cursor;
                 for (name, directory) in names
@@ -208,7 +251,7 @@ impl View {
                     })?;
                     end += 1;
                 }
-                Ok((end < 4).then_some(end))
+                Ok((end < names.len() as u64).then_some(end))
             }
             "children" => {
                 let page =
@@ -313,6 +356,31 @@ impl View {
         sink: &mut impl Write,
     ) -> Result<()> {
         match path.as_ref() {
+            "title" => Ok(sink.write_all(
+                cut.agent()
+                    .as_str()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .as_bytes(),
+            )?),
+            "model" | "cost" | "age" => Ok(sink.write_all("—".as_bytes())?),
+            "glyph" => Ok(sink.write_all(
+                match &cut.status()?.phase {
+                    Phase::Idle => "○",
+                    Phase::Running => "●",
+                    Phase::WaitingApproval { .. } | Phase::WaitingUser { .. } => "?",
+                    Phase::WaitingHost { .. } | Phase::Waiting { .. } => "◌",
+                    Phase::Done {
+                        outcome: crate::agent::AgentOutcome::Succeeded { .. },
+                    } => "✓",
+                    Phase::Done {
+                        outcome: crate::agent::AgentOutcome::Failed { .. },
+                    } => "✗",
+                    Phase::Done { .. } => "■",
+                }
+                .as_bytes(),
+            )?),
             "status.md" => status(cut, sink),
             "index.md" => {
                 let tail = cut.tail().ok_or(Error::Pending)?;
@@ -418,7 +486,7 @@ impl View {
     pub fn affected(&self, event: Affected) -> &'static [&'static str] {
         match event {
             Affected::Conversation => &["index.md", "turns"],
-            Affected::Status => &["index.md", "status.md"],
+            Affected::Status => &["index.md", "status.md", "glyph"],
             Affected::Children => &["children"],
         }
     }

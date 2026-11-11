@@ -192,7 +192,7 @@ async fn observe_launch(
         execution_grant: None,
         input: None,
         schedule: CaptureSchedule::Unbounded,
-        maximum_output_bytes: usize::MAX,
+        maximum_output_bytes: None,
     };
     match request.capture(handler).await {
         Err(crate::LaunchFailure::Refused { failure, handler }) => {

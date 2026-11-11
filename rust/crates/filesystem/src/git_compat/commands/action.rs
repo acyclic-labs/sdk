@@ -68,6 +68,8 @@ pub enum GitFilesystemAction {
         target_tree: GitTreeRef,
         /// Workspace owning the source branch.
         source_workspace: WorkspaceId,
+        /// Immutable source cut, when the caller publishes a completed turn.
+        source_generation: Option<GenerationId>,
         /// Whether to record rebase rather than merge ancestry.
         rebase: bool,
         /// Complete set of paths that may remain tracked after the join.

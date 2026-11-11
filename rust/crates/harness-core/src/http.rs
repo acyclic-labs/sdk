@@ -3,11 +3,11 @@ use crate::Result;
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, ProviderPlatform};
 use bytes::Bytes;
 use std::collections::BTreeMap;
-// Native work has the same availability as NativeFutureBundle and NativeWork.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+// Native work and future admission are always available on native targets.
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
 /// Native response payload custody shared by protocol codecs.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod owned_bytes;
 /// One streaming HTTP request. Headers may contain credentials; deliberately not Debug.
 pub struct HttpRequest {
@@ -30,11 +30,11 @@ pub struct HttpResponse {
     /// Allow-listed provider request identifier. Header storage moves from the
     /// transport and is copied once into admitted completion metadata.
     pub request_id: Option<::http::HeaderValue>,
-    /// The response's `Retry-After` delay, when it gave one in seconds.
+    /// The provider's recovery delay: Retry-After takes precedence over reset headers.
     pub retry_after: Option<std::time::Duration>,
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl HttpResponse {
     /// Admits the concrete body stream before boxing it on the issued ledger.
     /// Charges received bytes once; downstream codecs charge their own copies/decoding.
@@ -87,12 +87,12 @@ pub trait HttpTransport: ProviderPlatform {
     /// Deadlines are measured on it; timers only wake their measurement.
     fn now(&self) -> std::time::Duration;
     /// `delay` admitted on the original invocation ledger before it exists.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn delay_with_native_work(
         &self,
         _: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'static, ()>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), crate::Error>> {
         work.remaining()?;
         Err(crate::Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
@@ -100,18 +100,18 @@ pub trait HttpTransport: ProviderPlatform {
         })
     }
     /// Whether this transport funds its native callback frames before allocation.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;
         Ok(false)
     }
     /// Issues one HTTP exchange on the original invocation ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn send_with_native_work<'a>(
         &'a self,
         _: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, HttpResponse>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, crate::Error>> {
         work.remaining()?;
         Err(crate::Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
@@ -139,34 +139,5 @@ mod browser_credentials;
 #[cfg(target_arch = "wasm32")]
 pub use browser_credentials::BrowserCredentialResolver;
 
-/// Both HTTP forms of `Retry-After`, relative to the platform clock.
-pub fn retry_after(value: &str) -> Option<std::time::Duration> {
-    retry_after_at(value, || {
-        #[cfg(not(target_arch = "wasm32"))]
-        let now = std::time::SystemTime::now();
-        #[cfg(target_arch = "wasm32")]
-        let now = std::time::UNIX_EPOCH
-            + std::time::Duration::from_secs_f64(js_sys::Date::now() / 1_000.0);
-        now
-    })
-}
-
-/// Decodes a delay hint relative to the supplied original clock.
-pub fn retry_after_at(
-    value: &str,
-    now: impl FnOnce() -> std::time::SystemTime,
-) -> Option<std::time::Duration> {
-    let value = value.trim();
-    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
-        // Overflow is still a delay hint, always beyond our u32-millisecond retry budget.
-        // Treating it as absent would retry before the endpoint's requested time.
-        return Some(std::time::Duration::from_secs(
-            value.parse().unwrap_or(u64::MAX),
-        ));
-    }
-    let date = httpdate::parse_http_date(value).ok()?;
-    Some(
-        date.duration_since(now())
-            .unwrap_or(std::time::Duration::ZERO),
-    )
-}
+mod retry;
+pub use retry::{response_retry_after, retry_after, retry_after_at};

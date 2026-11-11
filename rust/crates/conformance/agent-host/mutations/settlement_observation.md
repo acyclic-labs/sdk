@@ -16,7 +16,7 @@ input and the existing exact-answer control checks both turns.
 Apply each mutation separately, run this command and reverse the mutation:
 
 ```sh
-cargo test --locked -p acyclic-harness-core --features filesystem,test-support --test main agent_model::wired::a_child_inherits_context_but_retains_its_own_observed_answer_across_turns -- --exact
+cargo test --locked -p acyclic-harness-core --features test-support --test main agent_model::wired::a_child_inherits_context_but_retains_its_own_observed_answer_across_turns -- --exact
 ```
 
 | Mutation | Required diagnostic |

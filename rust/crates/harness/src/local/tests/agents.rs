@@ -7,13 +7,86 @@ use crate::{
     agent::{AgentPath, AgentRecord, ConversationEntry, Reply, StatusRecord, TurnInput},
     local::agent_conversation::Conversation,
 };
-use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{
+    ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+};
 use futures::TryStreamExt;
 use std::{path::Path, sync::Arc};
 
 /// The root conversation `harness` serves to its own in-process session.
 async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> {
     Ok(Conversation::open(harness.connect().await?))
+}
+
+#[tokio::test]
+async fn renaming_the_primary_keeps_local_turns_on_the_same_source() -> Result<()> {
+    use crate::agent::{InboxRecord, WorkspaceChanged, WorkspaceOp, WorkspaceTable};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted([
+        super::ScriptedTurn::Text("before rename".into()),
+        super::ScriptedTurn::Text("after rename".into()),
+    ]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let mut observed = ObservedConversation::open(&harness).await?;
+    assert_eq!(
+        observed.send("before", "before").await?.outcome,
+        crate::agent::TurnOutcome::Completed
+    );
+    let (agents, root) = harness.agents().await?;
+    let state = agents.state(root).await.map_err(agent)?;
+    let mut entry = WorkspaceTable::primary_in(&state.volumes)
+        .ok_or_else(|| Error::NotFound("primary workspace".into()))?
+        .clone();
+    let id = entry.id;
+    entry.name = "renamed".into();
+    let record = InboxRecord::WorkspaceChanged(Box::new(WorkspaceChanged {
+        version: 1,
+        op: WorkspaceOp::Rename,
+        entry,
+    }));
+    let streams = harness
+        .agent_stream
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("agent stream".into()))?;
+    let result = streams
+        .commit(acyclic_stream::CommitRequest {
+            idempotency_key: acyclic_stream::IdempotencyKey::new(b"rename-primary".to_vec())
+                .map_err(agent)?,
+            deadline_unix_millis: None,
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![acyclic_stream::CommitCondition::Absent {
+                    path: root.closed().map_err(agent)?,
+                }],
+                vec![acyclic_stream::CommitMutation::Append {
+                    path: root.inbox().map_err(agent)?,
+                    records: vec![record.encode().map_err(agent)?.into()],
+                }],
+            )],
+        })
+        .await
+        .map_err(agent)?;
+    assert!(matches!(
+        result,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    agents.drain(root).await.map_err(agent)?;
+    let after = observed.send("after", "after").await?;
+    assert_eq!(after.outcome, crate::agent::TurnOutcome::Completed);
+    assert_eq!(provider.request_count(), 2);
+    let state = agents.state(root).await.map_err(agent)?;
+    let primary = WorkspaceTable::primary_in(&state.volumes)
+        .ok_or_else(|| Error::NotFound("renamed workspace".into()))?;
+    assert_eq!(primary.id, id);
+    assert_eq!(primary.volume()?, &project);
+    assert_eq!(primary.name, "renamed");
+    Ok(())
 }
 
 #[tokio::test]
@@ -398,7 +471,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             .expect("project binding");
         let forked = fs
             .open_workspace(
-                binding.volume.storage_name(&mut None)?,
+                binding.volume()?.storage_name(&mut None)?,
                 WorkBudget::UNBOUNDED,
                 &cancel,
             )
@@ -492,6 +565,8 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             .map_err(agent)?
             .open_children
             .contains(&original_child)
+            .await
+            .map_err(agent)?
     );
     assert_eq!(
         workspace
@@ -556,25 +631,10 @@ pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Re
         let inbox = crate::agent::inbox_tail(&**agents.provider(), root)
             .await
             .map_err(agent)?;
-        loop {
-            let progress = agents
-                .input_progress(root, inbox.saturating_sub(1))
-                .await
-                .map_err(agent)?;
-            if progress.settled {
-                return records(&**agents.provider(), root.conversation().map_err(agent)?).await;
-            }
-            let mut changes = acyclic_stream::records_only(
-                agents
-                    .provider()
-                    .follow(progress.follow)
-                    .await
-                    .map_err(agent)?,
-            );
-            changes.try_next().await.map_err(agent)?.ok_or_else(|| {
-                Error::Storage("agent state follow ended before settlement".into())
-            })?;
+        if let Some(input) = inbox.checked_sub(1) {
+            agents.wait_for_input(root, input).await.map_err(agent)?;
         }
+        records(&**agents.provider(), root.conversation().map_err(agent)?).await
     };
     tokio::select! {
         biased;
@@ -654,7 +714,12 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     assert_eq!(entry.inbox, inbox);
     assert!(matches!(entry.input, TurnInput::Message { .. }));
-    assert_eq!(provider.request_count(), 1);
+    assert_eq!(
+        provider.request_count(),
+        1,
+        "settled producer outcome: {:?}",
+        entry.outcome
+    );
     let turn = client.turn(&entry).await?;
     assert_eq!(
         (turn.prompt.as_deref(), turn.answer.as_str()),
@@ -758,6 +823,31 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         .read(&entry.output, 1 << 20, None, None)?
         .await?;
     assert!(!output.is_empty());
+    // The same authenticated connection queries an original status cut; a
+    // caller cannot choose a foreign owner or invent a missing status record.
+    let (samples, next) = client
+        .child_wakes(0, acyclic_harness_client::AgentPageRequest::default())
+        .await?;
+    assert!(samples.is_empty() && next.is_none());
+    assert!(
+        client
+            .child_wakes(
+                u64::MAX,
+                acyclic_harness_client::AgentPageRequest::default()
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(&AgentCommand::ChildWakes {
+                agent: AgentPath::root(&crate::agent::AgentId::from_bytes([91; 16])),
+                status: 0,
+                page: acyclic_harness_client::AgentPageRequest::default(),
+            })
+            .await
+            .is_err()
+    );
     // Give this scenario two visible files, independent of internal layout.
     let cancellation = acyclic_fs::CancellationToken::new();
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
@@ -907,6 +997,70 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             .await
             .is_err()
     );
+    let paths = vec!["directory-a".to_owned(), "absent-row".to_owned()];
+    let mut visible =
+        crate::local::agent_conversation::VisibleFiles::new(Arc::clone(&client), paths.clone());
+    visible.retain([root.clone()], 128);
+    futures::future::poll_fn(|cx| visible.poll_changed(cx)).await;
+    let snapshot = client.agent_files(paths.clone(), None).await?;
+    assert_eq!(
+        visible
+            .snapshot(&root)
+            .ok_or_else(|| Error::NotFound("visible cut".into()))?
+            .map_err(agent)?
+            .generation,
+        snapshot.generation
+    );
+    assert!(snapshot.files["absent-row"].is_none());
+    assert_eq!(
+        snapshot.files["directory-a"]
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("row".into()))?
+            .text,
+        "changed after selection"
+    );
+    let waiting = client.agent_files(paths.clone(), Some(snapshot.generation.clone()));
+    futures::pin_mut!(waiting);
+    assert!(
+        futures::poll!(waiting.as_mut()).is_pending(),
+        "unchanged files must wait on publication"
+    );
+    assert!(futures::poll!(futures::future::poll_fn(|cx| visible.poll_changed(cx))).is_pending());
+    private
+        .write_text("/directory-a", "authored row changed")
+        .await
+        .map_err(agent)?;
+    let updated = waiting.await?;
+    futures::future::poll_fn(|cx| visible.poll_changed(cx)).await;
+    assert_eq!(
+        visible
+            .snapshot(&root)
+            .ok_or_else(|| Error::NotFound("published visible cut".into()))?
+            .map_err(agent)?
+            .generation,
+        updated.generation
+    );
+    visible.retain(std::iter::empty(), 0);
+    assert!(visible.snapshot(&root).is_none());
+    assert!(futures::poll!(futures::future::poll_fn(|cx| visible.poll_changed(cx))).is_pending());
+    assert_ne!(updated.generation, snapshot.generation);
+    assert_eq!(
+        updated.files["directory-a"]
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("updated row".into()))?
+            .text,
+        "authored row changed"
+    );
+    assert!(
+        connection
+            .execute(&AgentCommand::AgentFiles {
+                agent: AgentPath::root(&crate::agent::AgentId::from_bytes([91; 16])),
+                paths,
+                after: None,
+            })
+            .await
+            .is_err()
+    );
     // The same intent replays its commit at the same sequence; no second turn runs.
     assert_eq!(client.send("hello", "hello").await?, inbox);
     assert_eq!(records(&**agents.provider(), conversation).await?.len(), 1);
@@ -985,42 +1139,12 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
             "settlement admitted an unrelated progress producer or performed I/O before refusal: {observed:?}"
         );
     }
-    // A multiplexed observer may consume one source's refusal while retaining
-    // its other follows. Those remaining sources cannot settle for the lost one.
-    // Exercise both required sources through the public persisted-cursor API.
-    for (source, role) in events.sources()[..2].iter().zip(["status", "conversation"]) {
-        let mut projection = acyclic_harness_client::EventProjection::new("retired-source".into());
-        projection.accepted(
-            source,
-            Some(acyclic_harness_client::EventCursor {
-                next: u64::MAX,
-                opaque: String::new(),
-            }),
-        );
-        let mut retired = client.replay(&projection)?;
-        loop {
-            match retired.next_projected().await {
-                // The canonical pool returns an opening refusal to the pending
-                // open, rather than exposing that wire Close as a delivery.
-                Err(Error::Storage(reason))
-                    if reason == acyclic_stream::StreamError::OutOfRange.to_string() =>
-                {
-                    break;
-                }
-                Err(error) => return Err(error),
-                Ok((event, _)) => {
-                    event?;
-                }
-            }
-        }
-        let invalid = client.settle("lost-producer", inbox, &mut retired);
-        tokio::pin!(invalid);
-        let observed = futures::poll!(&mut invalid);
-        assert!(
-            matches!(&observed, std::task::Poll::Ready(Err(Error::Invalid(_)))),
-            "settlement retained a retired {role} source or performed I/O before refusal: {observed:?}"
-        );
-    }
+    // Retain another observer on the original connection. Its first failed
+    // opening retires only that follow; the other selected follows remain.
+    // A future live cursor is valid and waits, so it cannot provoke retirement.
+    let mut retired = client.replay(&acyclic_harness_client::EventProjection::new(
+        "retired-source".into(),
+    ))?;
     let root = connection.root().clone();
     let settling = settled(&harness, &root);
     tokio::pin!(settling);
@@ -1035,6 +1159,12 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     assert_eq!(usage.totals().calls, 2);
     assert_eq!(usage.totals().completed, 1);
     let before = usage.totals().clone();
+    let fenced = client.wait_current_input();
+    tokio::pin!(fenced);
+    assert!(
+        futures::poll!(&mut fenced).is_pending(),
+        "captured input must remain pending while its producer is live"
+    );
     let waiting = client.settle("lost-producer", inbox, &mut events);
     tokio::pin!(waiting);
     assert!(
@@ -1062,6 +1192,11 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
         "usage lost the runtime cause: {usage_result:?}"
     );
+    let fenced = fenced.await;
+    assert!(
+        matches!(&fenced, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "input fence lost the runtime cause: {fenced:?}"
+    );
     let admitted = futures::poll!(&mut admission);
     assert!(
         matches!(&admitted, std::task::Poll::Ready(Err(Error::Storage(reason))) if reason.contains("model producer closed")),
@@ -1081,6 +1216,30 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     let hosted = harness.agents.get().unwrap();
     assert!(
         matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed"))
+    );
+    loop {
+        match retired.next_projected().await {
+            Err(Error::Storage(reason)) => {
+                assert!(
+                    reason.contains("model producer closed"),
+                    "retired follow lost the runtime cause: {reason}"
+                );
+                break;
+            }
+            Err(error) => return Err(error),
+            Ok((event, _)) => {
+                event?;
+            }
+        }
+    }
+    let invalid = client.settle("lost-producer", inbox, &mut retired);
+    tokio::pin!(invalid);
+    assert!(
+        matches!(
+            futures::poll!(&mut invalid),
+            std::task::Poll::Ready(Err(Error::Invalid(_)))
+        ),
+        "settlement admitted a retired original follow or performed I/O before refusal"
     );
     let settled = futures::poll!(&mut settling);
     assert!(
@@ -1305,10 +1464,9 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
             volume_config(directory.path(), volume(directory.path()).await?, provider)?
                 .without_default_tools()
                 .workspace_mounting(crate::local::WorkspaceMounting::Physical)
-                .compaction(crate::context::CompactionPolicy::Threshold(
-                    crate::context::ThresholdCompaction {
+                .compaction(crate::context::CompactionPolicy::Capacity(
+                    crate::context::CapacityCompaction {
                         response_reserve_tokens: 4096,
-                        recent_tokens: 4096,
                     },
                 )),
         )
@@ -1479,12 +1637,12 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
     let state = agents.state(&root).await.map_err(agent)?;
     // Each turn's calls share one directory, named by the turn.
     let turn = crate::agent::turn_id(&state, &entry.input).map_err(agent)?;
-    let private = &state
+    let private = state
         .volumes
         .iter()
         .find(|binding| binding.name == crate::filesystem::PRIVATE_VOLUME)
         .ok_or_else(|| Error::NotFound("private volume".into()))?
-        .volume;
+        .volume()?;
     let output = harness
         .client_reader()?
         .read(&entry.output, 1 << 20, None, None)?
@@ -1529,7 +1687,7 @@ async fn observation(
         .agent_observation(
             authority,
             path,
-            &authority.private.volume,
+            authority.private.volume()?,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             None,
         )
@@ -1650,79 +1808,18 @@ async fn follow_tool_output(
     }
 }
 
-/// A local HTTP peer that answers each request with its own ordinal, so a
-/// hook that ran again would add different context.
-#[cfg(unix)]
-struct CountingServer {
-    port: u16,
-    calls: Arc<std::sync::atomic::AtomicUsize>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-#[cfg(unix)]
-impl Drop for CountingServer {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-#[cfg(unix)]
-async fn counting_server() -> Result<CountingServer> {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(agent)?;
-    let port = listener.local_addr().map_err(agent)?.port();
-    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let served = Arc::clone(&count);
-    let task = tokio::spawn(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            let ordinal = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            let mut request = [0; 8192];
-            let mut used: usize = 0;
-            loop {
-                let start = used.saturating_sub(3);
-                match stream.read(&mut request[used..]).await {
-                    Ok(0) | Err(_) => return,
-                    Ok(read) => used += read,
-                }
-                if request[start..used]
-                    .windows(4)
-                    .any(|window| window == b"\r\n\r\n")
-                {
-                    break;
-                }
-            }
-            let body = format!("HOOK-HTTP-{ordinal}");
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            if stream.write_all(response.as_bytes()).await.is_err() {
-                return;
-            }
-        }
-    });
-    Ok(CountingServer {
-        port,
-        calls: count,
-        task,
-    })
-}
-
-/// A turn whose `UserPromptSubmit` hook called an HTTP peer is interrupted
+/// A turn whose `UserPromptSubmit` hook updated its project counter is interrupted
 /// after the hook's outcome was recorded; the reopened agent replays the
-/// turn from `hooks/{turn}/{op}.json`, with no new hook run or HTTP call,
+/// turn from `hooks/{turn}/{op}.json`, without updating the counter again,
 /// and the model sees the identical recorded context.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let directory = tempfile::tempdir().map_err(agent)?;
-    let peer = counting_server().await?;
-    let (port, calls) = (peer.port, &peer.calls);
     let home = directory.path().join("home");
     std::fs::create_dir_all(home.join(".claude")).map_err(agent)?;
-    let hook = format!("cat >/dev/null; curl -sS http://127.0.0.1:{port}/");
+    // The original workspace-write sandbox intentionally isolates networking.
+    let hook = r#"cat >/dev/null; n=0; if test -f hook-count; then read -r n < hook-count; fi; n=$((n + 1)); printf '%s\n' "$n" > hook-count; printf 'HOOK-RUN-%s\n' "$n""#;
     std::fs::write(
         home.join(".claude/settings.json"),
         serde_json::to_vec(
@@ -1773,8 +1870,19 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         .request(0)
         .ok_or_else(|| Error::NotFound("hook model request".into()))?;
     let recorded = super::request_text(&harness, &request).await?;
-    assert!(recorded.contains("HOOK-HTTP-1"), "{recorded}");
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(recorded.contains("HOOK-RUN-1"), "{recorded}");
+    let project = crate::filesystem::workspace_ref(
+        harness.project.provider().clone(),
+        &harness.project.storage_name(&mut None)?,
+    )?;
+    assert_eq!(
+        harness
+            .files
+            .read(&project, None, "/hook-count", 16, None)
+            .await?
+            .as_ref(),
+        b"1\n",
+    );
     // Crash: the turn is still waiting on the model when the harness drops.
     drop(observed);
     drop(harness);
@@ -1799,13 +1907,20 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let (agents, root) = (Arc::clone(agents), root.clone());
     let entries = settled(&harness, &root).await?;
     assert_eq!(entries.len(), 1);
-    // The replay ran no hook and made no HTTP call.
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // The replay ran no hook: the retained project counter is unchanged.
+    assert_eq!(
+        harness
+            .files
+            .read(&project, None, "/hook-count", 16, None)
+            .await?
+            .as_ref(),
+        b"1\n",
+    );
     // A re-dispatched request carries the identical recorded context.
     if let Some(request) = resumed.request(0) {
         let replayed = super::request_text(&harness, &request).await?;
         assert!(
-            replayed.contains("HOOK-HTTP-1") && !replayed.contains("HOOK-HTTP-2"),
+            replayed.contains("HOOK-RUN-1") && !replayed.contains("HOOK-RUN-2"),
             "{replayed}"
         );
     }
@@ -1813,12 +1928,12 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let state = agents.state(&root).await.map_err(agent)?;
     let turn = crate::agent::turn_id(&state, &entry.input).map_err(agent)?;
-    let private = &state
+    let private = state
         .volumes
         .iter()
         .find(|binding| binding.name == crate::filesystem::PRIVATE_VOLUME)
         .ok_or_else(|| Error::NotFound("private volume".into()))?
-        .volume;
+        .volume()?;
     assert_eq!(names(&harness, private, "hooks").await?, [turn.to_string()]);
     let recorded = names(&harness, private, &format!("hooks/{turn}")).await?;
     let [outcome, marker] = recorded.as_slice() else {
@@ -1950,7 +2065,7 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
             .expect("child project");
         let id = workspace
             .filesystem
-            .workspace_id(&project.volume.storage_name(&mut None)?)
+            .workspace_id(project.volume()?.storage_name(&mut None)?)
             .map_err(agent)?;
         let path = workspace
             .held_task_mount_root()?
@@ -2205,6 +2320,134 @@ async fn a_prompt_past_two_frames_is_accepted_and_reads_back_exactly() -> Result
 }
 
 #[tokio::test]
+async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> {
+    use crate::model::{ModelContent, ModelEvent, ToolCall};
+    use crate::test_support::{ScriptedEvent, ScriptedTurn};
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+    let call = |name: &str, arguments| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                name.into(),
+                name.into(),
+                arguments,
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ])
+    };
+    let provider = super::scripted([
+        call(
+            "write",
+            serde_json::json!({"path":".volumes/shared/board.txt", "content":"shared-board-sentinel-73dae"}),
+        ),
+        ScriptedTurn::Text("writer settled".into()),
+        call(
+            "shell",
+            serde_json::json!({"command":"pwd", "cwd":"missing-cwd-gc65"}),
+        ),
+        call(
+            "read",
+            serde_json::json!({"path":".volumes/shared/board.txt"}),
+        ),
+        ScriptedTurn::Text("reader settled".into()),
+    ]);
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let harness = Arc::new(
+        LocalHarness::open(
+            super::checkout_config(directory.path(), (super::model()?, provider.clone()))?
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let root = connection.root().clone();
+    for (id, brief) in [
+        ("writer", "write the shared board"),
+        ("reader", "read the shared board"),
+    ] {
+        let AgentReply::Spawned { agent: child, .. } = connection
+            .execute(&AgentCommand::Spawn {
+                parent: root.clone(),
+                id: crate::agent::IntentId::try_from(id).map_err(agent)?,
+                brief: ModelContent::Text(brief.into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("shared-board spawn refused".into()));
+        };
+        // Creation's initial idle status is not the brief's completion.
+        // Wait for the child's actual turn record through its served follow.
+        let conversation = Conversation::open(harness.attach(Some(child.clone()), true).await?);
+        let mut events = conversation.observe(Some(0)).await?;
+        let entry = loop {
+            match events.next().await? {
+                crate::local::Event::Turn(entry) => break entry,
+                crate::local::Event::Status(status)
+                    if matches!(status.phase, crate::agent::Phase::Done { .. }) =>
+                {
+                    return Err(Error::Conflict(format!(
+                        "shared-board child ended before its turn: {status:?}; model_requests={}",
+                        provider.request_count()
+                    )));
+                }
+                _ => {}
+            }
+        };
+        assert!(matches!(
+            entry.outcome,
+            crate::agent::TurnOutcome::Completed
+        ));
+    }
+    assert_eq!(provider.request_count(), 5);
+    let request = provider
+        .request(4)
+        .ok_or_else(|| Error::NotFound("shared-board read request".into()))?;
+    let refused = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id, content, ..
+            } if call_id == "shell" => Some(content),
+            _ => None,
+        })
+        .ok_or_else(|| Error::NotFound("missing-cwd tool result".into()))?;
+    assert!(matches!(
+        refused,
+        crate::model::ToolResultContent::Error { .. }
+    ));
+    assert!(
+        matches!(refused, crate::model::ToolResultContent::Error { message }
+        if message == "tool execution failed: cwd missing-cwd-gc65 does not exist")
+    );
+    let result = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id, content, ..
+            } if call_id == "read" => Some(content),
+            _ => None,
+        })
+        .ok_or_else(|| Error::NotFound("shared-board read result".into()))?;
+    assert!(
+        !matches!(result, crate::model::ToolResultContent::Error { .. }),
+        "shared-board read failed: {result:?}"
+    );
+    let observed = serde_json::to_string(result).map_err(agent)?;
+    assert!(
+        observed.contains("shared-board-sentinel-73dae"),
+        "the sibling did not read the original shared write: {observed}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Result<()> {
     use crate::model::{ModelContent, ModelContentPart, ModelEvent, ToolCall};
     use crate::test_support::{ScriptedEvent, ScriptedTurn};
@@ -2399,20 +2642,20 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     assert_eq!(provider.request_count(), 2);
     let child_file = publication(&connection, &child, 0).await?;
     let child_state = agents.state(&child).await.map_err(agent)?;
-    let child_project = &child_state
+    let child_project = child_state
         .volumes
         .iter()
         .find(|binding| binding.name == "project")
         .ok_or_else(|| Error::NotFound("child project volume".into()))?
-        .volume;
+        .volume()?;
     assert_ne!(child_project, &project);
     assert_eq!(child_file.volume(), child_project);
-    let child_scratch = &child_state
+    let child_scratch = child_state
         .volumes
         .iter()
         .find(|binding| binding.name == "home")
         .ok_or_else(|| Error::NotFound("child scratch volume".into()))?
-        .volume;
+        .volume()?;
     assert_ne!(child_scratch, &harness.scratch);
     let child_skills = catalog(0)?;
     let project_skill = child_skills
@@ -2518,6 +2761,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         let observed = connection
             .execute(&AgentCommand::Settlement {
                 agent: owner.clone(),
+                wait: false,
             })
             .await?;
         let observed_heads = head_reads.load(Ordering::Relaxed) - before;
@@ -2533,6 +2777,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             settled,
             statuses,
             phase,
+            ..
         } = observed
         else {
             return Err(Error::Invalid("settlement returned another reply".into()));
@@ -3081,7 +3326,8 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let harness = Arc::new(
         LocalHarness::open(
             volume_config(directory.path(), project, provider.clone())?
-                .compaction(crate::context::CompactionPolicy::Disabled),
+                .without_default_tools()
+                .compaction(crate::context::CompactionPolicy::default()),
         )
         .await?,
     );
@@ -3105,7 +3351,16 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         }
     };
     let inbox = client.send("first", "hello").await?;
-    settlement(&mut observed, inbox).await?;
+    let first = settlement(&mut observed, inbox).await?;
+    assert!(first.outcome.is_completed(), "{:?}", first.outcome);
+    settled(&harness, &root).await?;
+    let mut usage = client.usage_query();
+    while !usage.synchronized() {
+        usage.advance().await?;
+    }
+    assert_eq!(usage.totals().completed, 1);
+    let original_window = usage.context();
+    assert!(original_window.is_some());
     let store = crate::agent::actor_store(agents.provider()).map_err(agent)?;
     let actor = agents.actor(&root).map_err(agent)?;
     let before = store.load(&actor).await.map_err(agent)?.follow_request();
@@ -3145,6 +3400,15 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         .await?;
     let refusal = settlement(&mut observed, inbox).await?;
     assert_eq!(refusal.outcome, TurnOutcome::RestoreConflict);
+    settled(&harness, &root).await?;
+    for _ in notice..=inbox {
+        usage.advance().await?;
+    }
+    assert_eq!(
+        usage.context(),
+        original_window,
+        "refused restore changed model occupancy"
+    );
     assert!(
         client
             .turn(&refusal)
@@ -3518,11 +3782,15 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let project = child_state
         .volumes
         .iter()
-        .find(|binding| binding.volume.class() == crate::conversation::VolumeClass::Project)
+        .find(|binding| {
+            binding
+                .as_volume()
+                .is_some_and(|volume| volume.class() == crate::conversation::VolumeClass::Project)
+        })
         .ok_or_else(|| Error::Invalid("historical child has no project volume".into()))?;
     let child_workspace = fs
         .open_workspace(
-            project.volume.storage_name(&mut None)?,
+            project.volume()?.storage_name(&mut None)?,
             WorkBudget::UNBOUNDED,
             &cancel,
         )
@@ -3544,6 +3812,405 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
             "fork must retain the selected files while its parent keeps later edits"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn tool_free_checkout_sessions_read_their_own_logical_context_without_mounting() -> Result<()>
+{
+    use acyclic_fs::facade::FsWork as _;
+    let checkout = tempfile::tempdir().map_err(agent)?;
+    let state = tempfile::tempdir().map_err(agent)?;
+    std::fs::write(
+        checkout.path().join("AGENTS.md"),
+        "ORIGINAL_CHECKOUT_INSTRUCTIONS",
+    )
+    .map_err(agent)?;
+    let provider = super::scripted([super::ScriptedTurn::Text("own context".into())]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            crate::test_support::local_harness_config(
+                checkout.path(),
+                (
+                    crate::model::Model::new("scripted".into(), "test".into(), "1".into())?,
+                    provider.clone(),
+                ),
+            )?
+            .state_directory(state.path())
+            .without_default_tools()
+            .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let directory = harness.connect_sessions().await?;
+    let session = crate::local::sessions::create(&directory, "tool-free-session").await?;
+    let (agents, _) = harness.agents().await?;
+    let root = agents.state(session.root()).await.map_err(agent)?;
+    let project = root
+        .volumes
+        .iter()
+        .find(|binding| binding.name == "project")
+        .ok_or_else(|| Error::Invalid("session has no project".into()))?;
+    let view = harness
+        .workspace
+        .as_ref()
+        .unwrap()
+        .spawned_project_view(project.volume()?)
+        .await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    view.write(
+        "/AGENTS.md",
+        acyclic_stream::OwnedBytes::from_static(b"SESSION_ONLY_INSTRUCTIONS"),
+        acyclic_fs::IdempotencyKey::from_bytes(crate::OperationId::new().into_bytes()),
+        acyclic_fs::PublicationPermit::Unrestricted,
+        &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
+    )
+    .await
+    .map_err(agent)?;
+    let mut observed = ObservedConversation::observe(Conversation::open(session), None).await?;
+    observed
+        .send("context", "read the selected instructions")
+        .await?;
+    let request = super::request_text(
+        &harness,
+        &provider.last_request().expect("session model turn"),
+    )
+    .await?;
+    assert!(request.contains("SESSION_ONLY_INSTRUCTIONS"));
+    assert!(!request.contains("ORIGINAL_CHECKOUT_INSTRUCTIONS"));
+    assert_eq!(provider.requests().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversation_cut()
+-> Result<()> {
+    use crate::client::{AgentCommand, AgentReply};
+    use crate::filesystem::{WorkspaceMutation, workspace_ref};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted(
+        ["at cut", "later", "branch answer"].map(|text| super::ScriptedTurn::Text(text.into())),
+    );
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .without_default_tools()
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let workspace = workspace_ref(
+        project.provider().clone(),
+        &project.storage_name(&mut None)?,
+    )?;
+    for (key, text) in [
+        ("at-cut", b"at cut".as_slice()),
+        ("after-cut", b"after cut".as_slice()),
+    ] {
+        harness
+            .files
+            .apply(
+                &workspace,
+                None,
+                &[WorkspaceMutation::PutFile {
+                    path: "/plan.md".into(),
+                    bytes: acyclic_stream::OwnedBytes::copy_from_slice(text),
+                }],
+                &crate::IdempotencyKey::new(key)?,
+            )
+            .await?;
+        if key == "at-cut" {
+            let mut conversation = ObservedConversation::open(&harness).await?;
+            conversation.send("prefix", "first decision").await?;
+        } else {
+            let mut conversation = ObservedConversation::open(&harness).await?;
+            conversation.send("later", "later decision").await?;
+        }
+    }
+    let (agents, root) = harness.agents().await?;
+    let source = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
+    assert_eq!(source.len(), 2);
+    let connection = harness.connect_sessions().await?;
+    let request = AgentCommand::ForkSession {
+        agent: root.clone(),
+        id: crate::agent::IntentId::try_from("rewind").map_err(agent)?,
+        at: 0,
+    };
+    let AgentReply::Root { agent: branch } = connection.execute(&request).await? else {
+        return Err(Error::Invalid(
+            "historical root returned another reply".into(),
+        ));
+    };
+    assert!(branch.parent().is_none());
+    assert_ne!(&branch, root);
+    let state = agents.state(&branch).await.map_err(agent)?;
+    assert_eq!(state.conversation_tail, 1);
+    assert!(state.open_children.is_empty());
+    let actor = crate::agent::actor_store(agents.provider())
+        .map_err(agent)?
+        .load(&agents.actor(&branch).map_err(agent)?)
+        .await
+        .map_err(agent)?;
+    assert!(
+        actor
+            .state()
+            .ok_or_else(|| Error::Invalid("missing branch actor".into()))?
+            .paused()
+    );
+    assert_eq!(
+        records(&**agents.provider(), branch.conversation().map_err(agent)?).await?,
+        source[..1]
+    );
+    let selected_branch = Conversation::open(connection.select(branch.clone()).await?);
+    let inherited = ConversationEntry::decode(&source[0]).map_err(agent)?;
+    let shown = selected_branch.turn_at(0, &inherited).await?;
+    assert_eq!(shown.prompt.as_deref(), Some("first decision"));
+    assert_eq!(shown.answer, "at cut");
+    let future = ConversationEntry::decode(&source[1]).map_err(agent)?;
+    assert!(
+        selected_branch.turn_at(0, &future).await.is_err(),
+        "an exact record proof cannot authorize another turn's files"
+    );
+    assert!(
+        selected_branch.turn_at(1, &future).await.is_err(),
+        "a proof beyond the inherited prefix cannot authorize future source files"
+    );
+    assert!(
+        selected_branch.text(&future.output).await.is_err(),
+        "inheritance never grants the source private volume"
+    );
+    let page =
+        crate::local::sessions::page(&connection, crate::client::AgentPageRequest::default())
+            .await?;
+    assert_eq!(
+        page.items
+            .iter()
+            .find(|item| item.agent == branch)
+            .and_then(|item| item.title.as_deref()),
+        Some("first decision")
+    );
+    let project = state
+        .volumes
+        .iter()
+        .find(|binding| binding.name == "project")
+        .ok_or_else(|| Error::Invalid("missing branch project".into()))?;
+    let branched_workspace = workspace_ref(
+        project.volume()?.provider().clone(),
+        &project.volume()?.storage_name(&mut None)?,
+    )?;
+    assert_eq!(
+        harness
+            .files
+            .read(&branched_workspace, None, "/plan.md", 64, None)
+            .await?
+            .as_ref(),
+        b"at cut"
+    );
+    assert_eq!(
+        harness
+            .files
+            .read(&workspace, None, "/plan.md", 64, None)
+            .await?
+            .as_ref(),
+        b"after cut"
+    );
+    assert_eq!(
+        records(&**agents.provider(), root.conversation().map_err(agent)?).await?,
+        source
+    );
+    let AgentReply::Root { agent: replay } = connection.execute(&request).await? else {
+        return Err(Error::Invalid(
+            "historical replay returned another reply".into(),
+        ));
+    };
+    assert_eq!(replay, branch);
+    let mut changed = request;
+    if let AgentCommand::ForkSession { at, .. } = &mut changed {
+        *at = 1;
+    }
+    assert!(
+        connection.execute(&changed).await.is_err(),
+        "one intent cannot select another cut"
+    );
+    let AgentReply::Root { agent: repeated } = connection
+        .execute(&AgentCommand::ForkSession {
+            agent: branch,
+            id: crate::agent::IntentId::try_from("repeated-rewind").map_err(agent)?,
+            at: 0,
+        })
+        .await?
+    else {
+        return Err(Error::Invalid(
+            "repeated rewind returned another reply".into(),
+        ));
+    };
+    assert_eq!(
+        records(
+            &**agents.provider(),
+            repeated.conversation().map_err(agent)?
+        )
+        .await?,
+        source[..1]
+    );
+    assert_eq!(
+        provider.requests().len(),
+        2,
+        "creating a branch must never dispatch the model"
+    );
+    let selected = connection.select(repeated.clone()).await?;
+    let queued = Conversation::open(selected);
+    assert!(
+        !queued.phase().await?.in_turn(),
+        "adoption alone stays idle"
+    );
+    let inbox = queued
+        .send("cancel-before-resume", "do not run this queued prompt")
+        .await?;
+    let (mut queued_events, phase) = queued.observe_with_phase(Some(1)).await?;
+    assert!(
+        phase.in_turn(),
+        "unread adoption must not hide accepted work from cancellation"
+    );
+    queued.cancel().await?;
+    crate::local::sessions::pause_subtree(&connection, repeated.clone(), false).await?;
+    queued.wait_current_input().await?;
+    assert_eq!(queued.settled().await?, 1);
+    assert!(matches!(
+        queued.reply("cancel-before-resume", inbox).await?,
+        crate::agent::Reply::Dropped
+    ));
+    assert_eq!(
+        provider.requests().len(),
+        2,
+        "cancelled queued work must never dispatch"
+    );
+    loop {
+        if let crate::local::Event::Status(status) = queued_events.next().await? {
+            assert_eq!(status.phase, crate::agent::Phase::Idle);
+            break;
+        }
+    }
+    drop(queued_events);
+    let mut observed = ObservedConversation::observe(queued, Some(1)).await?;
+    observed
+        .send("branch-input", "continue the selected decision")
+        .await?;
+    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(
+        records(&**agents.provider(), root.conversation().map_err(agent)?).await?,
+        source
+    );
+    let source_conversation = Conversation::open(connection.select(root.clone()).await?);
+    let mut closing = source_conversation.observe(None).await?;
+    crate::local::sessions::archive(&connection.select(root.clone()).await?, "archive-source")
+        .await?;
+    loop {
+        if let crate::local::Event::Status(status) = closing.next().await?
+            && matches!(
+                status.phase,
+                crate::agent::Phase::Done {
+                    outcome: crate::agent::AgentOutcome::Archived
+                }
+            )
+        {
+            break;
+        }
+    }
+    let archived_branch =
+        crate::local::sessions::fork(&connection, root.clone(), 1, "fork-archived-source").await?;
+    assert_eq!(
+        Conversation::open(archived_branch)
+            .turn_at(1, &future)
+            .await?
+            .answer,
+        "later"
+    );
+    assert!(agents.state(root).await.map_err(agent)?.closed);
+    assert_eq!(
+        provider.requests().len(),
+        3,
+        "forking retained archived history cannot dispatch a model"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn archive_reactivates_paused_roots_and_open_descendants_for_closing() -> Result<()> {
+    use crate::agent::{Delivered, InboxRecord, IntentId, Sender, SpawnOutcome, SpawnRequest};
+    use crate::client::{AgentCommand, AgentReply};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted(std::iter::empty::<super::ScriptedTurn>());
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?.without_default_tools(),
+        )
+        .await?,
+    );
+    let (agents, root) = harness.agents().await?;
+    let connection = harness.connect().await?;
+    let profile = harness
+        .agents
+        .get()
+        .ok_or_else(|| Error::Invalid("missing host".into()))?
+        .server()
+        .bound()
+        .child_profile(root, "worker")
+        .await
+        .map_err(agent)?;
+    let by = Sender::User {
+        principal: "archive-control".into(),
+    };
+    let record = InboxRecord::Spawn(SpawnRequest {
+        by: by.clone(),
+        id: IntentId::try_from("idle-child").map_err(agent)?,
+        brief: None,
+        profile,
+        history: None,
+    });
+    let Delivered::Committed { inbox } = agents.send(root, &by, &record).await.map_err(agent)?
+    else {
+        return Err(Error::Invalid("parent was closed".into()));
+    };
+    let (intent, _) = crate::agent::requested_child(root, inbox).map_err(agent)?;
+    let SpawnOutcome::Spawned { child } =
+        agents.spawned(root, inbox, &intent).await.map_err(agent)?
+    else {
+        return Err(Error::Invalid("child was refused".into()));
+    };
+    agents.pause(&child, true).await.map_err(agent)?;
+    agents.pause(root, true).await.map_err(agent)?;
+    let parent = Conversation::open(connection.clone());
+    let descendant = Conversation::open(connection.select(child.clone()).await?);
+    let mut parent_events = parent.observe(None).await?;
+    let mut child_events = descendant.observe(None).await?;
+    assert!(matches!(
+        connection
+            .execute(&AgentCommand::Archive {
+                agent: root.clone(),
+                id: IntentId::try_from("archive-paused-tree").map_err(agent)?
+            })
+            .await?,
+        AgentReply::Delivered { .. }
+    ));
+    for events in [&mut parent_events, &mut child_events] {
+        loop {
+            if let crate::local::Event::Status(status) = events.next().await?
+                && let crate::agent::Phase::Done { outcome } = status.phase
+            {
+                assert_eq!(outcome, crate::agent::AgentOutcome::Archived);
+                break;
+            }
+        }
+    }
+    assert!(agents.state(root).await.map_err(agent)?.closed);
+    assert!(agents.state(&child).await.map_err(agent)?.closed);
+    assert_eq!(
+        provider.request_count(),
+        0,
+        "closing a paused tree must never start its model"
+    );
     Ok(())
 }
 

@@ -75,7 +75,7 @@ fn command_at(root: &std::path::Path, program: impl AsRef<std::ffi::OsStr>) -> C
         execution_grant: None,
         input: Some(OwnedCaptureInput::Literal(b"input:".to_vec())),
         schedule: CaptureSchedule::new(Duration::from_secs(60)),
-        maximum_output_bytes: 1 << 20,
+        maximum_output_bytes: Some(1 << 20),
     }
 }
 

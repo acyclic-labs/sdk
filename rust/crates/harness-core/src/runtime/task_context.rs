@@ -8,7 +8,7 @@ pub struct TaskContext {
     pub(super) output_content: ContentBindings,
     pub(super) journal: Option<Arc<dyn crate::executor::ExecutionJournal>>,
     /// The agent whose turn this is, with the volumes it binds.
-    pub(super) agent: Option<(crate::agent::AgentPath, Vec<crate::agent::VolumeBinding>)>,
+    pub(super) agent: Option<(crate::agent::AgentPath, Vec<crate::agent::WorkspaceEntry>)>,
     pub(super) children: Option<Arc<dyn crate::agent::TurnChildren>>,
 }
 
@@ -92,7 +92,7 @@ impl TaskContext {
     pub fn for_agent(
         mut self,
         path: crate::agent::AgentPath,
-        volumes: Vec<crate::agent::VolumeBinding>,
+        volumes: Vec<crate::agent::WorkspaceEntry>,
     ) -> Self {
         self.agent = Some((path, volumes));
         self
@@ -100,7 +100,7 @@ impl TaskContext {
 
     /// The agent whose turn this is and the volumes it binds, if any.
     #[must_use]
-    pub fn agent(&self) -> Option<(&crate::agent::AgentPath, &[crate::agent::VolumeBinding])> {
+    pub fn agent(&self) -> Option<(&crate::agent::AgentPath, &[crate::agent::WorkspaceEntry])> {
         self.agent
             .as_ref()
             .map(|(path, volumes)| (path, volumes.as_slice()))

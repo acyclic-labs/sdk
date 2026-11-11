@@ -18,6 +18,8 @@ pub(in crate::local) struct CommandContext<'a> {
 pub(in crate::local) struct Commands<'a> {
     pub(in crate::local) workspace: &'a Arc<LocalWorkspace>,
     pub(in crate::local) signed: &'a Scope,
+    /// Verifies the caller's scope, independently of a reused view's mount owner.
+    pub(in crate::local) verifier: &'a crate::core::AuthorityVerifier,
     pub(in crate::local) clock: &'a dyn acyclic_stream::UnixMillisClock,
     pub(in crate::local) capture_options: &'a acyclic_fs::CaptureOptions,
     pub(in crate::local) capture_policy: &'a acyclic_fs::CapturePolicy,
@@ -38,9 +40,52 @@ struct Invocation<'a> {
     lease: &'a acyclic_fs::OperationWindowLease,
     watcher: &'a mut Option<capture::Cursor>,
     access: &'a crate::filesystem::WorkspaceAccess,
+    capture_cut: acyclic_fs::GenerationId,
 }
 
 impl Commands<'_> {
+    /// One serialized entry to the git facade, shared by native hosts and
+    /// platform-owned session integration. The existing capture, recovery,
+    /// publication window and conflict projection all remain inside it.
+    pub(in crate::local) fn invoke<'a>(
+        &'a self,
+        command: &'a str,
+        context: CommandContext<'a>,
+        before: acyclic_stream::BoxProviderFuture<'a, Result<()>>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_fs::GitCommandOutput>> {
+        Box::pin(async move {
+            context.owner.verify().await?;
+            let parsed = self.fs_arguments(command, context.scope)?;
+            let mut state =
+                crate::sync::owned::lock_owned(StateArc::clone(&self.workspace.state)).await;
+            let selected: acyclic_stream::BoxProviderFuture<'_, _> =
+                Box::pin(self.workspace.selected_view());
+            let (selected, pending) = selected.await?;
+            let verify = || context.owner.verify();
+            let recovery: acyclic_stream::BoxProviderFuture<'_, _> =
+                Box::pin(reconciliation::recover_pending(
+                    self.workspace,
+                    selected.as_ref().unwrap_or_else(|| self.workspace.view()),
+                    pending,
+                    &verify,
+                ));
+            recovery.await?;
+            state.active = selected;
+            let physical: acyclic_stream::BoxProviderFuture<'_, _> =
+                Box::pin(self.workspace.selected_workspace(&mut state, context.owner));
+            let physical = physical.await?;
+            before.await?;
+            let command: acyclic_stream::BoxProviderFuture<'_, Result<Outcome>> =
+                Box::pin(self.fs(parsed, &context, &mut state, &physical));
+            let result = command.await?;
+            context.owner.verify().await?;
+            match result {
+                Outcome::Completed(output) => Ok(*output),
+                Outcome::Rejected(error) => Err(*error),
+            }
+        })
+    }
+
     pub(in crate::local) fn fs_arguments(
         &self,
         command: &str,
@@ -116,13 +161,145 @@ impl Commands<'_> {
         state: &mut State,
         workspace: &Arc<LocalWorkspace>,
     ) -> Result<Outcome> {
+        let project = parsed.volume.is_none();
+        let result = self
+            .fs_one(parsed, context, state, workspace)
+            .await?
+            .ok_or_else(|| {
+                Error::Conflict("recovered a pending fs transition; retry the command".into())
+            })?;
+        if project && matches!(result, Outcome::Completed(_)) {
+            self.drain_publications(context, state).await?;
+        }
+        Ok(result)
+    }
+
+    pub(in crate::local) async fn drain_publications(
+        &self,
+        context: &CommandContext<'_>,
+        state: &mut State,
+    ) -> Result<()> {
+        loop {
+            // A recovered checkout can select a different native mount.
+            // Capture and publication must use that same selected view.
+            let workspace = self
+                .workspace
+                .selected_workspace(state, context.owner)
+                .await?;
+            let repository = acyclic_fs::GitCompatRepository::new(
+                workspace.view().workspace().id(),
+                workspace.store.clone(),
+            );
+            let snapshot = repository.load().await.map_err(storage)?;
+            if snapshot.pending.as_ref().is_some_and(|pending| {
+                matches!(
+                    pending.mutation,
+                    acyclic_fs::GitPendingMutation::Join {
+                        conflicts: Some(_),
+                        ..
+                    }
+                )
+            }) {
+                return Ok(());
+            }
+            let Some((sequence, publication)) =
+                self.workspace.next_publication(&repository).await?
+            else {
+                return Ok(());
+            };
+            // A branch is a disposable reference. The queued request owns
+            // its source workspace independently, including across restart.
+            match snapshot.branches.get(&publication.branch) {
+                Some(branch) if branch.workspace_id != publication.source.workspace_id => {
+                    return Err(Error::Conflict(
+                        "deferred publication branch was rebound".into(),
+                    ));
+                }
+                Some(_) => {}
+                None => repository
+                    .register_branch_workspace(
+                        publication.branch.clone(),
+                        publication.source.workspace_id,
+                        None,
+                        false,
+                    )
+                    .await
+                    .map_err(storage)?,
+            }
+            let parsed =
+                self.fs_arguments(&format!("merge {}", publication.branch), context.scope)?;
+            let result = self
+                .fs_one(
+                    parsed,
+                    &CommandContext {
+                        owner: context.owner,
+                        operation: publication.operation,
+                        scope: context.scope,
+                        request: Some(acyclic_fs::GitRequest {
+                            merge_source: Some(publication.source),
+                            operation: acyclic_fs::OperationId::from_bytes(
+                                publication.operation.into_bytes(),
+                            ),
+                            unanswered: Arc::new(|_| true),
+                        }),
+                    },
+                    state,
+                    &workspace,
+                )
+                .await?;
+            match result {
+                // A different prepared transition just committed. Re-enter
+                // from that durable result, with its newly selected cut.
+                None => continue,
+                Some(Outcome::Completed(_)) => {}
+                Some(Outcome::Rejected(error)) => {
+                    // Its projection is retained by this exact pending join.
+                    let pending = acyclic_fs::GitCompatRepository::new(
+                        workspace.view().workspace().id(),
+                        workspace.store.clone(),
+                    )
+                    .pending_transition()
+                    .await
+                    .map_err(storage)?;
+                    if !matches!(*error, Error::Conflict(_))
+                        || !pending.is_some_and(|pending| {
+                            pending.request
+                                == Some(acyclic_fs::OperationId::from_bytes(
+                                    publication.operation.into_bytes(),
+                                ))
+                                && matches!(
+                                    pending.mutation,
+                                    acyclic_fs::GitPendingMutation::Join {
+                                        conflicts: Some(_),
+                                        ..
+                                    }
+                                )
+                        })
+                    {
+                        return Err(*error);
+                    }
+                }
+            }
+            self.workspace
+                .acknowledge_publication(sequence, publication.operation, &repository)
+                .await?;
+        }
+    }
+
+    async fn fs_one(
+        &self,
+        parsed: crate::tools::FsCommand,
+        context: &CommandContext<'_>,
+        state: &mut State,
+        workspace: &Arc<LocalWorkspace>,
+    ) -> Result<Option<Outcome>> {
         let (source, reserved) =
             self.fs_target_with_reserved_paths(workspace, &parsed, context.scope)?;
         let native = match &source {
-            Some(source) => Some(source.native().await),
+            Some(source) => Some(source.publication().await?),
             None => None,
         };
-        let native = native.as_ref().and_then(|guard| guard.as_ref());
+        let native = native.as_ref().and_then(|(guard, _)| guard.as_ref());
         let State {
             active, watcher, ..
         } = state;
@@ -148,20 +325,19 @@ impl Commands<'_> {
             owner.verify().await?;
         }
         let lease = begin_window(workspace, context, volume.id(), parent.id(), now).await?;
-        let access = workspace
-            .mount_authority
-            .as_ref()
-            .ok_or(Error::FilesystemAccessConfiguration("Git authority"))?
-            .workspace_access(
-                self.signed,
-                context.scope.grants(),
+        let access = crate::filesystem::WorkspaceAccess::new(
+            self.verifier,
+            self.signed,
+            context.scope.grants(),
+            Some(
                 &workspace
                     .mounts
                     .named(parsed.volume.as_deref())?
                     .1
                     .view
                     .volume,
-            )?;
+            ),
+        )?;
         let result = self
             .execute(
                 &parsed.arguments,
@@ -175,6 +351,7 @@ impl Commands<'_> {
                     lease: &lease,
                     watcher,
                     access: &access,
+                    capture_cut: parent.id(),
                 },
             )
             .await;
@@ -270,15 +447,21 @@ impl Commands<'_> {
             lease,
             watcher,
             access,
+            capture_cut,
         } = invocation;
         let owner = context.owner;
         owner.verify().await?;
         if source.is_none() {
+            // A conflict continuation retains the Git request, but captures a
+            // new checkout transition. Its selected cut distinguishes that
+            // publication from an earlier capture under the same request.
+            let capture_operation =
+                reconciliation_operation(context.operation, b"capture", capture_cut, capture_cut);
             capture::capture(
                 (self.capture_options, self.capture_policy),
                 (workspace, checkout),
                 watcher,
-                (context.operation, 0),
+                (OperationId::from_bytes(capture_operation.into_bytes()), 0),
                 lease.publication_permit(),
             )
             .await?;
@@ -319,7 +502,7 @@ impl Commands<'_> {
         context: &CommandContext<'_>,
         result: Result<crate::tools::git::Output>,
         closed: (Result<()>, Result<()>),
-    ) -> Result<Outcome> {
+    ) -> Result<Option<Outcome>> {
         let (publication, advanced) = closed;
         let owner = context.owner;
         let output = match result {
@@ -332,7 +515,7 @@ impl Commands<'_> {
             ) => {
                 publication?;
                 advanced?;
-                return Ok(Outcome::Rejected(Box::new(error)));
+                return Ok(Some(Outcome::Rejected(Box::new(error))));
             }
             Err(error) => return Err(error),
         };
@@ -344,10 +527,9 @@ impl Commands<'_> {
         // has no command result or closing the old workspace failed.
         publication?;
         advanced?;
-        let command = output.command.ok_or_else(|| {
-            Error::Conflict("recovered a pending fs transition; retry the command".into())
-        })?;
-        Ok(Outcome::Completed(Box::new(command)))
+        Ok(output
+            .command
+            .map(|command| Outcome::Completed(Box::new(command))))
     }
 
     async fn prepare_reconciliation(

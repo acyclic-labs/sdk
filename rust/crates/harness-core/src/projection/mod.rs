@@ -3,10 +3,10 @@
 mod artifacts;
 mod attachments;
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod custody_tests;
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod recorded_invocation_tests;
 mod selection;
 #[cfg(test)]
@@ -45,7 +45,9 @@ impl SelectedModelContext {
             Error::Invalid("selected context must end with the current user message".into())
         })?;
         if self.selection.conversation_revision == 0
-            || self.messages.len() > limits.context_messages
+            || limits
+                .context_messages
+                .is_some_and(|maximum| self.messages.len() > maximum.get())
             || self.messages.len() != self.selection.message_ids.len()
             || last.role != ModelRole::User
         {
@@ -69,9 +71,9 @@ impl SelectedModelContext {
         let last = self.messages.last().filter(|last| {
             self.messages.len() == self.selection.message_ids.len() && last.role == ModelRole::User
         });
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let native = io.and_then(PreparationIo::original_native_work);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = native {
             work.remaining()?;
             if last.is_some() {
@@ -82,7 +84,7 @@ impl SelectedModelContext {
             }
         }
         let matches = last.is_some_and(|last| &last.content == input);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if last.is_some()
             && let Some(work) = native
         {
@@ -113,11 +115,12 @@ pub async fn select_model_context(
     with_history_io(io, |work| {
         validate_model_context_selection(conversation, &selection, conversation_revision, work)
     })?;
-    if limits.context_messages == 0
-        || limits.render_bytes == 0
+    if limits.render_bytes == 0
         || limits.render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
         || maximum_projected_attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
-        || selection.message_ids.len() > limits.context_messages
+        || limits
+            .context_messages
+            .is_some_and(|maximum| selection.message_ids.len() > maximum.get())
     {
         return Err(stock_boundary(
             io,

@@ -207,9 +207,12 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
             let (delta, work) = input_work(|| prepared.input_since(anchor));
             assert_eq!(work, (0, 0), "retained input rebuilt its observed prefix");
             assert_eq!(delta?, Some(prepared.input_bytes()? - anchored_bytes));
-            let (files, work) = input_work(|| prepared.projected_file_bytes(0));
+            let (files, work) = input_work(|| prepared.projected_file_bytes(Some(0)));
             assert_eq!(files?, 0);
             assert_eq!(work, (0, 0), "file admission revisited retained history");
+            let (supported, work) = input_work(|| prepared.validate_byte_projection());
+            supported?;
+            assert_eq!(work, (0, 0), "media admission revisited retained history");
             assert!(prepared.input_has_byte_bound()?);
             assert!(!prepared.input_has_native_media()?);
             assert_eq!(
@@ -334,11 +337,7 @@ fn shape_work<T>(run: impl FnOnce() -> T) -> (T, u64) {
     (result, shape)
 }
 
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[test]
 fn every_encoding_ledger_keeps_original_custody_through_growth_and_retirement() -> Result<()> {
     for native in [false, true] {
@@ -358,11 +357,7 @@ fn every_encoding_ledger_keeps_original_custody_through_growth_and_retirement() 
     Ok(())
 }
 
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[test]
 fn native_prepared_inventory_tracks_request_and_cached_hash_storage() -> Result<()> {
     let measured = crate::test_support::accounted::accounted(
@@ -408,18 +403,10 @@ fn native_prepared_inventory_tracks_request_and_cached_hash_storage() -> Result<
     Ok(())
 }
 
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 type SuffixWork = (u64, u64, u64, u64);
 
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 fn measure_suffix(
     count: usize,
     schema_size: usize,
@@ -495,11 +482,7 @@ fn measure_suffix(
     Ok((suffix, full_bytes))
 }
 
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[test]
 fn admitted_suffix_encoding_and_hashing_do_not_revisit_historical_messages() -> Result<()> {
     for native in [false, true] {

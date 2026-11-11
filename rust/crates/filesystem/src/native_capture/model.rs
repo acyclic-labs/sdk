@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const MAX_NATIVE_EXACT_CAPTURE_PATHS: usize = 65_536;
 
 /// A native view may have host-generated timestamps that are not SDK metadata.
@@ -14,7 +14,7 @@ pub(crate) struct NativeViewBaseline {
 
 impl NativeViewBaseline {
     /// Records the identity and access mode of the materialized view.
-    #[cfg(any(feature = "native-mount", test))]
+    #[cfg(any(not(target_arch = "wasm32"), test))]
     pub(crate) const fn new(root_identity: NativeRootIdentity, read_only: bool) -> Self {
         Self {
             root_identity,
@@ -75,6 +75,11 @@ pub struct CaptureOptions {
     pub source_root: PathBuf,
     /// Stable identity that the capability actually used for capture must own.
     pub expected_root_identity: NativeRootIdentity,
+    /// Namespace of the held demand source, when capture authors its nodes.
+    /// New objects retain that source's file identities, so a lazy fork made
+    /// before the first capture shares the same base. Independent authored
+    /// checkouts use `None` and keep their ordinary transaction identities.
+    pub source_namespace: Option<[u8; 16]>,
     /// Maximum changed paths admitted in one atomic transaction.
     pub maximum_paths: u32,
     /// Maximum physically allocated host ranges admitted per regular file.

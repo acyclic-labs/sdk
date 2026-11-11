@@ -12,6 +12,7 @@ pub struct FollowFilter(Option<Arc<Vec<Clause>>>);
 struct Clause {
     all_keys: bool,
     filter: wire::SessionFilter,
+    projection: Option<wire::KeyRange>,
 }
 
 impl FollowFilter {
@@ -32,6 +33,23 @@ impl FollowFilter {
         clauses.extend_from_slice(self.clauses());
         clauses.extend_from_slice(other.clauses());
         Self(Some(Arc::new(clauses)))
+    }
+
+    /// Keeps an indirect record as a candidate through every key clause.
+    /// Attributes still apply. This is only an index selection: the caller
+    /// must project the indirect record and authorize its exact resulting keys
+    /// before disclosure. It must never be used as an authority ceiling.
+    pub fn including_projection_key(&self, key: &[u8]) -> Result<Self, StreamError> {
+        if key.len() >= crate::MAX_RECORD_KEY_BYTES {
+            return Err(StreamError::InvalidArgument);
+        }
+        let mut clauses = self.clauses().to_vec();
+        for clause in &mut clauses {
+            if !clause.filter.keys.is_empty() {
+                clause.projection = Some(projection_range(key)?);
+            }
+        }
+        Ok(Self::from_clauses(clauses))
     }
     /// Validates and canonicalizes a requested subscription filter.
     pub fn new(requested: wire::SessionFilter) -> Result<Self, StreamError> {
@@ -55,9 +73,15 @@ impl FollowFilter {
             clauses.push(Clause {
                 all_keys: false,
                 filter,
+                projection: None,
             });
         }
         for clause in conjunction {
+            let projection = clause
+                .projection_key
+                .as_deref()
+                .map(projection_range)
+                .transpose()?;
             let filter = canonical(wire::SessionFilter {
                 keys: clause.keys,
                 attributes: clause.attributes,
@@ -67,6 +91,7 @@ impl FollowFilter {
                 clauses.push(Clause {
                     all_keys: clause.all_keys,
                     filter,
+                    projection,
                 });
             }
         }
@@ -112,6 +137,7 @@ impl FollowFilter {
             }
             clauses.push(Clause {
                 all_keys: true,
+                projection: None,
                 filter: canonical(wire::SessionFilter {
                     all_of: vec![],
                     keys: source
@@ -134,6 +160,7 @@ impl FollowFilter {
             };
             clauses.push(Clause {
                 all_keys: true,
+                projection: None,
                 filter: canonical(wire::SessionFilter {
                     all_of: vec![],
                     keys: vec![],
@@ -163,11 +190,21 @@ impl FollowFilter {
         }
     }
 
-    fn matches_entry(&self, key: &[u8], headers: &RecordHeaders) -> bool {
+    /// Checks one expanded typed change against the original selection.
+    /// Indirect candidate selection must not replace this disclosure check.
+    pub fn matches_entry(&self, key: &[u8], headers: &RecordHeaders) -> bool {
         self.clauses().iter().all(|clause| {
             (clause.filter.keys.is_empty() || clause.contains(key))
                 && clause.matches_attributes(headers)
         })
+    }
+
+    /// Original attribute ceilings also apply to indirect candidates whose
+    /// concrete keys can only be checked after expansion.
+    pub fn matches_attributes(&self, headers: &RecordHeaders) -> bool {
+        self.clauses()
+            .iter()
+            .all(|clause| clause.matches_attributes(headers))
     }
 
     /// Validates a record and checks whether projection would preserve it whole.
@@ -209,7 +246,7 @@ impl FollowFilter {
 
     #[cfg(any(
         test,
-        all(feature = "session", not(target_arch = "wasm32")),
+        not(target_arch = "wasm32"),
         all(feature = "wasm", target_arch = "wasm32")
     ))]
     pub(crate) fn transport_filter(&self) -> Result<wire::SessionFilter, StreamError> {
@@ -223,6 +260,7 @@ impl FollowFilter {
                     keys: clause.filter.keys.clone(),
                     attributes: clause.filter.attributes.clone(),
                     all_keys: clause.all_keys,
+                    projection_key: clause.projection.as_ref().map(|range| range.start.clone()),
                 })
                 .collect(),
         };
@@ -240,6 +278,11 @@ impl FollowFilter {
         let mut bytes = Vec::new();
         for clause in self.clauses().iter() {
             hash.update([u8::from(clause.all_keys)]);
+            hash.update([u8::from(clause.projection.is_some())]);
+            if let Some(range) = &clause.projection {
+                hash.update((range.start.len() as u64).to_le_bytes());
+                hash.update(&range.start);
+            }
             let length = clause.filter.encoded_len();
             bytes.clear();
             if bytes.capacity() < length {
@@ -254,11 +297,11 @@ impl FollowFilter {
         hash.finalize().into()
     }
 
-    pub(crate) fn ranges(&self) -> Option<&[wire::KeyRange]> {
+    pub(crate) fn ranges(&self) -> Option<impl Iterator<Item = &wire::KeyRange>> {
         self.clauses()
             .iter()
             .find(|clause| !clause.filter.keys.is_empty())
-            .map(|clause| clause.filter.keys.as_slice())
+            .map(|clause| clause.filter.keys.iter().chain(clause.projection.iter()))
     }
 
     pub(crate) fn attribute(&self) -> Option<&wire::AttributeMatch> {
@@ -270,6 +313,13 @@ impl FollowFilter {
 
 impl Clause {
     fn contains(&self, key: &[u8]) -> bool {
+        if self
+            .projection
+            .as_ref()
+            .is_some_and(|range| range.start.as_ref() == key)
+        {
+            return true;
+        }
         let index = self
             .filter
             .keys
@@ -308,6 +358,18 @@ impl Clause {
                 })
             && self.matches_attributes(headers)
     }
+}
+
+fn projection_range(key: &[u8]) -> Result<wire::KeyRange, StreamError> {
+    if key.len() >= crate::MAX_RECORD_KEY_BYTES {
+        return Err(StreamError::InvalidArgument);
+    }
+    let mut end = key.to_vec();
+    end.push(0);
+    Ok(wire::KeyRange {
+        start: bytes::Bytes::copy_from_slice(key),
+        end: end.into(),
+    })
 }
 
 fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, StreamError> {
@@ -416,6 +478,7 @@ pub(crate) fn projection_contract(record: &crate::Record) -> Result<(), StreamEr
                 all_keys: true,
                 keys: vec![range(if conflicting { !prefix } else { prefix })],
                 attributes: Vec::new(),
+                projection_key: None,
             }],
             ..Default::default()
         })?;
@@ -460,6 +523,86 @@ pub(crate) fn projection_contract(record: &crate::Record) -> Result<(), StreamEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projection_candidate_keeps_full_caller_capacity_through_transport() {
+        for include_root in [false, true] {
+            let keys = (0..crate::MAX_ITEMS)
+                .map(|index| {
+                    let start = if include_root && index == 0 {
+                        Vec::new()
+                    } else {
+                        format!("path-{index:08}").into_bytes()
+                    };
+                    let mut end = start.clone();
+                    end.push(0);
+                    wire::KeyRange {
+                        start: start.into(),
+                        end: end.into(),
+                    }
+                })
+                .collect();
+            let original = FollowFilter::new(wire::SessionFilter {
+                keys,
+                ..Default::default()
+            })
+            .unwrap();
+            let candidate = original.including_projection_key(b"").unwrap();
+            let transported = FollowFilter::new(candidate.transport_filter().unwrap()).unwrap();
+            assert_eq!(candidate, transported);
+            let headers =
+                crate::RecordHeaders::new(vec![bytes::Bytes::new().into()], vec![]).unwrap();
+            assert!(transported.matches_entry(b"", &headers));
+            assert!(!transported.matches_entry(b"outside", &headers));
+            assert_eq!(original.matches_entry(b"", &headers), include_root);
+        }
+    }
+
+    #[test]
+    fn projection_candidates_preserve_attributes_and_every_other_key_ceiling() {
+        let requested = FollowFilter::new(wire::SessionFilter {
+            keys: vec![wire::KeyRange {
+                start: bytes::Bytes::from_static(b"watched"),
+                end: bytes::Bytes::from_static(b"watchee"),
+            }],
+            attributes: vec![wire::AttributeMatch {
+                name: "owner".into(),
+                any_of: vec![bytes::Bytes::from_static(b"caller")],
+            }],
+            all_of: vec![wire::SessionFilterClause {
+                all_keys: true,
+                keys: vec![wire::KeyRange {
+                    start: bytes::Bytes::from_static(b"watched/nested"),
+                    end: bytes::Bytes::from_static(b"watched/nestee"),
+                }],
+                attributes: vec![],
+                projection_key: None,
+            }],
+        })
+        .unwrap();
+        let candidates = requested.including_projection_key(&[]).unwrap();
+        let headers = |key: &'static [u8], owner: &'static [u8]| {
+            crate::AppendRecord::changes(
+                b"",
+                &[wire::ChangeEntry {
+                    key: bytes::Bytes::from_static(key),
+                    operation: "delta".into(),
+                    metadata: bytes::Bytes::new(),
+                }],
+                vec![crate::Attribute {
+                    name: "owner".into(),
+                    value: bytes::Bytes::from_static(owner).into(),
+                }],
+            )
+            .unwrap()
+            .headers
+        };
+        assert!(!requested.matches(&headers(b"", b"caller")));
+        assert!(candidates.matches(&headers(b"", b"caller")));
+        assert!(!candidates.matches(&headers(b"", b"foreign")));
+        assert!(!candidates.matches(&headers(b"watched/other", b"caller")));
+        assert!(candidates.matches(&headers(b"watched/nested/file", b"caller")));
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
@@ -513,6 +656,7 @@ mod tests {
                     all_keys: true,
                     keys: vec![range(b"b", b"c")],
                     attributes: vec![],
+                    projection_key: None,
                 }],
                 ..Default::default()
             })?,
@@ -526,6 +670,7 @@ mod tests {
                     all_keys: true,
                     keys: vec![range(b"b", b"zz")],
                     attributes: vec![],
+                    projection_key: None,
                 }],
                 ..Default::default()
             })?,
@@ -766,6 +911,7 @@ mod tests {
                 keys: vec![range(b"a", b"z")],
                 attributes: vec![],
                 all_keys: false,
+                projection_key: None,
             }],
         };
         let requested_intersection = FollowFilter::new(requested.clone()).unwrap();

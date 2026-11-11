@@ -11,15 +11,14 @@ use super::control_trace::{self, Decision};
 pub use super::input::{Progress, Queued, TurnInput};
 use super::input::{awaits, input};
 use super::{
-    AgentOutcome, AgentPath, ChildDone, ChildSettled, ChildWake, Error, ForkAdopted, InboxRecord,
-    IntentId, Phase, StatusRecord, VolumeBinding,
+    AgentOutcome, AgentPath, ChildDone, ChildSettled, ChildSettlement, ChildWakes, Error,
+    ForkAdopted, InboxRecord, IntentId, Phase, StatusRecord, WorkspaceEntry,
     kernel::{self, Admit, Control, Mode, Pick},
 };
 use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 
-pub use super::slots::MAX_OPEN_CHILDREN;
 /// Most inputs held in the checkpoint. Later input stays in the inbox, which is
 /// the agent's unbounded durable queue, and is read back as the window drains.
 pub const MAX_QUEUED: usize = 32;
@@ -42,12 +41,10 @@ pub const OVERSIZED_OUTCOME: &str = "agent outcome exceeds MAX_OUTCOME_BYTES";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpawnRefusal {
+    /// Refused by the forced run topology.
+    Topology,
     /// The agent is archived.
     Archived,
-    /// The child would exceed [`super::MAX_DEPTH`].
-    Depth,
-    /// The agent already has [`MAX_OPEN_CHILDREN`] open children.
-    Limit,
     /// The host runs no children, so it creates none to wait forever.
     Unhosted,
     /// The parent's role does not admit the requested role.
@@ -74,9 +71,15 @@ pub enum SpawnOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentState {
-    /// Original completion commit times retained only until this wait resumes.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub child_settlements: Vec<(super::AgentId, u64)>,
+    /// Every admitted worker, including settled children; replays count once.
+    pub spawned_children: super::Children,
+    /// Successful tool spawns retained by a paused turn, not yet published.
+    pub reserved_spawns: u64,
+    /// Original topology refusals, retained after later input and archival.
+    pub topology_refusals: super::Children,
+    /// First original completion fact in the status stream for this wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_settlements: Option<u64>,
     /// This agent.
     pub path: AgentPath,
     /// Spawning agent.
@@ -84,7 +87,7 @@ pub struct AgentState {
     /// Role profile pinned at adoption.
     pub profile: Option<super::CreationConfig>,
     /// Owned volumes.
-    pub volumes: Vec<VolumeBinding>,
+    pub volumes: Vec<WorkspaceEntry>,
     /// Approval policy file.
     pub policy: Option<FileRef>,
     /// Identity digest of the brief its adoption named: on a spawned agent,
@@ -127,11 +130,11 @@ pub struct AgentState {
     /// Last published phase.
     pub phase: Phase,
     /// Children that have not reported `ChildDone`.
-    pub open_children: BTreeSet<AgentPath>,
+    pub open_children: super::Children,
     /// Open children whose settlement the turn in progress still counts in
     /// [`Phase::Waiting`]; empty in every other phase.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub awaiting: BTreeSet<AgentPath>,
+    #[serde(default, skip_serializing_if = "super::Children::is_empty")]
+    pub awaiting: super::Children,
     /// How many more of `awaiting` must settle before the waiting turn
     /// resumes; zero in every other phase.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -141,7 +144,7 @@ pub struct AgentState {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub awaited: bool,
     /// Open children that still have to receive `Archive`.
-    pub archive_pending: BTreeSet<AgentPath>,
+    pub archive_pending: super::Children,
     /// A terminal publication refusal stopped the cascade. Pending children
     /// remain durable, but neither arrivals nor alarms retry their writes.
     pub archive_refused: bool,
@@ -161,12 +164,6 @@ pub struct AgentState {
     pub reported: bool,
     /// The turn in progress.
     pub turn: Option<Progress>,
-    /// While a turn is in progress, the children its recorded spawns open
-    /// when it settles, beyond those already open, plus slots vacated while
-    /// it pauses. A replayed recorded spawn may name one of those children;
-    /// clients cannot take its slot before the turn settles.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub reserved_children: u16,
 }
 
 fn is_zero<T: Default + PartialEq>(count: &T) -> bool {
@@ -182,6 +179,18 @@ fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
 }
 
 impl AgentState {
+    pub(super) fn validate_parent(&self) -> Result<(), Error> {
+        if !self.path.parent_is(self.parent.as_ref()) {
+            return Err(Error::Record("agent parent is not its path's parent"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn already_steered(&self, sequence: u64, record: &InboxRecord) -> bool {
+        sequence < self.steered_through
+            && matches!(record, InboxRecord::Message(_) | InboxRecord::Notice { .. })
+    }
+
     /// A terminal setup failure frees its name only before any reply or action
     /// committed. Model failure after a tool action must retain the identity.
     /// The brief is queued at adoption, not appended to the conversation: the
@@ -237,6 +246,7 @@ impl AgentState {
     /// # Errors
     /// When the adoption's brief has no identity digest.
     pub fn adopted(path: AgentPath, adopted: &ForkAdopted) -> Result<Self, Error> {
+        super::records::check_volumes(adopted.volumes.iter())?;
         let brief = adopted
             .brief
             .as_ref()
@@ -244,7 +254,10 @@ impl AgentState {
             .transpose()
             .map_err(|error| Error::Turn(Box::new(error)))?;
         Ok(Self {
-            child_settlements: Vec::new(),
+            spawned_children: super::Children::new(),
+            reserved_spawns: 0,
+            topology_refusals: super::Children::new(),
+            child_settlements: None,
             path,
             parent: adopted.parent.clone(),
             profile: adopted.profile.clone(),
@@ -264,19 +277,29 @@ impl AgentState {
             // The creating commit wrote the first status (`Idle`).
             status_tail: 1,
             phase: Phase::Idle,
-            open_children: BTreeSet::new(),
-            awaiting: BTreeSet::new(),
+            open_children: super::Children::new(),
+            awaiting: super::Children::new(),
             need: 0,
             awaited: false,
-            archive_pending: BTreeSet::new(),
+            archive_pending: super::Children::new(),
             archive_refused: false,
-            queued: VecDeque::new(),
+            queued: adopted
+                .brief
+                .iter()
+                .cloned()
+                .map(|brief| Queued {
+                    steering: false,
+                    inbox: adopted.forked_at,
+                    input: TurnInput::Brief {
+                        brief: Box::new(brief),
+                    },
+                })
+                .collect(),
             overflow: None,
             taken: BTreeSet::new(),
             closed: false,
             reported: false,
             turn: None,
-            reserved_children: 0,
         })
     }
 
@@ -300,34 +323,25 @@ impl AgentState {
         }
     }
 
-    /// Open-child slots a spawn requested now may take.
-    fn free_children(&self) -> usize {
-        super::slots::client_ceiling(self.turn.is_some(), usize::from(self.reserved_children))
-    }
-
     /// The outcome of the spawn named `intent`, read from the state committed
-    /// by the step that applied it. Its child is derived from the intent, and
-    /// that step either opened it, found it open, or refused it for exactly
-    /// one reason; no later input of the same step closes a child. So the
-    /// outcome is a function of that state, and no state records outcomes.
+    /// by the step that applied it. Persistent admission and refusal membership
+    /// preserve that decision after the child settles or the parent archives.
     #[must_use]
-    pub fn spawn_outcome(&self, intent: &IntentId) -> SpawnOutcome {
-        let Ok(child) = self.spawned(intent) else {
-            return SpawnOutcome::Refused {
-                reason: SpawnRefusal::Depth,
-            };
-        };
-        if self.open_children.contains(&child) {
+    pub async fn spawn_outcome(&self, intent: &IntentId) -> Result<SpawnOutcome, Error> {
+        let child = self.spawned(intent)?;
+        Ok(if self.spawned_children.contains(&child).await? {
             SpawnOutcome::Spawned { child }
+        } else if self.topology_refusals.contains(&child).await? {
+            SpawnOutcome::Refused {
+                reason: SpawnRefusal::Topology,
+            }
         } else if self.closed {
             SpawnOutcome::Refused {
                 reason: SpawnRefusal::Archived,
             }
         } else {
-            SpawnOutcome::Refused {
-                reason: SpawnRefusal::Limit,
-            }
-        }
+            return Err(Error::Record("spawn outcome precedes its applying step"));
+        })
     }
 
     /// The child a spawn named `intent` creates.
@@ -414,6 +428,8 @@ impl AgentState {
 /// An effect of one step, lowered into the step's single commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Out {
+    /// Retain the paused turn's successful, unpublished spawn admissions.
+    PendingSpawns(u64),
     /// Inbox inputs before this exclusive cursor already reached the model.
     Steered(u64),
     /// Append to this agent's conversation.
@@ -455,7 +471,7 @@ pub enum Out {
         /// for a host-requested spawn.
         profile: Option<super::CreationConfig>,
         /// Volumes bound to the child (filled by the filesystem contribution).
-        volumes: Vec<VolumeBinding>,
+        volumes: Vec<WorkspaceEntry>,
         /// Optional retained conversation cut selected by the caller.
         history: Option<super::HistorySelection>,
     },
@@ -569,9 +585,6 @@ impl Until {
 pub struct TurnStep {
     /// Driver checkpoint for the next step; ignored when the turn finished.
     pub checkpoint: Option<Vec<u8>>,
-    /// While the turn stays in progress, how many children its recorded
-    /// spawns open when it settles, beyond those already open.
-    pub reserved_children: usize,
     /// Effects, in order.
     pub outs: Vec<Out>,
     /// What to wait for next.
@@ -642,6 +655,22 @@ pub(super) struct PreparedStep {
 }
 
 impl PreparedStep {
+    pub(super) async fn persist_children<P: acyclic_stream::StreamProvider + ?Sized>(
+        &mut self,
+        provider: std::sync::Arc<P>,
+    ) -> Result<(), Error> {
+        self.step.state.open_children.bind(provider.clone());
+        self.step.state.archive_pending.bind(provider.clone());
+        self.step.state.topology_refusals.bind(provider.clone());
+        self.step.state.spawned_children.bind(provider.clone());
+        self.step.state.awaiting.bind(provider);
+        self.step.state.open_children.persist().await?;
+        self.step.state.archive_pending.persist().await?;
+        self.step.state.topology_refusals.persist().await?;
+        self.step.state.spawned_children.persist().await?;
+        self.step.state.awaiting.persist().await
+    }
+
     pub(super) fn step(&self) -> &Step {
         &self.step
     }
@@ -655,10 +684,103 @@ impl PreparedStep {
     }
 }
 
+/// Owns the logical transition before the host chooses its publication encoding.
+struct StepDraft {
+    state: AgentState,
+    outs: Vec<Out>,
+    previous: (Phase, u64),
+    cursor: u64,
+    child_wakes: Option<ChildWakes>,
+    child_settlement: Option<ChildSettlement>,
+}
+
+impl StepDraft {
+    fn finish(self) -> Result<Step, Error> {
+        finalize_step(
+            self.state,
+            self.outs,
+            &self.previous,
+            self.cursor,
+            self.child_wakes,
+            self.child_settlement,
+        )
+    }
+}
+
+impl PreparedStep {
+    fn new(draft: StepDraft) -> Result<Self, Error> {
+        let StepDraft {
+            state,
+            outs,
+            previous,
+            cursor,
+            child_wakes,
+            child_settlement,
+        } = draft;
+        let tails = (state.conversation_tail, state.status_tail);
+        let completion = (
+            state.awaited,
+            state.checkpoint,
+            state.roster,
+            outs.len(),
+            state.pending_notices.clone(),
+        );
+        let mut step = finalize_step(
+            state,
+            outs,
+            &previous,
+            cursor,
+            child_wakes,
+            child_settlement,
+        )?;
+        let mut bytes = checkpoint::encode(&step.state)?;
+        // Check the exact final tails, then retain these same bytes for commit.
+        // Only a state that must shed its growing input is encoded again.
+        if bytes.len() > MAX_CHECKPOINT_BYTES {
+            let child_wakes = step
+                .status
+                .as_mut()
+                .map(|status| std::mem::take(&mut status.child_wakes))
+                .unwrap_or_default();
+            let child_settlement = step
+                .status
+                .as_mut()
+                .and_then(|status| status.child_settlement.take());
+            let Step {
+                mut state,
+                mut outs,
+                ..
+            } = step;
+            state.conversation_tail = tails.0;
+            state.status_tail = tails.1;
+            state.awaited = completion.0;
+            state.checkpoint = completion.1;
+            state.roster = completion.2;
+            state.pending_notices = completion.4;
+            outs.truncate(completion.3);
+            shed(&mut state, &mut outs, OVERSIZED_STATE);
+            step = finalize_step(
+                state,
+                outs,
+                &previous,
+                cursor,
+                child_wakes,
+                child_settlement,
+            )?;
+            bytes = checkpoint::encode(&step.state)?;
+        }
+        Ok(PreparedStep {
+            step,
+            checkpoint: checkpoint::from_encoded(bytes)?,
+        })
+    }
+}
+
 /// Runs one step for `wake`. Every control decision is made by [`kernel`].
 ///
 /// `state` is `None` only for the first delivery, which must be `ForkAdopted`.
 /// `now_unix_ms` is the delivery's clock: a wait's timeout counts from it.
+/// Returns logical effects; checkpoint serialization belongs to the publishing host.
 pub async fn step<T: TurnDriver + ?Sized>(
     driver: &T,
     path: &AgentPath,
@@ -667,7 +789,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
     wake: Wake,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<Step, Error> {
-    Ok(prepare_step(
+    draft_step(
         driver,
         path,
         state,
@@ -676,7 +798,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
         cancellation,
     )
     .await?
-    .step)
+    .finish()
 }
 
 pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
@@ -687,17 +809,46 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     wake: Wake,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<PreparedStep, Error> {
+    PreparedStep::new(
+        draft_step(
+            driver,
+            path,
+            state,
+            (cursor, now_unix_ms, settled_at_micros),
+            wake,
+            cancellation,
+        )
+        .await?,
+    )
+}
+
+async fn draft_step<T: TurnDriver + ?Sized>(
+    driver: &T,
+    path: &AgentPath,
+    state: Option<AgentState>,
+    (cursor, now_unix_ms, settled_at_micros): (u64, u64, Option<u64>),
+    wake: Wake,
+    cancellation: acyclic_actors::guest::CancellationToken,
+) -> Result<StepDraft, Error> {
     let mut outs = Vec::new();
     let alarm_wake = matches!(wake, Wake::Alarm);
     // Consuming a non-waking stream event never advances the model driver,
     // including when another turn is currently paused or executing.
-    let quiet_notice = matches!(
+    let workspace_change = matches!(
         &wake,
         Wake::Inbox {
-            record: InboxRecord::Notice { notice, .. },
+            record: InboxRecord::WorkspaceChanged(_),
             ..
-        } if !notice.wakes()
+        }
     );
+    let quiet_notice = workspace_change
+        || matches!(
+            &wake,
+            Wake::Inbox {
+                record: InboxRecord::Notice { notice, .. },
+                ..
+            } if !notice.wakes()
+        );
     // A requested spawn's step carries only that spawn: its child is created
     // by this step's commit, so no turn may reach it until the commit lands.
     // Pending turn work continues at once on the next step (the kernel's
@@ -711,7 +862,10 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     );
     // The last published phase: the creating commit published `Idle`, and
     // admitting a record (a cancel) can itself change the phase.
-    let previous = state.as_ref().map_or(Phase::Idle, published);
+    let previous = state.as_ref().map_or((Phase::Idle, 0), |state| {
+        (published(state), state.dropped_before)
+    });
+    let mut child_settlement = None;
     let mut state = match (state, wake) {
         (
             None,
@@ -723,15 +877,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             if adopted.agent != path.id() {
                 return Err(Error::Record("ForkAdopted names another agent"));
             }
-            let mut state = AgentState::adopted(path.clone(), &adopted)?;
-            state.queued.extend(adopted.brief.map(|brief| Queued {
-                steering: false,
-                inbox: adopted.forked_at,
-                input: TurnInput::Brief {
-                    brief: Box::new(brief),
-                },
-            }));
-            state
+            AgentState::adopted(path.clone(), &adopted)?
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         (Some(state), Wake::Alarm) => state,
@@ -751,25 +897,26 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
                 volumes: Vec::new(),
                 history: spawn.history,
             });
-            // A turn in progress keeps the slots its recorded spawns take.
-            let free = state.free_children();
-            apply_spawns(&mut state, &mut outs, 0, free);
+            apply_spawns(&mut state, &mut outs, 0).await?;
             state
         }
         (Some(state), Wake::Inbox { sequence, record }) => {
-            admit(state, sequence, record, settled_at_micros)?
+            let (state, fact) = admit(state, sequence, record, settled_at_micros).await?;
+            child_settlement = fact;
+            state
         }
     };
-    let mut child_wakes = Vec::new();
+    state.validate_parent()?;
+    let mut child_wakes = None;
     let applied = outs.len();
     if state.closed {
-        state.child_settlements.clear();
-        cascade(&mut state, &mut outs)?;
+        state.child_settlements = None;
+        cascade(&mut state, &mut outs).await?;
     } else if !spawn_wake && !quiet_notice {
         run(
             driver,
             &mut state,
-            (cursor, now_unix_ms),
+            (cursor, now_unix_ms, child_settlement.is_some()),
             alarm_wake,
             &mut outs,
             &mut child_wakes,
@@ -777,50 +924,20 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         )
         .await?;
     }
-    apply_spawns(&mut state, &mut outs, applied, MAX_OPEN_CHILDREN);
-    let tails = (state.conversation_tail, state.status_tail);
-    let completion = (
-        state.awaited,
-        state.checkpoint,
-        state.roster,
-        outs.len(),
-        state.pending_notices.clone(),
-    );
-    let mut step = finalize_step(state, outs, &previous, cursor, child_wakes)?;
-    let mut bytes = checkpoint::encode(&step.state)?;
-    // Check the exact final tails, then retain these same bytes for commit.
-    // Only a state that must shed its growing input is encoded again.
-    if bytes.len() > MAX_CHECKPOINT_BYTES {
-        let child_wakes = step
-            .status
-            .as_mut()
-            .map(|status| std::mem::take(&mut status.child_wakes))
-            .unwrap_or_default();
-        let Step {
-            mut state,
-            mut outs,
-            ..
-        } = step;
-        state.conversation_tail = tails.0;
-        state.status_tail = tails.1;
-        state.awaited = completion.0;
-        state.checkpoint = completion.1;
-        state.roster = completion.2;
-        state.pending_notices = completion.4;
-        outs.truncate(completion.3);
-        shed(&mut state, &mut outs, OVERSIZED_STATE);
-        step = finalize_step(state, outs, &previous, cursor, child_wakes)?;
-        bytes = checkpoint::encode(&step.state)?;
-    }
-    Ok(PreparedStep {
-        step,
-        checkpoint: checkpoint::from_encoded(bytes)?,
+    apply_spawns(&mut state, &mut outs, applied).await?;
+    Ok(StepDraft {
+        state,
+        outs,
+        previous,
+        cursor,
+        child_wakes,
+        child_settlement,
     })
 }
 
 /// A refused publication discards its speculative effects and settles from the
 /// original checkpoint. The normal shedding path reports the child exactly once.
-pub(super) fn failed_step(
+pub(super) async fn failed_step(
     path: &AgentPath,
     state: Option<AgentState>,
     wake: Wake,
@@ -837,7 +954,7 @@ pub(super) fn failed_step(
                 sequence,
                 record: record @ InboxRecord::Archive(_),
             },
-        ) => admit(state, sequence, record, None)?,
+        ) => admit(state, sequence, record, None).await?.0,
         (Some(state), _) => state,
         (
             None,
@@ -848,10 +965,10 @@ pub(super) fn failed_step(
         ) => AgentState::adopted(path.clone(), &adopted)?,
         _ => return Err(Error::Record("first agent input is not ForkAdopted")),
     };
-    let previous = published(&state);
+    let previous = (published(&state), state.dropped_before);
     let mut outs = Vec::new();
     shed(&mut state, &mut outs, failure);
-    let step = finalize_step(state, outs, &previous, cursor, Vec::new())?;
+    let step = finalize_step(state, outs, &previous, cursor, None, None)?;
     let checkpoint = checkpoint::from_encoded(checkpoint::encode(&step.state)?)?;
     Ok(PreparedStep { step, checkpoint })
 }
@@ -877,9 +994,10 @@ fn wake_input(state: &AgentState) -> bool {
 fn finalize_step(
     mut state: AgentState,
     mut outs: Vec<Out>,
-    previous: &Phase,
+    previous: &(Phase, u64),
     cursor: u64,
-    child_wakes: Vec<ChildWake>,
+    child_wakes: Option<ChildWakes>,
+    child_settlement: Option<ChildSettlement>,
 ) -> Result<Step, Error> {
     // Retire admitted boundary input before choosing the next actor alarm.
     for out in &outs {
@@ -953,6 +1071,7 @@ fn finalize_step(
             Out::Roster(digest) => state.roster = Some(*digest),
             Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Send { .. }
+            | Out::PendingSpawns(_)
             | Out::Steered(_)
             | Out::Archive { .. }
             | Out::Spawn { .. }
@@ -978,12 +1097,21 @@ fn finalize_step(
         .conversation_tail
         .checked_add(appended)
         .ok_or(Error::Record("agent conversation tail overflow"))?;
-    let status = (&phase != previous || !child_wakes.is_empty()).then_some(StatusRecord {
-        child_wakes,
-        phase,
-        cursor,
-        conversation: state.conversation_tail,
-    });
+    // Settled entries and dropped inputs wake observers even when the actor's
+    // phase stays unchanged. An opening snapshot may have reported Running
+    // from accepted input while the committed checkpoint still said Idle.
+    let status = (phase != previous.0
+        || state.dropped_before != previous.1
+        || child_wakes.is_some()
+        || child_settlement.is_some()
+        || appended != 0)
+        .then_some(StatusRecord {
+            child_settlement,
+            child_wakes,
+            phase,
+            cursor,
+            conversation: state.conversation_tail,
+        });
     state.status_tail = state
         .status_tail
         .checked_add(u64::from(status.is_some()))
@@ -996,9 +1124,9 @@ fn finalize_step(
     })
 }
 
-/// The phase a status publishes: an idle agent still holding input runs it
-/// next, so it publishes `Running`; `Idle` always means nothing is pending.
-fn published(state: &AgentState) -> Phase {
+/// The phase a status publishes: retained input runs next, so `Idle` means
+/// that no admitted input remains pending in this checkpoint.
+pub(super) fn published(state: &AgentState) -> Phase {
     if matches!(state.phase, Phase::Idle | Phase::WaitingUser { .. })
         && (!state.queued.is_empty() || state.overflow.is_some())
     {
@@ -1028,16 +1156,15 @@ fn control(state: &AgentState) -> Control {
 }
 
 /// Folds one inbox record into the state.
-fn admit(
+async fn admit(
     mut state: AgentState,
     sequence: u64,
     record: InboxRecord,
     settled_at_micros: Option<u64>,
-) -> Result<AgentState, Error> {
-    if sequence < state.steered_through
-        && matches!(record, InboxRecord::Message(_) | InboxRecord::Notice { .. })
-    {
-        return Ok(state);
+) -> Result<(AgentState, Option<ChildSettlement>), Error> {
+    let mut fact = None;
+    if state.already_steered(sequence, &record) {
+        return Ok((state, None));
     }
     let kind = match &record {
         InboxRecord::ForkAdopted(_) => return Err(Error::Record("agent adopted twice")),
@@ -1055,8 +1182,9 @@ fn admit(
         state.pending_notices = None;
     }
     if !admitted.control.turn {
-        state.child_settlements.clear();
+        state.child_settlements = None;
         state.turn = None;
+        state.reserved_spawns = 0;
         state.awaiting.clear();
         state.need = 0;
     }
@@ -1079,24 +1207,28 @@ fn admit(
         }
     }
     if let InboxRecord::ChildDone(done) = &record {
-        if state.open_children.remove(&done.child) && state.turn.is_some() {
-            // The paused journal may already contain a replayed spawn of this
-            // child. Its slot remains owned by the turn until the driver next
-            // reconciles recorded effects. Duplicate ChildDone consumes none.
-            state.reserved_children = super::slots::reserve_vacated(state.reserved_children);
+        if done.child.is_child_of(&state.path) {
+            state.open_children.remove(&done.child).await?;
+            state.archive_pending.remove(&done.child).await?;
         }
-        state.archive_pending.remove(&done.child);
     }
     match &record {
+        InboxRecord::WorkspaceChanged(change) if !state.closed => {
+            super::workspaces::WorkspaceTable::apply_entries(&mut state.volumes, change)?;
+        }
         InboxRecord::Awaited => state.awaited = true,
         InboxRecord::ChildDone(ChildDone { child, .. })
         | InboxRecord::ChildSettled(ChildSettled { child }) => {
-            if state.awaiting.contains(child)
+            if state.awaiting.contains(child).await?
                 && let Some(settled_at) = settled_at_micros
             {
-                state.child_settlements.push((child.id(), settled_at));
+                state.child_settlements.get_or_insert(state.status_tail);
+                fact = Some(ChildSettlement {
+                    child: child.id(),
+                    settled_at_micros: settled_at,
+                });
             }
-            settle_awaited(&mut state, child);
+            settle_awaited(&mut state, child).await?;
         }
         _ => {}
     }
@@ -1119,15 +1251,15 @@ fn admit(
             state.overflow.get_or_insert(sequence);
         }
     }
-    Ok(state)
+    Ok((state, fact))
 }
 
 /// An awaited `child` settled: it counts once toward the [`Until`] the turn
 /// waits on in [`Phase::Waiting`], which resumes, through
 /// [`kernel::satisfy`], when the last needed one has. One set removal.
-fn settle_awaited(state: &mut AgentState, child: &AgentPath) {
-    if !state.awaiting.remove(child) {
-        return;
+async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(), Error> {
+    if !child.is_child_of(&state.path) || !state.awaiting.remove(child).await? {
+        return Ok(());
     }
     state.need = state.need.saturating_sub(1);
     if state.need == 0 {
@@ -1140,17 +1272,20 @@ fn settle_awaited(state: &mut AgentState, child: &AgentPath) {
             state.phase = Phase::Running;
         }
     }
+    Ok(())
 }
 
 /// Whether a driver's effect fits the record that carries it.
 fn admissible(out: &Out) -> bool {
     match out {
-        Out::Steered(_) => true,
-        Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
+        Out::Steered(_) | Out::PendingSpawns(_) => true,
+        Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(
                 record,
-                InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
+                InboxRecord::ForkAdopted(_)
+                    | InboxRecord::Archive(_)
+                    | InboxRecord::WorkspaceChanged(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
         Out::Archive { .. }
@@ -1174,10 +1309,10 @@ fn approval_position(state: &AgentState) -> Option<usize> {
 async fn run<T: TurnDriver + ?Sized>(
     driver: &T,
     state: &mut AgentState,
-    (cursor, now_unix_ms): (u64, u64),
+    (cursor, now_unix_ms, returning_completion): (u64, u64, bool),
     alarm_wake: bool,
     outs: &mut Vec<Out>,
-    child_wakes: &mut Vec<ChildWake>,
+    child_wakes: &mut Option<ChildWakes>,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<(), Error> {
     let approval = approval_position(state);
@@ -1198,17 +1333,17 @@ async fn run<T: TurnDriver + ?Sized>(
     };
     // This is the actual wait return, before the driver performs any work.
     // Completion times came with the original deliveries; this adds no read,
-    // commit or telemetry channel. A partial quorum emits nothing until here.
+    // commit or telemetry channel. Partial facts have no return clock until here.
     if picked == Pick::Resume {
-        child_wakes.extend(
-            std::mem::take(&mut state.child_settlements)
-                .into_iter()
-                .map(|(child, settled_at_micros)| ChildWake {
-                    child,
-                    settled_at_micros,
-                    woke_at_micros: now_unix_ms.saturating_mul(1_000),
-                }),
-        );
+        let until = state
+            .status_tail
+            .checked_add(u64::from(returning_completion))
+            .ok_or(Error::Record("status tail overflows"))?;
+        *child_wakes = state.child_settlements.take().map(|from| ChildWakes {
+            from,
+            until,
+            woke_at_micros: now_unix_ms.saturating_mul(1_000),
+        });
     }
     // A resumed turn keeps the input that started it.
     let started = match (&state.turn, &input) {
@@ -1223,7 +1358,6 @@ async fn run<T: TurnDriver + ?Sized>(
         Err(error) if error.uncertain() => return Err(error),
         Err(error) => TurnStep {
             checkpoint: None,
-            reserved_children: 0,
             outs: Vec::new(),
             wait: Wait::Done(AgentOutcome::Failed {
                 message: error.to_string(),
@@ -1241,7 +1375,6 @@ async fn run<T: TurnDriver + ?Sized>(
     {
         turn = TurnStep {
             checkpoint: None,
-            reserved_children: 0,
             outs: Vec::new(),
             wait: Wait::Done(AgentOutcome::Failed {
                 message: INADMISSIBLE_EFFECT.into(),
@@ -1252,13 +1385,22 @@ async fn run<T: TurnDriver + ?Sized>(
     if let Some(end) = turn.drops {
         state.drop_before(end);
     }
+    state.reserved_spawns = turn
+        .outs
+        .iter()
+        .rev()
+        .find_map(|out| match out {
+            Out::PendingSpawns(count) => Some(*count),
+            _ => None,
+        })
+        .unwrap_or(0);
     let spawned = outs.len();
     outs.extend(turn.outs);
     let wait = match turn.wait {
         Wait::Done(outcome) => Wait::Done(bounded(outcome)),
         wait => wait,
     };
-    let mut awaiting = (BTreeSet::new(), 0);
+    let mut awaiting = (super::Children::new(), 0);
     let (wait, approval, outcome) = match wait {
         Wait::Continue => (kernel::Wait::Continue, None, None),
         Wait::Approval { id, binding } => (
@@ -1276,12 +1418,13 @@ async fn run<T: TurnDriver + ?Sized>(
             // counts now. This step's own spawns are open children too, so
             // apply them first: a wait on a child spawned in the same step
             // asks it. Applying is idempotent for the step's later pass.
-            apply_spawns(state, outs, spawned, MAX_OPEN_CHILDREN);
-            let open: BTreeSet<AgentPath> = until
-                .awaited
-                .intersection(&state.open_children)
-                .cloned()
-                .collect();
+            apply_spawns(state, outs, spawned).await?;
+            let mut open = Vec::new();
+            for child in &until.awaited {
+                if child.is_child_of(&state.path) && state.open_children.contains(child).await? {
+                    open.push(child);
+                }
+            }
             let settled = u32::try_from(until.awaited.len() - open.len()).unwrap_or(u32::MAX);
             let need = until.need.saturating_sub(settled);
             let deadline = until
@@ -1298,10 +1441,13 @@ async fn run<T: TurnDriver + ?Sized>(
             );
             if matches!(wait, kernel::Wait::Await { .. }) {
                 outs.extend(open.iter().map(|child| Out::Send {
-                    to: child.clone(),
+                    to: (**child).clone(),
                     record: InboxRecord::Awaited,
                 }));
-                awaiting = (open, need);
+                for child in open {
+                    awaiting.0.insert(child).await?;
+                }
+                awaiting.1 = need;
             }
             (wait, None, None)
         }
@@ -1317,15 +1463,11 @@ async fn run<T: TurnDriver + ?Sized>(
         inbox,
         checkpoint: turn.checkpoint.unwrap_or_default(),
     });
-    state.reserved_children = match state.turn {
-        Some(_) => u16::try_from(turn.reserved_children.min(MAX_OPEN_CHILDREN)).unwrap_or(u16::MAX),
-        None => 0,
-    };
     state.reported = next.reported;
     (state.awaiting, state.need) = if matches!(next.mode, Mode::Await(_)) {
         awaiting
     } else {
-        (BTreeSet::new(), 0)
+        (super::Children::new(), 0)
     };
     state.phase = match (next.mode, approval, outcome) {
         (Mode::Running, ..) => Phase::Running,
@@ -1375,6 +1517,7 @@ fn bounded(outcome: AgentOutcome) -> AgentOutcome {
 fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
     state.drop_queue();
     state.turn = None;
+    state.reserved_spawns = 0;
     if matches!(state.phase, Phase::Done { .. }) && state.archive_pending.is_empty() {
         return;
     }
@@ -1394,7 +1537,7 @@ fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
 }
 
 /// Archive cascade: bounded fan-out to open children, then one report upward.
-fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Error> {
+async fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Error> {
     let pending = state.archive_pending.len();
     let before = control(state);
     let step = kernel::cascade(before, pending);
@@ -1402,9 +1545,11 @@ fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Error> {
     control_trace::record(state, Decision::Cascade(before, pending, step));
     let id = IntentId::try_from(format!("cascade:{}", state.path.id()))?;
     for _ in 0..step.archive {
-        let Some(child) = state.archive_pending.pop_first() else {
+        let Some(child_id) = state.archive_pending.first().await? else {
             break;
         };
+        let child = state.path.child(&child_id)?;
+        state.archive_pending.remove(&child).await?;
         outs.push(Out::Archive {
             id: id.clone(),
             target: child,
@@ -1450,7 +1595,11 @@ pub(super) fn requested_intent(sequence: u64) -> Result<IntentId, Error> {
 /// children every earlier spawn of the step opened. A refused spawn creates
 /// nothing and is dropped from `outs`; a requester reads every outcome from
 /// the committed state with [`AgentState::spawn_outcome`].
-fn apply_spawns(state: &mut AgentState, outs: &mut Vec<Out>, from: usize, limit: usize) {
+async fn apply_spawns(
+    state: &mut AgentState,
+    outs: &mut Vec<Out>,
+    from: usize,
+) -> Result<(), Error> {
     let mut index = from;
     while index < outs.len() {
         let Out::Spawn { intent, .. } = &outs[index] else {
@@ -1458,13 +1607,30 @@ fn apply_spawns(state: &mut AgentState, outs: &mut Vec<Out>, from: usize, limit:
             continue;
         };
         let opened = match state.spawned(intent) {
-            Ok(child) if state.open_children.contains(&child) => true,
             Ok(child)
                 if !state.closed
-                    && super::slots::admits(state.open_children.len(), limit, false) =>
+                    && (state.spawned_children.contains(&child).await?
+                        || state
+                            .profile
+                            .as_ref()
+                            .and_then(|profile| profile.topology.as_ref())
+                            .and_then(|topology| topology.spawn_limit(state.parent.is_none()))
+                            .is_none_or(|limit| {
+                                (state.spawned_children.len() as u64)
+                                    .saturating_add(state.reserved_spawns)
+                                    < limit
+                            })) =>
             {
-                state.open_children.insert(child);
+                state.spawned_children.insert(&child).await?;
+                state.open_children.insert(&child).await?;
                 true
+            }
+            Ok(child) => {
+                let opened = state.open_children.contains(&child).await?;
+                if !opened && !state.closed {
+                    state.topology_refusals.insert(&child).await?;
+                }
+                opened
             }
             _ => false,
         };
@@ -1474,4 +1640,5 @@ fn apply_spawns(state: &mut AgentState, outs: &mut Vec<Out>, from: usize, limit:
             outs.remove(index);
         }
     }
+    Ok(())
 }

@@ -163,8 +163,11 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
             .expect("read source"),
         file
     );
-    for range in [json!({"start":4,"end":1}), json!({"start":0,"end":6})] {
-        assert!(
+    for (range, rejected) in [
+        (json!({"start":4,"end":1}), true),
+        (json!({"start":0,"end":6}), false),
+    ] {
+        assert_eq!(
             adapter
                 .preflight(
                     &scope,
@@ -172,7 +175,8 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
                     &invocation(json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":range})),
                     None
                 )
-                .is_err()
+                .is_err(),
+            rejected
         );
     }
     let bounded = RuntimeScope::new(

@@ -332,7 +332,7 @@ pub(crate) fn encode(route: &str, input: &[u8]) -> Result<String> {
     serde_json::to_string(&request_json(route, input)?).map_err(|_| "could not encode request")
 }
 
-#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn encode_append(request: &crate::AppendRequest) -> Result<String> {
     serde_json::to_string(&append_json(request)?).map_err(|_| "could not encode request")
 }

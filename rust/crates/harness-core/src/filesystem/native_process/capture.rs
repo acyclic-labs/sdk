@@ -67,13 +67,9 @@ where
     }
 }
 
-type CaptureResult = std::io::Result<
-    std::result::Result<std::process::Output, acyclic_native_runtime::ProcessCaptureFailure>,
->;
-
 /// What the spawn turn left: a finished result, or a running capture.
 enum Started<H: acyclic_native_runtime::CaptureHandler> {
-    Finished(CaptureResult, H),
+    Finished(NativeProcessOutcome, H),
     Running(acyclic_native_runtime::ProcessCapture<H>),
     Streaming(acyclic_native_runtime::ProcessCaptureStream<H>),
 }
@@ -183,25 +179,25 @@ pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
     let started = match started {
         Ok(started) => started,
         Err(acyclic_native_runtime::LaunchFailure::Refused { failure, handler }) => {
-            Started::Finished(Ok(Err(failure)), handler)
+            Started::Finished(result(Ok(Err(failure))), handler)
         }
         Err(acyclic_native_runtime::LaunchFailure::Control { error, handler }) => {
-            Started::Finished(Err(error), handler)
+            Started::Finished(result(Err(error)), handler)
         }
         Err(acyclic_native_runtime::LaunchFailure::Indeterminate {
             error,
             handler: Some(handler),
-        }) => Started::Finished(Err(error), handler),
+        }) => Started::Finished(Err(indeterminate_launch(error)), handler),
         Err(acyclic_native_runtime::LaunchFailure::Indeterminate {
             error,
             handler: None,
         }) => {
-            return Err(Error::process_io(error));
+            return Err(indeterminate_launch(error));
         }
     };
     Ok(async move {
         let (output, handler) = match started {
-            Started::Finished(output, handler) => (output, handler),
+            Started::Finished(output, handler) => return Ok((output, handler)),
             Started::Running(capture) => {
                 // Ownership stays with the spawned capture until process cleanup
                 // finishes, even if its awaiting task is cancelled.
@@ -220,6 +216,15 @@ pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
         };
         Ok((result(output), handler))
     })
+}
+
+// The launch core alone knows whether spawn was proved not to have happened.
+// A lost worker or unproved spawn must retain reconciliation ownership even
+// when its underlying I/O cause looks like a familiar preflight error.
+fn indeterminate_launch(error: std::io::Error) -> Error {
+    Error::Storage(format!(
+        "native process launch outcome indeterminate: {error}; recovery: reconcile the original command"
+    ))
 }
 
 fn result(
@@ -249,7 +254,7 @@ fn result(
                         CaptureStop::ControlStopped => NativeProcessStopKind::ControlStopped,
                         CaptureStop::Failed => NativeProcessStopKind::CaptureFailed,
                     },
-                    message: failure.error.to_string().chars().take(128).collect(),
+                    message: failure.error.to_string(),
                     cleanup_completed: failure.cleanup_completed,
                 }),
             }

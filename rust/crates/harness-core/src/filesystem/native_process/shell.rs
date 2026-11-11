@@ -46,17 +46,34 @@ pub fn prepare<T>(
     mut invocation: Invocation,
     now: u64,
 ) -> Result<Invocation> {
+    let cwd_error = |cause: std::io::Error| {
+        let path = input.cwd.as_deref().unwrap_or(".");
+        let message = match cause.kind() {
+            std::io::ErrorKind::NotFound => format!("cwd {path} does not exist"),
+            std::io::ErrorKind::NotADirectory => format!("cwd {path} is not a directory"),
+            _ => format!("cannot use cwd {path}: {cause}"),
+        };
+        Error::process_io(std::io::Error::new(cause.kind(), message))
+    };
     input.validate()?;
     let relative = Path::new(input.cwd.as_deref().unwrap_or(""));
     let (mount, path) = mounts.resolve(relative)?;
     mount.check(Action::List, &path, now)?;
+    if matches!(mount.native_root, crate::workspace::NativeRoot::Logical) {
+        return Err(Error::Unsupported(
+            "logical volume has no native shell directory".into(),
+        ));
+    }
     let io = |cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause));
     // A volume's root is its binding, which may link to the view projecting
     // it, so the canonical cwd is checked against the canonical root.
+    let exposed = mounts
+        .native_root_for(mount)
+        .ok_or_else(|| Error::Unsupported("shell cwd has no native projection".into()))?;
     let native_root = mount
         .native_root
-        .as_deref()
-        .map(std::fs::canonicalize)
+        .override_path()
+        .map(|_| std::fs::canonicalize(exposed))
         .transpose()
         .map_err(io)?;
     let root = native_root.as_deref().unwrap_or(&mounts.root);
@@ -65,11 +82,16 @@ pub fn prepare<T>(
     } else {
         mounts.root.join(relative)
     };
-    let cwd = std::fs::canonicalize(requested).map_err(io)?;
+    let cwd = std::fs::canonicalize(&requested).map_err(cwd_error)?;
+    if !std::fs::metadata(&cwd).map_err(cwd_error)?.is_dir() {
+        return Err(cwd_error(std::io::Error::from(
+            std::io::ErrorKind::NotADirectory,
+        )));
+    }
     let selected = cwd
         .strip_prefix(root)
         .map_err(|_| Error::Invalid("shell cwd escapes the task view".into()))?;
-    if mount.native_root.is_some() {
+    if mount.native_root.override_path().is_some() {
         let selected = selected
             .to_str()
             .ok_or_else(|| Error::Invalid("shell cwd is not UTF-8".into()))?;
@@ -115,7 +137,7 @@ pub fn prepare<T>(
                     })
                     .map(|(_, value)| value.into())
             });
-        invocation.executable = search.resolve(program).map_err(io)?;
+        invocation.executable = search.resolve(program).map_err(Error::process_io)?;
     }
     invocation.argv = arguments;
     invocation.standard_input =
@@ -136,7 +158,7 @@ pub fn prepare<T>(
 /// Host-owned workspace boundary shared by shell and lifecycle hooks. Explicit
 /// execution grants retain their existing, separately authenticated authority.
 /// Native enforcement failures refuse launch, never retry unconfined. Linux
-/// and macOS implement this default; the Windows adapter remains pending.
+/// macOS and Windows consume the same default policy.
 #[doc(hidden)]
 pub fn workspace_grant<T>(
     mounts: &MountTable<T>,
@@ -144,25 +166,14 @@ pub fn workspace_grant<T>(
 ) -> Result<Option<acyclic_native_runtime::execution::ExecutionGrant>> {
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
-        use acyclic_native_runtime::execution::{
-            ExecutionAccess, ExecutionGrant, ExecutionNetwork,
-        };
-        // Workspace-write preserves host reads. Narrower explicit grants can
-        // restrict reads; this default boundary confines filesystem mutation.
-        #[cfg(unix)]
-        let mut read = vec![std::path::PathBuf::from("/")];
-        #[cfg(windows)]
-        let mut read =
-            acyclic_native_runtime::execution::ambient_read_roots().map_err(Error::process_io)?;
+        use acyclic_native_runtime::execution::{ExecutionAccess, ExecutionGrant};
+        let mut read = Vec::new();
         let mut write = Vec::new();
         let mut access = ExecutionAccess::ReadOnly;
         let io = Error::process_io;
         let mut primary = mounts.root.clone();
-        for (relative, mount) in mounts.mounts() {
-            let root = mount
-                .native_root
-                .clone()
-                .unwrap_or_else(|| mounts.root.join(relative));
+        for (relative, root, mount) in mounts.native_mounts() {
+            let root = root.to_path_buf();
             if relative.is_empty() {
                 primary = root;
                 if !mount.mode.read_only() {
@@ -194,7 +205,7 @@ pub fn workspace_grant<T>(
             environment.insert("TEMP".into(), temporary.clone());
             environment.insert("TMP".into(), temporary);
         }
-        ExecutionGrant::composed(&primary, access, write, read, ExecutionNetwork::On)
+        ExecutionGrant::workspace_default(&primary, access, write, read)
             .map(Some)
             .map_err(io)
     }

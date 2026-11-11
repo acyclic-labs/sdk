@@ -1,27 +1,9 @@
 use super::*;
 
 /// Optional content-operation accounting.
-#[cfg(feature = "filesystem")]
 pub type ContentIo = crate::filesystem::PreparationIo;
-/// Optional content-operation accounting.
-#[cfg(not(feature = "filesystem"))]
-pub type ContentIo = ();
 /// Retained content metadata ownership.
-#[cfg(feature = "filesystem")]
 pub type ContentHold<'a> = crate::filesystem::DecodeReservation<'a>;
-/// Retained content metadata ownership. Without filesystem accounting no
-/// content is funded, so no hold can exist and every funded branch is
-/// statically unreachable while keeping the same API as the funded hold.
-#[cfg(not(feature = "filesystem"))]
-pub struct ContentHold<'a>(std::convert::Infallible, std::marker::PhantomData<&'a ()>);
-
-#[cfg(not(feature = "filesystem"))]
-impl ContentHold<'_> {
-    /// Same contract as the funded hold; uninhabited, so never called.
-    pub(crate) fn into_retained(self) -> Result<()> {
-        match self.0 {}
-    }
-}
 
 /// Caller authority ceiling and accounting for a content operation.
 /// The ceiling can only narrow the adapter's authenticated workload authority.
@@ -36,21 +18,20 @@ pub struct ContentAccess<'scope, 'io> {
 /// An operation future whose allocation remains owned until its physical drop.
 pub struct BoundedContentFuture<'a, T> {
     pub(super) future: BoxFuture<'a, Result<T>>,
-    #[cfg(feature = "filesystem")]
     pub(super) _hold: Option<ContentHold<'a>>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) _native: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 thread_local! {
     static PAD_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl<'a, T> BoundedContentFuture<'a, T> {
     #[cfg(test)]
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_padded_frame<R>(enabled: bool, operation: impl FnOnce() -> R) -> R {
         struct Reset(bool);
         impl Drop for Reset {
@@ -68,9 +49,7 @@ impl<'a, T> BoundedContentFuture<'a, T> {
     where
         F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
     {
-        #[cfg(feature = "filesystem")]
         let mut hold = None;
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.check_cancellation()?;
             let bytes = std::mem::size_of::<F>() as u64;
@@ -98,7 +77,7 @@ impl<'a, T> BoundedContentFuture<'a, T> {
             }
         }
         let _ = io;
-        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(all(test, not(target_arch = "wasm32")))]
         if PAD_FRAME.get() {
             // Size-only mutation: keep the shipping future inline in its one
             // allocation, with extra retained state across the real await.
@@ -116,9 +95,8 @@ impl<'a, T> BoundedContentFuture<'a, T> {
         }
         Ok(Self {
             future: Box::pin(build()),
-            #[cfg(feature = "filesystem")]
             _hold: hold,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             _native: None,
         })
     }
@@ -140,7 +118,7 @@ pub(crate) fn content_error(
     code: crate::wire::ErrorCode,
     reason: &'static str,
 ) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if io.is_some_and(|io| io.original_native_work().is_some()) {
         return Error::NativeBoundary { code, reason };
     }
@@ -214,7 +192,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, ()>> {
         BoundedContentFuture::new(io, || async move {
-            verified_content_bytes(self, reference, maximum_bytes, None, io).await?;
+            verified_content_bytes(self, reference, Some(maximum_bytes), None, io).await?;
             Ok(())
         })
     }
@@ -272,7 +250,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         clippy::too_many_arguments,
         reason = "The provider receives the grant, generation and cursor as separate borrowed fields."
     )]
-    fn list_private_directory<'a>(
+    fn list_private_directory<'a, 'io: 'a>(
         &'a self,
         _volume: &'a VolumeRef,
         _granted_prefix: &'a str,
@@ -281,12 +259,29 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _after: Option<&'a str>,
         _maximum_entries: u32,
         _ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, Option<PrivateDirectoryPage>>> {
+        io: Option<&'io ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, Option<(PrivateDirectoryPage, Option<ContentHold<'io>>)>>>
+    {
         Err(content_error(
             io,
             crate::wire::ErrorCode::Unsupported,
             "private directory discovery is unavailable",
+        ))
+    }
+
+    /// Exact changed regular-file paths at two immutable generations under
+    /// the root's original directory authority. Equal payloads and equal
+    /// Merkle subtrees are skipped without reading or parsing their contents.
+    fn diff_private_paths<'a>(
+        &'a self,
+        _roots: &'a [&'a crate::context::ContextRoot],
+        _generations: (&'a GenerationRef, &'a GenerationRef),
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, Vec<crate::context::DiffPublication>>> {
+        Err(content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "immutable path comparison is unavailable",
         ))
     }
 
@@ -427,21 +422,51 @@ pub enum ContentChange<'a> {
         /// Exact source identity authorized for deletion in this commit.
         source: &'a FileRef,
     },
+    /// Removes the binding only while its original namespace selection is unchanged.
+    DeleteAt {
+        /// Original volume, path and generation; no content body is required.
+        source: &'a PathSelection,
+    },
+    /// Removes the current binding without requiring a source read.
+    Delete {
+        /// Destination authorized for deletion at the commit's selected cut.
+        path: &'a str,
+    },
 }
 
 impl ContentChange<'_> {
+    /// The filesystem action authorized by this exact publication member.
+    pub fn action(&self) -> acyclic_fs::access::Action {
+        use acyclic_fs::access::Action;
+        match self {
+            Self::CreateAbsent { .. } => Action::Create,
+            Self::UpdateExpected { .. } => Action::Write,
+            Self::DeleteExpected { .. } | Self::DeleteAt { .. } | Self::Delete { .. } => {
+                Action::Delete
+            }
+        }
+    }
+
     /// Exact destination path covered by the publication.
     pub fn path(&self) -> &str {
         match self {
-            Self::CreateAbsent { path, .. } => path,
+            Self::CreateAbsent { path, .. } | Self::Delete { path } => path,
             Self::UpdateExpected { source, .. } | Self::DeleteExpected { source } => source.path(),
+            Self::DeleteAt { source } => &source.path,
         }
     }
     /// Original immutable source, when this change replaces or removes a file.
     pub fn source(&self) -> Option<&FileRef> {
         match self {
-            Self::CreateAbsent { .. } => None,
+            Self::CreateAbsent { .. } | Self::DeleteAt { .. } | Self::Delete { .. } => None,
             Self::UpdateExpected { source, .. } | Self::DeleteExpected { source } => Some(source),
+        }
+    }
+
+    pub(crate) fn path_source(&self) -> Option<&PathSelection> {
+        match self {
+            Self::DeleteAt { source } => Some(source),
+            _ => None,
         }
     }
 }
@@ -491,7 +516,6 @@ impl ContentChanges {
         self.members.iter().filter_map(ContentChangeResult::file)
     }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.members.iter().try_fold(
             crate::core::owned_sum([
@@ -711,7 +735,6 @@ impl CompositeContentVerifier {
         volume: &VolumeRef,
         io: Option<&ContentIo>,
     ) -> Result<&dyn ContentResidencyVerifier> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             volume.validate(&mut Some(&mut io.history_io()))?;
             return self.volumes.get(volume).map(AsRef::as_ref).ok_or_else(|| content_error(
@@ -750,7 +773,6 @@ impl CompositeContentVerifier {
 
 impl ContentResidencyVerifier for CompositeContentVerifier {
     fn supports_read(&self, volume: &VolumeRef, _io: Option<&ContentIo>) -> Result<bool> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = _io {
             return self
                 .bound_reader(volume, Some(io))?
@@ -766,7 +788,6 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             return self.bound_reader(reference.volume(), Some(io))?.read(
                 reference,
@@ -859,7 +880,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             crate::conversation::ContentAccess { ceiling, io },
         )
     }
-    fn list_private_directory<'a>(
+    fn list_private_directory<'a, 'io: 'a>(
         &'a self,
         volume: &'a VolumeRef,
         granted_prefix: &'a str,
@@ -868,8 +889,9 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         after: Option<&'a str>,
         maximum_entries: u32,
         ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, Option<PrivateDirectoryPage>>> {
+        io: Option<&'io ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, Option<(PrivateDirectoryPage, Option<ContentHold<'io>>)>>>
+    {
         self.bound_reader(volume, io)?.list_private_directory(
             volume,
             granted_prefix,
@@ -880,6 +902,22 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             ceiling,
             io,
         )
+    }
+    fn diff_private_paths<'a>(
+        &'a self,
+        roots: &'a [&'a crate::context::ContextRoot],
+        generations: (&'a GenerationRef, &'a GenerationRef),
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, Vec<crate::context::DiffPublication>>> {
+        let root = roots.first().ok_or_else(|| {
+            content_error(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "comparison has no roots",
+            )
+        })?;
+        self.bound_reader(&root.volume, io)?
+            .diff_private_paths(roots, generations, io)
     }
     fn select_private_generation<'a, 'io>(
         &'a self,

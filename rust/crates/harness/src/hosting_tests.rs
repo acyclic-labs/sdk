@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     OperationId,
-    agent::{AgentId, AgentState, Delivered, VolumeBinding},
+    agent::{AgentId, AgentState, Delivered, WorkspaceEntry},
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityRoot},
     executor::Executor,
@@ -17,6 +17,9 @@ use prost::Message as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+#[path = "hosting_tests/session_pages.rs"]
+mod session_pages;
 
 struct Never;
 
@@ -43,6 +46,7 @@ struct Owner {
     revoke_read: AtomicBool,
     revoke_query: AtomicBool,
     childless: AtomicBool,
+    sessions: AtomicBool,
     diff: std::sync::Mutex<Option<QueryPause>>,
     admission: std::sync::Mutex<Option<QueryPause>>,
 }
@@ -53,6 +57,10 @@ struct QueryPause {
 }
 
 impl Platform for Owner {
+    fn sessions(&self) -> bool {
+        self.sessions.load(Ordering::SeqCst)
+    }
+
     fn policy<'a>(
         &'a self,
         _: &'a Principal,
@@ -137,6 +145,10 @@ fn provider() -> Result<ProviderRef> {
 
 /// A credential that may invoke exactly `resource`.
 fn credential(resource: &str) -> Bytes {
+    credentials(&[resource])
+}
+
+fn credentials(resources: &[&str]) -> Bytes {
     use acyclic_auth::contract::*;
     acyclic_auth::testing::root(|block| {
         let Some(key) = block
@@ -147,15 +159,18 @@ fn credential(resource: &str) -> Bytes {
             return;
         };
         key.key.grants = GrantSet {
-            grants: vec![Grant {
-                kind: GrantKind::Resource(ResourceGrant {
-                    resource: ResourcePattern {
-                        name: resource.into(),
-                        prefix: false,
-                    },
-                    actions: vec!["actors/invoke".into()],
-                }),
-            }],
+            grants: resources
+                .iter()
+                .map(|resource| Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: (*resource).into(),
+                            prefix: false,
+                        },
+                        actions: vec!["actors/invoke".into()],
+                    }),
+                })
+                .collect(),
         };
     })
     .into()
@@ -261,11 +276,7 @@ fn binding_with(
     )?)
 }
 
-#[cfg(all(
-    feature = "machines",
-    feature = "native-execution",
-    feature = "test-support"
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[path = "hosting_tests/machine_results.rs"]
 mod machine_results;
 
@@ -293,10 +304,11 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         &IntentId::try_from("output-root")?,
         RootRequest {
             agent,
-            fresh: vec![VolumeBinding {
-                name: PRIVATE_VOLUME.into(),
-                volume: private,
-            }],
+            fresh: vec![WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::Private,
+                PRIVATE_VOLUME.into(),
+                private,
+            )],
             retained: Vec::new(),
             brief: None,
             policy: None,
@@ -313,7 +325,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         agent_authority(bound.issuer(), bound.admission(), root, &state.volumes, &[]).await?;
     let publisher = FilesystemContentPublisher::new(
         bound.volumes().clone(),
-        &authority.private.volume,
+        authority.private.volume()?,
         &authority.verifier,
         &authority.scope,
         64 * 1024,
@@ -566,16 +578,17 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     let bound = binding()?;
     let stream = bound.agents().provider().clone();
     let agent = AgentId::from_bytes([1; 16]);
-    let private = VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
-        volume: VolumeRef::new(
+    let private = WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        VolumeRef::new(
             provider()?,
             "agent-private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
             &mut None,
         )?,
-    };
+    );
     let owner = Arc::new(Owner::default());
     let server = serve(
         bound,
@@ -1155,16 +1168,17 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
         },
     )?;
     let agent = AgentId::from_bytes([1; 16]);
-    let private = VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
-        volume: VolumeRef::new(
+    let private = WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        VolumeRef::new(
             provider()?,
             "agent-private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
             &mut None,
         )?,
-    };
+    );
     let owner = Arc::new(Owner::default());
     let server = serve(
         bound,
@@ -1229,10 +1243,10 @@ fn a_children_cursor_carries_its_hierarchy_version_and_last_path() -> Result {
     let version = CommitId::from_bytes([0xa5; 32]);
     let after = AgentPath::root(&crate::agent::AgentId::from_bytes([0x5a; 16]))
         .child(&crate::agent::AgentId::from_bytes([0x3c; 16]))?;
-    let cursor = children_cursor(&version, &after);
+    let cursor = children_cursor(&version, after.as_str());
     assert_eq!(
         page_json_bytes(&cursor)? - 2,
-        children_cursor_bytes(&version, &after) as u64
+        children_cursor_bytes(&version, after.as_str()) as u64
     );
     assert_eq!(
         parse_children_cursor(&cursor)?,

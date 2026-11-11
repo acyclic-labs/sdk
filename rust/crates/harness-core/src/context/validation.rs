@@ -2,17 +2,16 @@ use super::*;
 use crate::{executor::stock_boundary, wire::ErrorCode};
 
 pub(crate) fn plan_compaction_budget(
-    policy: &ThresholdCompaction,
+    policy: &CapacityCompaction,
     context: &Context,
-    count: &ModelTokenCount,
-    maximum_messages: usize,
-    recent_tokens: u32,
+    maximum_messages: Option<usize>,
+    requested_cut: usize,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(usize, usize)> {
-    // Weights select the retained suffix; they cannot reject or admit a request.
+    // The requested rewrite cut is adjusted only to preserve dependencies.
     // The completed compacted request is counted before response dispatch.
     crate::executor::with_history_io(io, |work| {
-        policy.projection_budget(context, count, maximum_messages, recent_tokens, work)
+        policy.projection_budget(context, maximum_messages, requested_cut, work)
     })
 }
 
@@ -35,11 +34,9 @@ pub(crate) fn validate_compaction(
             }),
             None => None,
         };
-        #[cfg(feature = "filesystem")]
         let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
         let (reconstructed, proof) =
             compact_projection(source, reference.maximum_messages as usize, summary, io)?;
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             quota.adopt(io.owned_bytes()? - before)?;
         }
@@ -98,7 +95,13 @@ fn validate_projection_metadata(
         {
             return Err(invalid("current input index is outside context"));
         }
-        if message_count > limits.context_messages || context.metadata.len() > limits.attachments {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| message_count > maximum.get())
+            || limits
+                .attachments
+                .is_some_and(|maximum| context.metadata.len() > maximum.get())
+        {
             return Err(invalid("context projection exceeded declared bounds"));
         }
         for file in context.metadata.values() {
@@ -181,8 +184,16 @@ pub(crate) fn restrict_context_limits(
     })?;
     Ok(Limits {
         file_bytes: pinned.file_bytes.min(admitted.file_bytes),
-        path_bytes: pinned.path_bytes.min(admitted.path_bytes),
-        attachments: pinned.attachments.min(admitted.attachments),
+        path_bytes: pinned
+            .path_bytes
+            .into_iter()
+            .chain(admitted.path_bytes)
+            .min(),
+        attachments: pinned
+            .attachments
+            .into_iter()
+            .chain(admitted.attachments)
+            .min(),
         render_bytes: pinned.render_bytes.min(admitted.render_bytes),
         model_events_per_step: pinned
             .model_events_per_step
@@ -194,6 +205,10 @@ pub(crate) fn restrict_context_limits(
             .into_iter()
             .chain(admitted.tool_calls_per_step)
             .min(),
-        context_messages: pinned.context_messages.min(admitted.context_messages),
+        context_messages: pinned
+            .context_messages
+            .into_iter()
+            .chain(admitted.context_messages)
+            .min(),
     })
 }

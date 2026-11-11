@@ -96,7 +96,6 @@ impl MachinesWorkspace {
 
     /// Materializes the selected logical volume for any non-attaching provider.
     /// The caller opens this workspace through the original filesystem facade.
-    #[cfg(feature = "filesystem")]
     pub(crate) async fn bind_copy<
         A: acyclic_fs::AsyncAuthorityStore,
         O: acyclic_fs::AsyncObjectStore,
@@ -269,21 +268,22 @@ impl ToolExecutor for MachinesWorkspace {
     fn read_path<'a>(
         &'a self,
         path: &'a str,
-        work: crate::NativeWork<'_>,
+        kind: crate::tool::ReadPathKind,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let owned_io = work
             .map(crate::executor::PreparationIo::from_native_work)
             .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = owned_io.as_ref();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let io = {
             let _ = work;
             None
         };
         crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history)?;
+            kind.validate(path, history)?;
             if path == ".volumes" || path.starts_with(".volumes/") {
                 return Err(crate::store::guarded_boundary(
                     history,
@@ -301,9 +301,9 @@ impl ToolExecutor for MachinesWorkspace {
         _scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,

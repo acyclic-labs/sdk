@@ -3,6 +3,12 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "reasoning": {
+      "type": "boolean"
+    },
+    "tool_details": {
+      "type": "boolean"
+    },
     "scrollback_lines": {
       "type": "integer",
       "minimum": 1,

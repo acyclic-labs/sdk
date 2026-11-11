@@ -5,7 +5,7 @@ pub(super) fn stock_context_capacity(
     model: &Model,
     io: Option<&PreparationIo>,
 ) -> Result<crate::context::ModelContextCapacity> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
         let work = io.original_native_work().ok_or_else(|| {
             stock_boundary(
@@ -17,7 +17,7 @@ pub(super) fn stock_context_capacity(
         io.check_cancellation()?;
         return provider.context_capacity_with_native_work(model, work);
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     if io.is_some() {
         return Err(stock_boundary(
             io,
@@ -36,7 +36,7 @@ pub(super) async fn stock_count_tokens(
     ceiling: u64,
     io: Option<&PreparationIo>,
 ) -> Result<crate::context::ModelTokenCount> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
         let work = io.original_native_work().ok_or_else(|| {
             stock_boundary(
@@ -52,7 +52,7 @@ pub(super) async fn stock_count_tokens(
         io.absorb_native_custody(custody)?;
         return Ok(count);
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     if io.is_some() {
         return Err(stock_boundary(
             io,
@@ -68,14 +68,13 @@ pub(super) fn stock_json_bound<T: Serialize>(
     maximum: u64,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.check_cancellation()?;
         return crate::executor::json::count_json_bytes_trusted(
             value,
             crate::executor::json::JsonBounds {
-                maximum_bytes: maximum,
-                maximum_items: io.remaining()?.items_examined,
+                maximum_bytes: Some(maximum),
+                maximum_items: Some(io.remaining()?.items_examined),
                 maximum_depth: 256,
             },
             io.original_native_work()
@@ -85,9 +84,7 @@ pub(super) fn stock_json_bound<T: Serialize>(
         )
         .map(|_| ());
     }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    crate::executor::json::json_byte_length(value, maximum, &mut None).map(|_| ())
+    crate::executor::json::json_byte_length(value, Some(maximum), &mut None).map(|_| ())
 }
 
 impl StockExecution<'_> {
@@ -97,16 +94,28 @@ impl StockExecution<'_> {
     ) -> Result<ContextAccounting> {
         let capacity = self.model_capacity()?;
         let ceiling = self.input_ceiling(capacity)?;
-        let count =
-            stock_count_tokens(self.stock.provider.as_ref(), prepared, ceiling, self.io).await?;
-        with_history_io(self.io, |work| count.validate(prepared, work))?;
+        let count = match stock_count_tokens(
+            self.stock.provider.as_ref(),
+            prepared,
+            ceiling,
+            self.io,
+        )
+        .await
+        {
+            Ok(count) => {
+                with_history_io(self.io, |work| count.validate(prepared, work))?;
+                Some(count)
+            }
+            Err(Error::ModelContextOverflow) if !self.single_request => None,
+            Err(error) => return Err(error),
+        };
         Ok(ContextAccounting { capacity, count })
     }
 
     /// Disabled compaction sends the installed pipeline's ordinary requests
     /// unchecked: no capacity read and no token count on the turn's path. The
     /// provider remains the authority on its window. Single inference and
-    /// threshold turns pass capacity admission.
+    /// capacity-policy turns pass capacity admission.
     pub(super) fn unchecked(&self) -> Result<bool> {
         Ok(!self.single_request
             && matches!(
@@ -119,7 +128,7 @@ impl StockExecution<'_> {
         let capacity =
             stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
         if !self.single_request
-            && let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()?
+            && let crate::context::CompactionPolicy::Capacity(policy) = self.compaction_policy()?
         {
             policy.validate(capacity, self.output_tokens())?;
         } else {
@@ -139,7 +148,7 @@ impl StockExecution<'_> {
             return Ok(u64::from(capacity.context_tokens - output));
         }
         match self.compaction_policy()? {
-            crate::context::CompactionPolicy::Threshold(policy) => {
+            crate::context::CompactionPolicy::Capacity(policy) => {
                 policy.input_ceiling(capacity, self.output_tokens())
             }
             crate::context::CompactionPolicy::Disabled => {
@@ -158,13 +167,6 @@ impl StockExecution<'_> {
                     self.stock.sampling,
                     profile.map(|profile| profile.sampling()),
                 )
-                .map_err(|_| {
-                    stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Invalid,
-                        "sampling admission failed: invalid settings or a pinned-profile conflict; recovery: select valid sampling that agrees with the model profile",
-                    )
-                })
             })
             .copied()
     }

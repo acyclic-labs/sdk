@@ -45,9 +45,9 @@ where
         operation: OperationId,
         digest: [u8; 32],
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, (), crate::Error>> {
         let io = PreparationIo::from_native_work(work)?;
-        crate::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             self.verify_tool_approval_with_io(id, operation, digest, Some(&io))
                 .await
         })
@@ -515,6 +515,9 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Option<Result<crate::conversation::BoundedContentFuture<'a, bool>>> {
         let approvals = self.agent_approvals.as_ref()?;
+        if !approvals.has_effect_barrier() {
+            return None;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if io.is_some_and(|io| io.original_native_work().is_some()) {
             return Some(Err(canonical_boundary(

@@ -746,6 +746,7 @@ fn transition(value: u8, alarm: AlarmChange) -> Transition {
         },
         alarm,
         effects: Vec::new(),
+        subscriptions: Vec::new(),
     }
 }
 
@@ -1225,11 +1226,29 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
         let wake_from = provider.tail(store.root().clone()).await?;
         let mut binding = store.bind_state(initial, 1)?;
         assert_eq!(binding.seed()?.journal_tail, "0");
+        binding.transaction(|state| {
+            state.put("retired".into(), Bytes::from_static(b"remove"));
+            state.put("packet-only".into(), Bytes::from_static(b"remove"));
+            state.put("metadata".into(), Bytes::from_static(b"replace"));
+            Ok(())
+        })?;
         binding.apply(crate::guest::ActorStateCommit {
-            writes: vec![crate::guest::ActorMetadataWrite {
-                key: "metadata".into(),
-                value: Bytes::from_static(b"accepted"),
-            }],
+            deletions: vec![
+                "retired".into(),
+                "packet-only".into(),
+                "metadata".into(),
+                "absent".into(),
+            ],
+            writes: vec![
+                crate::guest::ActorMetadataWrite {
+                    key: "metadata".into(),
+                    value: Bytes::from_static(b"accepted"),
+                },
+                crate::guest::ActorMetadataWrite {
+                    key: "retired".into(),
+                    value: Bytes::from_static(b"durable"),
+                },
+            ],
             journal_from: "0".into(),
             journal: vec![Bytes::from_static(b"first"), Bytes::from_static(b"second")],
             alarm: crate::guest::ActorStateAlarm::Set {
@@ -1241,11 +1260,14 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
                 state.get("metadata").map(Bytes::as_ref),
                 Some(b"accepted".as_slice())
             );
-            assert_eq!(state.entries().count(), 1);
+            assert_eq!(state.entries().count(), 2);
             Ok(())
         })?;
         let refused: Result<(), Error> = binding.transaction(|state| {
+            state.delete("metadata");
+            assert!(state.get("metadata").is_none());
             state.put("metadata".into(), Bytes::from_static(b"rolled-back"));
+            state.delete("metadata");
             state.append_journal(2, vec![Bytes::from_static(b"rolled-back")])?;
             state.alarm(None)?;
             Err(Error::Invalid("transaction refused"))
@@ -1301,6 +1323,14 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
                 key("state-transaction/checkpoint")?,
             )
             .await?;
+        // Deletion uses the same durable state publication and survives reopen.
+        let mut removed = store.bind_state(store.load(&address).await?, 1)?;
+        removed.transaction(|state| {
+            state.delete("retired");
+            Ok(())
+        })?;
+        removed.flush(key("state-transaction/delete")?).await?;
+        removed.finish()?;
         // A changed native journal tail must refuse metadata and alarm too.
         let mut stale = store.bind_state(store.load(&address).await?, 1)?;
         let current = store.load(&address).await?;
@@ -1352,5 +1382,76 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
     );
     assert!(binding.read_journal(2, 1).await?.is_empty());
     assert!(binding.read_journal(3, 1).await.is_err());
+    Ok(())
+}
+
+/// An actor's own subscription changes apply after its consumption, in order:
+/// re-adding a bound id at the same path keeps the consumed cursor, a removed
+/// id rebinds anywhere from its explicit start, and every other change is
+/// refused. A refused change yields no next state, so nothing of its turn
+/// (checkpoint or consumed cursor) can be published.
+#[test]
+fn actor_subscription_changes_keep_consumed_cursors_and_refuse_conflicts() -> TestResult {
+    use crate::guest::SubscriptionChange;
+    let own = StreamPath::new("harness/actors/agents/a")?;
+    let first = StreamPath::new("inboxes/a")?;
+    let second = StreamPath::new("inboxes/b")?;
+    let state = State {
+        epoch: 1,
+        placement_branch: None,
+        escrow: None,
+        checkpoint: None,
+        subscriptions: BTreeMap::from([(
+            "inbox".into(),
+            Subscription {
+                path: first.clone(),
+                cursor: 0,
+            },
+        )]),
+        alarm: Alarm::default(),
+        paused: false,
+        metadata: BTreeMap::new(),
+        journal_tail: 0,
+    };
+    let add = |id: &str, path: &StreamPath, from| SubscriptionChange::Add {
+        id: id.into(),
+        path: path.clone(),
+        from,
+    };
+    let turn = |changes: Vec<SubscriptionChange>| {
+        let mut turn = transition(1, AlarmChange::Keep);
+        turn.subscriptions = changes;
+        next(state.clone(), &own, &Alarm::default(), &record(0), &turn)
+    };
+    let consumed = turn(Vec::new())?;
+    assert_eq!(consumed.subscriptions["inbox"].cursor, 1);
+    // Re-adding the bound id at its path, even from an older start, keeps
+    // the cursor this same turn consumed.
+    assert_eq!(turn(vec![add("inbox", &first, Some(0))])?, consumed);
+    // Remove then add the same id binds the new path at its explicit start.
+    let rebound = turn(vec![
+        SubscriptionChange::Remove { id: "inbox".into() },
+        add("inbox", &second, Some(7)),
+    ])?;
+    assert_eq!(
+        rebound.subscriptions["inbox"],
+        Subscription {
+            path: second.clone(),
+            cursor: 7
+        }
+    );
+    // Removing an unbound id is a no-op.
+    assert_eq!(
+        turn(vec![SubscriptionChange::Remove { id: "other".into() }])?,
+        consumed
+    );
+    for refused in [
+        add("inbox", &second, Some(0)),
+        add("mirror", &own, Some(0)),
+        add("mirror", &second, None),
+        add("", &second, Some(0)),
+    ] {
+        assert!(matches!(turn(vec![refused]), Err(Error::Invalid(_))));
+    }
     Ok(())
 }

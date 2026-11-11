@@ -5,12 +5,12 @@
 //! after a lost acknowledgement replays exactly and a definitive conflict leaves
 //! the key unspent.
 
-use super::{AgentId, AgentPath, Error};
-use crate::conversation::{FileRef, VolumeRef};
+use super::{AgentId, AgentPath, Error, WorkspaceChanged, WorkspaceEntry};
+use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
 
 /// Largest agent record. Every part of one is bounded (paths by
-/// [`super::MAX_DEPTH`], file and volume references by the conversation
+/// the primitive record envelope, file and volume references by the conversation
 /// maxima, texts by their own limits), so every record a step builds is
 /// within this; `checkpoint`'s bound test checks each kind at its worst.
 pub const MAX_RECORD_BYTES: usize = 56 * 1024;
@@ -19,36 +19,9 @@ pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 pub const MAX_INTENT_BYTES: usize = 128;
 /// Largest failure message carried in a record.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
-/// Most volumes bound to one agent.
-pub const MAX_VOLUMES: usize = 8;
-/// Format version of every persisted agent record and saved turn effect,
-/// carried by their one shared header. Any change to a persisted shape bumps
-/// it, and readers refuse every other version whole: there is no migration
-/// code. The headerless format before it is version 1; version 2 carries a
-/// spawn brief by file reference. Version 3 binds goal runs to their committed
-/// terminal conversation entry. Version 4 lets a conversation entry name the
-/// execution-target roster its turn announced. Version 5 adds primitive Notices
-/// and the frozen original notice range retained by a settled turn.
-/// Version 6 retains waking Notice payloads by immutable file reference.
-/// Version 7 pins each stock agent's role profile at adoption.
-/// Version 8 adds explicit generation-linked file/context restoration requests.
-/// Version 9 retains the original action binding in a waiting approval's status
-/// and actor checkpoint.
-/// Version 10 unifies child and deadline waits as one monotone condition.
-/// Version 11 adds admitted boundary steering and next-turn messages.
-/// Version 12 retains template capabilities only in their immutable source.
-/// Version 13 uses named MessagePack values after a four-byte big-endian version.
-/// Version 14 adds the waiting-user phase to named MessagePack values after a
-/// four-byte big-endian version.
-/// Version 15 requires membership feeds created atomically with every agent.
-/// Version 16 retains committed agent actions and compact wait selections.
-/// Version 17 records forced continuation provenance in the creation profile.
-/// Version 18 settles a definitive turn failure as a failed conversation entry.
-/// Version 19 (retired) scoped status addresses by complete ancestry.
-/// Version 20 carries child settlement-to-wake measurements in status records.
-/// Version 21 adds input selection to actor waits.
-/// Version 22 indexes admitted replies across queued independent turns.
-pub const RECORD_VERSION: u32 = 22;
+/// Version-one workspace-aware agent records. Other formats are refused whole;
+/// sessions must start fresh, with no migration or compatibility reader.
+pub const RECORD_VERSION: u32 = 1;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -63,7 +36,9 @@ pub struct Membership {
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("unsupported record version {found}; this build reads version {expected}")]
+#[error(
+    "state format predates v1 table; start a fresh session (record {found}, expected {expected})"
+)]
 pub struct UnsupportedRecordVersion {
     /// The version the record carries.
     pub found: u32,
@@ -250,16 +225,6 @@ pub enum Sender {
     },
 }
 
-/// A named volume bound to an agent at adoption.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VolumeBinding {
-    /// Agent-visible name (`private`, `project`, `result`).
-    pub name: String,
-    /// The volume: provider, name, class and owner.
-    pub volume: VolumeRef,
-}
-
 /// Conversation selected when an agent is created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -277,6 +242,9 @@ pub enum SpawnContext {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreationConfig {
+    /// Forced run policy pinned at creation and inherited by every child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology: Option<crate::topology::Topology>,
     /// Present only on an explicitly continued decider, never inherited by spawns.
     pub continuation: Option<Box<super::Continuation>>,
     /// Conversation selected at creation, independent of a template name.
@@ -297,12 +265,17 @@ pub struct CreationConfig {
 
 /// A host's original template reader, shared by direct and model spawns.
 pub trait SpawnTemplates: acyclic_stream::ProviderPlatform {
+    /// The run-start policy pinned to roots by this template selector.
+    fn topology(&self) -> Option<&crate::topology::Topology> {
+        None
+    }
+
     /// Reads one child template using the parent's original authority.
     fn child<'a>(
         &'a self,
         parent: &'a CreationConfig,
         path: &'a super::AgentPath,
-        volumes: &'a [VolumeBinding],
+        volumes: &'a [WorkspaceEntry],
         template: &'a str,
         ceiling: Option<&'a crate::Capabilities>,
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<CreationConfig>>;
@@ -326,7 +299,7 @@ pub struct ForkAdopted {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<u64>,
     /// Volumes the agent owns.
-    pub volumes: Vec<VolumeBinding>,
+    pub volumes: Vec<WorkspaceEntry>,
     /// Task brief, if any.
     pub brief: Option<FileRef>,
     /// Approval policy file interpreted by the approvals feature, if any.
@@ -521,6 +494,8 @@ impl NoticePayload {
 pub enum InboxRecord {
     /// First record of every agent.
     ForkAdopted(Box<ForkAdopted>),
+    /// An ordered workspace-table delta.
+    WorkspaceChanged(Box<WorkspaceChanged>),
     /// `send`.
     Message(Message),
     /// A message reserved for a new turn, never injected into the active one.
@@ -595,7 +570,7 @@ pub enum Phase {
         /// Canonical path relative to the agent's `ui/` root.
         path: String,
     },
-    /// A turn is executing.
+    /// A turn is executing or accepted input awaits execution.
     Running,
     /// Waiting for an approval response.
     WaitingApproval {
@@ -663,6 +638,8 @@ impl Phase {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct ChildWake {
+    /// Sequence of the original completion fact in the owner status stream.
+    pub status: u64,
     /// Direct child id, relative to the owner of this status stream.
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub child: AgentId,
@@ -672,16 +649,105 @@ pub struct ChildWake {
     pub woke_at_micros: u64,
 }
 
+/// One admitted completion fact. It is not a wait-return measurement until
+/// an original ChildWakes range supplies the parent's return clock.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+#[serde(deny_unknown_fields)]
+pub struct ChildSettlement {
+    /// Direct child of the status owner.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub child: AgentId,
+    /// Original inbox commit clock, retained in the same ordinary status commit.
+    pub settled_at_micros: u64,
+}
+
+/// Original completion facts for one returned wait. These status sequences
+/// form a dense range: only admitted completions publish while a wait is parked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+#[serde(deny_unknown_fields)]
+pub struct ChildWakes {
+    /// First completion fact in the owner's status stream.
+    pub from: u64,
+    /// Exclusive end, including a completion in the returning status itself.
+    pub until: u64,
+    /// Parent delivery clock at the actual wait return, before the driver runs.
+    pub woke_at_micros: u64,
+}
+impl ChildWakes {
+    /// Read only the requested original status facts at this immutable cut.
+    /// No index IO, reconstruction of a subtree or per-child retained state.
+    pub async fn page<P: acyclic_stream::StreamProvider + ?Sized>(
+        &self,
+        provider: std::sync::Arc<P>,
+        agent: &AgentPath,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<ChildWake>, Error> {
+        use futures::TryStreamExt as _;
+        let from = after.unwrap_or(self.from);
+        if self.from > from || from > self.until || self.from >= self.until {
+            return Err(Error::Record("completion cursor is outside its status cut"));
+        }
+        if from == self.until || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut source = provider
+            .read(acyclic_stream::ReadRequest {
+                path: agent.status()?,
+                from,
+                limit: u32::try_from(limit)
+                    .map_err(|_| Error::Record("completion page exceeds transport credit"))?,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let mut samples = Vec::new();
+        let mut next = from;
+        while let Some(record) = source.try_next().await.map_err(Error::Stream)? {
+            if record.sequence >= self.until {
+                break;
+            }
+            if record.sequence != next {
+                return Err(Error::Record("completion status range has a gap"));
+            }
+            let fact = StatusRecord::decode(&record.value)?
+                .child_settlement
+                .ok_or(Error::Record(
+                    "completion status range contains an unrelated phase",
+                ))?;
+            samples.push(ChildWake {
+                status: record.sequence,
+                child: fact.child,
+                settled_at_micros: fact.settled_at_micros,
+                woke_at_micros: self.woke_at_micros,
+            });
+            next += 1;
+        }
+        if samples.len() as u64 != (limit as u64).min(self.until - from) {
+            return Err(Error::Record("completion status range is missing"));
+        }
+        Ok(samples)
+    }
+}
+
 /// One status stream record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct StatusRecord {
-    /// One measurement per observed child, published only when its wait returns.
+    /// One admitted completion fact, durable before a waiting parent resumes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_settlement: Option<ChildSettlement>,
+    /// Paged measurements, published only when the wait returns.
     /// Travels through the existing status/SessionFrame telemetry projection.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub child_wakes: Vec<ChildWake>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_wakes: Option<ChildWakes>,
     /// Phase after the transition that wrote it.
     pub phase: Phase,
     /// Inbox cursor consumed by that transition.
@@ -780,14 +846,11 @@ fn check_outcome(outcome: &AgentOutcome) -> Result<(), Error> {
     }
 }
 
-/// At most [`MAX_VOLUMES`] bindings, each with a valid name.
+/// Workspace metadata is admitted without a workspace-count ceiling.
 pub(super) fn check_volumes<'a>(
-    mut volumes: impl ExactSizeIterator<Item = &'a VolumeBinding>,
+    volumes: impl Iterator<Item = &'a WorkspaceEntry>,
 ) -> Result<(), Error> {
-    if volumes.len() > MAX_VOLUMES {
-        return Err(Error::Record("too many volumes"));
-    }
-    volumes.try_for_each(|binding| check_text(&binding.name))
+    super::workspaces::check_entries(volumes)
 }
 
 /// A path within the private UI root, using the shared content-path contract.
@@ -813,15 +876,9 @@ impl AgentRecord for InboxRecord {
             Self::ForkAdopted(adopted) => {
                 check_model(adopted.profile.as_ref())?;
                 check_volumes(adopted.volumes.iter())?;
-                if adopted
-                    .parent
-                    .as_ref()
-                    .is_some_and(|parent| parent.child(&adopted.agent).is_err())
-                {
-                    return Err(Error::Record("adopted child exceeds MAX_DEPTH"));
-                }
                 Ok(())
             }
+            Self::WorkspaceChanged(change) => change.check(),
             Self::ChildDone(done) => check_outcome(&done.outcome),
             Self::Notice { notice, .. } => {
                 match notice {
@@ -851,11 +908,11 @@ impl AgentRecord for InboxRecord {
                     check_volumes(expected.iter().map(|volume| &volume.binding))?;
                     if (!mode.files() && !expected.is_empty())
                         || expected.iter().enumerate().any(|(index, volume)| {
-                            volume.binding.volume.class()
-                                != crate::conversation::VolumeClass::Project
-                                || expected[..index]
-                                    .iter()
-                                    .any(|prior| prior.binding.name == volume.binding.name)
+                            volume.binding.as_volume().is_none_or(|source| {
+                                source.class() != crate::conversation::VolumeClass::Project
+                            }) || expected[..index]
+                                .iter()
+                                .any(|prior| prior.binding.name == volume.binding.name)
                         })
                     {
                         return Err(Error::Record("restore project bindings are invalid"));
@@ -883,6 +940,11 @@ impl AgentRecord for InboxRecord {
 }
 
 fn check_model(profile: Option<&CreationConfig>) -> Result<(), Error> {
+    if let Some(topology) = profile.and_then(|profile| profile.topology.as_ref()) {
+        topology
+            .validate()
+            .map_err(|_| Error::Record("invalid forced topology"))?;
+    }
     if let Some(model) = profile.and_then(|profile| profile.model.as_deref()) {
         crate::model::selection::validate(model)
             .map_err(|_| Error::Record("invalid model selection"))?;

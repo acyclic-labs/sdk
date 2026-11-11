@@ -11,7 +11,7 @@ use acyclic_stream::BoxProviderFuture;
 pub(super) mod access;
 pub(super) mod capture;
 mod git;
-#[cfg(any(test, feature = "hooks"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod hooks;
 mod output;
 pub(super) mod publisher;
@@ -25,8 +25,7 @@ mod tests;
 pub(super) struct CheckoutTools {
     workspace: Arc<LocalWorkspace>,
     signed: Scope,
-    read_grant: String,
-    write_grant: String,
+    verifier: AuthorityVerifier,
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
@@ -146,8 +145,7 @@ impl CheckoutTools {
             }
             Ok(Self {
                 signed: signed.clone(),
-                read_grant: project.capability(VolumeOperation::Read, &mut None)?,
-                write_grant: project.capability(VolumeOperation::Write, &mut None)?,
+                verifier: verifier.clone(),
                 capture_options,
                 capture_policy,
                 workspace,
@@ -158,6 +156,32 @@ impl CheckoutTools {
                 state: shared,
             })
         })
+    }
+
+    /// Publishes a freshly imported source's baseline before any command, so
+    /// the source is readable from the first turn, not only after the first
+    /// shell. Every later capture finds the baseline already recorded.
+    pub(super) async fn publish_baseline(&self) -> Result<()> {
+        if !(self.workspace.fresh && self.workspace.import_source) {
+            return Ok(());
+        }
+        serialized(&self.state, async |mut state| {
+            let State {
+                active, watcher, ..
+            } = &mut *state;
+            let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+            // A certified import commits under the baseline's own operation;
+            // an uncertified one is an ordinary capture, retried by the next.
+            self.capture(
+                (&self.workspace, view),
+                watcher,
+                crate::OperationId::new(),
+                0,
+                PublicationPermit::Unrestricted,
+            )?
+            .await
+        })
+        .await
     }
 }
 
@@ -196,18 +220,21 @@ impl CheckoutTools {
                 started,
             } = command;
             let result = serialized(&self.state, async |mut state| {
-                let owner = context.task();
-                let workspace = self.workspace.selected_workspace(&mut state, owner).await?;
+                let workspace = self
+                    .command_workspace(
+                        &mut state,
+                        context,
+                        if invocation.name == "fs" {
+                            "local fs facade"
+                        } else {
+                            "local shell"
+                        },
+                    )
+                    .await?;
                 let view = state
                     .active
                     .as_ref()
                     .unwrap_or_else(|| self.workspace.view());
-                self.require_command_access(
-                    view.workspace(),
-                    context.effective_scope().grants(),
-                    invocation.name == "fs",
-                )
-                .await?;
                 if reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await? {
                     state.watcher = None;
                 }
@@ -314,6 +341,15 @@ impl CheckoutTools {
                             })
                         })
                     {
+                        tracing::error!(
+                            operation = %invocation.operation_id,
+                            error = ?result.as_ref().err(),
+                            cleanup_completed = ?result.as_ref().ok()
+                                .and_then(|result| result.value.get("stop"))
+                                .and_then(|stop| stop.get("cleanup_completed"))
+                                .and_then(serde_json::Value::as_bool),
+                            "shell outcome requires reconciliation"
+                        );
                         state.unsettled.insert(invocation.operation_id);
                         return Err(Error::Indeterminate(invocation.operation_id));
                     }
@@ -352,7 +388,7 @@ impl ToolExecutor for CheckoutTools {
         invocation: &'a ToolInvocation,
         _context: &'a ToolContext,
         grant: &'a acyclic_native_runtime::execution::ExecutionGrant,
-        work: crate::NativeWork<'a>,
+        work: acyclic_fs::NativeWork<'a>,
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
             if invocation.name != crate::tools::shell::PLATFORM.name {
@@ -374,11 +410,15 @@ impl ToolExecutor for CheckoutTools {
     fn read_path<'a>(
         &'a self,
         path: &'a str,
-        work: crate::NativeWork<'_>,
+        kind: crate::tool::ReadPathKind,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
-        let (mount, relative) = self.workspace.mounts.file_with_work(None, path, work)?;
+        let (mount, relative) = self
+            .workspace
+            .mounts
+            .path_with_work(None, path, kind, work)?;
         mount.check_with_work(
-            acyclic_fs::access::Action::Read,
+            kind.action(),
             &relative,
             self.clock.now_unix_millis() / 1000,
             work,
@@ -392,7 +432,7 @@ impl ToolExecutor for CheckoutTools {
         true
     }
 
-    #[cfg(any(test, feature = "hooks"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn run_hooks<'a>(
         &'a self,
         configuration: (&'a crate::hooks::Hooks, [u8; 32]),
@@ -417,7 +457,7 @@ impl ToolExecutor for CheckoutTools {
         _scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
         if work.is_some() {
             return Err(Error::NativeBoundary {
@@ -431,14 +471,17 @@ impl ToolExecutor for CheckoutTools {
         if (invocation.name != crate::tools::shell::PLATFORM.name && invocation.name != "fs")
             || context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
-            || !(scope.grants().contains(&self.read_grant)
-                && scope.grants().contains(&self.write_grant))
-            || crate::tools::catalog()
-                .find(|spec| spec.name == invocation.name)
-                .is_none_or(|spec| !scope.grants().contains(&spec.capability()))
         {
             return Err(Error::Unauthorized(
-                "checkout command differs from its task authority".into(),
+                "checkout command identity differs from its task".into(),
+            ));
+        }
+        if crate::tools::catalog()
+            .find(|spec| spec.name == invocation.name)
+            .is_none_or(|spec| !scope.grants().contains(&spec.capability()))
+        {
+            return Err(Error::Unauthorized(
+                "checkout command requires its tool-call grant".into(),
             ));
         }
         Ok(())
@@ -537,13 +580,17 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
+            let context = context
+                .as_ref()
+                .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
+            // A started receipt is immutable private data. Its own read grant
+            // authorizes replay without queueing behind the running command.
             if invocation.name == crate::tools::shell::PLATFORM.name
                 && invocation
                     .arguments
                     .get("background")
                     .and_then(serde_json::Value::as_bool)
                     == Some(true)
-                && let Some(context) = context.as_ref()
                 && let (Some(file), _) = context
                     .observe_staged_file_once(
                         output::writer::operation(context, "started.json"),
@@ -563,7 +610,17 @@ impl ToolExecutor for CheckoutTools {
             // reaped. Once the guard is held, the call's process is gone
             // unless this process failed to reap it, and its outcome was never
             // recorded: it settles as interrupted.
-            let state = lock_owned(StateArc::clone(&self.state)).await;
+            let mut state = lock_owned(StateArc::clone(&self.state)).await;
+            self.command_workspace(
+                &mut state,
+                context,
+                if invocation.name == "fs" {
+                    "local fs facade"
+                } else {
+                    "local shell"
+                },
+            )
+            .await?;
             if state.unsettled.contains(&invocation.operation_id) {
                 return Ok(None);
             }

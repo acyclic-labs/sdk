@@ -43,15 +43,18 @@ pub(super) fn encode(grant: &Grant, access: ExecutionAccess) -> io::Result<Vec<u
         }
     }
     let write = builder.create_vector(&write);
-    let capabilities = builder.create_string(
-        "internetClient,internetClientServer,privateNetworkClientServer,networkLoopback",
-    );
+    let network_enabled = grant.network == ExecutionNetwork::On;
+    let capabilities = builder.create_string(if network_enabled {
+        "internetClient,internetClientServer,privateNetworkClientServer,networkLoopback"
+    } else {
+        ""
+    });
     let table = builder.start_table();
-    builder.push_slot::<i8>(4, 1, 0); // FilterAction::allow
+    builder.push_slot::<i8>(4, i8::from(network_enabled), 0);
     let egress = builder.end_table(table);
     let table = builder.start_table();
-    builder.push_slot::<i8>(4, 1, 0);
-    builder.push_slot::<i8>(6, 1, 0);
+    builder.push_slot::<i8>(4, i8::from(network_enabled), 0);
+    builder.push_slot::<i8>(6, i8::from(network_enabled), 0);
     let ingress = builder.end_table(table);
     let table = builder.start_table();
     builder.push_slot_always(6, egress);

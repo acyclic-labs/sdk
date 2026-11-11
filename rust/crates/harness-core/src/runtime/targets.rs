@@ -47,12 +47,13 @@ pub trait TargetResolver: acyclic_stream::ProviderPlatform {
     fn read_path<'a>(
         &'a self,
         _path: &'a str,
-        work: crate::NativeWork<'_>,
+        _kind: crate::tool::ReadPathKind,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,
     )> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
@@ -92,7 +93,7 @@ impl InProcessTargets {
     /// When a record is malformed, a name repeats or the home is unlisted.
     pub fn new(home: &str, targets: Vec<Target>) -> Result<Self> {
         let records = targets.iter().map(|target| target.record.clone()).collect();
-        let roster = Roster::new(home, records).map_err(agent_error)?;
+        let roster = Roster::new(home, records).map_err(Error::from)?;
         Ok(Self {
             roster: Arc::new(roster),
             targets: targets.into_iter().map(Arc::new).collect(),
@@ -139,13 +140,14 @@ impl TargetResolver for InProcessTargets {
     fn read_path<'a>(
         &'a self,
         path: &'a str,
-        work: crate::NativeWork<'_>,
+        kind: crate::tool::ReadPathKind,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,
     )> {
         let position = self.roster.select_position(None).map_err(Error::Target)?;
-        self.targets[position].executor.read_path(path, work)
+        self.targets[position].executor.read_path(path, kind, work)
     }
 
     fn roster(&self) -> Arc<Roster> {
@@ -156,10 +158,6 @@ impl TargetResolver for InProcessTargets {
         let position = self.roster.select_position(target).map_err(Error::Target)?;
         Ok(Arc::clone(&self.targets[position]))
     }
-}
-
-fn agent_error(error: crate::agent::Error) -> Error {
-    Error::Invalid(error.to_string())
 }
 
 /// The target a workspace tool call runs on: the one a `shell` call names,

@@ -83,6 +83,7 @@ struct PreparedTurn {
 /// All owned input fields keep their original producer's allocation credit.
 pub struct StreamUiCut {
     identity: [u8; 16],
+    agent: Retained<AgentPath>,
     status: Option<Retained<StatusRecord>>,
     tail: Option<u64>,
     turns: Retained<Vec<PreparedTurn>>,
@@ -91,9 +92,15 @@ pub struct StreamUiCut {
     targets: Retained<Vec<OwnedSourceChunk>>,
 }
 impl StreamUiCut {
-    fn empty(identity: [u8; 16], ctx: &mut KernelAccounting<'_>) -> Result<Self, DemandError> {
+    fn empty(
+        identity: [u8; 16],
+        agent: &AgentPath,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Self, DemandError> {
         Ok(Self {
             identity,
+            agent: RetainedAllocation::claim(agent.as_str().len() as u64, 1, ctx)?
+                .into_value(agent.clone()),
             status: None,
             tail: None,
             page: None,
@@ -104,6 +111,9 @@ impl StreamUiCut {
     }
 }
 impl Cut for StreamUiCut {
+    fn agent(&self) -> &AgentPath {
+        &self.agent
+    }
     fn status(&self) -> super::Result<Cow<'_, StatusRecord>> {
         self.status
             .as_ref()
@@ -303,7 +313,7 @@ where
             } => maximum_entries,
             _ => 0,
         };
-        let mut cut = StreamUiCut::empty(self.identity, ctx)?;
+        let mut cut = StreamUiCut::empty(self.identity, &self.agent, ctx)?;
         let child_page = match path {
             "children" if matches!(query, ViewQuery::Directory { .. }) => {
                 Some(u32::try_from(cursor >> 32).map_err(|_| DemandError::InvalidRequest)?)
@@ -365,8 +375,11 @@ where
             || path.starts_with("turns/")
             || (path == "turns" && matches!(query, ViewQuery::Directory { .. }))
             || (root_directory && cursor == 0 && maximum > 0);
-        let status = path == "status.md"
-            || (root_directory && cursor <= 1 && cursor + u64::from(maximum) > 1);
+        let status = matches!(path, "status.md" | "glyph")
+            || (root_directory
+                && [1, 8]
+                    .into_iter()
+                    .any(|entry| cursor <= entry && cursor + u64::from(maximum) > entry));
         if !status && !turns {
             return Ok(cut);
         }

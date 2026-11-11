@@ -1,7 +1,6 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
 /// Classifies pinned workspace bytes with the production media boundary.
-#[cfg(feature = "filesystem")]
 pub fn workspace_media_type(bytes: &[u8]) -> &'static str {
     crate::filesystem::host::reads::media_type::classify(bytes)
 }
@@ -11,25 +10,66 @@ pub fn agent_diff(arguments: &[String]) -> Option<&str> {
     crate::tools::fs_command::agent_diff(arguments)
 }
 
-#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::hooks::identity_test_support::assert_canonical_tool_consumers;
 
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod accounted;
 #[cfg(all(
-    any(test, all(feature = "test-support", feature = "filesystem-local")),
+    any(test, all(feature = "test-support", not(target_arch = "wasm32"))),
     not(target_arch = "wasm32")
 ))]
 #[doc(hidden)]
 pub mod crash_cuts;
 mod policy;
+#[cfg(not(target_arch = "wasm32"))]
+mod replay;
 mod scripted;
 pub use policy::FixedToolPolicy;
+#[cfg(not(target_arch = "wasm32"))]
+pub use replay::assert_replay_admission;
 
 pub use scripted::{
     ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn, read_request_files,
 };
+
+/// Stages an admitted request through the production versioned producer.
+pub async fn stage_model_request(
+    journal: &dyn crate::executor::ExecutionJournal,
+    operation: crate::OperationId,
+    key: &str,
+    prepared: &crate::model::PreparedModelRequest,
+) -> crate::Result<crate::conversation::FileRef> {
+    crate::executor::transcript::stage_request(journal, operation, key, prepared, None, None).await
+}
+
+/// Stages an unaccounted context through the production versioned producer.
+pub async fn stage_context_projection(
+    journal: &dyn crate::executor::ExecutionJournal,
+    operation: crate::OperationId,
+    key: &str,
+    context: crate::context::Context,
+    prepared: &crate::model::PreparedModelRequest,
+) -> crate::Result<crate::conversation::FileRef> {
+    crate::executor::transcript::stage_projection(
+        journal,
+        operation,
+        key,
+        &crate::executor::ResponseProjection {
+            context,
+            steering: None,
+            canonical: None,
+            checkpoint: None,
+            working: None,
+            accounting: None,
+        },
+        prepared,
+        None,
+        None,
+    )
+    .await
+}
 
 /// Observe the shipping error envelope and outcome uncertainty together.
 /// Comparing only error codes would hide lost diagnostics or operation identity.

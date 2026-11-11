@@ -12,8 +12,8 @@ impl Hooks {
         crate::executor::json::json_bytes_bounded(
             self,
             crate::executor::json::JsonBounds {
-                maximum_bytes,
-                maximum_items: maximum_bytes,
+                maximum_bytes: Some(maximum_bytes),
+                maximum_items: Some(maximum_bytes),
                 maximum_depth: 16,
             },
             None,
@@ -80,7 +80,7 @@ mod tests {
             let rules: Vec<_> = rules.into_iter().map(|(event, matcher, command, timeout_ms, block)| HookRule {
                 on: HookEvent::ALL[event],
                 matcher: matcher.into(),
-                hooks: vec![HookSpec { run: HookRun::Executable { executable: command, argv: vec!["one argument".into()] }, timeout_ms, failure: if block { HookFailure::Block } else { HookFailure::Report } }],
+                hooks: vec![HookSpec { run: HookRun::Executable { executable: command, argv: vec!["one argument".into()] }, timeout_ms: Some(timeout_ms), failure: if block { HookFailure::Block } else { HookFailure::Report } }],
             }).collect();
             let input = serde_json::to_vec(&rules)?;
             let decoded = serde_json::from_slice::<Hooks>(&input);

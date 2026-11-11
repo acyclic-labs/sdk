@@ -20,10 +20,14 @@ pub enum HostAction {
         /// Agent authorizing the query.
         task: AgentPath,
     },
-    /// The parent's open spawned children, by parent-local name.
+    /// One page of the parent's open spawned children, by parent-local name.
     Sessions {
         /// Owning parent agent.
         parent: AgentPath,
+        /// Exclusive identity seek within the current committed membership cut.
+        after: Option<crate::agent::AgentId>,
+        /// Page size; splits work without limiting total children. Must be positive.
+        limit: u32,
     },
     /// Native session lifecycle as the child agent's inbox records.
     Session {
@@ -78,10 +82,14 @@ pub enum HostAction {
         /// Ordinary shared filesystem command.
         command: String,
     },
-    /// The agent's open children and their sessions.
+    /// One visible page of the agent's open children and their sessions.
     Agents {
         /// Parent agent.
         task: AgentPath,
+        /// Exclusive child identity seek.
+        after: Option<crate::agent::AgentId>,
+        /// Page size; splits work without limiting total children.
+        limit: u32,
     },
 }
 

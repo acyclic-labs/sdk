@@ -18,7 +18,8 @@ pub struct ReadFileInput {
     /// current path under the original directory read grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Optional UTF-8 byte interval. Large intervals return a continuation page.
+    /// Optional UTF-8 byte interval, clipped to the source. Offsets past EOF
+    /// return an empty page. Large intervals return a continuation page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<super::text::TextRange>,
     /// A line, cell or native media projection. Mutually exclusive with `range`.
@@ -34,6 +35,17 @@ pub struct ReadFileInput {
 )]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReadSelection {
+    /// Exact UTF-8 source bytes, without automatic notebook or media projection.
+    Text,
+    /// Directory child names at one immutable generation. The last returned
+    /// entry's version is its exclusive continuation cursor.
+    Directory {
+        /// Opaque cursor from a previous entry in this directory.
+        #[serde(default)]
+        after: Option<String>,
+        /// Maximum names in this page.
+        limit: u32,
+    },
     /// Text lines, with an optional byte cursor returned by a previous page.
     Lines {
         /// First line to return.
@@ -73,7 +85,12 @@ pub struct ReadPage {
     /// Exclusive end of the selected interval.
     pub end: u64,
     /// Next byte offset for `range`, absent at end of source.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<u64>,
+    /// Total byte length of the original immutable source.
+    pub total: u64,
+    /// This page reaches the end of the source projection.
+    pub eof: bool,
     /// First zero-based line/cell in this view.
     pub offset: u64,
 }
@@ -89,6 +106,24 @@ pub struct WriteFileInput {
     pub path: String,
     /// Exact content bytes encoded as UTF-8.
     pub content: String,
+    /// `any` (or omission) replaces unconditionally; `absent` creates only
+    /// when missing; an opaque read version replaces exactly that source.
+    #[serde(default, rename = "ifVersion", skip_serializing_if = "Option::is_none")]
+    pub if_version: Option<String>,
+}
+
+/// Removal at the admitted current cut or one pinned file version.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveFileInput {
+    /// Public destination relative to the selected volume.
+    pub path: String,
+    /// `any` removes the current file; an opaque version requires that source.
+    #[serde(rename = "ifVersion")]
+    pub if_version: String,
 }
 
 /// Exact replacement against one pinned file generation.
@@ -217,7 +252,7 @@ pub struct ReadFileResult {
     pub file: FileReadSource,
     /// Exact selected UTF-8 text.
     pub text: String,
-    /// Provenance of a bounded text/cell view; absent for exact complete reads.
+    /// Provenance and EOF for every text/cell view; absent for native media.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<ReadPage>,
     /// Native media selection; the immutable file supplies its bytes.
@@ -295,7 +330,7 @@ mod codec_tests {
             let version = super::super::version::encode_version(&file, None).unwrap().0;
             round_trip(ReadFileInput { path: path.clone(), wait: false, version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), selection: None });
             round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement, replace_all: endpoints.is_some(), notebook: None });
-            round_trip(WriteFileInput { path, content: text });
+            round_trip(WriteFileInput { path, content: text, if_version: None });
         }
     }
 }

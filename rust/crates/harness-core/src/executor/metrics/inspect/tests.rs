@@ -36,6 +36,7 @@ fn admission(request: &[u8]) -> Result<ExecutionRecord> {
             purpose: ModelPurpose::Response,
             request_digest: *blake3::hash(request).as_bytes(),
             request: file,
+            context: None,
         },
     })
 }
@@ -488,7 +489,7 @@ fn borrowed_encoding_has_no_history_sized_allocations() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 #[tokio::test]
 async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_calls() -> Result<()> {
     use crate::{
@@ -522,6 +523,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
                 purpose: ModelPurpose::Response,
                 request_digest: *blake3::hash(&bytes).as_bytes(),
                 request: request_file.clone(),
+                context: None,
             },
             None,
         )?
@@ -706,6 +708,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
                 purpose: ModelPurpose::Response,
                 request_digest: *blake3::hash(&bytes).as_bytes(),
                 request: request_file,
+                context: None,
             },
             None,
         )?

@@ -8,7 +8,6 @@ pub(super) fn messages(
 ) -> Result<([u8; 32], Option<[u8; 32]>)> {
     #[cfg(not(target_arch = "wasm32"))]
     let _span = tracing::debug_span!("acyclic.harness.transcript.digest").entered();
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         return io.canonical_sequence_digests(messages, prefix);
     }
@@ -17,8 +16,8 @@ pub(super) fn messages(
         messages,
         prefix,
         crate::executor::json::JsonBounds {
-            maximum_bytes: u64::MAX,
-            maximum_items: u64::MAX,
+            maximum_bytes: Some(u64::MAX),
+            maximum_items: None,
             maximum_depth: 256,
         },
         None,

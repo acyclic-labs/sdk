@@ -67,10 +67,8 @@ pub async fn verify_model_contents_with_summary_authorization<
         Ok(())
     }
     .await;
-    #[cfg(feature = "filesystem")]
     let owned = (summaries.capacity() * std::mem::size_of::<&FileRef>()) as u64;
     drop(summaries);
-    #[cfg(feature = "filesystem")]
     if RELEASE && let Some(io) = io {
         io.release(owned)?;
     }
@@ -214,7 +212,12 @@ impl StockExecution<'_> {
         validate_model_content_scope(&input.input, self.stock.limits, scope, self.io)?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input, self.io)?;
-            if selected.messages.len() > self.stock.limits.context_messages {
+            if self
+                .stock
+                .limits
+                .context_messages
+                .is_some_and(|maximum| selected.messages.len() > maximum.get())
+            {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Invalid,

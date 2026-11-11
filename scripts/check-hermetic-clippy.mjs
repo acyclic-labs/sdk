@@ -14,7 +14,7 @@ export function hermeticCompilerPlans() {
 export function qualifyHermeticCompiler(run = spawnSync) {
 for (const {negative, args} of hermeticCompilerPlans()) {
   const start = performance.now();
-  const result = run('cargo', args, {cwd: root, encoding: 'utf8', maxBuffer: 1 << 23});
+  const result = run('cargo', args, {cwd: root, encoding: 'utf8', maxBuffer: Infinity});
   if (result.error) throw result.error;
   const diagnostics = result.stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
     .filter(record => record.reason === 'compiler-message').map(record => record.message);

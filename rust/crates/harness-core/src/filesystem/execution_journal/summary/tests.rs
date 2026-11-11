@@ -125,7 +125,7 @@ proptest! {
         step in any::<u32>(), summary in any::<bool>(), tool in any::<bool>(),
     ) {
         let purpose = if summary { ModelPurpose::Summary } else { ModelPurpose::Response };
-        let stopped = ExecutionEvent::ModelStopped { step, purpose };
+        let stopped = ExecutionEvent::ModelStopped { step, purpose, worker_paused: false };
         let encoded = serde_json::to_vec(&stopped).unwrap();
         prop_assert_eq!(serde_json::from_slice::<ExecutionEvent>(&encoded).unwrap(), stopped.clone());
         let seed: serde_json::Value = serde_json::from_slice(include_bytes!("../../../../../harness-fuzz/corpus/child_control/child-agent-turn")).unwrap();
@@ -133,9 +133,10 @@ proptest! {
         let mut state = ExecutionSummary::default();
         prop_assert!(state.require_next(&stopped, None).is_err());
         accept(&mut state, ExecutionEvent::Started { request_digest: [1;32] }).unwrap();
-        accept(&mut state, ExecutionEvent::ModelStarted { step, purpose, request_digest: [2;32], request: request.clone() }).unwrap();
+        accept(&mut state, ExecutionEvent::ModelStarted { step, purpose, request_digest: [2;32], request: request.clone() , context: None,
+}).unwrap();
         prop_assert!(!state.quiescent(None).unwrap());
-        let other = ExecutionEvent::ModelStopped { step: step ^ 1, purpose };
+        let other = ExecutionEvent::ModelStopped { step: step ^ 1, purpose, worker_paused: false };
         prop_assert!(state.require_next(&other, None).is_err());
         if tool {
             accept(&mut state, ExecutionEvent::ToolStarted { step, call_id: "tool".into(), invocation: request , publication: None,}).unwrap();

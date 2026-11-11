@@ -312,7 +312,7 @@ impl Drop for Registration {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod client;
 #[cfg(test)]
 mod tests;

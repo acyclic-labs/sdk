@@ -6,15 +6,15 @@ pub(super) fn context_contract<T: Serialize>(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Value> {
     let _ = io;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io
         && let Some(work) = io.original_native_work()
     {
         use crate::store::history::HistoryIo as _;
         let remaining = work.remaining()?;
         let bounds = crate::executor::json::JsonBounds {
-            maximum_bytes: remaining.bytes_encoded,
-            maximum_items: remaining.items_examined,
+            maximum_bytes: Some(remaining.bytes_encoded),
+            maximum_items: Some(remaining.items_examined),
             maximum_depth: 256,
         };
         let labels: u64 = 597;
@@ -56,7 +56,7 @@ pub(super) fn context_contract<T: Serialize>(
     serde_json::to_value(value).map_err(|error| crate::Error::Invalid(error.to_string()))
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn reserve_context_vec_native<T>(
     values: &mut Vec<T>,
     capacity: usize,

@@ -76,9 +76,9 @@ mod tests {
     }
 
     fn previous_labels(volume: &VolumeRef) -> Result<[String; 4]> {
-        let digest = crate::executor::json::canonical_json_digest(volume, u64::MAX, &mut None)?;
+        let digest = crate::executor::json::canonical_json_digest(volume, None, &mut None)?;
         let directory =
-            crate::executor::json::canonical_json_digest(&(volume, ""), u64::MAX, &mut None)?;
+            crate::executor::json::canonical_json_digest(&(volume, ""), None, &mut None)?;
         Ok([
             content_label("harness-", digest, &mut None)?,
             content_label(
@@ -146,7 +146,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn restored_owned_volume_hash_exceeds_the_same_copy_allowance() -> Result<()> {
         use acyclic_fs::{
@@ -172,7 +172,7 @@ mod tests {
             // Its temporary encoded document already exceeds the label budget.
             let restored_result = crate::executor::json::canonical_json_digest(
                 &volume,
-                crate::store::default_projection_read_limits().maximum_bytes,
+                Some(crate::store::default_projection_read_limits().maximum_bytes),
                 &mut Some(&mut restored_io),
             );
             assert!(
@@ -194,7 +194,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_volume_labels_only_copy_the_returned_labels() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};

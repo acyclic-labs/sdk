@@ -11,7 +11,7 @@ const temporary = mkdtempSync(join(tmpdir(), "acyclic-stream-protocol-"));
 
 try {
   const output = join(temporary, "stream.json");
-  const result = spawnSync(buf, ["build", "--path", "rust/crates/stream/proto/stream", "--exclude-source-info", "-o", output], {
+  const result = spawnSync(buf, ["build", "--path", "rust/crates/stream/proto/stream", "--exclude-source-info", "-o", output], { maxBuffer: Infinity,
     cwd: root,
     encoding: "utf8",
   });
@@ -53,15 +53,15 @@ try {
   assertFields("ForkMutation", [["source", 1], ["destination", 2], ["at_tail", 3], ["records", 4], ["exclude", 5]]);
   assertFields("CommittedFork", [["source", 1], ["destination", 2], ["forked_at", 3], ["tail", 4], ["records", 5], ["exclude", 6]]);
   assertFields("Child", [["path", 1], ["tail_record", 2], ["origin", 3], ["tail", 4]]);
-  assertFields("ChildrenPageRequest", [["parent", 1], ["after", 2], ["hierarchy_version", 3], ["limit", 4], ["tail_stream", 5]]);
+  assertFields("ChildrenPageRequest", [["parent", 1], ["after", 2], ["hierarchy_version", 3], ["limit", 4], ["tail_stream", 5], ["offset", 6]]);
   assertFields("ChildrenPageResponse", [["hierarchy_version", 1], ["children", 2], ["next_after", 3]]);
   assertFields("TailRequest", [["path", 1], ["accepted", 2], ["durable_through", 3], ["at_least", 4]]);
   assertFields("HeadRequest", [["path", 1]]);
-  assertFields("HeadsRequest", [["paths", 1], ["children", 2], ["limit", 3], ["at_least", 4], ["projection", 5], ["durable_through", 6], ["retained", 7]]);
+  assertFields("HeadsRequest", [["paths", 1], ["children", 2], ["limit", 3], ["at_least", 4], ["projection", 5], ["durable_through", 6], ["retained", 7], ["at", 8]]);
   assertFields("HeadObservation", [["head", 1]]);
-  assertFields("HeadsResponse", [["snapshot", 1], ["heads", 2], ["children", 3], ["projection", 4], ["retained", 5]]);
+  assertFields("HeadsResponse", [["snapshot", 1], ["heads", 2], ["children", 3], ["projection", 4], ["retained", 5], ["applied", 6]]);
   assertFields("FollowRequest", [["path", 1], ["from", 2], ["filter", 3], ["progress", 4], ["at_least", 5], ["when_absent", 6], ["bootstrap_head", 7], ["until", 8]]);
-  assertFields("PathHead", [["tail", 1], ["last", 2], ["durable", 3], ["origin", 4], ["retained_through", 5]]);
+  assertFields("PathHead", [["tail", 1], ["last", 2], ["durable", 3], ["origin", 4], ["retained_through", 5], ["changed_at", 6]]);
   assertFields("ForkOrigin", [["source", 1], ["forked_at", 2], ["commit_id", 3]]);
   assertFields("TailResponse", [["tail", 1], ["durable", 3], ["applied", 4]]);
   assertFields("ReadRequest", [["path", 1], ["from", 2], ["limit", 3], ["at_least", 4], ["key", 5]]);

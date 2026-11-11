@@ -1,5 +1,8 @@
 //! The production interpreter with real declarations, allocation and drop paths.
-use super::{allocator::EngineAllocator, interpreter};
+use super::{
+    allocator::{EngineAllocator, EngineResult},
+    interpreter,
+};
 use acyclic_stream::OwnedBytes;
 use futures::FutureExt;
 
@@ -43,8 +46,8 @@ fn check_arguments(input: &[u8]) -> Option<serde_json::Value> {
         std::marker::PhantomData::<serde_json::Value>,
         input,
         JsonBounds {
-            maximum_bytes: input.len() as u64,
-            maximum_items: u64::MAX,
+            maximum_bytes: Some(input.len() as u64),
+            maximum_items: None,
             maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
         },
         Some(ErrorCode::Invalid),
@@ -174,12 +177,15 @@ async fn check_bridge(text: &str) {
                 // the next refusal must produce its own cause on that carrier.
                 assert!(matches!(
                     allocator.failure().lock().unwrap().take(),
-                    Some(acyclic_fs::NativeTreeMaterializationError::Work(
-                        acyclic_fs::WorkError::BudgetExceeded {
-                            counter: "peak_allocation_bytes",
-                            ..
-                        }
-                    ))
+                    Some(crate::Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                            acyclic_fs::WorkError::BudgetExceeded {
+                                counter: "peak_allocation_bytes",
+                                ..
+                            }
+                        ),
+                        ..
+                    })
                 ));
                 drop(result);
                 drop(reserved);
@@ -196,16 +202,36 @@ async fn check_bridge(text: &str) {
     );
 }
 
+fn assert_retained_result(
+    work: &acyclic_fs::NativeMaterializationWork,
+    baseline: u64,
+    result: &Result<EngineResult, String>,
+) {
+    let held = result
+        .as_ref()
+        .ok()
+        .and_then(|result| result.custody.as_ref())
+        .map_or(0, acyclic_fs::NativeAllocation::bytes);
+    assert_eq!(
+        work.live_allocation_bytes(),
+        baseline + held,
+        "only the original result credit may outlive its engine"
+    );
+}
+
 async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, text: &str) {
+    let literal_module = format!("export default {literal}");
     for (source, maximum, deny_allocation) in [
         (
             std::str::from_utf8(input).ok(),
             literal.len().max(4096),
             false,
         ),
-        (Some(literal), literal.len(), false),
-        (Some(literal), literal.len() - 1, false),
-        (Some(literal), literal.len(), true),
+        (Some(literal_module.as_str()), literal.len(), false),
+        (Some(literal_module.as_str()), literal.len() - 1, false),
+        (Some(literal_module.as_str()), literal.len(), true),
+        // Invalid syntax must not run an unfunded parser before admission.
+        (Some("export default ("), literal.len(), true),
     ] {
         if let Some(source) = source {
             let work = native_work(deny_allocation);
@@ -226,21 +252,28 @@ async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, t
                 16,
             )
             .await;
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            let failed = failure.lock().unwrap().is_some();
+            drop(failure.lock().unwrap().take());
+            assert_retained_result(&work, baseline, &result);
             if deny_allocation {
                 assert!(result.is_err());
-                assert!(failure.lock().unwrap().is_some());
-            } else if source == literal && failure.lock().unwrap().is_none() {
+                assert!(failed);
+            } else if source == literal_module && !failed {
                 if maximum < literal.len() {
                     assert_eq!(
-                        result,
-                        Err("JavaScript result exceeds admitted output".into()),
+                        result.as_ref().err().map(String::as_str),
+                        Some("JavaScript result exceeds admitted output"),
                         "quoted output must refuse one byte beyond its admission"
                     );
                 } else {
-                    assert_eq!(result.unwrap(), serde_json::Value::String(text.to_string()));
+                    assert_eq!(
+                        &result.as_ref().unwrap().value,
+                        &serde_json::Value::String(text.to_string())
+                    );
                 }
             }
+            drop(result);
+            assert_eq!(work.live_allocation_bytes(), baseline);
         }
     }
 }
@@ -250,7 +283,7 @@ async fn check_progress(definitions: &OwnedBytes) {
     // promise with none must refuse through the same native-funded execution
     // boundary, without a dispatcher reply or cancellation supplying a wake.
     for (source, producerless) in [
-        ("await new Promise(() => {})", true),
+        ("export default await new Promise(() => {})", true),
         // Finite work still completes if the interrupt condition is broken,
         // so the negative control cannot strand its original blocking poll.
         (
@@ -261,6 +294,7 @@ async fn check_progress(definitions: &OwnedBytes) {
         let work = native_work(false);
         let baseline = work.live_allocation_bytes();
         let allocator = EngineAllocator::new(Some(&work));
+        let failure = allocator.failure();
         let (send, receive) = tokio::sync::mpsc::channel(1);
         let execution = interpreter::run(
             source.into(),
@@ -279,19 +313,24 @@ async fn check_progress(definitions: &OwnedBytes) {
         .await
         .expect("the original blocking pool must execute");
         drop(receive);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        drop(failure.lock().unwrap().take());
+        assert_retained_result(&work, baseline, &result);
         if producerless {
             assert_eq!(
-                result,
-                Err("JavaScript promise cannot settle: no pending jobs or tool calls".into()),
+                result.as_ref().err().map(String::as_str),
+                Some("JavaScript promise cannot settle: no pending jobs or tool calls"),
                 "a producerless promise must retain its refusal"
             );
         } else {
             assert!(
-                result.is_err_and(|error| error.contains("interrupt")),
+                result
+                    .as_ref()
+                    .is_err_and(|error| error.contains("interrupt")),
                 "finite CPU work must reach its protective interrupt"
             );
         }
+        drop(result);
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
 }
 
@@ -307,7 +346,7 @@ async fn check_replies(
     // transports one frame; it does not stand in for tool admission or execution.
     let source = format!(
         "let result; try {{ result = {{ok:true,value:await tools[{tool_name}]({{}})}}; }} \
-         catch (error) {{ result = {{ok:false,value:String(error.message)}}; }} result"
+         catch (error) {{ result = {{ok:false,value:String(error.message),class:error.class}}; }}"
     );
     let success = value.unwrap_or_else(|| {
         serde_json::json!([
@@ -318,15 +357,21 @@ async fn check_replies(
     let encoded = serde_json::to_string(&success).unwrap();
     let maximum = encoded.len().max(literal.len()).saturating_add(4096);
     let expected = canonical_reply(definitions, &encoded, maximum).await;
-    let refusal = serde_json::Value::String(text.to_string());
-    let expected_refusal = Ok(serde_json::json!({"ok": false, "value": &refusal}));
+    // Refusals use the same canonical cause producer as settled host calls.
+    let cause =
+        crate::executor::ToolFailureCause::of(&crate::Error::Invalid(text.to_owned()), &mut None)
+            .expect("canonical host refusal");
+    let (refusal, _) = crate::tool::value(&cause, u64::MAX, None).expect("canonical refusal value");
+    let expected_refusal: Result<_, String> = Ok(serde_json::json!({
+        "ok": false, "value": &cause.message, "class": cause.class,
+    }));
     for kind in 0..3 {
         let work = native_work(false);
         let baseline = work.live_allocation_bytes();
         let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
         let value = if kind == 0 { &success } else { &refusal };
         let reply = if kind < 2 {
-            super::encode_reply(kind == 0, value, Some(&io))
+            super::encode_reply(kind == 0, value, None, Some(&io))
         } else {
             // Arbitrary malformed frames retain their input credit through the
             // same OwnedBytes entrance as the encoder's valid frames.
@@ -356,10 +401,10 @@ async fn check_replies(
             // only requires malformed frames to preserve their refusal.
             format!(
                 "let parseable = true; try {{ JSON.parse({literal}); }} \
-                 catch {{ parseable = false; }} {source}; ({{parseable,outcome:result}})"
+                 catch {{ parseable = false; }} {source}; export default ({{parseable,outcome:result}})"
             )
         } else {
-            source.clone()
+            format!("{source}; export default result")
         };
         let run = interpreter::run(
             source,
@@ -379,21 +424,22 @@ async fn check_replies(
         };
         let (result, ()) = futures::join!(run, dispatch);
         drop(io);
-        assert_eq!(work.live_allocation_bytes(), baseline);
         let failed = failure.lock().unwrap().is_some();
+        drop(failure.lock().unwrap().take());
+        assert_retained_result(&work, baseline, &result);
         if !failed && kind < 2 {
             assert_eq!(
-                &result,
+                result.as_ref().map(|result| &result.value),
                 if kind == 0 {
-                    &expected
+                    expected.as_ref().map(|result| &result.value)
                 } else {
-                    &expected_refusal
+                    expected_refusal.as_ref()
                 },
                 "the original host reply must preserve its value and refusal"
             );
         } else if !failed {
-            let report = match result {
-                Ok(report) => report,
+            let report = match &result {
+                Ok(report) => &report.value,
                 Err(error) => {
                     assert_eq!(error, "JavaScript result exceeds admitted output");
                     continue;
@@ -409,6 +455,8 @@ async fn check_replies(
                 );
             }
         }
+        drop(result);
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
 }
 
@@ -416,18 +464,19 @@ async fn canonical_reply(
     definitions: &OwnedBytes,
     encoded: &str,
     maximum: usize,
-) -> Result<serde_json::Value, String> {
+) -> Result<EngineResult, String> {
     // Use the original engine's JSON semantics for numbers and Unicode. Rust
     // neither predicts JS number rounding nor implements another reply decoder.
     // Compare the same envelope and allowance: JS number formatting can expand
     // valid JSON beyond the admitted output, which must retain its exact refusal.
     let source = format!(
-        "({{ok:true,value:JSON.parse({})}})",
+        "export default ({{ok:true,value:JSON.parse({})}})",
         serde_json::to_string(encoded).unwrap()
     );
     let work = native_work(false);
     let baseline = work.live_allocation_bytes();
     let allocator = EngineAllocator::new(Some(&work));
+    let failure = allocator.failure();
     let (send, receive) = tokio::sync::mpsc::channel(1);
     drop(receive);
     let result = interpreter::run(
@@ -440,7 +489,8 @@ async fn canonical_reply(
         16,
     )
     .await;
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    drop(failure.lock().unwrap().take());
+    assert_retained_result(&work, baseline, &result);
     assert!(
         result.is_ok()
             || matches!(&result, Err(error) if error == "JavaScript result exceeds admitted output"),
@@ -468,9 +518,11 @@ async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &s
             let allocator = EngineAllocator::new(Some(&work));
             let failure = allocator.failure();
             let source = if console {
-                format!("await console.log({literal}, {{value:42}}, null, [], true, 1)")
+                format!(
+                    "export default await console.log({literal}, {{value:42}}, null, [], true, 1)"
+                )
             } else {
-                format!("await tools[{tool_name}]({{}})")
+                format!("export default await tools[{tool_name}]({{}})")
             };
             let cancellation = tokio_util::sync::CancellationToken::new();
             let (send, mut receive) = tokio::sync::mpsc::channel(1);
@@ -508,24 +560,32 @@ async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &s
             };
             let (result, (admitted, retained)) = futures::join!(run, dispatch);
             drop(retained);
-            assert_eq!(work.live_allocation_bytes(), baseline);
-            if failure.lock().unwrap().is_none() {
+            let failed = failure.lock().unwrap().is_some();
+            drop(failure.lock().unwrap().take());
+            if let Ok(result) = &result {
+                assert_retained_result(&work, baseline, result);
+            }
+            if !failed {
                 assert!(admitted, "the engine must submit its original RPC");
-                let result = result.expect("the original blocking pool must execute");
+                let result = result
+                    .as_ref()
+                    .expect("the original blocking pool must execute");
                 match settlement {
                     Settlement::Retire => {
                         assert!(result.is_err(), "a retired reply producer must refuse");
                     }
                     Settlement::Console => {
-                        assert_eq!(result.unwrap(), serde_json::Value::Null);
+                        assert_eq!(result.as_ref().unwrap().value, serde_json::Value::Null);
                     }
                     Settlement::Cancel => assert_eq!(
-                        result,
-                        Err("JavaScript interrupted".into()),
+                        result.as_ref().err().map(String::as_str),
+                        Some("JavaScript interrupted"),
                         "parent cancellation must retain its interruption"
                     ),
                 }
             }
+            drop(result);
+            assert_eq!(work.live_allocation_bytes(), baseline);
         }
     }
 }
@@ -630,7 +690,7 @@ async fn repeated_console_logs_release_temporary_decode_credit() {
     let allocator = EngineAllocator::new(Some(&engine_work));
     let (send, mut receive) = tokio::sync::mpsc::channel(1);
     let run = acyclic_native_runtime::blocking_future(interpreter::run(
-        "for (let i = 0; i < 256; i++) await console.log('a\\nb'); 42".into(),
+        "for (let i = 0; i < 256; i++) await console.log('a\\nb'); export default 42".into(),
         b"[]".as_slice().into(),
         send,
         tokio_util::sync::CancellationToken::new(),
@@ -670,7 +730,9 @@ async fn repeated_console_logs_release_temporary_decode_credit() {
         assert!(logs.lines.iter().all(|line| line == "a\nb"));
     };
     let (result, ()) = futures::join!(run, dispatch);
-    assert_eq!(result.unwrap().unwrap(), serde_json::json!(42));
+    let result = result.unwrap().unwrap();
+    assert_eq!(result.value, serde_json::json!(42));
+    drop(result);
     assert_eq!(work.live_allocation_bytes(), baseline);
     assert_eq!(engine_work.live_allocation_bytes(), engine_baseline);
 }

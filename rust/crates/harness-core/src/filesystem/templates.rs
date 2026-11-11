@@ -2,7 +2,7 @@
 use super::{FilesystemContentVerifier, FilesystemHost, TurnAdmission, agent_authority};
 use crate::{
     Result,
-    agent::{AgentPath, CreationConfig, SpawnTemplates, VolumeBinding},
+    agent::{AgentPath, CreationConfig, SpawnTemplates, WorkspaceEntry},
     core::RuntimeAuthority,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -20,7 +20,7 @@ pub struct Templates<A: 'static, O: 'static> {
 mod tests {
     use super::*;
     use crate::{
-        agent::{AgentId, AgentPath, SpawnContext, VolumeBinding},
+        agent::{AgentId, AgentPath, SpawnContext, WorkspaceEntry},
         conversation::{
             ContentAccess, ContentPublisher, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
         },
@@ -51,14 +51,16 @@ mod tests {
         host.create_volume(&private).await?;
         host.create_volume(&home).await?;
         let volumes = [
-            VolumeBinding {
-                name: super::super::PRIVATE_VOLUME.into(),
-                volume: private,
-            },
-            VolumeBinding {
-                name: super::super::HOME_VOLUME.into(),
-                volume: home.clone(),
-            },
+            WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::Private,
+                "interface".into(),
+                private,
+            ),
+            WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::Home,
+                "configuration".into(),
+                home.clone(),
+            ),
         ];
         let issuer = RuntimeAuthority::from(AuthorityRoot::new(
             "templates",
@@ -150,10 +152,11 @@ mod tests {
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         let child_private = super::super::private_volume(home.provider().clone(), &child.id())?;
         host.create_volume(&child_private).await?;
-        let child_volumes = [VolumeBinding {
-            name: super::super::PRIVATE_VOLUME.into(),
-            volume: child_private,
-        }];
+        let child_volumes = [WorkspaceEntry::initial_volume(
+            crate::agent::WorkspaceRole::Private,
+            "interface".into(),
+            child_private,
+        )];
         templates
             .child(&selected, &child, &child_volumes, "worker", None)
             .await?;
@@ -377,7 +380,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
         &'a self,
         creation: &'a CreationConfig,
         path: &'a AgentPath,
-        volumes: &'a [VolumeBinding],
+        volumes: &'a [WorkspaceEntry],
         name: &'a str,
         ceiling: Option<&'a crate::Capabilities>,
     ) -> BoxProviderFuture<'a, Result<CreationConfig>> {
@@ -393,14 +396,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
             .await?;
             let home = volumes
                 .iter()
-                .find(|binding| binding.name == super::HOME_VOLUME)
+                .find(|binding| binding.role == crate::agent::WorkspaceRole::Home)
                 .or_else(|| {
                     volumes
                         .iter()
-                        .find(|binding| binding.name == super::PRIVATE_VOLUME)
+                        .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
                 })
                 .ok_or_else(|| crate::Error::Invalid("parent has no home volume".into()))?;
-            let seed = crate::seed::volume(home.volume.provider())?;
+            let seed = crate::seed::volume(home.volume()?.provider())?;
             let reader = FilesystemContentVerifier::new(
                 Arc::clone(&self.host),
                 &authority.verifier,
@@ -411,7 +414,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
             crate::templates::admit_child(creation, reader.as_ref(), name, ceiling).await?;
             let mut selected = crate::templates::select(
                 reader.as_ref(),
-                &home.volume,
+                home.volume()?,
                 &seed,
                 name,
                 crate::conversation::ContentAccess { ceiling, io: None },

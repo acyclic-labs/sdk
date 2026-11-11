@@ -1,5 +1,5 @@
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 use super::sync::Arc;
@@ -18,7 +18,7 @@ pub(crate) struct Signal<T> {
 
 /// The original release observation follows the backing's final owner.
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub(crate) struct Guard<T> {
@@ -26,7 +26,7 @@ pub(crate) struct Guard<T> {
     value: Option<T>,
 }
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 impl<T> Guard<T> {
@@ -38,7 +38,7 @@ impl<T> Guard<T> {
     }
 }
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 impl<T> Drop for Guard<T> {
@@ -93,6 +93,18 @@ impl<T> Signal<T> {
         drop(previous);
         Ok((value, buffered))
     }
+    pub(crate) fn wake(&self) -> Result<(), StreamError> {
+        let wake = self
+            .state
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .1
+            .take();
+        if let Some(wake) = wake {
+            wake.wake();
+        }
+        Ok(())
+    }
     #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
     pub(crate) fn pending(&self) -> usize {
         self.state.lock().unwrap().0.len()
@@ -100,7 +112,7 @@ impl<T> Signal<T> {
 }
 
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 impl<T> Signal<T> {

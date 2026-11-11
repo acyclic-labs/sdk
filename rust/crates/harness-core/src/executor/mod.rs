@@ -46,6 +46,7 @@ mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;
 use accounting::*;
+mod background_compaction;
 mod binding;
 mod compaction;
 mod composition;
@@ -77,7 +78,6 @@ pub use model_usage::codec_fuzz as model_usage_codec_fuzz;
 /// Original research read receipts and bounded artifact source.
 #[cfg(feature = "research")]
 pub mod read_set;
-#[cfg(feature = "filesystem")]
 pub(crate) use model_usage::validate as validate_model_usage;
 pub use model_usage::{
     ContextUsage, ModelTokenUsage, ModelUsagePage, ModelUsageRecord, usage_page,
@@ -100,15 +100,10 @@ mod code_mode;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use code_mode::MEMORY_BYTES as ENGINE_MEMORY;
 /// Exercises the original JavaScript interpreter and native allocation owner.
-#[cfg(all(
-    feature = "test-support",
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub use code_mode::model::check as check_code_mode;
 mod summary;
-#[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
 mod tool_cards;
 pub use tool_cards::ToolCard;
@@ -117,9 +112,9 @@ mod tool_failure;
 pub(crate) use tool_execution::tool_failure_content;
 pub(crate) use tool_failure::ToolFailureText;
 pub use tool_failure::{ToolErrorClass, ToolFailureCause};
-#[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod agent_hooks;
-#[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod tool_hooks;
 
 /// Restores the defect where a resumed driver settled nothing it could not
@@ -148,7 +143,7 @@ pub mod unsettled_resume {
 mod tool_resolution;
 mod tool_settlement;
 pub(crate) use content::verify_model_contents_scoped;
-#[cfg(all(any(test, feature = "test-support"), feature = "filesystem"))]
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub use content::verify_model_contents_with_summary_authorization;
 pub(crate) use tool_settlement::tool_settlement_key;
@@ -166,7 +161,6 @@ use checkpoint_selection::*;
 mod checkpoint_projection;
 pub use checkpoint_projection::load_canonical_checkpoint;
 mod payload;
-#[cfg(any(test, feature = "filesystem", feature = "wasm"))]
 #[doc(hidden)]
 pub use payload::decode_json;
 pub use payload::load_model_request;
@@ -261,7 +255,6 @@ impl ModelPurpose {
         execution: OperationId,
         io: Option<&PreparationIo>,
     ) -> Result<OperationId> {
-        #[cfg(feature = "filesystem")]
         let charge = acyclic_fs::WorkCounters {
             bytes_hashed: if self == Self::Summary {
                 b"harness:summary-attempt:v1".len() as u64 + 16
@@ -270,7 +263,6 @@ impl ModelPurpose {
             },
             ..Default::default()
         };
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.preflight(charge)?;
         }
@@ -285,12 +277,9 @@ impl ModelPurpose {
                 OperationId::from_bytes(bytes)
             }
         };
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.spent(charge)?;
         }
-        #[cfg(not(feature = "filesystem"))]
-        let _ = io;
         Ok(operation)
     }
 }
@@ -351,6 +340,9 @@ pub enum ExecutionEvent {
         /// Pinned private artifact containing the exact provider-neutral request bytes.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         request: FileRef,
+        /// Verified occupancy of this exact admitted request, when available.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<crate::context::ContextWindow>,
     },
     /// One model stream item was observed.
     Model {
@@ -385,6 +377,10 @@ pub enum ExecutionEvent {
         step: u32,
         /// Admitted response or summary attempt.
         purpose: ModelPurpose,
+        /// Speculative work canceled only because its worker yielded for an
+        /// interaction. It is not a failed context preparation on recovery.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        worker_paused: bool,
     },
     /// Tool dispatch is about to begin.
     ToolStarted {
@@ -476,30 +472,19 @@ impl ToolFailureKind {
     }
 }
 
-#[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub use crate::filesystem::PreparationIo;
-
-#[cfg(not(feature = "filesystem"))]
-#[doc(hidden)]
-pub type PreparationIo = ();
 
 #[doc(hidden)]
 pub fn with_history_io<T>(
     io: Option<&PreparationIo>,
     run: impl FnOnce(&mut Option<&mut dyn crate::store::history::HistoryIo>) -> T,
 ) -> T {
-    #[cfg(feature = "filesystem")]
     {
         let mut observer = io.map(PreparationIo::history_io);
         run(&mut observer
             .as_mut()
             .map(|work| work as &mut dyn crate::store::history::HistoryIo))
-    }
-    #[cfg(not(feature = "filesystem"))]
-    {
-        let _ = io;
-        run(&mut None)
     }
 }
 
@@ -627,7 +612,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
     }
 
     /// Pure audited boundary probe; unsupported custom loops are never invoked.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -649,10 +634,10 @@ pub struct StockExecutor {
     context: ContextPipeline,
     tools: ToolRegistry,
     epoch_tools: Option<Arc<Vec<crate::tool::ToolDefinition>>>,
-    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     hooks: Option<Arc<crate::hooks::BoundHooks>>,
     /// A prompt hook's block: the turn fails with it before any model request.
-    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     prompt_block: Option<String>,
     limits: Limits,
     tool_scope: RuntimeScope,
@@ -663,7 +648,7 @@ pub struct StockExecutor {
         Arc<dyn crate::conversation::ContentResidencyVerifier>,
     )>,
     task_context: Option<(Arc<crate::runtime::TaskContext>, OperationId)>,
-    // `None` is the default: threshold compaction wherever the bound task can
+    // `None` is the default: capacity compaction wherever the bound task can
     // publish private summaries, and none elsewhere. An explicit policy is
     // verified at turn entry.
     compaction: Option<crate::context::CompactionPolicy>,
@@ -690,7 +675,9 @@ pub(crate) struct ResponseProjection {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ContextAccounting {
     pub(crate) capacity: crate::context::ModelContextCapacity,
-    pub(crate) count: crate::context::ModelTokenCount,
+    /// `None` records a typed provider context-overflow refusal for this projection.
+    /// It never supplies an estimated admission count.
+    pub(crate) count: Option<crate::context::ModelTokenCount>,
 }
 
 /// Validated retained model artifacts without provider dispatch.
@@ -702,14 +689,7 @@ pub(crate) struct RetainedModelStep {
     pub(crate) events: Vec<ModelEvent>,
 }
 
-#[cfg(feature = "filesystem")]
 pub(crate) use crate::filesystem::PreparationRecord;
-
-#[cfg(not(feature = "filesystem"))]
-pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {}
-
-#[cfg(not(feature = "filesystem"))]
-impl<T: serde::de::DeserializeOwned + Serialize> PreparationRecord for T {}
 
 #[derive(Default, Serialize, Deserialize, crate::HeapLayout)]
 #[doc(hidden)]

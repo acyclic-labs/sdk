@@ -937,11 +937,10 @@ fn shared_runtime_checkpoint_owner_loss_refuses_without_fabricating_custody() ->
     })
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() -> Result<()> {
     block_on(async {
-        use crate::agent::{AgentPath, AgentState, ForkAdopted, TurnHost, VolumeBinding};
+        use crate::agent::{AgentPath, AgentState, ForkAdopted, TurnHost, WorkspaceEntry};
         use crate::conversation::{VolumeClass, VolumeRef};
         use crate::filesystem::{
             FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, TurnAdmission, TurnAuthority,
@@ -1000,10 +999,11 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
                 forked_at: 0,
                 conversation_tail: 0,
                 checkpoint: None,
-                volumes: vec![VolumeBinding {
-                    name: PRIVATE_VOLUME.into(),
+                volumes: vec![WorkspaceEntry::initial_volume(
+                    crate::agent::WorkspaceRole::Private,
+                    PRIVATE_VOLUME.into(),
                     volume,
-                }],
+                )],
                 brief: None,
                 policy: None,
             },
@@ -1110,7 +1110,6 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
     })
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn original_turn_interrupt_wakes_every_checkpoint_and_refuses_ready_completion() -> Result<()> {
     block_on(async {

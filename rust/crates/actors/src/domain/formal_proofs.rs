@@ -84,15 +84,15 @@ fn positive_u64_constructor_accepts_exactly_nonzero_values() {
 #[kani::proof]
 #[kani::unwind(1)]
 fn actor_limits_constructor_accepts_exactly_positive_values() {
-    let handler_timeout_millis: u64 = kani::any();
-    let memory_bytes: u64 = kani::any();
-    let checkpoint_bytes: u64 = kani::any();
+    let handler_timeout_millis: Option<u64> = kani::any();
+    let memory_bytes: Option<u64> = kani::any();
+    let checkpoint_bytes: Option<u64> = kani::any();
 
     match ActorLimits::new(handler_timeout_millis, memory_bytes, checkpoint_bytes) {
         Ok(limits) => {
-            assert_ne!(handler_timeout_millis, 0);
-            assert_ne!(memory_bytes, 0);
-            assert_ne!(checkpoint_bytes, 0);
+            assert_ne!(handler_timeout_millis, Some(0));
+            assert_ne!(memory_bytes, Some(0));
+            assert_ne!(checkpoint_bytes, Some(0));
             assert_eq!(limits.handler_timeout_millis(), handler_timeout_millis);
             assert_eq!(limits.memory_bytes(), memory_bytes);
             assert_eq!(limits.checkpoint_bytes(), checkpoint_bytes);
@@ -102,7 +102,11 @@ fn actor_limits_constructor_accepts_exactly_positive_values() {
                 error,
                 DomainError::Contract(crate::ContractError::InvalidArgument)
             );
-            assert!(handler_timeout_millis == 0 || memory_bytes == 0 || checkpoint_bytes == 0);
+            assert!(
+                handler_timeout_millis == Some(0)
+                    || memory_bytes == Some(0)
+                    || checkpoint_bytes == Some(0)
+            );
         }
     }
 }
@@ -300,9 +304,9 @@ fn update_expected_configuration_revision_is_lossless() {
         code_sha256: vec![1; 32].into(),
         bindings: Vec::new(),
         limits: Some(crate::wire::ActorLimits {
-            handler_timeout_millis: 1,
-            memory_bytes: 1,
-            checkpoint_bytes: 1,
+            handler_timeout_millis: Some(1),
+            memory_bytes: Some(1),
+            checkpoint_bytes: Some(1),
         }),
         expected_configuration_revision: revision,
         idempotency_key: "i".into(),

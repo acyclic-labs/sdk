@@ -1,5 +1,5 @@
 //! Checkpoint descriptors are a paged projection of the conversation stream.
-use super::VolumeBinding;
+use super::WorkspaceEntry;
 use serde::{Deserialize, Serialize};
 
 /// Which part of a saved turn becomes current. External effects and child
@@ -55,7 +55,7 @@ pub struct ContextCut {
 #[serde(deny_unknown_fields)]
 pub struct HistoryVolume {
     /// Original binding; a history fork retains its original generation.
-    pub binding: VolumeBinding,
+    pub binding: WorkspaceEntry,
     /// Existing immutable generation, never a directory backup.
     pub generation: acyclic_fs::GenerationId,
 }
@@ -66,7 +66,7 @@ pub struct HistoryVolume {
 #[serde(deny_unknown_fields)]
 pub struct SavedVolume {
     /// Original project binding.
-    pub binding: VolumeBinding,
+    pub binding: WorkspaceEntry,
     /// Original project's head at this turn.
     pub generation: acyclic_fs::GenerationId,
     /// Structurally shared retention workspace, never a materialized directory.
@@ -174,7 +174,10 @@ impl HistoryCheckpoint {
         super::records::check_volumes(checkpoint.volumes.iter().map(|volume| &volume.binding))?;
         let mut bindings = std::collections::BTreeSet::new();
         if checkpoint.volumes.iter().any(|volume| {
-            volume.binding.volume.class() != crate::conversation::VolumeClass::Project
+            volume
+                .binding
+                .as_volume()
+                .is_none_or(|source| source.class() != crate::conversation::VolumeClass::Project)
                 || !bindings.insert(&volume.binding.name)
         }) {
             return Err(super::Error::Record("saved project bindings are invalid"));

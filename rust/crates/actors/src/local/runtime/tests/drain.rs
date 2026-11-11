@@ -1,5 +1,60 @@
 use super::*;
 
+/// Default admission runs beyond the retired 64 slots. The same real gate
+/// under explicit credit is the deterministic negative control.
+#[tokio::test]
+async fn unbounded_default_admits_beyond_old_concurrency_with_explicit_credit_control() -> TestResult
+{
+    const ACTORS: usize = 65;
+    for credit in [None, Some(64)] {
+        let provider = Arc::new(MemoryStream::default());
+        let store = Store::new(Arc::clone(&provider), root()?);
+        let handler = Arc::new(Gated::new()?);
+        let runtime = Runtime::new(
+            Store::new(Arc::clone(&provider), root()?),
+            handler.clone(),
+            Arc::new(SystemClock),
+        );
+        let runtime = match credit {
+            Some(credit) => runtime.with_limits(RuntimeLimits::new(credit, 64)?),
+            None => runtime,
+        };
+        let mut addresses = Vec::new();
+        for index in 0..ACTORS {
+            let address = spawn_with(&store, &format!("unbounded-{index}"), &[b"emit"]).await?;
+            runtime.track(address.clone())?;
+            addresses.push(address);
+        }
+        let mut entered = handler.entered.subscribe();
+        let mut running = FuturesUnordered::new();
+        for address in &addresses {
+            running.push(runtime.drain_actor(address));
+        }
+        tokio::select! {
+            observed = entered.wait_for(|active| *active == credit.unwrap_or(ACTORS)) => {
+                assert_eq!(*observed?, credit.unwrap_or(ACTORS));
+            }
+            completed = running.next() => {
+                return Err(format!("delivery completed before its gate opened: {completed:?}").into());
+            }
+        }
+        assert_eq!(
+            handler.active.load(Ordering::SeqCst),
+            credit.unwrap_or(ACTORS)
+        );
+        handler.gate.add_permits(ACTORS);
+        while let Some(result) = running.next().await {
+            result?;
+        }
+        assert_eq!(handler.active.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            handler.peak.load(Ordering::SeqCst),
+            credit.unwrap_or(ACTORS)
+        );
+    }
+    Ok(())
+}
+
 /// One admitted slot is the serial negative control. With two slots, the old
 /// serial drain fails at the entry assertion, without waiting for a timeout.
 #[tokio::test]
@@ -7,12 +62,7 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
     for active in [1, 2] {
         let provider = Arc::new(MemoryStream::default());
         let store = Store::new(Arc::clone(&provider), root()?);
-        let handler = Arc::new(Gated {
-            package: Package::new()?,
-            active: AtomicUsize::new(0),
-            peak: AtomicUsize::new(0),
-            gate: tokio::sync::Semaphore::new(0),
-        });
+        let handler = Arc::new(Gated::new()?);
         let runtime = Runtime::new(
             Store::new(Arc::clone(&provider), root()?),
             handler.clone(),
@@ -30,7 +80,14 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
             assert!(futures::poll!(drain.as_mut()).is_pending());
             assert_eq!(handler.active.load(Ordering::SeqCst), active);
             assert_eq!(handler.peak.load(Ordering::SeqCst), active);
-            assert_eq!(runtime.admission.available_permits(), 0);
+            assert_eq!(
+                runtime
+                    .admission
+                    .as_ref()
+                    .expect("explicit concurrency reservation")
+                    .available_permits(),
+                0
+            );
             assert_eq!(runtime.counts(), (actors.len(), actors.len() - active));
             for address in &actors {
                 assert_eq!(
@@ -47,7 +104,14 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
             // handler and returns its delivery locks and admission permits.
         }
         assert_eq!(handler.active.load(Ordering::SeqCst), 0);
-        assert_eq!(runtime.admission.available_permits(), active);
+        assert_eq!(
+            runtime
+                .admission
+                .as_ref()
+                .expect("explicit concurrency reservation")
+                .available_permits(),
+            active
+        );
         handler.gate.add_permits(actors.len());
         for address in &actors {
             runtime.wake(address);
@@ -97,7 +161,14 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
             );
         }
         assert_eq!(handler.active.load(Ordering::SeqCst), 0);
-        assert_eq!(runtime.admission.available_permits(), active);
+        assert_eq!(
+            runtime
+                .admission
+                .as_ref()
+                .expect("explicit concurrency reservation")
+                .available_permits(),
+            active
+        );
     }
     Ok(())
 }

@@ -69,7 +69,7 @@ impl McpRuntimeCallbacks {
     ) -> Result<(OperationId, Value)> {
         crate::executor::json::json_byte_length(
             request,
-            context.scope().limits().file_bytes,
+            Some(context.scope().limits().file_bytes),
             &mut None,
         )
         .map(|_| ())?;
@@ -166,7 +166,8 @@ impl McpRuntimeCallbacks {
                         "MCP sampling tools require host-selected tool projection".into(),
                     ));
                 }
-                ModelEvent::Content { .. }
+                ModelEvent::Restarted
+                | ModelEvent::Content { .. }
                 | ModelEvent::TextPart { .. }
                 | ModelEvent::Reasoning { .. }
                 | ModelEvent::ReasoningBlock { .. }

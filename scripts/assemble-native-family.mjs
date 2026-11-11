@@ -30,7 +30,7 @@ function run(command, args, options = {}) {
   const npmCli = join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
   const executable = process.platform === "win32" && command === "npm" ? process.execPath : command;
   const commandArgs = executable === process.execPath && command === "npm" ? [npmCli, ...args] : args;
-  const result = execFileSync(executable, commandArgs, {
+  const result = execFileSync(executable, commandArgs, { maxBuffer: Infinity,
     cwd: options.cwd ?? root,
     encoding: "utf8",
     stdio: options.stdio ?? ["ignore", "pipe", "pipe"],

@@ -1,9 +1,11 @@
 //! Verified provider admission, independent of usage-calibrated planning weights.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod reported_usage_tests;
 pub(crate) mod wire;
 use crate::{HttpRequest, ResolvedModel, dispatch, projection};
-use acyclic_harness_core::{Error, NativeCustody, NativeWork, Result, context::ModelTokenCount};
+use acyclic_harness_core::{Error, Result, context::ModelTokenCount};
 
-fn boundary(work: NativeWork<'_>, reason: &'static str) -> Error {
+fn boundary(work: acyclic_fs::NativeWork<'_>, reason: &'static str) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     if work.is_some() {
         return Error::NativeBoundary {
@@ -17,23 +19,44 @@ fn boundary(work: NativeWork<'_>, reason: &'static str) -> Error {
 
 pub(crate) fn specification<'a>(
     config: &'a crate::ProviderSpec,
-    work: NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<&'a wire::TokenCounterSpec> {
-    let spec = config.token_counter.as_ref().ok_or_else(|| {
-        let reason = "configure a verified input token counter for this endpoint";
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.is_some() {
-            return Error::NativeBoundary {
-                code: acyclic_harness_core::wire::ErrorCode::Unsupported,
-                reason,
-            };
-        }
-        Error::Unsupported(reason.into())
-    })?;
+    // Compatible Chat providers need no separate tokenizer route. A bounded
+    // completion reports the verified prompt count on the generation origin.
+    static CHAT_USAGE: std::sync::LazyLock<wire::TokenCounterSpec> =
+        std::sync::LazyLock::new(|| wire::TokenCounterSpec {
+            path: "chat/completions".into(),
+            adapter: crate::Adapter::Chat,
+            response_field: wire::TokenCountField::PromptTokens,
+            framing_tokens: 0,
+        });
+    let spec = config
+        .token_counter
+        .as_ref()
+        .or_else(|| (config.adapter == crate::Adapter::Chat).then(|| &*CHAT_USAGE))
+        .ok_or_else(|| {
+            let reason = "configure a verified input token counter for this endpoint";
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.is_some() {
+                return Error::NativeBoundary {
+                    code: acyclic_harness_core::wire::ErrorCode::Unsupported,
+                    reason,
+                };
+            }
+            Error::Unsupported(reason.into())
+        })?;
     if spec.adapter != config.adapter {
         return Err(boundary(
             work,
             "token counter dialect differs from generation",
+        ));
+    }
+    if spec.response_field == wire::TokenCountField::PromptTokens
+        && spec.adapter != crate::Adapter::Chat
+    {
+        return Err(boundary(
+            work,
+            "reported prompt usage requires the Chat adapter",
         ));
     }
     Ok(spec)
@@ -48,8 +71,8 @@ pub(crate) async fn count(
     provider: &ResolvedModel,
     request: &acyclic_harness_core::model::PreparedModelRequest,
     ceiling: u64,
-    work: NativeWork<'_>,
-) -> Result<(ModelTokenCount, NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(ModelTokenCount, acyclic_fs::NativeCustody)> {
     let current = provider.current_credentials()?;
     let provider = &current;
     if request.request().model != provider.model {
@@ -121,7 +144,7 @@ pub(crate) async fn count(
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let generation =
             projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
-        let bytes = wire::body(generation, &provider.model.name, spec.adapter)?;
+        let bytes = wire::body(generation, &provider.model.name, spec)?;
         let url = wire::endpoint(&provider.config, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;
         Ok::<_, Error>((url, bytes, plan))
@@ -197,8 +220,8 @@ fn local(
     provider: &ResolvedModel,
     request: &acyclic_harness_core::model::PreparedModelRequest,
     tokens: u64,
-    work: NativeWork<'_>,
-) -> Result<(ModelTokenCount, NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(ModelTokenCount, acyclic_fs::NativeCustody)> {
     #[cfg(not(target_arch = "wasm32"))]
     let mut custody = work
         .map(|work| {
@@ -215,7 +238,7 @@ fn local(
         })
         .transpose()?;
     #[cfg(target_arch = "wasm32")]
-    let custody: NativeCustody = {
+    let custody: acyclic_fs::NativeCustody = {
         let _ = work;
         None
     };
@@ -232,9 +255,9 @@ pub(crate) async fn send_count(
     provider: &ResolvedModel,
     exchange: HttpRequest,
     mut count: ModelTokenCount,
-    count_custody: NativeCustody,
-    work: NativeWork<'_>,
-) -> Result<(ModelTokenCount, NativeCustody)> {
+    count_custody: acyclic_fs::NativeCustody,
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(ModelTokenCount, acyclic_fs::NativeCustody)> {
     count.input_tokens = exchange_count(provider, exchange, count.request_digest, work).await?;
     Ok((count, count_custody))
 }
@@ -242,13 +265,9 @@ pub(crate) async fn send_count(
 async fn read_count(
     provider: &ResolvedModel,
     response: crate::HttpResponse,
-    work: NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<u64> {
-    let spec = provider
-        .config
-        .token_counter
-        .as_ref()
-        .ok_or_else(|| crate::invalid("missing token counter"))?;
+    let spec = specification(&provider.config, work)?;
     let body =
         crate::http::bounded::read(response.body, provider.config.max_event_bytes, work).await?;
     #[cfg(not(target_arch = "wasm32"))]
@@ -263,12 +282,12 @@ async fn read_count(
 }
 
 /// A count has no caller-visible output until its whole body is validated. All retryable
-/// failures, including a cut or stalled successful body, consume this one attempt budget.
+/// failures, including a cut or stalled successful body, wait through the shared recovery owner.
 async fn exchange_count(
     provider: &ResolvedModel,
     exchange: HttpRequest,
     request_digest: [u8; 32],
-    work: NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<u64> {
     let mut recovery = crate::retry::Attempt::count(provider.config.retry, request_digest);
     // Each attempt sends a copy, so the copy in flight is funded alongside the retained request.
@@ -307,7 +326,7 @@ async fn exchange_count(
             Ok(response) => {
                 let retry_after = response.retry_after;
                 let failure =
-                    crate::http_failure(response, provider.config.max_event_bytes, work).await;
+                    crate::recovery_failure(response, provider.config.max_event_bytes, work).await;
                 (failure, retry_after)
             }
             Err(failure) => (failure, None),
@@ -315,7 +334,6 @@ async fn exchange_count(
         let Some(wait) = recovery.next(&failure, retry_after) else {
             return Err(failure);
         };
-        drop(failure);
-        crate::deadline::timer(provider.transport.as_ref(), wait, work)?.await?;
+        crate::retry::wait(provider.transport.as_ref(), failure, wait, work).await?;
     }
 }

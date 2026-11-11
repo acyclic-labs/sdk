@@ -3,6 +3,7 @@ struct PathState {
     changed_at: u64,
     history: Option<Arc<History>>,
     ranges: HistoryRanges,
+    keys: KeyTree,
     prefix: [Option<HistoryWindow>; 2],
     tail: u64,
 }

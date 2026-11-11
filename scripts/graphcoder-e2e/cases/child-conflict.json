@@ -2,10 +2,26 @@
   "id": "child-conflict",
   "workspace": {
     "kind": "git",
-    "files": {}
+    "files": {
+      "seed.txt": "base\n"
+    }
   },
   "model": {
     "steps": [
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "capture-common-base",
+            "name": "fs",
+            "arguments": {
+              "command": "status"
+            }
+          }
+        ]
+      },
       {
         "when": {
           "user": "PARENT_E2E_TASK"
@@ -16,7 +32,7 @@
             "name": "spawn",
             "arguments": {
               "name": "worker",
-              "task": "CHILD_E2E_TASK",
+              "task": "CHILD_INITIAL",
               "role": "worker"
             }
           }
@@ -24,31 +40,32 @@
       },
       {
         "when": {
-          "user": "CHILD_E2E_TASK"
+          "user": "CHILD_INITIAL"
+        },
+        "text": [
+          "CHILD_READY"
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
         },
         "tools": [
           {
-            "id": "child-write",
-            "name": "write",
+            "id": "initial-wait",
+            "name": "wait",
             "arguments": {
-              "path": "seed.txt",
-              "content": "child\n"
+              "agents": [
+                "worker"
+              ]
             }
           }
         ]
       },
       {
         "when": {
-          "user": "CHILD_E2E_TASK",
-          "tool_result": "file"
-        },
-        "text": [
-          "child finished"
-        ]
-      },
-      {
-        "when": {
-          "user": "PARENT_E2E_TASK"
+          "user": "PARENT_E2E_TASK",
+          "tool_result": "CHILD_READY"
         },
         "tools": [
           {
@@ -67,7 +84,23 @@
         },
         "tools": [
           {
-            "id": "wait",
+            "id": "start-child",
+            "name": "send",
+            "arguments": {
+              "agent": "worker",
+              "message": "CHILD_WRITE_CONFLICT",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "conflict-wait",
             "name": "wait",
             "arguments": {
               "agents": [
@@ -79,58 +112,39 @@
       },
       {
         "when": {
-          "user": "PARENT_E2E_TASK"
+          "user": "CHILD_WRITE_CONFLICT"
         },
         "tools": [
           {
-            "id": "archive",
-            "name": "archive",
+            "id": "child-write",
+            "name": "write",
             "arguments": {
-              "agent": "worker"
+              "path": "seed.txt",
+              "content": "child\n"
             }
           }
         ]
       },
       {
         "when": {
-          "user": "PARENT_E2E_TASK"
+          "user": "CHILD_WRITE_CONFLICT",
+          "tool_result": "file"
         },
-        "tools": [
-          {
-            "id": "archive-wait",
-            "name": "wait",
-            "arguments": {
-              "agents": [
-                "worker"
-              ]
-            }
-          }
+        "text": [
+          "CHILD_CONFLICT_DONE"
         ]
       },
       {
         "when": {
-          "user": "PARENT_E2E_TASK"
+          "user": "PARENT_E2E_TASK",
+          "tool_result": "CHILD_CONFLICT_DONE"
         },
         "tools": [
           {
-            "id": "child-diff",
-            "name": "fs",
+            "id": "inspect-conflict",
+            "name": "code",
             "arguments": {
-              "command": "diff agents/worker"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "user": "PARENT_E2E_TASK"
-        },
-        "tools": [
-          {
-            "id": "child-final",
-            "name": "fs",
-            "arguments": {
-              "command": "merge agents/worker"
+              "code": "const result=await tools.shell({command:['node','-e',\"process.stdout.write(require('fs').readFileSync('seed.txt','utf8'))\"]}); if(!result.success||result.exit_code!==0||!result.text.includes('<<<<<<<'))throw Error('conflict projection missing: '+JSON.stringify(result)); export default {verified:'CONFLICT_PROJECTED'};"
             }
           }
         ]
@@ -138,11 +152,69 @@
       {
         "when": {
           "user": "PARENT_E2E_TASK",
-          "tool_result": "conflict"
+          "tool_result": "CONFLICT_PROJECTED"
         },
         "tools": [
           {
-            "id": "resolved",
+            "id": "spawn-later",
+            "name": "spawn",
+            "arguments": {
+              "name": "later",
+              "task": "LATER_WORKER",
+              "role": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "join-later",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker",
+                "later"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "LATER_WORKER"
+        },
+        "tools": [
+          {
+            "id": "later-write",
+            "name": "write",
+            "arguments": {
+              "path": "later.txt",
+              "content": "later\n"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "LATER_WORKER",
+          "tool_result": "file"
+        },
+        "text": [
+          "LATER_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK",
+          "tool_result": "LATER_DONE"
+        },
+        "tools": [
+          {
+            "id": "resolve",
             "name": "write",
             "arguments": {
               "path": "seed.txt",
@@ -183,6 +255,61 @@
         "when": {
           "user": "PARENT_E2E_TASK"
         },
+        "tools": [
+          {
+            "id": "verify-later-publication",
+            "name": "code",
+            "arguments": {
+              "code": "const result=await tools.shell({command:['node','-e',\"if(require('fs').readFileSync('later.txt','utf8')!=='later'+String.fromCharCode(10))process.exit(1)\"]}); if(!result.success||result.exit_code!==0)throw Error('deferred child work missing: '+JSON.stringify(result)); export default {verified:'LATER_IN_PARENT_WORKSPACE'};"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "follow-up",
+            "name": "send",
+            "arguments": {
+              "agent": "worker",
+              "message": "CHILD_AFTER_CONFLICT",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "follow-up-wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHILD_AFTER_CONFLICT"
+        },
+        "text": [
+          "CHILD_STILL_ALIVE"
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK",
+          "tool_result": "CHILD_STILL_ALIVE"
+        },
         "text": [
           "done"
         ]
@@ -197,15 +324,17 @@
     }
   ],
   "assert": {
-    "requests": 13,
+    "requests": 22,
     "files": {
-      "seed.txt": "resolved\n"
+      "seed.txt": "resolved\n",
+      "later.txt": "later\n"
     },
-    "tool_errors": [
-      "conflict"
-    ],
     "tool_contains": [
-      "conflict"
+      "CONFLICT_PROJECTED",
+      "CHILD_CONFLICT_DONE",
+      "CHILD_STILL_ALIVE",
+      "LATER_DONE",
+      "LATER_IN_PARENT_WORKSPACE"
     ]
   },
   "ntfs": true,

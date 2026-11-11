@@ -121,25 +121,30 @@ pub(in crate::bindings) fn native_authored_transaction(
     let metadata = FileMetadata::default();
     Ok(match kind.as_str() {
         "create-file" => AuthoredMutation::CreateFile {
+            file_id: None,
             path: native_path(&required(path, "path")?, config)?,
             bytes: required(bytes, "bytes")?.to_vec().into(),
             metadata,
         },
         "create-directory" => AuthoredMutation::CreateDirectory {
+            file_id: None,
             path: native_path(&required(path, "path")?, config)?,
             metadata,
         },
         "create-symbolic-link" => AuthoredMutation::CreateSymbolicLink {
+            file_id: None,
             path: native_path(&required(path, "path")?, config)?,
             target: required(target, "target")?.to_vec().into(),
             metadata,
         },
         "create-special" => AuthoredMutation::CreateEmptySpecial {
+            file_id: None,
             path: native_path(&required(path, "path")?, config)?,
             kind: empty_special_kind(&required(file_kind, "fileKind")?)?,
             metadata,
         },
         "create-device" => AuthoredMutation::CreateDevice {
+            file_id: None,
             path: native_path(&required(path, "path")?, config)?,
             kind: device_kind(&required(file_kind, "fileKind")?)?,
             major: required(major.map(NapiU32::into_inner), "major")?,
@@ -147,6 +152,7 @@ pub(in crate::bindings) fn native_authored_transaction(
             metadata,
         },
         "create-reparse-point" => AuthoredMutation::CreateReparsePoint {
+            file_id: None,
             path: native_path(&required(path, "path")?, config)?,
             payload: required(payload, "payload")?.to_vec().into(),
             metadata,

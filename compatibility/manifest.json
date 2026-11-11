@@ -13,14 +13,14 @@
     "actors": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:21edfc694c69d16f31177f32700f5a0a3e711a3877ed93f1fb35e606cf65edc9",
-      "descriptorDigest": "sha256:1320388e370be8064d1ec571aae373e4b3240a0ea83120d4536fe6efff0b3e14"
+      "schemaDigest": "sha256:9a599b2710fdc0dc41f4c37a0896874c76f768f65ab7b9d2e0fb0e5a24a98bf8",
+      "descriptorDigest": "sha256:5b63d9044e1f01a93e7926e835923a27412a8bff9cb00de3ce0e1f3a7f813eda"
     },
     "harness": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:28a79433948148e7e2f03807367c17b049e2e70eaf8c8d143454051ec520114f",
+      "schemaDigest": "sha256:8501884c9ed3649d192bc15af3edf2755749a9230e88c25023552c2b557bea7e",
       "conformanceDigest": "sha256:3da8cc65b19c2b710c3922b621fc28afd75268a7b7c66959cbb3a24472e95340",
-      "descriptorDigest": "sha256:53db9b56b8d175d2f14796328ad569e2ff0172e03fc0c69e0faec32b956ff5c6"
+      "descriptorDigest": "sha256:7d5abdf3646669a438a03c5cd67c70da73955a176160336921eaf73e39982d43"
     },
     "filesystem": {
       "version": "0.2.0",
@@ -32,15 +32,15 @@
     "stream": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:6b10415fcd50b02c06c788f40f51c324c01f9d2633a0b02763b7fe9a7d7e5d6b",
-      "descriptorDigest": "sha256:8eae55017c6f5ca0c4938f9c3a8f019a8c59ab8d2cabb52a2b19f010886deca1",
+      "schemaDigest": "sha256:9acae1787235ea28579b53a6114007d2c4029b6c1fdf9fb457f183601385cdf9",
+      "descriptorDigest": "sha256:9084ed89277c78aee1636fb36ecdbf655c5afeda682b751eb4c17bd5ec22bec5",
       "conformanceDigest": "sha256:d28314f2f12da7eda3f3cd3df4bd257233d925f84bc9026cfd79abea2b098f70"
     },
     "objects": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
       "schemaDigest": "sha256:904103a0d59d8f06f356f0efd881ef5d1c34194f87be23ed24c71351af25ee98",
-      "descriptorDigest": "sha256:fe8af48a27b5d305679afca4bf4272a7c8f1c6f7d468d570194c17108a178f28",
+      "descriptorDigest": "sha256:7fe1f68a7cfaaf2fb808eff5fe6530d1c5cc23882a05531ed5a36d7115d7cd08",
       "conformanceDigest": "sha256:fc5c392f15d39b9f7b5120607776dd9f1bcd31bc1e8ecf8b17e708323c7df0ca"
     },
     "machines": {

@@ -1,21 +1,11 @@
 use super::*;
 pub(crate) mod media_type;
-#[cfg(all(
-    test,
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32"),
-    not(loom)
-))]
+#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 mod skills_tests;
 #[cfg(all(test, not(loom)))]
 mod tests;
 
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 struct SkillRead<'a> {
     volume: &'a VolumeRef,
     grant: &'a ContentGrant,
@@ -311,11 +301,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
         self.require_private_directory(volume, grant, path, io)?;
         super::super::access::require_directory_ceiling(ceiling, volume, path, io)?;
-        #[cfg(all(
-            feature = "filesystem-local",
-            feature = "native-execution",
-            not(target_arch = "wasm32")
-        ))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(sources) = self.skill_sources(volume)?
             && let Some(source_generation) = expected_generation
             && sources.matches(volume, source_generation, path)
@@ -466,19 +452,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .tool_input());
             }
         };
-        let remaining = length.checked_sub(range.offset).ok_or_else(|| {
-            stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Invalid,
-                "read offset is past the file's end",
-            )
-            .tool_input()
-        })?;
+        let offset = range.offset.min(length);
+        let remaining = length - offset;
         let chunk = io.sdk(
             generation
                 .read_range(
                     &requested,
-                    range.offset,
+                    offset,
                     remaining.min(range.length),
                     io,
                     io.cancellation(),
@@ -632,11 +612,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<acyclic_fs::GenerationId> {
         bounded_io::generation_version(reference.version(), io)
     }
-    #[cfg(all(
-        feature = "filesystem-local",
-        feature = "native-execution",
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn materialize_skill(
         &self,
         sources: &crate::context::native_skills::NativeSkills,

@@ -8,7 +8,7 @@ fn a_service_that_exits_without_signalling_closes_its_readiness_channel() -> io:
     assert!(take_service_ready_signal()?.is_none());
     // This test binary rejects the service arguments and exits, writing
     // only to its discarded standard error.
-    let readiness = spawn_service_process(&std::env::current_exe()?)?;
+    let readiness = spawn_service_process(&std::env::current_exe()?, &["__service".into()])?;
     assert_eq!(readiness.wait()?, ServiceStartOutcome::Exited);
     Ok(())
 }

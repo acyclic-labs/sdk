@@ -15,6 +15,96 @@ use std::sync::Arc;
 mod context;
 pub use context::PublicationContext;
 
+/// Where a publication's namespace delta begins. Its end is the
+/// publication's generation, so a delta too large to list in its commit is
+/// published by reference to these two content-addressed generations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeltaOrigin {
+    /// The empty namespace: the publication created its volume.
+    Empty,
+    /// The exact generation compared with the publication, including its
+    /// authenticated storage association. A restore need not follow ancestry.
+    Generation(crate::GenerationId),
+}
+
+/// An immutable delta bound to the original follow selection. A delivered
+/// reference is only a candidate: expansion uses this same filter, never the
+/// widened index filter used to find the reference. Its digest keeps the
+/// reference fixed-size even for a large admitted selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublicationDelta {
+    origin: DeltaOrigin,
+    selection: [u8; 32],
+}
+
+impl PublicationDelta {
+    pub(crate) fn unfiltered(origin: DeltaOrigin) -> Self {
+        Self {
+            origin,
+            selection: acyclic_stream::FollowFilter::default().digest(),
+        }
+    }
+
+    pub(crate) fn with_selection(self, filter: &acyclic_stream::FollowFilter) -> Self {
+        Self {
+            selection: filter.digest(),
+            ..self
+        }
+    }
+
+    /// Authenticates the expansion's original query before opening either
+    /// generation. A different selection cannot expand this reference.
+    pub fn origin_for(
+        self,
+        filter: &acyclic_stream::FollowFilter,
+    ) -> Result<DeltaOrigin, acyclic_stream::StreamError> {
+        if self.selection != filter.digest() {
+            return Err(acyclic_stream::StreamError::InvalidArgument);
+        }
+        Ok(self.origin)
+    }
+
+    /// Applies the original query to one expanded full path, with the record's
+    /// original attributes and the volume's original key encoding.
+
+    pub fn selects(
+        self,
+        (volume, authorization): (VolumeId, &acyclic_stream::session::ResourceAuthorization),
+        path: &crate::kernel::NamespacePath,
+        config: VolumeConfig,
+        filter: &acyclic_stream::FollowFilter,
+        headers: &acyclic_stream::RecordHeaders,
+    ) -> Result<bool, acyclic_stream::StreamError> {
+        self.origin_for(filter)?;
+        let key = entry::key(path, config);
+        if !filter.matches_entry(key.slice(), headers) {
+            return Ok(false);
+        }
+        let attributes = acyclic_auth::contract::RecordAttributes::try_new(
+            headers
+                .attributes()
+                .iter()
+                .map(|attribute| acyclic_auth::contract::Attribute {
+                    name: attribute.name.to_owned(),
+                    value: attribute.value.to_vec(),
+                })
+                .collect(),
+        )
+        .map_err(|_| acyclic_stream::StreamError::InvalidArgument)?;
+        let resource = crate::session::namespace_resource(volume, path, config)?;
+        match authorization.authorize(
+            &resource,
+            &[key.slice().to_vec()],
+            &attributes,
+            acyclic_auth::authority::PolicyDecision::Allow,
+        ) {
+            Ok(()) => Ok(true),
+            Err(acyclic_stream::StreamError::AccessDenied) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 struct ChangeData {
     volume: VolumeId,
     config: VolumeConfig,
@@ -30,7 +120,7 @@ struct ChangeData {
 /// adapters validate its volume, previous head and candidate before atomically
 /// appending its public change records.
 #[derive(Clone)]
-pub struct PublicationChanges(Arc<ChangeData>, Option<Head>, ObjectId);
+pub struct PublicationChanges(Arc<ChangeData>, Option<Head>, ObjectId, DeltaOrigin);
 
 pub(crate) struct PublicationBasis {
     pub(crate) request: PublishGenerationRequest,
@@ -54,6 +144,7 @@ impl PartialEq for PublicationChanges {
             && self.1 == other.1
             && self.2 == other.2
             && self.0.config == other.0.config
+            && self.3 == other.3
             && self.0.inherited == other.0.inherited
             && self.0.paths.value == other.0.paths.value
     }
@@ -97,7 +188,7 @@ impl PublicationChanges {
     pub(crate) fn compose_base(
         &mut self,
         original: Head,
-        predecessor: Head,
+        (predecessor, root): (Head, ObjectId),
     ) -> Result<(), FsError> {
         if self.1 != Some(original)
             || original.epoch != predecessor.epoch
@@ -106,12 +197,13 @@ impl PublicationChanges {
             return Err(FsError::InvalidDiff);
         }
         self.1 = Some(predecessor);
+        self.3 = DeltaOrigin::Generation(crate::GenerationId::from_root(root));
         Ok(())
     }
     pub(crate) fn composed(
         &self,
         original: Head,
-        expected: Head,
+        expected: (Head, ObjectId),
         root: ObjectId,
     ) -> Result<Self, FsError> {
         if root.kind != crate::ObjectKind::GenerationRoot {
@@ -125,7 +217,7 @@ impl PublicationChanges {
 
     pub(crate) async fn proposed<O: AsyncObjectStore>(
         objects: &O,
-        base: &GenerationRoot,
+        base: (&GenerationRoot, ObjectId),
         candidate: &GenerationRoot,
         request: PublishGenerationRequest,
         config: VolumeConfig,
@@ -137,7 +229,7 @@ impl PublicationChanges {
                 Some(NamespaceView {
                     objects,
                     config,
-                    root: base,
+                    root: base.0,
                 }),
                 Some(NamespaceView {
                     objects,
@@ -145,7 +237,7 @@ impl PublicationChanges {
                     root: candidate,
                 }),
             ],
-            Some(request.expected),
+            Some((request.expected, base.1)),
             request.generation_root,
             config,
             accounting,
@@ -156,6 +248,10 @@ impl PublicationChanges {
 
     pub(crate) fn config(&self) -> VolumeConfig {
         self.0.config
+    }
+    /// Where this delta begins: the base its paths were computed against.
+    pub(crate) fn origin(&self) -> DeltaOrigin {
+        self.3
     }
     pub(crate) fn paths(&self) -> &[ChangedPath] {
         &self.0.paths.value
@@ -185,7 +281,7 @@ impl PublicationChanges {
         Self::sealed(
             creation.volume_id,
             creation.config,
-            paths,
+            (DeltaOrigin::Empty, paths),
             Some(source),
             None,
             creation.initial_generation_root,
@@ -196,7 +292,7 @@ impl PublicationChanges {
     fn sealed(
         volume: VolumeId,
         config: VolumeConfig,
-        paths: Retained<Vec<ChangedPath>>,
+        (origin, paths): (DeltaOrigin, Retained<Vec<ChangedPath>>),
         inherited: Option<VolumeId>,
         base: Option<Head>,
         root: ObjectId,
@@ -216,6 +312,7 @@ impl PublicationChanges {
             }),
             base,
             root,
+            origin,
         ))
     }
 
@@ -226,7 +323,7 @@ impl PublicationChanges {
 
     async fn prepare<O: AsyncObjectStore>(
         endpoints: [Option<NamespaceView<'_, O>>; 2],
-        base: Option<Head>,
+        base: Option<(Head, ObjectId)>,
         root: ObjectId,
         config: VolumeConfig,
         accounting: &mut KernelAccounting<'_>,
@@ -238,13 +335,24 @@ impl PublicationChanges {
             .ok_or(FsError::InvalidDiff)?
             .root
             .volume_id;
+        let origin = base.map_or(DeltaOrigin::Empty, |(_, root)| {
+            DeltaOrigin::Generation(crate::GenerationId::from_root(root))
+        });
         let maximum = u32::try_from(accounting.remaining()?.items_examined).unwrap_or(u32::MAX);
         let paths =
             crate::workspace::complete_changed_paths(endpoints, maximum, accounting, cancellation)
                 .await
                 .map_err(change_error)?;
         let paths = Retained::from_owned(paths, accounting)?;
-        Self::sealed(volume, config, paths, None, base, root, accounting)
+        Self::sealed(
+            volume,
+            config,
+            (origin, paths),
+            None,
+            base.map(|(head, _)| head),
+            root,
+            accounting,
+        )
     }
 
     pub(crate) async fn initial<O: AsyncObjectStore>(
@@ -331,7 +439,7 @@ impl PublicationChanges {
                     root: candidate,
                 }),
             ],
-            Some(head),
+            Some((head, basis.predecessor.unwrap_or(current_root))),
             request.generation_root,
             config,
             accounting,
@@ -344,9 +452,7 @@ impl PublicationChanges {
 }
 
 mod authority;
-#[cfg(any(test, feature = "distributed"))]
 pub(crate) mod entry;
-#[cfg(any(test, feature = "distributed"))]
 pub use entry::PublicationEntry;
 
 fn change_error(error: crate::WorkspaceError) -> FsError {

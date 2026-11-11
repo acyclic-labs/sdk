@@ -6,7 +6,6 @@ use crate::model::{ImageDetail, NativeMediaIntent, NativeMediaPolicy};
 use std::borrow::Cow;
 
 fn allocate(bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
@@ -31,7 +30,7 @@ pub(super) fn native_image(
 }
 
 pub(super) fn omission_text(count: usize, io: Option<&PreparationIo>) -> Result<String> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io
         && let Some(work) = io.original_native_work()
     {
@@ -41,7 +40,6 @@ pub(super) fn omission_text(count: usize, io: Option<&PreparationIo>) -> Result<
         io.absorb_native_custody(custody)?;
         return Ok(text);
     }
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         use std::fmt::Write;
         let digits = if count == 0 {
@@ -75,16 +73,15 @@ pub(super) fn omission_text(count: usize, io: Option<&PreparationIo>) -> Result<
 pub(super) async fn resolve<'a>(
     message: &'a ConversationMessage,
     resolver: &'a dyn ContentResidencyVerifier,
-    maximum: usize,
+    maximum: Option<std::num::NonZeroUsize>,
     io: Option<&'a PreparationIo>,
 ) -> Result<(Cow<'a, [Attachment]>, Option<ContentHold<'a>>)> {
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.check_cancellation()?;
     }
     match &message.attachments {
         ReferencedAttachments::Inline { items } => {
-            if items.len() > maximum {
+            if maximum.is_some_and(|maximum| items.len() > maximum.get()) {
                 return Err(stock_boundary(
                     io,
                     Invalid,
@@ -97,7 +94,7 @@ pub(super) async fn resolve<'a>(
             manifest,
             item_count,
         } => {
-            if *item_count as usize > maximum {
+            if maximum.is_some_and(|maximum| *item_count as usize > maximum.get()) {
                 return Err(stock_boundary(
                     io,
                     Invalid,
@@ -142,7 +139,7 @@ pub(super) fn append(
         }
         Cow::Owned(items) => items,
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let move_files = if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         let missing_hold = || {
             stock_boundary(
@@ -175,7 +172,7 @@ pub(super) fn append(
         _hold = source_hold;
         io.is_none()
     };
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let move_files = {
         _hold = source_hold;
         io.is_none()

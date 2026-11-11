@@ -150,6 +150,35 @@ describe("Git compatibility command codec", () => {
     } })).toThrow(TypeError);
   });
 
+  test("hydrates pinned join generations in prepared and pending actions", () => {
+    for (const reference of [generation, Uint8Array.from([0x86, ...new Uint8Array(112).fill(7)])]) {
+      const action = { Join: {
+        target_tree: exactTreeJson, source_workspace: Array.from(workspace),
+        source_generation: Array.from(reference), rebase: false, tracked_paths: [],
+      } };
+      const prepared = parseGitCompatOutputJson(JSON.stringify({ Prepared: {
+        transition: workspaceUuid, action,
+      } }));
+      const pending = parseGitPendingTransitionJson(JSON.stringify({
+        id: workspaceUuid, action, mutation: "NoOp",
+      }));
+      if (!("Prepared" in prepared) || !("Join" in pending.action) || !("Join" in prepared.Prepared.action)) {
+        throw new Error("pinned join projection changed");
+      }
+      for (const join of [pending.action.Join, prepared.Prepared.action.Join]) {
+        expect(join.source_generation).toBeInstanceOf(Uint8Array);
+        expect(join.source_generation?.subarray()).toEqual(reference);
+      }
+      action.Join.source_generation = Array.from(new Uint8Array(32));
+      expect(() => parseGitCompatOutputJson(JSON.stringify({ Prepared: {
+        transition: workspaceUuid, action,
+      } }))).toThrow(TypeError);
+      expect(() => parseGitPendingTransitionJson(JSON.stringify({
+        id: workspaceUuid, action, mutation: "NoOp",
+      }))).toThrow(TypeError);
+    }
+  });
+
   test("preserves lazy trees, tracked paths, and issued capture proofs", () => {
     const lazyTreeJson = {
       kind: "lazy", id: Array.from(snapshot), workspace_id: Array.from(workspace),

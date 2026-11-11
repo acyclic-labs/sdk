@@ -1,6 +1,6 @@
 //! Local-only APFS native working-set preparation and capture benchmark.
 
-#![cfg(all(target_os = "macos", feature = "native-mount"))]
+#![cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 
 #[path = "support/native_access.rs"]
 mod native_access;
@@ -79,6 +79,7 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
         .await?
         .value;
     let options = CaptureOptions {
+        source_namespace: None,
         expected_root_identity: capture_root_identity(root.path())?,
         source_root: root.path().to_owned(),
         maximum_paths: 128,

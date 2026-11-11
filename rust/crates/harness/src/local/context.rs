@@ -8,10 +8,10 @@ use crate::{
     filesystem::FilesystemContentVerifier,
 };
 
-#[cfg(any(test, feature = "native-execution"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod checkout;
 mod commands;
-#[cfg(any(test, feature = "native-execution"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod environment;
 pub(super) mod skills;
 
@@ -20,14 +20,14 @@ pub(super) mod skills;
 pub(super) struct Binding<'a> {
     pub(super) project: &'a VolumeRef,
     pub(super) scratch: &'a VolumeRef,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) journal: &'a VolumeRef,
     pub(super) reader: &'a dyn ContentResidencyVerifier,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) verifier: AuthorityVerifier,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) scope: &'a Scope,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) workspace: Option<Arc<LocalWorkspace>>,
 }
 
@@ -111,7 +111,15 @@ impl LocalHarness {
         publisher: &'a dyn ContentPublisher,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ContextEpoch>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
-            let tools = self.declared_tools()?;
+            let mut tools = self.declared_tools()?;
+            if agent
+                .profile
+                .as_ref()
+                .and_then(|profile| profile.topology.as_ref())
+                .is_some_and(|topology| !topology.offers_spawn(agent.parent.is_none()))
+            {
+                tools.retain(|tool| tool.name != "spawn");
+            }
             let operation = ContextEpoch::operation(agent.path.as_str(), agent.checkpoint)?;
             ContextEpoch::open(publisher, operation, self.limits, || {
                 self.live_manifest(binding, publisher, tools)
@@ -267,7 +275,7 @@ impl LocalHarness {
     /// a resumed turn binds the hooks it started with. Hooks are behaviour,
     /// not prefix, so they change at the next turn, never waiting for an
     /// epoch.
-    #[cfg(any(test, feature = "hooks"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) async fn turn_hooks(
         &self,
         turn: OperationId,
@@ -339,12 +347,12 @@ impl LocalHarness {
             _ => "policy-controlled approvals",
         };
         // A physical workspace projects no home volume.
-        #[cfg(any(test, feature = "native-execution"))]
+        #[cfg(any(test, not(target_arch = "wasm32")))]
         let home = binding
             .workspace
             .as_ref()
             .is_none_or(|workspace| workspace.mounting == super::WorkspaceMounting::Native);
-        #[cfg(not(any(test, feature = "native-execution")))]
+        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
         let home = true;
         let home = if home {
             " .volumes/home is your private retained home volume and is never merged into the project."
@@ -357,9 +365,9 @@ impl LocalHarness {
             "Shell commands retain the host boundary; native OS confinement is not yet available."
         };
         manifest.conventions.push(format!(
-            "Approval mode: {mode}. {sandbox} A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home}"
+            "Approval mode: {mode}. {sandbox} A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home} .volumes/shared belongs to this session tree and is shared with its descendants; condition edits on the exact version you read."
         ));
-        #[cfg(any(test, feature = "native-execution"))]
+        #[cfg(any(test, not(target_arch = "wasm32")))]
         if let Some(workspace) = &binding.workspace {
             manifest
                 .conventions
@@ -382,7 +390,9 @@ impl LocalHarness {
                 } else {
                     None
                 };
-                let cwd = if selected.is_none() || workspace.mounted.is_none() {
+                let cwd = if !super::open::uses_native_execution(&self.tools)? {
+                    None
+                } else if selected.is_none() || workspace.mounted.is_none() {
                     Some(workspace.path.as_path())
                 } else {
                     selected_mount
@@ -408,7 +418,7 @@ impl LocalHarness {
         publisher: &dyn ContentPublisher,
         work: &mut crate::context::DiscoveryWork,
     ) -> Result<DiscoveredContext> {
-        #[cfg(any(test, feature = "native-execution"))]
+        #[cfg(any(test, not(target_arch = "wasm32")))]
         if self.checkout_context
             && let Some(workspace) = &binding.workspace
         {
@@ -694,7 +704,7 @@ pub(in crate::local) fn copy_name(path: &str) -> String {
 impl LocalHarness {
     /// A checkout's mentioned files, copied onto the root's private volume
     /// below the message's `base` directory: their root.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn checkout_mentions(
         &self,
         base: &str,
@@ -712,7 +722,7 @@ impl LocalHarness {
         }))
     }
 
-    #[cfg(not(any(test, feature = "native-execution")))]
+    #[cfg(not(any(test, not(target_arch = "wasm32"))))]
     async fn checkout_mentions(
         &self,
         _: &str,
@@ -751,7 +761,12 @@ impl crate::context::InstructionReader for VolumeInstructions<'_> {
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>
     {
         Box::pin(async move {
-            if path.len() > self.harness.limits.path_bytes {
+            if self
+                .harness
+                .limits
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+            {
                 return Err(Error::Invalid("instruction path exceeds path bound".into()));
             }
             let Some(instruction) = self.source.instruction(path, revision, maximum).await? else {
@@ -787,7 +802,7 @@ mod tests {
                 &'static dyn ContentPublisher,
             )| local.context_epoch(agent, binding, publisher),
         );
-        #[cfg(feature = "native-execution")]
+        #[cfg(not(target_arch = "wasm32"))]
         let catalog = retained_operation_bytes(
             |(sources, root, view, work): (
                 &'static crate::context::native_skills::NativeSkills,
@@ -796,16 +811,16 @@ mod tests {
                 &'static mut crate::context::DiscoveryWork,
             )| sources.catalog(root, view, work),
         );
-        #[cfg(feature = "native-execution")]
+        #[cfg(not(target_arch = "wasm32"))]
         let users = retained_operation_bytes(
             |(sources, work): (
                 &'static crate::context::native_skills::NativeSkills,
                 &'static mut crate::context::DiscoveryWork,
             )| sources.user_catalog(work),
         );
-        #[cfg(feature = "native-execution")]
+        #[cfg(not(target_arch = "wasm32"))]
         let sizes = [manifest, catalog, users];
-        #[cfg(not(feature = "native-execution"))]
+        #[cfg(target_arch = "wasm32")]
         let sizes = [manifest];
         eprintln!("context retained bytes: {sizes:?}");
         assert!(
@@ -837,7 +852,6 @@ mod tests {
             let operation = ContextEpoch::operation(&agent, checkpoint)?;
             let path = ContextEpoch::path(operation);
             crate::conversation::validate_content_path(&path, &mut None)?;
-            prop_assert!(path.len() <= Limits::default().path_bytes);
             prop_assert_eq!(ContextEpoch::operation(&agent, checkpoint)?, operation);
             if agent != other {
                 prop_assert_ne!(ContextEpoch::operation(&other, checkpoint)?, operation);

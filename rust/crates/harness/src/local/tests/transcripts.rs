@@ -113,6 +113,10 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
     );
     eprintln!("TRANSCRIPTS_IDENTITY_NEGATIVE_CONTROL=PASS (child mapped to parent rejected)");
     for (path, mapping) in paths.into_iter().zip(index) {
+        let original_usage = &usage
+            .iter()
+            .find(|row| row["usage"]["agent_path"] == path.as_str())
+            .expect("each agent has an original model call")["usage"];
         assert_eq!(
             mapping,
             json!({
@@ -120,6 +124,9 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
                 "id": path.id(),
                 "agent_path": path.as_str(),
                 "parent": path.parent().map(|parent| parent.id()),
+                "role": if path.parent().is_none() { "orchestrator" } else { "worker" },
+                "model": format!("{}/{}", original_usage["provider"].as_str().unwrap(), original_usage["model"].as_str().unwrap()),
+                "topology": null,
             })
         );
         let selected = Conversation::open(connection.select(path.clone()).await?);

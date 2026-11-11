@@ -857,7 +857,6 @@ mod tests {
             assert_eq!(reader.connectivity(), Connectivity::Online);
             assert_eq!(reader.next_deadline(), None);
 
-            #[cfg(any(feature = "agents", feature = "wasm"))]
             {
                 use super::super::live::{Error, Source};
                 use std::num::NonZeroU32;
@@ -961,7 +960,11 @@ mod tests {
                     .await
                     .unwrap();
             }
-            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            let mut reader = Reader::new(ReaderPolicy {
+                timeout_ms: Some(100),
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
             for witness in &witnesses {
                 reader.observed_head(witness, provider.head(witness.clone()).await.unwrap(), None);
             }

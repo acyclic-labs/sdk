@@ -233,7 +233,6 @@ impl BlobIndexBuilder {
 }
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "index_tests.rs"]
 mod tests;
 

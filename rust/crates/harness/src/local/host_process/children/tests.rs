@@ -9,7 +9,7 @@ use std::{fs, sync::Arc};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn failed(step: &str, cause: impl std::fmt::Display) -> Box<dyn std::error::Error> {
-    format!("step={step}: {cause}; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests").into()
+    format!("step={step}: {cause}; recovery=cargo test --locked -p acyclic-harness --no-default-features --lib local::host_process::children::tests").into()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -431,7 +431,7 @@ fn completed_write(
 ) -> acyclic_native_runtime::ProcessCommand {
     let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
     command
-        .args(["-c", "printf turn > \"$1\" || { printf 'step=write native fixture: write failed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf '%s' \"$2\"", "fixture"])
+        .args(["-c", "printf turn > \"$1\" || { printf 'step=write native fixture: write failed; recovery=cargo test --locked -p acyclic-harness --no-default-features --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf '%s' \"$2\"", "fixture"])
         .arg(file)
         .arg(events)
         .current_dir(view)
@@ -514,7 +514,7 @@ fn shell_pid(running: &mut Running) -> Result<u32> {
 
 fn native_fixture(view: &Path, events: &str, exit: &str) -> acyclic_native_runtime::ProcessCommand {
     let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
-    command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release || { printf 'step=release native fixture: stdin closed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf captured > partial.txt; printf '%s' \"$1\"; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
+    command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release || { printf 'step=release native fixture: stdin closed; recovery=cargo test --locked -p acyclic-harness --no-default-features --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf captured > partial.txt; printf '%s' \"$1\"; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
         .arg(events).arg(exit).current_dir(view).stdin(ProcessStdio::piped()).stdout(ProcessStdio::piped()).stderr(ProcessStdio::piped());
     command
 }

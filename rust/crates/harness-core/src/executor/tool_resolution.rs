@@ -139,6 +139,7 @@ impl StockExecution<'_> {
         reason: ToolFailureKind,
         cause: ToolFailureCause,
     ) -> Result<crate::model::ToolResultContent> {
+        let _writer = self.journal_writes.lock().await;
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;
@@ -221,7 +222,7 @@ impl StockExecution<'_> {
             prior_messages,
             hook_context,
         );
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if self.native_work().is_some() {
             return crate::obs::traced_future(span, call)
                 .await

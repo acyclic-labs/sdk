@@ -2,7 +2,7 @@ use super::*;
 
 mod identity;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native_growth;
 
 fn lookup_executor() -> Result<StockExecutor> {
@@ -41,6 +41,7 @@ async fn journal_lookups_do_not_replay_prefixes_from_one_to_a_thousand_turns() -
             event: ExecutionEvent::ModelStopped {
                 step,
                 purpose: ModelPurpose::Response,
+                worker_paused: false,
             },
         });
         let before = journal.3.load(Ordering::SeqCst);
@@ -135,6 +136,7 @@ async fn index_checks_new_pages_and_does_not_share_authority_or_operation() -> R
         event: ExecutionEvent::ModelStopped {
             step: 0,
             purpose: ModelPurpose::Response,
+            worker_paused: false,
         },
     };
     journal
@@ -220,6 +222,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
             purpose: ModelPurpose::Response,
             request_digest: [1; 32],
             request: file.clone(),
+            context: None,
         },
         ContextPrepared {
             step: 1,
@@ -236,6 +239,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
             purpose: ModelPurpose::Response,
             request_digest: [2; 32],
             request: file.clone(),
+            context: None,
         },
         Model {
             step: 1,
@@ -246,12 +250,14 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
         ModelStopped {
             step: 1,
             purpose: ModelPurpose::Response,
+            worker_paused: false,
         },
         ModelStarted {
             step: 1,
             purpose: ModelPurpose::Summary,
             request_digest: [3; 32],
             request: file.clone(),
+            context: None,
         },
         Model {
             step: 1,
@@ -262,6 +268,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
         ModelStopped {
             step: 1,
             purpose: ModelPurpose::Summary,
+            worker_paused: false,
         },
         ToolStarted {
             step: 1,
@@ -347,7 +354,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;

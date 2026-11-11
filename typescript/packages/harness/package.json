@@ -63,7 +63,8 @@
   },
   "dependencies": {
     "@acyclic-labs/machines": "0.2.0",
-    "@acyclic-labs/objects": "0.2.0"
+    "@acyclic-labs/objects": "0.2.0",
+    "@acyclic-labs/actors": "0.2.0"
   },
   "peerDependencies": {
     "react": "^19.0.0"

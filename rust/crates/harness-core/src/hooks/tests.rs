@@ -4,6 +4,7 @@ use proptest::prelude::*;
 use serde_json::json;
 
 mod failures;
+mod output_credit;
 
 #[tokio::test]
 async fn early_stdin_closure_preserves_a_deny_with_a_large_tool_payload() -> Result<()> {
@@ -26,7 +27,7 @@ async fn early_stdin_closure_preserves_a_deny_with_a_large_tool_payload() -> Res
                 command: command.into(),
                 shell: Some(shell.into()),
             },
-            timeout_ms: 5_000,
+            timeout_ms: Some(5_000),
             failure: HookFailure::Report,
         }],
     }])?;
@@ -247,7 +248,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
             argv: vec!["--exact".into(), "hooks::tests::native_hooks_default_user_guards_and_project_trust_use_one_shared_script".into(),
                 "--nocapture".into(), "--skip".into(), format!("hook-child:{address}")],
         },
-        timeout_ms: 60_000,
+        timeout_ms: None,
         failure: HookFailure::Report,
     };
     let root = std::env::current_dir().map_err(process_error)?;
@@ -255,7 +256,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
         Arc::new(hook),
         (root.clone(), root, vec![]),
         Arc::new(|| Ok(())),
-        65_536,
+        Some(65_536),
         None,
         None,
     ));
@@ -432,7 +433,7 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
                     executable: "guard".into(),
                     argv: vec!["--check".into()],
                 },
-                timeout_ms: 2_000,
+                timeout_ms: Some(2_000),
                 failure: HookFailure::Block,
             },
             HookSpec {
@@ -440,7 +441,7 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
                     command: "format".into(),
                     shell: Some("sh".into()),
                 },
-                timeout_ms: 60_000,
+                timeout_ms: None,
                 failure: HookFailure::Report,
             },
         ],
@@ -464,7 +465,7 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
         );
     }
     let mut invalid = rule.clone();
-    invalid.hooks[0].timeout_ms = 0;
+    invalid.hooks[0].timeout_ms = Some(0);
     assert!(typed.add_rules([rule, invalid]).is_err());
     assert_eq!(
         typed
@@ -1206,7 +1207,7 @@ fn aggregate_failure_preserves_an_already_decoded_denial() -> Result<()> {
                         executable: "deny".into(),
                         argv: vec![],
                     },
-                    timeout_ms: 1000,
+                    timeout_ms: Some(1000),
                     failure: HookFailure::Report,
                 },
                 HookSpec {
@@ -1214,7 +1215,7 @@ fn aggregate_failure_preserves_an_already_decoded_denial() -> Result<()> {
                         executable: "expand".into(),
                         argv: vec![],
                     },
-                    timeout_ms: 1000,
+                    timeout_ms: Some(1000),
                     failure: HookFailure::Report,
                 },
             ],
@@ -1232,7 +1233,10 @@ fn aggregate_failure_preserves_an_already_decoded_denial() -> Result<()> {
                         }
                         _ => vec![0; 100],
                     };
-                    assert!(stdout.len() <= quota, "fixture exceeds capture quota");
+                    assert!(
+                        quota.is_some_and(|quota| stdout.len() <= quota),
+                        "fixture exceeds capture quota"
+                    );
                     std::future::ready(Ok((Some(0), stdout, vec![])))
                 },
             )
@@ -1268,7 +1272,7 @@ fn runner_folds_deny_after_encoded_overflow_in_config_order() -> Result<()> {
                         executable: command.into(),
                         argv: vec![],
                     },
-                    timeout_ms: 1000,
+                    timeout_ms: Some(1000),
                     failure: HookFailure::Report,
                 })
                 .collect(),
@@ -1280,7 +1284,7 @@ fn runner_folds_deny_after_encoded_overflow_in_config_order() -> Result<()> {
                 let stdout = if matches!(&hook.run, HookRun::Executable { executable, .. } if executable == "expand") {
                     vec![0;1000]
                 } else { br#"{"continue":false,"stopReason":"deny"}"#.to_vec() };
-                assert!(stdout.len() <= quota);
+                assert!(quota.is_some_and(|quota| stdout.len() <= quota));
                 std::future::ready(Ok((Some(0),stdout,vec![])))
             }).await?;
         assert_eq!(calls, 2);

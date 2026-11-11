@@ -153,9 +153,7 @@ fn authored_prefix(
     hasher.update(b"harness:model-prefix:ordered:v1");
     for message in &messages {
         hasher.update(&crate::executor::json::canonical_json_digest(
-            message,
-            u64::MAX,
-            &mut None,
+            message, None, &mut None,
         )?);
     }
     let segment = json!({
@@ -244,7 +242,7 @@ proptest! {
             prop_assert_ne!(pointer, envelope["value"]["sentinel"].as_str().unwrap().as_ptr());
         }
         let expected = crate::executor::validate_json_schema_value(&schema, &envelope, "model tool result", &mut None);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let admitted = expected.is_ok();
         let actual = request.validate(Limits::default(), None);
         prop_assert_eq!(actual.map_err(|e| e.code()), expected.map_err(|e| e.code()));
@@ -252,7 +250,7 @@ proptest! {
         let ToolResultContent::Json { value } = content(&request) else { unreachable!() };
         prop_assert_eq!(value["sentinel"].as_str().filter(|s| !s.is_empty()).map(str::as_ptr), owned_pointer);
         prop_assert_eq!(crate::contract::canonical_json_bytes(&request).unwrap(), crate::contract::canonical_json_bytes(&original).unwrap());
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
@@ -342,7 +340,7 @@ proptest! {
         let no_payload_copy = |work: acyclic_test_support::AllocationInfo| work.bytes_total < length as u64;
         prop_assert!(no_payload_copy(actual), "request copied its JSON payload: {actual:?}");
         prop_assert!(!no_payload_copy(old), "former conversion escaped detection: {old:?}");
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(

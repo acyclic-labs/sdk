@@ -6,18 +6,9 @@ const fn retryable_status(status: u16) -> bool {
     matches!(status, 408 | 429 | 500..=599)
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Admission {
-    Unknown,
-    Refused(u16),
-    Accepted,
-}
-
-/// One HTTP operation's recovery owner. Generation becomes irreversible at
-/// successful headers; a read-only count can recover until its body validates.
+/// One HTTP operation's recovery owner. Only permanent refusals end recovery.
 pub(crate) struct Attempt {
-    admission: Admission,
-    count: bool,
+    status: Option<u16>,
     redelivery: Redelivery,
     #[cfg(not(target_arch = "wasm32"))]
     refreshed: bool,
@@ -25,17 +16,16 @@ pub(crate) struct Attempt {
 
 impl Attempt {
     pub(crate) fn generation(spec: RetrySpec, dispatch: ModelDispatch) -> Self {
-        Self::new(Redelivery::new(spec, dispatch), false)
+        Self::new(Redelivery::new(spec, dispatch))
     }
 
     pub(crate) fn count(spec: RetrySpec, request_digest: [u8; 32]) -> Self {
-        Self::new(Redelivery::for_request(spec, request_digest), true)
+        Self::new(Redelivery::for_request(spec, request_digest))
     }
 
-    fn new(redelivery: Redelivery, count: bool) -> Self {
+    fn new(redelivery: Redelivery) -> Self {
         Self {
-            admission: Admission::Unknown,
-            count,
+            status: None,
             redelivery,
             #[cfg(not(target_arch = "wasm32"))]
             refreshed: false,
@@ -43,15 +33,8 @@ impl Attempt {
     }
 
     /// Record headers before reading a refusal or a successful count body.
-    /// A later failure cannot undo generation's acceptance fence.
     pub(crate) fn observe(&mut self, status: u16) {
-        if self.admission != Admission::Accepted {
-            self.admission = if (200..300).contains(&status) {
-                Admission::Accepted
-            } else {
-                Admission::Refused(status)
-            };
-        }
+        self.status = Some(status);
     }
 
     pub(crate) fn next(
@@ -59,56 +42,41 @@ impl Attempt {
         error: &Error,
         retry_after: Option<Duration>,
     ) -> Option<Duration> {
-        let retryable = match self.admission {
-            Admission::Unknown => {
-                self.count
-                    || matches!(
-                        error,
-                        Error::ModelUnavailable {
-                            failure: acyclic_harness_core::ModelTransportFailure::Connect,
-                            ..
-                        }
-                    )
-            }
-            Admission::Refused(status) => retryable_status(status),
-            Admission::Accepted => self.count,
-        };
-        if !retryable {
+        if self
+            .status
+            .is_some_and(|status| !(200..300).contains(&status) && !retryable_status(status))
+        {
             return None;
         }
         let wait = self.redelivery.next(error, retry_after);
         if wait.is_some() {
-            self.admission = Admission::Unknown;
+            self.status = None;
         }
         wait
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn refresh(&mut self, error: &Error) -> bool {
-        if self.count
-            || error.code() != ErrorCode::Unauthorized
-            || self.admission != Admission::Refused(401)
-            || self.refreshed
-        {
+        if error.code() != ErrorCode::Unauthorized || self.status != Some(401) || self.refreshed {
             return false;
         }
         self.refreshed = true;
-        self.admission = Admission::Unknown;
+        self.status = None;
         true
     }
 }
 
-/// One exchange's redelivery schedule. Its owner supplies the operation's
-/// completion fence; generation additionally requires refusal or connection failure.
+/// One operation's uncapped backoff schedule. Its owner retains permanent HTTP status.
 struct Redelivery {
     spec: RetrySpec,
     /// Jitter seed: concurrent exchanges spread out while one exchange's schedule replays.
     seed: [u8; 32],
+    // Saturation bounds the backoff exponent, never the number of waits.
     attempt: u8,
 }
 
 impl Redelivery {
-    /// The budget of one model dispatch.
+    /// The schedule of one model dispatch.
     fn new(spec: RetrySpec, dispatch: ModelDispatch) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"harness-providers:redelivery:dispatch:v1");
@@ -128,12 +96,10 @@ impl Redelivery {
 
     /// The wait before redelivering after `error`, or `None` when `error` is final.
     fn next(&mut self, error: &Error, retry_after: Option<Duration>) -> Option<Duration> {
-        if error.code() != ErrorCode::Unavailable || self.attempt >= self.spec.attempts {
+        if error.code() != ErrorCode::Unavailable {
             return None;
         }
-        let maximum = Duration::from_millis(self.spec.max_delay_ms.into());
         let wait = match retry_after {
-            Some(wait) if wait > maximum => return None,
             Some(wait) => wait,
             None => {
                 let ceiling = u64::from(self.spec.base_delay_ms)
@@ -151,20 +117,55 @@ impl Redelivery {
                 Duration::from_millis(half + sample % (ceiling - half + 1))
             }
         };
-        self.attempt += 1;
+        self.attempt = self.attempt.saturating_add(1);
         Some(wait)
     }
 }
 
-pub(crate) use acyclic_harness_core::http::retry_after;
+/// Observe the original recovery timer; it alone determines when redelivery resumes.
+pub(crate) async fn wait(
+    transport: &dyn crate::HttpTransport,
+    error: Error,
+    duration: Duration,
+    work: acyclic_fs::NativeWork<'_>,
+) -> acyclic_harness_core::Result<()> {
+    let primitive = match &error {
+        Error::ModelUnavailable {
+            failure: acyclic_harness_core::ModelTransportFailure::Status(429),
+            ..
+        } => "provider rate limit",
+        _ => "provider transport",
+    };
+    drop(error);
+    let timer = crate::deadline::timer(transport, duration, work)?;
+    let until = u128::from(transport.unix_ms()?) * 1_000_000 + duration.as_nanos();
+    let (seconds, nanos) = (until / 1_000_000_000, until % 1_000_000_000);
+    tracing::info!(
+        target: "acyclic.provider.wait",
+        until_unix_ns = %until,
+        wait_ns = %duration.as_nanos(),
+        reason = primitive,
+        "waiting for {primitive} until {seconds}.{nanos:09} (Unix seconds)"
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    let waiting = acyclic_native_runtime::obs::waiting(
+        primitive,
+        format_args!("until {seconds}.{nanos:09} (Unix seconds)"),
+        timer,
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    return waiting.await;
+    #[cfg(target_arch = "wasm32")]
+    timer.await
+}
+
 #[cfg(any(test, feature = "fuzzing"))]
 pub(crate) use acyclic_harness_core::http::retry_after_at;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_harness_core::OperationId;
-
+    use acyclic_harness_core::{ModelTransportFailure, OperationId};
     fn dispatch() -> ModelDispatch {
         ModelDispatch {
             operation_id: OperationId::from_bytes([3; 16]),
@@ -172,178 +173,65 @@ mod tests {
             request_digest: [0; 32],
         }
     }
-    fn unavailable() -> Error {
+    fn unavailable(failure: ModelTransportFailure) -> Error {
         Error::ModelUnavailable {
-            failure: acyclic_harness_core::ModelTransportFailure::Status(503),
-            excerpt: String::new(),
-        }
-    }
-
-    #[test]
-    fn redelivery_is_bounded_jittered_and_honors_retry_after() {
-        let mut retry = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-        let waits: Vec<_> = (0..4).map(|_| retry.next(&unavailable(), None)).collect();
-        assert_eq!(waits.last(), Some(&None));
-        for (attempt, wait) in waits.iter().take(3).enumerate() {
-            let ceiling = Duration::from_millis(500 << attempt);
-            assert!(wait.is_some_and(|wait| wait >= ceiling / 2 && wait <= ceiling));
-        }
-        // The schedule replays exactly for the same dispatch.
-        let mut again = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-        assert_eq!(
-            again.next(&unavailable(), None),
-            waits.first().copied().flatten()
-        );
-        let mut hinted = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-        assert_eq!(
-            hinted.next(&unavailable(), Some(Duration::from_secs(2))),
-            Some(Duration::from_secs(2))
-        );
-        // Negative controls: other classes, an over-long hint, a zero budget.
-        let mut fresh = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-        assert_eq!(fresh.next(&Error::Storage("lost".into()), None), None);
-        assert_eq!(fresh.next(&Error::Invalid("bad".into()), None), None);
-        let transport = |failure| Error::ModelUnavailable {
             failure,
             excerpt: String::new(),
-        };
-        // TLS failures meet the same peer again; every other transport class is redelivered.
-        assert_eq!(
-            fresh.next(
-                &transport(acyclic_harness_core::ModelTransportFailure::Tls),
-                None
-            ),
-            None
-        );
+        }
+    }
+    #[test]
+    fn every_transient_class_waits_without_a_cap_and_permanent_errors_do_not() {
         for failure in [
-            acyclic_harness_core::ModelTransportFailure::Connect,
-            acyclic_harness_core::ModelTransportFailure::Timeout,
-            acyclic_harness_core::ModelTransportFailure::Interrupted,
+            ModelTransportFailure::Status(408),
+            ModelTransportFailure::Status(429),
+            ModelTransportFailure::Status(503),
+            ModelTransportFailure::Connect,
+            ModelTransportFailure::Interrupted,
+            ModelTransportFailure::Timeout,
+            ModelTransportFailure::Tls,
         ] {
-            let mut each = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-            assert!(each.next(&transport(failure), None).is_some());
+            let mut owner = Attempt::generation(RetrySpec::DEFAULT, dispatch());
+            for index in 0..300 {
+                if let ModelTransportFailure::Status(status) = failure {
+                    owner.observe(status);
+                }
+                let hint = (index == 299).then_some(Duration::from_secs(60));
+                let wait = owner
+                    .next(&unavailable(failure), hint)
+                    .expect("transient failure must wait");
+                if let Some(hint) = hint {
+                    assert_eq!(wait, hint);
+                } else {
+                    assert!(!wait.is_zero());
+                    assert!(wait <= Duration::from_secs(8));
+                }
+            }
+            for error in [
+                Error::Unauthorized("auth".into()),
+                Error::Invalid("request".into()),
+                Error::Storage("storage".into()),
+            ] {
+                assert!(owner.next(&error, None).is_none());
+            }
         }
+        // A final HTTP refusal stays final even if reading its diagnostic is interrupted.
+        let mut owner = Attempt::generation(RetrySpec::DEFAULT, dispatch());
+        owner.observe(400);
         assert_eq!(
-            fresh.next(&unavailable(), Some(Duration::from_secs(9))),
+            owner.next(&unavailable(ModelTransportFailure::Interrupted), None),
             None
         );
-        let mut none = Redelivery::new(
-            RetrySpec {
-                attempts: 0,
-                ..RetrySpec::DEFAULT
-            },
-            dispatch(),
-        );
-        assert_eq!(none.next(&unavailable(), None), None);
-        assert_eq!(retry_after(" 7 "), Some(Duration::from_secs(7)));
-        assert_eq!(retry_after("not a date"), None);
     }
-
     proptest::proptest! {
-        #![proptest_config(proptest::test_runner::Config::with_cases(128))]
         #[test]
-        fn retry_after_forms_round_trip_and_obey_the_same_budget(
-            at in 0..4_000_000_000u64, now in 0..4_000_000_000u64,
-            delta in proptest::prelude::any::<u64>(),
-            overflow_digits in "[0-9]{20,80}",
-        ) {
-            let clock = std::time::UNIX_EPOCH + Duration::from_secs(now);
-            let date = httpdate::fmt_http_date(std::time::UNIX_EPOCH + Duration::from_secs(at));
-            let wait = retry_after_at(&date, || clock).unwrap();
-            proptest::prop_assert_eq!(wait, Duration::from_secs(at.saturating_sub(now)));
-            proptest::prop_assert_eq!(retry_after_at(&delta.to_string(), || clock), Some(Duration::from_secs(delta)));
-            let mut retry = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-            proptest::prop_assert_eq!(retry.next(&unavailable(), Some(wait)),
-                (wait <= Duration::from_millis(RetrySpec::DEFAULT.max_delay_ms.into())).then_some(wait));
-            // Negative control: the former delta-only parser ignores every date hint.
-            proptest::prop_assert_ne!(date.parse::<u64>().ok().map(Duration::from_secs), Some(wait));
-            let overflow = format!("1{overflow_digits}");
-            let wait = retry_after_at(&overflow, || clock);
-            proptest::prop_assert_eq!(wait, Some(Duration::from_secs(u64::MAX)));
-            let mut retry = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-            proptest::prop_assert_eq!(retry.next(&unavailable(), wait), None);
-            // Negative control: discarding numeric overflow would permit an early retry.
-            let mut former = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-            proptest::prop_assert!(former.next(&unavailable(), overflow.parse::<u64>().ok().map(Duration::from_secs)).is_some());
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    proptest::proptest! {
-        #![proptest_config(proptest::test_runner::Config::with_cases(64))]
-        #[test]
-        fn operation_recovery_preserves_completion_fences_and_budget(
-            budget in 0..5u8,
-            trace in proptest::collection::vec((proptest::bool::ANY, proptest::bool::ANY,
-                proptest::sample::select(vec![400u16, 401, 403, 408, 413, 429, 503])), 0..64),
-        ) {
-            let spec = RetrySpec { attempts: budget, ..RetrySpec::DEFAULT };
-            let mut attempt = Attempt::generation(spec, dispatch());
-            let (mut accepted, mut spent) = (false, false);
-            for failure in [acyclic_harness_core::ModelTransportFailure::Interrupted,
-                acyclic_harness_core::ModelTransportFailure::Timeout] {
-                let error = crate::transport_failure(true, failure, "fixture");
-                proptest::prop_assert_eq!(attempt.next(&error, None), None);
-            }
-            for &(admitted, unauthorized, status) in &trace {
-                accepted |= admitted;
-                if admitted { attempt.observe(200); }
-                if unauthorized { attempt.observe(status); }
-                let error = if unauthorized { Error::Unauthorized("fixture".into()) } else { Error::Invalid("fixture".into()) };
-                let expected = unauthorized && status == 401 && !accepted && !spent;
-                proptest::prop_assert_eq!(attempt.refresh(&error), expected);
-                let interruption = crate::transport_failure(true,
-                    acyclic_harness_core::ModelTransportFailure::Interrupted, "fixture");
-                if accepted { proptest::prop_assert_eq!(attempt.next(&interruption, None), None); }
-                spent |= expected;
-            }
-            // Each path uses one unchanged budget across connect failures,
-            // refusal bodies, and (for counts only) accepted-body failures.
-            // The same trace can grow without any operation growing its state.
-            for count in [false, true] {
-                let (mut spent, mut observed) = (0u8, None);
-                let mut owner = if count { Attempt::count(spec, [0; 32]) }
-                    else { Attempt::generation(spec, dispatch()) };
-                for (success, headers, status) in trace.iter().copied()
-                    .chain(std::iter::repeat_n((true, true, 200), usize::from(budget) + 1))
-                {
-                    let failure = if success {
-                        acyclic_harness_core::ModelTransportFailure::Interrupted
-                    } else {
-                        acyclic_harness_core::ModelTransportFailure::Connect
-                    };
-                    let status = if success { 200 } else { status };
-                    if headers {
-                        owner.observe(status);
-                        if observed.is_none_or(|prior| !(200..300).contains(&prior)) {
-                            observed = Some(status);
-                        }
-                    }
-                    let accepted = observed.is_some_and(|status| (200..300).contains(&status));
-                    let error = crate::transport_failure(true, failure, "fixture");
-                    let retryable = if accepted { count } else {
-                        observed.map_or(count || !success, |status| matches!(status, 408 | 429 | 500..=599))
-                    };
-                    let expected = retryable && spent < budget;
-                    let mut actual = None;
-                    let allocations = acyclic_test_support::measure(|| { actual = owner.next(&error, None); });
-                    proptest::prop_assert_eq!(allocations.count_total, 0);
-                    proptest::prop_assert_eq!(actual.is_some(), expected);
-                    if expected { spent += 1; observed = None; }
-                    if accepted && !count {
-                        // Negative control: the old schedule alone has no acceptance fence.
-                        let mut unfenced = Redelivery::new(spec, dispatch());
-                        proptest::prop_assert_eq!(unfenced.next(&error, None).is_some(), budget > 0);
-                    }
-                }
-                if count && budget > 0 {
-                    let error = crate::transport_failure(true,
-                        acyclic_harness_core::ModelTransportFailure::Interrupted, "fixture");
-                    proptest::prop_assert_eq!(owner.next(&error, None), None);
-                    // Negative control: reconstructing the owner replenishes a spent budget.
-                    let mut replenished = Attempt::count(spec, [0; 32]);
-                    proptest::prop_assert!(replenished.next(&error, None).is_some());
-                }
+        fn retry_after_forms_round_trip_without_shortening_provider_waits(at in 0..4_000_000_000u64,now in 0..4_000_000_000u64,delta in proptest::prelude::any::<u64>()) {
+            let clock=std::time::UNIX_EPOCH+Duration::from_secs(now);
+            let date=httpdate::fmt_http_date(std::time::UNIX_EPOCH+Duration::from_secs(at));
+            for (value,expected) in [(date,Duration::from_secs(at.saturating_sub(now))),(delta.to_string(),Duration::from_secs(delta))] {
+                let wait=retry_after_at(&value,||clock).unwrap();
+                proptest::prop_assert_eq!(wait,expected);
+                let mut owner=Attempt::generation(RetrySpec::DEFAULT,dispatch());
+                proptest::prop_assert_eq!(owner.next(&unavailable(ModelTransportFailure::Status(503)),Some(wait)),Some(expected));
             }
         }
     }

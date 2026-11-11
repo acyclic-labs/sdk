@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProcessError<M = String> {
-    /// Executable was absent.
+    /// A native resource required for execution was absent.
     NotFound {
         /// Observed process exit code, if any.
         exit_code: Option<i32>,

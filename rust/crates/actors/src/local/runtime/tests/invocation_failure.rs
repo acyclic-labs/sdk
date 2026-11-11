@@ -405,6 +405,7 @@ impl Handler for HidesFailure {
                     alarm: AlarmChange::Keep,
                     effects: Vec::new(),
                     participant: None,
+                    subscriptions: Vec::new(),
                 }),
             }
         })

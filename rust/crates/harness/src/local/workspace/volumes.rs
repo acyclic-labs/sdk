@@ -10,7 +10,7 @@ pub(in crate::local) const INCARNATION_PATH: &str = ".volumes/.incarnation";
 mod exclude;
 pub(super) mod parents;
 #[cfg(test)]
-#[cfg(all(any(test, feature = "native-execution"), not(loom)))]
+#[cfg(all(any(test, not(target_arch = "wasm32")), not(loom)))]
 mod publication_tests;
 #[cfg(test)]
 #[cfg(all(target_os = "linux", not(loom)))]
@@ -18,10 +18,9 @@ mod recovery_tests;
 pub(super) mod seed;
 
 #[cfg(target_os = "linux")]
-pub(super) fn recover_after_crash(root: &acyclic_fs::HeldRoot) -> Result<()> {
-    let relative = Path::new(HOME_PATH);
+pub(super) fn recover_after_crash(root: &acyclic_fs::HeldRoot, relative: &Path) -> Result<()> {
     let (Some(parent), Some(leaf)) = (relative.parent(), relative.file_name()) else {
-        return Err(Error::Invalid("home mount has no parent".into()));
+        return Err(Error::Invalid("volume mount has no parent".into()));
     };
     let parent = held_directories(root, parent)?;
     if recover_binding_alias(root, &root.path().join(relative))? {
@@ -116,14 +115,24 @@ pub(super) async fn attach(
     store: &acyclic_fs::LocalCoreStateStore,
     root: &acyclic_fs::HeldRoot,
     mounts: &mut Mounts,
-    authority: &crate::filesystem::NativeMountAuthority,
+    authority: Option<&crate::filesystem::NativeMountAuthority>,
     admission: &Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
+    native: bool,
 ) -> Result<()> {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     for (relative, mount) in mounts.mounts_mut() {
         if relative.is_empty() {
+            continue;
+        }
+        if let Some(source) = &mount.view.source {
+            mount.native_root = source
+                .options
+                .as_ref()
+                .map_or(crate::workspace::NativeRoot::Logical, |_| {
+                    crate::workspace::NativeRoot::Path(source.destination.clone())
+                });
             continue;
         }
         let source = filesystem
@@ -139,23 +148,39 @@ pub(super) async fn attach(
         // Bind the namespace before the initial source/watch cut. Creating its
         // parent during the first shell command would author a project change
         // even when that command only reads. The projection itself stays absent.
-        if let Some(parent) = Path::new(relative).parent() {
+        if native && let Some(parent) = Path::new(relative).parent() {
             held_directories(root, parent)?;
         }
-        let options = authority
-            .mount_options(
-                &source,
-                Some(&mount.view.volume),
-                !mount.mode.read_only(),
-                &work,
+        let options = if native {
+            Some(
+                authority
+                    .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
+                    .mount_options(
+                        &source,
+                        Some(&mount.view.volume),
+                        !mount.mode.read_only(),
+                        &work,
+                    )
+                    .await?
+                    .publication(MountPublication::Manual),
             )
-            .await?
-            .publication(MountPublication::Manual);
+        } else {
+            None
+        };
         #[cfg(windows)]
-        recover_volume_after_crash(root.path(), Path::new(relative), source.id().volume_id())?;
+        if native {
+            recover_volume_after_crash(root.path(), Path::new(relative), source.id().volume_id())?;
+        }
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source, &work, &cancellation)
             .await?;
+        // A native binding declares the root that execution projects; a
+        // logical-only binding must never acquire an OS path implicitly.
+        mount.native_root = options
+            .as_ref()
+            .map_or(crate::workspace::NativeRoot::Logical, |_| {
+                crate::workspace::NativeRoot::Path(destination.clone())
+            });
         mount.view.source = Some(Arc::new(MountedVolume {
             workspace: crate::tools::git::OwnedView::Volume(source),
             destination,
@@ -291,7 +316,9 @@ pub(in crate::local) async fn native_scope<T>(
     };
     let mut projected = Ok(());
     for (relative, mount) in ordered_mounts(mounts)? {
-        if let Some(source) = &mount.view.source {
+        if let Some(source) = &mount.view.source
+            && source.options.is_some()
+        {
             // The projection's counted claims retain the mount across every
             // overlapping command. Its native owner serializes publication;
             // a command lifetime must not exclude other admitted commands.
@@ -452,6 +479,10 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts, bindings: &Path) -> Result<
             .source
             .as_ref()
             .ok_or_else(|| Error::NotFound("volume mount is not bound".into()))?;
+        if source.options.is_none() {
+            mount.native_root = crate::workspace::NativeRoot::Logical;
+            continue;
+        }
         let target = source.destination.as_path();
         let relative = Path::new(relative);
         if let Some(parent) = relative.parent() {
@@ -466,7 +497,7 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts, bindings: &Path) -> Result<
         let previous =
             alias_target(&path)?.filter(|linked| names_binding(bindings, linked, relative));
         bind_alias(&path, target, previous.as_deref())?;
-        mount.native_root = Some(target.to_path_buf());
+        mount.native_root = crate::workspace::NativeRoot::Path(target.to_path_buf());
     }
     Ok(())
 }
@@ -622,14 +653,18 @@ fn link_directory(target: &Path, path: &Path) -> std::io::Result<()> {
 
 /// Reserve SDK state in the original checkout once, before the source cut.
 /// Physical projections live under the shared root; aliases remain reserved.
-pub(super) fn exclude_state(root: &acyclic_fs::HeldRoot) -> Result<()> {
+pub(super) fn exclude_state<'a>(
+    root: &acyclic_fs::HeldRoot,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let paths: Vec<_> = names
+        .into_iter()
+        .map(|name| Path::new(".volumes").join(name))
+        .chain([super::HOST_VIEW_ROOT.into(), ".acyclic-sdk".into()])
+        .collect();
     exclude::exclude_mount_paths(
         root,
-        &[
-            Path::new(super::HOST_VIEW_ROOT),
-            Path::new(HOME_PATH),
-            Path::new(".acyclic-sdk"),
-        ],
+        &paths.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
     )
 }
 /// Each binding supplies its durable logical volume identity. The destination

@@ -109,7 +109,6 @@ pub(super) fn check_preview(
         return Ok(());
     };
     let seed = crate::executor::json::JsonObject(std::marker::PhantomData::<SpillPreview<'_>>);
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let decoded = io.decode_seed(
             seed,
@@ -134,8 +133,8 @@ pub(super) fn check_preview(
         seed,
         text.as_bytes(),
         crate::executor::json::JsonBounds {
-            maximum_bytes: text.len() as u64,
-            maximum_items: u64::MAX,
+            maximum_bytes: Some(text.len() as u64),
+            maximum_items: None,
             maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
         },
         None,
@@ -195,10 +194,8 @@ fn with_media<R>(
     io: Option<&crate::executor::PreparationIo>,
     emit: impl FnOnce(&MediaView<'_>) -> Result<R>,
 ) -> Result<R> {
-    #[cfg(feature = "filesystem")]
     let _hold;
     let bytes;
-    #[cfg(feature = "filesystem")]
     {
         bytes = if let Some(io) = io {
             io.encode(view, io.remaining()?.bytes_encoded, false)?
@@ -208,11 +205,6 @@ fn with_media<R>(
                 .into()
         };
         _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
-    }
-    #[cfg(not(feature = "filesystem"))]
-    {
-        let _ = io;
-        bytes = serde_json::to_vec(view).map_err(|error| Error::Invalid(error.to_string()))?;
     }
     let preview = std::str::from_utf8(&bytes)
         .map_err(|_| Error::tool_rejected("output preview encoding is not UTF-8"))?;
@@ -228,11 +220,9 @@ pub(crate) async fn spill(
     operation: OperationId,
     maximum: u64,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(Value, crate::NativeCustody)> {
-    #[cfg(feature = "filesystem")]
+) -> Result<(Value, acyclic_fs::NativeCustody)> {
     let _bytes_hold;
     let bytes;
-    #[cfg(feature = "filesystem")]
     let encoded = if let Some(io) = io {
         bytes = io.encode(projection, io.remaining()?.bytes_encoded, false)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
@@ -244,35 +234,27 @@ pub(crate) async fn spill(
         _bytes_hold = None;
         bytes.as_ref()
     };
-    #[cfg(not(feature = "filesystem"))]
-    let encoded = {
-        bytes =
-            serde_json::to_vec(projection).map_err(|error| Error::Invalid(error.to_string()))?;
-        bytes.as_slice()
-    };
-    #[cfg(feature = "filesystem")]
     let _path_hold;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let _file_hold;
     let (file, path, retained) = context.spill_tool_output(operation, encoded, io).await?;
-    #[cfg(feature = "filesystem")]
     {
         _path_hold = io
             .map(|io| io.guard_owned(path.capacity() as u64))
             .transpose()?;
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         _file_hold = io
             .filter(|io| io.original_native_work().is_some())
             .map(|io| io.take_native_custody(retained))
             .transpose()?;
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let _ = retained;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let work = io.and_then(crate::executor::PreparationIo::original_native_work);
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let work = None;
     let _version_hold;
     let (version, version_hold) = super::files::encode_version(&file, work)?;
@@ -296,8 +278,8 @@ fn render(
     source: SpillRef<'_>,
     maximum: u64,
     io: Option<&crate::executor::PreparationIo>,
-    work: crate::NativeWork<'_>,
-) -> Result<(Value, crate::NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(Value, acyclic_fs::NativeCustody)> {
     let text = std::str::from_utf8(encoded)
         .map_err(|_| Error::tool_rejected("tool projection is not UTF-8 JSON"))?;
     let empty = SpillView {
@@ -319,12 +301,12 @@ fn render(
     let overhead = if let Some(parts) = media {
         with_media(&empty, parts, io, |view| {
             crate::executor::with_history_io(io, |history| {
-                crate::executor::json::json_byte_length(view, u64::MAX, history)
+                crate::executor::json::json_byte_length(view, None, history)
             })
         })?
     } else {
         crate::executor::with_history_io(io, |history| {
-            crate::executor::json::json_byte_length(&empty, u64::MAX, history)
+            crate::executor::json::json_byte_length(&empty, None, history)
         })? + super::schema::json_envelope_bytes()? as u64
     };
     // Reference metadata is indivisible. The display quantum bounds text;
@@ -357,6 +339,42 @@ mod checks {
     use super::*;
     use proptest::prelude::*;
 
+    fn prepare(definition: &ToolDefinition, projection: &Value) -> Result<()> {
+        use crate::model::*;
+        let mut definition = definition.clone();
+        definition.input_schema = Value::Bool(true);
+        let name = definition.name.clone();
+        let request = ModelRequest {
+            summary: false,
+            compose_tools: false,
+            model: Model::new("scripted".into(), "spill".into(), "1".into())?,
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
+                        "call".into(),
+                        name.clone(),
+                        Value::Null,
+                    ))),
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: "call".into(),
+                        name,
+                        content: serde_json::from_value(projection.clone())
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                    }),
+                },
+            ],
+            tools: vec![definition],
+            sampling: Default::default(),
+            max_output_tokens: Some(1),
+        };
+        PreparedModelRequest::prepare(request, crate::conversation::Limits::default(), None)?;
+        Ok(())
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]
@@ -372,6 +390,11 @@ mod checks {
             let mut definition = crate::tool::files::read().unwrap().definition;
             definition.projection_schema = crate::tool::json_projection_schema(serde_json::json!({"type":"null"}));
             let content = definition.check_projection(&bounded, crate::conversation::Limits::default(), None).unwrap().unwrap();
+            prop_assert!(prepare(&definition, &bounded).is_ok(), "request refused the original multipart spill");
+            let plain = serde_json::json!({"kind":"json", "value":text});
+            let plain_bytes = serde_json::to_vec(&plain).unwrap();
+            let (plain, _plain_hold) = render(&plain, &plain_bytes, SpillRef {path:"output.json",version:"retained"}, maximum, None, None).unwrap();
+            prop_assert!(prepare(&definition, &plain).is_ok(), "request refused the original JSON spill");
             let expected = crate::model::ModelDataPart::File {file, policy:crate::model::FileProjectionPolicy::Reference};
             prop_assert!(matches!(&content, crate::model::ToolResultContent::Parts {parts} if parts.len() == 2 && parts.get(1) == Some(&expected)), "native file part changed or disappeared");
             let preview: Value = serde_json::from_str(bounded["parts"][0]["text"].as_str().unwrap()).unwrap();
@@ -396,11 +419,12 @@ mod checks {
                 // The former prefix-only check accepts every one of these.
                 prop_assert!(is_spill(&broken));
                 prop_assert!(definition.validate_projection(&broken, crate::conversation::Limits::default(), None).is_err());
+                prop_assert!(prepare(&definition, &broken).is_err());
             }
         }
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn spill_preview_keeps_original_credit_and_cancellation() -> Result<()> {
         let value = serde_json::json!({"kind":"parts","parts":[{

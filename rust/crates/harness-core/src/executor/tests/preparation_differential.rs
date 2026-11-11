@@ -53,7 +53,7 @@ async fn initialize(text: &[String; 3], invalid: bool) -> State {
         .await
         .unwrap();
     if invalid {
-        executor.limits.context_messages = 1;
+        executor.limits.context_messages = std::num::NonZeroUsize::new(1);
     }
     (journal, executor, input, calls)
 }
@@ -77,7 +77,7 @@ fn pair(
                     let execution = StockExecution::ordinary(&executor);
                     if old || restore_old_factory {
                         execution
-                            .prepared_response_original(&journal, &input, 0, &[])
+                            .prepared_response_original(&journal, &input, 0, &[], None)
                             .await
                     } else {
                         execution
@@ -118,18 +118,27 @@ fn pair(
     )
 }
 
-fn check(text: &[String; 3], invalid: bool, restore: bool) -> TestCaseResult {
-    // Both factories use the production codec. Codec savings must not hide
-    // allocations from restoring the redundant request preparations.
-    let [(old, old_trace), (new, new_trace)] = pair(text, invalid, restore);
-    if !invalid {
-        prop_assert!(
-            new.4.count_total < old.4.count_total && new.4.bytes_total < old.4.bytes_total,
-            "preparation allocations did not decrease: old={:?}, new={:?}",
-            old.4,
-            new.4
-        );
-    }
+fn physical(
+    old: acyclic_test_support::AllocationInfo,
+    new: acyclic_test_support::AllocationInfo,
+    invalid: bool,
+) -> TestCaseResult {
+    // Both factories use the production codec. Account for allocations even
+    // when validation refuses, independently of the operation trace.
+    prop_assert!(
+        if invalid {
+            new.count_total <= old.count_total && new.bytes_total <= old.bytes_total
+        } else {
+            new.count_total < old.count_total && new.bytes_total < old.bytes_total
+        },
+        "preparation physical work did not improve: old={old:?}, new={new:?}"
+    );
+    Ok(())
+}
+
+fn check(text: &[String; 3], invalid: bool) -> TestCaseResult {
+    let [(old, old_trace), (new, new_trace)] = pair(text, invalid, false);
+    physical(old.4, new.4, invalid)?;
     let semantic = |trace: &Vec<(&'static str, u64)>| {
         trace
             .iter()
@@ -167,19 +176,20 @@ proptest! {
     fn preparations_keep_full_requests_journal_bytes_errors_and_operation_trace(
         text in prop::array::uniform3("[a-z0-9\\x00é🦀]{0,16}"),
     ) {
-        for invalid in [false, true] { check(&text, invalid, false)?; }
+        for invalid in [false, true] { check(&text, invalid)?; }
     }
 }
 
 #[test]
 fn restoring_redundant_request_preparations_is_detected() {
     let text = std::array::from_fn(|_| String::new());
-    check(&text, false, false).unwrap();
-    let error = check(&text, false, true).unwrap_err();
+    check(&text, false).unwrap();
+    let [(old, _), (restored, _)] = pair(&text, false, true);
+    let error = physical(old.4, restored.4, false).unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("preparation allocations did not decrease"),
+            .contains("preparation physical work did not improve"),
         "{error}"
     );
 }

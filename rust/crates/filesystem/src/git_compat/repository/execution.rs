@@ -237,7 +237,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             }
             return Ok(output);
         }
-        let output = match output {
+        let mut output = match output {
             GitCommandOutput::Action(action) if !action.is_read_only() => {
                 prepare_transition(&mut state, action, GitPendingMutation::NoOp)
             }
@@ -247,6 +247,27 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             return Ok(output);
         }
         if let Some(pending) = state.pending.as_mut() {
+            if let Some(source) = self
+                .request
+                .as_ref()
+                .and_then(|request| request.merge_source)
+            {
+                let GitFilesystemAction::Join {
+                    source_workspace,
+                    source_generation,
+                    ..
+                } = &mut pending.action
+                else {
+                    return Err(GitCompatError::InvalidState);
+                };
+                if *source_workspace != source.workspace_id {
+                    return Err(GitCompatError::WorkspaceMismatch);
+                }
+                *source_generation = Some(source.generation);
+                if let GitCommandOutput::Prepared { action, .. } = &mut output {
+                    *action = pending.action.clone();
+                }
+            }
             // Prepared work settles under the request that started it.
             pending.request = self.request_operation();
         } else {

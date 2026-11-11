@@ -32,8 +32,8 @@ impl Arguments {
     pub(crate) fn adapt(
         &self,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(Value, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         examine(work)?;
         let fields = invocation.arguments.as_object().ok_or_else(|| {
             invalid(
@@ -62,11 +62,11 @@ impl Arguments {
 type Call<'a> = (
     &'a Map<String, Value>,
     &'a ToolInvocation,
-    crate::NativeWork<'a>,
+    acyclic_fs::NativeWork<'a>,
 );
 
-fn examine(work: crate::NativeWork<'_>) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn examine(work: acyclic_fs::NativeWork<'_>) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1,
@@ -78,11 +78,11 @@ fn examine(work: crate::NativeWork<'_>) -> Result<()> {
 }
 
 fn invalid(
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     reason: &'static str,
     message: std::fmt::Arguments<'_>,
 ) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if work.is_some() {
         return Error::ToolRejected {
             code: crate::wire::ErrorCode::Invalid,

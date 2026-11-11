@@ -216,6 +216,7 @@ impl MemoryStream {
         };
         let original = state.paths.get(source_path);
         let mut ranges = original.map_or_else(HistoryRanges::default, |path| path.ranges.clone());
+        let mut keys = original.map_or_else(KeyTree::default, |path| path.keys.clone());
         if let Some(History::Batch { records, .. }) =
             original.and_then(|path| path.history.as_deref())
             && before.is_none_or(|before| records.start < before)
@@ -228,6 +229,7 @@ impl MemoryStream {
         }
         if let Some(before) = before {
             ranges = ranges.prefix(before.to_be_bytes());
+            keys = keys.cap(before);
         }
         let parent = match fact {
             CommittedMutation::Append(append) => state
@@ -242,11 +244,8 @@ impl MemoryStream {
                     .history
                     .clone();
                 Some(Arc::new(History::Prefix {
-                    keys: source
-                        .as_ref()
-                        .map_or_else(KeyTree::default, |source| source.keys().cap(fork.forked_at)),
                     source,
-                    #[cfg(any(test, feature = "local"))]
+                    #[cfg(any(test, not(target_arch = "wasm32")))]
                     tail: fork.forked_at,
                     _allocation: self.allocate(std::mem::size_of::<History>())?,
                 }))
@@ -257,6 +256,7 @@ impl MemoryStream {
             return Ok(PreparedHistory {
                 history: parent.ok_or(StreamError::Unavailable)?,
                 ranges,
+                keys,
             });
         }
         let (mut records, mut claim) = self.vector(source.len())?;
@@ -294,18 +294,15 @@ impl MemoryStream {
             committed_at_micros,
             _allocation: claim,
         });
-        let keys = parent
-            .as_ref()
-            .map_or_else(KeyTree::default, |parent| parent.keys().clone())
-            .append(&records, self)?;
+        let keys = keys.append(&records, self)?;
         Ok(PreparedHistory {
             history: Arc::new(History::Batch {
-                keys,
                 parent,
                 records,
                 _allocation: self.allocate(std::mem::size_of::<History>())?,
             }),
             ranges,
+            keys,
         })
     }
 
@@ -313,13 +310,14 @@ impl MemoryStream {
         &self,
         state: &'a State,
         destinations: impl Iterator<Item = &'a StreamPath> + Clone + 'a,
+        explicit: impl Fn(&str) -> bool + Copy + 'a,
     ) -> Result<(Vec<(StreamPath, PathState)>, Allocation), StreamError> {
-        let count = missing_paths(state, destinations.clone()).count();
+        let count = missing_paths(state, destinations.clone(), explicit).count();
         let (mut paths, allocation) = self.vector(count)?;
         if count == 0 {
             return Ok((paths, allocation));
         }
-        for (destination, end) in missing_paths(state, destinations) {
+        for (destination, end) in missing_paths(state, destinations, explicit) {
             paths.push((
                 destination
                     .as_str()
@@ -330,6 +328,7 @@ impl MemoryStream {
                     changed_at: 0,
                     history: None,
                     ranges: HistoryRanges::default(),
+                    keys: KeyTree::default(),
                     prefix: [None, None],
                     tail: 0,
                 },
@@ -450,6 +449,11 @@ impl MemoryStream {
             applied
                 .iter()
                 .map(|mutation| crate::CommitMutation::path(mutation)),
+            |prefix| {
+                applied
+                    .binary_search_by(|mutation| mutation.path().as_str().cmp(prefix))
+                    .is_ok()
+            },
         )?;
         let envelope = CommittedEnvelope {
             commit_id,
@@ -534,7 +538,7 @@ impl MemoryStream {
             check_deadline()?;
             let result = CommitOutcome::Conflict(conflicts);
             // Old behaviour, for negative controls only: the conflict spends the key.
-            #[cfg(all(loom, feature = "local"))]
+            #[cfg(all(loom, not(target_arch = "wasm32")))]
             if crate::verification::fault_is(crate::verification::Fault::RetainConflictKey) {
                 admit_replay(state, self.limits)?;
                 retain(
@@ -801,7 +805,8 @@ impl Namespace {
                     std::cmp::Ordering::Less => index = &mut edge.left,
                     std::cmp::Ordering::Greater => index = &mut edge.right,
                     std::cmp::Ordering::Equal => {
-                        return Arc::get_mut(&mut edge.node).ok_or(StreamError::Unavailable);
+                        return Arc::get_mut(edge.node.as_mut().ok_or(StreamError::Unavailable)?)
+                            .ok_or(StreamError::Unavailable);
                     }
                 }
             }
@@ -840,14 +845,14 @@ fn stage_namespace(
                     .node(&fork.source)
                     .ok_or(StreamError::NotFound)?
                     .clone();
-                #[cfg(all(loom, feature = "local"))]
+                #[cfg(all(loom, not(target_arch = "wasm32")))]
                 let subtree =
                     if crate::verification::fault_is(crate::verification::Fault::RootOnlyFork) {
                         build.node(subtree.data.clone(), None, subtree.origin.clone())?
                     } else {
                         subtree
                     };
-                #[cfg(all(loom, feature = "local"))]
+                #[cfg(all(loom, not(target_arch = "wasm32")))]
                 let excludes = if crate::verification::fault_is(
                     crate::verification::Fault::IgnoreForkExclusions,
                 ) {
@@ -855,7 +860,7 @@ fn stage_namespace(
                 } else {
                     &fork.exclude[..]
                 };
-                #[cfg(not(all(loom, feature = "local")))]
+                #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
                 let excludes = &fork.exclude[..];
                 let subtree = Namespace::excluded(&subtree, excludes, build)?;
                 origin = Some(ForkMarker {
@@ -928,9 +933,9 @@ fn install_namespace(
             CommittedMutation::Append(append) => (&append.path, append.tail),
             CommittedMutation::Fork(fork) => (&fork.destination, fork.tail),
         };
-        #[cfg(all(loom, feature = "local"))]
+        #[cfg(all(loom, not(target_arch = "wasm32")))]
         let notify = !crate::verification::fault_is(crate::verification::Fault::OmitAppendWake);
-        #[cfg(not(all(loom, feature = "local")))]
+        #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
         let notify = true;
         if notify && let Some(signals) = state.signals.get(path)? {
             let _ = signals.changed.notify();
@@ -950,7 +955,11 @@ fn fact_data(
     prepared: PreparedHistory,
     tail: u64,
 ) -> Result<PathState, StreamError> {
-    let PreparedHistory { history, ranges } = prepared;
+    let PreparedHistory {
+        history,
+        ranges,
+        keys,
+    } = prepared;
     let source = match fact {
         CommittedMutation::Append(append) => &append.path,
         CommittedMutation::Fork(fork) => &fork.source,
@@ -986,6 +995,7 @@ fn fact_data(
         prefix,
         history: Some(history),
         ranges,
+        keys,
         tail,
     })
 }

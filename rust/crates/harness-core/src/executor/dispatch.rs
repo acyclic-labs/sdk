@@ -1,5 +1,5 @@
 use super::*;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use crate::wire::ErrorCode::Unsupported;
 use futures::{FutureExt as _, future::Either};
 
@@ -140,16 +140,7 @@ impl StockExecution<'_> {
                         messages: std::mem::take(history),
                         ..Default::default()
                     };
-                    let retained_tables = retained.request.as_ref().is_some_and(|recorded| {
-                        recorded.request().messages.iter().any(|message| {
-                            message.content.notice_parts().is_some_and(|(notices, _)| {
-                                notices.iter().any(|notice| {
-                                    notice.source == "tools" && notice.kind == "tools.changed"
-                                })
-                            })
-                        })
-                    });
-                    let result = self.tools_notice(&mut context, tools, retained_tables);
+                    let result = self.tools_notice(&mut context, tools);
                     **history = context.messages;
                     result?;
                 }
@@ -210,7 +201,6 @@ impl StockExecution<'_> {
                 step,
                 request_digest,
             };
-            #[cfg(feature = "filesystem")]
             let _continuation_hold;
             let forced = self
                 .stock
@@ -244,13 +234,11 @@ impl StockExecution<'_> {
             let live = continuation.is_none() && purpose == ModelPurpose::Response;
             let mut clock = super::model_usage::CallClock::unknown();
             let stream = if let Some(continuation) = continuation {
-                #[cfg(feature = "filesystem")]
                 {
                     _continuation_hold = self.hold_continuation(&continuation)?;
                 }
                 Either::Left(continuation.into_iter())
             } else {
-                #[cfg(feature = "filesystem")]
                 {
                     _continuation_hold = None;
                 }
@@ -271,7 +259,7 @@ impl StockExecution<'_> {
                     ))
                     .await?;
                 clock.start();
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let generated = if let Some(work) = self.native_work() {
                     Either::Right(
                         attempt
@@ -287,7 +275,7 @@ impl StockExecution<'_> {
                 } else {
                     Either::Left(attempt.generate(self.stock.provider.as_ref(), &request, dispatch))
                 };
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let generated = attempt.generate(self.stock.provider.as_ref(), &request, dispatch);
                 Either::Right(generated)
             };
@@ -370,7 +358,6 @@ impl StockExecution<'_> {
         })
     }
 
-    #[cfg(feature = "filesystem")]
     fn hold_continuation(
         &self,
         continuation: &Vec<ModelEvent>,
@@ -443,6 +430,9 @@ impl StockExecution<'_> {
                             "summary source or instruction differs from retained admission".into(),
                         ));
                     }
+                } else {
+                    self.restore_background(journal, input, step, prior_messages, &recorded)
+                        .await?;
                 }
                 recorded
             }
@@ -463,9 +453,9 @@ impl StockExecution<'_> {
         dispatch: crate::model::ModelDispatch,
         replayed: &[ModelEvent],
     ) -> Result<Option<Vec<ModelEvent>>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = self.io;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let continuation = if let Some(work) = self.native_work() {
             let (continuation, custody) = self
                 .stock
@@ -484,7 +474,7 @@ impl StockExecution<'_> {
         } else {
             self.stock.provider.reconcile(dispatch, replayed).await?
         };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let continuation = self.stock.provider.reconcile(dispatch, &replayed).await?;
         Ok(continuation)
     }
@@ -497,6 +487,7 @@ impl StockExecution<'_> {
         request: &crate::model::PreparedModelRequest,
         phase: &mut DispatchPhase,
     ) -> Result<phase::ProviderAttempt> {
+        let _writer = self.journal_writes.lock().await;
         let (step, scope, purpose_key) = turn;
         let purpose = scope.purpose;
         let io = self.io;
@@ -552,6 +543,7 @@ impl StockExecution<'_> {
                     purpose,
                     request_digest,
                     request: reference,
+                    context: request.context_window(),
                 },
                 io,
             )?
@@ -646,11 +638,11 @@ impl StockExecution<'_> {
                 let completed_at = matches!(event, ModelEvent::Completed { .. })
                     .then(|| clock.completed_at())
                     .flatten();
-                let index = observed.len();
+                let index = admission.count;
                 let key = with_history_io(io, |work| {
                     preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
                 })?;
-                stock_vec_push(&mut observed, event, io)?;
+                stock_push_model_event(&mut observed, event, io)?;
                 let event = observed.last().ok_or_else(|| {
                     stock_boundary(
                         io,
@@ -670,6 +662,9 @@ impl StockExecution<'_> {
                 }
                 if let Some(text) = text.as_mut() {
                     text.observe(event);
+                    if matches!(event, ModelEvent::Restarted) {
+                        text.flush().await?;
+                    }
                 }
                 let usage = match event {
                     ModelEvent::Completed { metadata } => {
@@ -704,6 +699,7 @@ impl StockExecution<'_> {
                     }
                     _ => None,
                 };
+                let writer = self.journal_writes.lock().await;
                 let receipt = crate::obs::waiting(
                     "journal-commit",
                     operation_id,
@@ -718,6 +714,7 @@ impl StockExecution<'_> {
                     ),
                 )
                 .await?;
+                drop(writer);
                 #[cfg(feature = "research")]
                 if admission.completed && purpose == ModelPurpose::Response {
                     phase.1 = receipt.journal_cut;
@@ -736,7 +733,7 @@ impl StockExecution<'_> {
 
     async fn require_model_producer(&self) -> Result<()> {
         let io = self.io;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.native_work() {
             work.remaining()?;
             if !self.stock.provider.supports_native_model(work)? {
@@ -750,7 +747,7 @@ impl StockExecution<'_> {
         let _ = io;
         Ok(())
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn admit_model_event(
         &self,
         result: Result<(ModelEvent, acyclic_fs::NativeAllocation)>,

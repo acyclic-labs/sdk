@@ -14,14 +14,23 @@ test("browser transport rejects lossy byte and deadline bounds before I/O", () =
   const provider = () => { calls++; throw new Error("unexpected I/O"); };
   for (const invalid of [-1, 0.5, 1.5, 2 ** 32, 2 ** 32 + 1, NaN, Infinity, -Infinity, "4096", undefined, null, true]) {
     assert.throws(() => new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, invalid, 1000));
+  }
+  for (const invalid of [-1, 0, 0.5, 1.5, 2 ** 64, -1n, 1n << 64n, NaN, Infinity, -Infinity, "4096", true]) {
     assert.throws(() => new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, invalid));
+  }
+  for (const timeout of [undefined, null, 2 ** 32, 2 ** 32 + 1, (1n << 64n) - 1n]) {
+    const transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, timeout);
+    try {
+      const request = transport.initializationRequest(operation, "client", "1");
+      assert.equal(request.timeout_ms, timeout == null ? null : BigInt(timeout));
+    } finally { transport.free(); }
   }
   const maximum = 2 ** 32 - 1;
   const transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, maximum, maximum);
   try {
     const request = transport.initializationRequest(operation, "client", "1");
     assert.equal(request.maximum_response_bytes, maximum);
-    assert.equal(request.timeout_ms, maximum);
+    assert.equal(request.timeout_ms, BigInt(maximum));
   } finally { transport.free(); }
   assert.equal(calls, 0);
 });
@@ -121,6 +130,12 @@ test("captured browser responses preserve the admitted prefix before overflow", 
   const initialization = recorded("initialize");
   const discovery = recorded("tools/list");
   const originalOperation = initialization.request.id;
+  // The one transport budget admits the request as well as its response.
+  // Keep the real discovery request valid while forcing the captured response
+  // past that budget, so this control reaches the response decoder.
+  const responseLimit = new TextEncoder().encode(JSON.stringify({ ...discovery.request,
+    id: originalOperation })).length;
+  assert.ok(initialization.bytes.length > responseLimit);
   const observation = async promise => {
     try {
       const result = await promise;
@@ -160,7 +175,7 @@ test("captured browser responses preserve the admitted prefix before overflow", 
         read() { reads++; return exchange.read(); },
         cancel() { cancellations++; exchange.cancel(); } };
     };
-    const transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", "session", 1, 1000);
+    const transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, responseLimit, 1000);
     try {
       const actual = await observation(transport.listToolsJson(originalOperation, undefined));
       assert.match(actual.message, /SSE is not UTF-8/);
@@ -187,7 +202,7 @@ test("captured browser responses preserve the admitted prefix before overflow", 
       return Promise.resolve(initialization.bytes);
     },
     cancel() { overflowCancellations++; },
-  }), "http://localhost/mcp", "session", 1, 1000);
+  }), "http://localhost/mcp", "session", responseLimit, 1000);
   try {
     const overflow = await observation(overflowing.listToolsJson(originalOperation, undefined));
     assert.ok(overflow.message.includes(originalOperation), "browser overflow lost its operation");

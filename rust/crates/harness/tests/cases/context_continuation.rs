@@ -1,5 +1,5 @@
 //! Continuing projection publication through real Stream and private content.
-#![cfg(feature = "filesystem-local")]
+#![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_harness::context::{
     CompactionPolicy, CompactionReference, Context, ContextPipeline, ContextPlacement,
@@ -172,8 +172,8 @@ async fn fixture() -> Result<Fixture> {
     let bytes = acyclic_harness::canonical_json_bytes_bounded(
         &source,
         acyclic_harness::JsonBounds {
-            maximum_bytes: 65_536,
-            maximum_items: 4_096,
+            maximum_bytes: Some(65_536),
+            maximum_items: Some(4_096),
             maximum_depth: 64,
         },
         None,

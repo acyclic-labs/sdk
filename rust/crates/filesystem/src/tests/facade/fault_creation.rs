@@ -59,6 +59,7 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
     control.disable();
     (checkout.create(
         crate::AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("authority-cut-file")?,
             bytes: (bytes::Bytes::from_static(b"authority cut candidate")).into(),
             metadata: crate::kernel::FileMetadata::default(),
@@ -135,6 +136,7 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
     control.disable();
     (live.create(
         crate::AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("live-authority-cut")?,
             bytes: (bytes::Bytes::from_static(b"live")).into(),
             metadata: crate::kernel::FileMetadata::default(),

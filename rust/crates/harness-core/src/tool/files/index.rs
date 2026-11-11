@@ -90,7 +90,7 @@ fn cursor(
     first: u64,
     ordinal: u64,
     source_length: u64,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(u64, u64)> {
     let invalid = || executor::rejection(work, "ordinal index differs from its source");
     if bytes.len() < HEADER + 8
@@ -116,9 +116,6 @@ fn cursor(
         previous = Some(position);
     }
     let relative = ordinal.checked_sub(first).ok_or_else(invalid)?;
-    if terminal && relative >= count as u64 {
-        return Err(executor::rejection(work, "ordinal offset exceeds source"));
-    }
     if terminal && previous != Some(source_length) {
         return Err(invalid());
     }
@@ -138,19 +135,19 @@ pub(super) struct OrdinalIndex<'a> {
     origin: u64,
     logical_end: u64,
     page: Page,
-    _hold: crate::NativeCustody,
+    _hold: acyclic_fs::NativeCustody,
 }
 
 impl<'a> OrdinalIndex<'a> {
-    fn work(&self) -> crate::NativeWork<'_> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn work(&self) -> acyclic_fs::NativeWork<'_> {
+        #[cfg(not(target_arch = "wasm32"))]
         return self._hold.as_ref().map(|hold| hold.work());
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         None
     }
 
-    fn path(&self, operation: OperationId) -> Result<(String, crate::NativeCustody)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn path(&self, operation: OperationId) -> Result<(String, acyclic_fs::NativeCustody)> {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(hold) = &self._hold {
             let (path, hold) = hold.work().display(&format_args!(
                 "projections/v1/{}/{operation}.bin",
@@ -183,11 +180,11 @@ impl<'a> OrdinalIndex<'a> {
         version: &str,
         source_length: u64,
         projection: Projection,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Self> {
         let domain = projection.domain();
         let hold = edit::allocation(work, std::mem::size_of::<Self>())?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             work.charge(acyclic_fs::WorkCounters {
                 bytes_hashed: domain.len() as u64 + version.len() as u64,
@@ -213,7 +210,7 @@ impl<'a> OrdinalIndex<'a> {
     }
 
     fn operation(&self, first: u64) -> Result<OperationId> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(hold) = &self._hold {
             hold.work().charge(acyclic_fs::WorkCounters {
                 bytes_hashed: 8,
@@ -231,7 +228,7 @@ impl<'a> OrdinalIndex<'a> {
         &self,
         first: u64,
         ordinal: u64,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<(u64, u64)>> {
         let Some(bytes) = self
@@ -299,7 +296,7 @@ impl<'a> OrdinalIndex<'a> {
 
     fn metadata_operation(&self) -> Result<OperationId> {
         edit::charge(&self._hold, 0, 1)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(hold) = &self._hold {
             hold.work().charge(acyclic_fs::WorkCounters {
                 bytes_hashed: 4,
@@ -351,7 +348,7 @@ impl<'a> OrdinalIndex<'a> {
     pub async fn seek(
         &mut self,
         ordinal: u64,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(u64, u64)> {
         if ordinal == 0 {
@@ -479,7 +476,8 @@ mod checks {
             prop_assert_eq!(cursor(page.encoded(), first, first + selected as u64, source_length, None).unwrap(),
                 (first + selected as u64, positions[selected]));
             prop_assert!(cursor(page.encoded(), first + ENTRIES, first + selected as u64, source_length, None).is_err());
-            prop_assert!(cursor(page.encoded(), first, first + positions.len() as u64, source_length, None).is_err());
+            prop_assert_eq!(cursor(page.encoded(), first, first + positions.len() as u64, source_length, None).unwrap(),
+                (first + positions.len() as u64 - 1, source_length));
             prop_assert!(cursor(page.encoded(), first, first, source_length - 1, None).is_err());
             page.bytes[HEADER + 8..HEADER + 16].copy_from_slice(&0u64.to_le_bytes());
             prop_assert!(cursor(page.encoded(), first, first, source_length, None).is_err());

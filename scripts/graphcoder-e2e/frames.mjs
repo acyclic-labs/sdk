@@ -51,7 +51,7 @@ export class TerminalFrames {
 
 // Query errors are rendered in the status row, outside the task transcript.
 export function queryFailure(visible) {
-  const notice = visible.slice(visible.lastIndexOf("\n") + 1).replace(/^✗ /, "");
+  const notice = visible.slice(visible.lastIndexOf("\n") + 1).trimStart().replace(/^✗ /, "");
   return /^(?:resource not found:|Filesystem query ended:|Usage query ended:)/.test(notice) ? notice : undefined;
 }
 const NATIVE_FAILURE = /(task [0-9a-f-]{36}) failed: ([^\n]*)|✗ ([^\n]*)/g;

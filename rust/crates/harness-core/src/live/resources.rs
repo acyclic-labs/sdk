@@ -192,7 +192,6 @@ impl<'a> Sharing<'a> {
 /// One original filesystem authority fact in `storage/`, selected by the
 /// existing proven accounting page. Retentions refer to logical generations;
 /// neither equal roots nor multiple references prove physical bytes saved.
-#[cfg(feature = "filesystem")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Storage<'a> {
@@ -210,7 +209,6 @@ pub struct Storage<'a> {
     pub physical_copied_bytes: Option<u64>,
 }
 
-#[cfg(feature = "filesystem")]
 impl<'a> Storage<'a> {
     /// Borrow the original proven fact without another authority/object read,
     /// generation walk, sum, payload copy, clock or retained lookup table.
@@ -243,10 +241,8 @@ pub struct Counters<'a> {
     pub model: Option<&'a ModelUsageTotals>,
     /// Original filesystem operation work when its producer supplies coverage.
     /// Peak allocation is a peak, never an additive subtree byte total.
-    #[cfg(feature = "filesystem")]
     pub work: Option<&'a acyclic_fs::WorkCounters>,
     /// Original authenticated Machine interval receipt, without inferred cost.
-    #[cfg(feature = "machines")]
     pub machine: Option<&'a acyclic_machines::UsageReceipt>,
 }
 
@@ -261,9 +257,7 @@ impl<'a> Counters<'a> {
             version: VERSION,
             source,
             model,
-            #[cfg(feature = "filesystem")]
             work: None,
-            #[cfg(feature = "machines")]
             machine: None,
         })
     }
@@ -271,7 +265,6 @@ impl<'a> Counters<'a> {
 
 /// Original logical Machine binding in `placements/<target>.json`.
 /// A provider reference is not evidence for its physical host, NUMA or region.
-#[cfg(feature = "machines")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Placement<'a> {
@@ -293,7 +286,6 @@ pub struct Placement<'a> {
     pub executor_shard: Option<&'a str>,
 }
 
-#[cfg(feature = "machines")]
 impl<'a> Placement<'a> {
     /// Decode the original settled record once through the shared Machine
     /// admission, retaining its source before the reader drops metadata. The

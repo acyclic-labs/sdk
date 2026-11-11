@@ -190,6 +190,8 @@ impl ToolRegistry {
     }
 
     /// Resolve the current live selection, retaining its executor through a call.
+    /// An explicit revision must still be selected; retained revisions remain
+    /// available through `get` and recovery without authorizing fresh calls.
     pub fn resolve(
         &self,
         name: &str,
@@ -202,7 +204,17 @@ impl ToolRegistry {
                 return Ok(Some(tool));
             }
         }
-        Ok(self.get_shared(name, None, io)?.cloned())
+        Ok(self
+            .get_shared(name, None, io)?
+            .filter(|tool| {
+                matches!(
+                    self.data.selected.get(&tool.definition.name),
+                    Some(ModelSelection::Revision(revision)
+                        | ModelSelection::Native { revision: Some(revision), .. })
+                        if revision == &tool.definition.revision
+                )
+            })
+            .cloned())
     }
 
     pub(crate) fn has_sources(&self) -> bool {
@@ -218,11 +230,10 @@ struct RegistryData {
 }
 
 mod merge;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 const REGISTRY_BYTES: usize = std::mem::size_of::<ToolRegistry>()
     + std::mem::size_of::<RegistryData>()
     + 2 * std::mem::size_of::<usize>();
-#[cfg(feature = "filesystem")]
 const VERSION_SLOT_BYTES: usize = std::mem::size_of::<(String, String)>()
     + std::mem::size_of::<Arc<Tool>>()
     + std::mem::size_of::<Tool>()
@@ -230,7 +241,7 @@ const VERSION_SLOT_BYTES: usize = std::mem::size_of::<(String, String)>()
     + 2 * std::mem::size_of::<usize>();
 
 mod lookup;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod registration;
 mod selection;
@@ -238,7 +249,7 @@ mod selection;
 #[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 const OWNERSHIP_OVERFLOW: Error = Error::NativeBoundary {
     code: crate::wire::ErrorCode::Invalid,
     reason: "tool registry ownership overflow",

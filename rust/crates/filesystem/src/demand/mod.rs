@@ -9,6 +9,26 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use thiserror::Error;
 
+/// One identity for an unresolved source node and its authored captures.
+pub(crate) fn source_file_id(
+    namespace: &[u8; 16],
+    identity: &[u8; 32],
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+) -> Result<crate::FileId, crate::FsError> {
+    let domain = b"acyclic-fs-lazy-source-file-id-v1\0";
+    accounting.charge(WorkCounters {
+        bytes_hashed: domain.len() as u64 + 48,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    hash.update(namespace);
+    hash.update(identity);
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    Ok(crate::FileId::from_bytes(bytes))
+}
+
 mod model;
 pub use model::*;
 mod cursor;
@@ -30,10 +50,10 @@ pub use routed::Routed;
 mod computed_tests;
 
 /// Native provider backed by a held, no-follow directory capability.
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 #[cfg(test)]
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -69,7 +89,7 @@ pub use accounting::DemandWork;
 use admissions::Admissions;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use admissions::NativeAllocationAccounting;
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use admissions::ViewReadCompletion;
 #[cfg(target_os = "macos")]
 pub(crate) use context::native_demand_read_error;
@@ -77,14 +97,14 @@ pub(crate) use context::native_demand_read_error;
 pub(crate) use context::{CaptureTransientCustody, NativeDemandReadMeter, native_demand_error};
 #[cfg(not(target_arch = "wasm32"))]
 pub use ownership::NativeMountAllocationCustody;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use ownership::SourcePayloadOwnership;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use source_work::SourceDemandReadWork;
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod paths;
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use paths::*;
 
 #[cfg(test)]

@@ -23,7 +23,7 @@ impl crate::filesystem::VolumeResources for BeforeCut {
     fn release<'a>(
         &'a self,
         agent: &'a AgentPath,
-        bindings: &'a [crate::agent::VolumeBinding],
+        bindings: &'a [crate::agent::WorkspaceEntry],
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
         self.cuts.release(agent, bindings)
     }

@@ -10,6 +10,8 @@ mod content;
 mod projections;
 mod publication_cost;
 mod publication_evidence;
+#[cfg(not(target_arch = "wasm32"))]
+mod read_replay;
 mod ui;
 
 async fn run_admitted_file_case<F, Fut>(
@@ -55,7 +57,8 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
             "one.txt",
         )
         .await?;
-    let expected_projection = json!({"kind":"json","value":{"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"text":"pinned text"}});
+    let expected_projection = json!({"kind":"json","value":{"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"text":"pinned text",
+        "page":{"start":0,"end":11,"offset":0,"total":11,"eof":true}}});
     let render_bytes = serde_json::to_vec(&expected_projection)
         .map_err(|error| Error::Invalid(error.to_string()))?
         .len() as u64;
@@ -653,7 +656,8 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt","version":version})).await?.1.value, result.value);
         let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
         let (content, _bytes, _retained) = context.read_tool_path("notes/one.txt", Some(&source.generation), None).await?;
-        assert!(source.matches_content(&content));
+        assert!(source.path_selection().matches_content(&content));
+        assert_eq!(source.byte_length, content.descriptor().byte_length());
         let mut complete = crate::tool::ToolResult { value: json!({"file":{"content":content},"text":"one"}) };
         let pinned = ToolInvocation { arguments: json!({"path":"notes/one.txt","version":version}), ..invocation.clone() };
         read.projection.project(&pinned, &complete, None)?;
@@ -666,7 +670,14 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         let range_version = range_projection["value"]["version"].as_str().expect("selected generation");
         assert_eq!(range_result.value["text"], "on");
         assert!(range_result.value["file"]["authored"]["generation"].is_object());
-        assert!(call(&task, &read, json!({"path":"notes/one.txt", "range":{"start":0,"end":4}})).await.is_err());
+        let (clipped_invocation, clipped) = call(&task, &read,
+            json!({"path":"notes/one.txt", "range":{"start":0,"end":4}})).await?;
+        assert_eq!(clipped.value["text"], "one");
+        assert_eq!(clipped.value["page"]["end"], 3);
+        assert_eq!(clipped.value["page"]["total"], 3);
+        assert_eq!(clipped.value["page"]["eof"], true);
+        assert!(clipped.value["page"].get("next").is_none());
+        read.projection.project(&clipped_invocation, &clipped, None)?;
         let mut corrupt = range_result.clone();
         corrupt.value["text"] = json!("wrong length");
         assert!(read.projection.project(&range_invocation, &corrupt, None).is_err());

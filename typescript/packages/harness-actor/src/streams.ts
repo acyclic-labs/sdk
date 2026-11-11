@@ -11,7 +11,7 @@ export function harnessStreamLedger(streams: Pick<StreamLedger, "register" | "di
   }
   if (typeof objects?.open !== "function") throw new HarnessActorError("failed_precondition", HARNESS_BINDINGS.objects);
   return {
-    register: (actor, paths) => streams.register(actor, paths),
+    register: (actor, paths, expectedRevision) => streams.register(actor, paths, expectedRevision),
     dispatch: (actor, operation, input) => streams.dispatch(actor, operation, input),
     open: (operation, input, preceding) => streams.open(operation, input, preceding),
     objects: new WasmObjects({ port: objects }),

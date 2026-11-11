@@ -14,6 +14,9 @@ pub struct ReaderCut<'a> {
     pub file: &'a dyn Fn(&FileRef) -> Option<String>,
 }
 impl Cut for ReaderCut<'_> {
+    fn agent(&self) -> &AgentPath {
+        self.agent
+    }
     fn status(&self) -> Result<Cow<'_, StatusRecord>> {
         let stream = self.agent.status()?;
         let tail = self.reader.cache().tail(&stream).ok_or(Error::Pending)?;

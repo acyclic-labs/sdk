@@ -7,6 +7,8 @@
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
 mod checkpoint;
+mod children;
+pub use children::Children;
 mod continuation;
 pub use continuation::{Continuation, ContinuationOverride, ContinuationRequest, ForcedCall};
 #[cfg(any(test, feature = "test-support"))]
@@ -16,7 +18,6 @@ mod commit;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod control_trace;
-#[cfg(feature = "filesystem")]
 pub(crate) use commit::sender_text;
 mod driver;
 mod effects;
@@ -40,11 +41,14 @@ mod lifecycle;
 pub use lifecycle::{AgentComposer, AgentLifecycle, CLOSE};
 mod lower;
 mod machine;
+mod names;
 mod notices;
+pub use names::NameIndex;
 pub use notices::NoticeSelection;
 pub(crate) mod records;
 mod release;
 mod reply;
+pub(crate) use reply::entry as conversation_entry;
 mod settled;
 #[cfg(test)]
 mod ui_tests;
@@ -55,7 +59,6 @@ pub(crate) use settled::{named_child, select_children};
 pub(crate) mod spawn_names;
 pub use spawn_names::{SpawnResolution, resolve_spawn_name};
 mod messaging;
-mod slots;
 mod steering;
 pub use messaging::{MessageDelivery, peer_send_allowed, sibling_send_allowed};
 pub use steering::{
@@ -66,6 +69,12 @@ mod targets;
 pub use targets::{
     DeviceKind, MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass,
     TargetRecord, TargetRefusal, TargetState, USER_PREFIX,
+};
+mod word;
+mod workspaces;
+pub use workspaces::{
+    EntryId, WorkspaceChanged, WorkspaceEntry, WorkspaceFilter, WorkspaceInherit, WorkspaceKind,
+    WorkspaceMode, WorkspaceOp, WorkspaceRole, WorkspaceSource, WorkspaceTable,
 };
 mod volumes;
 pub use volumes::SpawnVolumes;
@@ -87,21 +96,21 @@ pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use layout::AgentStream;
 pub use layout::{
-    ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
+    ACTORS, AGENTS, AgentId, AgentPath, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
 };
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,
-    MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome,
-    SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Until, Wait, Wake,
-    requested_child, step,
+    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OUTCOME_BYTES, MAX_QUEUED, MAX_QUEUED_BYTES,
+    OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome, SpawnRefusal, Step,
+    TurnDriver, TurnFuture, TurnInput, TurnStep, Until, Wait, Wake, requested_child, step,
 };
 pub use records::{
-    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, ChildWake,
-    Closed, ContextAction, ContextRequest, Control, CreationConfig, ForkAdopted, Hook, InboxRecord,
-    IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Membership,
-    Message, NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext, SpawnRequest,
-    SpawnTemplates, StatusRecord, UnsupportedRecordVersion, VolumeBinding, decode_record,
+    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled,
+    ChildSettlement, ChildWake, ChildWakes, Closed, ContextAction, ContextRequest, Control,
+    CreationConfig, ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
+    MAX_RECORD_BYTES, Membership, Message, NoticePayload, Phase, RECORD_VERSION, Sender,
+    SpawnContext, SpawnRequest, SpawnTemplates, StatusRecord, UnsupportedRecordVersion,
+    decode_record,
 };
 pub use reply::{Reply, SteeringReply, reply};
 
@@ -115,7 +124,7 @@ pub enum Error {
     #[error("invalid agent record: {0}")]
     Record(&'static str),
     /// The retained checkpoint belongs to another artifact codec.
-    #[error("unsupported agent checkpoint codec")]
+    #[error("state format predates v1 table; start a fresh session")]
     IncompatibleCheckpointCodec,
     /// The recipient agent was never created.
     #[error("no such agent")]
@@ -201,6 +210,12 @@ impl Error {
             Self::Unknown(request) => Some(request),
             _ => None,
         }
+    }
+}
+
+impl From<crate::Error> for Error {
+    fn from(error: crate::Error) -> Self {
+        Self::Turn(Box::new(error))
     }
 }
 

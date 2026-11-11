@@ -99,6 +99,7 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
             "fork-adopted",
             InboxRecord::ForkAdopted(Box::new(ForkAdopted {
                 profile: Some(CreationConfig {
+                    topology: None,
                     model: None,
                     continuation: None,
                     context: SpawnContext::Fork,
@@ -148,7 +149,8 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
         let mut bytes = vec![1];
         bytes.extend(
             StatusRecord {
-                child_wakes: Vec::new(),
+                child_settlement: None,
+                child_wakes: None,
                 phase,
                 cursor,
                 conversation: 0,

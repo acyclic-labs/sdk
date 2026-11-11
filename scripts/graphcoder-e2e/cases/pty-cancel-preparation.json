@@ -16,7 +16,7 @@
       { "when": { "contains": ["GraphCoder"], "cursor": true }, "prompt": "prepare a turn" },
       { "after_request": { "path": "count", "step": 0 }, "when": { "contains": ["Thinking…"], "bold": "k" } },
       { "when": { "contains": ["Thinking…"], "bold": "i" }, "send": "\u0003" },
-      { "when": { "contains": ["cancelled"], "absent": ["Thinking…"] }, "send": "\u0004" }
+      { "when": { "contains": ["cancelled"], "absent": ["Thinking…"] }, "send": "\u0004\u0004" }
     ],
     "exit": 2
   }],

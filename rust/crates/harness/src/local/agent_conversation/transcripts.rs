@@ -1,6 +1,6 @@
 //! Live per-agent files over the original membership and execution journals.
 use super::*;
-use acyclic_harness_client::{EventProjection, ExecutionPosition};
+use acyclic_harness_client::{AgentCommand, AgentReply, EventProjection, ExecutionPosition};
 use acyclic_stream::{FollowRequest, RecordStream, records_only};
 use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _, future::LocalBoxFuture};
 use std::{
@@ -10,7 +10,7 @@ use std::{
 };
 use tokio::sync::watch;
 
-#[cfg(all(test, feature = "filesystem-local"))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "transcripts_tests.rs"]
 mod tests;
 
@@ -100,6 +100,22 @@ async fn add<'a>(
     operation: &'a str,
     finish: watch::Receiver<bool>,
 ) -> Result<()> {
+    let AgentReply::Settlement {
+        role,
+        model,
+        topology,
+        ..
+    } = connection
+        .execute(&AgentCommand::Settlement {
+            agent: connection.root().clone(),
+            wait: false,
+        })
+        .await?
+    else {
+        return Err(Error::Storage(
+            "agent metadata query returned another reply".into(),
+        ));
+    };
     let path = directory.join(format!("{}.jsonl", connection.root().id()));
     let file = std::fs::File::create(path).map_err(failed)?;
     line(
@@ -109,6 +125,9 @@ async fn add<'a>(
             "id": connection.root().id(),
             "agent_path": connection.root().as_str(),
             "parent": connection.root().parent().map(|parent| parent.id()),
+            "role": role,
+            "model": model,
+            "topology": topology,
         }),
     )?;
     let bounded = *finish.borrow();

@@ -7,10 +7,7 @@ use super::{ExecutionEvent, ExecutionJournal, OperationId};
 use crate::{
     Error, Result,
     executor::ExecutionRecordQuery,
-    tool::{
-        ToolInvocation,
-        files::{FileReadSource, ReadPage},
-    },
+    tool::{ToolInvocation, files::FileReadSource},
 };
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, io::Write};
@@ -49,7 +46,21 @@ struct ResultProjection {
 #[derive(Deserialize)]
 struct ReadReceipt {
     file: FileReadSource,
-    page: Option<ReadPage>,
+    page: Option<SourcePage>,
+}
+
+/// Original source interval retained by the version-1 read-set artifact.
+/// Presentation metadata is not part of this evidence projection.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SourcePage {
+    /// First returned byte in the original immutable source.
+    pub start: u64,
+    /// Exclusive end of the returned bytes.
+    pub end: u64,
+    /// Original byte continuation, when present.
+    pub next: Option<u64>,
+    /// Original zero-based line/cell offset.
+    pub offset: u64,
 }
 
 /// One immutable source exposed by the original successful read-tool result.
@@ -67,7 +78,7 @@ pub struct Observation {
     pub source: FileReadSource,
     /// Original returned source interval, when the tool reported one.
     /// Absence does not prove a whole-file read.
-    pub page: Option<ReadPage>,
+    pub page: Option<SourcePage>,
 }
 
 /// One bounded page, tied to the original source rather than a current path.
@@ -386,7 +397,6 @@ pub fn project(
 mod tests {
     use super::*;
 
-    #[cfg(feature = "filesystem")]
     #[tokio::test]
     async fn committed_reads_keep_original_generations_after_the_path_changes() -> Result<()> {
         use crate::{
@@ -481,7 +491,7 @@ mod tests {
             // The receipt below comes from the real built-in reader and storage,
             // never a hand-written provider or file-tool response fixture.
             let context = ToolContext::new(task.clone(), invocation.operation_id, &call_id)?;
-            let result = tool
+            let mut result = tool
                 .executor
                 .execute(invocation.clone(), Some(context))
                 .await?;
@@ -490,6 +500,14 @@ mod tests {
             assert_eq!(result.value["text"], std::str::from_utf8(bytes).unwrap());
             sources.push(original.file);
             let projection = tool.projection.project(&invocation, &result, None)?.0;
+            // The artifact reads source facts, independently of the producer's
+            // page presentation. Replay both original and extended page shapes.
+            if step == 0 {
+                let page = result.value["page"].as_object_mut().unwrap();
+                page.remove("total");
+                page.remove("eof");
+                page.insert("next".into(), serde_json::Value::Null);
+            }
             let result = crate::executor::stage_json(
                 journal.as_ref(),
                 operation,
@@ -529,6 +547,11 @@ mod tests {
             assert_eq!(observation.source, sources[step]);
             assert_eq!(observation.step, step as u32);
             assert_eq!(observation.sequence, 3 + 2 * step as u64);
+            let page = observation.page.as_ref().unwrap();
+            assert_eq!(page.start, 0);
+            assert_eq!(page.end, if step == 0 { 5 } else { 6 });
+            assert_eq!(page.offset, 0);
+            assert!(page.next.is_none());
         }
         assert!(
             page(journal.as_ref(), "a", operation, 0, cut + 1)

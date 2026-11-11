@@ -141,7 +141,6 @@ fn specification(origin: &str, authentication: Authentication) -> crate::Provide
     spec.adapter = crate::Adapter::Chat;
     spec.base_url = format!("{origin}/v1");
     spec.authentication = authentication;
-    spec.retry.attempts = 1;
     spec.retry.base_delay_ms = 0;
     spec.retry.max_delay_ms = 0;
     spec.token_counter = Some(crate::TokenCounterSpec {
@@ -291,7 +290,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
                 )
             } else {
                 (
-                    429,
+                    if index == 4 || index == 6 { 400 } else { 429 },
                     include_str!("../../../conformance/fixtures/inference/llamacpp/rate.body"),
                 )
             };
@@ -317,7 +316,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
     );
     assert!(
         provider.count_tokens(&request, 0).await.is_err(),
-        "captured 429 retains bounded count retry semantics"
+        "captured 429 waits and rebinds credentials before a definitive refusal"
     );
     let mut api_key = specification(
         &origin,

@@ -761,7 +761,7 @@ async fn projection_event(
 ) -> Result<()> {
     let failed = |cause| {
         Error::Storage(format!(
-            "step=observe workspace conformance: {cause}; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_files::tests::workspace_projection_uses_shared_results_without_client_state -- --exact"
+            "step=observe workspace conformance: {cause}; recovery=cargo test --locked -p acyclic-harness --no-default-features --lib local::host_files::tests::workspace_projection_uses_shared_results_without_client_state -- --exact"
         ))
     };
     tokio::select! {
@@ -1430,9 +1430,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         );
         let page = request(
             &cwd,
-            HostAction::Sessions {
-                parent: parent.clone(),
-            },
+            HostAction::Sessions { parent: parent.clone(), after: None, limit: 256 },
         )?;
         assert_eq!(page["references"], serde_json::json!(["endpoint-boundary"]));
         let turn = session(SessionAction::Next {})?;
@@ -1520,7 +1518,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         std::thread::scope(|scope| {
             let cwd = &cwd;
             let readers = [
-                HostAction::Sessions { parent: parent.clone() },
+                HostAction::Sessions { parent: parent.clone() , after: None, limit: 256 },
                 HostAction::Locate { cwd: cwd.clone() },
             ]
             .map(|action| scope.spawn(move || request(cwd, action).map(|_| ())));
@@ -1537,7 +1535,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
                     })
             })
         })?;
-        let agents = request(&cwd, HostAction::Agents { task: parent.clone() })?;
+        let agents = request(&cwd, HostAction::Agents { task: parent.clone() , after: None, limit: 256 })?;
         assert_eq!(agents["agents"][0]["reference"], "endpoint-boundary");
         assert_eq!(request(&cwd, HostAction::Open {
             host: "codex".into(), session: "fixture-native-session".into(),
@@ -1650,9 +1648,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     let refused_operation = OperationId::new();
     assert!(
-        matches!(request_operation(&registry, &cwd, refused_operation, HostAction::Agents {
-        task: serde_json::from_value(result["task"].clone()).map_err(storage)?,
-    }), Err(ref error) if request_storage_cause(error, refused_operation) == failure)
+        matches!(request_operation(&registry, &cwd, refused_operation, HostAction::Agents { task: serde_json::from_value(result["task"].clone()).map_err(storage)?, after: None, limit: 256 }), Err(ref error) if request_storage_cause(error, refused_operation) == failure)
     );
     assert_eq!(
         std::fs::read_dir(&requests).map_err(storage)?.count(),

@@ -18,6 +18,19 @@ mod command;
 pub use command::{ProcessCommand, ProcessStdio};
 #[cfg(windows)]
 mod windows_create;
+
+#[cfg(windows)]
+pub(crate) fn service_command_line(command: &ProcessCommand) -> std::io::Result<Vec<u16>> {
+    windows_create::make_command_line(&command.program, &command.args)
+}
+#[cfg(windows)]
+pub(crate) fn service_environment(command: &ProcessCommand) -> std::io::Result<Option<Vec<u16>>> {
+    command
+        .env
+        .capture_if_changed()
+        .map(windows_create::make_environment)
+        .transpose()
+}
 use std::time::{Duration, Instant};
 #[cfg(windows)]
 use windows_create::Child;
@@ -291,20 +304,16 @@ impl ProcessTree {
         meter: Option<&dyn crate::NativeReadMeter>,
         retained: &mut Option<Self>,
     ) -> io::Result<()> {
-        command.boundary = Some(
-            (|| {
-                if retained.is_some() {
-                    return Err(io::ErrorKind::AlreadyExists.into());
-                }
-                if let Some(meter) = meter {
-                    meter.check()?;
-                }
-                let cwd =
-                    grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
-                grant.prepare_launch(Some(cwd), meter)
-            })()
-            .map_err(crate::execution::failure)?,
-        );
+        command.boundary = Some((|| {
+            if retained.is_some() {
+                return Err(io::ErrorKind::AlreadyExists.into());
+            }
+            if let Some(meter) = meter {
+                meter.check()?;
+            }
+            let cwd = grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
+            grant.prepare_launch(Some(cwd), meter)
+        })()?);
         match custody {
             Some(custody) => {
                 Self::spawn_in_custody_controlled(&mut command, custody, meter, retained)
@@ -1071,7 +1080,8 @@ impl ProcessTree {
                 .map(|input| PendingStdin::new_with_buffer(input, stdin_buffer, meter, owner))
                 .transpose()
                 .map_err(ProcessCaptureFailure::before_capture)?;
-            let mut pump = pump::Pump::new(self, schedule.into(), max_bytes, input, meter, output)?;
+            let mut pump =
+                pump::Pump::new(self, schedule.into(), Some(max_bytes), input, meter, output)?;
             let result = 'capture: loop {
                 for signal in wake.unwrap_or_default() {
                     if let Err(error) = signal.consume() {
@@ -1097,7 +1107,7 @@ impl ProcessTree {
                     },
                 }
             };
-            captured = pump.captured(max_bytes);
+            captured = pump.captured();
             pump.finish(self, result, meter)
         });
         operation.record("bytes", captured);
@@ -1105,7 +1115,7 @@ impl ProcessTree {
         result
     }
 
-    /// Captures bounded output like [`Self::wait_with_output`], holding no
+    /// Captures output under an optional caller byte policy, holding no
     /// thread while the child runs: each turn runs on the blocking pool, and
     /// between turns the capture awaits one readiness wait on its pipes, its
     /// exit and its next check. Submission transfers the tree to its cleanup
@@ -1116,19 +1126,24 @@ impl ProcessTree {
         self,
         spawner: &crate::TaskSpawner,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: impl Into<Option<usize>>,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> ProcessCapture<H> {
         ProcessCapture {
-            completion: spawner.spawn(self.capture_owned(schedule, max_bytes, input, handler)),
+            completion: spawner.spawn(self.capture_owned(
+                schedule,
+                max_bytes.into(),
+                input,
+                handler,
+            )),
         }
     }
 
     async fn capture_owned<H: CaptureHandler>(
         self,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> io::Result<CaptureOutcome<H>> {
@@ -1150,7 +1165,7 @@ impl ProcessTree {
     async fn capture_physical<H: CaptureHandler>(
         self,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> io::Result<CaptureOutcome<H>> {
@@ -1189,7 +1204,7 @@ impl ProcessTree {
     fn start_capture<H: CaptureHandler>(
         mut self,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         input: Option<OwnedCaptureInput>,
         mut handler: H,
     ) -> Result<StartedCapture<H>, CaptureOutcome<H>> {

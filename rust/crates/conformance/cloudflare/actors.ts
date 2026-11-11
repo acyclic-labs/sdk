@@ -5,6 +5,8 @@ import { SqliteEventStorage, SqliteJournal, type StreamChange } from "../../../.
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
 import { streamProviderPort } from "../../../../typescript/packages/harness/src/stream-provider.js";
 
+import { metadataPages } from "../../../../typescript/packages/harness/src/event-storage.js";
+
 interface Env { ACTORS: DurableObjectNamespace<Actors>; ACTOR: DurableObjectNamespace<Actor> }
 interface Route { address: number[]; paths: string[]; generation: number; pending: boolean }
 const root = "actors/state";
@@ -67,7 +69,13 @@ export class Actors extends DurableObject<Env> {
   });
   private readonly calls = { dispatch: 0, cursor: 0, register: 0, wake: 0, lookup: 0, reset: 0 };
 
-  private rows(): [string, Route][] { return this.routes.entries().map(([name, value]) => [name, route(value)]); }
+  private *pages(): Generator<[string, Route][]> {
+    for (const page of metadataPages(this.routes, "", 128)) {
+      yield page.map(([name, value]) => [name, route(value)]);
+    }
+  }
+  private *rows(): Generator<[string, Route]> { for (const page of this.pages()) yield* page; }
+  private pending(): boolean { for (const [, row] of this.rows()) if (row.pending) return true; return false; }
   private owner(address: Uint8Array) { ++this.calls.lookup; return this.env.ACTOR.getByName(`${this.ctx.id.name}/${key(address)}`); }
   private async discover() {
     if (this.metadata.get("pending") !== "1") return;
@@ -78,7 +86,6 @@ export class Actors extends DurableObject<Env> {
       for (const address of page.actors) {
         const name = key(address);
         if (this.routes.get(name) === undefined) {
-          if (this.rows().length >= 1000) refuse("capacity");
           this.routes.put(name, JSON.stringify({ address: [...address], paths: [], generation: 0, pending: true }));
         }
         await this.owner(address).admit(this.ctx.id.name!, address);
@@ -92,8 +99,8 @@ export class Actors extends DurableObject<Env> {
   async register(address: Uint8Array, paths: string[]) {
     ++this.calls.register;
     const name = key(address), raw = this.routes.get(name);
-    if (raw === undefined || paths.length === 0 || paths.length > 1000 || new Set(paths).size !== paths.length
-      || paths.some(path => !path || path.length > 4096)) refuse("registration");
+    if (raw === undefined || paths.length === 0 || new Set(paths).size !== paths.length
+      || paths.some(path => !path)) refuse("registration");
     const row = route(raw);
     // Register before Host::wake performs its final committed-input recheck.
     this.routes.put(name, JSON.stringify({ ...row, paths }));
@@ -124,7 +131,7 @@ export class Actors extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(Date.now() + 1000);
     await this.discover();
     const errors: unknown[] = [];
-    await Promise.all(this.rows().filter(([, route]) => route.pending).map(async ([name, row]) => {
+    for (const page of this.pages()) await Promise.all(page.filter(([, route]) => route.pending).map(async ([name, row]) => {
       try {
         ++this.calls.wake;
         await this.owner(Uint8Array.from(row.address)).wake();
@@ -134,7 +141,7 @@ export class Actors extends DurableObject<Env> {
     }));
     await this.routes.flush();
     if (errors.length) throw new AggregateError(errors, `STEP hosted-actors-wake failed; recovery: ${recovery}`);
-    if (this.metadata.get("pending") !== "1" && !this.rows().some(([, route]) => route.pending)) await this.ctx.storage.deleteAlarm();
+    if (this.metadata.get("pending") !== "1" && !this.pending()) await this.ctx.storage.deleteAlarm();
   }
   private async restart() {
     await this.discover();

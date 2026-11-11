@@ -6,7 +6,6 @@ use acyclic_collections::FixedIndex;
 
 type Records = FixedIndex<ExecutionRecord, OwnedIndexAllocation, 8>;
 
-#[cfg(feature = "filesystem")]
 fn release_page_scratch(
     records: &[ExecutionRecord],
     capacity: usize,
@@ -43,10 +42,7 @@ pub(super) struct RecordIndex<'a> {
     keys: FixedIndex<(), OwnedIndexAllocation, 32>,
     steps: FixedIndex<Records, OwnedIndexAllocation, 32>,
     // Values are dropped before the custody that funds them.
-    #[cfg(feature = "filesystem")]
     quota: Option<crate::conversation::ContentHold<'a>>,
-    #[cfg(not(feature = "filesystem"))]
-    _quota: std::marker::PhantomData<&'a ()>,
 }
 
 impl ExecutionEvent {
@@ -106,11 +102,13 @@ impl ExecutionEvent {
                 purpose,
                 request_digest,
                 request,
+                context,
             } => ModelStarted {
                 step: *step,
                 purpose: *purpose,
                 request_digest: *request_digest,
                 request: file(request)?,
+                context: *context,
             },
             Model {
                 step,
@@ -134,9 +132,14 @@ impl ExecutionEvent {
                 event: text(event)?,
                 usage: usage.as_ref().map(file).transpose()?,
             },
-            ModelStopped { step, purpose } => ModelStopped {
+            ModelStopped {
+                step,
+                purpose,
+                worker_paused,
+            } => ModelStopped {
                 step: *step,
                 purpose: *purpose,
+                worker_paused: *worker_paused,
             },
             ToolStarted {
                 step,
@@ -196,10 +199,8 @@ impl<'a> RecordIndex<'a> {
             self.binding = binding;
         }
         loop {
-            #[cfg(feature = "filesystem")]
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let result = self.read_page(journal, operation, io).await;
-            #[cfg(feature = "filesystem")]
             if let Some(io) = io {
                 let owned = io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
                     stock_boundary(
@@ -227,7 +228,6 @@ impl<'a> RecordIndex<'a> {
         operation: OperationId,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
-        #[cfg(feature = "filesystem")]
         let page_before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let page = journal
             .replay(operation, self.tail, EXECUTION_REPLAY_PAGE_RECORDS, io)?
@@ -241,7 +241,6 @@ impl<'a> RecordIndex<'a> {
         }
         // Decoders may reserve conservative scratch space. Once the page is
         // materialized, only its vector and the moved records remain live.
-        #[cfg(feature = "filesystem")]
         release_page_scratch(&page, page.capacity(), page_before, io)?;
         let mut keys = [[0; 32]; EXECUTION_REPLAY_PAGE_RECORDS as usize];
         for (index, record) in page.iter().enumerate() {
@@ -267,7 +266,6 @@ impl<'a> RecordIndex<'a> {
                 )
             })? = key;
         }
-        #[cfg(feature = "filesystem")]
         let page_bytes = page.capacity() as u64 * std::mem::size_of::<ExecutionRecord>() as u64;
         let advanced = !page.is_empty();
         for (record, key) in page.into_iter().zip(keys) {
@@ -282,7 +280,6 @@ impl<'a> RecordIndex<'a> {
                 .get_or_try_insert_with(key, &mut work, |_| Ok(()))?;
             self.tail = sequence;
         }
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.release(page_bytes)?;
         }
@@ -432,13 +429,13 @@ impl StockExecution<'_> {
             *index = Default::default();
             return Err(error);
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let before = self
             .io
             .map(PreparationIo::owned_bytes)
             .transpose()?
             .unwrap_or(0);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = self.io.filter(|_| stock_is_native(self.io)) {
             io.retain_owned(std::mem::size_of::<Vec<ExecutionRecord>>() as u64)?;
         }
@@ -450,7 +447,7 @@ impl StockExecution<'_> {
             .transpose()?
             .unwrap_or_else(|| step_key(Some(step)));
         let (tail, records) = index.select(bucket, include_started, maximum, select, self.io)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             let bytes = records.iter().try_fold(
                 native_size_add(

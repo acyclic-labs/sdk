@@ -54,6 +54,9 @@ fn execution_native_admission_precedes_agent_resolution() -> Result<(), Box<dyn 
     for args in [
         vec!["unknown-command"],
         vec!["agents", "unexpected"],
+        vec!["agents", "--limit", "0"],
+        vec!["agents", "--limit", "1", "--limit", "2"],
+        vec!["agents", "--after", "invalid"],
         vec!["log", "unexpected"],
         vec!["capture", "unexpected"],
         vec!["fs"],

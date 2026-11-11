@@ -55,7 +55,7 @@ impl ContextAttribute {
         observe_value(&self.value, work)
     }
     pub(super) fn validate_schema(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
-        crate::executor::json::json_byte_length(self, u64::MAX, work).map(|_| ())?;
+        crate::executor::json::json_byte_length(self, None, work).map(|_| ())?;
         crate::executor::validate_json_schema_value(
             &self.schema,
             &self.value,

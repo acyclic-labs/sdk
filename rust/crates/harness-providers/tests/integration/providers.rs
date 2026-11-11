@@ -304,7 +304,7 @@ fn check_requests(case: &ProviderCase, transport: &Recorded) -> TestResult {
     if requests.len() != case.responses.len() || remaining != 0 {
         return Err("provider task did not consume the exact HTTP script".into());
     }
-    // Each refused connection was redelivered under the bounded policy until the script ran out.
+    // Each transient connection refusal was redelivered until the endpoint recovered.
     if transport.refused() != usize::from(case.unreachable) {
         return Err(format!(
             "provider task made {} refused attempts",

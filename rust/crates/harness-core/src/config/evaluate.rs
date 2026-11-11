@@ -4,14 +4,14 @@ use super::{Form, Link};
 use crate::{Error, Result, layers::Layer};
 use futures::future::BoxFuture;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
 
 /// The evaluator's identity: a change to its semantics changes every key.
-const VERSION: &str = "acyclic.harness.config.v3";
+const VERSION: &str = "acyclic.harness.config.v4";
 
 /// Interrupt polls (QuickJS polls every ten thousand instructions)
 /// before a settings module stops. It is deterministic, so a module passes
@@ -136,13 +136,13 @@ fn cache() -> &'static Cache {
 }
 
 /// One module of a closure, as JavaScript.
-struct Module {
-    script: String,
-    imports: Vec<String>,
+pub(crate) struct Module {
+    pub(crate) script: String,
+    pub(crate) imports: Vec<String>,
 }
 
-/// `path`'s source as a JavaScript module and its resolved static imports.
-fn strip(path: &str, source: &[u8]) -> std::result::Result<Module, String> {
+/// Compile one static module for settings and code execution.
+pub(crate) fn compile_module(path: &str, source: &[u8]) -> std::result::Result<Module, String> {
     let text = std::str::from_utf8(source).map_err(|_| format!("{path} is not UTF-8"))?;
     if path.ends_with(".json") {
         serde_json::from_str::<serde::de::IgnoredAny>(text)
@@ -194,20 +194,24 @@ fn strip(path: &str, source: &[u8]) -> std::result::Result<Module, String> {
     )
     .build_with_scoping(scoping, &mut program);
     refuse_errors!(transformed.diagnostics);
-    let script = oxc_codegen::Codegen::new().build(&program).code;
-    // Imports left after type erasure: re-read them from the emitted module.
-    let mut imports = {
-        let emitted =
-            oxc_parser::Parser::new(&allocator, &script, oxc_span::SourceType::mjs()).parse();
-        refuse_errors!(emitted.diagnostics);
-        emitted
-            .module_record
-            .requested_modules
-            .keys()
-            .map(|specifier| resolve(path, specifier.as_str()))
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
+    // Type erasure has already removed type-only imports and re-exports.
+    // Link the remaining declarations from this same tree, without parsing
+    // the emitted source into a second arena tree and module record.
+    let mut imports = program
+        .body
+        .iter()
+        .filter_map(|statement| statement.as_module_declaration()?.source())
+        .map(|source| {
+            let specifier = source
+                .value
+                .as_str()
+                .ok_or_else(|| format!("{path}: module paths must be valid Unicode"))?;
+            resolve(path, specifier)
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     imports.sort();
+    imports.dedup();
+    let script = oxc_codegen::Codegen::new().build(&program).code;
     Ok(Module { script, imports })
 }
 
@@ -238,7 +242,7 @@ fn resolve(importer: &str, specifier: &str) -> std::result::Result<String, Strin
         }
         directory.push(rest);
         directory.join("/")
-    } else if specifier.starts_with("sys/") {
+    } else if specifier == "acyclic" || specifier.starts_with("sys/") {
         specifier.to_owned()
     } else {
         return Err(refuse());
@@ -402,7 +406,19 @@ fn run(
         return Err(format!("exceeded its instruction budget ({FUEL} polls)"));
     }
     let (form, json) = outcome?;
-    let value = serde_json::from_str(&json).map_err(|error| error.to_string())?;
+    let value = crate::executor::json::json_from_slice_bounded(
+        std::marker::PhantomData::<Value>,
+        json.as_bytes(),
+        crate::executor::json::JsonBounds {
+            maximum_bytes: Some(json.len() as u64),
+            maximum_items: None,
+            maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+        },
+        None,
+        Some(&crate::executor::json::JsonValueSchema::Root),
+        &mut |_| Ok(()),
+    )
+    .map_err(|error| error.to_string())?;
     let form = if form == "function" {
         Form::Function
     } else {

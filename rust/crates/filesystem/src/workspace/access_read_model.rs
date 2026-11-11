@@ -166,28 +166,51 @@ fn missing_disclosure_fence_negative_control() {
 }
 
 fn policy_observation_model(confirm: bool) {
-    loom::model(move || {
-        let store = Arc::new(MemoryAuthorityStore::default());
-        let cancel = CancellationToken::new();
-        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
-        ready(|| store.create_authority(AUTHORITY, Epoch::GENESIS, &mut work, None::<&mut ()>))
-            .unwrap();
-        assert!(publish(&store, head(&store), 1));
-        let initial = head(&store);
-        let writer = loom::thread::spawn({
-            let store = store.clone();
-            move || assert!(publish(&store, initial, 2))
+    for policy_changed in [true, false] {
+        loom::model(move || {
+            let store = Arc::new(MemoryAuthorityStore::default());
+            let cancel = CancellationToken::new();
+            let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+            ready(|| store.create_authority(AUTHORITY, Epoch::GENESIS, &mut work, None::<&mut ()>))
+                .unwrap();
+            assert!(publish(&store, head(&store), 1));
+            let initial = head(&store);
+            let writer = loom::thread::spawn({
+                let store = store.clone();
+                move || assert!(publish(&store, initial, 2))
+            });
+            let observed = head(&store);
+            let selected_revision = revision(if policy_changed { observed } else { initial });
+            // Metadata IO belongs to observed. A later head check is the return cut.
+            loom::thread::yield_now();
+            let current = head(&store);
+            // Verification reads the confirming root's immutable metadata. A
+            // later publication cannot change the policy at this return cut.
+            loom::thread::yield_now();
+            let confirmed_revision = revision(if policy_changed { current } else { initial });
+            let returned = !confirm
+                || crate::facade::policy_revision_is_current(
+                    observed,
+                    current,
+                    &selected_revision,
+                    &confirmed_revision,
+                );
+            writer.join().unwrap();
+            if !policy_changed {
+                assert!(returned, "data publication invalidated unchanged policy");
+            }
+            if returned {
+                assert_eq!(
+                    observed.epoch, current.epoch,
+                    "stale authority epoch returned"
+                );
+                assert_eq!(
+                    selected_revision, confirmed_revision,
+                    "stale policy observation returned"
+                );
+            }
         });
-        let observed = head(&store);
-        // Metadata IO belongs to observed. A later head check is the return cut.
-        loom::thread::yield_now();
-        let current = head(&store);
-        let returned = !confirm || crate::facade::policy_head_is_current(observed, current);
-        writer.join().unwrap();
-        if returned {
-            assert_eq!(observed, current, "stale policy observation returned");
-        }
-    });
+    }
 }
 
 #[test]

@@ -5,16 +5,16 @@ pub(super) struct Window {
     pub source: FileReadSource,
     pub bytes: acyclic_stream::OwnedBytes,
     // The source must be dropped before the credit that owns it.
-    _hold: crate::NativeCustody,
+    _hold: acyclic_fs::NativeCustody,
 }
 
 pub(super) fn custody(
     io: Option<&crate::executor::PreparationIo>,
     retained: u64,
-) -> Result<crate::NativeCustody> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+) -> Result<acyclic_fs::NativeCustody> {
+    #[cfg(not(target_arch = "wasm32"))]
     return io.map(|io| io.take_native_custody(retained)).transpose();
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     {
         let _ = (io, retained);
         Ok(None)
@@ -27,12 +27,12 @@ impl Window {
         input: &ReadFileInput,
         original: super::source::ReadSource,
         range: acyclic_fs::ByteRange,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
         let original = match original.source {
-            Some(FileReadSource::Content(file)) => {
-                let range = content_range(&file, range, work)?;
+            Some(super::version::SelectedVersion::Content(file)) => {
+                let range = content_range(&file, range);
                 let bytes = context.read_file_range(&file, range, io).await?;
                 return Ok(Self {
                     source: FileReadSource::Content(file),
@@ -46,8 +46,8 @@ impl Window {
             },
         };
         let expected = original.source.as_ref().and_then(|source| match source {
-            FileReadSource::Authored(file) => Some(file),
-            FileReadSource::Content(_) => None,
+            super::version::SelectedVersion::Authored(file) => Some(file),
+            super::version::SelectedVersion::Content(_) => None,
         });
         let hold;
         let (source, bytes, retained) = context
@@ -59,7 +59,7 @@ impl Window {
             )
             .await?;
         hold = custody(io, retained)?;
-        if expected.is_some_and(|expected| expected != &source) {
+        if expected.is_some_and(|expected| !expected.matches_source(&source)) {
             return Err(executor::rejection(
                 work,
                 "range belongs to another source selection",
@@ -77,13 +77,13 @@ impl Window {
         context: &ToolContext,
         path: &str,
         range: acyclic_fs::ByteRange,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         match &self.source {
             FileReadSource::Content(file) => {
                 context
-                    .read_file_range(file, content_range(file, range, work)?, io)
+                    .read_file_range(file, content_range(file, range), io)
                     .await
             }
             FileReadSource::Authored(original) => {
@@ -104,18 +104,11 @@ impl Window {
     }
 }
 
-fn content_range(
-    file: &FileRef,
-    range: acyclic_fs::ByteRange,
-    work: crate::NativeWork<'_>,
-) -> Result<acyclic_fs::ByteRange> {
-    let remaining = file
-        .descriptor()
-        .byte_length()
-        .checked_sub(range.offset)
-        .ok_or_else(|| executor::rejection(work, "range exceeds source"))?;
-    Ok(acyclic_fs::ByteRange {
+fn content_range(file: &FileRef, range: acyclic_fs::ByteRange) -> acyclic_fs::ByteRange {
+    let offset = range.offset.min(file.descriptor().byte_length());
+    let remaining = file.descriptor().byte_length() - offset;
+    acyclic_fs::ByteRange {
+        offset,
         length: range.length.min(remaining),
-        ..range
-    })
+    }
 }

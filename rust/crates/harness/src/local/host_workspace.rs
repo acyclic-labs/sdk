@@ -3,7 +3,7 @@
 //! This facade opens no model provider, executor, service or process. Its
 //! agents come from the native host's agent runtime.
 use super::*;
-use crate::agent::{AgentPath, VolumeBinding};
+use crate::agent::{AgentPath, WorkspaceEntry};
 use acyclic_fs::HeldRoot;
 use workspace::owner::{AgentOwner, ViewOwner};
 
@@ -41,6 +41,7 @@ pub struct HostWorkspace {
     mount_root: Arc<HeldRoot>,
     project: VolumeRef,
     signed: Scope,
+    verifier: crate::core::AuthorityVerifier,
     scope: crate::runtime::RuntimeScope,
     _native_volumes: Vec<workspace::projection::Entered>,
 }
@@ -53,6 +54,7 @@ impl HostWorkspace {
         workspace: Arc<LocalWorkspace>,
         agent: AgentPath,
         signed: &Scope,
+        verifier: &crate::core::AuthorityVerifier,
         admitted_mount_root: HeldRoot,
     ) -> Result<Self> {
         if agent.depth() != 0 {
@@ -89,6 +91,7 @@ impl HostWorkspace {
                 Default::default(),
             )?,
             signed: signed.copy(&mut None)?,
+            verifier: verifier.clone(),
             mount_root: Arc::new(admitted_mount_root),
             project,
             _native_volumes: Vec::new(),
@@ -197,43 +200,26 @@ impl HostWorkspace {
         let commands = workspace::git::Commands {
             workspace: &self.workspace,
             signed: &self.signed,
+            verifier: &self.verifier,
             clock: &acyclic_stream::SystemUnixMillisClock,
             capture_options: &configuration.0,
             capture_policy: &configuration.1,
         };
-        let parsed = commands.fs_arguments(command, &self.scope)?;
-        let mut state =
-            crate::sync::owned::lock_owned(workspace::StateArc::clone(&self.workspace.state)).await;
-        let (selected, pending) = self.workspace.selected_view().await?;
-        super::checkout_tools::reconciliation::recover_pending(
-            &self.workspace,
-            selected.as_ref().unwrap_or_else(|| self.workspace.view()),
-            pending,
-            &|| owner.verify(),
-        )
-        .await?;
-        state.active = selected;
-        let physical = self.workspace.selected_workspace(&mut state, owner).await?;
-        self.capture_volumes().await?;
         let result = commands
-            .fs(
-                parsed,
-                &workspace::git::CommandContext {
+            .invoke(
+                command,
+                workspace::git::CommandContext {
                     owner,
                     operation,
                     scope: &self.scope,
                     request,
                 },
-                &mut state,
-                &physical,
+                Box::pin(self.capture_volumes()),
             )
             .await?;
         self.verify().await?;
         verify_root(&self.mount_root)?;
-        match result {
-            workspace::git::Outcome::Completed(output) => Ok(*output),
-            workspace::git::Outcome::Rejected(error) => Err(*error),
-        }
+        Ok(result)
     }
 
     /// Mounts spawned child `child`'s project view, idempotently, and names it
@@ -244,7 +230,7 @@ impl HostWorkspace {
     pub(super) async fn open_child(
         &self,
         child: &AgentPath,
-        volumes: &[VolumeBinding],
+        volumes: &[WorkspaceEntry],
         signed: Scope,
         reference: &str,
     ) -> Result<Self> {
@@ -258,11 +244,12 @@ impl HostWorkspace {
             volumes
                 .iter()
                 .find(|binding| binding.name == name)
-                .map(|binding| binding.volume.clone())
+                .and_then(|binding| binding.as_volume())
+                .cloned()
                 .ok_or_else(|| Error::Invalid(format!("host child has no {name} volume")))
         };
         let project = bound("project")?;
-        let scratch = bound(crate::filesystem::HOME_VOLUME)?;
+        bound(crate::filesystem::HOME_VOLUME)?;
         if project.class() != VolumeClass::Project {
             return Err(Error::Invalid(
                 "host child project volume class differs".into(),
@@ -313,7 +300,7 @@ impl HostWorkspace {
             .for_scope(&signed)?;
         let workspace = self
             .workspace
-            .bound_task_view(view, &project, scratch, &*child_owner, &authority)
+            .bound_task_view(view, &project, volumes, &*child_owner, &authority)
             .await?;
         verify_root(&self.mount_root)?;
         let mut result = Self {
@@ -327,6 +314,7 @@ impl HostWorkspace {
                 Default::default(),
             )?,
             signed,
+            verifier: self.verifier.clone(),
             _native_volumes: Vec::new(),
         };
         result.verify().await?;
@@ -372,11 +360,14 @@ impl HostWorkspace {
             let Some(source) = &mount.view.source else {
                 continue;
             };
+            let Some(options) = source.options.clone() else {
+                continue;
+            };
             self.verify().await?;
             source.prepare_command().await?;
             let root = workspace::volumes::projection_root(&source.destination, relative)?;
             let options = volume_guard::options(
-                source.options.clone(),
+                options,
                 Arc::clone(&self.owner),
                 Arc::clone(&self.mount_root),
                 mount.mode.read_only(),
@@ -393,6 +384,9 @@ impl HostWorkspace {
             let Some(source) = &mount.view.source else {
                 continue;
             };
+            if source.options.is_none() {
+                continue;
+            }
             let native = source.native().await;
             let native = native
                 .as_ref()

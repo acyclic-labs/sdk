@@ -54,6 +54,7 @@ async fn check(
     let path =
         NamespacePath::from_portable(&crate::path::PortablePath::parse("/file", limits)?, limits)?;
     let options = CaptureOptions {
+        source_namespace: None,
         source_root: source.to_owned(),
         expected_root_identity: capture_root_identity(source)?,
         maximum_paths: 8,

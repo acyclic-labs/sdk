@@ -3,7 +3,7 @@
 use crate::conversation::{ContentChange, FileRef, VolumeRef};
 use crate::tool::edit::{allocation, charge, reserve_string, reserve_vec};
 use crate::{
-    Error, NativeCustody, NativeWork, Result,
+    Error, Result,
     runtime::{RuntimeScope, ToolContext},
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult,
@@ -29,7 +29,7 @@ struct PatchResult<Files = Vec<FileRef>> {
     files: Files,
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl crate::filesystem::UploadRecord for PatchResult {
     fn logical_owned_bytes(&self) -> Result<u64> {
         self.files.iter().try_fold(
@@ -55,7 +55,7 @@ struct Plan<'a> {
     output: Option<String>,
     target: std::borrow::Cow<'a, str>,
     moving: bool,
-    _source_custody: NativeCustody,
+    _source_custody: acyclic_fs::NativeCustody,
 }
 
 #[derive(Clone, Copy)]
@@ -86,17 +86,17 @@ impl ApplyPatch {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
-        work: NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         recovering: bool,
-    ) -> Result<(Option<ToolResult>, NativeCustody)> {
+    ) -> Result<(Option<ToolResult>, acyclic_fs::NativeCustody)> {
         let context = admitted_context(Some(context), invocation)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let owned_io = work
             .map(crate::executor::PreparationIo::from_native_work)
             .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = owned_io.as_ref();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let io = None;
         let mut meter = allocation(work, 0)?;
         let actions = parse_document(input(&invocation.arguments)?, &mut meter)?;
@@ -105,7 +105,7 @@ impl ApplyPatch {
             let observed = context
                 .observe_tool_changes(invocation.operation_id, volume, io)
                 .await?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             let _receipt = io
                 .map(|io| io.take_native_custody(observed.1))
                 .transpose()?;
@@ -128,9 +128,9 @@ impl ApplyPatch {
             } else {
                 let (file, bytes, retained) =
                     context.read_tool_path(action.path(), None, io).await?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let custody = {
                     let _ = retained;
                     None
@@ -189,9 +189,9 @@ impl ApplyPatch {
         let (files, retained) = context
             .stage_tool_changes(invocation.operation_id, volume, &changes, io)
             .await?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let _receipt = io.map(|io| io.take_native_custody(retained)).transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let _ = retained;
         let encoded = crate::tool::value(&PatchResult { files }, u64::MAX, work)?;
         Ok((Some(ToolResult { value: encoded.0 }), encoded.1))
@@ -233,7 +233,11 @@ fn authorize_actions<'a>(
             crate::executor::with_history_io(io, |history| {
                 crate::conversation::validate_content_path(&relative, history)
             })?;
-            if relative.len() > context.effective_scope().limits().path_bytes
+            if context
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|maximum| relative.len() > maximum.get())
                 || crate::conversation::is_internal_path(&relative)
             {
                 return Err(Error::tool_rejected(
@@ -254,18 +258,18 @@ impl ToolExecutor for ApplyPatch {
         _scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
         let context = admitted_context(context, invocation)?;
         let mut meter = allocation(work, 0)?;
         let actions = parse_document(input(&invocation.arguments)?, &mut meter)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let owned_io = work
             .map(crate::executor::PreparationIo::from_native_work)
             .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = owned_io.as_ref();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let io = None;
         authorize_actions(context, &actions, io).map(|_| ())
     }
@@ -296,7 +300,7 @@ impl ToolExecutor for ApplyPatch {
                 .map(|result| result.0)
         })
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -304,14 +308,20 @@ impl ToolExecutor for ApplyPatch {
         work.remaining()?;
         Ok(())
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_context<'a>(
         &'a self,
         context: &'a ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (ToolResult, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let (result, custody) = self.run(context, invocation, Some(work), false).await?;
             Ok((
                 result.ok_or_else(|| Error::tool_rejected("patch receipt is missing"))?,
@@ -320,15 +330,20 @@ impl ToolExecutor for ApplyPatch {
             ))
         })
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_context<'a>(
         &'a self,
         context: &'a ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
-    {
-        crate::NativeFutureBundle::new(work, || async move {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (Option<ToolResult>, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let (result, custody) = self.run(context, invocation, Some(work), true).await?;
             Ok((
                 result,
@@ -344,8 +359,8 @@ impl ToolProjection for ApplyPatch {
         &self,
         invocation: &ToolInvocation,
         result: &ToolResult,
-        work: NativeWork<'_>,
-    ) -> Result<(Value, NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         let _result = crate::tool::decode::<PatchResult>(&result.value, work)?;
         let mut meter = allocation(work, 0)?;
         let actions = parse_document(input(&invocation.arguments)?, &mut meter)?;
@@ -381,8 +396,8 @@ impl ToolProjection for ApplyPatch {
         }
         schema::project_text(&text, work)
     }
-    fn supports_native_projection(&self, work: NativeWork<'_>) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_projection(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             work.remaining()?;
         }
@@ -391,7 +406,11 @@ impl ToolProjection for ApplyPatch {
     }
 }
 
-fn append_summary(text: &mut String, part: &str, meter: &mut NativeCustody) -> Result<()> {
+fn append_summary(
+    text: &mut String,
+    part: &str,
+    meter: &mut acyclic_fs::NativeCustody,
+) -> Result<()> {
     let length = text
         .len()
         .checked_add(part.len())

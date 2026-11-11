@@ -52,7 +52,7 @@ pub enum WorkspaceMounting {
 impl WorkspaceMounting {
     /// `Native` when this host admits a native projection; otherwise
     /// `Physical`, with the probe's reason for the caller to report.
-    #[cfg(feature = "native-execution")]
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn detect() -> (Self, Option<&'static str>) {
         match acyclic_fs::probe_native_mount().unavailable_reason {
@@ -64,6 +64,7 @@ impl WorkspaceMounting {
 
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
+    pub(super) topology: Option<crate::topology::Topology>,
     pub(super) system_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
     pub(super) active_directory: String,
     pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
@@ -77,7 +78,7 @@ pub struct LocalHarnessConfig {
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
     /// Resolves the model selection, approver models and search at open.
-    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) models: Option<(Arc<ModelResolver>, Option<String>)>,
     pub(super) tools: Vec<Tool>,
     /// Standard tools enabled, by name.
@@ -87,33 +88,27 @@ pub struct LocalHarnessConfig {
     pub(super) approval_policy: crate::approvals::ApprovalPolicy,
     pub(super) approval_issuer: Option<AuthorityRoot>,
     pub(super) approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
-    #[cfg(feature = "search-http")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) search_provider: Option<Arc<dyn crate::search::SearchProvider>>,
-    #[cfg(feature = "search-http")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) web_tools: bool,
     pub(super) limits: Limits,
     pub(super) run_limits: TaskRunLimits,
     pub(super) compaction: Option<crate::context::CompactionPolicy>,
-    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) settings: Option<crate::native_settings::SettingsConfig>,
-    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) mcp_limits: crate::mcp::McpClientLimits,
     pub(super) clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) environment_platform: crate::native_environment::PlatformPolicy,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) workspace_mounting: WorkspaceMounting,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) native_mount_probe: acyclic_fs::NativeMountProbe,
 }
 
-#[cfg(any(
-    test,
-    feature = "native-execution",
-    feature = "hooks",
-    feature = "mcp-stdio",
-    feature = "mcp-http"
-))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 impl LocalProject {
     pub(super) fn root(&self) -> &Path {
         match self {
@@ -124,6 +119,12 @@ impl LocalProject {
 }
 
 impl LocalHarnessConfig {
+    /// Forces a run's delegation policy before its first model request.
+    pub fn topology(mut self, topology: crate::topology::Topology) -> Result<Self> {
+        topology.validate()?;
+        self.topology = Some(topology);
+        Ok(self)
+    }
     /// Publishes public host metadata under `sys/models/` or `sys/secrets/`.
     /// The caller must project metadata before calling this method: credentials,
     /// secret values and private headers do not belong in this read-only layer.
@@ -147,7 +148,7 @@ impl LocalHarnessConfig {
     /// native settings' configured model, else the resolver's default. Approver
     /// models resolve through `models` too; the settings' search provider backs the host's
     /// web tools.
-    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     #[must_use]
     pub fn resolving(
         workspace: impl Into<PathBuf>,
@@ -161,7 +162,7 @@ impl LocalHarnessConfig {
 
     /// The one resolution of a [`Self::resolving`] composition under its native `settings`;
     /// `injected` settings keep search off the environment's native sources.
-    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) fn resolve(
         mut self,
         settings: Option<&crate::native_settings::SettingsConfig>,
@@ -183,7 +184,7 @@ impl LocalHarnessConfig {
             self.approval_models
                 .insert(model.into(), models.resolve(model)?);
         }
-        #[cfg(feature = "search-http")]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             if let Some(settings) = settings {
                 let search =
@@ -199,14 +200,14 @@ impl LocalHarnessConfig {
                 }
             }
         }
-        #[cfg(not(feature = "search-http"))]
+        #[cfg(target_arch = "wasm32")]
         let _ = injected;
         Ok(self)
     }
 
     /// Opens workspace coordination without a model, tools, settings or agent execution.
     /// The trusted harness owner must start this outside the native host sandbox.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     #[must_use]
     pub fn native_host(workspace: impl Into<PathBuf>) -> Self {
         let mut config = Self::configuration(workspace.into(), None);
@@ -219,6 +220,7 @@ impl LocalHarnessConfig {
 
     fn configuration(workspace: PathBuf, model: Option<(Model, Arc<dyn ModelProvider>)>) -> Self {
         Self {
+            topology: None,
             system_files: Default::default(),
             active_directory: String::new(),
             goal_continuations: Some(Default::default()),
@@ -228,7 +230,7 @@ impl LocalHarnessConfig {
             without_user_settings: false,
             test_state: None,
             model,
-            #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             models: None,
             tools: Vec::new(),
             default_tools: crate::tools::default_names(),
@@ -236,28 +238,28 @@ impl LocalHarnessConfig {
             approval_policy: Default::default(),
             approval_issuer: None,
             approval_models: Default::default(),
-            #[cfg(feature = "search-http")]
+            #[cfg(not(target_arch = "wasm32"))]
             search_provider: None,
-            #[cfg(feature = "search-http")]
+            #[cfg(not(target_arch = "wasm32"))]
             web_tools: false,
             limits: Limits::default(),
             run_limits: TaskRunLimits::default(),
             compaction: None,
-            #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             settings: None,
-            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            #[cfg(not(target_arch = "wasm32"))]
             mcp_limits: crate::mcp::McpClientLimits::default(),
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             environment_platform: crate::native_environment::PlatformPolicy::Native,
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             workspace_mounting: WorkspaceMounting::Native,
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             native_mount_probe: Default::default(),
         }
     }
     /// Selects how task views reach the host filesystem; `Native` by default.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     #[must_use]
     pub fn workspace_mounting(mut self, mounting: WorkspaceMounting) -> Self {
         self.workspace_mounting = mounting;
@@ -266,7 +268,7 @@ impl LocalHarnessConfig {
     /// Selects the host filesystem root whose native mount prerequisites are
     /// admitted. Root coordination still uses the existing physical checkout;
     /// only projected views and native shell tools require these capabilities.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     #[must_use]
     pub fn native_mount_probe(mut self, probe: acyclic_fs::NativeMountProbe) -> Self {
         self.native_mount_probe = probe;
@@ -282,7 +284,7 @@ impl LocalHarnessConfig {
     }
     /// Selects the instruction scope containing an explicitly supplied host working directory.
     /// A working directory outside the bound project selects root instructions only.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn working_directory(self, directory: &Path) -> Result<Self> {
         let root = std::fs::canonicalize(self.project.root()).map_err(storage)?;
         let directory = std::fs::canonicalize(directory).map_err(storage)?;
@@ -355,7 +357,6 @@ impl LocalHarnessConfig {
     }
     /// The one resolution of this composition's durable state directory: the injected directory, else the
     /// project's default under the per-user root.
-    #[cfg(test)]
     pub(super) fn resolved_state_directory(&self) -> Result<PathBuf> {
         let location = self.state_location()?;
         if let StateLocation::Directory(directory) = location {
@@ -416,7 +417,7 @@ impl LocalHarnessConfig {
     /// this harness's own owner scope, exactly as a managed host admits its
     /// verified caller, instead of as the tree's root custody.
     #[must_use]
-    #[cfg(feature = "serve")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn served(mut self, verifier: Arc<dyn super::Verifier>) -> Self {
         self.served = Some(verifier);
         self
@@ -452,7 +453,7 @@ impl LocalHarnessConfig {
         self
     }
     /// Enables credential-free HTTP retrieval. Search requires a configured provider.
-    #[cfg(feature = "search-http")]
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn web_tools(mut self) -> Self {
         self.web_tools = true;
@@ -460,7 +461,7 @@ impl LocalHarnessConfig {
     }
 
     /// Binds a host-owned search provider without serializing its credentials.
-    #[cfg(feature = "search-http")]
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn search_provider(mut self, provider: Arc<dyn crate::search::SearchProvider>) -> Self {
         self.search_provider = Some(provider);
@@ -469,7 +470,7 @@ impl LocalHarnessConfig {
     }
 
     /// Prebinds web tools before opening an embedded runtime and issuing its grants.
-    #[cfg(feature = "search-http")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn bind_web_tools(&self, registry: &mut ToolRegistry) -> Result<()> {
         if self.web_tools {
             super::web::WebExecutor::bind(registry, self.search_provider.clone())?;
@@ -505,14 +506,14 @@ impl LocalHarnessConfig {
         self
     }
     /// Selects native settings locations and explicit project trust using the shared loader.
-    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     #[must_use]
     pub fn settings(mut self, settings: crate::native_settings::SettingsConfig) -> Self {
         self.settings = Some(settings);
         self
     }
     /// Selects protective MCP discovery-frame and tool-exchange bounds.
-    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn mcp_limits(mut self, limits: crate::mcp::McpClientLimits) -> Self {
         self.mcp_limits = limits;
@@ -531,7 +532,7 @@ std::thread_local! {
     pub(super) static TEMPORARY_STATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub use crate::model::ModelResolver;
 
 #[cfg(all(test, not(loom)))]

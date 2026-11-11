@@ -178,7 +178,9 @@ impl StringSyntax {
 #[derive(Default)]
 pub(crate) struct JsonSpans {
     lexical: admission::Lexical,
-    frames: arrayvec::ArrayVec<Frame, 256>,
+    // Container depths are zero-based, so an empty container at the accepted
+    // maximum depth still needs its own frame above the root frame.
+    frames: arrayvec::ArrayVec<Frame, { RECORD_MAXIMUM_DEPTH as usize + 1 }>,
     position: u64,
     root_started: bool,
     root_done: bool,
@@ -261,16 +263,23 @@ impl JsonSpans {
     ) -> Result<usize> {
         let charge = RefCell::new(charge);
         for (index, byte) in bytes.iter().copied().enumerate() {
-            if self.position >= bounds.maximum_bytes {
+            if bounds
+                .maximum_bytes
+                .is_some_and(|maximum| self.position >= maximum)
+            {
                 return Err(boundary("JSON input exceeds declared byte bound", code));
             }
+            let next_position = self
+                .position
+                .checked_add(1)
+                .ok_or_else(|| boundary("JSON byte position overflow", code))?;
             let mut yielded = false;
             if self.lexical.string {
                 if !self.string.byte(byte) {
                     return Err(Self::invalid(code));
                 }
                 self.lexical.byte(byte, bounds, code, &charge)?;
-                self.position += 1;
+                self.position = next_position;
                 if !self.lexical.string {
                     if !self.string.complete() {
                         return Err(Self::invalid(code));
@@ -298,7 +307,7 @@ impl JsonSpans {
                     } else {
                         self.atom = Some(atom.byte(byte).ok_or_else(|| Self::invalid(code))?);
                         self.lexical.byte(byte, bounds, code, &charge)?;
-                        self.position += 1;
+                        self.position = next_position;
                         continue;
                     }
                 }
@@ -337,7 +346,7 @@ impl JsonSpans {
                         {
                             return Err(Self::invalid(code));
                         }
-                        yielded |= self.end(kind, frame.start, self.position + 1, emit)?;
+                        yielded |= self.end(kind, frame.start, next_position, emit)?;
                     }
                     _ => {
                         let kind = match byte {
@@ -381,7 +390,7 @@ impl JsonSpans {
                     }
                 }
                 self.lexical.byte(byte, bounds, code, &charge)?;
-                self.position += 1;
+                self.position = next_position;
             }
             if yielded {
                 return Ok(index + 1);

@@ -26,7 +26,7 @@ pub(super) fn plugin(instance: &str, matcher: Option<RequestMatch>) -> HookSpec 
             config: "{}".into(),
             matcher,
         },
-        timeout_ms: u64::MAX,
+        timeout_ms: None,
         failure: HookFailure::Block,
     }
 }
@@ -64,7 +64,7 @@ pub(super) async fn judge(
             HookEvent::PreToolUse,
             &original,
             &crate::tool::ToolRegistry::default(),
-            u64::MAX,
+            None,
             |hook, _, rewritten| {
                 let input = rewritten.unwrap_or(&original["tool_input"]);
                 let command = input["command"].as_str().unwrap_or_default().to_owned();
@@ -122,7 +122,7 @@ fn withdrawn(bytes: &[u8]) -> Result<()> {
             HookEvent::PreToolUse,
             &original,
             &registry,
-            u64::MAX,
+            None,
             |hook, _, rewritten| {
                 visits.set(visits.get() + 1);
                 let input = rewritten.unwrap_or(&original["tool_input"]);
@@ -229,7 +229,7 @@ fn joined(bytes: &[u8]) -> Result<()> {
     let cancel = bytes.first().copied().unwrap_or_default() % 3;
     let first_completed = usize::from(bytes.get(1).is_some_and(|byte| byte & 1 != 0));
     {
-        let run = configured.run_commands(event, &original, &registry, u64::MAX, |hook, _, _| {
+        let run = configured.run_commands(event, &original, &registry, None, |hook, _, _| {
             let index = usize::from(identity(hook) == "second");
             visits[index].set(visits[index].get() + 1);
             let receiver = receivers[index].take();

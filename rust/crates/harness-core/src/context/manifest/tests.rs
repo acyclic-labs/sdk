@@ -130,8 +130,7 @@ proptest! {
 
     // Property: the manifest round-trips its immutable sources, and
     // configuration files obey the same bounds as instructions.
-    #[cfg(feature = "filesystem")]
-    #[test]
+        #[test]
     fn configuration_sources_round_trip(path in "[a-zé猫]{1,40}", text in ".{0,80}", bound in 1usize..256) {
         use crate::conversation::{FileDescriptor, FileRef};
         let reference = FileRef::new(
@@ -144,7 +143,7 @@ proptest! {
         let limits = Limits { render_bytes: 32_768, ..Default::default() };
         let bytes = manifest.encode(limits)?;
         prop_assert_eq!(ContextManifest::decode(&bytes, limits)?, manifest.clone());
-        let limits = Limits { path_bytes: bound, ..limits };
+        let limits = Limits { path_bytes: std::num::NonZeroUsize::new(bound), ..limits };
         prop_assert_eq!(manifest.validate(limits).is_ok(), reference.path().len() <= bound);
         prop_assert_eq!(ContextManifest::decode(&bytes, limits).is_ok(), reference.path().len() <= bound);
     }
@@ -171,9 +170,9 @@ proptest! {
         };
         let limits = Limits { render_bytes: 32_768, ..Default::default() };
         let bytes = manifest.encode(limits)?;
-        for path_bytes in [bound, length - 1, length, length + 1] {
+        for path_bytes in [Some(bound), Some(length - 1), Some(length), Some(length + 1), None].map(|bound| bound.and_then(std::num::NonZeroUsize::new)) {
             let limits = Limits { path_bytes, ..limits };
-            let admitted = length <= path_bytes;
+            let admitted = path_bytes.is_none_or(|maximum| length <= maximum.get());
             prop_assert_eq!(manifest.validate(limits).is_ok(), admitted);
             prop_assert_eq!(manifest.encode(limits).is_ok(), admitted);
             prop_assert_eq!(ContextManifest::decode(&bytes, limits).is_ok(), admitted);
@@ -288,7 +287,7 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
     };
     for (message_limit, current_input_index) in [(2, 1), (3, 2)] {
         let limits = Limits {
-            context_messages: message_limit,
+            context_messages: std::num::NonZeroUsize::new(message_limit),
             ..Limits::default()
         };
         let run = pipeline.run(&input, limits, None).await?;
@@ -297,19 +296,19 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
         assert_eq!(run.messages.len(), message_limit);
         assert_eq!(run.current_input_index, Some(current_input_index));
         assert_eq!(
-            run.messages[message_limit - 2].content,
+            run.messages[0].content,
             ModelContent::Text("required".into())
         );
         if message_limit == 3 {
             assert!(
-                matches!(&run.messages[0].content, ModelContent::Text(text) if text.starts_with("<environment_context>"))
+                matches!(&run.messages[1].content, ModelContent::Text(text) if text.starts_with("<environment_context>"))
             );
         }
     }
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;

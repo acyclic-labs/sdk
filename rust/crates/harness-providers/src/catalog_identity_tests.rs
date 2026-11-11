@@ -20,9 +20,15 @@ fn projected_identity(adapter: Adapter, name: &str, counting: bool) {
     )
     .unwrap();
     if counting {
-        let count: serde_json::Value =
-            serde_json::from_slice(&crate::counting::wire::body(body, name, adapter).unwrap())
-                .unwrap();
+        let count: serde_json::Value = serde_json::from_slice(
+            &crate::counting::wire::body(
+                body,
+                name,
+                crate::counting::specification(&provider.config, None).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let actual = if adapter == Adapter::Gemini {
             count["generateContentRequest"]["model"]
                 .as_str()

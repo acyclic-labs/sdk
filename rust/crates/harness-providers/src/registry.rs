@@ -1,4 +1,6 @@
-use crate::{Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel, invalid};
+use crate::{
+    Adapter, Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel, invalid,
+};
 use acyclic_harness_core::{Result, model::Model};
 use std::{collections::BTreeMap, sync::Arc};
 mod catalog_update;
@@ -56,11 +58,12 @@ impl Registry {
         self.resolver = Some(resolver);
     }
 
-    /// Binds the owner's bounded content reader used by every adapter.
+    /// Binds the owner's content reader and optional aggregate projection credit.
+    /// `None` imposes no aggregate byte policy.
     pub fn with_content(
         mut self,
         reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Self {
         self.files = crate::files::Files {
             reader: Some(reader),
@@ -232,13 +235,15 @@ impl Registry {
         let transport = crate::deadline::Bounded::new(transport, config.timeouts);
         Ok(ResolvedModel {
             resolver: self.resolver.as_ref().map(Arc::downgrade),
-            unbound_transport: self.transport.clone(),
+            unbound_transport: (!Arc::ptr_eq(&transport, &self.transport))
+                .then(|| self.transport.clone()),
             #[cfg(not(target_arch = "wasm32"))]
             account_pin: codex_login
                 .as_ref()
                 .map_or_else(|| Arc::new(std::sync::OnceLock::new()), |login| login.pin()),
             inputs: Some(self.inputs.clone()),
-            credential_config: Some(credential_config),
+            credential_config: (!Arc::ptr_eq(&config, &credential_config))
+                .then_some(credential_config),
             files: self.files.clone(),
             accounting: crate::resolved::Accounting::new(config.adapter),
             model,
@@ -318,8 +323,12 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
                 "count endpoint must accept the provider input dialect",
             ));
         }
-        // A count projection deliberately omits generation/stream controls.
-        // Sending it to generation can run a billable, unaccounted model call.
+        let reported = counter.response_field == crate::TokenCountField::PromptTokens;
+        if reported && config.adapter != Adapter::Chat {
+            return Err(invalid("reported prompt usage requires the Chat adapter"));
+        }
+        // Tokenizer projections omit generation controls. Only the explicit
+        // reported-usage mode sends a one-token completion to generation.
         for name in std::iter::once("model").chain(config.models.keys().map(String::as_str)) {
             let count = validate_url(
                 &crate::counting::wire::endpoint(config, name, counter)?,
@@ -327,11 +336,16 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
             )?;
             let generation = url::Url::parse(&crate::projection::endpoint_for(config, name)?)
                 .map_err(|_| invalid("invalid generation endpoint"))?;
-            if count.origin() == generation.origin()
-                && count.path().trim_end_matches('/') == generation.path().trim_end_matches('/')
-            {
+            let same = count.origin() == generation.origin()
+                && count.path().trim_end_matches('/') == generation.path().trim_end_matches('/');
+            if same && !reported {
                 return Err(invalid(
                     "token counter must not use the generation endpoint",
+                ));
+            }
+            if reported && !same {
+                return Err(invalid(
+                    "reported prompt usage must use the generation endpoint",
                 ));
             }
         }

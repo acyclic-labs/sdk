@@ -37,7 +37,7 @@ impl crate::text_merge::admitted::Work for TextWork<'_, '_> {
 /// The shared merger owns scratch and transfers its original output guard
 /// directly into staging, without a second payload allocation or fresh budget.
 pub(crate) fn text_merge(
-    base: &str,
+    base: Option<&str>,
     ours: &str,
     theirs: &str,
     accounting: &mut KernelAccounting<'_>,

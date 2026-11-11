@@ -775,7 +775,6 @@ pub(super) fn probe_limits(config: VolumeConfig) -> ProbeLimits {
         maximum_cached_generations: 2,
         maximum_cached_records: config.limits.maximum_checkout_dependencies,
         maximum_extent_spans: config.limits.maximum_directory_page_entries,
-        maximum_content_payload_bytes: config.limits.maximum_read_bytes,
         maximum_directory_entries: config.limits.maximum_directory_page_entries,
     }
 }

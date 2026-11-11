@@ -1,5 +1,30 @@
 # Actors descriptor fixture provenance
 
+The 2026-11-11 capture at `a7969f5051aaf400b35596a87d9a15af3237a665`
+makes the three ActorLimits reservations optional. Its maintained schema SHA-256
+is `9a599b2710fdc0dc41f4c37a0896874c76f768f65ab7b9d2e0fb0e5a24a98bf8`.
+The existing native `sdk-proto-codegen` executable was copied before use and
+hashed as `b4669a47cd6d49aac7689a0f3228a3f07fc8b21dc9fd8d6f50af3fa54a9862ff`.
+The retained executable was reused without claiming a new generator build;
+its retained Google inputs were checked against the current Objects baseline.
+The executable processed an exact archive of the maintained
+Actors and shared protocol inputs, without rebuilding SDK packages:
+
+```sh
+sdk-proto-codegen descriptors INPUT_ROOT OUTPUT actors
+buf build --path rust/crates/actors/proto/actors --exclude-source-info -o actors-buf.bin
+sdk-proto-codegen canonicalize actors actors-buf.bin actors-buf-v1.bin
+```
+
+The Rust output SHA-256 is
+`5b63d9044e1f01a93e7926e835923a27412a8bff9cb00de3ce0e1f3a7f813eda`;
+the independent Buf 1.75.0 output is
+`fc04dc117d5274ba89b4428556bc7a849b0aa0bb70294376f3b516c003ffe2f4`.
+Their complete four-file descriptor closures compare identically after the
+existing contract normalization: remove source locations and sort top-level
+message/enum declarations. Unknown fields and options remain present. This
+capture does not claim that the pending native descriptor controls have run.
+
 Refresh all current Actors descriptors together from the maintained schema:
 
 ```sh

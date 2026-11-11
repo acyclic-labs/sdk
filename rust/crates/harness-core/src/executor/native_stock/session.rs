@@ -6,6 +6,9 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) io: Option<&'a PreparationIo>,
     pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
     pub(in crate::executor) single_request: bool,
+    /// Serializes journal transitions shared by response and summary producers.
+    pub(in crate::executor) journal_writes: JournalWrites<'a>,
+    pub(in crate::executor) background: crate::executor::background_compaction::Background<'a>,
     /// Resolved on first use, after `context` and `io` are fixed.
     pub(in crate::executor) compaction: once_cell::sync::OnceCell<ResolvedCompaction<'a>>,
     pub(in crate::executor) records:
@@ -15,6 +18,36 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) request_cache:
         tokio::sync::Mutex<crate::executor::retained_request::RequestCache<'a>>,
     pub(in crate::executor) content_admission: crate::executor::ExecutionJournalCacheId,
+}
+
+/// One writer entrance for an execution and its borrowed summary sessions.
+/// The guard covers a read-tail/commit transition, never provider or tool execution.
+pub(in crate::executor) enum JournalWrites<'a> {
+    Owned(tokio::sync::Mutex<()>),
+    Borrowed(&'a tokio::sync::Mutex<()>),
+}
+
+impl Default for JournalWrites<'_> {
+    fn default() -> Self {
+        Self::Owned(tokio::sync::Mutex::new(()))
+    }
+}
+
+impl JournalWrites<'_> {
+    fn mutex(&self) -> &tokio::sync::Mutex<()> {
+        match self {
+            Self::Owned(mutex) => mutex,
+            Self::Borrowed(mutex) => mutex,
+        }
+    }
+
+    pub(in crate::executor) fn borrowed(&self) -> JournalWrites<'_> {
+        JournalWrites::Borrowed(self.mutex())
+    }
+
+    pub(in crate::executor) async fn lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mutex().lock().await
+    }
 }
 
 /// The turn's compaction policy, resolved once from the original IO, with the
@@ -35,6 +68,8 @@ impl<'a> StockExecution<'a> {
             io: None,
             summary: None,
             single_request: false,
+            journal_writes: JournalWrites::default(),
+            background: Default::default(),
             compaction: once_cell::sync::OnceCell::new(),
             records: tokio::sync::Mutex::new(Default::default()),
             working_tail: tokio::sync::Mutex::new(Default::default()),
@@ -42,15 +77,8 @@ impl<'a> StockExecution<'a> {
             content_admission: Default::default(),
         }
     }
-    pub(in crate::executor) fn native_work(&self) -> crate::NativeWork<'_> {
-        #[cfg(feature = "filesystem")]
-        {
-            self.io.and_then(PreparationIo::original_native_work)
-        }
-        #[cfg(not(feature = "filesystem"))]
-        {
-            None
-        }
+    pub(in crate::executor) fn native_work(&self) -> acyclic_fs::NativeWork<'_> {
+        { self.io.and_then(PreparationIo::original_native_work) }
     }
     pub(in crate::executor) fn original_context(&self) -> Option<&crate::runtime::TaskContext> {
         self.context.map(|(context, _)| context.as_ref())
@@ -71,7 +99,7 @@ impl<'a> StockExecution<'a> {
     }
     fn resolve_compaction(&self) -> Result<ResolvedCompaction<'a>> {
         use crate::context::CompactionPolicy;
-        static THRESHOLD: std::sync::LazyLock<CompactionPolicy> =
+        static CAPACITY: std::sync::LazyLock<CompactionPolicy> =
             std::sync::LazyLock::new(CompactionPolicy::default);
         let stock: &'a StockExecutor = self.stock;
         let disabled = || ResolvedCompaction {
@@ -80,7 +108,7 @@ impl<'a> StockExecution<'a> {
         };
         Ok(match (&self.summary, &stock.compaction, self.context) {
             (Some(_), _, _) => disabled(),
-            (None, Some(policy @ CompactionPolicy::Threshold(_)), _) => {
+            (None, Some(policy @ CompactionPolicy::Capacity(_)), _) => {
                 let destination = self
                     .context
                     .map(|(context, _)| context.summary_destination(self.io))
@@ -98,7 +126,7 @@ impl<'a> StockExecution<'a> {
                 let destination = context.summary_destination(self.io)?;
                 ResolvedCompaction {
                     policy: if destination.writer().is_some() {
-                        &THRESHOLD
+                        &CAPACITY
                     } else {
                         &CompactionPolicy::Disabled
                     },
@@ -106,7 +134,7 @@ impl<'a> StockExecution<'a> {
                 }
             }
             (None, None, None) => ResolvedCompaction {
-                policy: &THRESHOLD,
+                policy: &CAPACITY,
                 destination: None,
             },
         })
@@ -220,7 +248,7 @@ impl StockExecutor {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl StockExecutor {
     /// Audits the native callback boundaries without cloning configuration or boxing work.
     pub(crate) fn supports_native_execution(

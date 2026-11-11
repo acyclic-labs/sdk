@@ -4,7 +4,7 @@ use acyclic_harness::{
     Error, Result,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     resources::ProviderRef,
-    workspace::{VolumeView, compose},
+    workspace::{MountTable, NativeRoot, VolumeView, compose},
 };
 use proptest::prelude::*;
 use std::{
@@ -119,6 +119,15 @@ fn volume(agent: &str, name: &str, policy: Arc<Policy>) -> Result<VolumeView<()>
 fn root() -> PathBuf {
     std::env::current_dir().unwrap().join("task-view")
 }
+fn expose_native_projections(table: &mut MountTable<()>) {
+    let root = table.root.clone();
+    for (relative, mount) in table.mounts_mut() {
+        if !relative.is_empty() {
+            mount.native_root = NativeRoot::Path(root.join(relative));
+        }
+    }
+}
+
 const CONTEXT: Context = Context {
     now: 100,
     approvals: 0,
@@ -128,7 +137,7 @@ const CONTEXT: Context = Context {
 fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
     let principal = principal("B");
     let policy = policy(false);
-    let table = compose(
+    let mut table = compose(
         root(),
         &principal,
         &capability(),
@@ -141,6 +150,8 @@ fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
     )?;
     assert_eq!(table.mounts().count(), 2);
     assert_eq!(table.context_line(), "Volumes: . (rw), .volumes/data (rw)");
+    assert!(!table.environment()?.contains_key("ACYCLIC_VOLUME_DATA"));
+    expose_native_projections(&mut table);
     let hints = table.environment()?;
     assert_eq!(
         hints.get("ACYCLIC_VOLUME_DATA_MODE").map(String::as_str),
@@ -189,7 +200,13 @@ fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
             others,
         )
     };
-    let table = build(false)?;
+    let mut table = build(false)?;
+    assert!(
+        !table
+            .environment()?
+            .contains_key("ACYCLIC_VOLUME_AGENTS_A_MODE")
+    );
+    expose_native_projections(&mut table);
     let (foreign, path) = table.resolve(Path::new(".volumes/agents/A/x"))?;
     assert!(foreign.mode.read_only());
     assert_eq!(

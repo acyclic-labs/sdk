@@ -31,10 +31,11 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
         &IntentId::try_from("editor-root")?,
         RootRequest {
             agent,
-            fresh: vec![VolumeBinding {
-                name: PRIVATE_VOLUME.into(),
-                volume: private,
-            }],
+            fresh: vec![WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::Private,
+                PRIVATE_VOLUME.into(),
+                private,
+            )],
             retained: Vec::new(),
             brief: None,
             policy: None,
@@ -51,7 +52,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
         agent_authority(bound.issuer(), bound.admission(), root, &state.volumes, &[]).await?;
     let publisher = FilesystemContentPublisher::new(
         bound.volumes().clone(),
-        &authority.private.volume,
+        authority.private.volume()?,
         &authority.verifier,
         &authority.scope,
         64 * 1024,
@@ -218,6 +219,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             &by,
             &InboxRecord::Spawn(crate::agent::SpawnRequest {
                 profile: crate::agent::CreationConfig {
+                    topology: None,
                     model: None,
                     continuation: None,
                     context: crate::agent::SpawnContext::Fork,

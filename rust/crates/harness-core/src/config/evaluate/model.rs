@@ -4,7 +4,7 @@ use serde_json::json;
 use std::borrow::Cow;
 use std::cell::Cell;
 mod composition;
-#[cfg(feature = "hooks")]
+#[cfg(not(target_arch = "wasm32"))]
 mod plugins;
 mod prepared;
 
@@ -118,7 +118,7 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
         } else {
             format!("export default {specifier};")
         };
-        strip(path, literal.as_bytes())
+        compile_module(path, literal.as_bytes())
             .map_err(|error| format!("encoded source literal admission: {error}"))?;
         // The same valid literal becomes an import specifier. Both public
         // surfaces must refuse that syntax before entering the engine, even
@@ -181,12 +181,12 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
         ] {
             let name = serde_json::to_string(&name).map_err(|error| error.to_string())?;
             let source = format!("import input from {name}; export default input;");
-            if strip(&importer, source.as_bytes()).is_ok() {
+            if compile_module(&importer, source.as_bytes()).is_ok() {
                 return Err("noncanonical static import escaped source admission".into());
             }
         }
-        if let Ok(module) = strip(path, bytes) {
-            let emitted = strip("raw.js", module.script.as_bytes())
+        if let Ok(module) = compile_module(path, bytes) {
+            let emitted = compile_module("raw.js", module.script.as_bytes())
                 .map_err(|error| format!("emitted JavaScript admission: {error}"))?;
             if module.imports != emitted.imports {
                 return Err("emitted JavaScript changed resolved imports".into());
@@ -242,7 +242,7 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
 pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
     prepared::check(bytes).await?;
     composition::check(bytes).await?;
-    #[cfg(feature = "hooks")]
+    #[cfg(not(target_arch = "wasm32"))]
     plugins::check(bytes).await?;
     raw_source(bytes).await?;
     let cache = Cache::default();

@@ -23,9 +23,21 @@ impl FileProjection {
                     .into_generator();
                 let content = generator.subschema_for::<schema::ReferenceProjection<'_>>();
                 let authored = generator.subschema_for::<schema::JsonProjection<FileView<'_>>>();
-                Ok(json!({"oneOf":[content,authored],"$defs":generator.take_definitions(true)}))
+                let directory =
+                    generator.subschema_for::<schema::JsonProjection<DirectoryReadResult>>();
+                Ok(
+                    json!({"oneOf":[content,authored,directory],"$defs":generator.take_definitions(true)}),
+                )
             }
-            Self::Read(ProjectionMode::Full) => schema::output::<ReadProjection<'_>>(),
+            Self::Read(ProjectionMode::Full) => {
+                let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+                    .for_serialize()
+                    .into_generator();
+                let file = generator.subschema_for::<ReadProjection<'_>>();
+                let directory =
+                    generator.subschema_for::<schema::JsonProjection<DirectoryReadResult>>();
+                Ok(json!({"oneOf":[file,directory],"$defs":generator.take_definitions(true)}))
+            }
             Self::Publication(mode) => Self::model_schema(mode),
             Self::Search(mode) => mode.schema::<SearchResult>(),
         }
@@ -90,8 +102,8 @@ impl Serialize for MediaText<'_> {
         match self {
             Self::Version(version) => serializer.serialize_str(version),
             Self::Notebook { path, version, page, text } => serializer.collect_str(&format_args!(
-                "{version}\nFile {path}; cells from {}; source bytes {}..{}; next byte {:?}\n{text}",
-                page.offset, page.start, page.end, page.next,
+                "{version}\nFile {path}; cells from {}; source bytes {}..{} of {}; eof {}; next byte {:?}\n{text}",
+                page.offset, page.start, page.end, page.total, page.eof, page.next,
             )),
         }
     }
@@ -138,6 +150,8 @@ pub(super) fn notebook_text_budget(
         start: u64::MAX,
         end: u64::MAX,
         next: Some(u64::MAX),
+        total: u64::MAX,
+        eof: false,
         offset: u64::MAX,
     };
     let empty = ReadProjection::Parts {
@@ -153,7 +167,7 @@ pub(super) fn notebook_text_budget(
         },
     };
     let overhead = crate::executor::with_history_io(io, |history| {
-        crate::executor::json::json_byte_length(&empty, u64::MAX, history)
+        crate::executor::json::json_byte_length(&empty, None, history)
     })?;
     Ok(maximum
         .min(crate::tool::output::VIEW_BYTES)
@@ -165,7 +179,7 @@ pub(super) fn notebook_output_bytes(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
     crate::executor::with_history_io(io, |history| {
-        crate::executor::json::json_byte_length(&output_part(file), u64::MAX - 1, history)
+        crate::executor::json::json_byte_length(&output_part(file), Some(u64::MAX - 1), history)
     })
     .map(|bytes| bytes + 1) // The preceding sequence comma.
 }
@@ -204,8 +218,8 @@ impl Serialize for MediaParts<'_> {
 }
 
 impl ToolProjection for FileProjection {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_projection(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
         if let Some(work) = work {
             work.remaining()?;
         }
@@ -215,21 +229,30 @@ impl ToolProjection for FileProjection {
         &self,
         invocation: &ToolInvocation,
         result: &ToolResult,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(Value, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         match *self {
             Self::Read(mode) => {
+                let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                if let Some(ReadSelection::Directory { after, limit }) = &input.0.selection {
+                    return super::directory::project(
+                        &input.0,
+                        after.as_deref(),
+                        *limit,
+                        result,
+                        work,
+                    );
+                }
                 let result = decode::<ReadFileResult>(&result.value, work)?;
                 let file = &result.0.file;
                 let text = &result.0.text;
-                let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let owned_io = work
                     .map(crate::executor::PreparationIo::from_native_work)
                     .transpose()?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let io = owned_io.as_ref();
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let io: Option<&crate::executor::PreparationIo> = None;
                 if let Some(requested) = &input.0.selection {
                     let native =
@@ -252,23 +275,29 @@ impl ToolProjection for FileProjection {
                     }
                     if page.end.checked_sub(page.start) != Some(text.len() as u64)
                         || page.end > file.byte_length()
+                        || page.total != file.byte_length()
+                        || page.eof != page.next.is_none()
                         || page
                             .next
                             .is_some_and(|next| next != page.end || next > file.byte_length())
-                        || input
-                            .0
-                            .range
-                            .is_some_and(|range| page.start != range.start || page.end > range.end)
+                        || input.0.range.is_some_and(|range| {
+                            page.start != range.start.min(page.total)
+                                || page.end > range.end.min(page.total)
+                        })
                         || match input.0.selection {
                             Some(
                                 ReadSelection::Lines { offset, .. }
                                 | ReadSelection::Cells { offset, .. },
                             ) => page.offset != offset,
-                            Some(ReadSelection::Image { .. } | ReadSelection::Pdf) => true,
+                            Some(
+                                ReadSelection::Image { .. }
+                                | ReadSelection::Pdf
+                                | ReadSelection::Directory { .. },
+                            ) => true,
                             None if input.0.path.ends_with(".ipynb") && input.0.range.is_none() => {
                                 page.offset != 0
                             }
-                            None => {
+                            None | Some(ReadSelection::Text) => {
                                 page.offset != 0 || (input.0.range.is_none() && page.start != 0)
                             }
                         }
@@ -277,6 +306,14 @@ impl ToolProjection for FileProjection {
                             work,
                             "text page differs from source interval",
                         ));
+                    }
+                    if page.start == 0
+                        && page.end == file.byte_length()
+                        && let FileReadSource::Content(file) = file
+                    {
+                        crate::executor::with_history_io(io, |history| {
+                            file.descriptor().verify(text.as_bytes(), history)
+                        })?;
                     }
                 } else if result.0.media.is_some() {
                     if !text.is_empty() {
@@ -365,7 +402,7 @@ impl ToolProjection for FileProjection {
                 // cannot compare that view path to a volume-relative path.
                 if let Some(version) = input.0.version.as_deref() {
                     let original = super::version::decode_version(file.path(), version, work)?;
-                    if !original.0.same_source(file) {
+                    if !original.0.matches_source(file) {
                         return Err(super::executor::rejection(
                             work,
                             "read result belongs to another version",
@@ -430,7 +467,7 @@ impl ToolProjection for FileProjection {
                         work,
                     );
                 }
-                let FileReadSource::Content(file) = file else {
+                if result.0.media.is_none() && matches!(file, FileReadSource::Authored(_)) {
                     let version = super::version::encode_source(file, work)?;
                     return schema::project_json(
                         &FileView {
@@ -441,21 +478,13 @@ impl ToolProjection for FileProjection {
                         },
                         work,
                     );
-                };
-                if let Some(range) = input.0.range {
-                    return schema::summary_reference(
-                        file,
-                        400,
-                        format_args!(
-                            "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
-                            range.start,
-                            range.end,
-                            range.start,
-                            file.descriptor().byte_length() - range.end,
-                        ),
-                        work,
-                    );
                 }
+                let FileReadSource::Content(file) = file else {
+                    return Err(super::executor::rejection(
+                        work,
+                        "native media requires a complete content descriptor",
+                    ));
+                };
                 schema::summary_reference(
                     file,
                     160,

@@ -2,7 +2,7 @@
 //! call, projected from the turn's own transcript, so every client renders
 //! the same cards from the one record and nothing else is stored.
 use super::TurnOutput;
-use crate::model::{ModelContentPart, ToolResultContent};
+use crate::model::{ModelContentPart, ModelDataPart, ToolResultContent};
 use serde_json::Value;
 
 /// One tool call of a settled turn, collapsed.
@@ -15,16 +15,29 @@ pub struct ToolCard {
     pub summary: String,
     /// The call failed or was refused, or the turn ended before its result.
     pub failed: bool,
+    /// The original model-visible result, without file capabilities.
+    pub details: String,
 }
 
 impl ToolCard {
-    /// The card's text: the name, then the summary.
+    /// The card's single-line label: the name, then the summary.
     #[must_use]
     pub fn line(&self) -> String {
         if self.summary.is_empty() {
             self.name.clone()
         } else {
-            format!("{}  {}", self.name, self.summary)
+            format!("{}  {}", self.name, self.summary.replace(['\r', '\n'], " "))
+        }
+    }
+
+    /// The summary followed by its result. Views can fold the result without
+    /// fetching another transcript or keeping a parallel tool-output buffer.
+    #[must_use]
+    pub fn text(&self) -> String {
+        if self.details.is_empty() {
+            self.line()
+        } else {
+            format!("{}\n{}", self.line(), self.details)
         }
     }
 }
@@ -58,6 +71,7 @@ impl TurnOutput {
                         name: call.name.clone(),
                         summary: summary(&call.arguments),
                         failed: true,
+                        details: String::new(),
                     },
                 )),
                 ModelContentPart::ToolResult {
@@ -67,12 +81,33 @@ impl TurnOutput {
                         cards.iter_mut().find(|(id, _)| *id == call_id.as_str())
                     {
                         card.failed = failed(content);
+                        card.details = details(content);
                     }
                 }
                 _ => {}
             }
         }
         cards.into_iter().map(|(_, card)| card).collect()
+    }
+}
+
+fn details(content: &ToolResultContent) -> String {
+    match content {
+        ToolResultContent::Error { message } => message.clone(),
+        ToolResultContent::Json { value } => value
+            .get("text")
+            .and_then(Value::as_str)
+            .map_or_else(|| value.to_string(), str::to_owned),
+        ToolResultContent::Parts { parts } => parts
+            .iter()
+            .map(|part| match part {
+                ModelDataPart::Text { text } => text.clone(),
+                ModelDataPart::File { file, .. } => {
+                    format!("{} ({})", file.display_name(), file.path())
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }
 
@@ -129,7 +164,7 @@ mod tests {
                 ModelContentPart::ToolCall(ToolCall::new(
                     "a".into(),
                     "shell".into(),
-                    json!({"command": "cargo test", "cwd": "x"}),
+                    json!({"command": "cargo test\n--locked", "cwd": "x"}),
                 )),
                 ModelContentPart::ToolCall(ToolCall::new(
                     "b".into(),
@@ -163,7 +198,7 @@ mod tests {
                 result(
                     "a",
                     ToolResultContent::Json {
-                        value: json!({"success": true, "exit_code": 0}),
+                        value: json!({"success": true, "exit_code": 0, "text": "Exit code: 0\nfirst\n**second**"}),
                     },
                 ),
                 result(
@@ -179,7 +214,7 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "shell  cargo test",
+                "shell  cargo test --locked",
                 "read  missing.txt",
                 "plan",
                 r#"custom  {"n":1}"#
@@ -189,6 +224,14 @@ mod tests {
         assert_eq!(
             cards.iter().map(|card| card.failed).collect::<Vec<_>>(),
             [false, true, true, true]
+        );
+        assert_eq!(cards[1].details, "tool execution failed: absent");
+        assert_eq!(
+            cards[0].text().split_once('\n'),
+            Some((
+                "shell  cargo test --locked",
+                "Exit code: 0\nfirst\n**second**"
+            ))
         );
         // Negative control: a turn without calls has no cards.
         let plain = TurnOutput {

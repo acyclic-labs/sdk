@@ -24,7 +24,7 @@ async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
         ToolRegistry::default(),
     )
     .with_limits(Limits {
-        context_messages: 2,
+        context_messages: std::num::NonZeroUsize::new(2),
         ..Limits::default()
     });
     let input = TurnInput {
@@ -450,7 +450,6 @@ async fn an_unreconciled_empty_model_attempt_fails_without_redispatch() -> Resul
                 ..
             },
         ) => {
-            #[cfg(feature = "filesystem")]
             assert!(!_error.leaves_outcome_uncertain());
             Ok(())
         }
@@ -526,7 +525,6 @@ async fn unrecoverable_prefix(unsettled: bool) -> Result<()> {
                 ..
             },
         ) => {
-            #[cfg(feature = "filesystem")]
             assert!(!_error.leaves_outcome_uncertain());
             Ok(())
         }

@@ -9,6 +9,237 @@ use acyclic_stream::{
 use std::sync::atomic::{AtomicBool, Ordering};
 
 struct Cut(AtomicBool);
+
+#[tokio::test]
+async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(exchange)?;
+    let project = volume(directory.path()).await?;
+    let provider = text();
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let mut observer = Observer::open(&connection, 0, 0)?;
+    loop {
+        if matches!(observer.next().await?, Event::Status(status) if matches!(status.phase, crate::agent::Phase::Idle))
+        {
+            break;
+        }
+    }
+    let reader = connection.session.read_provider();
+    let head = reader
+        .head(connection.root.status().map_err(exchange)?)
+        .await;
+    let page = reader
+        .children_page(acyclic_stream::ChildrenPageRequest {
+            parent: Some(connection.root.children().map_err(exchange)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 16,
+            tail_stream: Some(StreamPath::new("conversation").map_err(exchange)?),
+        })
+        .await;
+    assert!(
+        head.is_ok() && page.is_ok(),
+        "head: {head:?}; page: {page:?}"
+    );
+    assert!(page.map_err(exchange)?.children.is_empty());
+    let conversation = super::super::agent_conversation::Conversation::open(connection.clone());
+    let mut tree = conversation.tree()?;
+    tree.view.set_viewport(1, 0, 16);
+    loop {
+        tree.view.frame(0);
+        if tree
+            .view
+            .reader_ref()
+            .cache()
+            .listing(&connection.root.children().map_err(exchange)?, 0)
+            .is_some_and(|listing| listing.fresh && listing.children.is_empty())
+        {
+            break;
+        }
+        futures::future::poll_fn(|cx| tree.poll_changed(0, cx)).await;
+    }
+    eprintln!("tree reader: original empty page observed");
+    let child = match connection
+        .execute(&acyclic_harness_client::AgentCommand::Spawn {
+            parent: connection.root.clone(),
+            id: crate::agent::IntentId::try_from("reader-child").map_err(exchange)?,
+            role: "worker".into(),
+            brief: crate::model::ModelContent::Text("exercise the enrolled child listing".into()),
+        })
+        .await
+        .map_err(|error| Error::Conflict(format!("spawn child: {error}")))?
+    {
+        AgentReply::Spawned { agent, .. } => agent.clone(),
+        _ => return Err(Error::Conflict("spawn returned no child".into())),
+    };
+    eprintln!("tree reader: child spawn committed");
+    let populated = reader
+        .children_page(acyclic_stream::ChildrenPageRequest {
+            parent: Some(connection.root.children().map_err(exchange)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 16,
+            tail_stream: Some(StreamPath::new("conversation").map_err(exchange)?),
+        })
+        .await
+        .map_err(exchange)?;
+    assert_eq!(populated.children.len(), 1, "{populated:?}");
+    assert_eq!(populated.children[0].path.as_str(), child.as_str());
+    eprintln!("tree reader: populated scoped page observed");
+    loop {
+        tree.view.frame(0);
+        if tree.view.rows().iter().any(|(_, row)| {
+            matches!(row,
+            acyclic_harness_client::explorer::Row::Agent { path, .. } if path == &child)
+        }) {
+            break;
+        }
+        if let Some((path, issue)) = tree.view.reader_ref().issues().next() {
+            return Err(Error::Conflict(format!("tree reader {path}: {issue:?}")));
+        }
+        futures::future::poll_fn(|cx| tree.poll_changed(0, cx)).await;
+    }
+    eprintln!("tree reader: first child discovered through the live source");
+    // A real agent authors the same private files the visible-row query reads.
+    // Neither native mounting nor a project directory named .volumes is needed.
+    let selected = conversation.select(child.clone()).await?;
+    selected.wait_current_input().await?;
+    use crate::{
+        model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent},
+        test_support::{ScriptedEvent, ScriptedTurn},
+    };
+    let calls = [
+        ("ui-title", ".volumes/private/ui/title", "Authored title"),
+        (
+            "managed-output",
+            ".volumes/private/tools/forged.json",
+            "forged",
+        ),
+        (
+            "escape-output",
+            ".volumes/private/ui/../tools/forged.json",
+            "forged",
+        ),
+    ]
+    .into_iter()
+    .map(|(id, path, content)| {
+        ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+            id.into(),
+            "write".into(),
+            serde_json::json!({"path":path,"content":content}),
+        )))
+    })
+    .chain(std::iter::once(ScriptedEvent::Event(
+        ModelEvent::Completed {
+            metadata: serde_json::json!({}),
+        },
+    )))
+    .collect();
+    provider.extend([
+        ScriptedTurn::Events(calls),
+        ScriptedTurn::Text("ui authored".into()),
+    ]);
+    let before = selected
+        .agent_file_previews(vec!["ui/title".into()], None, 64)
+        .await?;
+    assert_eq!(before.files["ui/title"], None);
+    let mut events = selected.observe(None).await?;
+    let publish = async {
+        let inbox = selected.send("author-ui", "author the private UI").await?;
+        selected.settle("author-ui", inbox, &mut events).await?;
+        Result::Ok(())
+    };
+    let (_changed, ()) = futures::try_join!(
+        selected.agent_file_previews(vec!["ui/title".into()], Some(before.generation), 64),
+        publish,
+    )?;
+    // The private producer also carries journal publications. The original
+    // input's settlement, not its first volume event, certifies this write.
+    let changed = selected
+        .agent_file_previews(vec!["ui/title".into()], None, 64)
+        .await?;
+    let request = provider
+        .last_request()
+        .ok_or_else(|| Error::Conflict("no tool result request".into()))?;
+    for part in request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+    {
+        if let ModelContentPart::ToolResult {
+            call_id, content, ..
+        } = part
+            && call_id == "ui-title"
+        {
+            match content {
+                ToolResultContent::Error { message } => {
+                    eprintln!("private UI write refused: {message}")
+                }
+                ToolResultContent::Json { value } => eprintln!(
+                    "private UI result volume: {:?}",
+                    value
+                        .pointer("/file/volume/class")
+                        .and_then(serde_json::Value::as_str)
+                ),
+                ToolResultContent::Parts { .. } => {}
+            }
+        }
+    }
+    assert_eq!(changed.files["ui/title"].as_deref(), Some("Authored title"));
+    for id in ["managed-output", "escape-output"] {
+        assert!(request.messages.iter().flat_map(|message| message.content.parts()).any(|part|
+            matches!(part, ModelContentPart::ToolResult {call_id, content: ToolResultContent::Error {..}, ..} if call_id == id)),
+            "private managed output accepted {id}");
+    }
+    eprintln!("tree reader: authored private UI followed; managed outputs refused");
+    let outside = AgentPath::root(&crate::agent::AgentId::from_bytes([0; 16]));
+    assert_eq!(
+        reader.head(outside.status().map_err(exchange)?).await,
+        Err(StreamError::AccessDenied)
+    );
+    let directory_connection = harness.connect_sessions().await?;
+    let session = super::super::sessions::create(&directory_connection, "reader-session").await?;
+    let page = session
+        .session
+        .read_provider()
+        .children_page(acyclic_stream::ChildrenPageRequest {
+            parent: Some(session.root.children().map_err(exchange)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 16,
+            tail_stream: Some(StreamPath::new("conversation").map_err(exchange)?),
+        })
+        .await
+        .map_err(exchange)?;
+    assert!(page.children.is_empty());
+    assert_eq!(
+        reader.head(session.root.status().map_err(exchange)?).await,
+        Err(StreamError::AccessDenied)
+    );
+    // The primitive filters broad discovery to authorized children. A directory
+    // owner can discover both roots; this original tree credential sees only its own.
+    let page = reader
+        .children_page(acyclic_stream::ChildrenPageRequest {
+            parent: Some(StreamPath::new(crate::agent::AGENTS).map_err(exchange)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 16,
+            tail_stream: None,
+        })
+        .await
+        .map_err(exchange)?;
+    assert_eq!(page.children.len(), 1);
+    assert_eq!(page.children[0].path.as_str(), connection.root.as_str());
+    assert!(page.next_after.is_none());
+    Ok(())
+}
 impl PersistenceCut for Cut {
     fn admit(&self) -> bool {
         false

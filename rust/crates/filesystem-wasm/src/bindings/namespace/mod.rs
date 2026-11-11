@@ -13,6 +13,7 @@ impl BrowserCheckout {
         let receipt = browser_call!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateFile {
+                file_id: None,
                 path: path,
                 bytes: (bytes).into(),
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
@@ -30,6 +31,7 @@ impl BrowserCheckout {
         let receipt = browser_call!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: path,
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
             },)
@@ -48,6 +50,7 @@ impl BrowserCheckout {
         let receipt = browser_call!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateSymbolicLink {
+                file_id: None,
                 path: path,
                 target: (target).into(),
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
@@ -67,6 +70,7 @@ impl BrowserCheckout {
         let receipt = browser_call!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateEmptySpecial {
+                file_id: None,
                 path: path,
                 kind: kind,
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
@@ -91,6 +95,7 @@ impl BrowserCheckout {
         let receipt = browser_call!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateDevice {
+                file_id: None,
                 path: path,
                 kind: kind,
                 major: major,
@@ -111,6 +116,7 @@ impl BrowserCheckout {
         let receipt = browser_call!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateReparsePoint {
+                file_id: None,
                 path: path,
                 payload: (bytes::Bytes::from(payload)).into(),
                 metadata: acyclic_fs::kernel::FileMetadata::default(),

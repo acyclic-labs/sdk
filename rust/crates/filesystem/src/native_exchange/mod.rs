@@ -15,7 +15,7 @@ enum NativeExchangeError {
 }
 mod entry;
 pub(crate) use entry::exchange_native_entries;
-#[cfg(any(windows, test, feature = "native-mount"))]
+#[cfg(any(windows, test, not(target_arch = "wasm32")))]
 pub(crate) use entry::recover_native_entry_exchange;
 #[cfg(windows)]
 mod windows;

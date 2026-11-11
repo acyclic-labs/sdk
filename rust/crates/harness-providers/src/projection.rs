@@ -101,9 +101,7 @@ pub(crate) fn plan(
 
 pub(crate) fn encoded_len<T: serde::Serialize>(value: &T) -> Result<usize> {
     usize::try_from(acyclic_harness_core::executor::json::json_byte_length(
-        value,
-        u64::MAX,
-        &mut None,
+        value, None, &mut None,
     )?)
     .map_err(|_| invalid("token size overflow"))
 }
@@ -194,9 +192,25 @@ pub(crate) fn body_named<'a>(
         }
         let event = message.content.notice_parts();
         if let Some((notices, attachments)) = event {
-            let notice = acyclic_model_render::notice_block(rendered.clone(), notices)
-                .map_err(|error| invalid(error.to_string()))?;
-            sequence::push(adapter, &mut messages, Message::Notice(notice))?;
+            // Original native schemas authenticate history after a role change;
+            // sending them again as prompt text would evict a reusable prefix.
+            let visible = |notice: &&acyclic_model_render::Notice| {
+                notice.source != "tools" || notice.kind != "tools.bound"
+            };
+            if notices.iter().any(|notice| visible(&notice)) {
+                let filtered;
+                let notices = if notices.iter().all(|notice| visible(&notice)) {
+                    notices
+                } else {
+                    // Only externally combined batches need a visible copy;
+                    // normal binding/table fragments stay separate and borrow.
+                    filtered = notices.iter().filter(visible).cloned().collect::<Vec<_>>();
+                    &filtered
+                };
+                let notice = acyclic_model_render::notice_block(rendered.clone(), notices)
+                    .map_err(|error| invalid(error.to_string()))?;
+                sequence::push(adapter, &mut messages, Message::Notice(notice))?;
+            }
             if attachments.is_empty() {
                 continue;
             }

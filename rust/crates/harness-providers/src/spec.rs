@@ -79,8 +79,9 @@ pub struct ProviderSpec {
         tsify(type = "Record<string, ModelSpec>")
     )]
     pub models: BTreeMap<String, crate::ModelSpec>,
-    /// Verified admission counter. Required for automatic compaction; generic
-    /// compatible endpoints must configure their own tokenizer contract.
+    /// Verified admission counter. Without one, Chat measures the same input
+    /// through a one-token completion's reported `usage.prompt_tokens`.
+    /// Other protocols require their own tokenizer contract.
     #[serde(default)]
     pub token_counter: Option<crate::TokenCounterSpec>,
     /// Caller-selected capacity for one SSE event and retained protocol state.
@@ -88,7 +89,7 @@ pub struct ProviderSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
     pub max_event_bytes: Option<usize>,
-    /// Bounded redelivery of a request the endpoint refused before generating anything.
+    /// Redelivery of a request the endpoint refused before generating anything.
     #[serde(default, skip_serializing_if = "RetrySpec::is_default")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
     pub retry: RetrySpec,
@@ -109,7 +110,8 @@ pub struct ProviderSpec {
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub enum PromptCache {
     /// The protocol's own form: Anthropic breakpoints, the Responses
-    /// `prompt_cache_key`, Gemini implicit caching, nothing on generic Chat.
+    /// `prompt_cache_key`, and implicit caching on Gemini and compatible Chat
+    /// endpoints (for example Fireworks). Generic Chat has no universal cache flag.
     #[default]
     Native,
     /// A routing Chat gateway (OpenRouter): the automatic `cache_control`
@@ -151,29 +153,24 @@ impl Default for TimeoutSpec {
     }
 }
 
-/// Redelivery of a model request refused with HTTP 408, 429 or 5xx, or never connected.
-/// A successful HTTP response or an uncertain reply loss ends generation redelivery,
-/// even before its first event. A credential-refresh failure also ends generation
-/// with that original cause. Failure while reading a refusal body cannot make
-/// its HTTP status retryable. Read-only token counts can retry interrupted successful
-/// bodies within the same budget. Waits use the provider's `Retry-After` when present,
-/// otherwise exponential backoff with deterministic per-dispatch jitter.
+/// Transient provider failures wait with uncapped redelivery. Permanent authentication
+/// and invalid-request failures return immediately. The original request and turn identity
+/// are preserved. Retry-After and reset headers are honored unchanged; absent a hint,
+/// waits use exponential backoff
+/// with deterministic per-dispatch jitter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct RetrySpec {
-    /// Attempts after the first; zero disables redelivery.
-    pub attempts: u8,
     /// Backoff before the first redelivery; each later one doubles it.
     pub base_delay_ms: u32,
-    /// Longest single wait. A `Retry-After` beyond it ends redelivery immediately.
+    /// Longest computed backoff; provider Retry-After waits are never shortened.
     pub max_delay_ms: u32,
 }
 
 impl RetrySpec {
-    /// Three redeliveries from 500 ms, each wait at most 8 s.
+    /// Uncapped redelivery from 500 ms, with computed backoff at most 8 s.
     pub const DEFAULT: Self = Self {
-        attempts: 3,
         base_delay_ms: 500,
         max_delay_ms: 8_000,
     };

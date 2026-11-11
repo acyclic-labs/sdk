@@ -113,6 +113,75 @@ async fn old_point_reads_have_bounded_work_from_one_to_a_thousand_appends() -> T
     Ok(())
 }
 
+#[tokio::test]
+async fn releasing_a_keyed_pin_returns_superseded_index_funding() -> TestResult<()> {
+    let provider = MemoryStream::default();
+    let path = path("indexed/key-retirement")?;
+    let meter = Arc::new(Meter::default());
+    let append = |value: &'static [u8]| -> Result<_, StreamError> {
+        Ok(AppendRequest {
+            path: path.clone(),
+            records: vec![crate::AppendRecord {
+                value: Bytes::from_static(value),
+                headers: crate::RecordHeaders::new(
+                    vec![Bytes::from_static(b"selected")],
+                    Vec::new(),
+                )?,
+            }],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+    };
+    drop(
+        provider
+            .native_append(append(b"first")?, meter.original())
+            .await??,
+    );
+    // This ordinary cursor has no allocation on the native issuer. Any refund
+    // when it drops belongs to the real index version it alone keeps pinned.
+    let mut pinned = provider
+        .read(ReadRequest {
+            path: path.clone(),
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+            key: Some(crate::ReadKeySeek::exact(
+                Bytes::from_static(b"selected"),
+                u64::MAX,
+            )),
+        })
+        .await?;
+    drop(
+        provider
+            .native_append(append(b"second")?, meter.original())
+            .await??,
+    );
+    assert_eq!(
+        futures::TryStreamExt::try_next(&mut pinned)
+            .await?
+            .ok_or(StreamError::Unavailable)?
+            .value
+            .as_ref(),
+        b"first"
+    );
+    let held = meter.held.load(Ordering::SeqCst);
+    drop(pinned);
+    assert!(
+        meter.held.load(Ordering::SeqCst) < held,
+        "record ancestry retained a superseded key index after its last pin"
+    );
+    assert_records(
+        &provider,
+        &path,
+        &[Bytes::from_static(b"first"), Bytes::from_static(b"second")],
+    )
+    .await?;
+    drop(provider);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    meter.assert_refunded();
+    Ok(())
+}
+
 async fn assert_records(
     provider: &MemoryStream,
     path: &StreamPath,

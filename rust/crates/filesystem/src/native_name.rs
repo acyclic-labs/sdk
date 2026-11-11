@@ -1,4 +1,4 @@
-#[cfg(any(windows, test, feature = "native-mount"))]
+#[cfg(any(windows, test, not(target_arch = "wasm32")))]
 pub(crate) fn windows_unicode_units(text: &str) -> Option<std::str::EncodeUtf16<'_>> {
     (!text.contains(['/', '\\'])).then(|| text.encode_utf16())
 }
@@ -27,11 +27,11 @@ pub(crate) fn windows_name_units(
     )
 }
 
-#[cfg(any(test, feature = "native-watch"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod encoding;
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) use encoding::host_name_bytes_with_native_work;
-#[cfg(all(windows, any(test, feature = "native-watch")))]
+#[cfg(all(windows, any(test, not(target_arch = "wasm32"))))]
 pub(crate) use encoding::host_wide_name_bytes_with_source_work;
-#[cfg(any(test, feature = "native-watch"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) use encoding::{host_name_bytes, host_name_bytes_with_source_work};

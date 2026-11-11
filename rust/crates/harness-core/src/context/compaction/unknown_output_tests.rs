@@ -9,11 +9,10 @@ proptest! {
     ) {
         let output = output.min(context - 2);
         let capacity = ModelContextCapacity { context_tokens: context, output_tokens: None };
-        let policy = ThresholdCompaction {
+        let policy = CapacityCompaction {
             response_reserve_tokens: output,
-            recent_tokens: 1,
         };
-        prop_assert!(ThresholdCompaction::for_capacity(capacity, 0).is_err());
+        prop_assert!(CapacityCompaction::for_capacity(capacity, 0).is_err());
         prop_assert!(policy.validate(capacity, None).is_err());
         prop_assert!(policy.needs_compaction(capacity, 0, None).is_err());
         prop_assert_eq!(policy.validate(capacity, Some(output)).unwrap(), output);

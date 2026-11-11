@@ -164,7 +164,7 @@ kernel_cases! { extent_clone: ExtentCloneError {
 kernel_cases! { probe: AuthenticatedProbeError {
     Cancelled => [E::Cancelled];
     InvalidArgument => [E::InvalidLimits, E::ZeroBatchLimit, E::RecordIdentityMismatch, E::InvalidDependency(DependencyError::ZeroLimit)];
-    ResourceExhausted => [E::TooManyRegions {maximum: 1}, E::AllocationFailed, E::EncodedAllocationFailed(allocation()), E::ContentRangeTooLarge, E::DirectoryPageTooLarge, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::TooManyRegions {maximum: 1}, E::AllocationFailed, E::EncodedAllocationFailed(allocation()), E::DirectoryPageTooLarge, E::Work(WorkError::Overflow)];
     Internal => [E::CachePoisoned];
     DataLoss => [E::Decode(CanonicalDecodeError::Truncated)];
     PermissionDenied => [E::Context(Box::new(FsError::InvalidAccessPolicy))];

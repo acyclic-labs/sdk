@@ -20,8 +20,8 @@ use std::{fmt, sync::Arc};
 
 use acyclic_collections::{FixedIndex, IndexReadWork, binary_key};
 
-type NamePositions = FixedIndex<usize, crate::NativeCustody, { MAX_TARGET_NAME_BYTES + 8 }>;
-type OwnerPositions = FixedIndex<usize, crate::NativeCustody, { MAX_OWNER_BYTES + 8 }>;
+type NamePositions = FixedIndex<usize, acyclic_fs::NativeCustody, { MAX_TARGET_NAME_BYTES + 8 }>;
+type OwnerPositions = FixedIndex<usize, acyclic_fs::NativeCustody, { MAX_OWNER_BYTES + 8 }>;
 
 struct RosterPositions {
     names: NamePositions,
@@ -31,7 +31,7 @@ struct RosterPositions {
 impl RosterPositions {
     fn find<W: IndexReadWork>(&self, named: &str, work: &mut W) -> Result<Option<usize>, W::Error> {
         fn exact<W: IndexReadWork, const N: usize>(
-            index: &FixedIndex<usize, crate::NativeCustody, N>,
+            index: &FixedIndex<usize, acyclic_fs::NativeCustody, N>,
             text: &str,
             work: &mut W,
         ) -> Result<Option<usize>, W::Error> {
@@ -54,7 +54,7 @@ impl RosterPositions {
 /// The `target` prefix that names a user's home device instead of a device.
 pub const USER_PREFIX: &str = "user:";
 /// Longest target name, in bytes.
-pub const MAX_TARGET_NAME_BYTES: usize = 64;
+pub const MAX_TARGET_NAME_BYTES: usize = super::word::MAX_NAME_BYTES;
 /// Longest owner name, in bytes.
 pub const MAX_OWNER_BYTES: usize = 255;
 
@@ -144,7 +144,7 @@ pub struct TargetRecord {
 
 impl super::AgentRecord for TargetRecord {
     fn check(&self) -> Result<(), super::Error> {
-        check_name(&self.name)?;
+        super::word::check_name(&self.name)?;
         if self.owner.is_empty()
             || self.owner.len() > MAX_OWNER_BYTES
             || self.owner.chars().any(char::is_control)
@@ -155,23 +155,6 @@ impl super::AgentRecord for TargetRecord {
             return Err(super::Error::Record("target platform is incomplete"));
         }
         Ok(())
-    }
-}
-
-/// Names are lowercase ASCII words, so `user:` can never name a device.
-fn check_name(name: &str) -> Result<(), super::Error> {
-    let mut bytes = name.bytes();
-    if name.len() <= MAX_TARGET_NAME_BYTES
-        && bytes
-            .next()
-            .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
-        && bytes.all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
-        })
-    {
-        Ok(())
-    } else {
-        Err(super::Error::Record("target name is not a lowercase word"))
     }
 }
 

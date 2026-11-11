@@ -21,8 +21,7 @@ async fn initialize(journal: &Journal, operation: OperationId) -> Result<()> {
         .await?;
     let prepared = request()?;
     let reference =
-        crate::executor::stage_json(journal, operation, "request", prepared.request(), None)
-            .await?;
+        crate::test_support::stage_model_request(journal, operation, "request", &prepared).await?;
     journal
         .append(
             operation,
@@ -32,6 +31,7 @@ async fn initialize(journal: &Journal, operation: OperationId) -> Result<()> {
                 purpose: ModelPurpose::Response,
                 request_digest: prepared.request_digest(),
                 request: reference,
+                context: None,
             },
             None,
         )?
@@ -547,7 +547,7 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         serde_json::to_value(&usage).map_err(|error| Error::Invalid(error.to_string()))?,
     )
     .map_err(|error| Error::Invalid(error.to_string()))?;
-    for version in [0, 1, 3] {
+    for version in [0, 1, 2, crate::executor::ModelUsageRecord::VERSION + 1] {
         altered.version = version;
         assert!(
             crate::executor::validate_model_usage(
@@ -561,7 +561,7 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
             .is_err()
         );
     }
-    altered.version = 2;
+    altered.version = crate::executor::ModelUsageRecord::VERSION;
     altered.ttft_ns = Some(124);
     assert!(
         crate::executor::validate_model_usage(

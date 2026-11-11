@@ -41,7 +41,7 @@ impl<
                 {
                     return Ok(());
                 }
-                mutations = Some(Owned::allocate(2, ctx)?);
+                mutations = Some(Owned::allocate(1, ctx)?);
                 let mutation = self
                     .prepare_source_mutation(
                         transaction,
@@ -57,31 +57,6 @@ impl<
                     mutation,
                     ctx,
                 )?;
-                if !matches!(
-                    node.kind,
-                    SourceNodeKind::Directory | SourceNodeKind::RegularFile
-                ) {
-                    let namespace = self.namespace_path(path, ctx)?;
-                    let id = match self.source_file_id(&node.file_identity, ctx) {
-                        Ok(id) => id,
-                        Err(error) => {
-                            namespace.retire(ctx)?;
-                            return Err(error);
-                        }
-                    };
-                    crate::Transaction::<A, O>::push_mutation(
-                        mutations.as_mut().expect("pending mutations"),
-                        Owned::new(
-                            AuthoredMutation::Reidentify {
-                                path: namespace.value,
-                                file_id: id,
-                            },
-                            namespace.allocation,
-                            namespace.bytes,
-                        ),
-                        ctx,
-                    )?;
-                }
                 transaction
                     .apply_authored(
                         mutations.take().expect("complete mutations"),
@@ -286,6 +261,7 @@ impl<
                             )
                             .await?;
                         AuthoredMutation::CreateSymbolicLink {
+                            file_id: Some(self.source_file_id(&node.file_identity, ctx)?),
                             path: namespace.value,
                             target: target.bytes,
                             metadata,
@@ -293,6 +269,7 @@ impl<
                     }
                     SourceNodeKind::Fifo | SourceNodeKind::Socket => {
                         AuthoredMutation::CreateEmptySpecial {
+                            file_id: Some(self.source_file_id(&node.file_identity, ctx)?),
                             path: namespace.value,
                             kind: if node.kind == SourceNodeKind::Fifo {
                                 FileKind::Fifo
@@ -306,6 +283,7 @@ impl<
                         let (major, minor) =
                             node.device.ok_or(LazyWorkspaceError::UnsupportedNode)?;
                         AuthoredMutation::CreateDevice {
+                            file_id: Some(self.source_file_id(&node.file_identity, ctx)?),
                             path: namespace.value,
                             kind: if node.kind == SourceNodeKind::CharacterDevice {
                                 FileKind::CharacterDevice

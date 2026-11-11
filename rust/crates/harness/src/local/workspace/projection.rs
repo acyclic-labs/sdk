@@ -28,7 +28,7 @@ impl Drop for Native {
     }
 }
 
-// Lock order: checkout state -> one volume projection -> filesystem/provider.
+// Lock order: checkout state -> volume execution -> projection -> filesystem/provider.
 // No callback reacquires either outer lock. Hold this guard through logical
 // writes, so first projection cannot pin a head preceding an unpublished write.
 pub(super) async fn initialize<T>(
@@ -129,6 +129,15 @@ pub(in crate::local) async fn leave<T>(
 }
 
 impl MountedVolume {
+    /// Publication shares the command's gate, then takes its projection slot.
+    /// Drop the slot before releasing execution, including on cancellation.
+    pub(in crate::local) async fn publication(
+        &self,
+    ) -> Result<(OwnedMutexGuard<Option<Native>>, OwnedMutexGuard<()>)> {
+        let execution = lock_owned(StateArc::clone(&self.execution)).await;
+        Ok((self.prepared_native().await?, execution))
+    }
+
     pub(in crate::local) async fn native(&self) -> OwnedMutexGuard<Option<Native>> {
         lock_owned(StateArc::clone(&self.native)).await
     }
@@ -139,10 +148,14 @@ impl MountedVolume {
         relative: &str,
         read_only: bool,
     ) -> Result<Entered> {
+        let options = self
+            .options
+            .clone()
+            .ok_or_else(|| Error::Invalid("logical volume has no native projection".into()))?;
         let options = if read_only {
-            self.options.clone().restrict_to_read_only()
+            options.restrict_to_read_only()
         } else {
-            self.options.clone()
+            options
         };
         self.enter_with_options(root, relative, options).await
     }
@@ -204,6 +217,11 @@ impl MountedVolume {
     }
 
     pub(in crate::local) async fn prepare_command(&self) -> Result<()> {
+        drop(self.prepared_native().await?);
+        Ok(())
+    }
+
+    async fn prepared_native(&self) -> Result<OwnedMutexGuard<Option<Native>>> {
         let mut slot = loop {
             let settled = self.users.settled.notified();
             tokio::pin!(settled);
@@ -226,11 +244,11 @@ impl MountedVolume {
             } else if native.is_retiring() {
                 native.complete_command(true).await?;
             } else {
-                return Ok(());
+                return Ok(slot);
             }
             *slot = None;
         }
-        Ok(())
+        Ok(slot)
     }
 
     pub(super) async fn abandon(&self, entered: Entered) -> Result<()> {

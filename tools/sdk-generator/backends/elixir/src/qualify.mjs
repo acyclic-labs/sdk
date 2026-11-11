@@ -45,7 +45,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned,
     HEX_OFFLINE: "1",
     PATH: [elixirBin, otpBin, "/usr/bin", "/bin"].join(":"),
     ERL_FLAGS: "+S 1:1", ELIXIR_ERL_OPTIONS: "+fnu", LC_ALL: "C.UTF-8" });
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024 });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000, maxBuffer: Infinity });
   mkdirSync(output);
   const put = (name, bytes) => { const target = join(output, name); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, bytes, { flag: "wx" }); return target; };
   for (const [name, bytes] of admitted.payload) put("sdk/" + name, bytes);

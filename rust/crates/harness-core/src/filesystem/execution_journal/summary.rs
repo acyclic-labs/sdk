@@ -83,7 +83,7 @@ impl ExecutionSummary {
             }
             ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
-            | ExecutionEvent::ModelStopped { step, purpose } => self
+            | ExecutionEvent::ModelStopped { step, purpose, .. } => self
                 .models
                 .get(&(*step, *purpose), io)?
                 .is_some_and(Option::is_some),
@@ -201,7 +201,11 @@ impl ExecutionSummary {
         #[cfg(target_arch = "wasm32")]
         let digest_io = io;
         let digest = crate::executor::with_history_io(digest_io, |work| {
-            crate::executor::json::canonical_json_digest(&record.event, limits.file_bytes, work)
+            crate::executor::json::canonical_json_digest(
+                &record.event,
+                Some(limits.file_bytes),
+                work,
+            )
         })?;
         self.accept_verified(
             (record.sequence, key, digest),
@@ -297,7 +301,7 @@ impl ExecutionSummary {
                         })?;
                 }
             }
-            ExecutionEvent::ModelStopped { step, purpose } => {
+            ExecutionEvent::ModelStopped { step, purpose, .. } => {
                 let state = self
                     .models
                     .get_mut(&(*step, *purpose), io)?

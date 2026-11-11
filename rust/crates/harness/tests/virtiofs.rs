@@ -24,7 +24,7 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 fn readiness(daemon: &mut ProcessTree) -> Result<acyclic_native_runtime::ServiceStartOutcome> {
     let output = daemon.take_stdout().ok_or_else(|| std::io::Error::new(
         std::io::ErrorKind::BrokenPipe,
-        "step=take daemon readiness pipe; recovery: cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test main virtiofs:: -- --nocapture",
+        "step=take daemon readiness pipe; recovery: cargo test --locked -p acyclic-harness --features test-support --test main virtiofs:: -- --nocapture",
     ))?;
     Ok(
         acyclic_native_runtime::ServiceReadiness::from(std::fs::File::from(
@@ -158,7 +158,7 @@ fn standalone_daemon_readiness_requires_the_original_socket_and_reports_startup_
 
 #[test]
 fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
-    let artifacts = PathBuf::from(std::env::var_os("ACYCLIC_FS_GUEST_ARTIFACTS").ok_or("step=select guest artifacts; recovery: python3 -B scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest --vmm /path/to/cloud-hypervisor --vmm-sha256 <sha256>; ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test main -- virtiofs:: --include-ignored --nocapture")?);
+    let artifacts = PathBuf::from(std::env::var_os("ACYCLIC_FS_GUEST_ARTIFACTS").ok_or("step=select guest artifacts; recovery: python3 -B scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest --vmm /path/to/cloud-hypervisor --vmm-sha256 <sha256>; ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-harness --features test-support --test main -- virtiofs:: --include-ignored --nocapture")?);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -183,7 +183,7 @@ fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
         let mut daemon = ProcessTree::spawn(&mut daemon_command)?;
         let result = (|| {
             if readiness(&mut daemon)? != acyclic_native_runtime::ServiceStartOutcome::Ready {
-                return Err("step=wait for admitted daemon socket; recovery: cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test main virtiofs:: -- --nocapture".into());
+                return Err("step=wait for admitted daemon socket; recovery: cargo test --locked -p acyclic-harness --features test-support --test main virtiofs:: -- --nocapture".into());
             }
             use std::os::unix::fs::MetadataExt as _;
             assert_eq!(
@@ -227,7 +227,7 @@ fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
 
 fn capture(process: &mut ProcessTree, duration: Duration) -> Result<std::process::Output> {
     process.wait_with_output(duration, 64 * 1024, None, || Ok(()), |_| Ok(ProcessInput::default()), None, None, None)
-        .map_err(|failure| format!("step=capture owned VMM/daemon; cleanup_completed={}; error={}; stdout={}; stderr={}; recovery: cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test main -- virtiofs:: --nocapture", failure.cleanup_completed, failure.error, String::from_utf8_lossy(&failure.stdout), String::from_utf8_lossy(&failure.stderr)).into())
+        .map_err(|failure| format!("step=capture owned VMM/daemon; cleanup_completed={}; error={}; stdout={}; stderr={}; recovery: cargo test --locked -p acyclic-harness --features test-support --test main -- virtiofs:: --nocapture", failure.cleanup_completed, failure.error, String::from_utf8_lossy(&failure.stdout), String::from_utf8_lossy(&failure.stderr)).into())
 }
 
 fn frontend(vmm: &str, artifacts: &Path, socket: &Path) -> ProcessCommand {

@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { localCargoPackages } from "./publish-cargo-crates.mjs";
 import { enabled, featureSets, selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
 import { runCommand } from "./run-command.mjs";
+import { checkCloudNativeFeatures } from "./check-cloud-native-features.mjs";
 export { enabled, featureSets } from "./cargo-feature-selection.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -196,6 +197,7 @@ async function main() {
     // Serial, standalone checks share Cargo's existing target directory. Check
     // libraries without dev dependencies so test-support cannot mask a defect.
     const packages = localCargoPackages();
+    checkCloudNativeFeatures(packages);
     const commands = args.includes("--external-only") ? [] : consumerSelections(packages, selected).map(selection =>
       [...consumerCommand(selection), ...(target ? ["--target", target] : [])]);
     for (const command of commands) {

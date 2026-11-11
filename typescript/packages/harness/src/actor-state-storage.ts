@@ -1,4 +1,4 @@
-import type { EventStorage, StreamChange } from "./event-storage.js";
+import { checkMetadataPage, type EventStorage, type StreamChange } from "./event-storage.js";
 
 /** Structural view of the public Actors `ActorStateBinding` (Binding.stateTransaction). */
 export interface ActorState {
@@ -9,6 +9,7 @@ export interface ActorState {
 export interface ActorStateView {
   get(key: string): Uint8Array | undefined;
   put(key: string, value: Uint8Array): void;
+  delete(key: string): void;
   entries(): Iterable<readonly [string, Uint8Array]>;
   readonly journalTail: bigint;
   appendJournal(expected: bigint, frames: readonly Uint8Array[]): void;
@@ -65,8 +66,24 @@ export class ActorStateStorage {
         return value === undefined ? undefined : decoder.decode(value);
       },
       put: (name, value) => this.run(view => view.put(key(name), encoder.encode(value))),
-      entries: () => this.run(view => Array.from(view.entries()).flatMap(([name, value]): [string, string][] =>
-        name.startsWith(`${prefix}/`) ? [[name.slice(prefix.length + 1), decoder.decode(value)]] : [])),
+      delete: name => this.run(view => view.delete(key(name))),
+      entries: (selected, after, limit) => this.run(view => {
+        checkMetadataPage(limit);
+        const page: [string, Uint8Array][] = [];
+        const selectedPrefix = key(selected), cursor = key(after);
+        for (const [name, value] of view.entries()) {
+          if (!name.startsWith(selectedPrefix) || name <= cursor) continue;
+          if (page.length === limit && name >= page[page.length - 1]![0]) continue;
+          let low = 0, high = page.length;
+          while (low < high) {
+            const middle = low + Math.floor((high - low) / 2);
+            if (page[middle]![0] < name) low = middle + 1; else high = middle;
+          }
+          page.splice(low, 0, [name, value]);
+          if (page.length > limit) page.pop();
+        }
+        return page.map(([name, value]): [string, string] => [name.slice(prefix.length + 1), decoder.decode(value)]);
+      }),
       transaction: operation => this.run(() => operation()),
       flush: () => this.state.flush(),
       alarm: time => {
@@ -85,6 +102,7 @@ export class ActorStateStorage {
 
   /** The original EventStreamLedger journal port for this actor's one journal. */
   journal(appended?: (changes: readonly StreamChange[]) => void) {
+    const subscribers = new Set<{ after: number; ready: () => void }>();
     let maximumFrameBytes = 0;
     return {
       configure: async (configuration: Uint8Array, maximum: number, authority: Uint8Array): Promise<Uint8Array> => {
@@ -117,6 +135,12 @@ export class ActorStateStorage {
         const count = Math.min(page, head - from);
         return [header, ...(count === 0 ? [] : await this.state.readJournal(BigInt(from), count))];
       },
+      changed: (after: number, ready: () => void): (() => void) => {
+        if (this.durable > after) { ready(); return () => {}; }
+        const subscriber = { after, ready };
+        subscribers.add(subscriber);
+        return () => { subscribers.delete(subscriber); };
+      },
       append: async (index: number, admit: () => Uint8Array[], changes: readonly StreamChange[]): Promise<number> => {
         const accepted = this.run(view => {
           const tail = Number(view.journalTail);
@@ -138,6 +162,9 @@ export class ActorStateStorage {
         if (accepted === undefined) return this.run(view => Number(view.journalTail));
         await this.state.flush();
         if (accepted.head > this.durable) { this.durable = accepted.head; this.bytes = accepted.total; }
+        for (const subscriber of subscribers) {
+          if (this.durable > subscriber.after) { subscribers.delete(subscriber); subscriber.ready(); }
+        }
         return accepted.head;
       },
     };

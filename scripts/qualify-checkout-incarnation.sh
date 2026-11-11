@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export CODEX_HOME=$(mktemp -d)
-features=filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http
+features=test-support
 harness_features="acyclic-harness/${features//,/,acyclic-harness/}"
 timed() {
     local label=$1
@@ -49,7 +49,7 @@ static)
 native)
     artifacts=$(mktemp)
     trap 'rm -f "$artifacts"' EXIT
-    timed build cargo test --locked -p acyclic-fs -p acyclic-harness \
+ timed build cargo test --locked -p acyclic-fs -p acyclic-harness \
         --features "$features" --lib --no-run --message-format=json >"$artifacts"
     run_built acyclic_fs rust/crates/filesystem \
         native_capture::held_root_tests native_host::held_files::record native_host::leaf \
@@ -78,14 +78,14 @@ model)
     artifacts=$(mktemp)
     trap 'rm -f "$artifacts"' EXIT
     timed model-build env RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" \
-        cargo test --locked -p acyclic-fs --features model-checking --lib --no-run --message-format=json >"$artifacts"
+ cargo test --locked -p acyclic-fs --features model-checking --lib --no-run --message-format=json >"$artifacts"
     run_built acyclic_fs rust/crates/filesystem native_host::held_files::models
     ;;
 windows)
     for phase in windows-base windows-cli windows-fuzz; do bash "$0" "$phase"; done
     ;;
 windows-base)
-    timed windows cargo check --locked -p acyclic-fs -p acyclic-harness -p acyclic-native-runtime \
+ timed windows cargo check --locked -p acyclic-fs -p acyclic-harness -p acyclic-native-runtime \
         --lib --tests --features "$features" --target x86_64-pc-windows-gnu
     ;;
 windows-cli)

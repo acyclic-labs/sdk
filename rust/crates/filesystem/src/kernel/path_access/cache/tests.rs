@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
 -> Result<(), Box<dyn std::error::Error>> {

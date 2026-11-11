@@ -254,7 +254,7 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         task::Poll,
     };
 
-    for release_worker in [true, false] {
+    for (release_worker, finite) in [(true, true), (false, true), (true, false)] {
         let caller = std::thread::current().id();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         let (started, worker) = tokio::sync::oneshot::channel();
@@ -263,7 +263,7 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         let worker_active = active.clone();
         let connection = Arc::new(Remote::default());
         let worker_connection = connection.clone();
-        let registration = register_before(deadline, move |check| {
+        let registration = register_before(finite.then_some(deadline), move |check| {
             let _connection = worker_connection;
             worker_active.fetch_add(1, Ordering::SeqCst);
             let _ = started.send(std::thread::current().id());
@@ -288,7 +288,7 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         poll_fn(|cx| {
             assert!(
                 registration.as_mut().poll(cx).is_pending(),
-                "timeout must await worker retirement"
+                "registration must retain its original worker until retirement"
             );
             Poll::Ready(())
         })
@@ -300,10 +300,15 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         } else {
             drop(release);
         }
-        assert!(matches!(
-            registration.await,
-            Err(Error::Process(crate::ProcessError::Timeout { .. }))
-        ));
+        let result = registration.await;
+        if finite {
+            assert!(matches!(
+                result,
+                Err(Error::Process(crate::ProcessError::Timeout { .. }))
+            ));
+        } else {
+            result?;
+        }
         assert_eq!(active.load(Ordering::SeqCst), 0);
         assert_eq!(Arc::strong_count(&connection), 1);
         tokio::time::resume();
@@ -313,43 +318,131 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
 
 #[tokio::test]
 async fn initialization_is_concurrent_and_optional_diagnostics_keep_config_order() -> Result<()> {
-    let mut config = McpConfig::default();
-    let names: Vec<_> = (0..33).map(|index| format!("server{index:02}")).collect();
-    for name in &names {
-        config.servers.insert(
-            name.clone(),
-            server(json!({"command":name}), Dialect::Codex)?,
-        );
+    struct Active(Arc<AtomicUsize>);
+    impl Drop for Active {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
     }
-    let barrier = Arc::new(tokio::sync::Barrier::new(names.len()));
-    let result = config
-        .install_with(
-            ToolRegistry::default(),
-            McpClientLimits::default(),
-            move |_| {
-                let barrier = barrier.clone();
-                Box::pin(async move {
-                    barrier.wait().await;
-                    Err(Error::Invalid("startup rejected".into()))
-                })
-            },
-        )
-        .await?;
-    assert_eq!(
-        result
-            .diagnostics
-            .iter()
-            .map(|failure| failure.server.as_str())
-            .collect::<Vec<_>>(),
-        names.iter().map(String::as_str).collect::<Vec<_>>()
-    );
-    assert!(result.tools.definitions(None)?.is_empty());
-    assert!(result.capabilities.iter().next().is_none());
+    for (credit, population) in [(None, 0), (None, 33), (Some(1), 5), (Some(2), 5)] {
+        let names: Vec<String> = if population == 5 {
+            ["a", "b", "c", "d", "e"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        } else {
+            (0..population)
+                .map(|index| format!("server{index:02}"))
+                .collect()
+        };
+        let mut config = McpConfig::default();
+        for name in &names {
+            config.servers.insert(
+                name.clone(),
+                server(json!({"command":name}), Dialect::Codex)?,
+            );
+        }
+        let concurrent = credit.map_or(names.len().max(1), |credit| credit as usize);
+        let barrier = Arc::new(tokio::sync::Barrier::new(concurrent));
+        let active = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let result = config
+            .install_with(
+                ToolRegistry::default(),
+                McpClientLimits {
+                    servers: credit,
+                    ..Default::default()
+                },
+                |_| {
+                    let barrier = barrier.clone();
+                    let active = active.clone();
+                    let calls = calls.clone();
+                    Box::pin(async move {
+                        let index = calls.fetch_add(1, Ordering::SeqCst);
+                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        let _active = Active(active);
+                        assert!(current <= concurrent, "initialization credit exceeded");
+                        if index < population - population % concurrent {
+                            barrier.wait().await;
+                        }
+                        Err(Error::Invalid("startup rejected".into()))
+                    })
+                },
+            )
+            .await?;
+        assert_eq!(calls.load(Ordering::SeqCst), names.len());
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .map(|failure| failure.server.as_str())
+                .collect::<Vec<_>>(),
+            names.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        assert!(result.tools.definitions(None)?.is_empty());
+        assert!(result.capabilities.iter().next().is_none());
+    }
     Ok(())
 }
 
 #[tokio::test]
-async fn no_selected_tools_grant_no_authority_and_invalid_limits_never_connect() -> Result<()> {
+async fn completed_initialization_releases_credit_before_an_earlier_server_finishes() -> Result<()>
+{
+    let mut config = McpConfig::default();
+    for name in ["a", "b", "c"] {
+        config.servers.insert(
+            name.into(),
+            server(json!({"command": name}), Dialect::Codex)?,
+        );
+    }
+    let release = Arc::new(tokio::sync::Notify::new());
+    let third = Arc::new(AtomicUsize::new(0));
+    let installation = config.install_with(
+        ToolRegistry::default(),
+        McpClientLimits {
+            servers: Some(2),
+            ..Default::default()
+        },
+        |server| {
+            let release = release.clone();
+            let third = third.clone();
+            Box::pin(async move {
+                let crate::mcp::McpTransport::Stdio { command, .. } = &server.transport else {
+                    return Err(Error::Invalid("expected original stdio server".into()));
+                };
+                if command == "a" {
+                    release.notified().await;
+                } else if command == "c" {
+                    third.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(Error::Invalid("startup rejected".into()))
+            })
+        },
+    );
+    tokio::pin!(installation);
+    // One observation of a deliberately held owner: never a readiness loop.
+    assert!(futures::poll!(installation.as_mut()).is_pending());
+    assert_eq!(
+        third.load(Ordering::SeqCst),
+        1,
+        "the completed second server must release its credit"
+    );
+    release.notify_one();
+    let installed = installation.await?;
+    assert_eq!(
+        installed
+            .diagnostics
+            .iter()
+            .map(|failure| failure.server.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b", "c"]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn filtered_tools_stay_unavailable_and_invalid_limits_never_connect() -> Result<()> {
     let configuration = || {
         Ok::<_, Error>(McpConfig {
             servers: BTreeMap::from([(
@@ -374,12 +467,24 @@ async fn no_selected_tools_grant_no_authority_and_invalid_limits_never_connect()
         })
         .await?;
     assert!(installed.tools.definitions(None)?.is_empty());
-    assert!(installed.capabilities.iter().next().is_none());
+    assert!(
+        installed
+            .tools
+            .resolve("mcp.configured.read", None)?
+            .is_none()
+    );
+    // A configured live source can discover newly allowed tools later. Its
+    // scoped server grant cannot make the filtered executor resolvable.
+    assert_eq!(
+        installed.capabilities.iter().collect::<Vec<_>>(),
+        ["mcp:call:configured"]
+    );
     assert!(installed.diagnostics.is_empty());
-    for field in 0..2 {
+    for field in 0..3 {
         let mut limits = McpClientLimits::default();
         match field {
-            0 => limits.frame_bytes = 0,
+            0 => limits.servers = Some(0),
+            1 => limits.frame_bytes = 0,
             _ => limits.tool_bytes = 0,
         }
         assert!(matches!(
@@ -440,7 +545,7 @@ async fn startup_deadlines_and_required_failures_are_bounded_without_retries() -
     Ok(())
 }
 
-#[cfg(feature = "mcp-stdio")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Result<()> {
     let workspace = std::env::current_dir().map_err(Error::process_io)?;
@@ -494,7 +599,7 @@ fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Re
     Ok(())
 }
 
-#[cfg(feature = "mcp-stdio")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -> Result<()> {
     let root = std::env::current_dir().map_err(Error::process_io)?;
@@ -544,7 +649,7 @@ fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -
     Ok(())
 }
 
-#[cfg(feature = "mcp-http")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn http_credentials_resolve_without_serializing_or_disclosing_values() -> Result<()> {
     let environment = |_: &str| None::<std::ffi::OsString>;
@@ -597,7 +702,7 @@ fn http_credentials_resolve_without_serializing_or_disclosing_values() -> Result
     Ok(())
 }
 
-#[cfg(feature = "mcp-http")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn http_binding_tracks_resolved_endpoint_and_credentials_but_not_header_order() -> Result<()> {
     use reqwest::header::{HeaderMap, HeaderValue};
@@ -621,7 +726,7 @@ fn http_binding_tracks_resolved_endpoint_and_credentials_but_not_header_order() 
     Ok(())
 }
 
-#[cfg(all(unix, feature = "mcp-stdio"))]
+#[cfg(all(unix, not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn configured_stdio_server_inherits_its_workspace_and_retains_one_session() -> Result<()> {
     use crate::native_settings::{NativeSettings, SettingsConfig};
@@ -661,6 +766,7 @@ IFS= read -r input
             McpClientLimits {
                 frame_bytes: 1024,
                 tool_bytes: 8192,
+                ..Default::default()
             },
             Arc::new(crate::secrets::EnvSecrets),
         )

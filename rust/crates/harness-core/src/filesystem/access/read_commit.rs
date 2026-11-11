@@ -109,8 +109,8 @@ pub(in crate::filesystem) async fn require_current<A: AsyncAuthorityStore, O: As
     io: &PreparationIo,
 ) -> Result<()> {
     crate::conversation::BoundedContentFuture::new(Some(io), || async move {
-        // A publication overtaking this finite observation invalidates the
-        // disclosure. Do not poll a busy workspace until a quiet cut appears.
+        // The primitive confirms the selected policy at one committed return
+        // cut, accepting unrelated data writes without waiting for quiescence.
         let (generation, revision) = io
             .sdk(
                 workspace
@@ -121,7 +121,7 @@ pub(in crate::filesystem) async fn require_current<A: AsyncAuthorityStore, O: As
                 stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Conflict,
-                    "filesystem publication overtook the policy observation",
+                    "filesystem policy or authority epoch changed during observation",
                 )
             })?;
         let now = access_now()?;

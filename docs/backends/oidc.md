@@ -30,14 +30,15 @@ to 1–900 seconds. Token expiry is strict. Issuer, subject, audience, multiple-
 audience `azp`, signature and optional `nbf` are checked before turn I/O. The
 host supplies its trusted UTC clock, never a time supplied by the token caller.
 
-Default bounds: 64 KiB JWKS, 16 keys, 16 KiB compact token, 30 seconds between
-refresh attempts (including failures), a 10-second fetch deadline, one-hour
-last-good key lifetime and zero `nbf` clock skew. Configuration permits bounded
-changes: at most 1 MiB, 64 keys, 64 KiB tokens, one-day key lifetime and 30 seconds
-of `nbf` skew. Refresh counts and bounds the whole response, then selects keys
+JWKS bytes, key count and compact-token bytes have optional host-selected
+allowances; `None` is unbounded, with no fallback ceiling. Explicit allowances
+must be positive. Defaults retain 30 seconds between refresh attempts (including
+failures), a 10-second fetch deadline, one-hour last-good key lifetime and zero
+`nbf` clock skew. Key lifetime remains at most one day and `nbf` skew at most
+30 seconds. Refresh applies any selected response allowance, then selects keys
 for the pinned algorithm and verification use. Other signing families and
 encryption keys are ignored. Eligible keys still require valid material and
-unique bounded identifiers; malformed candidates or a set with no eligible
+unique nonempty identifiers; malformed candidates or a set with no eligible
 keys refuse the replacement before publication.
 Failed refresh retains the last-good snapshot without extending its lifetime;
 a stale snapshot refuses admission. Unknown keys refuse without fetching.

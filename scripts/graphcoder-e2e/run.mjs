@@ -8,6 +8,9 @@
 // all temporary directories and is mandatory on Windows.
 // E2E_OUTPUT selects the matrix/capture directory; roots are retained on failure.
 // E2E_CASES_ROOT selects an isolated cases/ and coverage.json input tree.
+// E2E_PRIMARY_MOUNTING=auto exercises default capability selection; primary
+// filesystem variants otherwise select native explicitly.
+// E2E_PTY_FRAMES=1 logs observed frames, consumed actions and model requests.
 // Unix requires python3 and a controlling PTY; no alternate GraphCoder runtime.
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -25,7 +28,8 @@ import { qualification } from "./qualification.mjs";
 import { failedCase, failureReport, finishCase, publishReport, retainCapture, verifyReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
-import { variants } from "./serial.mjs";
+import { mountingArguments, variants } from "./serial.mjs";
+import { verifyNativeTrace } from "./native-trace.mjs";
 import { conversation } from "./conversation.mjs";
 import { nativeHostEnvironment } from "../../plugin/tests/hosts/native-host.mjs";
 import { withFileSource } from "./file-source.mjs";
@@ -73,6 +77,7 @@ const json = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + "
 function expand(value, fixture) {
   return expandFixture(value, { support: directory.replaceAll("\\", "/"),
     provider: fixture.provider,
+    sessions: fixture.sessions,
     repository: resolve(directory, "../..").replaceAll("\\", "/"),
     workspace: fixture.workspace.replaceAll("\\", "/"),
     ...(port ? { url: `http://127.0.0.1:${port}/${nativeCases.has(fixture.id) ? 'native-' : ''}${fixture.id}/v1` } : {}) });
@@ -120,7 +125,7 @@ async function prepare(test, gitOrigin) {
   const provider = { adapter: test.adapter ?? "responses", authentication: test.authentication ?? "optional", base_url: expand(test.base_url ?? fixture.url, fixture),
     models: Object.fromEntries((test.models ?? ["tiny"]).map(model => [model, {
       capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true }
-    }])), max_event_bytes: 65536,
+    }])),
     token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
   await json(fixture.catalog, { ...(test.first_run ? { default_model: `${fixture.provider}/tiny` } : {}), [fixture.provider]: provider });
   fixture.env.E2E_MOCK_URL = fixture.url;
@@ -132,7 +137,7 @@ async function prepare(test, gitOrigin) {
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
   fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog,
     ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`]),
-    ...(test.variant === "physical" ? ["--workspace-mounting", "physical"] : []),
+    ...mountingArguments(test),
     ...expand(test.extra_args ?? [], fixture)];
   // Tracing owns explicit text storage, including through the native PTY host.
   for (const option of ["diagnostic-records", "diagnostic-record-bytes"]) {
@@ -152,6 +157,33 @@ async function execute(test, prepared) {
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
       const inputFixture = { ...fixture, env: { ...fixture.env, ...input.environment } };
+      if (input.mode === "service") {
+        // The service belongs to the case, rather than to a terminal whose
+        // original custody owner correctly retires all of its descendants.
+        const service = await processes.startOwned(binary,
+          [...fixture.args, ...(input.endpoint ? ["serve", "127.0.0.1:0"] : ["--local-service", "--signal-ready"])],
+          { cwd: fixture.workspace, env: inputFixture.env });
+        if (input.endpoint) {
+          const publication = await new Spool(service.child.stdout, service.closed,
+            { transcript: join(artifact, "endpoint.jsonl") }).next(() => true);
+          fixture.env.ACYCLIC_API_KEY = publication.credential;
+          fixture.args.push("--endpoint", publication.endpoint);
+          continue;
+        }
+        await new Promise((resolve, reject) => {
+          const ready = bytes => {
+            service.child.stdout.off("data", ready);
+            if (bytes[0] === 10) resolve();
+            else reject(new Error("session service refused readiness"));
+          };
+          service.child.stdout.on("data", ready);
+          service.closed.then(result => {
+            service.child.stdout.off("data", ready);
+            reject(new Error(`session service exited before readiness: ${result.stderr}`));
+          }, reject);
+        });
+        continue;
+      }
       if (input.mode === "conversation") {
         await conversation(processes, binary, fixture, { ...input, operation: input.operation ?? operation },
           capture => captures.push(capture));
@@ -164,6 +196,18 @@ async function execute(test, prepared) {
       if (input.mode === "pty") {
         const { pty } = await import("./pty.mjs");
         await pty(processes, binary, inputFixture, input, capture => captures.push(capture));
+        continue;
+      }
+      if (input.mode === "pty-group") {
+        const { pty } = await import("./pty.mjs");
+        const seen = new Set(), listeners = new Set();
+        const signal = name => { seen.add(name); for (const listener of listeners) listener(); };
+        const shared = { ...inputFixture, signal, signalled: name => seen.has(name),
+          onSignal: listener => { listeners.add(listener); return () => listeners.delete(listener); } };
+        const results = await Promise.allSettled(input.terminals.map(terminal =>
+          pty(processes, binary, shared, terminal, capture => captures.push(capture))
+            .finally(() => signal(`${terminal.name}:closed`))));
+        for (const result of results) if (result.status === "rejected") throw result.reason;
         continue;
       }
       const op = input.operation ?? operation;
@@ -184,6 +228,15 @@ async function execute(test, prepared) {
           running.child.stdin.end(input.stdin ?? JSON.stringify({ prompt: input.text ?? "hello", id: messageId }) + "\n");
         } else running.child.stdin.end();
         const result = await closed(running); captures.push(result);
+        if (input.capture_root) {
+          executionSucceeded(result);
+          const root = JSON.parse(result.stdout);
+          assert.equal(root.kind, "root");
+          assert.equal(typeof root.agent, "string");
+          fixture.sessions ??= {};
+          assert.ok(!Object.hasOwn(fixture.sessions, input.capture_root));
+          fixture.sessions[input.capture_root] = root.agent;
+        }
         if ((input.exit ?? 0) === 0) executionSucceeded(result);
         else assert.equal(result.code, input.exit, `exit ${result.code} (signal ${result.signal}), expected ${input.exit}; stderr: ${result.stderr.trim() || "(empty)"}\nstdout tail: ${result.stdout.slice(-1500)}`);
         if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}; stdout tail: ${result.stdout.slice(-1500) || "(empty)"}`);
@@ -198,6 +251,11 @@ async function execute(test, prepared) {
           if (input.answer !== undefined) assert.equal(settled.ok.text, input.answer);
         }
       });
+    }
+    for (const { path, ignored } of test.assert.git_ignored ?? []) {
+      const result = await processes.run("git", ["check-ignore", "--no-index", "--quiet", path],
+        { cwd: fixture.workspace, env: fixture.env });
+      assert.equal(result.code, ignored ? 0 : 1, `Git exclusion for ${path}: ${result.stderr}`);
     }
     // Check while the mock's held response is still open. Killing the mock
     // first would let an unfenced descendant exit and produce a false pass.
@@ -234,6 +292,7 @@ function verify(result, records) {
   const { test, fixture, captures } = contexts.get(result.case);
   try {
     requests(test, records);
+    if (test.assert.trace) verifyNativeTrace(fixture.workspace, test.assert.trace);
     const client = JSON.stringify(captures);
     for (const text of test.assert.wire_contains ?? []) assert.ok(client.includes(text), `client wire missing ${text}`);
     for (const text of test.assert.wire_absent ?? []) assert.ok(!client.includes(text), "client output exposed forbidden content");

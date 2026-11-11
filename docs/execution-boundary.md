@@ -1,5 +1,19 @@
 # Native execution capabilities
 
+Automatic child-publication journals use payload format v2: source entries pin
+the completed generation, and cursors retain the acknowledged operation until
+its result is released. Version 1 journals cannot prove those facts. They are
+retained and refused with an explicit unsupported-format error; start a fresh
+session rather than migrate or reinterpret their pending work. The existing
+stream identity is retained so incompatible pending debt cannot be hidden by
+opening a different journal. Idempotency identities include the payload version.
+
+The composed mount table distinguishes physical directories, independent native
+projections and logical-only volumes. No-FUSE physical mode keeps auxiliary
+volumes available through filesystem tools; it does not advertise nonexistent
+OS paths or include them in shell execution grants. Selecting a logical-only
+volume as a shell directory returns an explicit unsupported-boundary error.
+
 The native process launch owner accepts explicit execution capabilities.
 The shared launch core enforces grants on supported Linux kernels and returns
 typed refusals on unsupported platforms. On Linux, macOS and supported Windows, stock workspace shell calls and lifecycle hooks default to
@@ -12,7 +26,7 @@ command; there is no unconfined fallback. The adapter translates the same grant
 into Microsoft's PSEC specification and attaches it to the existing suspended
 process launch. The original Job owner retains policy lifetime and descendant
 custody. It changes no host ACLs and scans no directories. Workspace defaults
-read configured drive roots and set `TEMP` and `TMP` to the writable view as well
+read the Windows runtime directory and set `TEMP` and `TMP` to the writable view as well
 as `TMPDIR`. Windows native execution tests require a host exposing this API.
 The named qualification requirement is `windows-psec-1.1`: the actual Windows
 execution host must expose the native API and report support for major version
@@ -24,7 +38,11 @@ the leg must still execute the real outside-write regression.
 PSEC cannot represent the shared socket-free `Off` or outbound-only `TcpPorts`
 contracts: its egress filters leave intra-container loopback available, and
 private-network capability also enables inbound traffic. Those explicit grants
-refuse as unsupported on Windows. The workspace default uses `On`.
+refuse as unsupported on Windows. The workspace default uses `Isolated`:
+no traffic crosses the execution boundary, while communication between
+confined descendants may remain available. PSEC receives no network
+capabilities and deny-default ingress, host-loopback and egress policies.
+Linux and macOS enforce this boundary with their existing network-off rules.
 
 The default binds the selected primary workspace and its visible volume roots.
 Writable volumes can live outside the primary directory; read-only volume roots
@@ -32,14 +50,38 @@ receive no additional write authority. Native volume callbacks still enforce
 path-level permissions. Landlock's additive rules do not subtract permissions
 from a read-only alias inside an otherwise writable primary tree; such a binding
 requires the native volume provider's existing checks.
-The default preserves host filesystem reads, so installed tools and dependencies
-outside the checkout remain usable. It confines writes; it does not promise
-filesystem confidentiality. Explicit host grants can restrict reads as before.
+The default denies filesystem reads and writes outside its granted roots.
+`ExecutionGrant::workspace_default` selects the composed workspace, visible
+volumes and explicit read-only runtime dependencies in one shared policy core.
+Linux runtime grants are `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` and
+`/etc/ld.so.cache` and `/etc/ssl/openssl.cnf` (the system OpenSSL runtime
+configuration); macOS grants are `/System/Library`, `/usr`, `/bin`, `/sbin`
+`/Library/Apple/System/Library`, the OS and App Cryptex graft points used by
+dyld, and the null device `/dev/null`; Windows grants
+its `SystemRoot`. All three also grant the host's once-selected shell installation
+directory, including runtime files beside the shell executable. Model arguments
+and per-command PATH values cannot select that directory.
+Missing optional directories are omitted. Every selected root is bound by the
+same immutable grant machinery. Tools needing other paths or network access
+require an explicit authenticated grant; command arguments cannot add authority.
+On macOS, each bound root also permits reading its ancestor directory objects
+so dyld can resolve its bootstrap paths with `openat`. This includes the root
+directory object, without read access to ungranted sibling files or subtrees.
+Bindings retain the caller's alias path for lookup metadata (for example,
+`/var` leading to `/private/var`); file contents still require a canonical grant.
+Lookup paths use normalized absolute components. The shared policy records
+these metadata permissions and checks them against the parent's ceiling during
+attenuation, so an outside alias cannot add access to its own directory metadata.
 The command still receives only the host's ordinary environment, excluding secret
 variables and startup hooks. The default TMPDIR names the primary workspace, so standard temporary-file APIs
 remain inside the writable view without a separate mount or directory.
 Linux grant construction also makes the trusted host process non-dumpable before launch, preventing same-user guests from reading its environment, memory or file-descriptor aliases through procfs. This is process-wide and is not restored at command exit; a concurrent command may still be active. This protects host-owned secrets without claiming confidentiality for arbitrary host files.
 
+Workspace reads include directory enumeration and stat, including ancestor
+inode metadata needed for path traversal. Linux extended-attribute queries
+return EOPNOTSUPP: Landlock cannot confine them, so the boundary exposes no
+xattr facility. Tools such as `ls -la` can enumerate and stat the workspace
+without accessing host attributes.
 The existing seccomp policy also denies filesystem metadata mutation such as
 chmod, including within the workspace; this limitation remains explicit.
 Unsupported kernels refuse before guest execution, with no unconfined fallback.
@@ -371,14 +413,13 @@ The trusted process-tree warden runs before this final exec. The native test
 exercises an actual non-CLOEXEC outside-file descriptor as an escape control.
 Read-only attenuation removes mutation rules for every writable root together.
 Networking translates to no rules, all networking, or outbound TCP port rules.
-The macOS default preserves host reads and uses the primary workspace as TMPDIR.
+The macOS default uses explicit runtime reads and the primary workspace as TMPDIR.
 Windows compiles filesystem grants into a native PSEC 1.1 environment and
 attaches it to the existing suspended launch, retaining its lifetime with the
 original Job owner. Bound handles fence root identity and reparse traversal;
 inherited standard streams must be pipes or the null device. Stock workspace
 commands receive this boundary by default, independently of approval mode.
-Unavailable ambient drive roots are omitted from optional host reads; explicitly
-selected grant roots retain strict binding and failure semantics. Explicit
+Explicitly selected grant roots retain strict binding and failure semantics. Explicit
 `Off` and `TcpPorts` network grants refuse because PSEC cannot represent their
 socket-free and outbound-only contracts.
 

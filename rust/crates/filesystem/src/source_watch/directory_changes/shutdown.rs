@@ -1,8 +1,8 @@
 use super::ERROR_NOT_FOUND;
 use super::{
-    CancelIoEx, DemandError, DemandWork, ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED,
-    GetOverlappedResult, HANDLE, NativeSourceWatch, Ordering, PoisonError, READ, Reads, ReadsGuard,
-    Shared, SourceDemandReadWork, WRITE, WorkCounters, close, hub, io, io_work, is_open,
+    CancelIoEx, DemandError, DemandWork, ERROR_OPERATION_ABORTED, GetOverlappedResult, HANDLE,
+    NativeSourceWatch, Ordering, PoisonError, READ, Reads, ReadsGuard, Shared,
+    SourceDemandReadWork, WRITE, WorkCounters, close, hub, io, io_work, is_open,
 };
 use crate::source_watch::check_wait;
 
@@ -203,12 +203,7 @@ impl Shared {
                 false,
             )
         };
-        reads.cancelling = false;
-        reads.pending = !matches!(&completed, Ok(()))
-            && !completed.as_ref().err().is_some_and(|error| {
-                error.code() == ERROR_OPERATION_ABORTED.to_hresult()
-                    || error.code() == ERROR_NOTIFY_ENUM_DIR.to_hresult()
-            });
+        reads.observe_completion(&completed);
         result.and(match completed {
             Err(error) if error.code() != ERROR_OPERATION_ABORTED.to_hresult() => {
                 Err(io::Error::from(error).into())

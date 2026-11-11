@@ -2,12 +2,11 @@ use super::*;
 use crate::executor::records::RecordedCall;
 use crate::runtime::{Target, TargetResolver};
 
-#[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_recovery()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     use crate::{
-        agent::{AgentPath, AgentState, ForkAdopted, VolumeBinding},
+        agent::{AgentPath, AgentState, ForkAdopted, WorkspaceEntry},
         conversation::{VolumeClass, VolumeOperation, VolumeOwner},
         core::{AggregateKind, Authority, AuthorityRoot},
         filesystem::{
@@ -157,10 +156,11 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 forked_at: 0,
                 conversation_tail: 0,
                 checkpoint: None,
-                volumes: vec![VolumeBinding {
-                    name: "project".into(),
-                    volume: volume.clone(),
-                }],
+                volumes: vec![WorkspaceEntry::initial_volume(
+                    crate::agent::WorkspaceRole::User,
+                    "project".into(),
+                    volume.clone(),
+                )],
                 brief: None,
                 policy: None,
             },
@@ -449,7 +449,6 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 async fn replace_replay_policy<
     A: acyclic_fs::AsyncAuthorityStore,
     O: acyclic_fs::AsyncObjectStore,

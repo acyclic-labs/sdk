@@ -198,7 +198,7 @@ impl<
     }
 
     /// Prepares mounted removals and identity shadows for the same DATA decision.
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn prepare_mount_removals(
         &self,
         paths: &[String],
@@ -296,7 +296,7 @@ impl<
         Err(LazyWorkspaceError::Concurrent)
     }
     /// Reads the original mounted publication decision without updating the binding.
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn mount_removal_publication(
         &self,
         ctx: &mut KernelAccounting<'_>,
@@ -319,7 +319,7 @@ impl<
         }
     }
     /// Finishes the mounted overlay from its actual DATA result.
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn finish_mount_removals(
         &self,
         ctx: &mut KernelAccounting<'_>,

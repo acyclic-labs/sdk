@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(target_os = "linux", feature = "filesystem"))]
+#[cfg(target_os = "linux")]
 mod physical_grants;
 
 #[tokio::test]
@@ -17,7 +17,7 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     };
     let adapter = Arc::new(FakeTool(AtomicUsize::new(0)));
     crate::tool::ToolExecutor::authorize(adapter.as_ref(), Some(&wide), None, &invocation, None)?;
-    crate::executor::json::json_byte_length(&invocation, wide.limits().file_bytes, &mut None)
+    crate::executor::json::json_byte_length(&invocation, Some(wide.limits().file_bytes), &mut None)
         .map(|_| ())?;
     let tools = echo_tools(
         adapter.clone(),
@@ -81,7 +81,7 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
             _: &'a RuntimeScope,
             _io: Option<&'a crate::executor::PreparationIo>,
         ) -> Result<
-            crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>,
+            crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
         > {
             let decision = if self.0 {
                 ToolPolicyDecision::Deny {
@@ -188,7 +188,7 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
             _: Option<&RuntimeScope>,
             _: Option<&crate::runtime::ToolContext>,
             _: &ToolInvocation,
-            _: crate::NativeWork<'_>,
+            _: acyclic_fs::NativeWork<'_>,
         ) -> Result<()> {
             if self.0 == Stage::Authorize {
                 return Err((self.1)());
@@ -226,12 +226,12 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
         code: crate::wire::ErrorCode::Unauthorized,
         reason: "original read grant is absent",
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let native_boundary: fn() -> Error = || Error::NativeBoundary {
         code: crate::wire::ErrorCode::Invalid,
         reason: "native producer invariant failed",
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let native_accounting: fn() -> Error = || {
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(16_384, 16 * 1024 * 1024),
@@ -265,9 +265,9 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
             // Negative control: a harness fault never settles as a model-visible result.
             (storage, None),
             (unavailable, None),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             (native_boundary, None),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             (native_accounting, None),
         ] {
             let model = Arc::new(scripted_model());
@@ -431,7 +431,7 @@ async fn refused_calls_survive_an_interruption_after_the_next_context_is_prepare
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_stays_strict()
 -> Result<()> {
@@ -442,7 +442,7 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
             _: Option<&RuntimeScope>,
             _: Option<&crate::runtime::ToolContext>,
             _: &ToolInvocation,
-            _: crate::NativeWork<'_>,
+            _: acyclic_fs::NativeWork<'_>,
         ) -> Result<()> {
             Err(if self.0 {
                 Error::NativeBoundary {

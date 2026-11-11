@@ -9,25 +9,22 @@ publish.workspace = true
 description = "Bounded client state shared by native and WASM harness adapters"
 
 [features]
-agents = ["acyclic-harness-core/ui", "session", "dep:acyclic-harness-core", "dep:acyclic-actors", "dep:base64", "dep:blake3", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:pulldown-cmark"]
-grpc = ["agents", "acyclic-stream/grpc"]
-session = ["acyclic-stream/session", "dep:prost"]
-wasm = ["acyclic-harness-core/ui", "acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:acyclic-actors", "dep:base64", "dep:blake3", "dep:prost", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:tsify", "dep:wasm-bindgen", "dep:pulldown-cmark"]
+wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:tsify", "dep:wasm-bindgen"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
-acyclic-actors = { version = "=0.2.0", path = "../actors", optional = true }
-acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", optional = true }
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
-base64 = { version = "=0.22.1", optional = true }
-blake3 = { workspace = true, optional = true }
+base64 = { version = "=0.22.1" }
+blake3 = { workspace = true }
 bytes.workspace = true
 futures.workspace = true
-prost = { workspace = true, optional = true }
-pulldown-cmark = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
-thiserror = { workspace = true, optional = true }
+prost = { workspace = true }
+pulldown-cmark = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 url = "=2.5.8"

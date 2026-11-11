@@ -490,6 +490,7 @@ mod tests {
             (SpawnContext::Fork, "fork"),
         ] {
             let batch = project(Some(CreationConfig {
+                topology: None,
                 model: None,
                 continuation: None,
                 context,
@@ -523,6 +524,7 @@ mod tests {
             );
         }
         let root = project(Some(CreationConfig {
+            topology: None,
             model: None,
             continuation: None,
             context: SpawnContext::TopLevel,

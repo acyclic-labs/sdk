@@ -1,3 +1,4 @@
+pub use crate::config::RequestMatch;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -124,8 +125,8 @@ pub struct HookRule {
 pub struct HookSpec {
     /// Native executable or script passed to the shared shell selector.
     pub run: HookRun,
-    /// Positive execution deadline in milliseconds.
-    pub timeout_ms: u64,
+    /// Optional positive caller execution deadline in milliseconds.
+    pub timeout_ms: Option<u64>,
     /// How execution and output failures affect the caller.
     pub failure: HookFailure,
 }
@@ -165,25 +166,6 @@ pub enum HookRun {
         /// without running anything.
         matcher: Option<RequestMatch>,
     },
-}
-
-/// A plugin hook's `matcher` for one event: every named field must match.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
-#[cfg_attr(feature = "hooks", derive(ts_rs::TS))]
-#[serde(default, deny_unknown_fields)]
-pub struct RequestMatch {
-    /// Normalized actions (`exec`, `read`, `write`, `edit`, `search`, `web`,
-    /// `mcp`, `other`); empty matches every action.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub action: Vec<String>,
-    /// A regular expression over an `exec` request's command.
-    #[cfg_attr(feature = "hooks", ts(optional))]
-    pub command: Option<String>,
-    /// A regular expression over a `read`, `write` or `edit` request's path.
-    /// For atomic edits it selects any affected path, including move destinations;
-    /// the hook receives the complete ordered `paths` list instead of `path`.
-    #[cfg_attr(feature = "hooks", ts(optional))]
-    pub path: Option<String>,
 }
 
 /// A command failure always records a diagnostic; blocking is explicit.
@@ -257,7 +239,7 @@ impl HookSpec {
         if command.trim().is_empty()
             || command.contains('\0')
             || !arguments_valid
-            || self.timeout_ms == 0
+            || self.timeout_ms == Some(0)
         {
             return Err(Error::Invalid(
                 "hook command and timeout must be positive".into(),

@@ -13,7 +13,7 @@ fn apply(
 ) -> CheckResult {
     // Compare decoding semantics without an aggregate-output fallback changing
     // the retained approval. The bounded fold is exercised separately below.
-    let mut ledger = budget::Budget::existing(u64::MAX, output)?;
+    let mut ledger = budget::Budget::existing(None, output)?;
     ledger.apply(output, event, policy, result);
     ledger.finish(output);
     Ok(())

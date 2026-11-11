@@ -25,7 +25,7 @@ mod recorded_invocation;
 pub use recorded_invocation::RecordedInvocation;
 pub(crate) use recorded_invocation::validate_model_call_recorded;
 mod executor;
-pub use executor::{Dispatch, ToolExecutor, ToolPreparation, ToolPreparationFuture};
+pub use executor::{Dispatch, ReadPathKind, ToolExecutor, ToolPreparation, ToolPreparationFuture};
 mod projection;
 pub use projection::*;
 mod approval;
@@ -33,9 +33,8 @@ pub use approval::ToolApprovalVerifier;
 mod registry;
 pub use registry::{Tool, ToolRegistry, ToolSource};
 mod codec;
-#[cfg(feature = "filesystem")]
 pub(crate) use codec::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use codec::clone_value;
 #[doc(hidden)]
 pub use codec::decode;

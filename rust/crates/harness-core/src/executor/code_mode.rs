@@ -5,11 +5,12 @@ use tokio_util::sync::CancellationToken;
 
 mod allocator;
 mod interpreter;
-#[cfg(all(feature = "test-support", feature = "filesystem"))]
+#[cfg(feature = "test-support")]
 pub(super) mod model;
 pub(crate) use interpreter::MEMORY_BYTES;
 
 struct Call {
+    module: bool,
     name: allocator::BridgeText,
     arguments: allocator::BridgeText,
     reply: oneshot::Sender<Option<acyclic_stream::OwnedBytes>>,
@@ -107,7 +108,7 @@ impl ProgramLogs {
             }
         }
         let cost = with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(line.as_str(), u64::MAX, work)
+            crate::executor::json::json_byte_length(line.as_str(), None, work)
         })? as usize
             + 1;
         if self.bytes + cost + Self::FIELDS > maximum {
@@ -125,7 +126,6 @@ impl ProgramLogs {
         source: &'de str,
         io: Option<&'a PreparationIo>,
     ) -> Result<(T, Option<crate::conversation::ContentHold<'a>>)> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             let (value, hold) = io.decode_seed(
                 std::marker::PhantomData::<T>,
@@ -141,8 +141,8 @@ impl ProgramLogs {
             std::marker::PhantomData::<T>,
             source.as_bytes(),
             crate::executor::json::JsonBounds {
-                maximum_bytes: source.len() as u64,
-                maximum_items: u64::MAX,
+                maximum_bytes: Some(source.len() as u64),
+                maximum_items: None,
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             None,
@@ -164,7 +164,7 @@ impl ProgramLogs {
             return Ok(());
         }
         let result = with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&*output, u64::MAX, work)
+            crate::executor::json::json_byte_length(&*output, None, work)
         })? as usize;
         let Some(available) = maximum.checked_sub(result.saturating_add(Self::FIELDS)) else {
             return Ok(());
@@ -185,20 +185,23 @@ impl ProgramLogs {
 }
 
 type CallResult<'a> =
-    std::result::Result<(Value, Option<crate::conversation::ContentHold<'a>>), String>;
+    std::result::Result<(Value, Option<crate::conversation::ContentHold<'a>>), ToolFailureCause>;
 
 fn encode_reply(
     ok: bool,
     value: &Value,
+    version: Option<&str>,
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
     #[derive(Serialize)]
     struct Reply<'a> {
         ok: bool,
         value: &'a Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        version: Option<&'a str>,
     }
-    let reply = Reply { ok, value };
-    #[cfg(feature = "filesystem")]
+    let reply = Reply { ok, value, version };
+
     if let Some(io) = io {
         return io.encode(&reply, u64::MAX, false);
     }
@@ -269,13 +272,10 @@ impl StockExecution<'_> {
                 })?;
             let definitions =
                 stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?;
-            #[cfg(feature = "filesystem")]
             let funded = self
                 .io
                 .map(|io| io.encode(&definitions, u64::MAX, false))
                 .transpose()?;
-            #[cfg(not(feature = "filesystem"))]
-            let funded: Option<acyclic_stream::OwnedBytes> = None;
             let definitions = match funded {
                 Some(bytes) => bytes,
                 None => serde_json::to_vec(&definitions)
@@ -297,7 +297,6 @@ impl StockExecution<'_> {
             // time. Promise.all remains usable without an unbounded host work queue.
             let (send, mut receive) = mpsc::channel(1);
             let allocator = allocator::EngineAllocator::new(self.native_work());
-            #[cfg(feature = "filesystem")]
             let engine_failure = allocator.failure();
             let code = stock_string_copy(code, self.io)?;
             let mut worker = Box::pin(acyclic_native_runtime::blocking_future(interpreter::run(
@@ -339,8 +338,8 @@ impl StockExecution<'_> {
                                 let values = serde_json::from_str(&arguments.value).map_err(|_| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "JavaScript log arguments are not JSON"))?;
                                 let entry = Log { kind: "code.log", call_id: &parent.call_id, ordinal: log_ordinal, values };
                                 logs.observe(values, maximum, self.io)?;
-                                let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:log:{log_ordinal}", parent.operation_id), work))?;
-                                #[cfg(feature = "filesystem")]
+                                let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:log:{log_ordinal}:result", parent.operation_id), work))?;
+
                                 let _key_hold = self.io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
                                 tokio::select! {
                                     biased;
@@ -371,12 +370,28 @@ impl StockExecution<'_> {
                             ExecutionProgress::PreDispatchFailed(failure) => return Ok(ExecutionProgress::PreDispatchFailed(failure)),
                         };
                         let ok = result.is_ok();
-                        let (value, _result_hold) = match result { Ok(result) => result, Err(message) => (Value::String(message), None) };
-                        let output_bytes = with_history_io(self.io, |work| crate::executor::json::json_byte_length(&value, u64::MAX, work))?;
+                        let (value, _result_hold, _failure_hold) = match result {
+                            Ok((value, hold)) => (value, hold, None),
+                            Err(cause) => {
+                                let (value, hold) = crate::tool::value(&cause, u64::MAX, self.native_work())?;
+                                (value, None, hold)
+                            },
+                        };
+                        let version = if ok {
+                            crate::tool::files::result_version(
+                                if call.module {
+                                    call.name.value.strip_prefix("acyclic.").unwrap_or("")
+                                } else {
+                                    ""
+                                },
+                                &value,
+                                self.native_work(),
+                            )?
+                        } else { None };
+                        let output_bytes = with_history_io(self.io, |work| crate::executor::json::json_byte_length(&value, None, work))?;
                         let entry = CallLog { kind: "code.call", call_id: &parent.call_id, ordinal, tool: &call.name.value, ok, input_bytes, output_bytes };
                         let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:{ordinal}:result", parent.operation_id), work))?;
-                        #[cfg(feature = "filesystem")]
-                        let _key_hold = self.io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
+                                                let _key_hold = self.io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
                         // The ordinary journal publishes one immutable tool-output
                         // file per settled call. Following that directory streams
                         // logs without retaining call history in the caller or VM.
@@ -390,28 +405,52 @@ impl StockExecution<'_> {
                             }
                             result = stage_json(journal, identity.0, &key, &entry, self.io) => { result?; }
                         }
-                        let reply = encode_reply(ok, &value, self.io)?;
+                        let reply = encode_reply(ok, &value, version.as_ref().map(|v| v.0.as_str()), self.io)?;
                         let _ = call.reply.send(Some(reply));
                     }
                 }
             };
-            #[cfg(feature = "filesystem")]
             if let Some(error) = engine_failure
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
             {
-                return Err(error.into());
+                return Err(error);
             }
             let mut value = match program {
-                Ok(value) => {
-                    serde_json::json!({"value": value})
+                Ok(result) => {
+                    if let Some(custody) = result.custody {
+                        let io = self.io.ok_or_else(|| {
+                            stock_boundary(
+                                self.io,
+                                crate::wire::ErrorCode::Invalid,
+                                "JavaScript result has no original ledger",
+                            )
+                        })?;
+                        io.absorb_native_custody(custody)?;
+                    }
+                    let slots =
+                        crate::executor::json::object_slot_bytes(1, true).ok_or_else(|| {
+                            stock_boundary(
+                                self.io,
+                                crate::wire::ErrorCode::Invalid,
+                                "JavaScript result wrapper size overflow",
+                            )
+                        })?;
+
+                    if let Some(io) = self.io {
+                        io.retain_owned(slots)?;
+                    }
+                    let key = stock_string_copy("value", self.io)?;
+                    let mut fields = serde_json::Map::new();
+                    fields.insert(key, result.value);
+                    Value::Object(fields)
                 }
                 Err(mut error) => {
                     let mut value = serde_json::json!({"error": ""});
                     // Reserve the exact wrapper before fitting escaped text.
                     let overhead = with_history_io(self.io, |work| {
-                        crate::executor::json::json_byte_length(&value, maximum as u64, work)
+                        crate::executor::json::json_byte_length(&value, Some(maximum as u64), work)
                     })?;
                     let budget =
                         maximum.saturating_sub(usize::try_from(overhead).unwrap_or(usize::MAX));
@@ -473,7 +512,23 @@ impl StockExecution<'_> {
         hash.update(parent.call_id.as_bytes());
         hash.update(&ordinal.to_be_bytes());
         let call_id = hash.finalize().to_hex().to_string();
-        #[cfg(feature = "filesystem")]
+        let canonical = call
+            .module
+            .then(|| call.name.value.strip_prefix("acyclic."))
+            .flatten();
+        let name = match canonical {
+            Some(name) => match self.stock.tools.capability(name, self.io)? {
+                Some(tool) => with_history_io(self.io, |work| {
+                    preparation_format(
+                        format_args!("{}@{}", tool.definition.name, tool.definition.revision),
+                        work,
+                    )
+                })?,
+                None => stock_string_copy(name, self.io)?,
+            },
+            None => stock_string_copy(&call.name.value, self.io)?,
+        };
+
         let decoded = self
             .io
             .map(|io| {
@@ -484,8 +539,6 @@ impl StockExecution<'_> {
                 )
             })
             .transpose()?;
-        #[cfg(not(feature = "filesystem"))]
-        let decoded: Option<(Value, crate::conversation::ContentHold<'_>)> = None;
         let (arguments, _arguments_hold) = match decoded {
             Some((value, hold)) => (value, Some(hold)),
             None => (
@@ -503,7 +556,7 @@ impl StockExecution<'_> {
             operation,
             step,
             stock_string_copy(&call_id, self.io)?,
-            stock_string_copy(&call.name.value, self.io)?,
+            stock_string_copy(&name, self.io)?,
             arguments,
             self.native_work(),
         )?;
@@ -513,7 +566,7 @@ impl StockExecution<'_> {
             role: ModelRole::Assistant,
             content: ModelContent::Part(ModelContentPart::ToolCall(
                 // Only metadata and identity are read from this local envelope.
-                crate::model::ToolCall::new(call_id.clone(), call.name.value.clone(), Value::Null),
+                crate::model::ToolCall::new(call_id.clone(), name.clone(), Value::Null),
             )),
         }];
         let result = match Box::pin(self.settle_tool_call(
@@ -545,7 +598,31 @@ impl StockExecution<'_> {
             ..
         }) = messages.pop()
         {
-            return Ok(ExecutionProgress::Ready(Err(message)));
+            // Classification comes from the exact indexed receipt, never from
+            // parsing model-visible error text. This extra bounded read is
+            // needed only for failures, until settlement exposes its cause.
+            let (_, records) = self
+                .tool_records(journal, operation, step, &call_id)
+                .await?;
+            let super::records::RecordedCall::Failed { reason, cause, .. } =
+                super::records::RecordedCall::classify(&records).map_err(|reason| {
+                    stock_boundary(self.io, crate::wire::ErrorCode::Invalid, reason)
+                })?
+            else {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "failed call has no failure receipt",
+                ));
+            };
+            return Ok(ExecutionProgress::Ready(Err(ToolFailureCause {
+                class: if reason == ToolFailureKind::Unavailable {
+                    ToolErrorClass::Denied
+                } else {
+                    cause.class
+                },
+                message,
+            })));
         }
         let result = result.ok_or_else(|| {
             stock_boundary(
@@ -557,7 +634,7 @@ impl StockExecution<'_> {
         let value = if self
             .stock
             .tools
-            .get(&call.name.value, None, self.io)?
+            .get(&name, None, self.io)?
             .is_some_and(|tool| tool.executor.is_code_mode())
         {
             crate::model::clone_value(crate::tools::code_mode::output(&result.0.value)?, self.io)?

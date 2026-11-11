@@ -21,6 +21,7 @@ pub(super) struct Session {
     // depends on the verified contents, not unrelated files at that cut.
     price_source: Option<FileDescriptor>,
     open_view: Option<String>,
+    pub tree: Option<bool>,
 }
 
 const COMMANDS: &str = "commands/commands.json";
@@ -57,6 +58,7 @@ impl Session {
             prices: Arc::default(),
             price_source: None,
             open_view: None,
+            tree: None,
         };
         session.project()?;
         Ok(session)
@@ -74,6 +76,21 @@ impl Session {
             self.prices = Arc::new(prices);
             self.price_source = source.map(|file| file.file.descriptor().clone());
         }
+        self.tree = self
+            .snapshot
+            .files
+            .get("layout.json")
+            .and_then(Option::as_ref)
+            .map(|file| -> Result<Option<bool>, Failure> {
+                let layout: Value = serde_json::from_str(&file.text)?;
+                match layout.get("tree") {
+                    None => Ok(None),
+                    Some(Value::Bool(value)) => Ok(Some(*value)),
+                    Some(_) => Err("layout.json tree must be boolean".into()),
+                }
+            })
+            .transpose()?
+            .flatten();
         self.catalog = match self.snapshot.files.get(COMMANDS).and_then(Option::as_ref) {
             Some(file) => {
                 let document: CommandFile = serde_json::from_str(&file.text)?;
@@ -165,6 +182,23 @@ impl Session {
         conversation: &Conversation,
         query: Option<&CommandQuery>,
     ) -> Result<(), Failure> {
+        self.change(conversation, query, None).await
+    }
+
+    pub async fn show_tree(
+        &mut self,
+        conversation: &Conversation,
+        shown: bool,
+    ) -> Result<(), Failure> {
+        self.change(conversation, None, Some(shown)).await
+    }
+
+    async fn change(
+        &mut self,
+        conversation: &Conversation,
+        query: Option<&CommandQuery>,
+        tree: Option<bool>,
+    ) -> Result<(), Failure> {
         let mut snapshot = CommandFileSnapshot::new();
         if let Some(file) = self
             .snapshot
@@ -178,7 +212,18 @@ impl Session {
             );
         }
         let operation = OperationId::new();
-        let changes = view_changes(&snapshot, query, operation)?;
+        let changes = if let Some(shown) = tree {
+            let mut changes = CommandResolution::Select {
+                query: CommandQuery::Tree,
+            }
+            .file_changes(&snapshot, operation)?;
+            for change in &mut changes {
+                change.contents["tree"] = Value::Bool(shown);
+            }
+            changes
+        } else {
+            view_changes(&snapshot, query, operation)?
+        };
         self.publish(conversation, operation, changes).await
     }
 
@@ -200,6 +245,30 @@ impl Session {
                     .or_default()
                     .insert(path.into(), serde_json::from_str(&file.text)?);
             }
+        }
+        if let CommandResolution::Select {
+            query: query @ (CommandQuery::Details | CommandQuery::Reasoning),
+        } = resolution
+        {
+            let key = if *query == CommandQuery::Details {
+                "tool_details"
+            } else {
+                "reasoning"
+            };
+            let settings = self
+                .config
+                .settings()
+                .map_err(|errors| format!("UI configuration: {errors:?}"))?;
+            let current = if *query == CommandQuery::Details {
+                settings.tool_details
+            } else {
+                settings.reasoning
+            };
+            snapshot
+                .entry(CommandFileRoot::Config)
+                .or_default()
+                .entry("settings.json".into())
+                .or_insert_with(|| serde_json::json!({}))[key] = Value::Bool(current);
         }
         let operation = OperationId::new();
         let changes = resolution.file_changes(&snapshot, operation)?;
@@ -257,6 +326,33 @@ pub(super) fn follow(
     super::super::phase(|| async move {
         conversation
             .client_files(conversation.client_session(), paths(), Some(after))
+            .await
+    })
+}
+
+pub(super) fn title(snapshot: &acyclic_harness::client_files::FilePreviews) -> String {
+    snapshot
+        .files
+        .get("ui/title")
+        .and_then(Option::as_ref)
+        .map(|text| text.chars().filter(|ch| !ch.is_control()).collect())
+        .unwrap_or_default()
+}
+
+pub(super) fn follow_title(
+    conversation: Arc<Conversation>,
+    after: acyclic_harness::resources::GenerationRef,
+) -> futures::future::LocalBoxFuture<
+    'static,
+    acyclic_harness::Result<acyclic_harness::client_files::FilePreviews>,
+> {
+    super::super::phase(|| async move {
+        conversation
+            .agent_file_previews(
+                vec!["ui/title".into()],
+                Some(after),
+                acyclic_harness::client::MAX_READ_BYTES,
+            )
             .await
     })
 }
@@ -411,6 +507,32 @@ mod tests {
         )
         .await?;
         let theme_commands = CommandCatalog::builtins()?;
+        for query in [CommandQuery::Details, CommandQuery::Reasoning] {
+            let before = ui
+                .config
+                .settings()
+                .map_err(|errors| format!("{errors:?}"))?;
+            for toggled in [true, false] {
+                ui.submit(
+                    &conversation,
+                    &CommandResolution::Select {
+                        query: query.clone(),
+                    },
+                )
+                .await?;
+                let reopened = Session::open(&conversation).await?;
+                let settings = reopened
+                    .config
+                    .settings()
+                    .map_err(|errors| format!("{errors:?}"))?;
+                let (current, original) = if query == CommandQuery::Details {
+                    (settings.tool_details, before.tool_details)
+                } else {
+                    (settings.reasoning, before.reasoning)
+                };
+                assert_eq!(current, original ^ toggled);
+            }
+        }
         for mode in ["light", "dark", "auto"] {
             let resolution = theme_commands
                 .resolve(&format!("/theme {mode}"), u64::MAX)?

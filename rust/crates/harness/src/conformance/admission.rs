@@ -72,7 +72,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
 async fn admission(
     root: &AuthorityRoot,
     audience: Authority,
-    binding: &VolumeBinding,
+    binding: &WorkspaceEntry,
     case: Case,
     clock: &super::fixtures::AuthorityClock,
 ) -> Result<TurnAdmission> {
@@ -81,13 +81,13 @@ async fn admission(
     }
     let mut grants = vec![
         binding
-            .volume
+            .volume()?
             .capability(VolumeOperation::Read, &mut None)?,
     ];
     if !matches!(case, Case::ReadOnly | Case::Widened) {
         grants.push(
             binding
-                .volume
+                .volume()?
                 .capability(VolumeOperation::Write, &mut None)?,
         );
     }
@@ -110,10 +110,10 @@ async fn admission(
         Case::Widened => {
             let wider = Capabilities::new([
                 binding
-                    .volume
+                    .volume()?
                     .capability(VolumeOperation::Read, &mut None)?,
                 binding
-                    .volume
+                    .volume()?
                     .capability(VolumeOperation::Write, &mut None)?,
             ]);
             if root
@@ -180,7 +180,7 @@ async fn check_scope(
     root: &AuthorityRoot,
     admission: &TurnAdmission,
     path: &AgentPath,
-    binding: &VolumeBinding,
+    binding: &WorkspaceEntry,
     case: Case,
 ) -> Result<String> {
     let authority = agent_authority(

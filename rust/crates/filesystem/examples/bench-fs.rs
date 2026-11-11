@@ -188,6 +188,7 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
     })
     .await?;
     let options = CaptureOptions {
+        source_namespace: None,
         source_root: source.path().to_path_buf(),
         expected_root_identity: capture_root_identity(source.path())?,
         maximum_paths: paths.saturating_add(1),

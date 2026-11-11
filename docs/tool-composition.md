@@ -50,18 +50,23 @@ including escaping and framing, even when one schema exceeds a part. The batch
 retains its position as later steps append calls/results, preserving that prefix.
 New turns use the latest bound registry; each program binds a fresh table from
 that same snapshot. The turn's admitted tools remain pinned for receipt replay.
-Dynamic schemas stay in the admitted request for validating earlier exchanges;
-only the provider declaration iterator filters them from the native prefix.
+Native schemas remain in `tools.bound` history metadata for validating earlier
+exchanges, including a parent's calls inherited by a worker whose capabilities
+differ. Providers omit these records from model input: current native schemas
+are already in the declaration header. Dynamic schemas remain in model-visible
+`tools.changed` notices. Successor tables revoke only their own bindings for
+later calls without changing the shared prefix.
 The admitted request's explicit `compose_tools` setting controls this projection;
 stock execution sets it from the bound JavaScript executor. A custom tool named
-`code` retains ordinary declarations and does not announce a JavaScript table.
+`code` retains ordinary declarations; its history table does not enable
+JavaScript composition.
 Requests saved without the composition setting require fresh admission under
 the current request schema. Their original bytes and digests remain immutable.
 Use it for multi-step reads, filters and loops, for example:
 
 ```javascript
 const files = await tools.read({ path: "README.md" });
-files
+export default files
 ```
 
 Each currently granted model tool is an async function in the frozen `tools`
@@ -73,8 +78,13 @@ resumption reruns deterministic JavaScript against the same inner call receipts.
 Programs should derive call order and arguments only from their code and tool
 results. Ambient time and randomness are absent.
 
-The model receives only the final expression, or `{ error }` for an uncaught
-exception. `Promise.all` submits independent calls in one program; bounded host
+Programs are ES modules with top-level `await`. The model receives the awaited
+default export, or `{ error }` for an uncaught
+exception. The built-in `acyclic` module provides `read`, `write`, `remove`
+and lazy directory `list` through the same granted tools. Each returned file
+retains one immutable selection; `text`, `json` and `lines` read its retained
+text. Authoring declarations live at `sys/types/index.d.ts`; their configuration
+records come from the kernel’s declaration producer. `Promise.all` submits independent calls in one program; bounded host
 credit feeds them to ordinary settlement. Each settled call publishes a
 `code.call` JSON log under the turn's existing `tools/.results/` directory before
 its promise resolves. Follow that directory to stream tool name, success/failure
@@ -85,17 +95,18 @@ publication before continuing. Unawaited logs, including logs created while
 encoding the result or formatting an exception, retire before the program returns.
 Replay reuses each immutable log's identity; logging does not change inner tool
 call identities. Log values follow JSON encoding, including its errors for cycles
-and BigInt. No formatting or retained console buffer is added.
-Logs stay in files without accumulating in the result or being omitted by a
-count limit. Each result uses the caller's admitted per-part render budget;
+and BigInt. Console lines also accompany the model-visible result as
+`{ value, logs }` while they fit its render budget; `logs_omitted` reports
+lines whose presentation does not fit. Their complete records remain in files.
+Each result uses the caller's admitted per-part render budget;
 oversized final values return `{ error: "JavaScript result exceeds admitted output" }`.
 Input, history and other results retain their own per-part allowances. The whole request passes
 ordinary verified token admission, without an additional aggregate JSON limit.
 Intermediate tool results remain inside the interpreter and ordinary journal
 artifacts; they are not added to model history.
 
-The interpreter installs no filesystem, network, environment, module loader or
-host API. Credentials and tool contexts stay in the stock dispatcher. QuickJS
+The interpreter resolves the built-in `acyclic` module. It exposes filesystem,
+network and environment access through granted tools alone. Credentials and tool contexts stay in the stock dispatcher. QuickJS
 allocations use the original native memory ledger. A 1 GiB engine memory ceiling
 and a billion interrupt checks protect against runaway scripts; neither bounds
 product counts. Cancellation follows the parent's event and interrupts executing

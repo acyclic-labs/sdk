@@ -42,7 +42,7 @@ fn answer(hook: &HookSpec, event: HookEvent, run: &Run) -> Result<Answer> {
         });
     };
     let mut single = HookOutput::default();
-    let mut budget = budget::Budget::new(u64::MAX)?;
+    let mut budget = budget::Budget::new(None)?;
     budget.apply(
         &mut single,
         event,
@@ -64,7 +64,7 @@ fn answer(hook: &HookSpec, event: HookEvent, run: &Run) -> Result<Answer> {
 fn fold<'a>(
     runs: impl IntoIterator<Item = (&'a Arc<HookSpec>, Run)>,
     event: HookEvent,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     input: Option<Value>,
 ) -> Result<HookOutput> {
     let mut output = HookOutput {
@@ -86,12 +86,12 @@ pub(super) async fn judge<F, Fut, M>(
     hooks: &[(&Arc<HookSpec>, Option<&Requests>)],
     event: HookEvent,
     original: &Value,
-    (quota, maximum_bytes): (usize, u64),
+    (quota, maximum_bytes): (Option<usize>, Option<u64>),
     matches: &M,
     execute: &mut F,
 ) -> Result<HookOutput>
 where
-    F: FnMut(&Arc<HookSpec>, usize, Option<&Value>) -> Fut,
+    F: FnMut(&Arc<HookSpec>, Option<usize>, Option<&Value>) -> Fut,
     Fut: Future<Output = Run>,
     M: Fn(Option<&Requests>, &Value) -> Result<bool>,
 {

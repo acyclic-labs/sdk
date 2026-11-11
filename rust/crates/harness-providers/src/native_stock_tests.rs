@@ -6,7 +6,7 @@ use acyclic_harness_core::{
     Capabilities, OperationId,
     agent::{
         self, AgentHost, AgentOutcome, AgentPath, AgentRecord as _, AgentState, ExecutorDriver,
-        ForkAdopted, InboxRecord, IntentId, Message, Phase, Sender, StatusRecord, VolumeBinding,
+        ForkAdopted, InboxRecord, IntentId, Message, Phase, Sender, StatusRecord, WorkspaceEntry,
     },
     context::{CompactionPolicy, ContextPipeline},
     conversation::{
@@ -111,7 +111,7 @@ impl TurnExecutors for Stock {
         Box::pin(async move {
             let provider = Arc::clone(&self.provider) as Arc<dyn ModelProvider>;
             let provider = provider
-                .bind_content(authority.content.reader.clone(), LIMITS.maximum_bytes)
+                .bind_content(authority.content.reader.clone(), Some(LIMITS.maximum_bytes))
                 .unwrap_or(provider);
             Ok(Arc::new(
                 StockExecutor::new(
@@ -225,10 +225,11 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
                 forked_at: 0,
                 conversation_tail: 0,
                 checkpoint: None,
-                volumes: vec![VolumeBinding {
-                    name: PRIVATE_VOLUME.into(),
+                volumes: vec![WorkspaceEntry::initial_volume(
+                    acyclic_harness_core::agent::WorkspaceRole::Private,
+                    PRIVATE_VOLUME.into(),
                     volume,
-                }],
+                )],
                 brief: None,
                 policy: None,
             },

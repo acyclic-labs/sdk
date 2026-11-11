@@ -12,6 +12,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             path,
             |path| {
                 Ok(AuthoredMutation::CreateDirectory {
+                    file_id: None,
                     path,
                     metadata: FileMetadata::default(),
                 })
@@ -35,6 +36,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             path,
             |path| {
                 Ok(AuthoredMutation::CreateFile {
+                    file_id: None,
                     path,
                     bytes: bytes.into(),
                     metadata,
@@ -82,6 +84,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             path,
             |path| {
                 Ok(AuthoredMutation::CreateSymbolicLink {
+                    file_id: None,
                     path,
                     target: target.into(),
                     metadata: FileMetadata::default(),
@@ -196,6 +199,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             |path| match (kind, device) {
                 (FileKind::Fifo | FileKind::Socket, None) => {
                     Ok(AuthoredMutation::CreateEmptySpecial {
+                        file_id: None,
                         path,
                         kind,
                         metadata: FileMetadata::default(),
@@ -203,6 +207,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                 }
                 (FileKind::CharacterDevice | FileKind::BlockDevice, Some((major, minor))) => {
                     Ok(AuthoredMutation::CreateDevice {
+                        file_id: None,
                         path,
                         kind,
                         major,

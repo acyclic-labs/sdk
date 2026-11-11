@@ -119,13 +119,15 @@ control derives every foreign version byte and its truncated header from
 those same production encoders, for observations and envelopes. Run it with:
 
 ```sh
-cargo nextest run --locked -p acyclic-stream --features local,test-support --lib -E 'test(=persistence::tests::old_and_unknown_fact_versions_refuse_before_payload)'
+cargo nextest run --locked -p acyclic-stream --features test-support --lib -E 'test(=persistence::tests::old_and_unknown_fact_versions_refuse_before_payload)'
 ```
 
 Apply `rust/codec-fuzz/negative-controls/stream-header-truncated-foreign.patch`
 from the repository root to restore the original production guard. The same
 control must fail at `persisted fuzz oracle`; this checks the actual oracle
 used by the fuzz target. Reverse the patch before running the intact source.
+
+The thirty-one `harness_codecs/agent-v14-*` files retain the original version-14 production-writer bytes and their original source hashes and goldens. They remain historical inputs alongside the earlier writer captures. Current record version 24 and the current checkpoint codec retain typed foreign-version refusal; historical input names do not select an older decoder. The agent codec control also runs the current production-writer generator.
 
 Refresh only the current agent record and checkpoint writers with:
 
@@ -305,49 +307,22 @@ The producer checks the same complete state separately; no simulated decoder
 or alternate field-loss implementation is used.
 
 The checkpoint's shared wire oracle uses its original prost type and writer
-to derive malformed variants of each admitted input. Short or long child IDs,
-duplicate children,
-incorrect archive/awaited bitmap widths and unmatched turn body/inbox fields
-must receive the original typed malformed-checkpoint refusal. No alternate
-protobuf parser or capture producer is needed. The following production
-guard mutations must fail when replaying the retained
-`harness_codecs/agent-v13-checkpoint-wait` input through `harness_codecs`:
+to derive malformed parent and turn fields. Membership is represented by
+persistent roots, so the former embedded child arrays and bitmap controls
+have been deleted with that decoder. Historical receipts remain historical;
+they do not qualify the persistent index.
 
 | PATCH | Required runtime assertion |
 | --- | --- |
-| `agent-checkpoint-duplicate-child.patch` | `checkpoint admitted a duplicate child` |
-| `agent-checkpoint-child-id.patch` | `checkpoint admitted an invalid child id width` |
-| `agent-checkpoint-bitmap-width.patch` | `checkpoint admitted an invalid bitmap width` |
-| `agent-checkpoint-short-archive.patch` | index-out-of-bounds panic while decoding the short archive bitmap |
-| `agent-checkpoint-short-awaited.patch` | `checkpoint admitted a short awaited bitmap` |
 | `agent-checkpoint-turn-pair.patch` | `checkpoint admitted an incomplete turn` |
 | `agent-checkpoint-embedded-parent.patch` | `checkpoint admitted an embedded parent` |
-| `agent-checkpoint-embedded-open-children.patch` | `checkpoint admitted embedded open children` |
-| `agent-checkpoint-embedded-archive-children.patch` | `checkpoint admitted embedded archive children` |
-| `agent-checkpoint-embedded-awaited-children.patch` | `checkpoint admitted embedded awaited children` |
 | `agent-checkpoint-embedded-turn.patch` | `checkpoint admitted an embedded turn` |
-| `agent-checkpoint-child-depth.patch` | `checkpoint reconstructed a child beyond its path boundary` |
 
-The child-depth relation places the original writer's payload at the public
-agent path boundary through the production path constructor and parser. The
-original child IDs then require the production checkpoint decoder to retain
-the typed path refusal. Its mutation removes the actual child-construction
-guard; no parallel path parser, capture producer or additional target is used.
-
-The embedded-field controls put one nonempty ownership field at a time back
-into the shared payload through the production writer. Each removes only
-that field's production guard. Use `agent-v13-checkpoint-archive` for the
-archive field, and `agent-v13-checkpoint-wait` for the other four fields.
-The original prost fields remain intact, so a second invalid field cannot
-mask an omitted guard.
-
-The existing round-trip check lives beside that same private wire type.
-Short bitmap derivatives retain the writer's child count and the awaited
-bitmap's valid empty representation. The archive-width mutation exposes the
-actual indexing hazard; the awaited-width mutation silently drops membership
-bits unless the shared refusal oracle rejects it.
-These finite refusal checks supplement the arbitrary-input target; they do
-not establish complete source-branch coverage or a fuzz campaign.
+Replay these controls against newly generated checkpoint captures. The
+`agent-checkpoint-child-depth.patch` mutation reintroduces the former
+construction cap; run the production path round-trip control
+`agent_model::layout_round_trips_beyond_the_former_depth_cap` against it. Checkpoints no longer
+reconstruct whole child paths from an embedded child array.
 
 `agent-checkpoint-parent-report.patch` instead removes the actual terminal
 report from `machine::shed`. Its component control uses the production
@@ -392,7 +367,7 @@ The history descriptor oracle has a kept production version-admission defect at
 `git apply rust/codec-fuzz/mutations/history-version.patch`, then run:
 
 ```sh
-cargo run --locked -p acyclic-harness-core --no-default-features --features filesystem,test-support --example history-codec-corpus
+cargo run --locked -p acyclic-harness-core --no-default-features --features test-support --example history-codec-corpus
 ```
 
 The unchanged oracle must panic with
@@ -464,7 +439,7 @@ also passes these bytes through that target's shared HTTP/SSE oracle when
 source-poll count through the production byte frontier. From the repository root:
 
 ```sh
-cargo nextest run --locked -p acyclic-harness-core --no-default-features --features filesystem-local,test-support,mcp-http --lib -E 'test(=mcp::http::body::tests::frontier_borrows_prefix_and_settles_without_another_source_poll)'
+cargo nextest run --locked -p acyclic-harness-core --no-default-features --features test-support --lib -E 'test(=mcp::http::body::tests::frontier_borrows_prefix_and_settles_without_another_source_poll)'
 ```
 
 The retained `mutations/mcp-http-discard-prefix.patch`,
@@ -761,7 +736,7 @@ The retained `mutations/machines-call-opening-producer-loss.patch` restores the
 original unguarded finite read before an operation watch opens its follow:
 
 ```sh
-cargo test --locked -p acyclic-machines --no-default-features --features local --lib provider::journal::tests::machines_call_held_read_keeps_admission_and_original_terminal_progress -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --lib provider::journal::tests::machines_call_held_read_keeps_admission_and_original_terminal_progress -- --exact --nocapture
 ```
 
 The existing real-journal control holds its original MemoryStream read response,
@@ -1064,7 +1039,7 @@ nil refusals; `corpus/SOURCES.tsv` retains their producers and hashes.
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-identity-nil.patch
-cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --features test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-identity-nil.patch
 ```
 
@@ -1091,7 +1066,7 @@ zero-digest corpus supplies refusal forms. This subsumes
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-oci-name.patch
-cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --features test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-oci-name.patch
 ```
 
@@ -1114,13 +1089,13 @@ handoff; initial completion decoding still reads the full body.
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-recovery-clone.patch
-cargo test --locked -p acyclic-machines --no-default-features --features grpc,local,test-support --lib provider::journal::tests::machines_call_recovery_transfers_original_decoded_body -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --features test-support --lib provider::journal::tests::machines_call_recovery_transfers_original_decoded_body -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-recovery-clone.patch
 ```
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-observation-state.patch
-cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib grpc::tests::result_pages::machines_call_remote_pages_keep_original_cut_credit_and_observations -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --features test-support --lib grpc::tests::result_pages::machines_call_remote_pages_keep_original_cut_credit_and_observations -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-observation-state.patch
 ```
 
@@ -1177,7 +1152,7 @@ Run this control from the repository root (`cd ../..` from `rust/codec-fuzz`):
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-plan-position.patch
-cargo test --locked -p acyclic-harness-core --no-default-features --features machines,test-support,filesystem,wasm --lib machines::lifecycle::first_use_tests::original_binding_positions_precede_allocation_and_recovery -- --exact --nocapture
+cargo test --locked -p acyclic-harness-core --no-default-features --features test-support,wasm --lib machines::lifecycle::first_use_tests::original_binding_positions_precede_allocation_and_recovery -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-plan-position.patch
 ```
 

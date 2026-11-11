@@ -18,7 +18,6 @@ mod cache;
 mod credential;
 mod demand;
 mod driver;
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub mod live;
 mod requests;
 
@@ -63,8 +62,8 @@ pub struct ReaderPolicy {
     pub lag: u64,
     /// Follow deliveries folded per frame; the rest wait on session credit.
     pub deliveries: usize,
-    /// A read unanswered after this is failed and its slot reused.
-    pub timeout_ms: u64,
+    /// Optional caller deadline before an unanswered read is failed.
+    pub timeout_ms: Option<u64>,
     /// First retry delay after a failure.
     pub backoff_min_ms: u64,
     /// Longest retry delay.
@@ -87,7 +86,7 @@ impl Default for ReaderPolicy {
             listing_limit: 64,
             lag: 16,
             deliveries: 256,
-            timeout_ms: 10_000,
+            timeout_ms: None,
             backoff_min_ms: 250,
             backoff_max_ms: 8_000,
             offline_after: 3,
@@ -120,7 +119,7 @@ impl ReaderPolicy {
             && (1..=acyclic_stream::MAX_ITEMS as u64).contains(&u64::from(self.listing_limit))
             && self.lag >= 1
             && self.deliveries > 0
-            && self.timeout_ms > 0
+            && self.timeout_ms.is_none_or(|timeout| timeout > 0)
             && self.backoff_min_ms > 0
             && self.backoff_min_ms <= self.backoff_max_ms
             && self.offline_after > 0;
@@ -370,7 +369,7 @@ struct InFlight {
     priority: Priority,
     /// Original rotated age, retained even when the want is withdrawn.
     ticket: u64,
-    deadline: u64,
+    deadline: Option<u64>,
     issued: u64,
     paging: Paging,
     observed: Option<(u64, u64)>,
@@ -382,7 +381,7 @@ std::thread_local! {
 }
 
 impl InFlight {
-    fn deadline(&self) -> u64 {
+    fn deadline(&self) -> Option<u64> {
         #[cfg(test)]
         DEADLINE_READS.with(|reads| reads.set(reads.get() + 1));
         self.deadline
@@ -412,7 +411,7 @@ struct FollowIntent {
 /// Footprint of one client, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Residency {
-    /// One encoded snapshot awaiting source admission, separately bounded.
+    /// Staged cache charge awaiting source admission, under the cache budget.
     pub snapshot_bytes: usize,
     /// Cache charge, never above the byte budget.
     pub cache_bytes: usize,
@@ -440,7 +439,7 @@ pub struct Reader {
     policy: ReaderPolicy,
     cache: RecordCache,
     credentials: Option<Credentials>,
-    pending_snapshot: Option<Vec<u8>>,
+    pending_snapshot: Option<cache::PendingSnapshot>,
     driver: Option<std::sync::Arc<()>>,
     demand: Demands,
     next_ticket: u64,
@@ -550,7 +549,7 @@ impl Reader {
                 if let Some(snapshot) = self.pending_snapshot.take() {
                     // A cache miss is harmless; it never authenticates a source
                     // or changes the requested observation's logical outcome.
-                    let _ = self.cache.restore(&snapshot);
+                    let _ = self.cache.install_snapshot(snapshot);
                 }
             }
             CredentialStatus::Pending => {}
@@ -614,7 +613,7 @@ impl Reader {
     }
 
     /// Warm start from persisted bytes. While the registered source resolves,
-    /// retain one bounded snapshot for atomic validation after lease admission.
+    /// retain private cache residency for atomic validation after lease admission.
     ///
     /// # Errors
     /// Refuses malformed bytes or replacement while reads or follows are active.
@@ -623,10 +622,7 @@ impl Reader {
             return Err(SnapshotError);
         }
         if self.credential_status() == CredentialStatus::Pending {
-            if bytes.len() > self.cache.snapshot_limit() {
-                return Err(SnapshotError);
-            }
-            self.pending_snapshot = Some(bytes.to_vec());
+            self.pending_snapshot = Some(self.cache.prepare_snapshot(bytes)?);
             self.generation += 1;
             return Ok(());
         }
@@ -642,8 +638,8 @@ impl Reader {
         self.cache.set_budget(bytes);
         if self
             .pending_snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.len() > self.cache.snapshot_limit())
+            .as_mut()
+            .is_some_and(|snapshot| !snapshot.set_budget(bytes))
         {
             self.pending_snapshot = None;
             self.generation += 1;
@@ -703,7 +699,10 @@ impl Reader {
     #[must_use]
     pub fn residency(&self) -> Residency {
         Residency {
-            snapshot_bytes: self.pending_snapshot.as_ref().map_or(0, Vec::len),
+            snapshot_bytes: self
+                .pending_snapshot
+                .as_ref()
+                .map_or(0, cache::PendingSnapshot::bytes),
             cache_bytes: self.cache.bytes(),
             passed_bytes: self.cache.passed_bytes(),
             backing_bytes: self.cache.backing_bytes(),
@@ -726,7 +725,7 @@ impl Reader {
         // IDs follow monotonic admission time and one immutable timeout.
         // Their existing order is therefore also the deadline order.
         while let Some((&id, flight)) = self.inflight.first_key_value() {
-            if flight.deadline() > now {
+            if flight.deadline().is_none_or(|deadline| deadline > now) {
                 break;
             }
             if self.cancel(id) {
@@ -878,6 +877,15 @@ impl Reader {
                 tail,
                 witness,
             } => {
+                // A live listing must learn its witness before declaring the
+                // page fresh. In particular, an empty page has no child heads
+                // to discover it indirectly; without this head no follow can
+                // be opened and the first child would remain invisible.
+                if let Some(witness) = witness
+                    && self.cache.tail(witness).is_none()
+                {
+                    return Some((OpKey::Head(witness.clone()), Paging::default()));
+                }
                 let projection = ListingProjection {
                     tail: tail.clone(),
                     witness: witness.clone(),
@@ -957,7 +965,10 @@ impl Reader {
                     key: key.clone(),
                     priority: *priority,
                     ticket: 0,
-                    deadline: now.saturating_add(self.policy.timeout_ms),
+                    deadline: self
+                        .policy
+                        .timeout_ms
+                        .map(|timeout| now.saturating_add(timeout)),
                     issued: now,
                     paging: Paging::default(),
                     observed: self.cache.observation(key.path()),
@@ -1566,7 +1577,7 @@ impl Reader {
         let read = self
             .inflight
             .first_key_value()
-            .map(|(_, flight)| flight.deadline());
+            .and_then(|(_, flight)| flight.deadline());
         let waiting = !self.demand.is_empty() || (self.follow_backoff && !self.follows.is_empty());
         let retry = (waiting && self.retry_at > self.now).then_some(self.retry_at);
         let credential = self.credentials.as_ref().and_then(Credentials::deadline);
@@ -1618,6 +1629,77 @@ fn projected(cache: &RecordCache, want: &Want) -> Vec<(StreamPath, u64)> {
 #[cfg(test)]
 mod reader_tests {
     use super::*;
+
+    #[test]
+    fn duplicate_prefetch_promotes_without_spending_prefetch_credit() {
+        let mut reader = Reader::new(ReaderPolicy {
+            prefetch: false,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
+        let first = StreamPath::new("test/first-visible").unwrap();
+        let later = StreamPath::new("test/later-visible").unwrap();
+        let want = |stream: StreamPath| Want::Last { stream, count: 1 };
+        let ops = frame(
+            &mut reader,
+            0,
+            &[
+                (want(later.clone()), Priority::Prefetch),
+                (want(first.clone()), Priority::Visible),
+                (want(later.clone()), Priority::Visible),
+            ],
+        );
+        assert_eq!(ops.len(), 2);
+        let actual: BTreeSet<_> = ops
+            .into_iter()
+            .map(|op| match op {
+                Op::Head { stream, .. } => stream,
+                op => panic!("expected a visible head: {op:?}"),
+            })
+            .collect();
+        assert_eq!(actual, BTreeSet::from([first, later]));
+    }
+
+    #[test]
+    fn all_requested_reads_and_follows_are_reachable_without_default_ceilings() {
+        let mut reader = Reader::new(ReaderPolicy {
+            requests: 5_000,
+            prefetch_requests: 0,
+            cache_bytes: 0,
+            streams: 0,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
+        let streams: Vec<_> = (0..5_000)
+            .map(|index| StreamPath::new(format!("test/{index}")).unwrap())
+            .collect();
+        reader.plan(streams.iter().map(|stream| {
+            (
+                Want::Last {
+                    stream: stream.clone(),
+                    count: 1,
+                },
+                Priority::Visible,
+            )
+        }));
+        let ops = reader.poll(0);
+        assert_eq!(ops.len(), streams.len());
+        reader.begin_frame(20_000);
+        assert!(
+            reader.take_cancelled().is_empty(),
+            "slow reads retain their original credit"
+        );
+        for op in ops {
+            reader.complete(
+                op.id(),
+                Outcome::Head(head(0, CommitId::from_bytes([0; 32]), b"", None)),
+                20_000,
+            );
+        }
+        reader.set_follows(streams.clone());
+        let followed: BTreeSet<_> = reader.follows().map(|(stream, _)| stream.clone()).collect();
+        assert_eq!(followed, streams.into_iter().collect());
+    }
 
     fn head(
         tail: u64,
@@ -2098,7 +2180,7 @@ mod reader_tests {
                 key: key.clone(),
                 priority: Priority::Visible,
                 ticket: 0,
-                deadline: 100,
+                deadline: Some(100),
                 issued: 0,
                 paging: Paging::default(),
                 observed: None,
@@ -2387,7 +2469,7 @@ mod reader_tests {
             let credit_policy = ReaderPolicy {
                 requests: 4,
                 prefetch_requests: 2,
-                timeout_ms: 100,
+                timeout_ms: Some(100),
                 ..ReaderPolicy::default()
             };
             let mut credit = Reader::new(credit_policy).unwrap();
@@ -2518,7 +2600,7 @@ mod reader_tests {
             let policy = ReaderPolicy {
                 requests: heads.len(),
                 prefetch_requests: 0,
-                timeout_ms: 100,
+                timeout_ms: Some(100),
                 ..ReaderPolicy::default()
             };
             let first_want = (

@@ -31,7 +31,8 @@ pub(super) async fn read_before_effect<T>(
 pub struct FilesystemTools<P: ?Sized + 'static, O: 'static> {
     host: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
     store: StreamGitCompatStore<P>,
-    volumes: BTreeMap<String, VolumeRef>,
+    volumes: BTreeMap<String, crate::agent::WorkspaceEntry>,
+    primary: Option<String>,
     binding_identity: [u8; 32],
     verifier: AuthorityVerifier,
     scope: Scope,
@@ -50,8 +51,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             StreamGitCompatStore::new(StreamAuthorityStore::new(host.filesystem.stream_provider()));
         let mut volumes = BTreeMap::new();
         for binding in &agent.volumes {
+            if binding.role == crate::agent::WorkspaceRole::Internal
+                || binding.as_volume().is_none()
+            {
+                continue;
+            }
             if volumes
-                .insert(binding.name.clone(), binding.volume.clone())
+                .insert(binding.name.clone(), binding.clone())
                 .is_some()
             {
                 return Err(Error::Invalid("duplicate filesystem volume binding".into()));
@@ -69,15 +75,17 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             identity.update(&(part.len() as u64).to_be_bytes());
             identity.update(part.as_bytes());
         }
-        for (name, volume) in &volumes {
+        for (name, binding) in &volumes {
             identity.update(&(name.len() as u64).to_be_bytes());
             identity.update(name.as_bytes());
-            identity.update(&volume.identity_digest(u64::MAX, &mut None)?);
+            identity.update(&crate::contract::canonical_json_bytes(binding)?);
         }
         Ok(Self {
             host,
             store,
             volumes,
+            primary: crate::agent::WorkspaceTable::primary_in(&agent.volumes)
+                .map(|entry| entry.name.clone()),
             binding_identity: identity.finalize().into(),
             verifier,
             scope: authority.scope.copy(&mut None)?,
@@ -89,11 +97,19 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         parsed: &crate::tools::FsCommand,
         context: &ToolContext,
     ) -> Result<&VolumeRef> {
-        let name = parsed.volume.as_deref().unwrap_or("project");
-        let volume = self
+        let name = parsed
+            .volume
+            .as_deref()
+            .or(self.primary.as_deref())
+            .ok_or_else(|| Error::NotFound("primary filesystem workspace".into()))?;
+        let binding = self
             .volumes
             .get(name)
             .ok_or_else(|| Error::NotFound(format!("filesystem volume {name}")))?;
+        // This Git facade exposes raw whole-volume operations. It must refuse
+        // a restricted view, as WorkspaceAccess does, rather than widen it.
+        // Scoped file tools continue to use the entry's directory/read grants.
+        let volume = binding.whole_volume()?;
         if volume.provider() != &self.host.provider {
             return Err(Error::Unauthorized(
                 "filesystem volume belongs to another provider".into(),
@@ -148,6 +164,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         )?;
         read_before_effect(&mut cancellation, access.require(&root)).await?;
         let request = acyclic_fs::GitRequest {
+            merge_source: None,
             operation: acyclic_fs::OperationId::from_bytes(context.operation_id().into_bytes()),
             unanswered: Arc::new(|_| true),
         };
@@ -293,7 +310,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
-        work: crate::NativeWork<'a>,
+        work: acyclic_fs::NativeWork<'a>,
     ) -> Option<BoxProviderFuture<'a, Result<()>>> {
         Some(Box::pin(async move {
             #[cfg(not(target_arch = "wasm32"))]
@@ -351,7 +368,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
         _: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
         if work.is_some() {
             return Err(Error::Unsupported(

@@ -1,14 +1,14 @@
 use super::NativeAllocationAccounting;
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 use super::*;
 use crate::NativeMaterializationWork;
 use crate::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-#[cfg(all(test, feature = "native-watch", not(loom)))]
+#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 #[path = "ownership_backing_tests.rs"]
 mod backing_tests;
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default)]
 pub(crate) enum SourcePayloadOwnership {
     #[default]
@@ -18,7 +18,7 @@ pub(crate) enum SourcePayloadOwnership {
     },
     Registered(NativeMountAllocationCustody, AtomicU64),
 }
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 impl SourcePayloadOwnership {
     pub(crate) fn from_native_allocation(allocation: crate::NativeAllocation) -> Self {
         Self::Allocation {
@@ -169,7 +169,7 @@ impl SourcePayloadOwnership {
         }
     }
 }
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for SourcePayloadOwnership {
     fn drop(&mut self) {
         if let Self::Registered(custody, bytes) = self {
@@ -197,7 +197,7 @@ struct MountAllocationCustody {
     original: Option<NativeMaterializationWork>,
 }
 impl NativeMountAllocationCustody {
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) const ALLOCATION_BYTES: u64 = const {
         match crate::arc_layout::allocation_bytes(
             std::alloc::Layout::new::<MountAllocationCustody>(),
@@ -209,7 +209,7 @@ impl NativeMountAllocationCustody {
     pub(crate) fn same_backing(&self, other: &Self) -> bool {
         crate::sync::Arc::ptr_eq(&self.0, &other.0)
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     fn claimed_bytes() -> u64 {
         #[cfg(all(test, not(loom)))]
         if backing_tests::PAYLOAD_ONLY.get() {
@@ -220,7 +220,7 @@ impl NativeMountAllocationCustody {
     pub(super) fn retained_bytes(&self) -> u64 {
         self.0.bytes.load(Ordering::Acquire)
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn new<W: SourceDemandReadWork>(work: &mut W) -> Result<Self, DemandError> {
         work.check()?;
         let original = work.native_source_work().map(|work| work.allocation_work());
@@ -240,11 +240,11 @@ impl NativeMountAllocationCustody {
             })))
         })
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_admitted(&self, work: &DemandWork) -> bool {
         work.owns_native_allocation_accounting(&self.0.accounting)
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn claim(&self, bytes: u64, work: &mut DemandWork) -> Result<(), DemandError> {
         work.check()?;
         self.retained_bytes()
@@ -256,7 +256,7 @@ impl NativeMountAllocationCustody {
         work.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
         self.retain(bytes, work).map_err(DemandError::from)
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retain(&self, bytes: u64, work: &mut DemandWork) -> Result<(), crate::WorkError> {
         let capture = self
             .0
@@ -266,7 +266,7 @@ impl NativeMountAllocationCustody {
             .and_then(std::sync::Weak::upgrade);
         self.retain_allocation(bytes, work, capture.as_deref())
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     fn retain_allocation(
         &self,
         bytes: u64,
@@ -290,7 +290,7 @@ impl NativeMountAllocationCustody {
         }
         Ok(())
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retire(&self, bytes: u64) -> Result<(), crate::WorkError> {
         self.0
             .bytes
@@ -303,7 +303,7 @@ impl NativeMountAllocationCustody {
         self.0.accounting.retire_native(bytes);
         self.0.retire_resource(bytes)
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retire_deferred(&self, bytes: u64) {
         if let Err(error) = self.retire(bytes)
             && let Some(original) = &self.0.original
@@ -337,7 +337,7 @@ impl Drop for MountAllocationCustody {
 }
 
 #[cfg(test)]
-#[cfg(all(feature = "native-watch", any(target_os = "linux", windows)))]
+#[cfg(all(not(target_arch = "wasm32"), any(target_os = "linux", windows)))]
 mod properties {
     use super::*;
     use proptest::prelude::*;

@@ -252,7 +252,7 @@ pub struct NativeProcessRequest {
     pub view: NativeViewManifest,
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl super::PreparationRecord for NativeProcessRequest {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::NativeProcessRequest
@@ -261,7 +261,7 @@ impl super::PreparationRecord for NativeProcessRequest {
 
 impl NativeProcessRequest {
     /// Decodes the pinned approved request with the canonical closed-record codec.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn decode_with_native_work(
         bytes: &[u8],
         work: &acyclic_fs::NativeMaterializationWork,
@@ -303,7 +303,7 @@ impl NativeProcessRequest {
         }
         let value = (NATIVE_PROCESS_EFFECT_KIND, task, command, self);
         let Some(io) = io else {
-            return crate::executor::json::canonical_json_digest(&value, u64::MAX, &mut None);
+            return crate::executor::json::canonical_json_digest(&value, None, &mut None);
         };
         let guard;
         let encoded = io.encode(&value, io.remaining()?.bytes_encoded, true)?;
@@ -346,10 +346,10 @@ pub struct NativeProcessResult {
     pub stop: Option<NativeProcessStop>,
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl super::PreparationRecord for NativeProcessResult {}
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl NativeProcessResult {
     /// Decodes a pinned result with the canonical closed-record decoder.
     pub fn decode_with_native_work(
@@ -410,7 +410,7 @@ pub enum NativeProcessStopKind {
 }
 
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native_result_decode_tests {
     use super::*;
 

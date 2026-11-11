@@ -1,10 +1,49 @@
 use super::*;
 
 impl ToolRegistry {
+    /// The selected canonical executor, including when presented through native
+    /// declarations. Hidden capabilities remain unavailable. Native adapters all
+    /// retain the same originally selected capability and revision.
+    pub(crate) fn capability(
+        &self,
+        name: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<&Tool>> {
+        let selected = match self.data.selected.get(name) {
+            // A family can replace the canonical spelling entirely. Every
+            // declaration retains the capability selected before binding.
+            Some(ModelSelection::Native { names, .. }) => match names.first() {
+                Some(declaration) => self.get(declaration, None, io)?,
+                None => None,
+            },
+            _ => self.get(name, None, io)?,
+        };
+        Ok(selected.map(|tool| tool.executor.capability().unwrap_or(tool)))
+    }
+
     pub(crate) fn pin_model_definitions(
         &mut self,
         definitions: &[ToolDefinition],
         io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        self.pin_definitions(definitions, io, false)
+    }
+
+    /// Epochs pin registered capabilities while live sources retain their
+    /// event-driven catalog generations and announce changes after the prefix.
+    pub(crate) fn pin_epoch_definitions(
+        &mut self,
+        definitions: &[ToolDefinition],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        self.pin_definitions(definitions, io, true)
+    }
+
+    fn pin_definitions(
+        &mut self,
+        definitions: &[ToolDefinition],
+        io: Option<&crate::executor::PreparationIo>,
+        fixed_only: bool,
     ) -> Result<()> {
         use crate::{executor::stock_boundary, wire::ErrorCode};
         // A manifest pins canonical revisions; native declarations bind to
@@ -24,6 +63,9 @@ impl ToolRegistry {
             let mut selected =
                 crate::core::reserve_copy_vector::<(&str, &str)>(definitions.len(), &mut quota)?;
             for definition in definitions {
+                if fixed_only && !self.data.selected.contains_key(&definition.name) {
+                    continue;
+                }
                 let tool = lookup::get(&self.data.versions, &definition.name, &definition.revision)
                     .ok_or_else(|| {
                         stock_boundary(
@@ -59,13 +101,11 @@ impl ToolRegistry {
                     )?),
                     Err(_) => ModelSelection::Hidden,
                 };
-                #[cfg(feature = "filesystem")]
                 let old_bytes = match selection {
                     ModelSelection::Revision(revision) => revision.capacity(),
                     _ => 0,
                 };
                 *selection = replacement;
-                #[cfg(feature = "filesystem")]
                 if let Some(io) = io {
                     io.release(old_bytes as u64)?;
                 }
@@ -194,7 +234,6 @@ impl ToolRegistry {
         revision: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Arc<Tool>>> {
-        #[cfg(feature = "filesystem")]
         if revision.is_none()
             && let Some(io) = io
         {
@@ -303,7 +342,6 @@ impl ToolRegistry {
         capabilities: bool,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ToolDefinition>> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.retain_owned(std::mem::size_of::<Vec<ToolDefinition>>() as u64)?;
         }

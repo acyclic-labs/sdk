@@ -508,11 +508,12 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         // The same reader also borrows the actual agent status encoding.
         // A live view must not require the phase owner to publish another row.
         let status = StatusRecord {
-            child_wakes: vec![acyclic_harness_core::agent::ChildWake {
-                child: acyclic_harness_core::agent::AgentId::from_bytes([2; 16]),
-                settled_at_micros: 5_000_000,
+            child_settlement: None,
+            child_wakes: Some(acyclic_harness_core::agent::ChildWakes {
+                from: 1,
+                until: 2,
                 woke_at_micros: 5_001_000,
-            }],
+            }),
             phase: Phase::Idle,
             cursor: 0,
             conversation: 0,

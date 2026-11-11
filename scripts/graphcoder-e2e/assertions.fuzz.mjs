@@ -9,6 +9,18 @@ const stdout = capture("shipping-output").captures["jsonl-reopen"].stdout;
 const reply = JSON.parse(stdout);
 const reads = capture("live-file-read-results").cases.map(({ event }) => event);
 const shells = capture("live-shell-results").cases.map(({ event }) => event.tool_response);
+// Generate diagnostic mutations from the shipped enum, retaining the original
+// captured refusal bytes. Before-dispatch failures share ExecutorRejected's
+// model-visible prefix through ToolFailureText, including removed tools.
+const executor = readFileSync(new URL("../../rust/crates/harness-core/src/executor/mod.rs", import.meta.url), "utf8");
+const kinds = [.../pub enum ToolFailureKind \{([^]*?)\n\}/.exec(executor)[1].matchAll(/^\s+(\w+),$/gm)].map(match => match[1]);
+const rendering = executor.slice(executor.indexOf("pub const fn message(self)"), executor.indexOf("pub const fn precedes_dispatch(self)"));
+const messages = new Map([...rendering.matchAll(/Self::(\w+) =>\s*(?:\{\s*)?"(tool [^"]*)"/g)].map(match => [match[1], match[2]]));
+assert.equal(messages.size, kinds.length, "each shipped failure kind needs its original rendering");
+for (const kind of kinds) assert.ok(messages.has(kind), `missing failure rendering: ${kind}`);
+const admission = /matches!\(\s*self,\s*([^)]*)\)/.exec(executor.slice(executor.indexOf("pub const fn precedes_dispatch(self)")))[1];
+const beforeDispatch = new Set([...admission.matchAll(/Self::(\w+)/g)].map(match => match[1]));
+const failures = [...new Set(kinds.map(kind => messages.get(beforeDispatch.has(kind) ? "ExecutorRejected" : kind)))];
 
 function rejectedReply(value, id) {
   assert.throws(() => messageReply(value, id), { code: "ERR_ASSERTION" });
@@ -24,6 +36,12 @@ export function fuzz(data) {
   try { value = JSON.parse(text); }
   catch (error) { if (!(error instanceof SyntaxError)) throw error; value = text; }
   toolOutcome({ version: 2, context: [], output: { value } });
+  for (const message of failures) for (const failure of [message, message + ": " + vm.output.error + text]) {
+    for (const allowed of [undefined, [""], [null]])
+      assert.throws(() => toolOutcome(failure, allowed), { code: "ERR_ASSERTION" });
+    toolOutcome(failure, [message]);
+    toolOutcome("ordinary output: " + failure);
+  }
   const selected = { ...reply, id: reply.id + ":" + bytes.toString("hex"), text };
   assert.equal(messageReply(selected, selected.id), selected);
   assert.deepEqual(jsonlReply(JSON.stringify(selected) + "\n", selected.id), selected);

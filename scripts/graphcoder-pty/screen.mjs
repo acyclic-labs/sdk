@@ -26,15 +26,16 @@ export function screenText(terminal) {
 export function screenSnapshot(terminal, { completeLines = false } = {}) {
   const buffer = terminal.buffer.active, lines = rows(terminal, buffer);
   const visible = lines.map(line => line?.translateToString(true) ?? "").join("\n");
+  let diagnosticLines = lines;
   if (completeLines && buffer.type === "normal") {
     // A pipe chunk is not a diagnostic boundary. Exclude the entire current
     // logical line, including any of its preceding soft-wrapped rows.
     let cursor = buffer.baseY + buffer.cursorY - buffer.viewportY;
     while (cursor > 0 && lines[cursor]?.isWrapped) cursor--;
-    lines.length = Math.max(0, Math.min(lines.length, cursor));
+    diagnosticLines = lines.slice(0, Math.max(0, cursor));
   }
-  const diagnostic = lines.map((line, index) =>
+  const diagnostic = diagnosticLines.map((line, index) =>
     (index === 0 || line?.isWrapped ? "" : "\n")
-      + (line?.translateToString(!lines[index + 1]?.isWrapped) ?? "")).join("");
-  return { visible, diagnostic };
+      + (line?.translateToString(!diagnosticLines[index + 1]?.isWrapped) ?? "")).join("");
+  return { visible, diagnostic, lines };
 }

@@ -104,7 +104,7 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
     fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value>;
     /// Validates a replacement before installation.
     fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if io
             .and_then(crate::executor::PreparationIo::original_native_work)
             .is_some()
@@ -149,13 +149,14 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
     fn project_optional(
         &self,
         _context: &Context,
+        _local_prefix_messages: usize,
         _limits: Limits,
         _io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<ContextInsertion>> {
         Ok(None)
     }
     /// Reports original-ledger support before constructing a future.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native(&self) -> bool {
         false
     }
@@ -187,7 +188,7 @@ impl ContextPipeline {
 
     /// Validates stage identities on the optional preparation ledger.
     pub fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
             work.remaining()?;
             if self.0.iter().any(|stage| !stage.supports_native()) {
@@ -204,7 +205,7 @@ impl ContextPipeline {
     }
 
     /// Appends to a caller-guarded native pipeline, returning only its actual backing-capacity delta.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn append_with_native_work(
         &mut self,
         stage: Arc<dyn ContextStage>,
@@ -367,8 +368,13 @@ impl ContextPipeline {
         limits: Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Context> {
+        let before = context.current_input_index.unwrap_or(0);
         let mut context = self.transform_required(input, context, limits, io).await?;
-        self.project_optional(&mut context, 0, limits, 0, io)?;
+        let prepended = context
+            .current_input_index
+            .unwrap_or(0)
+            .saturating_sub(before) as usize;
+        self.project_optional(&mut context, 0, prepended, limits, 0, io)?;
         Ok(context)
     }
 
@@ -382,7 +388,10 @@ impl ContextPipeline {
     ) -> Result<Context> {
         crate::executor::with_history_io(io, |work| limits.validate(work))?;
         self.validate(io)?;
-        if self.0.len() > limits.context_messages {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| self.0.len() > maximum.get())
+        {
             return Err(stock_boundary(
                 io,
                 ErrorCode::Invalid,
@@ -419,6 +428,7 @@ impl ContextPipeline {
         &self,
         context: &mut Context,
         prefix_messages: usize,
+        local_prefix_messages: usize,
         limits: Limits,
         request_frame_bytes: u64,
         io: Option<&crate::executor::PreparationIo>,
@@ -427,9 +437,8 @@ impl ContextPipeline {
             return Ok(());
         }
         let frame = crate::executor::with_history_io(io, |work| {
-            let context_bytes = crate::executor::json::json_byte_length(context, u64::MAX, work)?;
-            let messages =
-                crate::executor::json::json_byte_length(&context.messages, u64::MAX, work)?;
+            let context_bytes = crate::executor::json::json_byte_length(context, None, work)?;
+            let messages = crate::executor::json::json_byte_length(&context.messages, None, work)?;
             Ok::<_, crate::Error>(context_bytes - messages)
         })?;
         let optional_limits = Limits {
@@ -439,7 +448,9 @@ impl ContextPipeline {
             ..limits
         };
         for stage in self.0.iter().filter(|stage| stage.has_optional()) {
-            if let Some(insertion) = stage.project_optional(context, optional_limits, io)? {
+            if let Some(insertion) =
+                stage.project_optional(context, local_prefix_messages, optional_limits, io)?
+            {
                 insertion.insert(context, prefix_messages, io)?;
             }
             validate_projected_context(context, limits, io)?;
@@ -449,7 +460,7 @@ impl ContextPipeline {
 
     /// Returns immutable stage contracts on the optional preparation ledger.
     pub fn contracts(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Vec<Value>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if io
             .and_then(crate::executor::PreparationIo::original_native_work)
             .is_some()

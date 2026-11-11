@@ -27,7 +27,7 @@ export function parseManifest(text) {
 export function parseManifests(texts) {
   return JSON.parse(execFileSync(process.platform === "win32" ? "python" : "python3", [
     fileURLToPath(new URL("./rustfmt-manifests.py", import.meta.url)),
-  ], { input: JSON.stringify(texts), encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
+  ], { input: JSON.stringify(texts), encoding: "utf8", maxBuffer: Infinity }));
 }
 
 const nearest = (path, table) => {
@@ -39,7 +39,7 @@ const nearest = (path, table) => {
 
 // Groups the tracked Rust files under `root` by the edition cargo would format them with.
 export function filesByEdition(root) {
-  const list = (pattern) => execFileSync("git", ["ls-files", "-z", "--", pattern, VENDORED, CAPTURED_EVIDENCE], { cwd: root, encoding: "utf8" })
+  const list = (pattern) => execFileSync("git", ["ls-files", "-z", "--", pattern, VENDORED, CAPTURED_EVIDENCE], { maxBuffer: Infinity, cwd: root, encoding: "utf8" })
     .split("\0").filter(Boolean);
   const texts = Object.fromEntries(list("*Cargo.toml").filter((path) => /(^|\/)Cargo\.toml$/.test(path))
     .map((path) => [path, readFileSync(resolve(root, path), "utf8")]));

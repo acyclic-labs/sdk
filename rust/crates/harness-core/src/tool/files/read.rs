@@ -7,9 +7,9 @@ impl FileTool {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
+    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
         let mut input = decode::<ReadFileInput>(&invocation.arguments, work)?;
         if input.0.wait && input.0.version.is_some() {
@@ -21,10 +21,14 @@ impl FileTool {
             ));
         }
         if input.0.range.is_some_and(|range| range.end < range.start) {
-            return Err(invalid("read range is reversed"));
+            return Err(invalid("read range is reversed; use start <= end"));
         }
         if input.0.wait {
             context.wait_tool_path(&input.0.path, io).await?;
+        }
+        if let Some(ReadSelection::Directory { after, limit }) = &input.0.selection {
+            return super::directory::read(context, &input.0, after.as_deref(), *limit, work, io)
+                .await;
         }
         let mut source = super::source::ReadSource::decode(
             context,
@@ -36,18 +40,21 @@ impl FileTool {
             let (layer, selected) = context
                 .effective_tool_path(
                     &input.0.path,
-                    source.source.as_ref().map(FileReadSource::volume),
+                    source
+                        .source
+                        .as_ref()
+                        .map(super::version::SelectedVersion::volume),
                     io,
                 )
                 .await?;
             input.0.path = layer.into_owned();
             if let Some((selected, custody)) = selected {
                 source = super::source::ReadSource {
-                    source: Some(FileReadSource::Authored(selected)),
+                    source: Some(FileReadSource::Authored(selected).into()),
                     custody,
                 };
             }
-            if let Some(FileReadSource::Content(file)) = &source.source {
+            if let Some(super::version::SelectedVersion::Content(file)) = &source.source {
                 context.authorize_tool_file_read(&input.0.path, file, io)?;
             }
         }
@@ -67,7 +74,7 @@ impl FileTool {
         {
             return super::notebook_read::read(context, &input.0, source, 0, None, work, io).await;
         }
-        if input.0.selection.is_none() {
+        if input.0.selection.is_none() || input.0.selection == Some(ReadSelection::Text) {
             return self
                 .read_path_range(context, &input.0, source, work, io)
                 .await;
@@ -82,16 +89,16 @@ impl FileTool {
         context: &ToolContext,
         input: &ReadFileInput,
         source: super::source::ReadSource,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
+    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
         let start = input.range.map_or(0, |range| range.start);
         let count = input
             .range
             .map(|range| range.end.checked_sub(range.start))
             .unwrap_or(Some(u64::MAX))
-            .ok_or_else(|| invalid("read range is reversed"))?;
+            .ok_or_else(|| invalid("read range is reversed; use start <= end"))?;
         let window = context
             .effective_scope()
             .limits()
@@ -112,13 +119,11 @@ impl FileTool {
         )
         .await?;
         let bytes = &window.bytes;
-        let end = input
-            .range
-            .map_or(window.source.byte_length(), |range| range.end);
-        if end > window.source.byte_length() {
-            return Err(invalid("read result belongs to another selection"));
-        }
-        if input.range.is_none() {
+        let start = start.min(window.source.byte_length());
+        let end = input.range.map_or(window.source.byte_length(), |range| {
+            range.end.min(window.source.byte_length())
+        });
+        if input.range.is_none() && input.selection.is_none() {
             let media = crate::model::image_media_type(&bytes)
                 .map(|_| ReadSelection::Image {
                     detail: crate::model::ImageDetail::Auto,
@@ -162,8 +167,8 @@ impl FileTool {
         &self,
         file: FileRef,
         selection: Option<ReadSelection>,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
         let valid = match &selection {
             Some(ReadSelection::Image { .. }) => matches!(
                 file.descriptor().media_type(),
@@ -199,13 +204,22 @@ fn text_result(
     path: &str,
     interval: (u64, u64),
     maximum: u64,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(ToolResult, crate::NativeCustody)> {
+) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
     let (start, end) = interval;
     let _version_hold;
     let (version, version_hold) = super::version::encode_source(&file, work)?;
     _version_hold = version_hold;
+    let total = file.byte_length();
+    let page = |end| ReadPage {
+        start,
+        end,
+        next: (end < total).then_some(end),
+        total,
+        eof: end == total,
+        offset: 0,
+    };
     let complete = source.len() as u64 == end - start
         && crate::executor::with_history_io(io, |history| {
             crate::executor::json::json_byte_length(
@@ -213,9 +227,9 @@ fn text_result(
                     path,
                     version: &version,
                     text: Some(source),
-                    page: None,
+                    page: Some(&page(end)),
                 },
-                u64::MAX,
+                None,
                 history,
             )
         })? + schema::json_envelope_bytes()? as u64
@@ -238,12 +252,7 @@ fn text_result(
         &Read {
             file,
             text: shown,
-            page: (shown_end < end).then_some(ReadPage {
-                start,
-                end: shown_end,
-                next: Some(shown_end),
-                offset: 0,
-            }),
+            page: Some(page(shown_end)),
         },
         u64::MAX,
         work,
@@ -255,7 +264,7 @@ pub(super) fn encoded_text_budget(
     version: &str,
     path: &str,
     maximum: u64,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
     let empty = FileView {
@@ -266,11 +275,13 @@ pub(super) fn encoded_text_budget(
             start: u64::MAX,
             end: u64::MAX,
             next: Some(u64::MAX),
+            total: u64::MAX,
+            eof: false,
             offset: u64::MAX,
         }),
     };
     let overhead = crate::executor::with_history_io(io, |history| {
-        crate::executor::json::json_byte_length(&empty, u64::MAX, history)
+        crate::executor::json::json_byte_length(&empty, None, history)
     })? + schema::json_envelope_bytes()? as u64;
     maximum
         .min(crate::tool::output::VIEW_BYTES)
@@ -283,7 +294,7 @@ pub(super) fn page_text<'a>(
     bytes: &'a [u8],
     empty: bool,
     truncated: bool,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<&'a str> {
     if !empty && truncated {
         match std::str::from_utf8(bytes) {
@@ -325,7 +336,11 @@ mod checks {
                 let shown = value["value"]["text"].as_str().unwrap();
                 prop_assert!(source[cursor..].starts_with(shown));
                 assembled.push_str(shown);
-                if result.value.get("page").is_none() { break; }
+                prop_assert_eq!(result.value["page"]["total"].as_u64(), Some(source.len() as u64));
+                if result.value["page"]["eof"] == true {
+                    prop_assert!(result.value["page"].get("next").is_none());
+                    break;
+                }
                 let next = result.value["page"]["next"].as_u64().unwrap() as usize;
                 prop_assert!(next > cursor, "page failed to advance");
                 prop_assert_eq!(next, cursor + shown.len());
@@ -335,11 +350,12 @@ mod checks {
             let tiny: String = source.chars().take(40).collect();
             let file = crate::tool::tests::file(tiny.as_bytes()).unwrap();
             let version = serde_json::to_string(&file).unwrap();
-            let exact = serde_json::json!({"kind":"json","value":{"path":file.path(),"version":version,"text":tiny}});
+            let exact = serde_json::json!({"kind":"json","value":{"path":file.path(),"version":version,"text":tiny,
+                "page":{"start":0,"end":tiny.len(),"offset":0,"total":tiny.len(),"eof":true}}});
             let credit = serde_json::to_vec(&exact).unwrap().len() as u64;
             let (result, _hold) = text_result(FileReadSource::Content(file.clone()), &tiny, file.path(), (0,tiny.len() as u64), credit, None, None).unwrap();
             prop_assert_eq!(result.value["text"].as_str().unwrap(), tiny.as_str());
-            prop_assert!(result.value.get("page").is_none());
+            prop_assert_eq!(&result.value["page"], &exact["value"]["page"]);
         }
     }
 }

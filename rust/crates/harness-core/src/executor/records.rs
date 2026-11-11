@@ -39,6 +39,7 @@ impl StockExecution<'_> {
                     | ExecutionEvent::ModelStopped {
                         step: recorded,
                         purpose: ModelPurpose::Response,
+                        ..
                     }
                     | ExecutionEvent::ContextPrepared { step: recorded, .. }
                     | ExecutionEvent::ContextCompacted { step: recorded, .. } => *recorded == step,
@@ -77,7 +78,7 @@ impl StockExecution<'_> {
                 ExecutionEvent::ModelStarted { step: event_step, purpose: event_purpose, .. }
                 | ExecutionEvent::Model { step: event_step, purpose: event_purpose, .. }
                 | ExecutionEvent::ModelInline { step: event_step, purpose: event_purpose, .. }
-                | ExecutionEvent::ModelStopped { step: event_step, purpose: event_purpose }
+                | ExecutionEvent::ModelStopped { step: event_step, purpose: event_purpose, .. }
                 if *event_step == step && *event_purpose == purpose)
                     || matches!(event, ExecutionEvent::ContextPrepared { step: event_step, .. }
                     | ExecutionEvent::ContextCompacted { step: event_step, .. }

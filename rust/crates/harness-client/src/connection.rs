@@ -90,7 +90,6 @@ impl ConnectionOptions {
     ///
     /// # Errors
     /// When the credential is not base64url text.
-    #[cfg(feature = "grpc")]
     pub fn session_credential(&self) -> Result<Vec<u8>, ConnectionConfigError> {
         acyclic_auth::credential::capability_from_text(&self.credential)
             .map_err(|_| ConnectionConfigError::InvalidCredential)

@@ -62,7 +62,9 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
         invocation: &'a ToolInvocation,
         scope: &'a RuntimeScope,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>;
+    ) -> Result<
+        crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
+    >;
 
     /// Selects physical authority after this exact invocation's policy and
     /// approval have allowed it, before its first dispatch. The host must
@@ -82,7 +84,7 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
     }
 
     /// Returns the owned identity with custody for its inline Self and strings.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn identity_with_native_work(
         &self,
         _work: &acyclic_fs::NativeMaterializationWork,
@@ -156,14 +158,14 @@ pub fn tool_approval_request(
     policy: &ComponentIdentity,
     definition: &ToolDefinition,
     invocation: &ToolInvocation,
-    paid: (String, NativeCustody),
-    work: Option<&NativeWork>,
+    paid: (String, acyclic_fs::NativeCustody),
+    work: acyclic_fs::NativeWork<'_>,
     (route, target): (
         crate::interaction::ApprovalRoute,
         Option<&crate::agent::TargetRecord>,
     ),
-) -> Result<((OperationId, Interaction), NativeCustody)> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+) -> Result<((OperationId, Interaction), acyclic_fs::NativeCustody)> {
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         if !paid.1.as_ref().is_some_and(|custody| {
             custody.work().shares_ledger(work) && custody.bytes() >= paid.0.capacity() as u64
@@ -183,7 +185,7 @@ pub fn tool_approval_request(
     }
     let (operation, digest) = tool_approval_binding(task, policy, definition, invocation, work)?;
     if digest == [0; 32] {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -194,12 +196,12 @@ pub fn tool_approval_request(
     }
 
     let (prompt, custody) = paid;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let mut custody = custody;
     let subject = copy_approval_subject(invocation, work, route, target)?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let mut subject = subject;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(copied) = subject.1.as_mut() {
         custody
             .as_mut()
@@ -220,11 +222,11 @@ pub fn tool_approval_request(
 
 fn copy_approval_subject(
     invocation: &ToolInvocation,
-    work: Option<&NativeWork>,
+    work: acyclic_fs::NativeWork<'_>,
     route: crate::interaction::ApprovalRoute,
     target: Option<&crate::agent::TargetRecord>,
-) -> Result<(ApprovalSubject, NativeCustody)> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+) -> Result<(ApprovalSubject, acyclic_fs::NativeCustody)> {
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         use crate::store::history::HistoryIo as _;
         let remaining = work.remaining()?;
@@ -236,8 +238,8 @@ fn copy_approval_subject(
         let arguments = crate::executor::json::json_value_copy_bounded(
             &invocation.arguments,
             crate::executor::json::JsonBounds {
-                maximum_bytes: remaining.bytes_encoded,
-                maximum_items: remaining.items_examined,
+                maximum_bytes: Some(remaining.bytes_encoded),
+                maximum_items: Some(remaining.items_examined),
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             Some(crate::wire::ErrorCode::Invalid),
@@ -277,15 +279,9 @@ fn copy_approval_subject(
     ))
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tools/approval_tests.rs"]
 mod approval_tests;
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) type NativeWork = acyclic_fs::NativeMaterializationWork;
-
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-pub(super) type NativeWork = ();
 
 // Negative-control seam for `hooks::mcp_identity_tests`: substitutes the
 // approval subject. It lives beside its only use so it exists in every build
@@ -301,15 +297,15 @@ pub(crate) fn tool_approval_binding(
     policy: &ComponentIdentity,
     definition: &ToolDefinition,
     invocation: &ToolInvocation,
-    work: Option<&NativeWork>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(OperationId, [u8; 32])> {
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let _ = work;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let io = work
         .map(crate::filesystem::PreparationIo::from_native_work)
         .transpose()?;
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let io = None;
     validate_policy_identity(policy, io.as_ref())?;
     crate::executor::with_history_io(io.as_ref(), |observed| {
@@ -328,7 +324,7 @@ pub(crate) fn tool_approval_binding(
     let digest =
         crate::executor::preparation_digest(&(task, policy, definition, invocation), io.as_ref())?;
     let prefix = b"harness:tool-approval:v2";
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
             bytes_hashed: (prefix.len() + digest.len()) as u64,
@@ -440,7 +436,7 @@ impl std::ops::Deref for ToolContext {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl ToolContext {
     /// Checks effective READ and the selected byte credit before content IO.
     /// `None` admits the complete body; an empty range admits metadata only.
@@ -455,7 +451,10 @@ impl ToolContext {
                 file,
                 self.effective_scope(),
                 self.effective_scope().grants(),
-                range,
+                range.map_or(
+                    super::content_read::ReadExtent::Body,
+                    super::content_read::ReadExtent::Range,
+                ),
                 Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
             )
             .map(|_| ())
@@ -496,17 +495,27 @@ impl ToolContext {
             .await
     }
 
+    pub(crate) async fn observe_tool_path_once(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        let (binding, _) = self.task().tool_publication_path(path, io)?;
+        self.observe_once(binding, operation_id, io).await
+    }
+
     pub(crate) async fn observe_tool_source_file_once(
         &self,
         operation_id: OperationId,
-        source: Option<&FileRef>,
+        source_volume: Option<&VolumeRef>,
         replacement_path: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, u64)> {
-        let binding = self.task().tool_content(source.map(FileRef::volume));
+        let binding = self.task().tool_content(source_volume);
         let writer = super::content_write::content_writer(binding, io)?;
         let destination = replacement_path
-            .map(|path| writer.destination(source.map(FileRef::volume), path, io))
+            .map(|path| writer.destination(source_volume, path, io))
             .transpose()?;
         self.task()
             .observe_bound_file_once(
@@ -575,7 +584,11 @@ impl ToolContext {
         for change in changes {
             crate::executor::with_history_io(io, |work| {
                 crate::conversation::validate_content_path(change.path(), work)?;
-                if change.path().len() > self.effective_scope().limits().path_bytes
+                if self
+                    .effective_scope()
+                    .limits()
+                    .path_bytes
+                    .is_some_and(|maximum| change.path().len() > maximum.get())
                     || crate::conversation::is_internal_path(change.path())
                 {
                     return Err(Error::tool_rejected(
@@ -589,7 +602,7 @@ impl ToolContext {
                     source,
                     self.effective_scope(),
                     self.effective_scope().grants(),
-                    None,
+                    super::content_read::ReadExtent::Metadata,
                     io,
                 )?;
                 if source.volume() != volume {
@@ -598,10 +611,35 @@ impl ToolContext {
                     ));
                 }
             }
+            if let Some(source) = change.path_source() {
+                crate::executor::with_history_io(io, |work| {
+                    source.validate(work)?;
+                    if &source.volume != volume
+                        || !crate::core::directory_read_granted_with_work(
+                            self.effective_scope().grants(),
+                            volume,
+                            source
+                                .path
+                                .rsplit_once('/')
+                                .map_or("", |(parent, _)| parent),
+                            work,
+                        )?
+                    {
+                        return Err(crate::store::guarded_boundary(
+                            work,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "conditional path source requires its original directory read grant",
+                        ));
+                    }
+                    Ok(())
+                })?;
+            }
             let bytes = match change {
                 ContentChange::CreateAbsent { bytes, .. }
                 | ContentChange::UpdateExpected { bytes, .. } => bytes.len() as u64,
-                ContentChange::DeleteExpected { .. } => 0,
+                ContentChange::DeleteExpected { .. }
+                | ContentChange::DeleteAt { .. }
+                | ContentChange::Delete { .. } => 0,
             };
             if bytes > self.effective_scope().limits().file_bytes {
                 return Err(Error::tool_rejected(
@@ -641,7 +679,12 @@ impl ToolContext {
                 | (ContentChange::UpdateExpected { .. }, ContentChangeResult::Updated(file)) => {
                     file
                 }
-                (ContentChange::DeleteExpected { .. }, ContentChangeResult::Deleted(_)) => continue,
+                (
+                    ContentChange::DeleteExpected { .. }
+                    | ContentChange::DeleteAt { .. }
+                    | ContentChange::Delete { .. },
+                    ContentChangeResult::Deleted(_),
+                ) => continue,
                 _ => {
                     return Err(crate::executor::stock_boundary(
                         io,
@@ -662,7 +705,9 @@ impl ToolContext {
                     source.descriptor().media_type(),
                     source.display_name(),
                 ),
-                ContentChange::DeleteExpected { .. } => continue,
+                ContentChange::DeleteExpected { .. }
+                | ContentChange::DeleteAt { .. }
+                | ContentChange::Delete { .. } => continue,
             };
             if file.volume() != volume
                 || file.path() != change.path()
@@ -682,11 +727,7 @@ impl ToolContext {
                 .verify_publication(file, file.descriptor().byte_length(), io)?
                 .await?;
         }
-        #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        #[cfg(not(feature = "filesystem"))]
-        let retained = 0;
-        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
@@ -707,13 +748,10 @@ impl ToolContext {
             .ok_or_else(|| Error::Unsupported("conditional content writer is not bound".into()))?;
         let writer = super::content_write::content_writer(Some(content), io)?;
         super::content_write::authorize_volume_write(volume, self.effective_scope(), io)?;
-        #[cfg(feature = "filesystem")]
         let maximum = io
             .map(|io| io.remaining().map(|work| work.bytes_encoded))
             .transpose()?
             .unwrap_or(u64::MAX);
-        #[cfg(not(feature = "filesystem"))]
-        let maximum = u64::MAX;
         let (files, hold) = writer
             .observe_changes(
                 volume,
@@ -741,11 +779,7 @@ impl ToolContext {
                     .await?;
             }
         }
-        #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        #[cfg(not(feature = "filesystem"))]
-        let retained = 0;
-        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
@@ -763,13 +797,7 @@ impl ToolContext {
         display_name: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, u64)> {
-        if crate::layers::read_only(path) {
-            return Err(Error::Unauthorized(format!(
-                "{path} is read-only; write under {HOME_PATH}"
-            ))
-            .tool_input());
-        }
-        let binding = self.task().tool_content(None);
+        let (binding, path) = self.task().tool_publication_path(path, io)?;
         self.stage_once(
             binding,
             operation_id,
@@ -840,9 +868,55 @@ impl ToolContext {
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        self.select_tool_read_path(path, crate::tool::ReadPathKind::File, io)
+    }
+
+    pub(crate) fn authorize_tool_directory_read<'a>(
+        &'a self,
+        path: &'a str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let path = if path == "." {
+            ""
+        } else {
+            path.strip_suffix('/')
+                .filter(|path| !path.is_empty())
+                .unwrap_or(path)
+        };
+        let (volume, relative) =
+            self.select_tool_read_path(path, crate::tool::ReadPathKind::Directory, io)?;
         crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
-            if path.len() > self.effective_scope().limits().path_bytes
+            if !crate::core::directory_read_granted_with_work(
+                self.effective_scope().grants(),
+                volume,
+                &relative,
+                history,
+            )? {
+                return Err(crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "directory listing requires its original subtree grant",
+                )
+                .tool_input());
+            }
+            Ok(())
+        })?;
+        Ok((volume, relative))
+    }
+
+    fn select_tool_read_path<'a>(
+        &'a self,
+        path: &'a str,
+        kind: crate::tool::ReadPathKind,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        crate::executor::with_history_io(io, |history| {
+            kind.validate(path, history).map_err(Error::tool_input)?;
+            if self
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
                 || crate::conversation::is_internal_path(path)
             {
                 return Err(crate::store::guarded_boundary(
@@ -856,14 +930,21 @@ impl ToolContext {
         })?;
         // The effective view is read-only: reads resolve it to one layer
         // first (`effective_tool_path`), and nothing writes through it.
-        if path.starts_with(EFFECTIVE_PATH) {
+        if path.starts_with(EFFECTIVE_PATH) || path == EFFECTIVE_PATH.trim_end_matches('/') {
             return Err(Error::Unauthorized(format!(
                 "{EFFECTIVE_PATH} is read-only; write {HOME_PATH} instead"
             ))
             .tool_input());
         }
+        if let Some((binding, relative)) = self.task().private_content_path(path, io)? {
+            return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
+        }
         if let (Some(relative), Some(seed)) = (
-            path.strip_prefix(SEED_PATH),
+            path.strip_prefix(SEED_PATH).or_else(|| {
+                (kind == crate::tool::ReadPathKind::Directory
+                    && path == SEED_PATH.trim_end_matches('/'))
+                .then_some("")
+            }),
             self.task().harness.seed.as_ref(),
         ) {
             return Ok((&seed.volume, std::borrow::Cow::Borrowed(relative)));
@@ -883,29 +964,91 @@ impl ToolContext {
                 std::borrow::Cow::Borrowed(relative),
             ));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let work = io.and_then(crate::executor::PreparationIo::original_native_work);
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let work = None;
         if let Some(targets) = self.task().harness.targets.as_ref() {
-            return targets.read_path(path, work).map_err(Error::tool_input);
+            return targets
+                .read_path(path, kind, work)
+                .map_err(Error::tool_input);
         }
-        // Match the home mount's public path when no execution target is
-        // bound. Keep the same private reader and ordinary directory grants.
-        if let Some(relative) = path.strip_prefix(HOME_PATH) {
-            let binding = self
-                .task()
-                .harness
-                .artifacts
-                .as_ref()
-                .unwrap_or(&self.task().output_content);
-            if binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate {
-                return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
-            }
+        let home_path = if kind == crate::tool::ReadPathKind::Directory
+            && path == HOME_PATH.trim_end_matches('/')
+        {
+            HOME_PATH
+        } else {
+            path
+        };
+        if let Some((binding, relative)) = self.task().home_content_path(home_path) {
+            return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
         }
         Ok((
             &self.task().tool_read_content().volume,
             std::borrow::Cow::Borrowed(path),
+        ))
+    }
+
+    pub(crate) async fn list_tool_directory<'a, 'io: 'a>(
+        &'a self,
+        request: crate::conversation::DirectoryRead<'a>,
+        io: Option<&'io crate::conversation::ContentIo>,
+    ) -> Result<(
+        crate::conversation::PrivateDirectoryPage,
+        Option<crate::conversation::ContentHold<'io>>,
+    )> {
+        let request = crate::conversation::DirectoryRead {
+            generation: self.layer_generation(request.volume, request.generation)?,
+            ..request
+        };
+        self.task()
+            .list_bound_directory(request, self.effective_scope(), io)
+            .await
+    }
+
+    /// Maps an original effective-file selection back to its mounted layer.
+    /// The token selects a cut; ordinary read grants still authorize it.
+    pub(crate) fn effective_tool_layer<'a>(
+        &self,
+        path: &'a str,
+        source: Option<(&VolumeRef, &str)>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<std::borrow::Cow<'a, str>> {
+        let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
+            return Ok(path.into());
+        };
+        if relative.ends_with(crate::layers::WHY_SUFFIX) {
+            return Err(
+                Error::Unsupported("derived provenance requires its module reader".into())
+                    .tool_input(),
+            );
+        }
+        let prefixes = if (relative.starts_with("sys/models/")
+            || relative.starts_with("sys/secrets/"))
+            && self.task().harness.system.is_some()
+        {
+            &[SYSTEM_PATH][..]
+        } else if crate::layers::layered(relative) {
+            &[HOME_PATH, SEED_PATH][..]
+        } else {
+            &[SEED_PATH][..]
+        };
+        for prefix in prefixes {
+            if *prefix == SEED_PATH && self.task().harness.seed.is_none() {
+                continue;
+            }
+            let layer = crate::executor::with_history_io(io, |history| {
+                crate::executor::preparation_format(format_args!("{prefix}{relative}"), history)
+            })?;
+            let (volume, selected) = self.tool_path_selection(&layer, io)?;
+            if source.is_none_or(|(original, original_path)| {
+                original == volume && original_path == selected
+            }) {
+                return Ok(layer.into());
+            }
+        }
+        Err(Error::tool_rejected(
+            "file version belongs to another effective path or layer",
         ))
     }
 
@@ -919,7 +1062,10 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(
         std::borrow::Cow<'a, str>,
-        Option<(crate::conversation::FilePathSelection, crate::NativeCustody)>,
+        Option<(
+            crate::conversation::FilePathSelection,
+            acyclic_fs::NativeCustody,
+        )>,
     )> {
         use crate::layers::{WHY_SUFFIX, equals_from_prefix, layered, off_from_prefix};
         let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
@@ -932,8 +1078,12 @@ impl ToolContext {
             ))
             .tool_input());
         }
-        let seed = || format!("{SEED_PATH}{relative}");
         let seeded = self.task().harness.seed.is_some();
+        let seed = || {
+            crate::executor::with_history_io(io, |history| {
+                crate::executor::preparation_format(format_args!("{SEED_PATH}{relative}"), history)
+            })
+        };
         if !layered(relative) {
             let selected = if (relative.starts_with("sys/models/")
                 || relative.starts_with("sys/secrets/"))
@@ -941,7 +1091,7 @@ impl ToolContext {
             {
                 format!("{SYSTEM_PATH}{relative}")
             } else if seeded {
-                seed()
+                seed()?
             } else {
                 return Err(missing());
             };
@@ -967,7 +1117,7 @@ impl ToolContext {
                 .as_ref()
                 .is_some_and(|seed| &seed.volume == original)
             {
-                return Ok((seed().into(), None));
+                return Ok((seed()?.into(), None));
             }
             return Err(
                 Error::Conflict("effective version belongs to another layer".into()).tool_input(),
@@ -984,16 +1134,16 @@ impl ToolContext {
                 Ok(read) => read,
                 Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
                     return if seeded {
-                        Ok((seed().into(), None))
+                        Ok((seed()?.into(), None))
                     } else {
                         Err(missing())
                     };
                 }
                 Err(error) => return Err(error),
             };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let custody = {
             let _ = retained;
             None
@@ -1005,9 +1155,9 @@ impl ToolContext {
                 let (_, bytes, retained) = self
                     .read_tool_path_range(home, Some(&selected.generation), range, io)
                     .await?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let custody = {
                     let _ = retained;
                     None::<()>
@@ -1034,9 +1184,9 @@ impl ToolContext {
         if inherits_seed {
             drop(selected);
             drop(custody);
-            return Ok((seed().into(), None));
+            return Ok((seed()?.into(), None));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let custody = {
             if let Some(custody) = custody {
                 custody.into_retained()?;
@@ -1093,10 +1243,7 @@ impl ToolContext {
                 file,
                 self.effective_scope(),
                 self.effective_scope().grants(),
-                Some(acyclic_fs::ByteRange {
-                    offset: 0,
-                    length: 0,
-                }),
+                super::content_read::ReadExtent::Metadata,
                 io,
             )
             .map(|_| ())
@@ -1160,9 +1307,9 @@ impl ToolContext {
                     .await
                 {
                     Ok((selected, _, retained)) => {
-                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        #[cfg(not(target_arch = "wasm32"))]
                         let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-                        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                        #[cfg(target_arch = "wasm32")]
                         let _ = retained;
                         Some(selected.generation)
                     }
@@ -1183,9 +1330,9 @@ impl ToolContext {
                                 io,
                             )
                             .await?;
-                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        #[cfg(not(target_arch = "wasm32"))]
                         let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-                        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                        #[cfg(target_arch = "wasm32")]
                         let _ = retained;
                     }
                     Ok(())
@@ -1266,9 +1413,9 @@ impl ToolContext {
                 || expected_generation.is_some_and(|generation| generation != &selected.generation)
                 || selected
                     .byte_length
-                    .checked_sub(range.offset)
-                    .map(|remaining| remaining.min(range.length))
-                    != Some(bytes.len() as u64)
+                    .saturating_sub(range.offset)
+                    .min(range.length)
+                    != bytes.len() as u64
             {
                 return Err(crate::store::guarded_boundary(
                     history,
@@ -1278,17 +1425,10 @@ impl ToolContext {
             }
             Ok(())
         })?;
-        #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
-        #[cfg(not(feature = "filesystem"))]
-        let retained = {
-            let _ = hold;
-            0
-        };
         Ok((selected, bytes, retained))
     }
 
@@ -1297,14 +1437,14 @@ impl ToolContext {
     /// run, whichever form (content or authored) carries the version.
     pub(crate) fn check_layer_version(
         &self,
-        source: &crate::tool::files::FileReadSource,
+        source: &crate::tool::files::SelectedVersion,
     ) -> Result<()> {
-        use crate::tool::files::FileReadSource;
+        use crate::tool::files::SelectedVersion;
         let current = match source {
-            FileReadSource::Content(file) => self
+            SelectedVersion::Content(file) => self
                 .layer_generation(file.volume(), None)?
                 .is_none_or(|pinned| crate::conversation::names_generation(file, pinned)),
-            FileReadSource::Authored(selected) => {
+            SelectedVersion::Authored(selected) => {
                 self.layer_generation(&selected.volume, Some(&selected.generation))?;
                 true
             }
@@ -1350,8 +1490,9 @@ impl ToolContext {
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let (binding, path) = self.task().tool_publication_path(path, io)?;
         let (_, volume, relative) = super::content_write::publication_destination(
-            self.task().tool_content(None),
+            binding,
             self.effective_scope(),
             None,
             path,

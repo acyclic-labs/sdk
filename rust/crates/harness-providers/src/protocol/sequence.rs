@@ -1,7 +1,8 @@
 //! Position and adjacency rules shared by input validation and projection.
 use serde_json::Value;
 
-/// OAR-RSN-02: a reasoning item requires an immediately following output.
+/// OAR-RSN-02: an ordered reasoning run requires a following output.
+/// A response may contain several reasoning items before its tool call.
 /// End is a position so projection finalization and validation use the same rule.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResponseItem {
@@ -30,7 +31,7 @@ impl ResponseItem {
     pub fn violation(self, next: Self) -> Option<&'static str> {
         if self == Self::Configuration && next == Self::Configuration {
             Some("OAR-CFG-02")
-        } else if self == Self::Reasoning && next != Self::Output {
+        } else if self == Self::Reasoning && !matches!(next, Self::Reasoning | Self::Output) {
             Some("OAR-RSN-02")
         } else {
             None

@@ -160,10 +160,12 @@ export async function fuzz(schedule) {
       admission(current, prefix + notice, "action_refusal", notice, schedule);
     }
     for (const reason of ["resource not found: Unknown command: /marke", ...queryFormats.map(format => format.replace("{error}", notice))]) {
-      const prefixed = refusalPrefix + reason;
-      const current = query.visible.slice(0, -notice.length) + prefixed;
-      assert.equal(queryFailure(current), reason);
-      admission(current, prefixed, "query_failure", reason, schedule);
+      for (const padding of ["", " ".repeat(1 + (schedule[0] ?? 0) % screen.cols)]) {
+        const prefixed = padding + refusalPrefix + reason;
+        const current = query.visible.slice(0, -notice.length) + prefixed;
+        assert.equal(queryFailure(current), reason);
+        admission(current, prefixed, "query_failure", reason, schedule);
+      }
     }
     // An ordinary action refusal still needs explicit refusal admission.
     const reason = refusal.slice(refusal.indexOf(" failed: ") + 9);

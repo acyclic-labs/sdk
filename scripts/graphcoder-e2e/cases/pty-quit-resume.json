@@ -70,6 +70,14 @@
             ]
           },
           "send": "\u0004"
+        },
+        {
+          "when": {
+            "contains": [
+              "Stop or detach?"
+            ]
+          },
+          "prompt": "detach"
         }
       ],
       "resume": true

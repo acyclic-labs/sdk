@@ -3,7 +3,7 @@ import type { Env } from "./generated/env.js";
 
 type StreamHandle = { append(bytes: Uint8Array, retryKey: string): Promise<void> };
 type SecretHandle = { reveal(): Promise<string> };
-type ActorEnv = Env<StreamHandle, never, never, never, never, never, never, never, never, never, never, SecretHandle>;
+type ActorEnv = Env<StreamHandle, never, never, never, never, never, never, never, SecretHandle>;
 
 export function author(env: ActorEnv): Promise<void> {
   const result = env.INBOX.append(new Uint8Array([1]), "delivery/effect");

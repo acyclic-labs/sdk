@@ -81,8 +81,12 @@ pub const GIT_COMPAT_IDENTITY_WIRE_FIELDS: &[(&str, usize)] = &[
 ];
 
 /// Fields carrying the canonical variable-width generation-root reference.
-pub const GIT_COMPAT_GENERATION_WIRE_FIELDS: &[&str] =
-    &["generation", "authored_generation", "initial_generation"];
+pub const GIT_COMPAT_GENERATION_WIRE_FIELDS: &[&str] = &[
+    "generation",
+    "authored_generation",
+    "initial_generation",
+    "source_generation",
+];
 
 /// Field names that language bindings decode as owned byte arrays. `None`
 pub const GIT_COMPAT_BYTE_WIRE_FIELDS: &[(&str, Option<usize>)] = &[
@@ -238,7 +242,7 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ),
     (
         "Join",
-        r#"{ readonly Join: { readonly target_tree: GitTreeRef; readonly source_workspace: WorkspaceIdentity; readonly rebase: boolean; readonly tracked_paths: readonly string[] } }"#,
+        r#"{ readonly Join: { readonly target_tree: GitTreeRef; readonly source_workspace: WorkspaceIdentity; readonly source_generation: GenerationIdentity | undefined; readonly rebase: boolean; readonly tracked_paths: readonly string[] } }"#,
     ),
     (
         "ApplyCommit",

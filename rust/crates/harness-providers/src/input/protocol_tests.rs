@@ -3,7 +3,6 @@ use super::*;
 fn probes() -> Vec<(Adapter, Value, &'static str)> {
     let reasoning =
         json!({"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque"});
-    let answer = json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]});
     let mut probes = vec![
         (
             Adapter::Responses,
@@ -12,7 +11,7 @@ fn probes() -> Vec<(Adapter, Value, &'static str)> {
         ),
         (
             Adapter::Responses,
-            json!({"store":false,"input":[reasoning, reasoning, answer]}),
+            json!({"store":false,"input":[reasoning, reasoning]}),
             "OAR-RSN-02",
         ),
         (

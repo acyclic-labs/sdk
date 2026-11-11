@@ -9,7 +9,7 @@ use crate::{
     tool::{JsonToolProjection, ToolProjection, ToolRegistry},
 };
 use acyclic_stream::BoxProviderFuture;
-use futures::future::join_all;
+use futures::{StreamExt as _, stream};
 use serde_json::json;
 use std::{path::Path, sync::Arc, time::Duration};
 
@@ -21,9 +21,12 @@ mod native;
 mod watched;
 use cancellation::CancelOnDrop;
 
-/// Protective per-message bounds, independent of catalog size and task allowances.
+/// Host-selected initialization credit and independent per-message bounds.
 #[derive(Clone, Copy)]
 pub struct McpClientLimits {
+    /// Concurrent initialization credit, never a total server allowance.
+    /// `None` starts every configured server without an implicit ceiling.
+    pub servers: Option<u32>,
     /// Maximum bytes in one discovery request or response, never the whole catalog.
     pub frame_bytes: u32,
     /// Maximum request or response bytes for an installed tool call.
@@ -33,6 +36,7 @@ pub struct McpClientLimits {
 impl Default for McpClientLimits {
     fn default() -> Self {
         Self {
+            servers: None,
             frame_bytes: 1_048_576,
             tool_bytes: 1_048_576,
         }
@@ -96,37 +100,61 @@ impl McpConfig {
     where
         F: for<'a> Fn(&'a McpServer) -> BoxProviderFuture<'a, Result<Connected>>,
     {
-        if limits.frame_bytes == 0 || limits.tool_bytes == 0 {
-            return Err(Error::Invalid("MCP message bounds must be positive".into()));
+        if limits.servers == Some(0) || limits.frame_bytes == 0 || limits.tool_bytes == 0 {
+            return Err(Error::Invalid(
+                "MCP credit and message bounds must be positive".into(),
+            ));
         }
         let mut diagnostics = Vec::new();
         let mut capabilities = Capabilities::default();
-        let results = join_all(self.servers.into_iter().map(|(name, server)| {
-            let connect = &connect;
-            async move {
-                let deadline = tokio::time::Instant::now()
-                    + Duration::from_millis(u64::from(server.startup_timeout_ms));
-                let result = tokio::time::timeout_at(deadline, connect(&server))
-                    .await
-                    .map_err(|_| startup_timeout())
-                    .and_then(|result| result);
-                let required = server.required;
-                let result = match result {
-                    Ok(connected) => {
-                        let name = name.clone();
-                        register_before(deadline, move |check| {
-                            check()?;
-                            live::LiveCatalog::new(name, server, connected, limits)
-                        })
-                        .await
-                    }
-                    Err(error) => Err(error),
-                };
-                (name, required, result)
-            }
-        }))
-        .await;
-        for (server, required, result) in results {
+        // Buffering requires positive credit even for an empty input. With no
+        // policy, every configured server can initialize concurrently.
+        let count = self.servers.len();
+        let concurrent = limits
+            .servers
+            .map_or(count.max(1), |credit| credit as usize);
+        let mut results: Vec<_> = std::iter::repeat_with(|| None).take(count).collect();
+        let missing = || Error::Storage("MCP initialization lost its configuration slot".into());
+        let mut initializing = stream::iter(self.servers.into_iter().enumerate().map(
+            |(index, (name, server))| {
+                let connect = &connect;
+                async move {
+                    let deadline = super::deadline::after(
+                        server.startup_timeout_ms.map(Duration::from_millis),
+                    );
+                    let admitted_deadline = deadline.as_ref().ok().copied().flatten();
+                    let result = match deadline {
+                        Ok(deadline) => super::deadline::until(deadline, connect(&server))
+                            .await
+                            .map_err(|_| startup_timeout())
+                            .and_then(|result| result),
+                        Err(error) => Err(error),
+                    };
+                    let deadline = admitted_deadline;
+                    let required = server.required;
+                    let result = match result {
+                        Ok(connected) => {
+                            let name = name.clone();
+                            register_before(deadline, move |check| {
+                                check()?;
+                                live::LiveCatalog::new(name, server, connected, limits)
+                            })
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    (index, name, required, result)
+                }
+            },
+        ))
+        .buffer_unordered(concurrent);
+        // Completion releases credit immediately. The original configuration
+        // slot retains diagnostic order without sorting or head-of-line waits.
+        while let Some((index, name, required, result)) = initializing.next().await {
+            *results.get_mut(index).ok_or_else(missing)? = Some((name, required, result));
+        }
+        for result in results {
+            let (server, required, result) = result.ok_or_else(missing)?;
             match result {
                 Ok((additional, grants)) => {
                     tools.extend(additional)?;
@@ -155,7 +183,7 @@ fn startup_timeout() -> Error {
 }
 
 async fn register_before<T: Send + 'static>(
-    deadline: tokio::time::Instant,
+    deadline: Option<tokio::time::Instant>,
     register: impl FnOnce(&dyn Fn() -> Result<()>) -> Result<T> + Send + 'static,
 ) -> Result<T> {
     use super::sync::{Arc, atomic::AtomicBool};
@@ -165,8 +193,8 @@ async fn register_before<T: Send + 'static>(
     let mut worker =
         acyclic_native_runtime::run_blocking_io(move || cancellation::run(flag, register), None)
             .map_err(Error::process_io)?;
-    match tokio::time::timeout_at(deadline, &mut worker).await {
-        Ok(result) if tokio::time::Instant::now() < deadline => {
+    match super::deadline::until(deadline, &mut worker).await {
+        Ok(result) if deadline.is_none_or(|deadline| tokio::time::Instant::now() < deadline) => {
             result.map_err(Error::process_io)?
         }
         result => {
@@ -216,7 +244,7 @@ fn register(
             limits.tool_bytes,
             &catalog,
         ),
-        u64::MAX,
+        None,
         &mut None,
     )?)
     .to_hex()
@@ -263,7 +291,7 @@ fn recovery_binding(
                 &server.enabled_tools,
                 &server.disabled_tools,
             ),
-            u64::MAX,
+            None,
             &mut None,
         )?)
         .to_hex()
@@ -272,7 +300,7 @@ fn recovery_binding(
 }
 
 #[cfg(test)]
-#[cfg(feature = "mcp-stdio")]
+#[cfg(not(target_arch = "wasm32"))]
 mod path_tests;
 #[cfg(test)]
 mod tests;

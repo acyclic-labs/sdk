@@ -32,6 +32,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     .value;
     (rebasing.create(
         crate::AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("local")?,
             bytes: (bytes::Bytes::from_static(b"local sparse candidate")).into(),
             metadata: crate::kernel::FileMetadata::default(),
@@ -42,6 +43,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     .await?;
     (writer.create(
         crate::AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("remote")?,
             bytes: (bytes::Bytes::from_static(b"remote sparse head")).into(),
             metadata: crate::kernel::FileMetadata::default(),
@@ -139,6 +141,7 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
     .value;
     (ours.create(
         crate::AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("ours")?,
             bytes: (bytes::Bytes::from(vec![b'o'; 4_096])).into(),
             metadata: crate::kernel::FileMetadata::default(),
@@ -149,6 +152,7 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
     .await?;
     (theirs.create(
         crate::AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("theirs")?,
             bytes: (bytes::Bytes::from(vec![b't'; 4_096])).into(),
             metadata: crate::kernel::FileMetadata::default(),
@@ -243,6 +247,7 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
     .value;
     (checkout.create(
         crate::AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("publish-large")?,
             bytes: (bytes::Bytes::from(vec![b'p'; 16_384])).into(),
             metadata: crate::kernel::FileMetadata::default(),
@@ -333,6 +338,7 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
     .value;
     (checkout.create(
         crate::AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("indeterminate-file")?,
             bytes: (bytes::Bytes::from_static(b"durable exactly once")).into(),
             metadata: crate::kernel::FileMetadata::default(),

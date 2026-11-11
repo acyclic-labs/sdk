@@ -2,47 +2,41 @@ use super::*;
 
 use super::exchanges::{Group, exchange_groups};
 
-impl ThresholdCompaction {
+impl CapacityCompaction {
     /// Plans a bounded projection preserving complete tool exchanges.
     pub(crate) fn projection_budget(
         &self,
         context: &Context,
-        count: &ModelTokenCount,
-        maximum_messages: usize,
-        recent_tokens: u32,
+        maximum_messages: Option<usize>,
+        requested_cut: usize,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(usize, usize)> {
+        self.try_projection_budget(context, maximum_messages, requested_cut, work)?
+            .ok_or_else(|| compaction_error(work, "no complete older compaction source"))
+    }
+
+    /// No complete evictable prefix is an ordinary speculative miss. Invalid
+    /// input and accounting failures remain errors, never silently suppressed.
+    pub(crate) fn try_projection_budget(
+        &self,
+        context: &Context,
+        maximum_messages: Option<usize>,
+        requested_cut: usize,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Option<(usize, usize)>> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let recent_messages = maximum_messages.checked_sub(1).ok_or_else(|| {
-            compaction_error(
-                quota.work(),
-                "compaction requires a summary message allowance",
-            )
-        })?;
-        if recent_tokens == 0 {
-            return Err(compaction_error(
-                quota.work(),
-                "recent token budget must be positive",
-            ));
+        let mut through = requested_cut;
+        if let Some(maximum) = maximum_messages {
+            let recent_messages = maximum.checked_sub(1).ok_or_else(|| {
+                compaction_error(
+                    quota.work(),
+                    "compaction requires a summary message allowance",
+                )
+            })?;
+            through = through.max(context.messages.len().saturating_sub(recent_messages));
         }
-        let mut recent = 0_u64;
-        let mut start = count.message_tokens.len();
-        for tokens in count.message_tokens.iter().rev() {
-            if recent >= u64::from(recent_tokens) {
-                break;
-            }
-            compaction_step(&mut quota)?;
-            start -= 1;
-            recent = recent
-                .checked_add(u64::from(*tokens))
-                .ok_or_else(|| compaction_error(quota.work(), "recent token count overflows"))?;
-        }
-        let mut through = start.max(context.messages.len().saturating_sub(recent_messages));
-        if count.message_tokens.len() != context.messages.len() || through == 0 {
-            return Err(compaction_error(
-                quota.work(),
-                "no older source fits the compaction policy",
-            ));
+        if through == 0 || through >= context.messages.len() {
+            return Ok(None);
         }
         let groups = exchange_groups(context, &mut quota)?;
         for group in groups.iter().rev() {
@@ -50,12 +44,6 @@ impl ThresholdCompaction {
             if group.size > 0 && group.root < through && through <= group.end {
                 through = group.root;
             }
-        }
-        if through == 0 && maximum_messages == usize::MAX {
-            return Err(compaction_error(
-                quota.work(),
-                "tool exchange leaves no complete older compaction source",
-            ));
         }
         let selected = mandatory_selection(context, context.messages.len(), &groups, &mut quota)?;
         let mut mandatory = context.messages.len();
@@ -75,36 +63,33 @@ impl ThresholdCompaction {
             if component.retained_through == position && !selected[group.root] {
                 mandatory -= component.size;
             }
-            if component.end == position
-                && let Some(source) = component.source
-            {
-                if groups[source].retained_through == position && !selected[source] {
-                    mandatory -= groups[source].size;
+            if component.end == position {
+                for source in component.sources() {
+                    compaction_step(&mut quota)?;
+                    if groups[source].retained_through == position && !selected[source] {
+                        mandatory -= groups[source].size;
+                    }
                 }
             }
-            if end <= position && position + 1 >= through && mandatory < maximum_messages {
+            if end <= position
+                && position + 1 >= through
+                && maximum_messages.is_none_or(|maximum| mandatory < maximum)
+            {
                 cut = Some(position + 1);
                 break;
             }
         }
-        let through = cut.ok_or_else(|| {
-            compaction_error(
-                quota.work(),
-                "mandatory content leaves no compaction source",
-            )
-        })?;
+        let Some(through) = cut else { return Ok(None) };
         let maximum = mandatory.checked_add(1).ok_or_else(|| {
             compaction_error(quota.work(), "compaction projection count overflows")
         })?;
         retire_vector(groups, &mut quota)?;
         retire_vector(selected, &mut quota)?;
-        if maximum > context.messages.len() || maximum > maximum_messages {
-            return Err(compaction_error(
-                quota.work(),
-                "mandatory content leaves no compaction source",
-            ));
+        if maximum > context.messages.len() || maximum_messages.is_some_and(|limit| maximum > limit)
+        {
+            return Ok(None);
         }
-        Ok((through, maximum))
+        Ok(Some((through, maximum)))
     }
 }
 
@@ -151,10 +136,11 @@ fn mandatory_selection(
     }
     for group in groups {
         compaction_step(quota)?;
-        if selected[group.root]
-            && let Some(source) = groups[group.root].source
-        {
-            selected[source] = true;
+        if selected[group.root] {
+            for source in groups[group.root].sources() {
+                compaction_step(quota)?;
+                selected[source] = true;
+            }
         }
     }
     for (position, group) in groups.iter().enumerate() {
@@ -196,6 +182,19 @@ pub(crate) fn mandatory_messages(
     Ok(messages)
 }
 
+pub(crate) fn mandatory_message_count(
+    context: &Context,
+    covered: usize,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<usize> {
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let (selected, groups) = mandatory_flags(context, covered, &mut quota)?;
+    let count = selected.iter().filter(|keep| **keep).count();
+    retire_vector(groups, &mut quota)?;
+    retire_vector(selected, &mut quota)?;
+    Ok(count)
+}
+
 pub(crate) fn compact_context(
     context: &Context,
     maximum: usize,
@@ -224,11 +223,17 @@ pub(crate) fn compact_context(
         for group in groups.iter().rev() {
             compaction_step(&mut quota)?;
             let root = group.root;
-            let dependency = groups[root].source.filter(|source| !selected[*source]);
-            let size = groups[root].size + dependency.map_or(0, |source| groups[source].size);
+            let mut size = groups[root].size;
+            for source in groups[root].sources() {
+                compaction_step(&mut quota)?;
+                if !selected[source] {
+                    size += groups[source].size;
+                }
+            }
             if !selected[root] && size < maximum - count {
                 selected[root] = true;
-                if let Some(source) = dependency {
+                for source in groups[root].sources() {
+                    compaction_step(&mut quota)?;
                     selected[source] = true;
                 }
                 count += size;
@@ -305,7 +310,7 @@ pub(super) fn compaction_error(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
     reason: &'static str,
 ) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if work
         .as_deref()
         .is_some_and(|io| io.original_native_work().is_some())

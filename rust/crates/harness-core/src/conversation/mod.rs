@@ -60,30 +60,30 @@ pub const DEFAULT_CONVERSATION_PAGE_MESSAGES: u32 = 1_024;
 pub struct Limits {
     /// Maximum bytes in one referenced file admitted to a conversation.
     pub file_bytes: u64,
-    /// Maximum normalized UTF-8 path bytes.
-    pub path_bytes: usize,
-    /// Maximum attachments in one message, inline or manifest-backed.
-    pub attachments: usize,
+    /// Optional maximum normalized UTF-8 path bytes.
+    pub path_bytes: Option<std::num::NonZeroUsize>,
+    /// Optional maximum attachments in one message, inline or manifest-backed.
+    pub attachments: Option<std::num::NonZeroUsize>,
     /// Maximum bytes rendered directly into one model context part.
     pub render_bytes: u64,
     /// Optional maximum streamed observations in one model round trip; `None` is unbounded.
     pub model_events_per_step: Option<std::num::NonZeroUsize>,
     /// Optional maximum distinct tool calls in one model round trip; `None` is unbounded.
     pub tool_calls_per_step: Option<std::num::NonZeroUsize>,
-    /// Maximum canonical messages selected into one model request.
-    pub context_messages: usize,
+    /// Optional maximum canonical messages selected into one model request.
+    pub context_messages: Option<std::num::NonZeroUsize>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Self {
             file_bytes: MAX_EXACT_JS_INTEGER,
-            path_bytes: u32::MAX as usize,
-            attachments: u32::MAX as usize,
+            path_bytes: None,
+            attachments: None,
             render_bytes: MAX_EXACT_JS_INTEGER,
             model_events_per_step: None,
             tool_calls_per_step: None,
-            context_messages: u32::MAX as usize,
+            context_messages: None,
         }
     }
 }
@@ -100,8 +100,12 @@ impl Limits {
         if [self.file_bytes, self.render_bytes]
             .into_iter()
             .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
-            || [self.path_bytes, self.attachments, self.context_messages]
+            || self
+                .path_bytes
+                .map(std::num::NonZeroUsize::get)
                 .into_iter()
+                .chain(self.attachments.map(std::num::NonZeroUsize::get))
+                .chain(self.context_messages.map(std::num::NonZeroUsize::get))
                 .chain(self.model_events_per_step.map(std::num::NonZeroUsize::get))
                 .chain(self.tool_calls_per_step.map(std::num::NonZeroUsize::get))
                 .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64)
@@ -141,7 +145,10 @@ impl Limits {
     ) -> Result<()> {
         self.validate(work)?;
         file.validate(work)?;
-        if file.path().len() > self.path_bytes {
+        if self
+            .path_bytes
+            .is_some_and(|maximum| file.path().len() > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
@@ -185,7 +192,10 @@ impl Limits {
     ) -> Result<()> {
         self.validate(work)?;
         file.validate(work)?;
-        if file.path().len() > self.path_bytes {
+        if self
+            .path_bytes
+            .is_some_and(|maximum| file.path().len() > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
@@ -210,7 +220,10 @@ impl Limits {
                 item_count,
             } => (&[][..], Some(manifest), *item_count as usize),
         };
-        if count > self.attachments {
+        if self
+            .attachments
+            .is_some_and(|maximum| count > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
@@ -259,17 +272,19 @@ pub use content::{
     ContentPublisher, ContentResidencyVerifier, ContentSource,
 };
 pub use directory::{
-    MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
+    DirectoryRead, MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
     PrivateDirectoryPage,
 };
-pub use file_source::FilePathSelection;
-pub(crate) use file_source::names_generation;
+pub use file_source::{FilePathSelection, PathSelection};
+pub(crate) use file_source::{PathSelectionView, names_generation};
 pub use files::{FileDescriptor, FileRef};
-#[cfg(feature = "filesystem")]
 pub(crate) use files::{PublicationDomain, PublicationWitness};
 pub use message::{ConversationMessage, MessageKind};
 pub use outcome::TaskOutcomeRecord;
-pub use volumes::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
+pub use volumes::{
+    ContentGrant, PRIVATE_VOLUME, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    private_volume,
+};
 #[doc(hidden)]
 pub use volumes::{
     contains_content_label, content_label, is_inherited_context_path, is_internal_path,
@@ -320,16 +335,16 @@ pub(crate) struct ConversationStateWire {
 
 #[derive(Debug, Default)]
 struct NativeConversationCustody {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     messages: Option<acyclic_fs::NativeAllocation>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     digests: Option<acyclic_fs::NativeAllocation>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     archive: Option<acyclic_fs::NativeAllocation>,
     // The index drops before these tickets; their vector drops before its buffer owner.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     indexes: Vec<acyclic_fs::NativeAllocation>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     index_buffer: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -435,7 +450,7 @@ fn advance_history_digest(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
     let digest =
-        crate::executor::json::canonical_json_digest(message, maximum_encoded_bytes, work)?;
+        crate::executor::json::canonical_json_digest(message, Some(maximum_encoded_bytes), work)?;
     if let Some(work) = work.as_deref_mut() {
         work.hashed_bytes(b"harness:conversation-prefix:v3\0".len() as u64 + 64)?;
     }
@@ -564,7 +579,6 @@ pub(crate) use identity::derived_operation_id;
 pub mod wire;
 
 /// Versioned items encoded through the original bounded journal boundary.
-#[cfg(feature = "filesystem")]
 pub mod envelope;
 
 crate::core::ownership::owned_struct!(Limits {

@@ -20,7 +20,7 @@ where
     fn bind_content(
         &self,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
-        max_file_bytes: u64,
+        max_file_bytes: Option<u64>,
     ) -> Option<Arc<dyn ModelProvider>> {
         self.inner()
             .bind_content(reader, max_file_bytes)
@@ -31,7 +31,6 @@ where
     fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
         self.inner().model_profile(model)
     }
-    #[cfg(feature = "filesystem")]
     fn admit_profile(
         &self,
         model: &Model,
@@ -46,7 +45,6 @@ where
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
         self.inner().native_tool_profile(model)
     }
-    #[cfg(feature = "filesystem")]
     fn native_tools(
         &self,
         model: &Model,
@@ -81,11 +79,11 @@ where
         self.record(RequestClass::Metadata);
         self.inner().reconcile(dispatch, prefix)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_model(&self, work: &NativeMaterializationWork) -> Result<bool> {
         self.inner().supports_native_model(work)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn context_capacity_with_native_work(
         &self,
         model: &Model,
@@ -94,36 +92,47 @@ where
         self.record(RequestClass::Metadata);
         self.inner().context_capacity_with_native_work(model, work)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn count_tokens_with_native_work<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
         ceiling: u64,
         work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::context::ModelTokenCount, NativeAllocation)>>
-    {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (crate::context::ModelTokenCount, NativeAllocation),
+            crate::Error,
+        >,
+    > {
         self.record(RequestClass::Token);
         self.inner()
             .count_tokens_with_native_work(request, ceiling, work)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn generate_with_native_work<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
         work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, NativeModelStream<'a>>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, NativeModelStream<'a>, crate::Error>> {
         self.record(RequestClass::Data);
         self.inner()
             .generate_with_native_work(request, dispatch, work)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_work<'a>(
         &'a self,
         dispatch: ModelDispatch,
         prefix: &'a [ModelEvent],
         work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (Option<Vec<ModelEvent>>, NativeAllocation),
+            crate::Error,
+        >,
+    > {
         self.record(RequestClass::Metadata);
         self.inner()
             .reconcile_with_native_work(dispatch, prefix, work)

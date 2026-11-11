@@ -406,6 +406,7 @@ async fn authored_live_transaction_preserves_create_ids_and_publishes_atomically
         .apply_authored_live(
             vec![
                 AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: file.clone(),
                     bytes: OwnedBytes::from_static(b"initial"),
                     metadata: FileMetadata::default(),

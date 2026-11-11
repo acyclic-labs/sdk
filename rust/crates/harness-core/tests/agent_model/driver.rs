@@ -437,7 +437,7 @@ async fn definitive_failures_settle_the_turn_and_uncertain_ones_retry() -> Resul
             settles,
         ));
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     cases.push((
         CoreError::NativeBoundary {
             code: acyclic_harness_core::wire::ErrorCode::Unavailable,
@@ -582,50 +582,119 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
 
 #[tokio::test]
 async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> Result {
-    let path = AgentPath::root(&id(1));
-    let state = AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts");
-    let approval = OperationId::from_bytes([9; 16]);
-    let (script, driver) = driver(vec![ExecutionProgress::Pending(approval)]);
-    let first = step(
-        &driver,
-        &path,
-        Some(state),
-        (1, 0),
-        Wake::Inbox {
-            sequence: 1,
-            record: request("m1")?.0,
-        },
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let waiting = intent(&approval_intent(approval));
-    assert_eq!(
-        first.state.phase,
-        Phase::WaitingApproval {
-            id: waiting.clone(),
-            binding: None,
+    for mode in ["team:1", "swarm"] {
+        let path = AgentPath::root(&id(1));
+        let mut state = AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts");
+        let mut profile = acyclic_harness_core::templates::root()?;
+        profile.topology = Some(acyclic_harness_core::topology::Topology::select(mode)?);
+        state.profile = Some(profile.clone());
+        let approval = OperationId::from_bytes([9; 16]);
+        let (script, driver) = driver(vec![ExecutionProgress::Pending(approval)]);
+        let promised = intent("spawn:promised");
+        script.effects.lock().unwrap().push(TurnEffect::Spawn {
+            intent: promised.clone(),
+            brief: Box::new(file("promised.md")?),
+            profile,
+        });
+        let first = step(
+            &driver,
+            &path,
+            Some(state),
+            (1, 0),
+            Wake::Inbox {
+                sequence: 1,
+                record: request("m1")?.0,
+            },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        let waiting = intent(&approval_intent(approval));
+        assert_eq!(
+            first.state.phase,
+            Phase::WaitingApproval {
+                id: waiting.clone(),
+                binding: None,
+            }
+        );
+        assert!(first.state.turn.is_some());
+        assert_eq!(first.state.reserved_spawns, u64::from(mode == "team:1"));
+        // An unrelated approval does not resume the paused operation.
+        let other = step(
+            &driver,
+            &path,
+            Some(first.state.clone()),
+            (2, 0),
+            Wake::Inbox {
+                sequence: 2,
+                record: InboxRecord::Approval(Approval {
+                    id: intent("tool:other"),
+                }),
+            },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(script.operations.lock().expect("lock").len(), 1);
+        assert_eq!(other.state.phase, first.state.phase);
+        // The checkpoint holds the starting input, so a resume re-derives the same operation.
+        assert_eq!(other.state.turn, first.state.turn);
+        // A client arrival cannot steal the successful tool call's reservation.
+        // The unrestricted policy is the control: it admits both workers.
+        let client = step(
+            &driver,
+            &path,
+            Some(other.state),
+            (4, 0),
+            super::spawn_request(3),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        let client_intent = requested_child(&path, 3)?.0;
+        if mode == "team:1" {
+            assert_eq!(
+                client.state.spawn_outcome(&client_intent).await?,
+                SpawnOutcome::Refused {
+                    reason: SpawnRefusal::Topology
+                }
+            );
+            let mut archived = client.state.clone();
+            archived.closed = true;
+            assert_eq!(
+                archived.spawn_outcome(&client_intent).await?,
+                SpawnOutcome::Refused {
+                    reason: SpawnRefusal::Topology
+                }
+            );
+        } else {
+            assert!(matches!(
+                client.state.spawn_outcome(&client_intent).await?,
+                SpawnOutcome::Spawned { .. }
+            ));
         }
-    );
-    assert!(first.state.turn.is_some());
-    // An unrelated approval does not resume the paused operation.
-    let other = step(
-        &driver,
-        &path,
-        Some(first.state.clone()),
-        (2, 0),
-        Wake::Inbox {
-            sequence: 2,
-            record: InboxRecord::Approval(Approval {
-                id: intent("tool:other"),
-            }),
-        },
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    assert_eq!(script.operations.lock().expect("lock").len(), 1);
-    assert_eq!(other.state.phase, first.state.phase);
-    // The checkpoint holds the starting input, so a resume re-derives the same operation.
-    assert_eq!(other.state.turn, first.state.turn);
+        script.progress.lock().unwrap().push_back(ready());
+        let resumed = step(
+            &driver,
+            &path,
+            Some(client.state),
+            (5, 0),
+            Wake::Inbox {
+                sequence: 4,
+                record: InboxRecord::Approval(Approval { id: waiting }),
+            },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        assert!(
+            resumed
+                .outs
+                .iter()
+                .any(|out| matches!(out, Out::Spawn { intent, .. } if intent == &promised))
+        );
+        assert_eq!(resumed.state.reserved_spawns, 0);
+        assert_eq!(
+            resumed.state.spawned_children.len(),
+            if mode == "team:1" { 1 } else { 2 }
+        );
+    }
     Ok(())
 }
 

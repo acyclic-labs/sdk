@@ -28,7 +28,7 @@ struct Document {
 
 impl Document {
     const BYTES: usize = 40;
-    fn decode(bytes: &[u8], length: u64, work: crate::NativeWork<'_>) -> Result<Self> {
+    fn decode(bytes: &[u8], length: u64, work: acyclic_fs::NativeWork<'_>) -> Result<Self> {
         let invalid = || executor::rejection(work, "notebook index differs from its source");
         if bytes.len() != Self::BYTES || &bytes[..8] != b"nbcells1" {
             return Err(invalid());
@@ -122,7 +122,7 @@ impl Selection {
         }
     }
 
-    fn supply(&mut self, bytes: &[u8], key: Label, work: crate::NativeWork<'_>) -> Result<()> {
+    fn supply(&mut self, bytes: &[u8], key: Label, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
         if let Label::Output(level) = key {
             return self.outputs.supply(bytes, level, work);
         }
@@ -166,7 +166,7 @@ impl Selection {
             .map(|(start, end)| (start, end, Label::Format))
     }
 
-    fn event(&mut self, event: SpanEvent, work: crate::NativeWork<'_>) -> Result<bool> {
+    fn event(&mut self, event: SpanEvent, work: acyclic_fs::NativeWork<'_>) -> Result<bool> {
         let invalid = || executor::rejection(work, "invalid nbformat v4 cell document");
         if self.cells
             && self.outputs.event(
@@ -289,9 +289,9 @@ pub(super) async fn read(
     source: super::source::ReadSource,
     offset: u64,
     limit: Option<u64>,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(ToolResult, crate::NativeCustody)> {
+) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
     let maximum = context.effective_scope().limits().render_bytes;
     let quantum = context
         .effective_scope()
@@ -392,8 +392,8 @@ pub(super) async fn read(
             .await?;
     }
     let bounds = JsonBounds {
-        maximum_bytes: window.source.byte_length(),
-        maximum_items: u64::MAX,
+        maximum_bytes: Some(window.source.byte_length()),
+        maximum_items: None,
         maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
     };
     let code = Some(crate::wire::ErrorCode::Invalid);
@@ -588,6 +588,7 @@ pub(super) async fn read(
         #[serde(skip_serializing_if = "Vec::is_empty")]
         outputs: &'a Vec<NotebookOutput>,
     }
+    let source_bytes = window.source.byte_length();
     let result = super::value(
         &Read {
             file: window.source,
@@ -596,6 +597,8 @@ pub(super) async fn read(
                 start,
                 end,
                 next: (selection.next_cell < total || end < selected_end).then_some(end),
+                total: source_bytes,
+                eof: selection.next_cell >= total && end == selected_end,
                 offset,
             },
             outputs: &outputs.values,

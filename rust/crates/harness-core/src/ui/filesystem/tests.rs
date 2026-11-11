@@ -16,6 +16,7 @@ use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 struct Data {
+    agent: AgentPath,
     status: StatusRecord,
     children: Vec<StreamPath>,
     links: BTreeMap<String, Vec<u8>>,
@@ -23,6 +24,9 @@ struct Data {
 #[derive(Clone)]
 struct Snapshot(Arc<Data>);
 impl Cut for Snapshot {
+    fn agent(&self) -> &AgentPath {
+        &self.0.agent
+    }
     fn status(&self) -> UiResult<Cow<'_, StatusRecord>> {
         Ok(Cow::Borrowed(&self.0.status))
     }
@@ -101,7 +105,8 @@ async fn prepared() -> Result<Snapshot, Box<dyn std::error::Error>> {
     let agent = AgentPath::root(&AgentId::from_bytes([1; 16]));
     let child = agent.child(&AgentId::from_bytes([2; 16]))?;
     let status = StatusRecord {
-        child_wakes: Vec::new(),
+        child_settlement: None,
+        child_wakes: None,
         phase: Phase::WaitingUser {
             path: "réponse.md".into(),
         },
@@ -149,6 +154,7 @@ async fn prepared() -> Result<Snapshot, Box<dyn std::error::Error>> {
         .collect::<Vec<_>>();
     let id = child.id().to_string();
     Ok(Snapshot(Arc::new(Data {
+        agent,
         status,
         children,
         links: BTreeMap::from([(id.clone(), format!("/agent/{id}/ui").into_bytes())]),

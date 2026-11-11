@@ -11,7 +11,7 @@ const fixture = mkdtempSync(join(tmpdir(), 'sdk-build-profile-'));
 const target = resolve(process.env.CARGO_TARGET_DIR ?? 'target', 'profile-contract');
 let packageName = 'build-profile-contract';
 function run(command, args) {
-  const result = spawnSync(command, args, {cwd: root, encoding: 'utf8', maxBuffer: 1 << 23, env: {...process.env, CARGO_TARGET_DIR: target}});
+  const result = spawnSync(command, args, {cwd: root, encoding: 'utf8', maxBuffer: Infinity, env: {...process.env, CARGO_TARGET_DIR: target}});
   if (result.error) throw result.error;
   assert.equal(result.status, 0, `${command} ${args.join(' ')}\n${result.stdout}\n${result.stderr}`);
   return result.stdout;

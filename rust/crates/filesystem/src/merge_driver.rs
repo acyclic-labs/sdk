@@ -592,8 +592,8 @@ pub struct DefaultTextMergeDriver;
 
 impl MergeDriver for DefaultTextMergeDriver {
     fn fingerprint(&self) -> &[u8] {
-        // Prior resolutions may have projected binary content as text.
-        b"acyclic-default-text-v2"
+        // Includes conservative text additions with an absent authored base.
+        b"acyclic-default-text-v3"
     }
 
     fn mode(&self) -> MergeDriverMode {
@@ -601,27 +601,38 @@ impl MergeDriver for DefaultTextMergeDriver {
     }
 
     fn resolve(&self, conflict: &ConflictView) -> Result<MergeResolution, DriverError> {
-        let (ConflictValue::Text(base), ConflictValue::Text(ours), ConflictValue::Text(theirs)) =
-            (&conflict.base, &conflict.ours, &conflict.theirs)
+        let (ConflictValue::Text(ours), ConflictValue::Text(theirs)) =
+            (&conflict.ours, &conflict.theirs)
         else {
             return Err(DriverError::Unsupported);
         };
-        for text in [base, ours, theirs] {
-            crate::text_merge::text_from_bytes(
-                text.as_bytes(),
-                crate::text_merge::ByteMergeLimits {
-                    max_bytes: u64::MAX,
-                },
-            )
-            .map_err(|_| DriverError::Unsupported)?;
-        }
-        let merged = crate::text_merge::merge_text(base, ours, theirs, "ours", "theirs");
-        if merged.clean && merged.content == *ours {
-            Ok(MergeResolution::Select(ConflictSide::Ours))
-        } else if merged.clean && merged.content == *theirs {
-            Ok(MergeResolution::Select(ConflictSide::Theirs))
-        } else {
-            Ok(MergeResolution::Text(merged.content.into()))
+        let base = match &conflict.base {
+            ConflictValue::Text(base) => Some(base.as_str()),
+            ConflictValue::Absent => None,
+            _ => return Err(DriverError::Unsupported),
+        };
+        use crate::text_merge::{ByteMerge, ByteMergeLimits};
+        match crate::text_merge::merge_bytes(
+            base.map(str::as_bytes),
+            Some(ours.as_bytes()),
+            Some(theirs.as_bytes()),
+            "ours",
+            "theirs",
+            ByteMergeLimits {
+                max_bytes: u64::MAX,
+            },
+        )
+        .map_err(|_| DriverError::Unsupported)?
+        {
+            ByteMerge::Merged(bytes) if bytes == ours.as_bytes() => {
+                Ok(MergeResolution::Select(ConflictSide::Ours))
+            }
+            ByteMerge::Merged(bytes) if bytes == theirs.as_bytes() => {
+                Ok(MergeResolution::Select(ConflictSide::Theirs))
+            }
+            ByteMerge::Merged(bytes) | ByteMerge::Conflicted { bytes, .. } => {
+                Ok(MergeResolution::Text(bytes.into()))
+            }
         }
     }
 }

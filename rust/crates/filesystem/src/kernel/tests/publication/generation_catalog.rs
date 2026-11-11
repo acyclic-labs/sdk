@@ -293,7 +293,7 @@ async fn fixture_with_fence(
         commit.publication = Some(
             PublicationChanges::proposed(
                 objects,
-                &base,
+                (&base, creation.initial_generation_root),
                 &candidate,
                 request,
                 config,
@@ -440,7 +440,11 @@ async fn generation_catalog_single_group_and_quote_use_receipts_without_prefligh
                         .publication
                         .as_ref()
                         .ok_or("seal missing")?
-                        .composed(last.expected, head, publication.generation_root)?,
+                        .composed(
+                            last.expected,
+                            (head, publication.generation_root),
+                            publication.generation_root,
+                        )?,
                 );
                 let next = GuardedAppend {
                     authority_id: request.authority_id,
@@ -957,7 +961,11 @@ async fn group_capacity_quote_covers_reused_to_composed_generation_shape() -> Te
             KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
         let mut commit =
             prepare_publication_commit(request, None, None, None, &mut accounting, &cancel)?;
-        commit.publication = Some(changes.composed(head, head, request.generation_root)?);
+        commit.publication = Some(changes.composed(
+            head,
+            (head, request.generation_root),
+            request.generation_root,
+        )?);
         let reused = GuardedAppend {
             authority_id: request.authority_id,
             epoch: head.epoch,

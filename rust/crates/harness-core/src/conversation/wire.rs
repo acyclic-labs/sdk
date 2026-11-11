@@ -47,7 +47,6 @@ impl HeapLayout for WireItem {
     ]);
 }
 
-#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for WireItem {
     fn decoded_owned_bytes(&self) -> crate::Result<Option<u64>> {
         let provenance = self.provenance();

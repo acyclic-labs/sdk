@@ -68,6 +68,7 @@ pub struct ExtentSeekRequest {
 #[derive(Clone, Copy)]
 enum TraversalMode {
     Plan,
+    Prefix,
     Seek(ExtentSeekTarget),
 }
 
@@ -129,6 +130,25 @@ pub(crate) async fn plan_extent_range_with_accounting<S: AsyncObjectStore>(
         cancellation,
     )
     .await
+}
+
+/// Returns one bounded prefix; callers continue at the last span's end.
+pub(crate) async fn plan_extent_prefix_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    request: ExtentRangeRequest,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(ExtentPlan, KernelOwnedAllocation), FsError> {
+    run_range_async(
+        store,
+        request,
+        TraversalMode::Prefix,
+        std::convert::identity,
+        accounting,
+        cancellation,
+    )
+    .await?
+    .finish_plan(accounting)
 }
 
 impl<T> ExtentPlan<T> {
@@ -375,7 +395,7 @@ impl<T, P: Fn(ExtentSlice) -> T> RangeMachine<T, P> {
                                 break;
                             }
                         }
-                        TraversalMode::Plan => {
+                        TraversalMode::Plan | TraversalMode::Prefix => {
                             let start = extent.offset.max(self.input.range.offset);
                             let clipped_end = end.min(self.range_end);
                             if start < clipped_end {
@@ -413,6 +433,15 @@ impl<T, P: Fn(ExtentSlice) -> T> RangeMachine<T, P> {
                                     items_returned: 1,
                                     ..WorkCounters::UNCHARGED
                                 })?;
+                                if matches!(self.mode, TraversalMode::Prefix)
+                                    && self.spans.len()
+                                        == usize::try_from(self.input.maximum_spans)
+                                            .unwrap_or(usize::MAX)
+                                {
+                                    self.range_end = self.covered_end;
+                                    self.pending.clear();
+                                    break;
+                                }
                             }
                         }
                     }
@@ -474,7 +503,7 @@ impl<T, P: Fn(ExtentSlice) -> T> RangeMachine<T, P> {
         mut self,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(ExtentPlan<T>, KernelOwnedAllocation), FsError> {
-        if !matches!(self.mode, TraversalMode::Plan) {
+        if !matches!(self.mode, TraversalMode::Plan | TraversalMode::Prefix) {
             return Err(range_failure(ExtentReadError::TraversalState));
         }
         if self.covered_end != self.range_end {
@@ -695,6 +724,5 @@ fn failed(error: ExtentReadError, work: WorkCounters) -> ExtentReadFailure {
 }
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "tests/range.rs"]
 mod tests;

@@ -208,7 +208,7 @@ impl NativeDemandSource {
     }
 
     #[cfg(test)]
-    #[cfg(all(unix, feature = "native-mount"))]
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
     pub(crate) fn unwatched(self) -> Self {
         Self {
             watchable: false,

@@ -159,7 +159,7 @@ impl PreparationIo {
         Ok(())
     }
 
-    pub(in crate::filesystem) fn temporary(io: Option<&Self>) -> Result<Option<Self>> {
+    pub(crate) fn temporary(io: Option<&Self>) -> Result<Option<Self>> {
         #[cfg(not(target_arch = "wasm32"))]
         return io
             .and_then(Self::original_native_work)
@@ -236,7 +236,7 @@ impl PreparationIo {
         }
         Ok(custody)
     }
-    pub(crate) fn original_native_work(&self) -> crate::NativeWork<'_> {
+    pub(crate) fn original_native_work(&self) -> acyclic_fs::NativeWork<'_> {
         match self {
             Self::Owned { .. } => None,
             #[cfg(not(target_arch = "wasm32"))]

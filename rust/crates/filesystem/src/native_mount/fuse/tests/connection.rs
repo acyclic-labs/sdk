@@ -1,4 +1,4 @@
-//! Exercise abort authority against real, privately hidden or read-only fusectl.
+//! Exercise native startup and retirement with hidden or read-only fusectl.
 
 use super::*;
 use nix::mount::{MsFlags, mount};
@@ -89,7 +89,7 @@ fn linux_dead_mountpoint_is_reclaimed_without_fusermount_with_negative_control()
 
 #[test]
 #[ignore = "requires a live Linux FUSE mount and mount namespace privileges"]
-fn linux_abort_control_is_acquired_before_admission_and_retained()
+fn linux_mount_serves_without_abort_control_and_retains_available_control()
 -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(mode) = std::env::var(MODE) {
         return isolated_case(&mode);
@@ -99,7 +99,7 @@ fn linux_abort_control_is_acquired_before_admission_and_retained()
             .args(["--mount", "--propagation", "private", "--"])
             .arg(std::env::current_exe()?)
             .args([
-                "native_mount::fuse::tests::connection::linux_abort_control_is_acquired_before_admission_and_retained",
+                "native_mount::fuse::tests::connection::linux_mount_serves_without_abort_control_and_retains_available_control",
                 "--exact",
                 "--ignored",
                 "--nocapture",
@@ -118,6 +118,7 @@ fn linux_abort_control_is_acquired_before_admission_and_retained()
 }
 
 fn isolated_case(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
     let temporary = tempfile::tempdir()?;
     let hidden = temporary.path().join("hidden");
     std::fs::create_dir(&hidden)?;
@@ -152,7 +153,7 @@ fn isolated_case(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
             crate::NativeMountRequest {
                 mount_id: crate::MountId::new(),
                 volume_id: source.volume_id()?,
-                destination,
+                destination: destination.clone(),
                 writable: true,
                 shared,
             },
@@ -176,26 +177,13 @@ fn isolated_case(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
             nix::mount::umount(CONNECTIONS)?;
         } else {
-            let Err(NativeMountError::StartupFailed(mut failure)) = result else {
-                panic!("{mode} fusectl did not reject mount startup");
-            };
-            let NativeMountError::HostOperation {
-                operation: "open FUSE abort control",
-                source: error,
-                ..
-            } = failure.error()
-            else {
-                panic!("unexpected startup failure: {failure}");
-            };
+            let mut session = result?;
+            std::fs::write(destination.join("child"), b"without abort control")?;
             assert_eq!(
-                error.raw_os_error(),
-                Some(if mode == "missing" {
-                    libc::ENOENT
-                } else {
-                    libc::EROFS
-                }),
+                std::fs::read(destination.join("child"))?,
+                b"without abort control"
             );
-            assert!(failure.owner_mut().stop()?);
+            assert!(session.stop()?);
         }
         let table = std::fs::read_to_string("/proc/self/mountinfo")?;
         assert!(

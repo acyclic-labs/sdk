@@ -55,7 +55,7 @@ test("filesystem policy qualification requires real cache and authority models i
     const run = (command, args, options) => {
       if (command === "cargo") {
         assert.deepEqual(args, ["test", "--locked", "--message-format=json", "-p", "acyclic-fs", "--lib", "--no-run",
-          "--no-default-features", "--features", "memory,model-checking", "--features", "model-checking"]);
+          "--no-default-features", "--features", "model-checking", "--features", "model-checking",]);
         assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_fs" } }) };
       }
@@ -123,7 +123,7 @@ function qualifyOrReject(missing, qualify) {
 }
 
 test("gate rejects every trailing argument before starting a build", () => {
-  for (const trailing of [["--bogus"], ["--features", "x"], ["--all-features"], ["--stream-retry"], ["--gate"], ["x"]]) {
+  for (const trailing of [["--bogus"], ["--features", "x",], ["--all-features"], ["--stream-retry"], ["--gate"], ["x"]]) {
     let builds = 0;
     const run = () => { builds++; throw new Error("unexpected build"); };
     assert.throws(() => qualificationMain(["--gate", ...trailing], run), /unknown qualification argument/);
@@ -189,7 +189,6 @@ test("fs Session qualification instruments real provider and Session locks and r
     const run = (command, args, options) => {
       if (command === "cargo") {
         assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
-        assert.ok(args.includes("memory,session,acyclic-stream/local"));
         assert.ok(args.includes("main"));
         return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "main" } }) };
       }
@@ -239,7 +238,7 @@ test("qualification opts into the crate cfg only for the model build and execute
     return { status: 0, stderr: "", stdout: calls.length === 1 ? JSON.stringify(artifact) : summary(6) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "main", "--all-features", "--features", "model-checking", "--features", "model-checking"]],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "main", "--all-features", "--features", "model-checking", "--features", "model-checking",]],
     ["model-binary", ["mcp_loom::"]],
   ]);
   const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");
@@ -253,7 +252,7 @@ test("qualification opts into the crate cfg only for the model build and execute
 
 test("guest qualification selects every guest model in the instrumented main target", () => {
   const plan = qualificationPlan(["--guest"]);
-  assert.deepEqual(plan.args, ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "main", "--features", "model-checking"]);
+  assert.deepEqual(plan.args, ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "main", "--features", "model-checking",]);
   assert.equal(plan.wrapper, loomEnvironment().RUSTC_WORKSPACE_WRAPPER);
   assert.deepEqual(plan.tests, [{ args: ["guest_loom::"], passed: 3 }]);
 });

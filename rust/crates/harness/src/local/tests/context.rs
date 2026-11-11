@@ -18,7 +18,8 @@ async fn open(directory: &Path, provider: Arc<ScriptedModelProvider>) -> Result<
     Ok(Arc::new(
         LocalHarness::open(
             volume_config(directory, project, provider)?
-                .compaction(crate::context::CompactionPolicy::Disabled),
+                .without_default_tools()
+                .compaction(crate::context::CompactionPolicy::default()),
         )
         .await?,
     ))
@@ -50,7 +51,31 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
     );
     let harness = open(directory.path(), provider.clone()).await?;
     let mut client = ObservedConversation::open(&harness).await?;
-    client.send("first", "remember FIRST_FACT").await?;
+    let (_, root) = harness.agents().await?;
+    let root = root.clone();
+    let mut usage = client.conversation.usage_query();
+    let first = client.send("first", "remember FIRST_FACT").await?;
+    assert!(first.outcome.is_completed(), "{:?}", first.outcome);
+    super::agents::settled(&harness, &root).await?;
+    while !usage.synchronized() {
+        usage.advance().await?;
+    }
+    assert_eq!(usage.totals().completed, 1);
+    assert!(usage.context().is_some());
+    let original_window = usage.context();
+    let expected = client.conversation.project_heads().await?;
+    let files_only = client
+        .conversation
+        .restore("files-only", 0, crate::agent::RestoreMode::Files, expected)
+        .await?;
+    client.settled(files_only).await?;
+    super::agents::settled(&harness, &root).await?;
+    usage.advance().await?;
+    assert_eq!(
+        usage.context(),
+        original_window,
+        "files-only restore changed model occupancy"
+    );
 
     // Compaction is one model request over the whole current context.
     let inbox = client
@@ -58,6 +83,16 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
         .compact("compact", Some("KEEP_GUIDANCE"))
         .await?;
     let entry = client.settled(inbox).await?;
+    super::agents::settled(&harness, &root).await?;
+    usage.advance().await?;
+    assert_eq!(usage.totals().completed, 2);
+    assert!(
+        matches!(
+            usage.context(),
+            Some(crate::executor::ContextUsage::Unavailable)
+        ),
+        "manual compaction kept its source occupancy"
+    );
     assert!(matches!(
         checkpoint(&entry),
         Some(ContextAction::Compact {
@@ -81,6 +116,10 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
 
     // A later turn starts from the summary alone.
     client.send("discard", "DISCARD_PROMPT").await?;
+    super::agents::settled(&harness, &root).await?;
+    usage.advance().await?;
+    assert_eq!(usage.totals().completed, 3);
+    assert!(usage.context().is_some());
     let after = request(&harness, &provider, 2).await?;
     assert!(after.contains("CHECKPOINT_SUMMARY"), "{after}");
     assert!(!after.contains("FIRST_FACT") && !after.contains("FIRST_REPLY"));
@@ -90,6 +129,15 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
     let inbox = client.conversation.rewind("rewind").await?;
     let entry = client.settled(inbox).await?;
     assert_eq!(checkpoint(&entry), Some(&ContextAction::Rewind));
+    super::agents::settled(&harness, &root).await?;
+    usage.advance().await?;
+    assert!(
+        matches!(
+            usage.context(),
+            Some(crate::executor::ContextUsage::Unavailable)
+        ),
+        "rewind kept a discarded request's occupancy"
+    );
     assert_eq!(provider.request_count(), 3);
     assert_eq!(
         client.conversation.turn(&entry).await?.answer,
@@ -99,6 +147,11 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
     let rewound = request(&harness, &provider, 3).await?;
     assert!(rewound.contains("CHECKPOINT_SUMMARY"), "{rewound}");
     assert!(!rewound.contains("DISCARD_PROMPT") && !rewound.contains("DISCARDED_REPLY"));
+    super::agents::settled(&harness, &root).await?;
+    usage.advance().await?;
+    assert_eq!(usage.totals().completed, 4);
+    assert!(usage.context().is_some());
+    drop(usage);
     drop(client);
     drop(harness);
 

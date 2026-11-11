@@ -251,7 +251,7 @@ async fn ref_only_metadata_admission_covers_physical_storage_without_workflow_sl
         )
         .await?;
     let manifest = RequestManifest {
-        version: 1,
+        version: 3,
         header: reference.clone(),
         header_digest: [255; 32],
         messages: MessagePrefix {
@@ -393,12 +393,12 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
                     context_tokens: 65_536,
                     output_tokens: Some(4096),
                 },
-                count: crate::context::ModelTokenCount {
+                count: Some(crate::context::ModelTokenCount {
                     request_digest: [9; 32],
                     input_tokens: 128,
                     fixed_tokens: 0,
                     message_tokens: vec![128],
-                },
+                }),
             }),
         };
         // Includes physical peak/residence, malformed diagnostics, sparse maps,

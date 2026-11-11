@@ -10,7 +10,7 @@ use crate::{
     agent::{
         AgentHost, AgentId, AgentPath, AgentRecord as _, AgentState, ConversationEntry,
         ForkAdopted, Hook, InboxRecord, IntentId, Message, Out, Queued, Sender, TurnDriver,
-        TurnFuture, TurnInput, TurnStep, VolumeBinding, Wait,
+        TurnFuture, TurnInput, TurnStep, Wait, WorkspaceEntry,
     },
     conversation::{ContentAccess, ContentResidencyVerifier as _, FileRef, VolumeOwner},
     core::AuthorityRoot,
@@ -62,8 +62,8 @@ pub(super) struct Running {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 enum SessionVersion {
     #[default]
-    #[serde(rename = "1")]
-    V1,
+    #[serde(rename = "2")]
+    V2,
 }
 
 /// A completion already lives in its immutable admitted request file.
@@ -83,8 +83,6 @@ pub(super) struct Session {
     version: SessionVersion,
     /// Parent-local name of a spawned session, from its brief.
     pub(super) reference: Option<String>,
-    /// Parent-local names of its children still open, in spawn order.
-    pub(super) spawned: Vec<String>,
     /// The input its open turn runs.
     pub(super) running: Option<Running>,
     /// Settled turns.
@@ -248,7 +246,7 @@ impl HostDriver {
             )?,
             writer: FilesystemContentPublisher::new(
                 Arc::clone(&self.files),
-                &private.volume,
+                private.volume()?,
                 &verifier,
                 &scope,
                 bound,
@@ -380,7 +378,17 @@ impl HostDriver {
             return Session::decode(&turn.checkpoint).map_err(storage);
         }
         if agent.conversation_tail <= agent.conversation_base {
-            return Ok(Session::default());
+            let mut session = Session::default();
+            if let Some(Queued {
+                input: TurnInput::Brief { brief },
+                ..
+            }) = agent.queued.front()
+            {
+                let bytes = self.read(agent, brief, MAXIMUM_BYTES).await?;
+                let brief = serde_json::from_slice::<Brief>(&bytes).map_err(storage)?;
+                session.reference = Some(brief.reference);
+            }
+            return Ok(session);
         }
         let mut records = match self
             .stream
@@ -419,12 +427,7 @@ impl HostDriver {
                 None
             }
             TurnInput::Message { .. } => return start(session, inbox, input),
-            TurnInput::ChildDone { done } => {
-                session.spawned.retain(|reference| {
-                    child(&agent.path, reference).ok().as_ref() != Some(&done.child)
-                });
-                None
-            }
+            TurnInput::ChildDone { .. } => None,
             // Native hosts decide their own tool approvals and own their
             // model context.
             TurnInput::Approval { .. }
@@ -445,7 +448,7 @@ impl HostDriver {
                             }
                         )
                         .then_some(inbox);
-                        apply(agent, &mut session, id, event, decoded, &mut outs)?
+                        apply(agent, &mut session, id, event, decoded, &mut outs).await?
                     }
                     Err(error) => reject(&mut session, id, &error.to_string()),
                 }
@@ -540,7 +543,7 @@ pub(super) struct NativeAgents {
     driver: Arc<HostDriver>,
     files: Arc<LocalFilesystem>,
     issuer: AuthorityRoot,
-    bindings: [VolumeBinding; 2],
+    bindings: [WorkspaceEntry; 3],
 }
 
 impl NativeAgents {
@@ -577,19 +580,12 @@ impl NativeAgents {
             )
             .map_err(storage)?,
         );
-        let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
-            name: name.to_owned(),
-            volume: volume.clone(),
-        };
         Ok(Self {
             host,
             driver,
             files: local.files.clone(),
             issuer,
-            bindings: [
-                bind("project", &local.project),
-                bind(crate::filesystem::HOME_VOLUME, &local.scratch),
-            ],
+            bindings: local.session_bindings(),
         })
     }
 
@@ -603,7 +599,7 @@ impl NativeAgents {
         let mut bytes = [0; 16];
         hasher.finalize_xof().fill(&mut bytes);
         let agent = AgentId::from_bytes(bytes);
-        let project = &self.bindings[0].volume;
+        let project = self.bindings[0].volume()?;
         let private = VolumeRef::new(
             project.provider().clone(),
             format!("native-{agent}"),
@@ -612,10 +608,11 @@ impl NativeAgents {
             &mut None,
         )?;
         self.files.create_volume(&private).await?;
-        let mut volumes = vec![VolumeBinding {
-            name: PRIVATE_VOLUME.to_owned(),
-            volume: private,
-        }];
+        let mut volumes = vec![WorkspaceEntry::initial_volume(
+            crate::agent::WorkspaceRole::Private,
+            PRIVATE_VOLUME.to_owned(),
+            private,
+        )];
         volumes.extend(self.bindings.iter().cloned());
         let root = self
             .host
@@ -869,7 +866,7 @@ impl NativeAgents {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         for binding in &agent.volumes {
-            grants.push(binding.volume.directory_read_capability("", &mut None)?);
+            grants.push(binding.volume()?.directory_read_capability("", &mut None)?);
         }
         self.issuer.bootstrap_scope(
             "agent",
@@ -877,5 +874,80 @@ impl NativeAgents {
             Some(crate::AgentId::from_bytes(agent.path.id_bytes())),
             &mut None,
         )
+    }
+}
+
+#[cfg(test)]
+mod adoption_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn native_child_reference_is_readable_before_its_first_delivery() -> Result<()> {
+        let checkout = tempfile::tempdir().map_err(storage)?;
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let local = LocalHarness::open(
+            LocalHarnessConfig::native_host(checkout.path())
+                .state_directory(directory.path().join("owner")),
+        )
+        .await?;
+        let native = NativeAgents::new(&local)?;
+        let parent = native.open("codex", "adoption-observation").await?;
+        let state = native.state(&parent).await?;
+        let reference = "committed-unrun-child";
+        let brief = native.brief(&state, reference, "original prompt").await?;
+        let operation = OperationId::new();
+        let event = Event::Spawn {
+            reference: reference.into(),
+            brief,
+        };
+        let bytes = serde_json::to_vec(&event).map_err(storage)?;
+        let event_file = native
+            .driver
+            .stage(&state, operation, &bytes, MAXIMUM_BYTES)
+            .await?;
+        let record = InboxRecord::Hook(Hook {
+            host: HOST.into(),
+            id: request_id(operation)?,
+            event: Box::new(event_file),
+        });
+        native
+            .host
+            .send(&parent, &Sender::Host { host: HOST.into() }, &record)
+            .await
+            .map_err(storage)?;
+        // Commit only the parent's spawn. The child has never taken a delivery.
+        native
+            .host
+            .runtime()
+            .drain_actor(&native.host.actor(&parent).map_err(storage)?)
+            .await
+            .map_err(storage)?;
+        let child = child(&parent, reference)?;
+        let child_actor = native.host.actor(&child).map_err(storage)?;
+        let snapshot = native
+            .host
+            .runtime()
+            .store()
+            .load(&child_actor)
+            .await
+            .map_err(storage)?;
+        assert!(
+            snapshot
+                .state()
+                .expect("committed child")
+                .checkpoint()
+                .is_none()
+        );
+        let (left, right) = futures::join!(native.session(&child), native.session(&child));
+        for observation in [left?, right?] {
+            assert_eq!(observation.1.reference.as_deref(), Some(reference));
+            assert!(observation.0.queued.front().expect("adopted brief").inbox > 0);
+        }
+        native.resume(&child).await?;
+        assert_eq!(
+            native.session(&child).await?.1.reference.as_deref(),
+            Some(reference)
+        );
+        Ok(())
     }
 }

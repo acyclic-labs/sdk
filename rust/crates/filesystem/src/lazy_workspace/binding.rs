@@ -159,7 +159,7 @@ impl<
         Self::open(workspace, Arc::clone(&self.source), self.store.clone(), ctx).await
     }
 
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn watch_source(
         &self,
         sink: Arc<dyn crate::demand::SourceChangeSink>,
@@ -175,6 +175,11 @@ impl<
         }
         let result = self.source.watch(sink, ctx.remaining()?, cancel);
         accept_receipt(result, ctx)
+    }
+
+    /// Stable source namespace, without capturing its current cut or doing IO.
+    pub fn source_identity(&self) -> [u8; 16] {
+        self.source.identity()
     }
 
     pub(crate) async fn source_reference(
@@ -272,7 +277,7 @@ impl<
     }
 
     /// Selects companion indexes for a retained mounted checkout without mutation.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn mounted_read_state(
         &self,
         checkout: &crate::native_mount::SharedCheckoutObservation<'_, A, O>,

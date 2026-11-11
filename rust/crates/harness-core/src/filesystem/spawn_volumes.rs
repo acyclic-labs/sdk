@@ -9,7 +9,8 @@
 use super::FilesystemHost;
 use crate::{
     agent::{
-        AgentPath, AgentState, Error, IntentId, MAX_OPEN_CHILDREN, Out, SpawnVolumes, VolumeBinding,
+        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, IntentId, Out, SpawnVolumes,
+        WorkspaceEntry, WorkspaceInherit, WorkspaceSource,
     },
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
 };
@@ -24,6 +25,9 @@ use acyclic_fs::{
 use acyclic_stream::{BoxProviderFuture, CommitOutcome, CommitRequest, Record, StreamError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+#[cfg(test)]
+mod tests;
 
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
 
@@ -72,7 +76,7 @@ pub trait VolumeResources: acyclic_stream::ProviderPlatform + 'static {
     fn release<'a>(
         &'a self,
         agent: &'a AgentPath,
-        bindings: &'a [VolumeBinding],
+        bindings: &'a [WorkspaceEntry],
     ) -> BoxProviderFuture<'a, Result<(), crate::Error>>;
 }
 
@@ -97,18 +101,27 @@ struct Planned {
     source: Option<VolumeRef>,
     destination: VolumeRef,
     key: [u8; 16],
-    binding: String,
+    binding: crate::agent::EntryId,
     history: Option<crate::agent::HistorySelection>,
 }
 
-fn key(child: &AgentPath, name: &str) -> [u8; 16] {
+fn key(child: &AgentPath, entry: crate::agent::EntryId) -> [u8; 16] {
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.spawn-volume.v1");
     hasher.update(child.as_str().as_bytes());
     hasher.update(&[0]);
-    hasher.update(name.as_bytes());
+    hasher.update(&entry.into_bytes());
     let mut bytes = [0; 16];
     hasher.finalize_xof().fill(&mut bytes);
     bytes
+}
+
+/// Creation identity of an agent's forked binding. Observation of its original
+/// generation uses this same receipt, independently of later edits or merges.
+pub fn spawned_operation(
+    child: &AgentPath,
+    binding: crate::agent::EntryId,
+) -> acyclic_fs::OperationId {
+    acyclic_fs::OperationId::from_bytes(key(child, binding))
 }
 
 fn invalid(error: crate::Error) -> Error {
@@ -120,25 +133,25 @@ fn invalid(error: crate::Error) -> Error {
 /// that keeps state beside a forked volume prepares it through [`VolumeResources`].
 fn spawned_volume(
     child: &AgentPath,
-    binding: &VolumeBinding,
+    binding: &WorkspaceEntry,
 ) -> Result<(VolumeRef, acyclic_fs::OperationId), Error> {
-    let source = &binding.volume;
+    let source = binding.volume()?;
     let owner = match source.owner() {
         VolumeOwner::Agent(_) => VolumeOwner::Agent(crate::AgentId::from_bytes(child.id_bytes())),
+        VolumeOwner::Session(_) if source.class() == VolumeClass::SessionShared => {
+            VolumeOwner::Session(child.id().to_string())
+        }
         other => other.clone(),
     };
     let destination = VolumeRef::new(
         source.provider().clone(),
-        format!("{}-{}", binding.name, child.id().as_str()),
+        format!("workspace-{}-{}", binding.id, child.id().as_str()),
         source.class(),
         owner,
         &mut None,
     )
     .map_err(invalid)?;
-    Ok((
-        destination,
-        acyclic_fs::OperationId::from_bytes(key(child, &binding.name)),
-    ))
+    Ok((destination, spawned_operation(child, binding.id)))
 }
 
 /// The volume spawned child `child` binds in place of its parent's volume
@@ -147,9 +160,9 @@ fn spawned_volume(
 ///
 /// # Errors
 /// When the derived volume reference is invalid.
-pub fn spawned_binding(child: &AgentPath, binding: &VolumeBinding) -> Result<VolumeRef, Error> {
-    if binding.volume.class() == VolumeClass::SessionShared {
-        return Ok(binding.volume.clone());
+pub fn spawned_binding(child: &AgentPath, binding: &WorkspaceEntry) -> Result<VolumeRef, Error> {
+    if binding.inherit == WorkspaceInherit::Share {
+        return Ok(binding.volume()?.clone());
     }
     Ok(spawned_volume(child, binding)?.0)
 }
@@ -157,24 +170,34 @@ pub fn spawned_binding(child: &AgentPath, binding: &VolumeBinding) -> Result<Vol
 /// The child's binding of `parent`'s volume `binding`, and how it comes to exist.
 fn plan(
     child: &AgentPath,
-    binding: &VolumeBinding,
-) -> Result<(VolumeBinding, Option<Planned>), Error> {
-    let source = &binding.volume;
-    if source.class() == VolumeClass::SessionShared {
+    binding: &WorkspaceEntry,
+) -> Result<(WorkspaceEntry, Option<Planned>), Error> {
+    binding.check()?;
+    if matches!(binding.source, WorkspaceSource::Subtree(_)) {
+        return Ok((
+            WorkspaceEntry {
+                source: WorkspaceSource::Subtree(child.clone()),
+                ..binding.clone()
+            },
+            None,
+        ));
+    }
+    let source = binding.volume()?;
+    if binding.inherit == WorkspaceInherit::Share {
         return Ok((binding.clone(), None));
     }
     let (destination, key) = spawned_volume(child, binding)?;
-    let fork = binding.name != super::PRIVATE_VOLUME;
+    let fork = binding.inherit == WorkspaceInherit::Fork;
     Ok((
-        VolumeBinding {
-            name: binding.name.clone(),
-            volume: destination.clone(),
+        WorkspaceEntry {
+            source: crate::agent::WorkspaceSource::Volume(destination.clone()),
+            ..binding.clone()
         },
         Some(Planned {
             source: fork.then(|| source.clone()),
             destination,
             key: key.into_bytes(),
-            binding: binding.name.clone(),
+            binding: binding.id,
             history: None,
         }),
     ))
@@ -200,15 +223,40 @@ struct VolumeRequest {
     history: bool,
 }
 
+/// One binding plan for both independent roots and nested children. The
+/// destination's path never changes the filesystem fork mechanism.
+pub(super) fn fork_bindings(
+    child: &AgentPath,
+    source: &[WorkspaceEntry],
+    history: Option<&crate::agent::HistorySelection>,
+) -> Result<Vec<WorkspaceEntry>, Error> {
+    Ok(planned_bindings(child, source, history)?.0)
+}
+
+fn planned_bindings(
+    child: &AgentPath,
+    source: &[WorkspaceEntry],
+    history: Option<&crate::agent::HistorySelection>,
+) -> Result<(Vec<WorkspaceEntry>, Vec<Planned>), Error> {
+    let mut bindings = Vec::with_capacity(source.len());
+    let mut planned = Vec::new();
+    for binding in source {
+        let (bound, mut created) = plan(child, binding)?;
+        if let Some(created) = &mut created {
+            created.history = history.cloned();
+        }
+        bindings.push(bound);
+        planned.extend(created);
+    }
+    Ok((bindings, planned))
+}
+
 /// The one planning function: each requested child's bindings and the volumes
 /// its spawn creates, derived only from `parent`'s own bindings.
 fn children(
     parent: &AgentState,
     requested: &[Requested],
-) -> Result<(Vec<Vec<VolumeBinding>>, Vec<Planned>), Error> {
-    if requested.len() > MAX_OPEN_CHILDREN {
-        return Err(Error::Record("spawn requests too many children"));
-    }
+) -> Result<(Vec<Vec<WorkspaceEntry>>, Vec<Planned>), Error> {
     let mut bindings = Vec::with_capacity(requested.len());
     let mut planned = Vec::new();
     for Requested { intent, history } in requested {
@@ -216,16 +264,9 @@ fn children(
             &parent.path.id(),
             intent.as_str(),
         ))?;
-        let mut volumes = Vec::with_capacity(parent.volumes.len());
-        for binding in &parent.volumes {
-            let (bound, mut created) = plan(&child, binding)?;
-            if let Some(created) = &mut created {
-                created.history.clone_from(history);
-            }
-            volumes.push(bound);
-            planned.extend(created);
-        }
+        let (volumes, created) = planned_bindings(&child, &parent.volumes, history.as_ref())?;
         bindings.push(volumes);
+        planned.extend(created);
     }
     Ok((bindings, planned))
 }
@@ -250,7 +291,7 @@ where
     fn release<'a>(
         &'a self,
         agent: &'a AgentPath,
-        bindings: &'a [VolumeBinding],
+        bindings: &'a [WorkspaceEntry],
     ) -> BoxProviderFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             if let Some(resources) = &self.cuts {
@@ -344,6 +385,34 @@ where
     }
 }
 
+impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
+    FilesystemSpawnVolumes<P, O>
+{
+    /// An independent root composes the same fresh private volume, retained
+    /// generation forks, lazy cuts and head fences as every child spawn.
+    pub(super) fn root_volumes<'a>(
+        &'a self,
+        source: &'a AgentState,
+        child: &'a AgentPath,
+        history: Option<&'a crate::agent::HistorySelection>,
+        request: CommitRequest,
+    ) -> BoxProviderFuture<'a, Result<FilesystemCommit, GuestError>> {
+        Box::pin(async move {
+            let (_, planned) = planned_bindings(child, &source.volumes, history).map_err(guest)?;
+            SpawnFork {
+                host: Arc::clone(&self.host),
+                cuts: self.cuts.clone(),
+                planned,
+                parent: source.path.clone(),
+                history: None,
+                commit: None,
+            }
+            .compose(request)
+            .await
+        })
+    }
+}
+
 /// The participant forking and creating one step's child volumes.
 struct SpawnFork<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
@@ -400,7 +469,7 @@ where
                                 saved
                                     .volumes
                                     .into_iter()
-                                    .find(|volume| volume.binding.name == planned.binding)
+                                    .find(|volume| volume.binding.id == planned.binding)
                                     .ok_or_else(|| {
                                         guest("history fork project binding is absent")
                                     })?,

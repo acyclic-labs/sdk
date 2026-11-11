@@ -29,7 +29,6 @@ fn canonical_replay_encodes_each_admitted_document_once() -> Result<()> {
         assert_eq!(actual, expected);
         assert!(compared.count_total < buffered.count_total);
         assert!(compared.bytes_total < buffered.bytes_total);
-        #[cfg(feature = "filesystem")]
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let mut budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
@@ -69,7 +68,6 @@ fn finite_replay_keeps_canonical_rejection_after_sorting_admitted_values() -> Re
         b"[1,]",
     ] {
         assert!(decode_json::<Value>(bytes, None).is_err());
-        #[cfg(feature = "filesystem")]
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
@@ -314,6 +312,7 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
                     request: journal
                         .stage(operation, "page-fixture", b"null", "application/json", None)?
                         .await?,
+                    context: None,
                 },
                 None,
             )?
@@ -380,7 +379,6 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn finite_canonical_replay_rejects_unmeasured_custom_journal_before_work() -> Result<()> {
     let journal = Journal::default();
@@ -662,7 +660,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
             [],
         );
         let limits = Limits {
-            context_messages: message_limit,
+            context_messages: std::num::NonZeroUsize::new(message_limit),
             render_bytes,
             ..Limits::default()
         };
@@ -704,7 +702,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         let request = &requests[0];
         assert!(request.messages.starts_with(&root.request().messages));
         assert_eq!(
-            request.messages[1 + usize::from(expect_environment)].content,
+            request.messages[1].content,
             ModelContent::Text("required convention".into())
         );
         assert_eq!(
@@ -727,7 +725,6 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
 /// its key names the turn, step and call alone, so the journal recognises
 /// the retry and keeps one record, while another settlement at the same
 /// stale tail is refused.
-#[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn a_retried_settlement_is_one_record() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;

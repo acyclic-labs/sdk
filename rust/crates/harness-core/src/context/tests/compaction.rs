@@ -29,12 +29,9 @@ fn every_cut_of_the_only_protected_exchange_retains_all_input() -> Result<()> {
         ],
         Some(0),
     );
-    let policy = ThresholdCompaction {
-        recent_tokens: 1,
-        ..Default::default()
-    };
+    let policy = CapacityCompaction::default();
     let capacity = ModelContextCapacity {
-        context_tokens: 65_536,
+        context_tokens: 32_768,
         output_tokens: Some(4_096),
     };
     let input_bytes = source.messages.iter().try_fold(100_u64, |total, message| {
@@ -209,7 +206,6 @@ fn compaction_always_preserves_native_tool_exchanges() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn owned_compaction_proof_reconstructs_exactly_and_releases_actual_fields() -> Result<()> {
     let source = Context {
@@ -448,34 +444,106 @@ fn compaction_keeps_fragmented_schemas_only_for_retained_exchanges() -> Result<(
         dropped_one_exchange,
         "one schema table must not pin every call in its epoch"
     );
-    let policy = ThresholdCompaction {
-        recent_tokens: 1,
-        ..Default::default()
-    };
-    let count = ModelTokenCount::from_upper_bounds([0; 32], 0, vec![1; source.messages.len()]);
-    let messages = u32::try_from(source.messages.len())
-        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    let policy = CapacityCompaction::default();
     let schema_position = source
         .messages
         .iter()
         .position(|message| message == &second[0])
         .expect("schema position");
     let mut planned_retained_schema = false;
-    for recent_tokens in 1..=messages {
-        for maximum in 2..=source.messages.len() {
+    let mut unbounded_retained_schema = false;
+    for requested_cut in 1..source.messages.len() {
+        let mut finite_plan = false;
+        let mut unbounded_plan = false;
+        for limit in std::iter::once(None).chain((2..=source.messages.len()).map(Some)) {
             if let Ok((through, maximum)) =
-                policy.projection_budget(&source, &count, maximum, recent_tokens, &mut None)
+                policy.projection_budget(&source, limit, requested_cut, &mut None)
             {
+                finite_plan |= limit.is_some();
+                unbounded_plan |= limit.is_none();
                 let (retained, proof) = compact(&source, maximum, through)?;
                 validate_compaction(&proof, &source, &retained, None)?;
-                planned_retained_schema |= through > schema_position && has_call(&retained, "d");
+                let retained_schema = through > schema_position && has_call(&retained, "d");
+                planned_retained_schema |= retained_schema;
+                unbounded_retained_schema |= limit.is_none() && retained_schema;
                 prepare(retained.messages, Vec::new())?;
             }
         }
+        assert!(
+            !finite_plan || unbounded_plan,
+            "removing message credit must not reject an otherwise valid projection"
+        );
     }
     assert!(
         planned_retained_schema,
         "automatic planning must retain the original table across its summary cut"
+    );
+    assert!(
+        unbounded_retained_schema,
+        "unbounded planning must retain the original table across its summary cut"
+    );
+    // Independent, interleaved native and dynamic snapshots. The native table
+    // becomes active last; it must neither replace the dynamic schema nor
+    // allow compaction to retain only one environment or one fragment.
+    let mut native_definition = definition("native", "integer");
+    native_definition.name = "native.compaction.live".into();
+    let mut native = fragments(&[native_definition])?;
+    for message in &mut native {
+        let ModelContent::Part(ModelContentPart::Notices { notices }) = &mut message.content else {
+            unreachable!()
+        };
+        notices[0].kind = "tools.bound".into();
+    }
+    let mut native_call = exchange("native", serde_json::json!(7));
+    for message in &mut native_call {
+        match &mut message.content {
+            ModelContent::Part(ModelContentPart::ToolCall(call)) => {
+                call.name = "native.compaction.live".into()
+            }
+            ModelContent::Part(ModelContentPart::ToolResult { name, .. }) => {
+                *name = "native.compaction.live".into()
+            }
+            _ => unreachable!(),
+        }
+    }
+    let mut mixed = vec![
+        first[0].clone(),
+        native[0].clone(),
+        first[1].clone(),
+        native[1].clone(),
+    ];
+    mixed.extend(native_call);
+    mixed.extend(exchange("dynamic", serde_json::json!("old")));
+    mixed.push(text(ModelRole::User, "current"));
+    let current = mixed.len() as u32 - 1;
+    let mixed = context(mixed, Some(current));
+    prepare(mixed.messages.clone(), Vec::new())?;
+    let mut retained_one_call = false;
+    for maximum in 2..=mixed.messages.len() {
+        let (retained, proof) = compact(&mixed, maximum, mixed.messages.len())?;
+        validate_compaction(&proof, &mixed, &retained, None)?;
+        prepare(retained.messages.clone(), Vec::new())?;
+        if has_call(&retained, "native") || has_call(&retained, "dynamic") {
+            retained_one_call |= has_call(&retained, "native") != has_call(&retained, "dynamic");
+            for fragment in first.iter().chain(&native) {
+                assert!(retained.messages.contains(fragment));
+                let mut broken = retained.messages.clone();
+                broken.remove(
+                    broken
+                        .iter()
+                        .position(|message| message == fragment)
+                        .unwrap(),
+                );
+                assert!(
+                    prepare(broken, Vec::new()).is_err(),
+                    "a partial table was admitted"
+                );
+            }
+        }
+    }
+    assert!(
+        retained_one_call,
+        "two tables must not pin every exchange together"
     );
     Ok(())
 }

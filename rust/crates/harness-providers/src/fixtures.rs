@@ -17,8 +17,10 @@ pub(crate) fn now() -> std::time::Duration {
 pub(crate) fn native_delay(
     _: std::time::Duration,
     work: &acyclic_fs::NativeMaterializationWork,
-) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
-    acyclic_harness_core::NativeFutureBundle::new(work, move || async move { Ok(()) })
+) -> acyclic_harness_core::Result<
+    acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
+> {
+    acyclic_fs::NativeFutureBundle::new(work, move || async move { Ok(()) })
 }
 
 pub(crate) const CHAT: &str = concat!(

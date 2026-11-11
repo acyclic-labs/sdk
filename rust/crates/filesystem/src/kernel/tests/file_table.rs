@@ -1,16 +1,12 @@
 use super::*;
 use crate::foundation::Digest;
 use crate::kernel::EncodeError;
-#[cfg(feature = "memory")]
 use crate::memory::MemoryObjectStore;
-#[cfg(feature = "memory")]
 use std::task::{Context, Poll, Waker};
 
 use crate::kernel::Child;
-#[cfg(feature = "memory")]
 use crate::test_support::put_file_table_page as put_memory_page;
 
-#[cfg(feature = "memory")]
 fn fifo_record(byte: u8) -> FileRecord {
     FileRecord {
         bindings: None,
@@ -26,7 +22,6 @@ fn fifo_record(byte: u8) -> FileRecord {
     }
 }
 
-#[cfg(feature = "memory")]
 async fn two_level_file_table(
     store: &MemoryObjectStore,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
@@ -663,7 +658,6 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
     Ok(())
 }
 
-#[cfg(feature = "memory")]
 #[tokio::test]
 async fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -702,7 +696,6 @@ async fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-#[cfg(feature = "memory")]
 #[tokio::test]
 async fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -790,7 +783,6 @@ async fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
     Ok(())
 }
 
-#[cfg(feature = "memory")]
 #[tokio::test]
 async fn file_record_batch_shares_frontiers_and_preserves_order()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -825,7 +817,6 @@ async fn file_record_batch_shares_frontiers_and_preserves_order()
     Ok(())
 }
 
-#[cfg(feature = "memory")]
 #[tokio::test]
 async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
 -> Result<(), Box<dyn std::error::Error>> {

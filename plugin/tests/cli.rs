@@ -157,7 +157,8 @@ async fn model_adapter(
 #[tokio::test]
 async fn chat_without_a_counter_starts_with_explicit_no_compaction() {
     const CHAT: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
-    for unchecked in [false, true] {
+    for (unchecked, session_client) in [(false, false), (true, false), (false, true), (true, true)]
+    {
         let fixture = fixture();
         let model = model_adapter(
             fixture._directory.path(),
@@ -169,6 +170,9 @@ async fn chat_without_a_counter_starts_with_explicit_no_compaction() {
         let mut args = vec!["-p", "hello"];
         if unchecked {
             args.push("--no-compaction");
+        }
+        if session_client {
+            args.push("--new-session");
         }
         let output = graphcoder(&fixture, &model.catalog, args, "").await;
         if unchecked {
@@ -276,15 +280,22 @@ async fn capture(mut command: Command, stdin: &str) -> Output {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let stdin = stdin.to_owned();
+    capture_configured(command, Some(stdin)).await
+}
+
+async fn capture_configured(mut command: Command, stdin: Option<&str>) -> Output {
+    let stdin = stdin.map(str::to_owned);
     tokio::task::spawn_blocking(move || {
         use acyclic_native_runtime::{CaptureInput, ProcessInput, ProcessTree};
         let mut child = ProcessTree::spawn(&mut command).expect("spawn GraphCoder process tree");
+        drop(command);
         child
             .wait_with_output(
                 std::time::Duration::from_secs(60),
                 usize::MAX,
-                Some(CaptureInput::Literal(stdin.as_bytes())),
+                stdin
+                    .as_deref()
+                    .map(|text| CaptureInput::Literal(text.as_bytes())),
                 || Ok(()),
                 |_| Ok(ProcessInput::default()),
                 None,
@@ -622,6 +633,101 @@ async fn failed_prompt_and_replay_report_the_original_cause() {
 /// The shipping readiness path checks prerequisites without changing any
 /// configured state, checkout metadata or signing custody, even on refusal.
 #[tokio::test]
+#[cfg(unix)]
+async fn doctor_selects_report_mode_from_each_original_terminal_stream() {
+    use std::{fs::File, io::Read as _};
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
+    for (input_tty, output_tty, prompt) in [
+        (true, false, false),
+        (false, true, false),
+        (true, true, true),
+        (true, true, false),
+    ] {
+        let pty = rustix_openpty::openpty(None, None).unwrap();
+        let mut controller = Some(File::from(pty.controller));
+        let mut command = graphcoder_command(&fixture);
+        command
+            .arg("--settings-root")
+            .arg(&fixture.settings)
+            .arg("--catalog")
+            .arg(&model.catalog)
+            .args(["--model", "graphcoder-qual/tiny"]);
+        if prompt {
+            command.args(["-p", "hello"]);
+        }
+        command.arg("doctor");
+        command
+            .stdin(if input_tty {
+                Stdio::from(pty.user.try_clone().unwrap())
+            } else {
+                Stdio::piped()
+            })
+            .stdout(if output_tty {
+                Stdio::from(pty.user.try_clone().unwrap())
+            } else {
+                Stdio::piped()
+            })
+            .stderr(Stdio::piped());
+        drop(pty.user);
+        // Drain the terminal while the child owns its slave. Darwin can discard
+        // unread terminal output when the final slave closes at process exit.
+        let terminal_output = output_tty.then(|| {
+            let mut controller = controller.take().unwrap();
+            tokio::task::spawn_blocking(move || {
+                let mut bytes = Vec::new();
+                if let Err(error) = controller.read_to_end(&mut bytes) {
+                    // Linux reports a closed PTY producer as EIO instead of EOF.
+                    assert_eq!(error.raw_os_error(), Some(5), "{error}");
+                }
+                String::from_utf8(bytes).unwrap()
+            })
+        });
+        let result = capture_configured(command, (!input_tty).then_some("")).await;
+        // An input-only terminal keeps its live controller until capture ends.
+        drop(controller);
+        let stdout = match terminal_output {
+            Some(reader) => reader.await.unwrap(),
+            None => String::from_utf8(result.stdout).unwrap(),
+        };
+        assert!(
+            !stdout.is_empty(),
+            "doctor output was lost: input_tty={input_tty}, output_tty={output_tty}, prompt={prompt}, stderr={}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if !input_tty || !output_tty {
+            assert!(result.status.success(), "{stdout}");
+            let report: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(report["mode"], "headless");
+            assert_eq!(report["ready"], true);
+        } else {
+            assert!(serde_json::from_str::<Value>(&stdout).is_err());
+            assert!(
+                stdout.contains("check: provider network: reachable"),
+                "{stdout}"
+            );
+            if prompt {
+                assert!(result.status.success(), "{stdout}");
+                assert!(
+                    stdout.contains("ok: local prerequisites checked"),
+                    "{stdout}"
+                );
+            } else {
+                // Both original streams are TTYs but TERM=dumb: retain the
+                // interactive refusal rather than silently selecting JSON.
+                assert!(!result.status.success(), "{stdout}");
+                assert!(
+                    stdout.contains("refused: terminal: interactive terminal unavailable"),
+                    "{stdout}"
+                );
+            }
+        }
+    }
+    assert_eq!(model.generated(), 0);
+    model.close().await;
+}
+
+#[tokio::test]
 async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
@@ -652,11 +758,14 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         result
     }
     let original = snapshot(fixture._directory.path());
-    let ready = graphcoder(&fixture, &model.catalog, vec!["-p", "hello", "doctor"], "").await;
-    assert!(
-        succeeded(&ready)
-            .contains("ok: local prerequisites checked; state and signing authority unopened")
-    );
+    // Installation pipes both streams and has no prompt or terminal.
+    let ready = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
+    let report: serde_json::Value = serde_json::from_str(&succeeded(&ready)).unwrap();
+    assert_eq!(report["version"], 1);
+    assert_eq!(report["kind"], "doctor");
+    assert_eq!(report["mode"], "headless");
+    assert_eq!(report["ready"], true);
+    assert_eq!(report["refusals"], serde_json::json!([]));
     // A JSONL run's exact flags are accepted; output flags are inert here.
     let flagged = graphcoder(
         &fixture,
@@ -716,12 +825,13 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     let refused = graphcoder(&nested, &model.catalog, vec!["-p", "hello", "doctor"], "").await;
     let stdout = String::from_utf8_lossy(&refused.stdout);
     assert_eq!(refused.status.code(), Some(1), "{stdout}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["ready"], false);
+    assert_eq!(report["refusals"].as_array().unwrap().len(), 1);
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("1 startup refusal(s)"), "{stderr}");
     assert!(
-        stdout.contains("refused: ")
-            && stdout.contains("separate from the checkout")
-            && stdout.contains("recovery:"),
+        stdout.contains("separate from the checkout") && stdout.contains("recovery:"),
         "{stdout}"
     );
     assert_eq!(
@@ -1204,7 +1314,7 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         .await
         .unwrap();
 
-    for (command, kind) in [("sessions", "children"), ("history", "history")] {
+    for command in ["sessions", "history"] {
         let output = graphcoder(
             &fixture,
             &model.catalog,
@@ -1220,7 +1330,9 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         )
         .await;
         let reply: Value = serde_json::from_str(&succeeded(&output)).unwrap();
-        assert_eq!(reply["kind"], kind);
+        if command == "history" {
+            assert_eq!(reply["kind"], "history");
+        }
         assert_eq!(reply["items"], json!([]));
         assert!(reply["next"].is_null());
     }

@@ -16,7 +16,8 @@ async function ledgerBinding(port: OwnedStreamProviderPort): Promise<OwnedStream
   const values = new Map<string, string>();
   const storage: EventStorage = {
     get: key => values.get(key), put: (key, value) => { values.set(key, value); },
-    entries: () => [...values], transaction: operation => operation(),
+    delete: key => { values.delete(key); },
+    entries: (prefix, after, limit) => [...values].filter(([key]) => key.startsWith(prefix) && key > after).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, limit), transaction: operation => operation(),
     flush: async () => {}, alarm: async () => {},
   };
   const unused = async (): Promise<never> => { throw new Error("unexpected Objects operation"); };

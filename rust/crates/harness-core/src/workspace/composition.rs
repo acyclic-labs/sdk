@@ -2,7 +2,7 @@ use crate::{Error, Result, conversation::VolumeRef};
 use acyclic_fs::access::{
     Action, Capability, Context, MountMode, PathTrie, Policy, Principal, Resource,
 };
-#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+#[cfg(not(target_arch = "wasm32"))]
 use std::borrow::Cow;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
@@ -32,6 +32,26 @@ pub struct VolumeView<T> {
     pub source: T,
 }
 
+/// Native-path authority carried by one composed volume binding.
+#[doc(hidden)]
+pub enum NativeRoot {
+    /// A physical directory in the composed task root.
+    Composed,
+    /// A logical volume available through filesystem tools, with no OS path.
+    Logical,
+    /// An independently projected native volume.
+    Path(PathBuf),
+}
+
+impl NativeRoot {
+    pub fn override_path(&self) -> Option<&PathBuf> {
+        match self {
+            Self::Path(path) => Some(path),
+            Self::Composed | Self::Logical => None,
+        }
+    }
+}
+
 /// One independently captured source in a task's composed namespace.
 pub struct Mount<T> {
     /// Published volume selected by the task binding.
@@ -39,8 +59,9 @@ pub struct Mount<T> {
     /// Maximum access anywhere in this mount; paths may be more restrictive.
     pub mode: MountMode,
     access: PathTrie,
+    /// Host-projected OS root. An absent named root remains logical-only.
     #[doc(hidden)]
-    pub native_root: Option<PathBuf>,
+    pub native_root: NativeRoot,
 }
 
 impl<T> Mount<T> {
@@ -55,9 +76,9 @@ impl<T> Mount<T> {
         action: Action,
         path: &str,
         now: u64,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             work.remaining()?;
         }
@@ -84,6 +105,26 @@ pub struct MountTable<T> {
 }
 
 impl<T> MountTable<T> {
+    /// OS root of an exposed mount; the primary defaults to this task's root.
+    /// Named mounts require an explicit native projection.
+    pub fn native_root_for<'a>(&'a self, mount: &'a Mount<T>) -> Option<&'a Path> {
+        match &mount.native_root {
+            NativeRoot::Path(path) => Some(path),
+            NativeRoot::Logical => None,
+            NativeRoot::Composed => self.mounted.first().and_then(|(_, primary)| {
+                std::ptr::eq(primary, mount).then_some(self.root.as_path())
+            }),
+        }
+    }
+
+    /// The native subset of this composed namespace, retaining its access modes.
+    pub fn native_mounts(&self) -> impl Iterator<Item = (&str, &Path, &Mount<T>)> {
+        self.mounts().filter_map(|(relative, mount)| {
+            self.native_root_for(mount)
+                .map(|root| (relative, root, mount))
+        })
+    }
+
     /// Resolves an admitted volume without scanning the mounted namespace.
     #[doc(hidden)]
     pub fn by_volume(
@@ -113,7 +154,7 @@ impl<T> MountTable<T> {
     }
 
     /// Resolves either a task-relative path or an exact volume's relative path.
-    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn file<'a>(
         &'a self,
@@ -125,13 +166,26 @@ impl<T> MountTable<T> {
 
     /// Borrowed canonical content-path routing on the original tool ledger.
     /// Explicit-volume native routing is refused before allocating a path.
-    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn file_with_work<'a>(
         &'a self,
         volume: Option<&VolumeRef>,
         path: &'a str,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
+        self.path_with_work(volume, path, crate::tool::ReadPathKind::File, work)
+    }
+
+    /// Resolves file bytes or directory names through the same mount table.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[doc(hidden)]
+    pub fn path_with_work<'a>(
+        &'a self,
+        volume: Option<&VolumeRef>,
+        path: &'a str,
+        kind: crate::tool::ReadPathKind,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
         if volume.is_none() {
             #[cfg(not(target_arch = "wasm32"))]
@@ -142,9 +196,7 @@ impl<T> MountTable<T> {
             let io: Option<&crate::filesystem::PreparationIo> = None;
             #[cfg(not(target_arch = "wasm32"))]
             let io = io.as_ref();
-            crate::executor::with_history_io(io, |history| {
-                crate::conversation::validate_content_path(path, history)
-            })?;
+            crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
             if Path::new(path)
                 .components()
                 .any(|component| !matches!(component, Component::Normal(_)))
@@ -168,9 +220,7 @@ impl<T> MountTable<T> {
         #[cfg(not(target_arch = "wasm32"))]
         let io = io.as_ref();
         let mount = self.by_volume(volume.expect("explicit volume checked above"), io)?;
-        crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history)
-        })?;
+        crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
         if Path::new(path)
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
@@ -192,7 +242,7 @@ impl<T> MountTable<T> {
     }
     /// Resolves a qualifier through the visible namespace, never by opening a
     /// model-supplied volume identity.
-    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn named(&self, name: Option<&str>) -> Result<(&str, &Mount<T>)> {
         self.mounts()
@@ -246,7 +296,7 @@ impl<T> MountTable<T> {
     fn select<'a>(
         &self,
         relative: &'a str,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&Mount<T>, &'a str)> {
         let mut prefix = relative;
         loop {
@@ -280,9 +330,9 @@ impl<T> MountTable<T> {
 fn path_error(
     code: crate::wire::ErrorCode,
     reason: &'static str,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if work.is_some() {
         return Error::NativeBoundary { code, reason };
     }
@@ -371,7 +421,7 @@ pub fn compose<T>(
             view,
             mode,
             access,
-            native_root: None,
+            native_root: NativeRoot::Composed,
         }));
     }
     let mut mounted = Vec::new();

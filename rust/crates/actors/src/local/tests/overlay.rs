@@ -163,6 +163,37 @@ async fn creation_overlay_forks_a_template_into_a_dormant_actor() -> TestResult 
         binding.transaction(|state| state.debit_escrow(1)),
         Err(Error::Escrow(EscrowError::Exhausted))
     ));
+    // A root reconstructed at a retained history cut has no source actor
+    // snapshot to branch. Its creation must already be paused in the same
+    // publication that appends its trigger, with its own zero escrow.
+    let pinned = actor("created-paused")?;
+    let mut publication = PreparedPublish::foreign(key("pinned/create")?);
+    publication.join(store.create_paused(
+        None,
+        &pinned,
+        Creation {
+            subscriptions: inbox(&pinned)?,
+            checkpoint: Some(initial),
+            escrow: Some(Escrow::new(Some(0))),
+        },
+    )?)?;
+    publication.join(store.activation(&pinned))?;
+    store.submit(publication).await?;
+    assert!(
+        store
+            .load(&pinned)
+            .await?
+            .state()
+            .ok_or("missing pin")?
+            .paused()
+    );
+    let resumed = resume(&store, &pinned).await?;
+    let epoch = resumed.state().ok_or("missing pin")?.epoch();
+    let mut binding = store.bind_state(resumed, epoch)?;
+    assert!(matches!(
+        binding.transaction(|state| state.debit_escrow(1)),
+        Err(Error::Escrow(EscrowError::Exhausted))
+    ));
     Ok(())
 }
 

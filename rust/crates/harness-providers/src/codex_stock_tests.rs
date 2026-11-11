@@ -1,6 +1,5 @@
 use super::*;
 use acyclic_fs::NativeMaterializationWork;
-use acyclic_harness_core::NativeFutureBundle;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Backend {
@@ -34,7 +33,9 @@ impl HttpTransport for Backend {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
+    ) -> acyclic_harness_core::Result<
+        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
+    > {
         crate::fixtures::native_delay(wait, work)
     }
     /// The agent host's ordinary dispatch.
@@ -58,8 +59,8 @@ impl HttpTransport for Backend {
         &'a self,
         request: HttpRequest,
         work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
-        NativeFutureBundle::new(work, || async move {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let (status, body) = self.answer(&request);
             drop(request);
             HttpResponse::with_native_body(
@@ -161,23 +162,24 @@ async fn stock(broken: bool) -> Result<()> {
         counts: AtomicUsize::new(0),
         generations: AtomicUsize::new(0),
     });
+    let credentials = Credentials::explicit(if broken {
+        BTreeMap::from([("openai".into(), "fixture-key".into())])
+    } else {
+        BTreeMap::new()
+    });
     let mut registry =
-        Registry::with_transport(Credentials::explicit(BTreeMap::new()), backend.clone())
-            .with_codex_login(login);
+        Registry::with_transport(credentials, backend.clone()).with_codex_login(login);
     let catalog = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog"))?;
     std::fs::write(catalog.path(), include_str!("fixtures/luna-catalog.json"))
         .map_err(|_| invalid("fixture catalog"))?;
     registry.load_catalog(catalog.path())?;
     let mut spec = registry.catalog()["openai"].as_ref().clone();
     spec.authentication = Authentication::ApiKeyOrCodexLogin;
-    registry.register("openai".into(), spec)?;
-    let mut provider = registry.resolve("openai/gpt-6-luna")?;
-    assert!(provider.config.token_counter.is_none());
     if broken {
         // The former path retained the public endpoint's counter when changing
-        // base_url. Disable the new local choice to expose precisely that route.
-        provider.codex_login = None;
-        provider.key = Some("fixture-key".into());
+        // base_url. Configure that original input before resolution, so each
+        // credential refresh admits the same deliberately broken route.
+        spec.base_url = "https://chatgpt.com/backend-api/codex".into();
         let mut counter = crate::catalog::default_catalog()["openai"]
             .token_counter
             .clone()
@@ -185,16 +187,18 @@ async fn stock(broken: bool) -> Result<()> {
         // Generated counter configuration on the original catalog: framing
         // alone fills this context, so the byte shortcut cannot admit the
         // unchanged stock task. It must reach the inherited, absent route.
-        counter.framing_tokens = u32::try_from(provider.capacity.context_tokens)
+        counter.framing_tokens = u32::try_from(spec.models["gpt-6-luna"].capacity.context_tokens)
             .map_err(|_| invalid("fixture context exceeds counter framing"))?;
-        Arc::make_mut(&mut provider.config).token_counter = Some(counter);
+        spec.token_counter = Some(counter);
     }
+    registry.register("openai".into(), spec)?;
+    let provider = registry.resolve("openai/gpt-6-luna")?;
+    assert_eq!(provider.config.token_counter.is_some(), broken);
     // This fixture declares an 8192-token context in its catalog. Enable
     // automatic counting with explicit compaction budgets inside that window.
-    let policy = acyclic_harness_core::context::CompactionPolicy::Threshold(
-        acyclic_harness_core::context::ThresholdCompaction {
+    let policy = acyclic_harness_core::context::CompactionPolicy::Capacity(
+        acyclic_harness_core::context::CapacityCompaction {
             response_reserve_tokens: 1024,
-            recent_tokens: 2048,
         },
     );
     let objects = acyclic_objects::MemoryObjects::memory();

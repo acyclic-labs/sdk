@@ -63,8 +63,11 @@ impl LiveCatalog {
 impl ToolSource for LiveCatalog {
     fn refresh(&self) -> BoxProviderFuture<'_, Result<()>> {
         Box::pin(async move {
-            let deadline = tokio::time::Instant::now()
-                + std::time::Duration::from_millis(u64::from(self.server.startup_timeout_ms));
+            let deadline = super::super::deadline::after(
+                self.server
+                    .startup_timeout_ms
+                    .map(std::time::Duration::from_millis),
+            )?;
             let refresh = async {
                 let _refresh = self.refresh.lock().await;
                 let generation = self.transport.tools_generation();
@@ -113,7 +116,7 @@ impl ToolSource for LiveCatalog {
                 snapshot.generation = generation;
                 Ok(())
             };
-            match tokio::time::timeout_at(deadline, refresh).await {
+            match super::super::deadline::until(deadline, refresh).await {
                 Ok(result) => result,
                 Err(_) if !self.server.required => Ok(()),
                 Err(_) => Err(startup_timeout()),

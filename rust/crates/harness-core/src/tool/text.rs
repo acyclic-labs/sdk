@@ -1,7 +1,7 @@
 //! Bounded UTF-8 selections and literal search, independent of storage or models.
 
 use super::edit::{charge, invalid, reserve_vec};
-use crate::NativeCustody;
+
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -114,7 +114,7 @@ pub(crate) fn literal_search(
     source: &str,
     query: &str,
     options: SearchOptions,
-    work: &mut NativeCustody,
+    work: &mut acyclic_fs::NativeCustody,
 ) -> Result<SearchMatches> {
     if options.maximum_input_bytes == 0
         || options.maximum_input_bytes > crate::conversation::MAX_EXACT_JS_INTEGER

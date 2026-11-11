@@ -35,7 +35,7 @@ where
         let grant = ContentGrant::verify_directory_read(
             &authority.verifier,
             &authority.scope,
-            &authority.private.volume,
+            authority.private.volume()?,
             path,
             &mut None,
         )
@@ -43,7 +43,7 @@ where
         let (bytes, _selected, length) = self
             .volumes
             .read_private_range(
-                &authority.private.volume,
+                authority.private.volume()?,
                 &grant,
                 path,
                 Some(generation),
@@ -81,7 +81,7 @@ where
         let grant = ContentGrant::verify_directory_read(
             &authority.verifier,
             &authority.scope,
-            &authority.private.volume,
+            authority.private.volume()?,
             path,
             &mut None,
         )
@@ -104,10 +104,18 @@ where
         };
         let (generation, page) = self
             .volumes
-            .list_private_directory(&authority.private.volume, &grant, path, options)
+            .list_private_directory(authority.private.volume()?, &grant, path, options)
             .await
             .map_err(turn)?
             .ok_or(Error::Record("selected directory does not exist"))?;
-        PrivateDirectoryPage::from_filesystem(generation, page).map_err(turn)
+        let ledger =
+            crate::filesystem::PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())
+                .map_err(turn)?;
+        let source = ledger
+            .reserve_decode(generation.logical_owned_bytes().map_err(turn)?)
+            .map_err(turn)?;
+        PrivateDirectoryPage::from_filesystem(generation, page, source, &ledger)
+            .map(|(page, _custody)| page)
+            .map_err(turn)
     }
 }

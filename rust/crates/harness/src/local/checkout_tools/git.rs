@@ -7,6 +7,7 @@ impl CheckoutTools {
         workspace::git::Commands {
             workspace: &self.workspace,
             signed: &self.signed,
+            verifier: &self.verifier,
             clock: self.clock.as_ref(),
             capture_options: &self.capture_options,
             capture_policy: &self.capture_policy,

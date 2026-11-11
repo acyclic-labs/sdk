@@ -24,8 +24,8 @@ use crate::agent::spawn_names::{spawn_intent, spawn_name};
 use crate::{
     Error, Result,
     agent::{
-        AgentPath, AgentState, CreationConfig, IntentId, MAX_OPEN_CHILDREN, SpawnTemplates,
-        TurnChildren, TurnEffect, TurnEffects, TurnOutcome, named_child,
+        AgentPath, AgentState, CreationConfig, IntentId, SpawnTemplates, TurnChildren, TurnEffect,
+        TurnEffects, TurnOutcome, named_child,
     },
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
@@ -113,9 +113,11 @@ pub struct WaitAgentInput {
 
 /// What one turn's agent tools act for.
 struct Turn {
+    spawned_children: u64,
+    spawning: futures::lock::Mutex<()>,
     agent: AgentPath,
     parent: Option<AgentPath>,
-    children: BTreeSet<AgentPath>,
+    children: crate::agent::Children,
     effects: Arc<dyn TurnEffects>,
     /// What `wait` observes; `None` when the host observes no children.
     observer: Option<Arc<dyn TurnChildren>>,
@@ -124,10 +126,7 @@ struct Turn {
     /// This agent's creation snapshot and the host's template reader; spawn refuses
     /// when either is absent.
     templates: Option<(CreationConfig, Arc<dyn SpawnTemplates>)>,
-    volumes: Vec<crate::agent::VolumeBinding>,
-    /// Held from a spawn's limit check through its record, so concurrent
-    /// spawns of one turn see each other.
-    spawning: futures::lock::Mutex<()>,
+    volumes: Vec<crate::agent::WorkspaceEntry>,
     /// The first unfinished wait consumes the actor deadline release.
     released: AtomicBool,
 }
@@ -174,9 +173,10 @@ impl AgentTool {
         }
         let key = call_key(&invocation, context.as_ref());
         let operation = crate::agent::operation_key(invocation.operation_id);
-        let _spawning = match self.name {
-            "spawn" => Some(turn.spawning.lock().await),
-            _ => None,
+        let _spawning = if self.name == "spawn" {
+            Some(turn.spawning.lock().await)
+        } else {
+            None
         };
         let effect = match self.name {
             "spawn" => {
@@ -197,6 +197,25 @@ impl AgentTool {
                         "this agent has no creation template to spawn from".into(),
                     )));
                 };
+                if let Some(limit) = parent
+                    .topology
+                    .as_ref()
+                    .and_then(|topology| topology.spawn_limit(turn.parent.is_none()))
+                {
+                    let mut pending = BTreeSet::new();
+                    for effect in turn.effects.recorded().await? {
+                        if let TurnEffect::Spawn { intent, .. } = effect {
+                            pending.insert(intent);
+                        }
+                    }
+                    if !pending.contains(&intent)
+                        && turn.spawned_children.saturating_add(pending.len() as u64) >= limit
+                    {
+                        return Ok(ToolResult {
+                            value: json!({"error": format!("tool execution failed: forced topology permits at most {limit} total spawns")}),
+                        });
+                    }
+                }
                 let peers = match peer_grants(&turn.agent, input.peers) {
                     Ok(peers) => peers,
                     Err(rejected) => return Ok(rejected),
@@ -223,13 +242,6 @@ impl AgentTool {
                     profile.model = Some(model);
                 }
                 profile.peers = peers;
-                // The agent's hard limit: a spawn the step would refuse is
-                // refused here, before the model is told it succeeded.
-                if !self.within(&intent, MAX_OPEN_CHILDREN).await? {
-                    return Ok(rejected(format!(
-                        "at most {MAX_OPEN_CHILDREN} open children; archive one or wait for one to finish"
-                    )));
-                }
                 let brief = turn
                     .writer
                     .stage_once(
@@ -282,7 +294,7 @@ impl AgentTool {
                 TurnEffect::Send {
                     delivery: input.delivery.unwrap_or_default(),
                     to,
-                    id: IntentId::try_from(format!("send:{operation}")).map_err(agent)?,
+                    id: IntentId::try_from(format!("send:{operation}")).map_err(Error::from)?,
                     body: Box::new(body),
                 }
             }
@@ -296,7 +308,7 @@ impl AgentTool {
                 };
                 TurnEffect::Archive {
                     target,
-                    id: IntentId::try_from(format!("archive:{operation}")).map_err(agent)?,
+                    id: IntentId::try_from(format!("archive:{operation}")).map_err(Error::from)?,
                 }
             }
             _ => return Err(Error::Unsupported(format!("agent tool {}", self.name))),
@@ -312,8 +324,8 @@ impl AgentTool {
     fn result(&self, recorded: TurnEffect) -> Result<ToolResult> {
         let value = match recorded {
             TurnEffect::Spawn { intent, .. } => json!({
-                "agent": TurnEffect::child(&self.turn.agent, &intent).map_err(agent)?.as_str(),
-                "name": spawn_name(&intent).map_err(agent)?,
+                "agent": TurnEffect::child(&self.turn.agent, &intent).map_err(Error::from)?.as_str(),
+                "name": spawn_name(&intent).map_err(Error::from)?,
             }),
             TurnEffect::Send { to, .. } => json!({"sent": to.as_str(), "status": "queued"}),
             TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
@@ -323,36 +335,41 @@ impl AgentTool {
 
     /// The open children: those open when the turn started plus this turn's
     /// recorded spawns.
-    async fn open(&self) -> Result<BTreeSet<AgentPath>> {
+    async fn open(&self) -> Result<crate::agent::Children> {
         let turn = &*self.turn;
         let mut open = turn.children.clone();
         for effect in turn.effects.recorded().await? {
             if let TurnEffect::Spawn { intent, .. } = effect {
-                open.insert(TurnEffect::child(&turn.agent, &intent).map_err(agent)?);
+                open.insert(&TurnEffect::child(&turn.agent, &intent).map_err(Error::from)?)
+                    .await
+                    .map_err(Error::from)?;
             }
         }
         Ok(open)
     }
 
-    /// Whether spawning `intent` keeps at most `limit` open children. A spawn
-    /// already recorded (a replayed call) is within its own limit.
-    async fn within(&self, intent: &IntentId, limit: usize) -> Result<bool> {
-        let open = self.open().await?;
-        let child = TurnEffect::child(&self.turn.agent, intent).map_err(agent)?;
-        Ok(open.contains(&child) || open.len() < limit)
-    }
-
     /// `agent` when this turn may reach it: an open child, or the parent too.
-    async fn recipient(&self, agent: &str, parent: bool) -> Result<Option<AgentPath>> {
+    async fn recipient(&self, reference: &str, parent: bool) -> Result<Option<AgentPath>> {
         let turn = &*self.turn;
-        if parent && let Some(to) = turn.parent.as_ref().filter(|path| path.as_str() == agent) {
+        if parent
+            && let Some(to) = turn
+                .parent
+                .as_ref()
+                .filter(|path| path.as_str() == reference)
+        {
             return Ok(Some(to.clone()));
         }
-        Ok(
-            named_child(turn.observer.as_deref(), &turn.agent, agent, false)
-                .await?
-                .filter(|child| turn.children.contains(child)),
-        )
+        let Some(child) =
+            named_child(turn.observer.as_deref(), &turn.agent, reference, false).await?
+        else {
+            return Ok(None);
+        };
+        Ok(turn
+            .children
+            .contains(&child)
+            .await
+            .map_err(Error::from)?
+            .then_some(child))
     }
 
     async fn peer(
@@ -469,7 +486,17 @@ impl AgentTool {
                 match observer.settled(child).await {
                     Ok(observed) => Ok(Some(observed)),
                     // Spawned this turn: its creation commits with the step.
-                    Err(Error::NotFound(_)) if open.contains(child) => Ok(None),
+                    Err(Error::NotFound(_)) => {
+                        if open
+                            .contains(child)
+                            .await
+                            .map_err(|error| (name, Error::from(error)))?
+                        {
+                            Ok(None)
+                        } else {
+                            Err((name, Error::NotFound(child.to_string())))
+                        }
+                    }
                     Err(error) => Err((name, error)),
                 }
             }
@@ -498,7 +525,7 @@ impl AgentTool {
                     serde_json::to_value(&observed.phase)
                         .map_err(|error| Error::Invalid(error.to_string()))
                 })?;
-            if open.contains(child) {
+            if open.contains(child).await.map_err(Error::from)? {
                 pending.insert(child.clone());
                 unsettled.push(json!({"name": name, "phase": phase}));
             } else {
@@ -601,10 +628,6 @@ mod selection_checks;
 #[cfg(feature = "test-support")]
 pub use selection_checks::check as check_agent_wait_selection;
 
-fn agent(error: crate::agent::Error) -> Error {
-    Error::Invalid(error.to_string())
-}
-
 impl ToolExecutor for AgentTool {
     fn prepare<'a>(
         &'a self,
@@ -615,7 +638,7 @@ impl ToolExecutor for AgentTool {
         if self.name != "wait" {
             return Ok(None);
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if io.is_some_and(|io| io.original_native_work().is_some()) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
@@ -789,6 +812,8 @@ pub fn bind_agent_tools(
     (names, templates): (&[String], Option<Arc<dyn SpawnTemplates>>),
 ) -> Result<()> {
     let turn = Arc::new(Turn {
+        spawned_children: agent.spawned_children.len() as u64,
+        spawning: futures::lock::Mutex::new(()),
         agent: agent.path.clone(),
         parent: agent.parent.clone(),
         children: agent.open_children.clone(),
@@ -798,7 +823,6 @@ pub fn bind_agent_tools(
         maximum_bytes,
         templates: agent.profile.clone().zip(templates),
         volumes: agent.volumes.clone(),
-        spawning: futures::lock::Mutex::new(()),
         released: AtomicBool::new(matches!(agent.phase, crate::agent::Phase::Waiting { .. })),
     });
     for (name, definition) in selected(names)? {
@@ -820,6 +844,105 @@ pub fn bind_agent_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Effects(std::sync::atomic::AtomicUsize);
+
+    impl TurnEffects for Effects {
+        fn recorded_call<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> BoxProviderFuture<'a, Result<Option<TurnEffect>>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn record<'a>(
+            &'a self,
+            _: &'a str,
+            effect: &'a TurnEffect,
+        ) -> BoxProviderFuture<'a, Result<TurnEffect>> {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(effect.clone())
+            })
+        }
+        fn recorded(&self) -> BoxProviderFuture<'_, Result<Vec<TurnEffect>>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn holds(&self, _: crate::OperationId) -> BoxProviderFuture<'_, Result<bool>> {
+            Box::pin(async { Ok(false) })
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_a_persistent_child_index_failure_out_of_model_feedback() -> Result<()> {
+        use crate::agent::AgentId;
+        let parent = AgentPath::root(&AgentId::from_bytes([71; 16]));
+        let child = parent.child(&AgentId::from_bytes([72; 16]))?;
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
+        let mut children = crate::agent::Children::new();
+        children.bind(stream.clone());
+        children.insert(&child).await?;
+        let checkpoint = serde_json::to_vec(&children).unwrap();
+
+        for missing_source in [false, true] {
+            let mut children: crate::agent::Children = serde_json::from_slice(&checkpoint).unwrap();
+            children.bind(if missing_source {
+                Arc::new(acyclic_stream::MemoryStream::default())
+            } else {
+                stream.clone()
+            });
+            let effects = Arc::new(Effects(std::sync::atomic::AtomicUsize::new(0)));
+            let tool = AgentTool {
+                name: "archive",
+                turn: Arc::new(Turn {
+                    spawned_children: 1,
+                    spawning: futures::lock::Mutex::new(()),
+                    agent: parent.clone(),
+                    parent: None,
+                    children,
+                    effects: effects.clone(),
+                    observer: None,
+                    writer: Arc::new(crate::runtime::test_context::PrivateVolume(
+                        crate::runtime::test_context::private_volume(71)?,
+                    )),
+                    maximum_bytes: u64::MAX,
+                    templates: None,
+                    volumes: Vec::new(),
+                    released: AtomicBool::new(false),
+                }),
+            };
+            let invocation = ToolInvocation {
+                operation_id: crate::OperationId::from_bytes([73; 16]),
+                call_id: "archive-child".into(),
+                name: "archive".into(),
+                arguments: json!({"agent":child.as_str()}),
+            };
+            let result = tool.execute(invocation.clone(), None).await;
+            if missing_source {
+                let error = result.expect_err("the checkpoint's immutable node is missing");
+                assert_eq!(error.code(), crate::wire::ErrorCode::Storage);
+                assert!(!error.is_tool_failure());
+                assert!(!error.uncertain(), "a missing index is a definitive fault");
+                assert!(matches!(error, Error::Agent(_)));
+                assert_eq!(effects.0.load(Ordering::SeqCst), 0);
+            } else {
+                assert_eq!(result?.value["archived"], child.as_str());
+                assert_eq!(effects.0.load(Ordering::SeqCst), 1);
+            }
+            // A genuine bad reference is still ordinary feedback, even when
+            // the unrelated persistent child index cannot be read.
+            let rejected = tool
+                .execute(
+                    ToolInvocation {
+                        arguments: json!({"agent":"missing-child"}),
+                        ..invocation
+                    },
+                    None,
+                )
+                .await?;
+            assert!(rejected.value["error"].is_string());
+        }
+        Ok(())
+    }
 
     #[test]
     fn model_schemas_carry_only_meaning() -> Result<()> {
@@ -879,7 +1002,7 @@ mod tests {
                     name,
                 )
                 .await
-                .map_err(agent)
+                .map_err(Error::from)
             })
         }
 
@@ -915,14 +1038,18 @@ mod tests {
 
     #[tokio::test]
     async fn deepest_agent_lookup_still_reaches_its_authorized_sibling() -> Result<()> {
-        use crate::agent::{AgentId, MAX_DEPTH};
+        use crate::agent::AgentId;
         let mut parent = AgentPath::root(&AgentId::from_bytes([1; 16]));
-        for _ in 1..MAX_DEPTH {
-            parent = parent.child(&AgentId::from_bytes([2; 16])).map_err(agent)?;
+        for _ in 1..128 {
+            parent = parent
+                .child(&AgentId::from_bytes([2; 16]))
+                .map_err(Error::from)?;
         }
-        let deepest = parent.child(&AgentId::from_bytes([3; 16])).map_err(agent)?;
-        let sibling = TurnEffect::child(&parent, &spawn_intent("sibling", 0).map_err(agent)?)
-            .map_err(agent)?;
+        let deepest = parent
+            .child(&AgentId::from_bytes([3; 16]))
+            .map_err(Error::from)?;
+        let sibling = TurnEffect::child(&parent, &spawn_intent("sibling", 0).map_err(Error::from)?)
+            .map_err(Error::from)?;
         let children = Children {
             agent: deepest.clone(),
             settled: BTreeSet::new(),
@@ -934,7 +1061,7 @@ mod tests {
             sibling.id().as_str().as_bytes(),
         )
         .expect("sibling actor");
-        let store = crate::agent::actor_store(&children.stream).map_err(agent)?;
+        let store = crate::agent::actor_store(&children.stream).map_err(Error::from)?;
         let effects = [
             store
                 .create(None, &actor, acyclic_actors::local::Creation::default())
@@ -950,7 +1077,7 @@ mod tests {
         assert!(matches!(
             crate::agent::submit(&*children.stream, request)
                 .await
-                .map_err(agent)?,
+                .map_err(Error::from)?,
             crate::agent::Submitted::Committed(_)
         ));
         assert!(

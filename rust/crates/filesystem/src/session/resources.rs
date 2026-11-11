@@ -124,6 +124,7 @@ where
         let terminal = state.clone();
         let (deadline_tx, deadline_rx) = tokio::sync::oneshot::channel();
         Ok(ResourceSubscription {
+            authorization: request.authorization.clone(),
             revalidate: Arc::new(move || state.validate()),
             terminal: Box::pin(async move {
                 let deadline = async {
@@ -179,7 +180,8 @@ where
                 let filter = match &selected {
                     Some(selected) => filter.intersection(selected.filter()),
                     None => filter,
-                };
+                }
+                .including_projection_key(&[])?;
                 let records = streams
                     .follow(acyclic_stream::FollowRequest {
                         bootstrap_head: false,
@@ -207,6 +209,7 @@ where
                                     trie: &trie,
                                     authorization: &request.authorization,
                                     selected: selected.as_ref(),
+                                    requested: &request.filter,
                                 },
                             ),
                             progress => Ok(progress),
@@ -218,5 +221,5 @@ where
     }
 }
 
-#[cfg(all(test, feature = "memory", not(loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests;

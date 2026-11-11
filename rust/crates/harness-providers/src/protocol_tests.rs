@@ -70,7 +70,7 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
 
 #[test]
 fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Result<()> {
-    use acyclic_harness_core::context::ThresholdCompaction;
+    use acyclic_harness_core::context::CapacityCompaction;
     for (adapter, _) in fixtures() {
         // A resumed process resolves a fresh model: no previous usage calibration.
         let (provider, script) = provider(adapter, 200);
@@ -80,10 +80,8 @@ fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Res
         let prepared = PreparedModelRequest::prepare(resumed, Limits::default(), None)?;
         let count = futures::executor::block_on(provider.count_tokens(&prepared, 0))?.input_tokens;
         let capacity = provider.context_capacity(&provider.model)?;
-        let policy = ThresholdCompaction {
+        let policy = CapacityCompaction {
             response_reserve_tokens: 1024,
-            recent_tokens: 1024,
-            ..ThresholdCompaction::default()
         };
         assert!(policy.needs_compaction(capacity, count, prepared.request().max_output_tokens)?);
         // No generation has started. A fresh process uses the verified count;
@@ -122,11 +120,196 @@ async fn responses_content_filter_and_unknown_incomplete_reasons_are_invalid() {
     }
 }
 
+/// Replay the live swarm's refusal through every protocol, beyond both the old
+/// retry limit and the schedule counter's range, then finish the original turn.
+#[tokio::test]
+async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> Result<()> {
+    use std::time::Duration;
+    struct RateLimited {
+        success: &'static str,
+        mixed: bool,
+        count: bool,
+        failure: acyclic_harness_core::ModelTransportFailure,
+        sent: Mutex<Vec<HttpRequest>>,
+        waits: Mutex<Vec<Duration>>,
+    }
+    impl HttpTransport for RateLimited {
+        fn now(&self) -> Duration {
+            crate::fixtures::now()
+        }
+        fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
+            self.waits.lock().unwrap().push(wait);
+            crate::fixtures::delay(wait)
+        }
+        fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+            Box::pin(async move {
+                let index = {
+                    let mut sent = self.sent.lock().unwrap();
+                    let index = sent.len();
+                    sent.push(request);
+                    index
+                };
+                if index < 300
+                    && !matches!(
+                        self.failure,
+                        acyclic_harness_core::ModelTransportFailure::Status(_)
+                    )
+                {
+                    return Err(crate::transport_failure(
+                        false,
+                        self.failure,
+                        "recorded transport failure",
+                    ));
+                }
+                if self.mixed && index == 301 {
+                    return Err(crate::transport_failure(
+                        false,
+                        acyclic_harness_core::ModelTransportFailure::Connect,
+                        "fixture",
+                    ));
+                }
+                if self.mixed && self.count && index == 302 {
+                    return Ok(HttpResponse {
+                        status: 200,
+                        request_id: None,
+                        retry_after: None,
+                        body: Box::pin(futures::stream::iter([Err(crate::transport_failure(
+                            false,
+                            acyclic_harness_core::ModelTransportFailure::Interrupted,
+                            "fixture",
+                        ))])),
+                    });
+                }
+                Ok(HttpResponse {
+                    status: if index < 300 {
+                        match self.failure {
+                            acyclic_harness_core::ModelTransportFailure::Status(status) => status,
+                            _ => unreachable!(),
+                        }
+                    } else if self.mixed && index == 300 {
+                        503
+                    } else {
+                        200
+                    },
+                    request_id: None,
+                    // No hint in the recorded failure. Also cover a provider wait
+                    // longer than max_delay_ms, before and after the former cap.
+                    retry_after: matches!(index, 0 | 299).then_some(Duration::from_secs(60)),
+                    body: if index == 0 {
+                        Box::pin(futures::stream::pending())
+                    } else {
+                        chunks(
+                            if index < 300 {
+                                r#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#
+                            } else {
+                                self.success
+                            },
+                            7,
+                        )
+                    },
+                })
+            })
+        }
+    }
+    for (adapter, success) in fixtures() {
+        for failure in [
+            acyclic_harness_core::ModelTransportFailure::Status(429),
+            acyclic_harness_core::ModelTransportFailure::Status(503),
+            acyclic_harness_core::ModelTransportFailure::Status(408),
+            acyclic_harness_core::ModelTransportFailure::Connect,
+            acyclic_harness_core::ModelTransportFailure::Interrupted,
+            acyclic_harness_core::ModelTransportFailure::Timeout,
+            acyclic_harness_core::ModelTransportFailure::Tls,
+        ] {
+            for (mixed, count) in [(false, false), (true, false), (true, true)] {
+                let transport = Arc::new(RateLimited {
+                    success: if count {
+                        r#"{"input_tokens":7}"#
+                    } else {
+                        success
+                    },
+                    mixed,
+                    count,
+                    failure,
+                    sent: Mutex::new(Vec::new()),
+                    waits: Mutex::new(Vec::new()),
+                });
+                let provider =
+                    provider_with(adapter, "https://recorded.invalid/v1", transport.clone());
+                let (request, mut dispatch) = request(&provider)?;
+                dispatch.operation_id = acyclic_harness_core::OperationId::from_bytes([31; 16]);
+                let events = if count {
+                    assert_eq!(
+                        provider
+                            .count_tokens(&request, 0)
+                            .now_or_never()
+                            .expect("count refusal body must not be polled")?
+                            .input_tokens,
+                        7
+                    );
+                    Vec::new()
+                } else {
+                    provider
+                        .generate(&request, dispatch)
+                        .try_collect::<Vec<_>>()
+                        .now_or_never()
+                        .expect("transient refusal must not wait for its diagnostic body")?
+                };
+                let exchanges = if mixed {
+                    if count { 304 } else { 303 }
+                } else {
+                    301
+                };
+                let sent = transport.sent.lock().unwrap();
+                assert_eq!(sent.len(), exchanges);
+                for request in sent.iter().skip(1) {
+                    assert_eq!(request.url, sent[0].url);
+                    assert_eq!(request.headers, sent[0].headers);
+                    assert_eq!(request.body, sent[0].body);
+                }
+                let waits = transport.waits.lock().unwrap();
+                assert_eq!(waits.len(), exchanges - 1);
+                if matches!(
+                    failure,
+                    acyclic_harness_core::ModelTransportFailure::Status(_)
+                ) {
+                    assert_eq!(waits[0], Duration::from_secs(60));
+                    assert_eq!(waits[299], Duration::from_secs(60));
+                }
+                assert!(
+                    waits[1..299]
+                        .iter()
+                        .all(|wait| !wait.is_zero() && *wait <= Duration::from_secs(8))
+                );
+                let calls: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        ModelEvent::ToolCall(call) => Some(call),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(calls.len(), usize::from(!count));
+                if let Some(call) = calls.first() {
+                    assert_eq!(call.call_id, dispatch.tool_call_id(0));
+                }
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| matches!(event, ModelEvent::Completed { .. }))
+                        .count(),
+                    usize::from(!count)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_excerpt() -> Result<()>
 {
-    for (adapter, body) in fixtures() {
-        for status in [401, 403, 408, 429, 500, 502, 503, 400, 404] {
+    for (adapter, _) in fixtures() {
+        for status in [401, 403, 400, 404] {
             let (provider, script) = provider(adapter, status);
             let (prepared, dispatch) = request(&provider)?;
             let error = provider
@@ -142,25 +325,6 @@ async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_exce
                 .map_err(|_| invalid("fixture lock"))?
                 .len();
             match status {
-                408 | 429 | 500..=599 => {
-                    // Redelivered within the default budget, then a typed refusal.
-                    assert_eq!(sent, 1 + usize::from(crate::RetrySpec::DEFAULT.attempts));
-                    let Error::ModelUnavailable {
-                        failure: acyclic_harness_core::ModelTransportFailure::Status(found),
-                        excerpt,
-                    } = &error
-                    else {
-                        panic!("{adapter:?}: {error}");
-                    };
-                    assert_eq!(*found, status);
-                    assert!(excerpt.len() <= crate::EXCERPT_BYTES && !excerpt.is_empty());
-                    assert!(!excerpt.chars().any(char::is_control));
-                    let flat: String = body
-                        .chars()
-                        .map(|c| if c.is_control() { ' ' } else { c })
-                        .collect();
-                    assert!(flat.trim().starts_with(excerpt.as_str()));
-                }
                 // Status-only failures never consume the response body.
                 401 | 403 => {
                     assert!(matches!(
@@ -325,6 +489,115 @@ impl HttpTransport for ToolLoop {
             })
         })
     }
+}
+
+#[tokio::test]
+async fn responses_reasoning_runs_survive_delegate_results_and_durable_replay() -> Result<()> {
+    // Swarmbench 20261111T003659Z-decipher-single-XS-0c16 emitted two distinct
+    // opaque reasoning items before spawn. Preserve the whole run in order:
+    // https://developers.openai.com/api/docs/guides/reasoning#keeping-reasoning-items-in-context
+    let native = [
+        r#"{"id":"rs_plan","type":"reasoning","content":[],"encrypted_content":"opaque-plan","summary":[]}"#,
+        r#"{"id":"rs_delegate","type":"reasoning","content":[],"encrypted_content":"opaque-delegate","summary":[]}"#,
+    ];
+    let mut first = String::new();
+    for (index, item) in native.iter().enumerate() {
+        first.push_str(&format!(
+            "data: {{\"type\":\"response.output_item.done\",\"output_index\":{index},\"item\":{item}}}\n\n"
+        ));
+    }
+    first.push_str(concat!(
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"call_id\":\"delegate\",\"name\":\"spawn\",\"arguments\":\"{\\\"name\\\":\\\"worker\\\"}\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+    ));
+    let script = Arc::new(ToolLoop {
+        replies: Mutex::new(VecDeque::from([
+            first,
+            concat!(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"delegated\"}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+            )
+            .into(),
+        ])),
+        sent: Mutex::new(Vec::new()),
+    });
+    let (mut provider, _) = provider(Adapter::Responses, 200);
+    provider.model.name = "gpt-6-luna".into();
+    provider.transport = crate::deadline::Bounded::new(script.clone(), crate::TimeoutSpec::DEFAULT);
+    let (initial, dispatch) = request(&provider)?;
+    let events = provider
+        .generate(&initial, dispatch)
+        .try_collect::<Vec<_>>()
+        .await?;
+    let events: Vec<ModelEvent> = serde_json::from_slice(&serde_json::to_vec(&events).unwrap())
+        .expect("durable response events");
+    let mut next = initial.request().clone();
+    next.tools.push(acyclic_harness_core::tool::ToolDefinition {
+        name: "spawn".into(),
+        revision: "1".into(),
+        description: "Delegate to a child".into(),
+        input_schema: json!({"type":"object"}),
+        output_schema: json!({}),
+        projection_schema: json!({}),
+    });
+    let mut call_id = None;
+    for event in events {
+        let part = match event {
+            ModelEvent::ReasoningBlock { block } => ModelContentPart::Reasoning { block },
+            ModelEvent::ToolCall(call) => {
+                call_id = Some(call.call_id.clone());
+                ModelContentPart::ToolCall(call)
+            }
+            _ => continue,
+        };
+        next.messages.push(ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(part),
+        });
+    }
+    next.messages.push(ModelMessage {
+        role: ModelRole::Tool,
+        content: ModelContent::Part(ModelContentPart::ToolResult {
+            call_id: call_id.ok_or_else(|| invalid("missing delegate call"))?,
+            name: "spawn".into(),
+            content: ToolResultContent::Json {
+                value: json!({"agent":"worker"}),
+            },
+        }),
+    });
+    let next = PreparedModelRequest::prepare(next, Limits::default(), None)?;
+    let next = PreparedModelRequest::decode(next.bytes(), Limits::default(), None)?;
+    let events = provider
+        .generate(
+            &next,
+            ModelDispatch {
+                step: 1,
+                request_digest: next.request_digest(),
+                ..dispatch
+            },
+        )
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert!(events.contains(&ModelEvent::Content {
+        delta: "delegated".into(),
+    }));
+    let sent = script.sent.lock().map_err(|_| invalid("fixture lock"))?;
+    assert_eq!(sent.len(), 2);
+    let body = json(&sent[1].body)?;
+    assert!(crate::validate_input(Adapter::Responses, &body).is_empty());
+    let input = body["input"].as_array().expect("Responses input");
+    let start = input
+        .iter()
+        .position(|item| item["id"] == "rs_plan")
+        .unwrap();
+    assert_eq!(input[start + 1]["id"], "rs_delegate");
+    assert_eq!(input[start + 2]["type"], "function_call");
+    assert_eq!(input[start + 3]["type"], "function_call_output");
+    let encoded = std::str::from_utf8(&sent[1].body).unwrap();
+    for item in native {
+        assert!(encoded.contains(item), "native item changed during replay");
+    }
+    Ok(())
 }
 
 #[tokio::test]

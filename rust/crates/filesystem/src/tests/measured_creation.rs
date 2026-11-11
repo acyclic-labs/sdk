@@ -270,11 +270,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     Ok(())
 }
 
-#[cfg(all(
-    feature = "distributed",
-    feature = "native-watch",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 mod source_bound_lost_ack {
     use super::*;
     use acyclic_fs::demand::{SourceReference, native::NativeDemandSource};

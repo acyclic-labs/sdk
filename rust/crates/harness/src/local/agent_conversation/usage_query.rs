@@ -11,24 +11,25 @@ use acyclic_harness_client::{AgentCommand, AgentReply};
 use std::{borrow::Cow, sync::Arc};
 
 /// One selected conversation's live usage frontier. Storage is independent of
-/// history length: the shared fixed-size totals and at most one pending call.
+/// history length: shared totals and one pending call per model purpose.
 /// No work occurs on redraw, and no transcript or child tree is traversed.
 pub struct UsageQuery {
     conversation: Arc<Conversation>,
     input: u64,
     end: u64,
-    pending: Option<ModelUsageProjection<'static>>,
+    pending: [Option<ModelUsageProjection<'static>>; 2],
     totals: ModelUsageTotals,
-    synchronized: bool,
-    closed: bool,
     context: Option<ContextUsage>,
     model: Option<(String, String)>,
     open_children: Option<u64>,
     prices: Arc<ModelPrices>,
+    synchronized: bool,
+    closed: bool,
 }
 
 /// Where the current page's last uncompleted contribution came from. Keeping
 /// its row index moves the original row only after the whole page is admitted.
+#[derive(Clone, Copy)]
 enum Pending {
     Existing,
     Row(usize),
@@ -44,8 +45,6 @@ impl Conversation {
     }
 
     /// Start a fresh projection against one admitted immutable price file.
-    /// Repricing is an explicit new query; no price lookup or timer is added
-    /// to the original journal follow, and original usage remains unchanged.
     pub fn usage_query_with_prices(self: &Arc<Self>, prices: Arc<ModelPrices>) -> UsageQuery {
         let totals = prices.totals();
         self.usage_projection(prices, totals)
@@ -60,11 +59,11 @@ impl Conversation {
             conversation: Arc::clone(self),
             input: 0,
             end: 0,
-            pending: None,
+            pending: [None, None],
             totals,
+            context: None,
             synchronized: false,
             closed: false,
-            context: None,
             model: None,
             open_children: None,
             prices,
@@ -79,20 +78,18 @@ impl UsageQuery {
         &self.totals
     }
 
-    /// Latest original prepared-context accounting at this query's frontier.
+    /// Latest original verified response occupancy, independent of cumulative usage.
     #[must_use]
     pub const fn context(&self) -> Option<ContextUsage> {
         self.context
     }
 
     /// Direct open-child count from the same actor cut that fences this page.
-    #[must_use]
     pub const fn open_children(&self) -> Option<u64> {
         self.open_children
     }
 
-    /// Latest response-model admission, independent of a provider response label.
-    #[must_use]
+    /// Latest response-model admission.
     pub fn model(&self) -> Option<(&str, &str)> {
         self.model
             .as_ref()
@@ -137,10 +134,9 @@ impl UsageQuery {
         else {
             return Err(unexpected());
         };
-        let Some(mut page) = page else {
+        let Some(page) = page else {
+            // A settled inbox tail is the producer's terminal frontier.
             self.closed = settled;
-            // An idle tail still carries the original actor's metadata. The
-            // next request parks on both inbox and actor continuations.
             let changed = !self.synchronized || self.open_children != Some(open_children);
             self.input = input;
             self.open_children = Some(open_children);
@@ -170,13 +166,16 @@ impl UsageQuery {
             // One fixed-size copy makes contribution admission atomic. Empty
             // pages advance only their frontier, without copying any totals.
             let mut totals = self.totals.clone();
-            let mut pending = Pending::Existing;
+            let mut pending = [Pending::Existing; 2];
             for (index, row) in page.items.iter().enumerate() {
+                let purpose = purpose_slot(row.purpose);
                 let projection = row.estimate(self.prices.price(row)).map_err(failed)?;
                 if row.completed {
-                    match pending {
+                    match pending[purpose] {
                         Pending::Existing => totals.replace(
-                            self.pending.as_ref().ok_or_else(missing_admission)?,
+                            self.pending[purpose]
+                                .as_ref()
+                                .ok_or_else(missing_admission)?,
                             &projection,
                         ),
                         Pending::Row(previous) => totals.replace(
@@ -188,30 +187,40 @@ impl UsageQuery {
                         Pending::None => return Err(missing_admission()),
                     }
                     .map_err(failed)?;
-                    pending = Pending::None;
+                    pending[purpose] = Pending::None;
                 } else {
+                    // A stopped producer has no terminal usage contribution.
+                    // Its unknown counters already remain in the aggregate;
+                    // the next admission takes this role's live slot.
                     totals.push(&projection).map_err(failed)?;
-                    pending = Pending::Row(index);
+                    pending[purpose] = Pending::Row(index);
                 }
             }
             if !finished {
-                match pending {
-                    Pending::Existing => {}
-                    Pending::None => self.pending = None,
-                    Pending::Row(index) => {
-                        self.pending = Some(owned(page.items.swap_remove(index), &self.prices)?);
+                let mut admitted = [None, None];
+                for (index, row) in page.items.into_iter().enumerate() {
+                    let purpose = purpose_slot(row.purpose);
+                    if matches!(pending[purpose], Pending::Row(selected) if selected == index) {
+                        admitted[purpose] = Some(owned(row, &self.prices)?);
+                    }
+                }
+                for (purpose, state) in pending.into_iter().enumerate() {
+                    match state {
+                        Pending::Existing => {}
+                        Pending::None => self.pending[purpose] = None,
+                        Pending::Row(_) => self.pending[purpose] = admitted[purpose].take(),
                     }
                 }
             }
             self.totals = totals;
         }
         if finished {
-            self.pending = None;
+            self.pending = [None, None];
         }
-        self.open_children = Some(open_children);
         if let Some(context) = page.context {
             self.context = Some(context);
         }
+        self.open_children = Some(open_children);
         if let Some(model) = model {
             self.model = Some(model);
         }
@@ -219,6 +228,13 @@ impl UsageQuery {
         self.end = if finished { 0 } else { page.end };
         self.synchronized = synchronized;
         Ok(changed)
+    }
+}
+
+pub(super) fn purpose_slot(purpose: ModelPurpose) -> usize {
+    match purpose {
+        ModelPurpose::Response => 0,
+        ModelPurpose::Summary => 1,
     }
 }
 

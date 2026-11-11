@@ -56,7 +56,7 @@ async fn native_root_admission_denies_owned_memory_before_native_io() -> TestRes
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn original_native_root_custody_and_current_reference_are_provider_owned() -> TestResult {
     use acyclic_fs::NativeMaterializationWork;

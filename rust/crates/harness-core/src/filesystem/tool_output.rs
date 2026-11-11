@@ -15,7 +15,7 @@ pub struct AgentObservation {
     /// The `fs:/` resource of [`TOOL_OUTPUT`]; a turn's output is under
     /// `{resource}/{turn}`.
     pub resource: String,
-    /// Sealed credential to follow the agent's conversation and status and to
+    /// Sealed credential to read and follow the agent's conversation and status and to
     /// list and read under `resource`, bound to the agent's audience; it lives
     /// no longer than the agent's scope and is revoked with it.
     pub credential: Vec<u8>,
@@ -43,6 +43,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         volume: &VolumeRef,
         clock: Arc<dyn UnixMillisClock>,
         calls: Option<&str>,
+    ) -> Result<AgentObservation> {
+        self.client_observation(authority, agent, volume, clock, calls, None)
+            .await
+    }
+
+    /// Host-authorized directory observation. Only a platform owning all roots
+    /// of the placement may request this credential; ordinary tree enrollment
+    /// always uses the single-agent observation entry.
+    pub(crate) async fn client_observation(
+        &self,
+        authority: &AgentAuthority<'_>,
+        agent: &crate::agent::AgentPath,
+        volume: &VolumeRef,
+        clock: Arc<dyn UnixMillisClock>,
+        calls: Option<&str>,
+        directory: Option<&str>,
     ) -> Result<AgentObservation> {
         let issuer = authority.issuer.native().ok_or_else(|| {
             Error::Invalid("client credential enrollment requires native custody".into())
@@ -100,26 +116,50 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let stream =
             |path: std::result::Result<acyclic_stream::StreamPath, crate::agent::Error>| {
                 path.map(|path| acyclic_stream::wire_codec::session::stream_resource(path.as_str()))
-                    .map_err(|error| Error::Invalid(format!("agent stream: {error}")))
+                    .map_err(Error::from)
             };
         let (conversation, status) = (stream(agent.conversation())?, stream(agent.status())?);
+        let children = stream(agent.children())?;
         let tree = agent.depth() == 0;
         let membership = stream(if tree {
             agent.membership_tree()
         } else {
             agent.membership()
         })?;
-        let follow: &[&str] = &["streams/follow"];
+        let observe: &[&str] = &["streams/read", "streams/follow"];
+        let explore: &[&str] = &["streams/list", "streams/read", "streams/follow"];
         let read: &[&str] = &["fs/list", "fs/read"];
         let invoke: &[&str] = &["actors/invoke"];
         let mut grants = vec![
-            (conversation.as_str(), false, follow),
-            (status.as_str(), false, follow),
-            (membership.as_str(), tree, follow),
+            (conversation.as_str(), false, observe),
+            (status.as_str(), true, observe),
+            (children.as_str(), true, explore),
+            (membership.as_str(), tree, observe),
             (resource.as_str(), true, read),
         ];
         if let Some(calls) = calls {
             grants.push((calls, false, invoke));
+        }
+        let directory_streams = [
+            (
+                acyclic_stream::wire_codec::session::stream_resource(crate::agent::AGENTS),
+                explore,
+            ),
+            (
+                acyclic_stream::wire_codec::session::stream_resource(crate::agent::STATUSES),
+                observe,
+            ),
+            (
+                acyclic_stream::wire_codec::session::stream_resource("harness/membership"),
+                observe,
+            ),
+        ];
+        if let Some(directory) = directory {
+            grants.push((directory, false, invoke));
+            for (stream, actions) in &directory_streams {
+                grants.push((stream.as_str(), true, actions));
+            }
+            grants.push(("fs:/", true, read));
         }
         let (credential, principal) =
             issuer.resource_credential(&authority.scope, &grants, seconds(clock.as_ref()))?;

@@ -79,6 +79,7 @@ async fn admitted_request_append_reads_only_the_manifest_as_history_grows() -> R
                 purpose: ModelPurpose::Response,
                 request: request.clone(),
                 request_digest: prepared.request_digest(),
+                context: None,
             };
             let before = io.receipt();
             journal
@@ -204,6 +205,7 @@ where
             purpose: ModelPurpose::Response,
             request: reference,
             request_digest: if forged { [7; 32] } else { digest },
+            context: None,
         };
         let io = PreparationIo::from_budget(
             acyclic_fs::performance::work_budget(64 * 1024 * 1024, 8 * 1024 * 1024),

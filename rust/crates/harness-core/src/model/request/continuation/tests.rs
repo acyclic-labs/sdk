@@ -20,11 +20,7 @@ fn request(count: usize) -> Result<ModelRequest> {
     })
 }
 
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[test]
 fn suffix_validation_work_is_flat_from_one_to_one_thousand_messages() -> Result<()> {
     for native in [false, true] {
@@ -112,7 +108,15 @@ fn continuing_preserves_canonical_bytes_digests_and_original_buffers() -> Result
         let mut complete = original.clone();
         complete.messages.push(text("new text"));
         let expected = PreparedModelRequest::prepare(complete, Limits::default(), None)?;
-        let prepared = PreparedModelRequest::prepare(original, Limits::default(), None)?;
+        let mut prepared = PreparedModelRequest::prepare(original, Limits::default(), None)?;
+        let original_bytes = prepared.bytes().to_vec();
+        let original_digest = prepared.request_digest();
+        prepared.retain_context_window(crate::context::ContextWindow {
+            input_tokens: 100,
+            capacity_tokens: 200,
+        })?;
+        assert_eq!(prepared.bytes(), original_bytes);
+        assert_eq!(prepared.request_digest(), original_digest);
         let ModelContent::Text(first) = &prepared.request().messages.first().unwrap().content
         else {
             unreachable!()
@@ -124,6 +128,10 @@ fn continuing_preserves_canonical_bytes_digests_and_original_buffers() -> Result
         assert_eq!(continued.request(), expected.request());
         assert_eq!(continued.bytes(), expected.bytes());
         assert_eq!(continued.request_digest(), expected.request_digest());
+        assert!(
+            continued.context_window().is_none(),
+            "an appended request reused the previous count"
+        );
         let ModelContent::Text(first) = &continued.request().messages.first().unwrap().content
         else {
             unreachable!()
@@ -269,7 +277,7 @@ fn changed_limits_revalidate_the_admitted_prefix() -> Result<()> {
             continuation
                 .finish(
                     Limits {
-                        context_messages: 9,
+                        context_messages: std::num::NonZeroUsize::new(9),
                         ..Limits::default()
                     },
                     None
@@ -312,10 +320,6 @@ fn instruction_reservations_span_the_immutable_prefix_and_new_suffix() -> Result
     Ok(())
 }
 
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[path = "ownership_tests.rs"]
 mod ownership_tests;

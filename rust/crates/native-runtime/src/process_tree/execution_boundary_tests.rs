@@ -101,7 +101,7 @@ fn granted_cwd_keeps_the_original_object_across_path_replacement() {
         // A replacement in the earlier validation/preparation interval must
         // instead refuse: openat2 cannot traverse this substituted symlink.
         let error = grant.prepare_launch(Some(cwd), None).unwrap_err();
-        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
         std::fs::remove_file(&selected).unwrap();
         std::fs::remove_dir(&held).unwrap();
     }

@@ -26,8 +26,10 @@ impl Accounting {
 pub struct ResolvedModel {
     // A selected model can use the registry's host, but cannot extend its lifetime.
     pub(crate) resolver: Option<Weak<dyn crate::CredentialResolver>>,
-    pub(crate) unbound_transport: Arc<dyn HttpTransport>,
+    // Retain a separate original only when binding changed its identity.
+    pub(crate) unbound_transport: Option<Arc<dyn HttpTransport>>,
     pub(crate) inputs: Option<Arc<crate::credentials::CredentialInputs>>,
+    // The active config is its own credential source unless the route changed.
     pub(crate) credential_config: Option<Arc<ProviderSpec>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) account_pin: Arc<std::sync::OnceLock<Option<blake3::Hash>>>,
@@ -90,9 +92,10 @@ impl ResolvedModel {
     /// Credentials are request inputs; resolving a model does not freeze them.
     pub(crate) fn current_credentials(&self) -> Result<Self> {
         let mut current = self.derived(self.model.clone(), self.profile, self.files.clone());
-        let (Some(inputs), Some(config)) = (&self.inputs, &self.credential_config) else {
+        let Some(inputs) = &self.inputs else {
             return Ok(current);
         };
+        let config = self.credential_config.as_ref().unwrap_or(&self.config);
         if config.authentication.secret_reference().is_some() || self.credential_scope.is_some() {
             return Ok(current);
         }
@@ -152,12 +155,19 @@ impl ResolvedModel {
             &current.config,
             current.key.take(),
             resolver.as_deref(),
-            self.unbound_transport.clone(),
+            self.unbound_transport
+                .as_ref()
+                .unwrap_or(&self.transport)
+                .clone(),
         )?;
         let (key, scope, transport) = binding.into_parts();
         current.key = key;
         current.credential_scope = scope;
         current.transport = crate::deadline::Bounded::new(transport, current.config.timeouts);
+        current.credential_config = (!Arc::ptr_eq(&current.config, config)).then(|| config.clone());
+        let original = self.unbound_transport.as_ref().unwrap_or(&self.transport);
+        current.unbound_transport =
+            (!Arc::ptr_eq(&current.transport, original)).then(|| original.clone());
         Ok(current)
     }
 
@@ -326,16 +336,21 @@ impl ModelProvider for ResolvedModel {
     fn bind_content(
         &self,
         reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Option<Arc<dyn ModelProvider>> {
-        Some(Arc::new(self.derived(
-            self.model.clone(),
-            self.profile,
-            crate::files::Files {
-                reader: Some(reader),
-                maximum_bytes: maximum_bytes.min(self.files.maximum_bytes),
-            },
-        )))
+        Some(Arc::new(
+            self.derived(
+                self.model.clone(),
+                self.profile,
+                crate::files::Files {
+                    reader: Some(reader),
+                    maximum_bytes: maximum_bytes
+                        .into_iter()
+                        .chain(self.files.maximum_bytes)
+                        .min(),
+                },
+            ),
+        ))
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_model(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
@@ -366,13 +381,14 @@ impl ModelProvider for ResolvedModel {
         ceiling: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        acyclic_harness_core::NativeFutureBundle<
+        acyclic_fs::NativeFutureBundle<
             'a,
             (ModelTokenCount, acyclic_fs::NativeAllocation),
+            acyclic_harness_core::Error,
         >,
     > {
         self.context_capacity_with_native_work(&request.request().model, work)?;
-        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let cancelled = work.cancellation_wait()?;
             let exchange = crate::counting::count(self, request, ceiling, Some(work));
             let cancelled = core::pin::pin!(cancelled);
@@ -402,9 +418,10 @@ impl ModelProvider for ResolvedModel {
         dispatch: ModelDispatch,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        acyclic_harness_core::NativeFutureBundle<
+        acyclic_fs::NativeFutureBundle<
             'a,
             acyclic_harness_core::model::NativeModelStream<'a>,
+            acyclic_harness_core::Error,
         >,
     > {
         crate::native::generate(self, request, dispatch, work)
@@ -417,12 +434,13 @@ impl ModelProvider for ResolvedModel {
         _: &'a [ModelEvent],
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        acyclic_harness_core::NativeFutureBundle<
+        acyclic_fs::NativeFutureBundle<
             'a,
             (Option<Vec<ModelEvent>>, acyclic_fs::NativeAllocation),
+            acyclic_harness_core::Error,
         >,
     > {
-        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?))
         })
     }

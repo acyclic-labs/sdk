@@ -87,7 +87,7 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
         ],
     )?;
     assert!(matches!(
-        offline.read_path("notes.txt", None),
+        offline.read_path("notes.txt", acyclic_harness_core::tool::ReadPathKind::File, None),
         Err(acyclic_harness_core::Error::Target(refusal))
             if refusal.refused == acyclic_harness_core::agent::Refused::Offline
     ));
@@ -120,10 +120,23 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
     for targets in [directory as Arc<dyn TargetResolver>, targets] {
         assert!(
             targets
-                .read_path(".volumes/scratch/file.txt", None)
+                .read_path(
+                    ".volumes/scratch/file.txt",
+                    acyclic_harness_core::tool::ReadPathKind::File,
+                    None
+                )
                 .is_err()
         );
-        assert_eq!(targets.read_path("notes.txt", None)?.0, storage.volume());
+        assert_eq!(
+            targets
+                .read_path(
+                    "notes.txt",
+                    acyclic_harness_core::tool::ReadPathKind::File,
+                    None
+                )?
+                .0,
+            storage.volume()
+        );
         let mut bindings = Bindings::local();
         bindings.targets = Some(targets);
         bindings.scope = RuntimeScope::new(
@@ -489,10 +502,11 @@ async fn committed_handover(refused_close: bool) -> Result {
                 )?
                 .for_agent(
                     agent.clone(),
-                    vec![acyclic_harness_core::agent::VolumeBinding {
-                        name: "project".into(),
-                        volume: workspace.selected_volume().clone(),
-                    }],
+                    vec![acyclic_harness_core::agent::WorkspaceEntry::initial_volume(
+                        acyclic_harness_core::agent::WorkspaceRole::User,
+                        "project".into(),
+                        workspace.selected_volume().clone(),
+                    )],
                 ),
         );
         let oversized = acyclic_harness_core::tool::ToolInvocation {
@@ -514,6 +528,35 @@ async fn committed_handover(refused_close: bool) -> Result {
                 .dispatch(&oversized, Some(&context), None)?
                 .is_some()
         );
+        // The remote protocol currently carries a whole volume. A view must
+        // never gain broader shell authority by losing its mode or root.
+        for (root, mode) in [
+            ("", acyclic_harness_core::agent::WorkspaceMode::ReadOnly),
+            (
+                "subtree",
+                acyclic_harness_core::agent::WorkspaceMode::ReadWrite,
+            ),
+        ] {
+            let mut entry = acyclic_harness_core::agent::WorkspaceEntry::initial_volume(
+                acyclic_harness_core::agent::WorkspaceRole::User,
+                "project".into(),
+                workspace.selected_volume().clone(),
+            );
+            entry.root = root.into();
+            entry.mode = mode;
+            let restricted = Arc::new(task.as_ref().clone().for_agent(agent.clone(), vec![entry]));
+            let context = acyclic_harness_core::runtime::ToolContext::new(
+                restricted,
+                oversized.operation_id,
+                &oversized.call_id,
+            )?;
+            assert!(matches!(
+                remote.executor.dispatch(&oversized, Some(&context), None),
+                Err(acyclic_harness_core::Error::FilesystemAccessConfiguration(
+                    _
+                ))
+            ));
+        }
         let registry = acyclic_harness_core::tools::defaults()?;
         let shell = &registry
             .get("shell", None, None)?

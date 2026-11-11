@@ -47,7 +47,7 @@ fn file(agent: AgentId, path: &str, media_type: &str, bytes: &[u8]) -> Result<Fi
     )
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Result<()> {
     const RECORD: &[u8] = br#"{"invocation":{"operation_id":"00000000-0000-0000-0000-000000000001","call_id":"call","name":"echo","arguments":{"value":1}},"metadata":{"signature":"opaque","blocks":[{"thinking":"plan"}]}}"#;
@@ -149,7 +149,7 @@ fn canonical_checkpoint_selects_exact_bounded_delta_from_ten_thousand_records() 
     }
     let current = message(10_001, MessageKind::User, content, None);
     let limits = Limits {
-        context_messages: 3,
+        context_messages: std::num::NonZeroUsize::new(3),
         ..Limits::default()
     };
     assert!(select_turn_delta(&conversation, &current, true, None, limits).is_err());
@@ -194,7 +194,7 @@ fn canonical_checkpoint_selects_exact_bounded_delta_from_ten_thousand_records() 
             true,
             Some((&checkpoint, pinned.clone())),
             Limits {
-                context_messages: 2,
+                context_messages: std::num::NonZeroUsize::new(2),
                 ..limits
             }
         )
@@ -291,8 +291,8 @@ async fn manifest_projection_checks_limit_before_resolution_and_exact_count_afte
         ..Resolver::default()
     };
     let limits = Limits {
-        context_messages: 256,
-        attachments: 1,
+        context_messages: std::num::NonZeroUsize::new(256),
+        attachments: std::num::NonZeroUsize::new(1),
         render_bytes: 128 * 1024,
         ..Limits::default()
     };
@@ -311,7 +311,7 @@ async fn manifest_projection_checks_limit_before_resolution_and_exact_count_afte
     );
     assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
     let limits = Limits {
-        attachments: 2,
+        attachments: std::num::NonZeroUsize::new(2),
         ..limits
     };
     assert!(
@@ -366,19 +366,19 @@ async fn json_projection_checks_resolved_bytes_before_parsing() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_manifest_resolution_never_calls_the_ordinary_resolver() -> Result<()> {
     native_manifest_resolution(false).await
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_manifest_resolution_rejects_foreign_bytes() -> Result<()> {
     native_manifest_resolution(true).await
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
     struct NativeResolver {
         bytes: acyclic_stream::OwnedBytes,
@@ -468,16 +468,21 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
         Invalid
     };
     assert!(matches!(
-        attachments::resolve(&message, &resolver, 1, Some(&io)).await,
+        attachments::resolve(&message, &resolver, std::num::NonZeroUsize::new(1), Some(&io)).await,
         Err(Error::NativeBoundary { code, .. }) if code == expected
     ));
     assert_eq!(resolver.ordinary.load(Ordering::SeqCst), 0);
     assert_eq!(resolver.native.load(Ordering::SeqCst), 1);
     work.cancellation().cancel();
     assert!(
-        attachments::resolve(&message, &resolver, 1, Some(&io))
-            .await
-            .is_err()
+        attachments::resolve(
+            &message,
+            &resolver,
+            std::num::NonZeroUsize::new(1),
+            Some(&io)
+        )
+        .await
+        .is_err()
     );
     assert_eq!(resolver.native.load(Ordering::SeqCst), 1);
     Ok(())

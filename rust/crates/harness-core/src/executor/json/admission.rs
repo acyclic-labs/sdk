@@ -438,14 +438,17 @@ impl<const TRACK_SCRATCH: bool> Lexer<TRACK_SCRATCH> {
             }
         };
         if item {
-            if self.items >= bounds.maximum_items {
+            if bounds
+                .maximum_items
+                .is_some_and(|maximum| self.items >= maximum)
+            {
                 return Err(boundary("JSON exceeds declared structural bound", code));
             }
             if depth > bounds.maximum_depth {
                 return Err(input_error(JsonInputError::Depth, code));
             }
             charge.borrow_mut()(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-            self.items += 1;
+            self.items = checked(self.items.checked_add(1), "JSON item count overflow")?;
         }
         Ok(item)
     }
@@ -472,8 +475,11 @@ fn laid_out(
     code: Option<crate::wire::ErrorCode>,
     charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
 ) -> Result<JsonValueShape> {
-    bounds.maximum_depth = bounds.maximum_depth.min(256);
-    if bytes.len() as u64 > bounds.maximum_bytes {
+    bounds.maximum_depth = bounds.maximum_depth.min(RECORD_MAXIMUM_DEPTH);
+    if bounds
+        .maximum_bytes
+        .is_some_and(|maximum| bytes.len() as u64 > maximum)
+    {
         return Err(boundary("JSON input exceeds declared byte bound", code));
     }
     let charge = RefCell::new(charge);
@@ -527,11 +533,11 @@ fn finish(
 ) -> Result<JsonValueShape> {
     if items
         .checked_add(counts.nodes)
-        .is_none_or(|items| items > bounds.maximum_items)
+        .is_none_or(|items| bounds.maximum_items.is_some_and(|maximum| items > maximum))
     {
         return Err(boundary("JSON item limit exceeded", code));
     }
-    if counts.depth > bounds.maximum_depth.min(256) {
+    if counts.depth > bounds.maximum_depth.min(RECORD_MAXIMUM_DEPTH) {
         return Err(input_error(JsonInputError::Depth, code));
     }
     Ok(JsonValueShape {
@@ -546,7 +552,7 @@ fn finish(
         origin,
     })
 }
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const fn lexical_json_diagnostic_bytes() -> u64 {
     "JSON exceeds declared structural bound".len() as u64
 }
@@ -596,7 +602,7 @@ pub(super) fn admit_typed(
         // same syntax error, so report that cause. The parse keeps one byte
         // per open container in a vector that doubles, at most twice the
         // admitted depth while it grows.
-        let scratch = u64::from(bounds.maximum_depth.min(256)) * 2;
+        let scratch = u64::from(bounds.maximum_depth.min(RECORD_MAXIMUM_DEPTH)) * 2;
         charge(JsonCodecCharge::Retain { bytes: scratch })?;
         let parsed = serde_json::from_slice::<serde::de::IgnoredAny>(bytes);
         charge(JsonCodecCharge::Release { bytes: scratch })?;
@@ -613,8 +619,8 @@ pub(super) fn admit_typed(
 #[cfg(test)]
 pub(crate) fn layout_reservation<T: super::layout::HeapLayout>(bytes: &[u8]) -> Option<u64> {
     let bounds = JsonBounds {
-        maximum_bytes: u64::MAX,
-        maximum_items: u64::MAX,
+        maximum_bytes: Some(u64::MAX),
+        maximum_items: None,
         maximum_depth: 256,
     };
     admit_json_layout(bytes, bounds, None, T::LAYOUT, None, &mut |_| Ok(()))

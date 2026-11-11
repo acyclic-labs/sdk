@@ -73,7 +73,8 @@ test("event owner loss releases metadata, placement and queued waits", async () 
         if (step === phase) { entered.resolve(); await producer.promise; }
       };
       const storage: EventStorage = {
-        get: key => values.get(key), entries: () => [...values], transaction: action => action(),
+        get: key => values.get(key), delete: key => { values.delete(key); },
+    entries: (prefix, after, limit) => [...values].filter(([key]) => key.startsWith(prefix) && key > after).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, limit), transaction: action => action(),
         put: (key, value) => { ++calls.write; values.set(key, value); },
         alarm: async () => { ++calls.alarm; await wait("alarm"); },
         flush: async () => { ++calls.flush; await wait("flush"); },
@@ -155,7 +156,8 @@ test("cancelled queued Session open retains its predecessor's admission fence", 
   let alarms = 0;
   let overtook = false;
   const storage: EventStorage = {
-    get: key => values.get(key), entries: () => [...values], transaction: action => action(),
+    get: key => values.get(key), delete: key => { values.delete(key); },
+    entries: (prefix, after, limit) => [...values].filter(([key]) => key.startsWith(prefix) && key > after).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, limit), transaction: action => action(),
     put: (key, value) => { values.set(key, value); },
     alarm: async () => { if (++alarms > 1 && pending) overtook = true; },
     flush: async () => { entered.resolve(); await producer.promise; pending = false; },
@@ -187,7 +189,7 @@ test("cancelled queued Session open retains its predecessor's admission fence", 
 test("session trust is plain public data, verified in the host module and fenced on owner loss", async () => {
   const { fixture, authority, trust } = await setup();
   const unexpected = async (): Promise<never> => { throw new Error("no storage or provider work is expected"); };
-  const storage: EventStorage = { get: () => undefined, entries: () => [], transaction: action => action(),
+  const storage: EventStorage = { get: () => undefined, delete: () => {}, entries: () => [], transaction: action => action(),
     put: () => undefined, alarm: unexpected, flush: unexpected };
   const ledger: StreamLedger = { register: unexpected, dispatch: unexpected, open: unexpected,
     objects: new WasmObjects({ port: { open: unexpected } }) };

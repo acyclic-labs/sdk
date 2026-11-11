@@ -70,6 +70,18 @@ pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 pub const MAX_OUTPUT_READ_BYTES: u32 = 65_536;
 /// Maximum events returned in one page.
 pub const MAX_EVENT_PAGE_SIZE: u32 = 1_024;
+/// Normalize a positive request hint to one physical page or output chunk.
+/// Continue using the returned page cursor or output offset for more data.
+///
+/// # Errors
+/// Rejects zero request hints or zero chunk widths.
+pub fn page_limit(requested: u64, chunk: u32) -> Result<u32, ProviderError> {
+    if requested == 0 || chunk == 0 {
+        return Err(ProviderError::Invalid("page size must be positive".into()));
+    }
+    Ok(u32::try_from(requested).unwrap_or(chunk).min(chunk))
+}
+
 /// Default automatic idle suspension delay.
 pub const DEFAULT_IDLE_SUSPEND: Duration = Duration::from_secs(15);
 
@@ -88,14 +100,12 @@ mod simulation;
 pub use simulation::*;
 
 /// Native process execution over the same public output stream.
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod local;
 
-#[cfg(feature = "grpc")]
 pub mod grpc;
-#[cfg(feature = "grpc")]
 mod obs;
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use grpc::Tls;
 
 /// Shared provider qualification, checked benchmarks and request accounting.

@@ -48,9 +48,7 @@ impl ModelPrefix {
         hasher.update(b"harness:model-prefix:ordered:v1");
         for message in &request.request().messages {
             hasher.update(&crate::executor::json::canonical_json_digest(
-                message,
-                u64::MAX,
-                &mut None,
+                message, None, &mut None,
             )?);
         }
         Ok(Self {
@@ -66,7 +64,6 @@ impl ModelPrefix {
         &self,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             return io.encode(self, io.remaining()?.bytes_encoded, true);
         }
@@ -169,17 +166,11 @@ impl PreparedModelRequest {
                 ));
             }
 
-            let (bytes, hold) = crate::conversation::verified_content_bytes(
-                verifier,
-                &reference,
-                reference.descriptor().byte_length(),
-                None,
-                io,
-            )
-            .await?;
+            let (bytes, hold) =
+                crate::conversation::verified_content_bytes(verifier, &reference, None, None, io)
+                    .await?;
             let _bytes_hold = hold;
             let segment: ModelPrefix = match io {
-                #[cfg(feature = "filesystem")]
                 Some(io) => crate::filesystem::retain_decoded(io.decode(
                     std::marker::PhantomData::<ModelPrefix>,
                     &bytes,
@@ -188,10 +179,8 @@ impl PreparedModelRequest {
                 _ => crate::contract::json_from_slice(&bytes)
                     .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
             };
-            #[cfg(feature = "filesystem")]
             let _canonical_hold;
             let canonical = segment.canonical_bytes(io)?;
-            #[cfg(feature = "filesystem")]
             {
                 _canonical_hold = io
                     .map(|io| io.guard_bytes(&canonical))
@@ -221,7 +210,10 @@ impl PreparedModelRequest {
                 .total_messages
                 .checked_add(local_messages)
                 .ok_or_else(|| Error::Invalid("model prefix message count overflow".into()))?;
-            if total > limits.context_messages {
+            if limits
+                .context_messages
+                .is_some_and(|maximum| total > maximum.get())
+            {
                 return Err(Error::Invalid(
                     "inherited model context exceeds message limit".into(),
                 ));
@@ -243,17 +235,14 @@ fn update_hasher(
     bytes: &[u8],
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    #[cfg(feature = "filesystem")]
     let charge = acyclic_fs::WorkCounters {
         bytes_hashed: bytes.len() as u64,
         ..Default::default()
     };
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.preflight(charge)?;
     }
     hasher.update(bytes);
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.charge(charge)?;
     }

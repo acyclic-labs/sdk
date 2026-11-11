@@ -79,9 +79,8 @@ where
     // an oracle and is not used to choose execution behaviour.
     object.insert("expect".into(), serde_json::json!({"text":""}));
     let mut case = Scenario::from_value(recipe)?;
-    let limits = case.execution_limits()?;
     publish(&storage, &case.seed).await?;
-    let (executor, provider, source) = configure(&mut case, limits)?;
+    let (executor, provider, source) = configure(&mut case);
     let input = TurnInput {
         max_steps: case.max_steps,
         operation_id: OperationId::new(),
@@ -90,13 +89,12 @@ where
     };
     let operation = input.operation_id;
     let journal = storage.journal();
-    let configured = if let Some(discovery) = &case.discovery {
-        discovery
+    let configured = match (executor, &case.discovery) {
+        (Ok(executor), Some(discovery)) => discovery
             .stage(&storage)
             .await
-            .and_then(|stage| executor.with_context_stage(Arc::new(stage)))
-    } else {
-        Ok(executor)
+            .and_then(|stage| executor.with_context_stage(Arc::new(stage))),
+        (result, _) => result,
     };
     let execution = match configured {
         Err(error) => Execution {

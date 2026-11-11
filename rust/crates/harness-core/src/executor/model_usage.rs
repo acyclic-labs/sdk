@@ -311,6 +311,23 @@ pub async fn usage_page(
         {
             context = Some(context_usage::read(journal, projection).await?);
         }
+        if let ExecutionEvent::ModelStarted {
+            purpose: ModelPurpose::Response,
+            context: window,
+            ..
+        } = &record.event
+        {
+            context = Some(match window {
+                Some(window) => {
+                    window.validate()?;
+                    ContextUsage::Counted {
+                        input_tokens: window.input_tokens,
+                        capacity_tokens: window.capacity_tokens,
+                    }
+                }
+                None => ContextUsage::Unavailable,
+            });
+        }
         if let Some(usage) = project_record(journal, operation, agent_path, &record).await? {
             items.push(usage);
         }
@@ -335,6 +352,7 @@ pub(super) async fn project_record(
             purpose,
             request_digest,
             request,
+            ..
         } => {
             if record.operation_id != operation || record.sequence == 0 {
                 return Err(Error::Storage("usage source admission failed: foreign operation or zero journal sequence; recovery: select the original operation's committed journal record".into()));

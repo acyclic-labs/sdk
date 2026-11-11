@@ -46,6 +46,30 @@ pub(super) enum ContentPublication<'a> {
 }
 
 impl TaskContext {
+    /// Preserve a mounted publisher's routing, or select the ordinary home
+    /// binding before handing a relative path to a single-volume publisher.
+    pub(super) fn tool_publication_path<'a>(
+        &'a self,
+        path: &'a str,
+        io: Option<&ContentIo>,
+    ) -> Result<(Option<&'a ContentBindings>, &'a str)> {
+        if crate::layers::read_only(path) {
+            return Err(content_error(
+                io,
+                ErrorCode::Unauthorized,
+                "file publication path is read-only; recovery: write under .volumes/home/",
+            )
+            .tool_input());
+        }
+        if let Some((binding, relative)) = self.private_content_path(path, io)? {
+            return Ok((Some(binding), relative));
+        }
+        Ok(self.home_content_path(path).map_or_else(
+            || (self.tool_content(None), path),
+            |(binding, relative)| (Some(binding), relative),
+        ))
+    }
+
     /// A cache commit must not advance the source volume's generation. Only
     /// an independently bound private destination can retain projections.
     pub(crate) fn projection_destination(
@@ -215,15 +239,19 @@ impl TaskContext {
         io: Option<&ContentIo>,
     ) -> Result<()> {
         if let Some(source) = source {
-            self.authorize_file_read(source, scope, scope.grants(), None, io)?;
+            self.authorize_file_read(
+                source,
+                scope,
+                scope.grants(),
+                super::content_read::ReadExtent::Metadata,
+                io,
+            )?;
         }
-        publication_destination(
-            self.tool_content(source.map(FileRef::volume)),
-            scope,
-            source,
-            path,
-            io,
-        )?;
+        let (binding, path) = match source {
+            Some(source) => (self.tool_content(Some(source.volume())), path),
+            None => self.tool_publication_path(path, io)?,
+        };
+        publication_destination(binding, scope, source, path, io)?;
         Ok(())
     }
 
@@ -243,7 +271,12 @@ impl TaskContext {
         scope: &RuntimeScope,
         io: Option<&ContentIo>,
     ) -> Result<(FileRef, u64)> {
-        if bytes.len() as u64 > scope.limits.file_bytes || path.len() > scope.limits.path_bytes {
+        if bytes.len() as u64 > scope.limits.file_bytes
+            || scope
+                .limits
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+        {
             return Err(content_error(
                 io,
                 ErrorCode::Invalid,
@@ -269,7 +302,13 @@ impl TaskContext {
         writer.supports_stage(io)?;
         let output = match publication {
             ContentPublication::Replacement(source) => {
-                self.authorize_file_read(source, scope, scope.grants(), None, io)?;
+                self.authorize_file_read(
+                    source,
+                    scope,
+                    scope.grants(),
+                    super::content_read::ReadExtent::Body,
+                    io,
+                )?;
                 if source.volume() != volume || source.path() != relative.as_ref() {
                     return Err(content_error(
                         io,
@@ -440,11 +479,7 @@ async fn finish_publication<'io>(
             "content publisher returned another file identity".into(),
         ));
     }
-    #[cfg(feature = "filesystem")]
     let retained = output.1.as_ref().map_or(0, |hold| hold.bytes());
-    #[cfg(not(feature = "filesystem"))]
-    let retained = 0;
-    #[cfg(feature = "filesystem")]
     if output.1.is_none()
         && let Some(io) = io
     {
@@ -462,17 +497,14 @@ async fn finish_publication<'io>(
         .verify_publication(file, file.descriptor().byte_length(), io)?
         .await?;
     let (file, hold) = output;
-    #[cfg(feature = "filesystem")]
     if let Some(hold) = hold {
         hold.into_retained()?;
     }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = hold;
     Ok((file, retained))
 }
 
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
 

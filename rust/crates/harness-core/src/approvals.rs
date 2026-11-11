@@ -217,7 +217,6 @@ impl ApprovalPolicy {
                 Approver::Parent => "parent",
             };
             if principal.is_empty()
-                || principal.len() > 255
                 || principal.starts_with("parent:")
                 || principal.starts_with("model-start:")
                 || principal == "policy:exhausted"
@@ -341,11 +340,12 @@ impl ToolPolicy for ApprovalGate {
         _: &'a ToolInvocation,
         _: &'a RuntimeScope,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
-    {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    ) -> Result<
+        crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
+    > {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-            return crate::NativeFutureBundle::new(work, || async move {
+            return acyclic_fs::NativeFutureBundle::new(work, || async move {
                 use crate::store::history::HistoryIo;
                 let mut io = crate::store::HistoryWork::new(
                     crate::filesystem::PreparationIo::from_native_work(work)?,
@@ -371,7 +371,7 @@ impl ToolPolicy for ApprovalGate {
             frame_bytes: 0,
         })
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn identity_with_native_work(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,

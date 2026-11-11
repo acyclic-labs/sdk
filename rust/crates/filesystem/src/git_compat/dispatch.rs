@@ -224,6 +224,7 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
                 GitFilesystemAction::Join {
                     target_tree: workspace,
                     source_workspace: source.workspace_id,
+                    source_generation: None,
                     rebase: false,
                     tracked_paths,
                 },
@@ -280,6 +281,7 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
                 GitFilesystemAction::Join {
                     target_tree: workspace,
                     source_workspace: source.workspace_id,
+                    source_generation: None,
                     rebase: true,
                     tracked_paths,
                 },

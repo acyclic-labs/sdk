@@ -1,15 +1,23 @@
 //! Pure UI files over pinned stream and volume data. Shared by cached clients and filesystem sources.
 pub mod blocks;
-#[cfg(feature = "filesystem")]
 mod filesystem;
 mod project;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod stream;
 use crate::command_request::CommandFileRoot;
-#[cfg(feature = "filesystem")]
 pub use filesystem::{FilesystemCut, FilesystemView};
-pub use project::{Affected, Children, Cut, Node, NodeRef, Page, View};
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use project::{Affected, AgentRow, Children, Cut, Node, NodeRef, Page, View};
+
+/// Case-insensitive subsequence matching over an already selected title.
+#[must_use]
+pub fn title_matches(title: &str, query: &str) -> bool {
+    let mut title = title.chars().flat_map(char::to_lowercase);
+    query
+        .chars()
+        .flat_map(char::to_lowercase)
+        .all(|needle| title.any(|c| c == needle))
+}
+#[cfg(not(target_arch = "wasm32"))]
 pub use stream::{StreamUiCut, StreamUiProvider};
 
 /// Projection or untrusted document failure.

@@ -4,7 +4,7 @@ index cbe09e94af..422dac6430 100644
 +++ a/rust/crates/harness-core/src/hooks/mod.rs
 @@ -300,7 +300,7 @@ impl Hooks {
              let hooks: Vec<_> = self.candidates(event, input, registry)?.collect();
-             let quota = capture_quota(maximum_bytes, hooks.len());
+             let quota = maximum_bytes.map(|maximum| capture_quota(maximum, hooks.len()));
              let original = input.tool_input().unwrap_or(&Value::Null);
 -            let reason = match chain::judge(
 +            return chain::judge(
@@ -34,4 +34,4 @@ index cbe09e94af..422dac6430 100644
 +            .await;
          }
          let commands = self.commands(event, input, registry)?;
-         let quota = capture_quota(maximum_bytes, commands.clone().count());
+         let quota = maximum_bytes.map(|maximum| capture_quota(maximum, commands.clone().count()));

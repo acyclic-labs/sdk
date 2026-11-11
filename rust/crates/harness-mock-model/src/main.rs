@@ -13,6 +13,7 @@ struct Host {
     record: recorder::Recorder,
     sequence: u64,
     native_authorization: Option<hyper::header::HeaderValue>,
+    chunks: std::collections::BTreeMap<(String, String), tokio::sync::oneshot::Sender<()>>,
 }
 
 mod recorder;
@@ -62,6 +63,22 @@ fn answer(
         );
     }
     let (namespace, endpoint) = route(path);
+    if endpoint == "ack" {
+        let acknowledged = body
+            .get("chunk")
+            .and_then(Value::as_str)
+            .and_then(|chunk| {
+                host.chunks
+                    .remove(&(namespace.to_owned(), chunk.to_owned()))
+            })
+            .is_some_and(|sender| sender.send(()).is_ok());
+        let (committed, receive) = tokio::sync::oneshot::channel();
+        let _ = committed.send(Ok(()));
+        return Ok(RecordedReply {
+            reply: response(if acknowledged { 204 } else { 409 }, "json", Body::empty()),
+            committed: receive,
+        });
+    }
     let count = matches!(
         endpoint,
         "count" | "responses/input_tokens" | "messages/count_tokens"
@@ -83,10 +100,42 @@ fn answer(
             host.engine
                 .reply_events(namespace, endpoint, &body, bound, tokens.unwrap_or(0))
         }) {
-            let chunks = stream::iter(
-                events
-                    .into_iter()
-                    .map(|text| Ok::<_, Infallible>(Bytes::from(text))),
+            let mut gates = bound
+                .as_ref()
+                .expect("bound SSE reply")
+                .pause_after
+                .iter()
+                .map(|marker| {
+                    let (sender, receiver) = tokio::sync::oneshot::channel();
+                    host.chunks
+                        .insert((namespace.to_owned(), marker.clone()), sender);
+                    (marker.clone(), receiver)
+                })
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let events = events
+                .into_iter()
+                .map(|text| {
+                    let marker = gates
+                        .keys()
+                        .find(|marker| {
+                            let encoded = serde_json::to_string(marker).expect("string encoding");
+                            text.contains(&encoded[1..encoded.len() - 1])
+                        })
+                        .cloned();
+                    let gate = marker.and_then(|marker| gates.remove(&marker));
+                    (text, gate)
+                })
+                .collect::<Vec<_>>();
+            let chunks = stream::unfold(
+                (events.into_iter(), None),
+                |(mut events, gate)| async move {
+                    if let Some(gate) = gate {
+                        let _: Result<(), tokio::sync::oneshot::error::RecvError> = gate.await;
+                    }
+                    events.next().map(|(text, gate)| {
+                        (Ok::<_, Infallible>(Bytes::from(text)), (events, gate))
+                    })
+                },
             );
             let hold = bound.as_ref().is_ok_and(|step| step.hold);
             let tail = stream::once(async move {
@@ -258,6 +307,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         record: recorder::Recorder::open(File::create(record)?)?,
         sequence: 0,
         native_authorization,
+        chunks: Default::default(),
     }));
     println!("{}", json!({"event":"ready","port":address.port()}));
     std::io::stdout().flush()?;

@@ -51,14 +51,23 @@ async fn save_unaccounted_request(
         .prepare_transformed_request(&context_input, base)
         .await?;
     context.messages = prepared.request().messages.clone();
-    let projection = json!({
-        "context": context,
-        "steering": null,
-        "canonical": null,
-        "checkpoint": null,
-    });
-    let projection =
-        stage_json(journal, input.operation_id, "context:0", &projection, None).await?;
+    let projection = transcript::stage_projection(
+        journal,
+        input.operation_id,
+        "context:0",
+        &ResponseProjection {
+            context,
+            steering: None,
+            canonical: None,
+            checkpoint: None,
+            working: None,
+            accounting: None,
+        },
+        &prepared,
+        None,
+        None,
+    )
+    .await?;
     journal
         .append(
             input.operation_id,
@@ -171,6 +180,7 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
                 purpose: ModelPurpose::Response,
                 request_digest: prepared.request_digest(),
                 request: reference,
+                context: None,
             },
             None,
         )?

@@ -1,7 +1,7 @@
 use super::*;
 
 impl StockExecutor {
-    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
         self
@@ -25,9 +25,9 @@ impl StockExecutor {
             context,
             tools,
             epoch_tools: None,
-            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             hooks: None,
-            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             prompt_block: None,
             limits: Limits::default(),
             tool_scope: RuntimeScope::default(),
@@ -81,7 +81,6 @@ impl StockExecutor {
         self
     }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) fn with_automatic_compaction(mut self) -> Result<Self> {
         if self.compaction.is_none() {
             self.compaction = Some(crate::context::CompactionPolicy::for_output(
@@ -108,9 +107,9 @@ impl StockExecutor {
         Ok(self)
     }
 
-    /// Binds request assembly and tool selection to one frozen context epoch:
-    /// every request of this executor renders exactly its manifest as the
-    /// prefix, whatever its sources hold now.
+    /// Binds request assembly and fixed tool selection to one frozen context
+    /// epoch. Its manifest remains the prefix; live tool sources retain their
+    /// own generations and announce changes through the ordinary tool notices.
     pub async fn with_context_epoch(
         mut self,
         epoch: &crate::context::ContextEpoch,
@@ -122,12 +121,7 @@ impl StockExecutor {
                 "executor already has a context manifest".into(),
             ));
         }
-        let bytes = reader
-            .read(&reference, self.limits.render_bytes, None, None)?
-            .await?;
-        let manifest = crate::context::ContextManifest::decode(&bytes, self.limits)?;
-        self.epoch_tools = Some(Arc::new(manifest.tools));
-        let (tools, stage) = crate::context::ContextManifest::bind_observed(
+        let (tools, stage, baseline) = crate::context::ContextManifest::bind_observed(
             reference,
             reader.as_ref(),
             self.tools,
@@ -136,6 +130,7 @@ impl StockExecutor {
             false,
         )
         .await?;
+        self.epoch_tools = Some(Arc::new(baseline));
         self.tools = tools;
         self.with_context_stage(stage)
     }
@@ -143,7 +138,6 @@ impl StockExecutor {
     /// Offers the selected capabilities as `native`'s declarations. Called
     /// after any context manifest pins the selection, which a bound registry
     /// refuses, so each declaration runs the revision the manifest pins.
-    #[cfg(feature = "filesystem")]
     pub(crate) fn with_native_tools(
         mut self,
         native: &crate::tools::native::NativeTools,
@@ -184,7 +178,6 @@ impl StockExecutor {
 impl StockExecutor {
     /// Retains this exact composition while refusing every fresh effect intent.
     #[cfg(test)]
-    #[cfg(feature = "filesystem")]
     pub(crate) fn into_reconciliation(mut self) -> Self {
         self.reconciliation_only = true;
         self
@@ -266,7 +259,7 @@ impl Executor for StockExecutor {
         Box::pin(StockExecutor::execute_progress(self, input, journal))
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,

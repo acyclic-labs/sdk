@@ -74,20 +74,23 @@ impl EnvironmentFacts {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Option<ContextInsertion>> {
-        if context.messages.len() >= limits.context_messages {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| context.messages.len() >= maximum.get())
+        {
             return Ok(None);
         }
         let used = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(context, u64::MAX, work)
+            crate::executor::json::json_byte_length(context, None, work)
         })?;
         let mut bodies = u64::MAX;
         crate::model::reserve_instruction_bodies(&context.messages, &mut bodies, io)?;
         let wrapper = ModelMessage {
-            role: ModelRole::System,
+            role: ModelRole::User,
             content: ModelContent::Text(String::new()),
         };
         let wrapper = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&wrapper, u64::MAX, work)
+            crate::executor::json::json_byte_length(&wrapper, None, work)
         })?;
         // Empty string quotes are already in wrapper. One separator and at
         // most one extra input-index digit accompany the inserted message.
@@ -143,7 +146,7 @@ impl EnvironmentFacts {
         Ok(Some(ContextInsertion {
             local_index: 0,
             message: ModelMessage {
-                role: ModelRole::System,
+                role: ModelRole::User,
                 content: ModelContent::Text(text),
             },
         }))
@@ -160,7 +163,7 @@ fn json_string_bytes(text: &str) -> u64 {
         .sum()
 }
 
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl From<crate::native_environment::CheckoutFacts> for EnvironmentFacts {
     fn from(facts: crate::native_environment::CheckoutFacts) -> Self {
         Self {
@@ -224,18 +227,18 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]
         fn optional_environment_obeys_bytes_messages_and_current_input(
-            cwd in ".{0,60}", budget in 1_u64..1500, messages in 1_usize..4,
+            cwd in ".{0,60}", budget in 1_u64..1500, messages in proptest::option::of(1_usize..4),
         ) {
             let mut context = Context {
                 messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text("current".into()) }],
                 current_input_index: Some(0), ..Default::default()
             };
-            let limits = Limits { render_bytes: budget, context_messages: messages, ..Limits::default() };
+            let limits = Limits { render_bytes: budget, context_messages: messages.and_then(std::num::NonZeroUsize::new), ..Limits::default() };
             if let Some(insertion) = facts(cwd).project(&context, limits, None)? {
                 insertion.insert(&mut context, 0, None)?;
                 prop_assert_eq!(context.current_input_index, Some(1));
                 prop_assert!(crate::contract::canonical_json_bytes(&context)?.len() as u64 <= budget);
-                prop_assert!(context.messages.len() <= messages);
+                prop_assert!(messages.is_none_or(|maximum| context.messages.len() <= maximum));
             }
         }
     }

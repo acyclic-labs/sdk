@@ -368,7 +368,6 @@ impl TurnDriver for Spawner {
             agent.path == AgentPath::root(&id(1)) && self.0.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
             Ok(TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {
@@ -408,6 +407,6 @@ fn adopted(agent: AgentId) -> ForkAdopted {
     }
 }
 
-#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "target_lifecycle_native.rs"]
 mod native;

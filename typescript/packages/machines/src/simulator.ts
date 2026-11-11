@@ -5,7 +5,8 @@ import type {
   CheckpointOut, EventsOut, MutationOut, ObservationOut, OperationOut, PageOut,
   QualificationOut, UsageOut, ResultPageOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
-import "./wasm-runtime.js";
+import { pageSize } from "./wasm-runtime.js";
+import { MANAGED_OCI_CONTRACT } from "./managed-oci-contract.js";
 import type {
   CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, Image,
   ImageQualification, MachineId, MachineObservation, MachinesProvider,
@@ -50,7 +51,7 @@ export class SimulatedMachines implements MachinesProvider {
   qualifyImage(image: Image): Promise<ImageQualification> { return this.#run(image, (inner, authored) => inner.qualifyImage(authored)).then(asPublic<QualificationOut, ImageQualification>); }
   create(request: CreateMachine): Promise<MutationOutcome> { return this.#run(request, (inner, authored) => inner.create(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   inspectMachine(machineId: MachineId): Promise<MachineObservation> { return this.#run(machineId, (inner, authored) => inner.inspectMachine(authored)).then(asPublic<ObservationOut, MachineObservation>); }
-  listMachines(after: MachineId | null, limit: number): Promise<MachinePage> { return this.#run({ after, limit }, (inner, authored) => inner.listMachines(authored)).then(asPublic<PageOut, MachinePage>); }
+  async listMachines(after: MachineId | null, limit: number): Promise<MachinePage> { return this.#run({ after, limit: pageSize(limit, MANAGED_OCI_CONTRACT.maxPageSize) }, (inner, authored) => inner.listMachines(authored)).then(asPublic<PageOut, MachinePage>); }
   checkpoint(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.checkpoint(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   inspectCheckpoint(checkpointId: CheckpointId): Promise<CheckpointObservation> { return this.#run(checkpointId, (inner, authored) => inner.inspectCheckpoint(authored)).then(asPublic<CheckpointOut, CheckpointObservation>); }
   fork(checkpointId: CheckpointId, count: number, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ checkpointId, count, idempotencyKey }, (inner, authored) => inner.fork(authored)).then(asPublic<MutationOut, MutationOutcome>); }
@@ -60,7 +61,7 @@ export class SimulatedMachines implements MachinesProvider {
   setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, policy, idempotencyKey }, (inner, authored) => inner.setSuspensionPolicy(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   destroyMachine(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.destroyMachine(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   destroyCheckpoint(checkpointId: CheckpointId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ checkpointId, idempotencyKey }, (inner, authored) => inner.destroyCheckpoint(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  async events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return this.#run({ machineId, afterSequence: afterSequence === null ? null : u64Number(afterSequence, "afterSequence"), limit }, (inner, authored) => inner.events(authored)).then(asPublic<EventsOut, MachineEventPage>); }
+  async events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return this.#run({ machineId, afterSequence: afterSequence === null ? null : u64Number(afterSequence, "afterSequence"), limit: pageSize(limit, MANAGED_OCI_CONTRACT.maxEventPageSize) }, (inner, authored) => inner.events(authored)).then(asPublic<EventsOut, MachineEventPage>); }
   async usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.#run({ machineId, startUnixMs: u64Number(startUnixMs, "startUnixMs"), endUnixMs: u64Number(endUnixMs, "endUnixMs") }, (inner, authored) => inner.usage(authored)).then(usageOut); }
   readResults(cursor: ResultCursor, credit: number): Promise<ResultPage> { return this.#run({ cursor, credit }, (inner, authored) => inner.readResults(authored)).then(asPublic<ResultPageOut, ResultPage>); }
   recover(key: IdempotencyKey): Promise<MutationOutcome> { return this.#run(key, (inner, authored) => inner.recover(authored)).then(asPublic<MutationOut, MutationOutcome>); }

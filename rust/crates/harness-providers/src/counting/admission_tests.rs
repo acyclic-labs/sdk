@@ -20,7 +20,7 @@ proptest! {
             let names = crate::tool_names::Names::new(prepared.request());
             let origin = provider.reasoning_origin(provider.key.as_deref(), None);
             let projected = projection::body_named(&provider, prepared.request(), &names, &origin, &mut crate::files::FileText::default()).unwrap();
-            let counted = wire::body(projected, &provider.model.name, adapter).unwrap();
+            let counted = wire::body(projected, &provider.model.name, crate::counting::specification(&provider.config, None).unwrap()).unwrap();
             let actual = counted.len() as u64 + 512;
             let first = futures::executor::block_on(provider.count_tokens(&prepared, 0)).unwrap();
             prop_assert_eq!(first.input_tokens, actual + u64::from(framing));
@@ -95,9 +95,6 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
     for (status, code) in [
         (401, acyclic_harness_core::wire::ErrorCode::Unauthorized),
         (403, acyclic_harness_core::wire::ErrorCode::Unauthorized),
-        (408, acyclic_harness_core::wire::ErrorCode::Unavailable),
-        (429, acyclic_harness_core::wire::ErrorCode::Unavailable),
-        (503, acyclic_harness_core::wire::ErrorCode::Unavailable),
         (400, acyclic_harness_core::wire::ErrorCode::Invalid),
     ] {
         let (mut provider, _) = provider(Adapter::Responses, 200);
@@ -166,8 +163,8 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(64))]
     #[test]
-    fn count_body_failures_share_the_exchange_attempt_budget(
-        failures in 0..6usize, budget in 0..5u8, timeout in proptest::prelude::any::<bool>(),
+    fn count_body_failures_recover_until_success_or_a_permanent_error(
+        failures in 0..6usize, timeout in proptest::prelude::any::<bool>(),
         partial in proptest::prelude::any::<bool>(), definitive in proptest::prelude::any::<bool>(),
         status in proptest::sample::select(vec![200u16, 201, 202, 400, 413, 408, 429, 503]),
     ) {
@@ -202,17 +199,16 @@ proptest::proptest! {
             }
         }
         let (mut provider, _) = provider(Adapter::Responses, 200);
-        Arc::make_mut(&mut provider.config).retry.attempts = budget;
         let transport = Arc::new(CountBody {
             sent: std::sync::atomic::AtomicUsize::new(0), failures, timeout, partial, definitive, status,
         });
         provider.transport = crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, _) = request(&provider).unwrap();
         let result = futures::executor::block_on(provider.count_tokens(&request, 0));
-        let final_failure = definitive || matches!(status, 400 | 413);
-        let expected = if final_failure && failures > 0 { 1 } else { (failures + 1).min(usize::from(budget) + 1) };
+        let final_failure = matches!(status, 400 | 413) || (definitive && !matches!(status,408 | 429 | 500..=599));
+        let expected = if final_failure && failures > 0 { 1 } else { failures + 1 };
         proptest::prop_assert_eq!(transport.sent.load(std::sync::atomic::Ordering::SeqCst), expected);
-        proptest::prop_assert_eq!(result.is_ok(), failures == 0 || (!final_failure && failures <= usize::from(budget)));
+        proptest::prop_assert_eq!(result.is_ok(), failures == 0 || !final_failure);
         if let Ok(count) = result {
             proptest::prop_assert_eq!(count.input_tokens, 7);
             proptest::prop_assert_eq!(count.request_digest, request.request_digest());
@@ -268,7 +264,12 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
             &origin,
             &mut crate::files::FileText::default(),
         )?;
-        let body = wire::body(projected, &provider.model.name, adapter)?.len() as u64;
+        let body = wire::body(
+            projected,
+            &provider.model.name,
+            crate::counting::specification(&provider.config, None).unwrap(),
+        )?
+        .len() as u64;
         // Unanchored: the exact body bounds every counted token.
         let bound = provider.count_tokens(&prepared, u64::MAX).await?;
         assert_eq!((bound.input_tokens, sent()), (body + u64::from(framing), 0));
@@ -322,7 +323,11 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
                     &origin,
                     &mut crate::files::FileText::default(),
                 )?;
-                let rendered = wire::body(projected, &provider.model.name, adapter)?;
+                let rendered = wire::body(
+                    projected,
+                    &provider.model.name,
+                    crate::counting::specification(&provider.config, None).unwrap(),
+                )?;
                 let expanded_bound = rendered.len() as u64 + u64::from(framing);
                 assert!(expanded_bound > old_bound);
                 let before = sent();
@@ -372,7 +377,11 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
                     &origin,
                     &mut crate::files::FileText::default(),
                 )?;
-                let old_body = wire::body(projected, &provider.model.name, adapter)?;
+                let old_body = wire::body(
+                    projected,
+                    &provider.model.name,
+                    crate::counting::specification(&provider.config, None).unwrap(),
+                )?;
                 provider.accounting.usage.observe(
                     adapter,
                     &observed,
@@ -396,7 +405,11 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
                     &origin,
                     &mut crate::files::FileText::default(),
                 )?;
-                let rendered = wire::body(projected, &provider.model.name, adapter)?;
+                let rendered = wire::body(
+                    projected,
+                    &provider.model.name,
+                    crate::counting::specification(&provider.config, None).unwrap(),
+                )?;
                 assert!(rendered.len() > old_body.len() + whitespace.len());
                 let rendered_bound = rendered.len() as u64 + u64::from(framing);
                 assert!(rendered_bound > old_bound);

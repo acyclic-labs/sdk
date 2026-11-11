@@ -46,12 +46,15 @@ fn within() -> acyclic_actors::addressing::ActorReference {
 type Host = Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>;
 
 /// The private-volume binding of agent `path`, and its filesystem host.
-async fn private(path: &AgentPath) -> Result<(Host, VolumeBinding)> {
+async fn private(path: &AgentPath) -> Result<(Host, WorkspaceEntry)> {
     private_on(path, Fs::memory()).await
 }
 
 /// Turns and filesystem history participate in the same publication domain.
-async fn private_in(stream: &Arc<MemoryStream>, path: &AgentPath) -> Result<(Host, VolumeBinding)> {
+async fn private_in(
+    stream: &Arc<MemoryStream>,
+    path: &AgentPath,
+) -> Result<(Host, WorkspaceEntry)> {
     private_on(
         path,
         Fs::from_memory_providers(
@@ -96,7 +99,7 @@ async fn deliver(
 async fn private_on(
     path: &AgentPath,
     filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
-) -> Result<(Host, VolumeBinding)> {
+) -> Result<(Host, WorkspaceEntry)> {
     let provider = ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::<MemoryAuthorityBackend, MemoryObjectBackend>::new(
         filesystem, &provider, None,
@@ -112,10 +115,11 @@ async fn private_on(
     host.create_volume(&volume).await?;
     Ok((
         host,
-        VolumeBinding {
-            name: PRIVATE_VOLUME.into(),
+        WorkspaceEntry::initial_volume(
+            acyclic_harness_core::agent::WorkspaceRole::Private,
+            PRIVATE_VOLUME.into(),
             volume,
-        },
+        ),
     ))
 }
 
@@ -255,14 +259,14 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
         let write = ContentGrant::verify(
             &authority.verifier,
             &authority.scope,
-            &binding.volume,
+            binding.volume()?,
             VolumeOperation::Write,
             LIMITS.maximum_bytes,
             &mut None,
         )?;
         let file = filesystem
             .put_content(
-                &binding.volume,
+                binding.volume()?,
                 &write,
                 "policy.json",
                 bytes,
@@ -470,7 +474,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
     .await?;
     let publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
         filesystem.clone(),
-        &binding.volume,
+        binding.volume()?,
         &authority.verifier,
         &authority.scope,
         LIMITS.maximum_bytes,
@@ -745,6 +749,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
                         purpose: ModelPurpose::Response,
                         request_digest: request.request_digest(),
                         request: request_file.clone(),
+                        context: None,
                     },
                     None,
                 )?
@@ -801,7 +806,7 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
     let path = super::create(&stream, id(221)).await?;
     let (filesystem, binding) = private(&path).await?;
     let peer = VolumeRef::new(
-        binding.volume.provider().clone(),
+        binding.volume()?.provider().clone(),
         "agent-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes([222; 16])),
@@ -874,7 +879,7 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
         )?,
     )
     .await?;
-    let own = binding.volume.clone();
+    let own = binding.volume()?.clone();
     let mut adoption = adopted(path.id());
     adoption.volumes = vec![binding];
     let state = AgentState::adopted(path, &adoption).expect("adopts");
@@ -1027,7 +1032,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     .await?;
     let notice_publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
         filesystem.clone(),
-        &binding.volume,
+        binding.volume()?,
         &notice_authority.verifier,
         &notice_authority.scope,
         acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER,
@@ -1555,6 +1560,7 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
         id: intent("spawn"),
         brief: Some(Box::new(brief)),
         profile: CreationConfig {
+            topology: None,
             model: None,
             continuation: None,
             context: SpawnContext::Fork,
@@ -1663,7 +1669,7 @@ async fn admitted_root_after_its_child(
         ]));
         let (host, binding) = private_in(&stream, &root).await?;
         let own = VolumeRef::new(
-            binding.volume.provider().clone(),
+            binding.volume()?.provider().clone(),
             "child-private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
@@ -1694,7 +1700,7 @@ async fn admitted_root_after_its_child(
             }
             Ok(issuer.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?)
         };
-        let (child_scope, root_scope) = (admission(&own)?, admission(&binding.volume)?);
+        let (child_scope, root_scope) = (admission(&own)?, admission(binding.volume()?)?);
         let driver = |scope| {
             ExecutorDriver::new(FilesystemTurnHost::new(
                 stream.clone(),
@@ -1713,10 +1719,11 @@ async fn admitted_root_after_its_child(
         // The child settles its turn; its result is that turn's output.
         let mut adoption = adopted(id(base + 1));
         adoption.parent = Some(root.clone());
-        adoption.volumes = vec![VolumeBinding {
-            name: PRIVATE_VOLUME.into(),
-            volume: own,
-        }];
+        adoption.volumes = vec![WorkspaceEntry::initial_volume(
+            acyclic_harness_core::agent::WorkspaceRole::Private,
+            PRIVATE_VOLUME.into(),
+            own,
+        )];
         let settled = step(
             &driver(child_scope),
             &child,
@@ -1887,7 +1894,7 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
             let (host, binding) = private(&path).await?;
             let mut grants = vec![INTERACTION_ROUTE.to_owned()];
             for operation in operations {
-                grants.push(binding.volume.capability(*operation, &mut None)?);
+                grants.push(binding.volume()?.capability(*operation, &mut None)?);
             }
             let scope =
                 root.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?;
@@ -2058,7 +2065,7 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
             match grant {
                 Grant::Exact(operations) => {
                     for operation in operations {
-                        grants.push(binding.volume.capability(*operation, &mut None)?);
+                        grants.push(binding.volume()?.capability(*operation, &mut None)?);
                     }
                 }
                 Grant::Structured(actions) => grants.push(
@@ -2307,7 +2314,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         )]));
         let (host, private) = private(&path).await?;
         let volume = VolumeRef::new(
-            private.volume.provider().clone(),
+            private.volume()?.provider().clone(),
             "agent-scratch".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
@@ -2372,10 +2379,11 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         let mut adoption = adopted(id(3));
         adoption.volumes = vec![
             private,
-            VolumeBinding {
-                name: acyclic_harness_core::filesystem::HOME_VOLUME.into(),
-                volume: volume.clone(),
-            },
+            WorkspaceEntry::initial_volume(
+                acyclic_harness_core::agent::WorkspaceRole::Home,
+                acyclic_harness_core::filesystem::HOME_VOLUME.into(),
+                volume.clone(),
+            ),
         ];
         let first = step(
             &driver,

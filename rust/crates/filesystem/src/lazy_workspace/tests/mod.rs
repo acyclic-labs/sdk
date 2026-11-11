@@ -304,7 +304,7 @@ impl DemandSource for CountingSource {
     }
 }
 mod binding;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 async fn native_source(
     path: &std::path::Path,
     profile: crate::model::FilesystemProfile,

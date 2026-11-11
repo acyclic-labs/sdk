@@ -134,8 +134,8 @@ validation and complete serialization; a rejected result preserves the previous
 artifact. This is final-result validation. Provider-native constrained generation
 requires the selected provider's own enforcement contract.
 
-`acyclic sessions` reads one bounded page of the selected agent's direct
-children through `children_page`. `acyclic history` seeks directly to the
+`acyclic sessions` reads one bounded page of independent roots from the
+checkout's scope directory, then projects only those rows' title files. `acyclic history` seeks directly to the
 newest compact turn summaries. Its opaque `next` continuation visits older turns
 under the same frozen opening cut; a fresh initial query includes new appends.
 Pass either continuation unchanged using `--cursor`. Select and follow only

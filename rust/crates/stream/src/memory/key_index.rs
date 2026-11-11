@@ -4,11 +4,38 @@ const RECORD_KEY_WIDTH: usize = crate::MAX_RECORD_KEY_BYTES + 8;
 type RecordKeys = acyclic_collections::KeyedIndex<(), Allocation, RECORD_KEY_WIDTH>;
 
 #[derive(Clone, Default)]
-struct KeyTree(RecordKeys);
+struct KeyTree {
+    // Current paths and admitted key reads own roots. Historical record nodes
+    // never keep superseded radix paths alive. A fork's cut is allocation-free.
+    root: Option<Arc<KeyRoot>>,
+    before: Option<u64>,
+}
+
+struct KeyRoot {
+    index: RecordKeys,
+    _allocation: Allocation,
+}
 
 impl KeyTree {
     fn cap(&self, before: u64) -> Self {
-        Self(self.0.cap(before))
+        Self {
+            root: self.root.clone(),
+            before: Some(self.before.map_or(before, |old| old.min(before))),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn insertion_bound(&self, count: u64) -> Option<acyclic_collections::IndexInsertionBound> {
+        let mut bound = match &self.root {
+            Some(root) => root.index.insertion_bound(count),
+            None => RecordKeys::default().insertion_bound(count),
+        }?;
+        if count != 0 {
+            bound.allocation_bytes = bound
+                .allocation_bytes
+                .checked_add(acyclic_collections::arc_allocation_bytes::<KeyRoot>() as u64)?;
+        }
+        Some(bound)
     }
 
     fn append(
@@ -24,7 +51,11 @@ impl KeyTree {
         records: &Arc<RecordBatch>,
         work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
     ) -> Result<Self, StreamError> {
-        let mut tree = self.clone();
+        let mut tree = self.root.as_ref().map_or_else(RecordKeys::default, |root| {
+            self.before
+                .map_or_else(|| root.index.clone(), |before| root.index.cap(before))
+        });
+        let mut changed = false;
         for (index, record) in records.values.iter().enumerate() {
             for key in record.headers.keys() {
                 let key = acyclic_collections::binary_key::<RECORD_KEY_WIDTH, _>(key, work)
@@ -32,10 +63,22 @@ impl KeyTree {
                         acyclic_collections::BinaryKeyError::Work(error) => error,
                         _ => StreamError::InvalidArgument,
                     })?;
-                tree.0 = tree.0.insert(key, records.start + index as u64, (), work)?;
+                tree = tree.insert(key, records.start + index as u64, (), work)?;
+                changed = true;
             }
         }
-        Ok(tree)
+        if !changed {
+            return Ok(self.clone());
+        }
+        let allocation =
+            work.claim(acyclic_collections::arc_allocation_bytes::<KeyRoot>() as u64)?;
+        Ok(Self {
+            root: Some(Arc::new(KeyRoot {
+                index: tree,
+                _allocation: allocation,
+            })),
+            before: None,
+        })
     }
 
     /// The nearest selected position at cursor `from`, in the read's order.
@@ -69,9 +112,16 @@ impl KeyTree {
             first,
             last,
             from,
-            before,
+            before: self.before.map_or(before, |cut| cut.min(before)),
         };
-        self.0
+        let empty;
+        let index = if let Some(root) = &self.root {
+            &root.index
+        } else {
+            empty = RecordKeys::default();
+            &empty
+        };
+        index
             .entry(
                 &range,
                 read.order == crate::ReadOrder::LatestFirst,

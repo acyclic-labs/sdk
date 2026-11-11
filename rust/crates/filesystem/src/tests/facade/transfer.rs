@@ -13,6 +13,7 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
     let mut checkout = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     (checkout.create(
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("file")?,
             bytes: OwnedBytes::from(vec![42; 4096]),
             metadata: FileMetadata::default(),

@@ -54,7 +54,7 @@ pub(super) fn counts_input(
         // Resolution replaces the inherited remote counter with local counting.
         return Ok(());
     }
-    if config.token_counter.is_some() {
+    if config.token_counter.is_some() || config.adapter == Adapter::Chat {
         let counter = crate::counting::specification(config, None)?;
         return crate::counting::wire::endpoint(config, model, counter).map(|_| ());
     }

@@ -17,7 +17,7 @@ use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use crate::{
     Capabilities, Error, OperationId, Result,
     agent::{
-        AgentPath, AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost, VolumeBinding,
+        AgentPath, AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost, WorkspaceEntry,
     },
     conversation::{
         ContentResidencyVerifier, FileRef, ModelContextSelection, VolumeClass, VolumeOperation,
@@ -27,7 +27,6 @@ use crate::{
     executor::{Executor, TurnOutput},
     model::{ModelContent, ModelMessage, ModelRole},
     projection::SelectedModelContext,
-    resources::ProviderRef,
     runtime::ContentBindings,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -37,22 +36,7 @@ use acyclic_stream::{
 use futures::TryStreamExt;
 use std::sync::Arc;
 
-/// Name of the volume binding that holds an agent's journal and staged turn output.
-pub const PRIVATE_VOLUME: &str = "private";
-
-/// The private volume of `agent`, which every portable host creates and binds
-/// as [`PRIVATE_VOLUME`]. A platform selecting an Actor-hosted agent's volume
-/// for its Machine passes the manifest's volume provider and
-/// [`AgentId::hosted_root`](crate::agent::AgentId::hosted_root) of the actor id.
-pub fn private_volume(provider: ProviderRef, agent: &crate::agent::AgentId) -> Result<VolumeRef> {
-    VolumeRef::new(
-        provider,
-        PRIVATE_VOLUME.to_owned(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
-        &mut None,
-    )
-}
+pub use crate::conversation::{PRIVATE_VOLUME, private_volume};
 
 #[cfg(test)]
 #[path = "agent_turns/admission_tests.rs"]
@@ -96,7 +80,7 @@ pub struct AgentAuthority<'v> {
     /// Verifier of grants under `scope`.
     pub verifier: AuthorityVerifier,
     /// The agent's own private volume binding.
-    pub private: &'v VolumeBinding,
+    pub private: &'v WorkspaceEntry,
 }
 
 /// What every agent scope of a host derives from.
@@ -154,8 +138,8 @@ impl TurnAdmission {
 pub(super) struct AdmittedAgent<'v> {
     issuer: RuntimeAuthority,
     owner: crate::AgentId,
-    volumes: &'v [VolumeBinding],
-    private: &'v VolumeBinding,
+    volumes: &'v [WorkspaceEntry],
+    private: &'v WorkspaceEntry,
     /// Original immutable admission; attestation occurs only when needed.
     parent: Option<&'v Scope>,
 }
@@ -167,15 +151,15 @@ impl<'v> AdmittedAgent<'v> {
         issuer: &RuntimeAuthority,
         admission: &'v TurnAdmission,
         path: &AgentPath,
-        volumes: &'v [VolumeBinding],
+        volumes: &'v [WorkspaceEntry],
     ) -> Result<Self> {
         let owner = crate::AgentId::from_bytes(path.id_bytes());
         let private = volumes
             .iter()
-            .find(|binding| binding.name == PRIVATE_VOLUME)
+            .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
             .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
-        if private.volume.class() != VolumeClass::AgentPrivate
-            || *private.volume.owner() != VolumeOwner::Agent(owner)
+        if private.volume()?.class() != VolumeClass::AgentPrivate
+            || *private.volume()?.owner() != VolumeOwner::Agent(owner)
         {
             return Err(Error::Unauthorized(
                 "private volume belongs to another agent".into(),
@@ -192,12 +176,12 @@ impl<'v> AdmittedAgent<'v> {
                 &issuer.verifier(&mut None)?,
                 scope,
                 owner,
-                &private.volume,
+                private.volume()?,
                 VolumeOperation::Write,
                 u64::MAX,
                 &mut None,
             )?;
-            require_structured_write(scope, owner, &private.volume)?;
+            require_structured_write(scope, owner, private.volume()?)?;
         }
         Ok(Self {
             issuer,
@@ -318,35 +302,46 @@ pub(super) fn require_structured_write(
     }
 }
 
-/// A local root agent's grants: routing, its agent tools, read, write and delete of
-/// every bound volume, read of its provider's seed layer (see
-/// [`crate::seed`]), and each `external` file by its exact version.
-fn root_grants(volumes: &[VolumeBinding], external: &[FileRef]) -> Result<Vec<String>> {
+/// A local root agent's grants: routing, tools, the visible entries' read/write
+/// ceilings, its provider's seed layer and retained exact input versions.
+/// Raw writers cannot widen a rooted entry; scoped publication belongs to the
+/// table's view composition.
+fn root_grants(volumes: &[WorkspaceEntry], external: &[FileRef]) -> Result<Vec<String>> {
     let mut grants = Vec::with_capacity(3 * volumes.len() + 2);
-    if let Some(binding) = volumes.first() {
+    if let Some(volume) = volumes.iter().find_map(WorkspaceEntry::as_volume) {
         grants.push(
-            crate::seed::volume(binding.volume.provider())?
-                .capability(VolumeOperation::Read, &mut None)?,
+            crate::seed::volume(volume.provider())?.capability(VolumeOperation::Read, &mut None)?,
         );
     }
     grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
     // Every agent may spawn, message and archive within its own subtree.
     grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
-    for binding in volumes {
-        for operation in [
-            VolumeOperation::Read,
-            VolumeOperation::Write,
-            VolumeOperation::Delete,
-        ] {
-            grants.push(binding.volume.capability(operation, &mut None)?);
+    for binding in volumes
+        .iter()
+        .filter(|binding| binding.role != crate::agent::WorkspaceRole::Internal)
+    {
+        let Some(volume) = binding.as_volume() else {
+            continue; // A lazy subtree view has no whole-volume authority.
+        };
+        if !binding.root.is_empty() {
+            grants.push(volume.directory_read_capability(&binding.root, &mut None)?);
+        } else {
+            grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
+            if binding.mode == crate::agent::WorkspaceMode::ReadWrite {
+                for operation in [VolumeOperation::Write, VolumeOperation::Delete] {
+                    grants.push(volume.capability(operation, &mut None)?);
+                }
+            }
         }
     }
     for file in external {
+        // A retained exact file can lie outside the current root on a still
+        // bound volume. Its immutable conversation selection grants it alone.
+        grants.push(file.read_capability(&mut None)?);
         if !volumes
             .iter()
-            .any(|binding| binding.volume == *file.volume())
+            .any(|binding| binding.as_volume() == Some(file.volume()) && binding.root.is_empty())
         {
-            grants.push(file.read_capability(&mut None)?);
             // An attachment manifest's files are copies in its own directory,
             // so one grant reaches them however many it lists.
             if file.descriptor().media_type() == crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE
@@ -369,7 +364,7 @@ pub async fn agent_authority<'v>(
     issuer: &RuntimeAuthority,
     admission: &'v TurnAdmission,
     path: &AgentPath,
-    volumes: &'v [VolumeBinding],
+    volumes: &'v [WorkspaceEntry],
     external: &[FileRef],
 ) -> Result<AgentAuthority<'v>> {
     AdmittedAgent::verify(issuer, admission, path, volumes)?
@@ -550,6 +545,15 @@ where
         fault: impl Fn(&AgentState) -> Result<()> + Send + Sync + 'static,
     ) -> Self {
         self.binding_fault = Some(Arc::new(fault));
+        self
+    }
+
+    /// The same reader both model and host child creation use.
+    pub fn with_topology(mut self, topology: crate::topology::Topology) -> Self {
+        self.templates = Arc::new(crate::topology::Templates {
+            inner: self.templates,
+            topology,
+        });
         self
     }
 
@@ -743,13 +747,16 @@ where
         };
         let mut heads = Vec::new();
         for binding in &agent.volumes {
-            if binding.volume.class() != VolumeClass::Project {
+            if binding
+                .as_volume()
+                .is_none_or(|volume| volume.class() != VolumeClass::Project)
+            {
                 continue;
             }
             crate::conversation::ContentGrant::authorize_volume(
                 &authority.verifier,
                 &authority.scope,
-                &binding.volume,
+                binding.volume()?,
                 operation,
                 u64::MAX,
                 &mut None,
@@ -758,7 +765,7 @@ where
                 .host
                 .filesystem
                 .open_workspace(
-                    binding.volume.storage_name(&mut None)?,
+                    binding.volume()?.storage_name(&mut None)?,
                     acyclic_fs::WorkBudget::UNBOUNDED,
                     &cancel,
                 )
@@ -897,7 +904,7 @@ where
         }
         let writer = FilesystemContentPublisher::new(
             Arc::clone(&self.host),
-            &private.volume,
+            private.volume()?,
             &verifier,
             &scope,
             crate::conversation::MAX_EXACT_JS_INTEGER,
@@ -907,14 +914,14 @@ where
             Arc::clone(&self.stream),
             Arc::clone(&self.host),
             FilesystemJournalBinding {
-                volume: &private.volume,
+                volume: private.volume()?,
                 verifier: &verifier,
                 scope: &scope,
                 io: None,
             },
         )?
         .with_input_verifier(reader.clone());
-        let internal = self.internal_files(&private.volume, &verifier, &scope)?;
+        let internal = self.internal_files(private.volume()?, &verifier, &scope)?;
         Ok((
             journal,
             Bindings {
@@ -922,7 +929,7 @@ where
                 scope,
                 grants: capabilities,
                 content: ContentBindings {
-                    volume: private.volume.clone(),
+                    volume: private.volume()?.clone(),
                     reader,
                     writer: Some(writer),
                 },
@@ -1013,19 +1020,11 @@ where
                 .await?;
             let mut records = acyclic_stream::pages::ExactRange::new(records, from..through)?;
             while let Some(record) = records.try_next().await? {
-                entries.push(ConversationEntry::decode(&record.value).map_err(agent_error)?);
+                entries.push(ConversationEntry::decode(&record.value).map_err(Error::from)?);
             }
             from = through;
         }
         Ok(entries)
-    }
-}
-
-pub(super) fn agent_error(error: crate::agent::Error) -> Error {
-    match error {
-        crate::agent::Error::Stream(cause) => cause.into(),
-        crate::agent::Error::Turn(cause) => *cause,
-        other => Error::Invalid(other.to_string()),
     }
 }
 
@@ -1080,14 +1079,14 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
     use crate::model::ModelContentPart;
     let mut pending = NoticeBlocks::new(maximum);
     if let Some(selected) = selected {
-        selected.validate(agent).map_err(agent_error)?;
+        selected.validate(agent).map_err(Error::from)?;
         let mut from = selected.range.start;
         while from < selected.range.end {
             let limit = (selected.range.end - from).min(acyclic_stream::MAX_ITEMS as u64) as u32;
             let records = stream
                 .read(ReadRequest {
                     key: None,
-                    path: selected.source.inbox().map_err(agent_error)?,
+                    path: selected.source.inbox().map_err(Error::from)?,
                     from,
                     limit,
                     at_least: Default::default(),
@@ -1099,7 +1098,7 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
                 if let crate::agent::InboxRecord::Notice {
                     notice: crate::agent::NoticePayload::Quiet(notice),
                     ..
-                } = crate::agent::InboxRecord::decode(&record.value).map_err(agent_error)?
+                } = crate::agent::InboxRecord::decode(&record.value).map_err(Error::from)?
                 {
                     pending.push(notice)?;
                 }
@@ -1168,7 +1167,7 @@ impl NoticeBlocks {
                     &crate::model::ModelContentPart::Notices {
                         notices: Vec::new(),
                     },
-                    maximum,
+                    Some(maximum),
                     &mut None,
                 )?;
                 self.bytes = self.envelope;
@@ -1176,7 +1175,7 @@ impl NoticeBlocks {
             // Count the original event once, without a temporary JSON buffer.
             let bytes = crate::executor::json::json_byte_length_at_depth(
                 &notice,
-                maximum - self.envelope,
+                Some(maximum - self.envelope),
                 256,
                 &mut None,
             )?;
@@ -1282,7 +1281,7 @@ impl<'a> TurnContext<'a> {
                     fork = None;
                 }
                 Some((
-                    crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
+                    crate::agent::turn_id(agent, &entry.input).map_err(Error::from)?,
                     entry.output,
                 ))
             }
@@ -1321,9 +1320,9 @@ impl<'a> TurnContext<'a> {
                     roster_at = Some(at);
                 }
                 Ok(SettledTurn {
-                    turn: crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
+                    turn: crate::agent::turn_id(agent, &entry.input).map_err(Error::from)?,
                     targets: entry.targets,
-                    input: crate::agent::model_input(&entry.input).map_err(agent_error)?,
+                    input: crate::agent::model_input(&entry.input).map_err(Error::from)?,
                     output: entry.output,
                     steering: entry.steering.map(|steering| steering.file),
                     steered: Vec::new(),
@@ -1343,7 +1342,7 @@ impl<'a> TurnContext<'a> {
             // A spawned agent runs under the approval policy it inherited,
             // staged on an ancestor's private volume.
             policy: agent.policy.as_ref(),
-            notices: crate::agent::turn_notices(agent).map_err(agent_error)?,
+            notices: crate::agent::turn_notices(agent).map_err(Error::from)?,
         })
     }
 
@@ -1674,7 +1673,7 @@ where
                             Error::Invalid("selected checkpoint is absent".into())
                         })?;
                         let entry =
-                            ConversationEntry::decode(&record.value).map_err(agent_error)?;
+                            ConversationEntry::decode(&record.value).map_err(Error::from)?;
                         if record.sequence != at || entry.checkpoint().is_none() {
                             return Err(Error::Invalid(
                                 "selected checkpoint differs from its indexed cut".into(),
@@ -1690,7 +1689,7 @@ where
             let authority =
                 crate::core::until_turn_stopped(Some(stop), admitted.authority(&[])).await?;
             let outputs = self.internal_files(
-                &authority.private.volume,
+                authority.private.volume()?,
                 &authority.verifier,
                 &authority.scope,
             )?;
@@ -1837,7 +1836,7 @@ where
                 // turn decides it once, when it starts: a resumed turn keeps the
                 // announcement its checkpoint holds, so it sends the request it
                 // started with, and a roster change meanwhile is the next turn's.
-                let roster = match crate::agent::turn_roster(agent).map_err(agent_error)? {
+                let roster = match crate::agent::turn_roster(agent).map_err(Error::from)? {
                     Some(kept) => kept,
                     None => match self.executors.roster(agent) {
                         Some(roster) => {
@@ -1851,7 +1850,7 @@ where
                         None => None,
                     },
                 };
-                let segment = crate::agent::turn_segment(agent).map_err(agent_error)?;
+                let segment = crate::agent::turn_segment(agent).map_err(Error::from)?;
                 let effects = Arc::new(FilesystemTurnEffects::new(
                     Arc::clone(&files),
                     Arc::clone(&self.stream),
@@ -1975,7 +1974,7 @@ struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
     agent: AgentPath,
-    volumes: Vec<VolumeBinding>,
+    volumes: Vec<WorkspaceEntry>,
     maximum_bytes: u64,
 }
 
@@ -1991,13 +1990,13 @@ where
 
     fn closed(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            let path = self.agent.inbox().map_err(agent_error)?;
+            let path = self.agent.inbox().map_err(Error::from)?;
             // Archive's close marker and inbox delivery commit together. Watch
             // the delivery, so active work stops before resource retirement.
             let tail = self.stream.tail(path.clone()).await?;
             match self
                 .stream
-                .tail(self.agent.closed().map_err(agent_error)?)
+                .tail(self.agent.closed().map_err(Error::from)?)
                 .await
             {
                 Ok(_) => return Ok(()),
@@ -2011,7 +2010,7 @@ where
             );
             while let Some(record) = records.try_next().await? {
                 let record =
-                    crate::agent::InboxRecord::decode(&record.value).map_err(agent_error)?;
+                    crate::agent::InboxRecord::decode(&record.value).map_err(Error::from)?;
                 if matches!(record, crate::agent::InboxRecord::Archive(_)) {
                     return Ok(());
                 }
@@ -2036,7 +2035,7 @@ where
                         let child = self
                             .agent
                             .child(&crate::agent::AgentId::from_bytes(id))
-                            .map_err(agent_error)?;
+                            .map_err(Error::from)?;
                         Ok((reference.unwrap_or_else(|| child.as_str().into()), child))
                     })
                     .collect()
@@ -2076,7 +2075,7 @@ where
         Box::pin(async move {
             crate::agent::resolve_spawn_name(&self.stream, &self.within, parent, name)
                 .await
-                .map_err(agent_error)
+                .map_err(Error::from)
         })
     }
 
@@ -2090,7 +2089,7 @@ where
                 Err(crate::agent::Error::NoSuchAgent) => {
                     Err(Error::NotFound(child.as_str().to_owned()))
                 }
-                Err(error) => Err(agent_error(error)),
+                Err(error) => Err(Error::from(error)),
             }
         })
     }
@@ -2103,7 +2102,7 @@ where
         Box::pin(async move {
             let entry = crate::agent::answer(&*self.stream, child, sequence)
                 .await
-                .map_err(agent_error)?;
+                .map_err(Error::from)?;
             let outcome = entry.outcome;
             let external = [entry.output];
             let authority = agent_authority(

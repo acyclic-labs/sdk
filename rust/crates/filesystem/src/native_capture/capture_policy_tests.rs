@@ -147,6 +147,7 @@ async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
     let file = path("/file")?;
     let mutations = vec![
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: file.clone(),
             bytes: acyclic_stream::OwnedBytes::from_static(b"a"),
             metadata: FileMetadata::default(),
@@ -486,6 +487,7 @@ fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
 
 fn options(root: &Path, maximum_paths: u32) -> Result<CaptureOptions, CaptureError> {
     Ok(CaptureOptions {
+        source_namespace: None,
         source_root: root.to_path_buf(),
         expected_root_identity: capture_root_identity(root)?,
         maximum_paths,
@@ -645,6 +647,475 @@ async fn a_modified_directory_keeps_what_it_holds() -> Result<(), Box<dyn std::e
         &[("/pkg/shared.rs", Some(FileKind::Regular))],
     )
     .await
+}
+
+#[tokio::test]
+async fn observed_moves_retain_native_directory_and_file_identities()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (children, destination, stale_child) in [
+        (false, None, false),
+        (true, None, false),
+        (false, Some(FileKind::Directory), false),
+        (true, Some(FileKind::Directory), false),
+        (true, Some(FileKind::Directory), true),
+        (true, Some(FileKind::Regular), false),
+    ] {
+        let source = tempfile::tempdir()?;
+        std::fs::create_dir(source.path().join("old"))?;
+        if children {
+            std::fs::write(source.path().join("old/file"), b"kept")?;
+        }
+        match destination {
+            Some(FileKind::Directory) => std::fs::create_dir(source.path().join("new"))?,
+            Some(FileKind::Regular) => std::fs::write(source.path().join("new"), b"replaced")?,
+            _ => {}
+        }
+        if stale_child {
+            std::fs::write(source.path().join("new/stale"), b"removed before the move")?;
+        }
+        let mut checkout = checkout(&[]).await?;
+        let mut options = options(source.path(), 8)?;
+        options.source_namespace = Some([97; 16]);
+        let cancellation = CancellationToken::new();
+        capture_baseline(
+            &mut checkout,
+            &options,
+            &CapturePolicy::default(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        let identity = checkout
+            .lookup_no_follow(&path("/old")?, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .record
+            .ok_or("missing old directory")?
+            .file_id;
+        let child_identity = if children {
+            Some(
+                checkout
+                    .lookup_no_follow(&path("/old/file")?, WorkBudget::UNBOUNDED, &cancellation)
+                    .await?
+                    .value
+                    .record
+                    .ok_or("missing original child")?
+                    .file_id,
+            )
+        } else {
+            None
+        };
+        // Removing the destination first also works on Windows, whose native
+        // rename does not replace directories. Capture sees only final states.
+        if stale_child {
+            std::fs::remove_file(source.path().join("new/stale"))?;
+        }
+        match destination {
+            Some(FileKind::Directory) => std::fs::remove_dir(source.path().join("new"))?,
+            Some(FileKind::Regular) => std::fs::remove_file(source.path().join("new"))?,
+            _ => {}
+        }
+        std::fs::rename(source.path().join("old"), source.path().join("new"))?;
+        // No rename event or descendant scan: final states alone prove the move.
+        capture_paths(
+            &mut checkout,
+            &[path("/old")?, path("/new")?],
+            &options,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        assert_records(
+            &mut checkout,
+            &[
+                ("/old", None),
+                ("/new", Some(FileKind::Directory)),
+                ("/new/stale", None),
+            ],
+        )
+        .await?;
+        assert_eq!(
+            checkout
+                .lookup_no_follow(&path("/new")?, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .record
+                .ok_or("missing moved directory")?
+                .file_id,
+            identity
+        );
+        if children {
+            let child = checkout
+                .lookup_no_follow(&path("/new/file")?, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .record
+                .ok_or("missing moved child")?
+                .file_id;
+            assert_eq!(Some(child), child_identity);
+            std::fs::rename(
+                source.path().join("new/file"),
+                source.path().join("new/renamed"),
+            )?;
+            std::fs::rename(source.path().join("new"), source.path().join("final"))?;
+            capture_paths(
+                &mut checkout,
+                &[path("/new")?, path("/final")?, path("/final/renamed")?],
+                &options,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+            assert_eq!(
+                checkout
+                    .lookup_no_follow(
+                        &path("/final/renamed")?,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation
+                    )
+                    .await?
+                    .value
+                    .record
+                    .ok_or("missing renamed child")?
+                    .file_id,
+                child
+            );
+            assert_records(
+                &mut checkout,
+                &[
+                    ("/new", None),
+                    ("/final/file", None),
+                    ("/final/renamed", Some(FileKind::Regular)),
+                ],
+            )
+            .await?;
+            std::fs::hard_link(
+                source.path().join("final/renamed"),
+                source.path().join("final/alias"),
+            )?;
+            capture_paths(
+                &mut checkout,
+                &[path("/final/alias")?],
+                &options,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+            let alias = checkout
+                .lookup_no_follow(&path("/final/alias")?, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .record
+                .ok_or("missing captured alias")?;
+            assert_eq!(alias.file_id, child);
+            assert_eq!(alias.link_count, 2);
+            std::fs::write(
+                source.path().join("final/last"),
+                b"replaced alias destination",
+            )?;
+            capture_paths(
+                &mut checkout,
+                &[path("/final/last")?],
+                &options,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+            // The index's first alias is outside this partial capture. Its host
+            // deletion must not remove that unobserved logical binding.
+            std::fs::remove_file(source.path().join("final/alias"))?;
+            std::fs::rename(
+                source.path().join("final/renamed"),
+                source.path().join("final/last"),
+            )?;
+            capture_paths(
+                &mut checkout,
+                &[path("/final/renamed")?, path("/final/last")?],
+                &options,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+            for name in ["/final/alias", "/final/last"] {
+                let record = checkout
+                    .lookup_no_follow(&path(name)?, WorkBudget::UNBOUNDED, &cancellation)
+                    .await?
+                    .value
+                    .record
+                    .ok_or("missing retained alias")?;
+                assert_eq!(record.file_id, child);
+                assert_eq!(record.link_count, 2);
+            }
+            assert_records(&mut checkout, &[("/final/renamed", None)]).await?;
+            std::fs::create_dir_all(source.path().join("parents/nested"))?;
+            std::fs::rename(
+                source.path().join("final/last"),
+                source.path().join("parents/nested/last"),
+            )?;
+            capture_paths(
+                &mut checkout,
+                &[
+                    path("/final/last")?,
+                    path("/parents")?,
+                    path("/parents/nested")?,
+                    path("/parents/nested/last")?,
+                ],
+                &options,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+            let parent = checkout
+                .lookup_no_follow(&path("/parents")?, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .record
+                .ok_or("missing new parent")?
+                .file_id;
+            std::fs::rename(source.path().join("parents"), source.path().join("moved"))?;
+            capture_paths(
+                &mut checkout,
+                &[path("/parents")?, path("/moved")?],
+                &options,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+            for (name, expected) in [("/moved", parent), ("/moved/nested/last", child)] {
+                assert_eq!(
+                    checkout
+                        .lookup_no_follow(&path(name)?, WorkBudget::UNBOUNDED, &cancellation)
+                        .await?
+                        .value
+                        .record
+                        .ok_or("missing moved parent or file")?
+                        .file_id,
+                    expected
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn relocations_use_the_current_namespace_after_parent_replacement()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    for directory in ["old", "new"] {
+        std::fs::create_dir(source.path().join(directory))?;
+        std::fs::write(
+            source.path().join(directory).join("file"),
+            directory.as_bytes(),
+        )?;
+    }
+    std::fs::write(source.path().join("third"), b"final moved file")?;
+    let mut checkout = checkout(&[]).await?;
+    let mut options = options(source.path(), 8)?;
+    options.source_namespace = Some([98; 16]);
+    let cancellation = CancellationToken::new();
+    capture_baseline(
+        &mut checkout,
+        &options,
+        &CapturePolicy::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    let identity = checkout
+        .lookup_no_follow(&path("/third")?, WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value
+        .record
+        .ok_or("missing third file")?
+        .file_id;
+    std::fs::remove_file(source.path().join("new/file"))?;
+    std::fs::remove_dir(source.path().join("new"))?;
+    std::fs::rename(source.path().join("old"), source.path().join("new"))?;
+    std::fs::rename(source.path().join("third"), source.path().join("new/file"))?;
+    capture_paths(
+        &mut checkout,
+        &[
+            path("/old")?,
+            path("/new")?,
+            path("/new/file")?,
+            path("/third")?,
+        ],
+        &options,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    assert_records(&mut checkout, &[("/old", None), ("/third", None)]).await?;
+    assert_eq!(
+        checkout
+            .lookup_no_follow(&path("/new/file")?, WorkBudget::UNBOUNDED, &cancellation,)
+            .await?
+            .value
+            .record
+            .ok_or("missing final moved file")?
+            .file_id,
+        identity
+    );
+    assert_eq!(
+        checkout
+            .read_file_range(
+                &path("/new/file")?,
+                crate::ByteRange {
+                    offset: 0,
+                    length: b"final moved file".len() as u64
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value
+            .bytes
+            .as_ref(),
+        b"final moved file"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn directory_promotions_preserve_the_retained_subtree()
+-> Result<(), Box<dyn std::error::Error>> {
+    for nested in [false, true] {
+        let source = tempfile::tempdir()?;
+        let retained = if nested { "a/b/c" } else { "a/b" };
+        std::fs::create_dir_all(source.path().join(retained))?;
+        std::fs::write(source.path().join(retained).join("file"), b"retained")?;
+        std::fs::write(source.path().join("a/gone"), b"removed")?;
+        let cancellation = CancellationToken::new();
+        let config = crate::model::VolumeConfig {
+            limits: crate::model::VolumeLimits {
+                maximum_component_bytes: 4,
+                ..Default::default()
+            },
+            ..crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral)
+        };
+        let workspace = crate::Fs::memory()
+            .create_workspace_with_config("promotion", config, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let mut options = options(source.path(), 8)?;
+        options.source_namespace = Some([99; 16]);
+        capture_baseline(
+            &mut checkout,
+            &options,
+            &CapturePolicy::default(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        let mut identities = Vec::new();
+        for suffix in ["", "/file"] {
+            identities.push(
+                checkout
+                    .lookup_no_follow(
+                        &path(&format!("/{retained}{suffix}"))?,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await?
+                    .value
+                    .record
+                    .ok_or("missing retained source")?
+                    .file_id,
+            );
+        }
+        // An occupied candidate must never be replaced or selected for capture.
+        checkout
+            .apply_authored_transaction(
+                vec![AuthoredMutation::CreateFile {
+                    path: path("/\u{1}")?,
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"outside observation"),
+                    metadata: FileMetadata::default(),
+                    file_id: None,
+                }],
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        std::fs::rename(source.path().join(retained), source.path().join("aside"))?;
+        std::fs::remove_dir_all(source.path().join("a"))?;
+        std::fs::rename(source.path().join("aside"), source.path().join("a"))?;
+        capture_paths(
+            &mut checkout,
+            &[path("/a")?, path(&format!("/{retained}"))?],
+            &options,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        for (suffix, identity) in ["", "/file"].into_iter().zip(identities) {
+            assert_eq!(
+                checkout
+                    .lookup_no_follow(
+                        &path(&format!("/a{suffix}"))?,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await?
+                    .value
+                    .record
+                    .ok_or("missing promoted source")?
+                    .file_id,
+                identity
+            );
+        }
+        assert_records(
+            &mut checkout,
+            &[
+                ("/a/b", None),
+                ("/a/gone", None),
+                ("/\u{1}", Some(FileKind::Regular)),
+            ],
+        )
+        .await?;
+        let root = checkout
+            .list_directory(&path("/")?, None, 3, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        assert_eq!(
+            root.entries.len(),
+            2,
+            "temporary bindings must not escape capture"
+        );
+        assert!(!root.has_more);
+        for (name, expected) in [
+            ("/a/file", b"retained".as_slice()),
+            ("/\u{1}", b"outside observation".as_slice()),
+        ] {
+            assert_eq!(
+                checkout
+                    .read_file_range(
+                        &path(name)?,
+                        crate::ByteRange {
+                            offset: 0,
+                            length: expected.len() as u64
+                        },
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await?
+                    .value
+                    .bytes
+                    .as_ref(),
+                expected
+            );
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]

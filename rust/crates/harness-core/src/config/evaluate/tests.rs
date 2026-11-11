@@ -27,6 +27,15 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
         ),
         ("export const x = 1;", "export default"),
         (
+            "export default await new Promise(() => {});",
+            "never settles",
+        ),
+        ("export default import('./models.ts');", "import()"),
+        (
+            r"import '\uD800'; export default 0;",
+            "module paths must be valid Unicode",
+        ),
+        (
             "import x from 'node:fs'; export default x;",
             "imports node:fs",
         ),
@@ -57,4 +66,27 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
         message.contains("the default export.x must be plain data"),
         "{message}"
     );
+    // Negative control: the same data is accepted on both surfaces.
+    for surface in [Surface::Compose, Surface::Data] {
+        let ok = evaluate(
+            "policy.ts",
+            b"export default { deny: [] };",
+            &Missing,
+            &json!({}),
+            surface,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok.value, json!({"deny": []}));
+    }
+}
+
+#[test]
+fn json_module_exports_preserve_json_property_semantics() -> Result<()> {
+    let source = br#"{"__proto__":{"x":1},"escaped":"\\\""}"#;
+    let module = compile_module("data.json", source).map_err(Error::Invalid)?;
+    let modules = vec![("data.json".to_owned(), module)];
+    let (value, _) = run(&modules, b"{}", Surface::Data).map_err(Error::Invalid)?;
+    assert_eq!(value["__proto__"]["x"], 1);
+    Ok(())
 }

@@ -15,7 +15,7 @@ mod refusal_tests;
 pub(crate) fn send<'a>(
     transport: &'a dyn HttpTransport,
     request: HttpRequest,
-    work: acyclic_harness_core::NativeWork<'a>,
+    work: acyclic_fs::NativeWork<'a>,
 ) -> Result<
     impl std::future::Future<Output = Result<HttpResponse>> + acyclic_stream::ProviderTask + 'a,
 > {
@@ -88,11 +88,13 @@ impl ReqwestTransport {
             .await
             .map_err(|error| reqwest_failure(native, &error))?;
         let status = response.status().as_u16();
-        let retry_after = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(crate::retry::retry_after);
+        let retry_after = acyclic_harness_core::http::response_retry_after(
+            response
+                .headers()
+                .iter()
+                .filter_map(|(name, value)| Some((name.as_str(), value.to_str().ok()?))),
+            std::time::UNIX_EPOCH + std::time::Duration::from_millis(self.unix_ms()?),
+        );
         let request_id = if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
             response
                 .headers_mut()
@@ -154,10 +156,10 @@ fn reqwest_failure(native: bool, error: &reqwest::Error) -> acyclic_harness_core
             None => break,
         }
     }
-    let failure = if tls {
-        ModelTransportFailure::Tls
-    } else if error.is_timeout() {
+    let failure = if error.is_timeout() {
         ModelTransportFailure::Timeout
+    } else if tls {
+        ModelTransportFailure::Tls
     } else if error.is_connect() {
         ModelTransportFailure::Connect
     } else {
@@ -191,8 +193,8 @@ impl HttpTransport for ReqwestTransport {
         &self,
         duration: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
-        acyclic_harness_core::NativeFutureBundle::new(work, move || async move {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, move || async move {
             tokio::time::sleep(duration).await;
             Ok(())
         })
@@ -209,7 +211,7 @@ impl HttpTransport for ReqwestTransport {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
-        acyclic_harness_core::NativeFutureBundle::new(work, || self.exchange(request, Some(work)))
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || self.exchange(request, Some(work)))
     }
 }

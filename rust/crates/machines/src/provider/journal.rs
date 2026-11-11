@@ -561,11 +561,7 @@ impl Journal {
         after: Option<u64>,
         limit: u32,
     ) -> Result<EventPage, ProviderError> {
-        if limit == 0 {
-            return Err(ProviderError::Invalid(
-                "event page is empty; recovery: provide positive page credit".into(),
-            ));
-        }
+        let limit = crate::page_limit(u64::from(limit), crate::MAX_EVENT_PAGE_SIZE)?;
         let path = self.path(format_args!("machines/{}", self.machine))?;
         let head = self.head(path.clone()).await?;
         let from = after.unwrap_or(0);

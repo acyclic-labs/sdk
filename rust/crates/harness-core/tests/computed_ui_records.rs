@@ -67,7 +67,8 @@ fn status(path: &str) -> StatusRecord {
         phase: Phase::WaitingUser { path: path.into() },
         cursor: 3,
         conversation: 2,
-        child_wakes: Vec::new(),
+        child_settlement: None,
+        child_wakes: None,
     }
 }
 
@@ -252,7 +253,7 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
         .ok_or("missing watch")?;
     assert_eq!(
         sink.changes.lock().unwrap().len(),
-        5,
+        6,
         "opening invalidates earlier observations"
     );
     sink.changes.lock().unwrap().clear();
@@ -274,7 +275,8 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
         *sink.changes.lock().unwrap(),
         [
             SourceChange::Entry(namespace("/index.md")),
-            SourceChange::Entry(namespace("/status.md"))
+            SourceChange::Entry(namespace("/status.md")),
+            SourceChange::Entry(namespace("/glyph"))
         ]
     );
     sink.changes.lock().unwrap().clear();

@@ -5,11 +5,11 @@ pub(crate) fn stock_boundary(
     code: crate::wire::ErrorCode,
     reason: &'static str,
 ) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if io.and_then(PreparationIo::original_native_work).is_some() {
         return crate::Error::NativeBoundary { code, reason };
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let _ = io;
     crate::Error::from_code(code, reason)
 }
@@ -26,20 +26,15 @@ pub(crate) fn stock_retire_text(text: String, io: Option<&PreparationIo>) -> Res
 }
 
 fn stock_retire<T>(value: T, bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
-    #[cfg(feature = "filesystem")]
     let custody = io
         .filter(|_| bytes != 0)
         .map(|io| io.guard_owned(bytes))
         .transpose()?;
-    #[cfg(not(feature = "filesystem"))]
-    let _ = (io, bytes);
     drop(value);
-    #[cfg(feature = "filesystem")]
     drop(custody);
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 pub(in crate::executor) fn stock_events_payload_bytes(events: &Vec<ModelEvent>) -> Result<u64> {
     events.iter().try_fold(
         (events.capacity() as u64)
@@ -55,7 +50,6 @@ pub(in crate::executor) fn stock_events_payload_bytes(events: &Vec<ModelEvent>) 
     )
 }
 
-#[cfg(feature = "filesystem")]
 fn stock_event_payload_bytes(event: &ModelEvent) -> Result<u64> {
     Ok(event.retained_owned_bytes()? - std::mem::size_of::<ModelEvent>() as u64)
 }
@@ -64,15 +58,26 @@ pub(in crate::executor) fn stock_retire_event(
     event: ModelEvent,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    #[cfg(feature = "filesystem")]
     let bytes = if io.is_some() {
         stock_event_payload_bytes(&event)?
     } else {
         0
     };
-    #[cfg(not(feature = "filesystem"))]
-    let bytes = 0;
     stock_retire(event, bytes, io)
+}
+
+/// Keep only the active attempt while the journal retains its complete history.
+pub(crate) fn stock_push_model_event(
+    events: &mut Vec<ModelEvent>,
+    event: ModelEvent,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    if matches!(event, ModelEvent::Restarted) {
+        for old in events.drain(..) {
+            stock_retire_event(old, io)?;
+        }
+    }
+    stock_vec_push(events, event, io)
 }
 
 pub(crate) fn stock_vec_push<T>(
@@ -131,7 +136,6 @@ pub(crate) fn stock_vec_reserve<T>(
         .len()
         .checked_mul(std::mem::size_of::<T>())
         .ok_or_else(overflow)? as u64;
-    #[cfg(feature = "filesystem")]
     let _peak = io
         .map(|io| {
             let bytes = values
@@ -214,7 +218,6 @@ impl Iterator for StockEventIter<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         let event = self.storage.next()?;
         Some((|| {
-            #[cfg(feature = "filesystem")]
             if let Some(hold) = &mut self.storage._hold {
                 hold.retain_part(stock_event_payload_bytes(&event)?)?;
             }
@@ -227,15 +230,9 @@ pub(in crate::executor) fn stock_events_into_iter(
     events: Vec<ModelEvent>,
     io: Option<&PreparationIo>,
 ) -> Result<StockEventIter<'_>> {
-    #[cfg(feature = "filesystem")]
     let hold = io
         .map(|io| io.guard_owned(stock_events_payload_bytes(&events)?))
         .transpose()?;
-    #[cfg(not(feature = "filesystem"))]
-    let hold = {
-        let _ = io;
-        None
-    };
     Ok(StockEventIter {
         storage: StockVecIter {
             values: events.into_iter(),
@@ -248,7 +245,6 @@ pub(crate) fn stock_into_iter<'a, T>(
     values: Vec<T>,
     io: Option<&'a PreparationIo>,
 ) -> Result<StockVecIter<'a, T>> {
-    #[cfg(feature = "filesystem")]
     let hold = io
         .map(|io| {
             let bytes = values
@@ -264,23 +260,13 @@ pub(crate) fn stock_into_iter<'a, T>(
             io.guard_owned(bytes as u64)
         })
         .transpose()?;
-    #[cfg(not(feature = "filesystem"))]
-    let hold = {
-        let _ = io;
-        None
-    };
     Ok(StockVecIter {
         values: values.into_iter(),
         _hold: hold,
     })
 }
 
-#[cfg(all(
-    test,
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::cell::Cell;

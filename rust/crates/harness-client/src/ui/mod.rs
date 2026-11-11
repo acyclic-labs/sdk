@@ -3,7 +3,8 @@ mod attention;
 mod cut;
 mod reply;
 pub use acyclic_harness_core::ui::{
-    Affected, Children, Cut, Error, Node, Page, Result, UiPath, View, blocks,
+    Affected, AgentRow, Children, Cut, Error, Node, Page, Result, UiPath, View, blocks,
+    title_matches,
 };
 pub use attention::{attention, attention_wants};
 pub use cut::ReaderCut;

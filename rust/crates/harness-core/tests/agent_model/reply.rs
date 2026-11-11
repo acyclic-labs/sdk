@@ -1,5 +1,5 @@
 //! The one committed-reply correlation: an accepted message's settled entry,
-//! found by binary search over the agent's own committed conversation range.
+//! or context action, found by binary search over the agent's own committed conversation range.
 
 use super::{Result, create, driver::file, id, intent, user};
 use acyclic_harness_core::agent::*;
@@ -98,17 +98,25 @@ async fn committed_reply_search_respects_identity_and_fork_base() -> Result {
             entry(1, message("m1")?)?,
             third.encode()?,
             entry(4, approval)?,
+            entry(
+                5,
+                TurnInput::Context {
+                    from: user(),
+                    id: intent("ctx5"),
+                    action: ContextAction::Clear,
+                },
+            )?,
             entry(6, message("m6")?)?,
         ],
     )
     .await?;
     let mut state = AgentState::adopted(root.clone(), &super::adopted(id(1))).expect("adopts");
-    state.conversation_tail = 3;
+    state.conversation_tail = 4;
     let provider = &provider;
     let ask = move |state: AgentState, name: &'static str, inbox: u64| async move {
         reply(provider, &state, 7, &intent(name), inbox).await
     };
-    for (name, inbox, sequence) in [("m1", 1, 0), ("m3", 3, 1)] {
+    for (name, inbox, sequence) in [("m1", 1, 0), ("m3", 3, 1), ("ctx5", 5, 3)] {
         let Reply::Answered {
             sequence: found,
             entry,
@@ -120,7 +128,7 @@ async fn committed_reply_search_respects_identity_and_fork_base() -> Result {
         assert_eq!((found, entry.inbox), (sequence, inbox));
     }
     // Another request's entry is never this request's answer.
-    for (name, inbox) in [("m1", 3), ("m4", 4)] {
+    for (name, inbox) in [("m1", 3), ("m3", 1), ("m4", 4), ("m1", 5)] {
         assert!(matches!(
             ask(state.clone(), name, inbox).await,
             Err(Error::Conflict(_))
@@ -138,7 +146,14 @@ async fn committed_reply_search_respects_identity_and_fork_base() -> Result {
         vec![
             entry(1, message("m1")?)?,
             entry(3, message("m3")?)?,
-            entry(5, message("c5")?)?,
+            entry(
+                5,
+                TurnInput::Context {
+                    from: user(),
+                    id: intent("c5"),
+                    action: ContextAction::Clear,
+                },
+            )?,
         ],
     )
     .await?;

@@ -205,7 +205,7 @@ where
                         let work = io.original_native_work().ok_or_else(|| {
                             io.invalid("execution replay requires original native work")
                         })?;
-                        crate::NativeFutureBundle::new(work, || {
+                        acyclic_fs::NativeFutureBundle::new(work, || {
                             self.replay_page(
                                 operation,
                                 summary.tail,
@@ -455,11 +455,11 @@ where
         let event_digest = crate::executor::with_history_io(io, |work| {
             crate::executor::json::canonical_json_digest(
                 event,
-                if io.is_some() {
+                Some(if io.is_some() {
                     acyclic_stream::MAX_RECORD_BYTES as u64
                 } else {
                     u64::MAX
-                },
+                }),
                 work,
             )
         })?;

@@ -28,7 +28,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   if (!pluginPin || pluginHash !== pluginPin.sha256) throw new Error("cpp-plugin executable differs from admitted host pin");
   const compilerHash = sha256(readFileSync(protoc));
   if (compilerHash !== toolchain.protoc?.[host]?.sha256) throw new Error("compiler executable differs from admitted host pin");
-  const options = { encoding: "utf8", timeout: 180_000, maxBuffer: 4 * 1024 * 1024,
+  const options = { encoding: "utf8", timeout: 180_000, maxBuffer: Infinity,
     env: { ...process.env, LC_ALL: "C" } };
   const version = command(protoc, ["--version"], options);
   if (version.error || version.status !== 0 || version.stdout.trim() !== toolchain.protoc_version) {

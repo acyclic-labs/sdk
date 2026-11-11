@@ -1,5 +1,5 @@
 use super::*;
-use crate::reader::{Driver, Priority};
+use crate::reader::{Driver, Priority, Want};
 use crate::{
     AgentCommand, AgentId, AgentPath, AgentRecord, IntentId, ModelContent, PendingApproval, Phase,
     Reader, ReaderPolicy, StatusRecord,
@@ -24,7 +24,8 @@ fn agent(n: u128) -> AgentPath {
 }
 fn status(phase: Phase) -> StatusRecord {
     StatusRecord {
-        child_wakes: Vec::new(),
+        child_settlement: None,
+        child_wakes: None,
         phase,
         cursor: 1,
         conversation: 0,
@@ -67,19 +68,27 @@ fn file(
 async fn wait(
     reader: &mut Reader,
     driver: &mut Driver<MemoryStream>,
+    wants: Vec<Want>,
     ready: impl Fn(&Reader) -> bool,
 ) {
     poll_fn(|cx| {
+        let generation = reader.generation();
+        reader.begin_frame(0);
+        reader.plan(wants.iter().cloned().map(|want| (want, Priority::Visible)));
         driver.step(reader, 0, cx);
         if ready(reader) {
             Poll::Ready(())
         } else {
+            if reader.generation() != generation {
+                cx.waker().wake_by_ref();
+            }
             Poll::Pending
         }
     })
     .await;
 }
 async fn idle(memory: &MemoryStream, path: &AgentPath) -> TestResult {
+    append(memory, path.membership()?, b"self membership".to_vec()).await?;
     let adoption = InboxRecord::ForkAdopted(Box::new(ForkAdopted {
         agent: path.id(),
         parent: None,
@@ -142,16 +151,16 @@ async fn ui_default_projection() -> TestResult {
     let mut driver = Driver::new(Arc::clone(&memory));
     driver.attach(&mut reader, 0);
     let index = UiPath::new("index.md")?;
-    reader.plan(
-        view.wants(&selected, &index, None, 0)?
-            .into_iter()
-            .map(|w| (w, Priority::Visible)),
-    );
-    wait(&mut reader, &mut driver, |r| {
-        r.cache()
-            .record(&selected.conversation().expect("conversation"), 4)
-            .is_some()
-    })
+    wait(
+        &mut reader,
+        &mut driver,
+        view.wants(&selected, &index, None, 0)?,
+        |r| {
+            r.cache()
+                .record(&selected.conversation().expect("conversation"), 4)
+                .is_some()
+        },
+    )
     .await;
     let lookup = |f: &FileRef| files.get(f.path()).cloned();
     let cut = ReaderCut {
@@ -161,6 +170,26 @@ async fn ui_default_projection() -> TestResult {
     };
     assert_eq!(view.project(&cut, &index)?, include_str!("golden/index.md"));
     assert_eq!(view.project(&cut, &UiPath::new("status.md")?)?, "Idle\n");
+    // Rows resolve exactly the authored UI cut over the same default files;
+    // absence never invents a model, currency or creation clock.
+    let row = view.row(&cut, |_| None)?;
+    assert_eq!(
+        (&*row.glyph, &*row.title, &*row.model, &*row.cost, &*row.age),
+        ("○", selected.id().as_str(), "—", "—", "—")
+    );
+    let authored = BTreeMap::from([
+        ("title", "Parser worker"),
+        ("model", "selected-model"),
+        ("cost", "0.12 EUR"),
+        ("age", "2m"),
+    ]);
+    let row = view.row(&cut, |path| authored.get(path).copied())?;
+    assert_eq!(
+        (&*row.title, &*row.model, &*row.cost, &*row.age),
+        ("Parser worker", "selected-model", "0.12 EUR", "2m")
+    );
+    assert!(title_matches(&row.title, "pWK"));
+    assert!(!title_matches(&row.title, "wp"));
     assert_eq!(
         view.bytes(&cut, &index, 2..17)?,
         view.project(&cut, &index)?
@@ -170,16 +199,16 @@ async fn ui_default_projection() -> TestResult {
     );
     let children = UiPath::new("children")?;
     reader.begin_frame(0);
-    reader.plan(
-        view.wants(&selected, &children, Some(5), 0)?
-            .into_iter()
-            .map(|w| (w, Priority::Visible)),
-    );
-    wait(&mut reader, &mut driver, |r| {
-        r.cache()
-            .listing(&selected.children().expect("children"), 0)
-            .is_some()
-    })
+    wait(
+        &mut reader,
+        &mut driver,
+        view.wants(&selected, &children, Some(5), 0)?,
+        |r| {
+            r.cache()
+                .listing(&selected.children().expect("children"), 0)
+                .is_some()
+        },
+    )
     .await;
     let cut = ReaderCut {
         reader: &reader,
@@ -206,16 +235,16 @@ async fn ui_default_projection() -> TestResult {
     let cursor = first.next.ok_or("next page")?;
     let issued = reader.issued();
     reader.begin_frame(0);
-    reader.plan(
-        view.wants(&selected, &children, Some(5), cursor)?
-            .into_iter()
-            .map(|w| (w, Priority::Visible)),
-    );
-    wait(&mut reader, &mut driver, |r| {
-        r.cache()
-            .listing(&selected.children().expect("children"), 1)
-            .is_some()
-    })
+    wait(
+        &mut reader,
+        &mut driver,
+        view.wants(&selected, &children, Some(5), cursor)?,
+        |r| {
+            r.cache()
+                .listing(&selected.children().expect("children"), 1)
+                .is_some()
+        },
+    )
     .await;
     assert_eq!(
         reader.issued() - issued,
@@ -250,7 +279,10 @@ async fn ui_default_projection() -> TestResult {
             .iter()
             .any(|want| { matches!(want, crate::reader::Want::Listing { index: 2, .. }) })
     );
-    assert_eq!(view.affected(Affected::Status), &["index.md", "status.md"]);
+    assert_eq!(
+        view.affected(Affected::Status),
+        &["index.md", "status.md", "glyph"]
+    );
     // A real followed record supplies multibyte text. Byte ranges may split a
     // scalar, cross formatting writes, be reversed, or extend beyond EOF.
     reader.set_follow(selected.status()?, true);
@@ -264,7 +296,7 @@ async fn ui_default_projection() -> TestResult {
     )
     .await?;
     let tail = memory.head(selected.status()?).await?.tail;
-    wait(&mut reader, &mut driver, |r| {
+    wait(&mut reader, &mut driver, Vec::new(), |r| {
         let stream = selected.status().expect("status");
         r.cache().tail(&stream) == Some(tail) && r.cache().record(&stream, tail - 1).is_some()
     })
@@ -495,19 +527,19 @@ async fn ui_lazy_cost() -> TestResult {
         assert_eq!(reader.issued(), 0, "no viewer has no operations");
         let mut driver = Driver::new(memory.clone());
         driver.attach(&mut reader, 0);
-        reader.plan(
-            view.wants(&selected, &UiPath::new("index.md")?, None, 0)?
-                .into_iter()
-                .map(|w| (w, Priority::Visible)),
-        );
-        wait(&mut reader, &mut driver, |r| {
-            r.cache()
-                .record(&selected.status().expect("status"), 0)
-                .is_some()
-                && r.cache()
-                    .record(&selected.conversation().expect("conversation"), 0)
+        wait(
+            &mut reader,
+            &mut driver,
+            view.wants(&selected, &UiPath::new("index.md")?, None, 0)?,
+            |r| {
+                r.cache()
+                    .record(&selected.status().expect("status"), 0)
                     .is_some()
-        })
+                    && r.cache()
+                        .record(&selected.conversation().expect("conversation"), 0)
+                        .is_some()
+            },
+        )
         .await;
         let lookup = |file: &FileRef| (file == &reference).then(|| output.clone());
         let cut = ReaderCut {

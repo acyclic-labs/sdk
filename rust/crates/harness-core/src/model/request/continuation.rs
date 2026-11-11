@@ -42,7 +42,11 @@ impl RequestContinuation {
             .len()
             .checked_add(self.suffix.len())
             .ok_or_else(|| Error::Invalid("model context count overflows".into()))?;
-        if count == 0 || count > limits.context_messages {
+        if count == 0
+            || limits
+                .context_messages
+                .is_some_and(|maximum| count > maximum.get())
+        {
             return Err(Error::Invalid("model context count is invalid".into()));
         }
         if limits == self.prepared.admitted_limits {
@@ -52,6 +56,8 @@ impl RequestContinuation {
             ModelRequest::validate_messages(
                 &mut self.suffix,
                 &self.prepared.request.tools,
+                self.prepared.request.compose_tools,
+                true,
                 limits,
                 io,
                 // Only the suffix is mutable; these declarations belong to the
@@ -78,8 +84,10 @@ impl RequestContinuation {
                 .messages
                 .capacity()
                 .saturating_mul(2)
-                .max(count)
-                .min(limits.context_messages);
+                .max(count);
+            let capacity = limits
+                .context_messages
+                .map_or(capacity, |maximum| capacity.min(maximum.get()));
             crate::executor::stock_vec_reserve(&mut self.prepared.request.messages, capacity, io)?;
         }
         for message in crate::executor::stock_into_iter(self.suffix, io)? {
@@ -111,7 +119,6 @@ impl RequestContinuation {
         }
         let old_count = self.prepared.request.messages.len();
         let mut projection_nodes = self.prepared.projection_nodes.load(Ordering::Relaxed);
-        #[cfg(feature = "filesystem")]
         let old_inventory = (
             self.prepared.resident_payload,
             self.prepared.request.messages.capacity(),
@@ -125,7 +132,6 @@ impl RequestContinuation {
         if !same_limits {
             return PreparedModelRequest::encode_validated(request, limits, remaining, io);
         }
-        #[cfg(feature = "filesystem")]
         let resident_payload = Some(match old_inventory {
             (Some(bytes), capacity) => {
                 let added_slots = request
@@ -158,6 +164,7 @@ impl RequestContinuation {
             request,
             bytes,
             request_digest,
+            context_window: None,
             replay_key: std::sync::OnceLock::new(),
             projection_nodes: AtomicUsize::new(projection_nodes),
             admitted_limits: limits,
@@ -165,7 +172,6 @@ impl RequestContinuation {
             encoding,
             input,
             content_admission,
-            #[cfg(feature = "filesystem")]
             resident_payload,
         })
     }

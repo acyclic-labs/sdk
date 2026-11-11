@@ -15,7 +15,7 @@
 
 use super::{
     AgentPath, AgentRecord, AgentState, Closed, Control, Error, ForkAdopted, InboxRecord, Out,
-    Sender, Step, VolumeBinding, commit,
+    Sender, Step, WorkspaceEntry, commit,
 };
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey,
@@ -111,6 +111,25 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             let mut adopted = adoption(state, volumes, cursor, prior_conversation);
             adopted.brief.clone_from(brief);
             adopted.profile.clone_from(profile);
+            // The root pins a run policy. A client-selected child role or
+            // context cannot replace it with an unrestricted subtree.
+            if let Some(topology) = state
+                .profile
+                .as_ref()
+                .and_then(|profile| profile.topology.as_ref())
+            {
+                let child = adopted
+                    .profile
+                    .get_or_insert_with(|| super::CreationConfig {
+                        topology: None,
+                        model: None,
+                        continuation: None,
+                        context: super::SpawnContext::Fork,
+                        template: None,
+                        peers: Default::default(),
+                    });
+                child.topology = Some(topology.clone());
+            }
             if let Some(history) = history {
                 if history.conversation > prior_conversation {
                     return Err(Error::Record("history fork exceeds committed conversation"));
@@ -155,14 +174,20 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 builder.condition(CommitCondition::Absent { path: path.clone() });
                 builder.append(path, super::goal::Completed { sequence }.encode()?);
             }
-            Out::Checkpoint | Out::Roster(_) | Out::Steered(_) | Out::Notices(_) => {}
+            Out::Checkpoint
+            | Out::Roster(_)
+            | Out::Steered(_)
+            | Out::Notices(_)
+            | Out::PendingSpawns(_) => {}
             Out::Send { to, record } => {
                 if matches!(
                     record,
-                    InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
+                    InboxRecord::ForkAdopted(_)
+                        | InboxRecord::Archive(_)
+                        | InboxRecord::WorkspaceChanged(_)
                 ) {
                     return Err(Error::Record(
-                        "send carries neither ForkAdopted nor Archive",
+                        "send cannot carry adoption, archive or workspace changes",
                     ));
                 }
                 builder.recipient(to)?;
@@ -252,7 +277,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
 /// spawn names the child, and the fork cut is `cursor`.
 pub(super) fn adoption(
     state: &AgentState,
-    volumes: &[VolumeBinding],
+    volumes: &[WorkspaceEntry],
     cursor: u64,
     conversation_tail: u64,
 ) -> ForkAdopted {

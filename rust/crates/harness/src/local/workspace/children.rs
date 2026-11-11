@@ -185,7 +185,7 @@ impl crate::filesystem::VolumeResources for LocalVolumeResources {
     fn release<'a>(
         &'a self,
         _agent: &'a crate::agent::AgentPath,
-        bindings: &'a [crate::agent::VolumeBinding],
+        bindings: &'a [crate::agent::WorkspaceEntry],
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move { self.0.release_physical_bindings(bindings) })
     }
@@ -220,7 +220,7 @@ impl LocalWorkspace {
         &self,
         agent: &crate::agent::AgentPath,
         resolver: &dyn crate::agent::TurnChildren,
-        volumes: &[crate::agent::VolumeBinding],
+        volumes: &[crate::agent::WorkspaceEntry],
         arguments: &[String],
     ) -> Result<()> {
         let names: Vec<&str> = arguments
@@ -235,7 +235,7 @@ impl LocalWorkspace {
         for binding in volumes {
             let id = self
                 .filesystem
-                .workspace_id(&binding.volume.storage_name(&mut None)?)
+                .workspace_id(binding.volume()?.storage_name(&mut None)?)
                 .map_err(storage)?;
             if id == repository {
                 project = Some(binding);

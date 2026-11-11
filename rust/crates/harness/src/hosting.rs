@@ -59,6 +59,47 @@ use std::sync::Arc;
 /// policy for the verified principal's command. Identity comes only from the
 /// session credential; the platform never supplies a caller here.
 pub trait Platform: ProviderPlatform + 'static {
+    /// Explicitly serve the roots of this placement as independent sessions.
+    /// Tree-only hosts retain their existing routing and credential boundary.
+    fn sessions(&self) -> bool {
+        false
+    }
+
+    /// Optional source of the new session's independent volume forks. The
+    /// host chooses this checkout binding; a client cannot supply volume grants.
+    fn session_source(&self) -> Option<AgentPath> {
+        None
+    }
+
+    /// Bind a new session to platform-owned resources. Requests cannot supply
+    /// volume grants, signing custody or an actor placement.
+    fn session_root(
+        &self,
+        agent: crate::agent::AgentId,
+    ) -> BoxProviderFuture<'_, crate::Result<RootRequest>> {
+        let _ = agent;
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "session creation is unavailable".into(),
+            ))
+        })
+    }
+
+    /// Integrate a root through the platform's existing filesystem merge.
+    /// The directory credential and current policy were checked first.
+    fn merge_session<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        operation: crate::OperationId,
+    ) -> BoxProviderFuture<'a, crate::Result<Option<String>>> {
+        let _ = (agent, operation);
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "session merge is unavailable".into(),
+            ))
+        })
+    }
+
     /// The current policy for `principal` issuing `command`.
     fn policy<'a>(
         &'a self,
@@ -160,6 +201,10 @@ pub struct Server<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     platform: Arc<dyn Platform>,
     root: AgentPath,
     resource: String,
+    /// Only uncertain root publications retain process state; settled sessions
+    /// are discovered directly from the stream directory.
+    pending_roots:
+        std::sync::Mutex<std::collections::BTreeMap<AgentPath, (blake3::Hash, Prepared)>>,
 }
 
 /// What serving a root came to.
@@ -239,6 +284,9 @@ where
             }));
         }
     };
+    if platform.sessions() {
+        bound.initialize_sessions().await?;
+    }
     Ok(Serving::Served(server(bound, platform, root)))
 }
 
@@ -257,6 +305,9 @@ where
     O: AsyncObjectStore + 'static,
 {
     bound.admit_path(&root)?;
+    if platform.sessions() {
+        bound.initialize_sessions().await?;
+    }
     Ok(server(bound, platform, root))
 }
 
@@ -279,6 +330,7 @@ where
         platform,
         root,
         resource,
+        pending_roots: Default::default(),
     })
 }
 
@@ -360,13 +412,69 @@ where
 
     /// `agent` when it is the root or one of its descendants.
     fn within_tree<'a>(&self, agent: &'a AgentPath) -> Result<&'a AgentPath, Error> {
-        self.root
-            .contains(agent)
+        (self.root.contains(agent) || self.platform.sessions())
             .then_some(agent)
             .ok_or(Error::NoSuchAgent)
     }
 
-    /// Delivers one context request to `agent`; its checkpoint settles in
+    /// Whether this platform admits an independent root-session directory.
+    pub fn serves_sessions(&self) -> bool {
+        self.platform.sessions()
+    }
+
+    /// Separate resource: a tree credential never acquires directory authority.
+    pub fn session_resource(&self) -> String {
+        format!(
+            "actors:/session-directory/{}",
+            acyclic_auth::encode_component(self.bound.within().namespace().as_str().as_bytes())
+        )
+    }
+
+    fn command_resource(&self, command: &AgentCommand) -> String {
+        if matches!(
+            command,
+            AgentCommand::Sessions { .. }
+                | AgentCommand::NewSession { .. }
+                | AgentCommand::ForkSession { .. }
+                | AgentCommand::NameSession { .. }
+                | AgentCommand::ResolveSession { .. }
+                | AgentCommand::SelectSession { .. }
+                | AgentCommand::LatestSession {}
+        ) || matches!(command, AgentCommand::MergeSession { agent, .. } if agent.parent().is_none())
+            || command
+                .agent()
+                .is_some_and(|agent| !self.root.contains(agent))
+        {
+            self.session_resource()
+        } else {
+            self.resource.clone()
+        }
+    }
+
+    fn authorize_command(
+        &self,
+        authorization: &CallAuthorization,
+        command: &AgentCommand,
+        attributes: &acyclic_auth::contract::RecordAttributes,
+        policy: PolicyDecision,
+    ) -> Result<(), StreamError> {
+        authorization.authorize(&self.resource, &[], attributes, policy)?;
+        let selected = self.command_resource(command);
+        if selected != self.resource {
+            authorization
+                .dependent_resource(
+                    acyclic_auth::contract::ResourcePattern {
+                        name: selected.clone(),
+                        prefix: false,
+                    },
+                    "actors/invoke",
+                )?
+                .authorize(&selected, &[], attributes, policy)?;
+        }
+        Ok(())
+    }
+
+    /// Delivers one context request to the agent; its checkpoint settles in
     /// the agent's conversation like a turn.
     async fn context(
         &self,
@@ -418,13 +526,236 @@ where
             AgentCommand::Root {} => Ok(AgentReply::Root {
                 agent: self.root.clone(),
             }),
-            AgentCommand::Settlement { agent } => {
+            AgentCommand::AgentFilePreviews {
+                agent,
+                paths,
+                after,
+                bytes,
+            } => {
+                let snapshot = self
+                    .bound
+                    .agent_file_previews(self.within_tree(agent)?, paths, after.as_ref(), *bytes)
+                    .await?;
+                Ok(AgentReply::FilePreviews { snapshot })
+            }
+            AgentCommand::AgentFiles {
+                agent,
+                paths,
+                after,
+            } => {
+                let snapshot = self
+                    .bound
+                    .agent_files(self.within_tree(agent)?, paths, after.as_ref())
+                    .await?;
+                Ok(AgentReply::ClientFiles { snapshot })
+            }
+            AgentCommand::PublishAgentFiles {
+                agent,
+                operation,
+                changes,
+            } => {
+                let generation = self
+                    .bound
+                    .publish_agent_files(self.within_tree(agent)?, *operation, changes)
+                    .await?;
+                Ok(AgentReply::ClientFilesPublished { generation })
+            }
+            AgentCommand::Archive { agent, id } => {
+                let delivery = agents.archive(self.within_tree(agent)?, by, id).await?;
+                Ok(AgentReply::Delivered { delivery })
+            }
+            AgentCommand::Pause { agent, paused } => {
+                agents.pause(self.within_tree(agent)?, *paused).await?;
+                Ok(AgentReply::Paused { paused: *paused })
+            }
+            AgentCommand::MergeSession { agent, id } => {
+                if agent.parent().is_none() && !self.platform.sessions() {
+                    return Err(Error::Record("root merge requires a session directory"));
+                }
+                let identity = crate::contract::canonical_json_bytes(&(by, id, agent))
+                    .map_err(|_| Error::Record("merge identity cannot encode"))?;
+                let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.session-merge.v1");
+                hash.update(&identity);
+                let mut operation = [0; 16];
+                hash.finalize_xof().fill(&mut operation);
+                let commit = self
+                    .platform
+                    .merge_session(
+                        self.within_tree(agent)?,
+                        crate::OperationId::from_bytes(operation),
+                    )
+                    .await
+                    .map_err(|error| Error::Turn(Box::new(error)))?;
+                Ok(AgentReply::Merged { commit })
+            }
+            AgentCommand::NameSession { agent, name, id } => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                self.bound.name_session(agent, name, id).await?;
+                Ok(AgentReply::Root {
+                    agent: agent.clone(),
+                })
+            }
+            AgentCommand::ResolveSession { name } => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                Ok(AgentReply::Root {
+                    agent: self.bound.resolve_session(name).await?,
+                })
+            }
+            AgentCommand::SelectSession { agent, id } => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                self.bound.select_session(agent, id).await?;
+                Ok(AgentReply::Root {
+                    agent: agent.clone(),
+                })
+            }
+            AgentCommand::LatestSession {} => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                Ok(AgentReply::LatestSession {
+                    agent: self.bound.latest_session().await?,
+                })
+            }
+            AgentCommand::NewSession { id } | AgentCommand::ForkSession { id, .. } => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.session.v1");
+                hasher.update(self.root.as_str().as_bytes());
+                // New and historical root intents are independent namespaces.
+                if let AgentCommand::ForkSession { .. } = command {
+                    hasher.update(b"history");
+                }
+                hasher.update(
+                    &serde_json::to_vec(&(by, id))
+                        .map_err(|_| Error::Record("session identity cannot encode"))?,
+                );
+                let mut bytes = [0; 16];
+                hasher.finalize_xof().fill(&mut bytes);
+                let identity = crate::agent::AgentId::from_bytes(bytes);
+                let path = AgentPath::root(&identity);
+                let parameters = blake3::hash(
+                    &serde_json::to_vec(command)
+                        .map_err(|_| Error::Record("session request cannot encode"))?,
+                );
+                let pending = self
+                    .pending_roots
+                    .lock()
+                    .map_err(|_| Error::Record("session publication owner is poisoned"))?
+                    .remove(&path);
+                if pending.is_none() {
+                    match agents.state(&path).await {
+                        Ok(state) => {
+                            let provenance = state
+                                .profile
+                                .as_ref()
+                                .and_then(|profile| profile.continuation.as_ref());
+                            let same = match command {
+                                AgentCommand::ForkSession { agent, at, .. } => provenance
+                                    .is_some_and(|origin| {
+                                        origin.parent_run_id == *agent
+                                            && origin.stream_offset == *at
+                                    }),
+                                _ => provenance.is_none(),
+                            };
+                            if !same {
+                                return Err(Error::Record(
+                                    "session intent already names another creation",
+                                ));
+                            }
+                            return Ok(AgentReply::Root { agent: path });
+                        }
+                        Err(Error::NoSuchAgent) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                let prepared = match pending {
+                    Some((original, prepared)) => {
+                        if original != parameters {
+                            self.pending_roots
+                                .lock()
+                                .map_err(|_| {
+                                    Error::Record("session publication owner is poisoned")
+                                })?
+                                .insert(path, (original, prepared));
+                            return Err(Error::Record(
+                                "uncertain session intent names another request",
+                            ));
+                        }
+                        prepared
+                    }
+                    None => {
+                        let root = self
+                            .platform
+                            .session_root(identity)
+                            .await
+                            .map_err(|error| Error::Turn(Box::new(error)))?;
+                        match command {
+                            AgentCommand::ForkSession { agent, at, .. } => {
+                                self.bound
+                                    .prepare_session_history(
+                                        id,
+                                        root,
+                                        self.within_tree(agent)?,
+                                        *at,
+                                    )
+                                    .await?
+                            }
+                            _ => match self.platform.session_source() {
+                                Some(source) => {
+                                    self.bound
+                                        .prepare_isolated_session(id, root, &source)
+                                        .await?
+                                }
+                                None => self.bound.prepare_session_root(id, root).await?,
+                            },
+                        }
+                    }
+                };
+                let agent = match self.bound.submit_root(prepared).await? {
+                    RootSubmission::Created(agent) => agent,
+                    RootSubmission::Unknown(prepared) => {
+                        let request = prepared.request().clone();
+                        self.pending_roots
+                            .lock()
+                            .map_err(|_| Error::Record("session publication owner is poisoned"))?
+                            .insert(path, (parameters, prepared));
+                        return Err(Error::Unknown(Box::new(request)));
+                    }
+                };
+                Ok(AgentReply::Root { agent })
+            }
+            AgentCommand::Settlement { agent, wait } => {
                 let agent = self.within_tree(agent)?;
-                let state = agents.state(agent).await?;
+                if *wait {
+                    let tail = crate::agent::inbox_tail(&**agents.provider(), agent).await?;
+                    if let Some(input) = tail.checked_sub(1) {
+                        agents.wait_for_input(agent, input).await?;
+                    }
+                }
+                let (state, settlement) = agents.settlement_snapshot(agent).await?;
+                let profile = state.profile.as_ref();
                 Ok(AgentReply::Settlement {
                     settled: state.conversation_tail,
                     statuses: state.status_tail,
-                    phase: state.phase,
+                    role: profile
+                        .and_then(|profile| match &profile.template {
+                            None => Some("orchestrator"),
+                            Some(file) => file
+                                .path()
+                                .strip_prefix("templates/")
+                                .and_then(|path| path.strip_suffix("/AGENT.md")),
+                        })
+                        .map(str::to_owned),
+                    model: profile.and_then(|profile| profile.model.clone()),
+                    topology: profile.and_then(|profile| profile.topology.clone()),
+                    phase: settlement.phase,
                 })
             }
             AgentCommand::Diff { agent, page } => {
@@ -499,6 +830,49 @@ where
                         .publish_client_files(agent, *session, *operation, changes)
                         .await?,
                 })
+            }
+            AgentCommand::ChildWakes {
+                agent,
+                status,
+                page,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let after = page
+                    .cursor()
+                    .map(|after| after.parse::<u64>())
+                    .transpose()
+                    .map_err(|_| Error::Record("invalid completion cursor"))?;
+                let mut items = self
+                    .bound
+                    .child_wakes(agent, *status, after, page.items() as usize + 1)
+                    .await?;
+                let mut credit = PageCredit::new(page, |next| AgentReply::ChildWakes {
+                    items: Vec::new(),
+                    next,
+                })?;
+                for (index, item) in items.iter().take(page.items() as usize).enumerate() {
+                    let continues = index + 1 < items.len();
+                    let next = item
+                        .status
+                        .checked_add(1)
+                        .ok_or(Error::Record("completion status overflow"))?;
+                    if !credit.accept(item, continues.then_some(u64::from(next.ilog10()) + 1))? {
+                        break;
+                    }
+                }
+                let next = if credit.items < items.len() {
+                    Some(
+                        items[credit.items - 1]
+                            .status
+                            .checked_add(1)
+                            .ok_or(Error::Record("completion status overflow"))?
+                            .to_string(),
+                    )
+                } else {
+                    None
+                };
+                items.truncate(credit.items);
+                Ok(AgentReply::ChildWakes { items, next })
             }
             AgentCommand::Directory {
                 agent,
@@ -577,6 +951,11 @@ where
                     ReadTarget::File { file } => {
                         self.bound
                             .read_file(agent, file, *offset, MAX_READ_BYTES)
+                            .await?
+                    }
+                    ReadTarget::Conversation { sequence, file } => {
+                        self.bound
+                            .read_conversation_file(agent, file, *sequence, *offset, MAX_READ_BYTES)
                             .await?
                     }
                     ReadTarget::ToolOutput { path, at } => {
@@ -776,8 +1155,15 @@ where
                 let next = history_cursor(&cursor)?;
                 Ok(AgentReply::History { items, next })
             }
-            AgentCommand::Children { agent, page } => {
-                let agent = self.within_tree(agent)?;
+            AgentCommand::Children { page, .. } | AgentCommand::Sessions { page } => {
+                let sessions = matches!(command, AgentCommand::Sessions { .. });
+                let parent = match command {
+                    AgentCommand::Children { agent, .. } => self.within_tree(agent)?.children()?,
+                    AgentCommand::Sessions { .. } if self.platform.sessions() => {
+                        self.bound.session_roots()?
+                    }
+                    _ => return Err(Error::Record("this host serves one tree")),
+                };
                 let mut credit = PageCredit::new(page, |next| AgentReply::Children {
                     items: Vec::new(),
                     next,
@@ -799,7 +1185,7 @@ where
                     children: Some(ChildrenPageRequest {
                         offset: 0,
                         tail_stream: None,
-                        parent: Some(agent.children()?),
+                        parent: Some(parent),
                         after,
                         hierarchy_version,
                         limit: page.items(),
@@ -824,13 +1210,30 @@ where
                     .children
                     .ok_or(Error::Stream(StreamError::InvalidResponse))?;
                 let mut items = Vec::with_capacity(listed.children.len());
+                let mut listed_paths = Vec::with_capacity(listed.children.len());
                 let mut paths = acyclic_stream::HeadSet::with_capacity(listed.children.len());
                 for child in listed.children {
-                    let agent = AgentPath::try_from(child.path.as_str().to_owned())?;
+                    let agent = if matches!(command, AgentCommand::Sessions { .. }) {
+                        let id = child
+                            .path
+                            .as_str()
+                            .rsplit('/')
+                            .next()
+                            .ok_or(Error::Record("session entry has no identity"))?;
+                        AgentPath::root(&crate::agent::AgentId::try_from(id.to_owned())?)
+                    } else {
+                        AgentPath::try_from(child.path.as_str().to_owned())?
+                    };
+                    listed_paths.push(child.path.clone());
                     paths.push(agent.status()?);
+                    if sessions {
+                        paths.push(child.path);
+                    }
                     items.push(ChildAgent {
                         agent,
                         status: None,
+                        created_at_micros: None,
+                        updated_at_micros: None,
                     });
                 }
                 if !items.is_empty() {
@@ -844,7 +1247,7 @@ where
                         projection: HeadProjection::History,
                         paths,
                         children: None,
-                        limit: page.items(),
+                        limit: page.items() * if sessions { 2 } else { 1 },
                         at_least: RevisionCut::of(view.snapshot),
                     };
                     let statuses = provider
@@ -852,17 +1255,37 @@ where
                         .await
                         .map_err(Error::Stream)?;
                     statuses.validate_for(&request).map_err(Error::Stream)?;
-                    for (item, head) in items.iter_mut().zip(statuses.heads) {
-                        let record = head
+                    let mut heads = statuses.heads.into_iter();
+                    for item in &mut items {
+                        let record = heads
+                            .next()
+                            .flatten()
                             .and_then(|head| head.last)
                             .ok_or(Error::Record("admitted child has no published status"))?;
+                        item.updated_at_micros = Some(record.committed_at_micros);
                         item.status = Some(StatusRecord::decode(&record.value)?);
+                        if sessions {
+                            let member = heads
+                                .next()
+                                .flatten()
+                                .and_then(|head| head.last)
+                                .ok_or(Error::Record("session has no directory admission"))?;
+                            if member.sequence != 0 {
+                                return Err(Error::Record(
+                                    "session directory admission is not immutable",
+                                ));
+                            }
+                            item.created_at_micros = Some(member.committed_at_micros);
+                        }
                     }
                 }
                 for (index, item) in items.iter().enumerate() {
                     let next_bytes =
                         (index + 1 < items.len() || listed.next_after.is_some()).then(|| {
-                            children_cursor_bytes(&listed.hierarchy_version, &item.agent) as u64
+                            children_cursor_bytes(
+                                &listed.hierarchy_version,
+                                listed_paths[index].as_str(),
+                            ) as u64
                         });
                     if !credit.accept(item, next_bytes)? {
                         break;
@@ -871,10 +1294,13 @@ where
                 let continued = credit.items < items.len() || listed.next_after.is_some();
                 items.truncate(credit.items);
                 let next = if continued {
-                    let last = items
-                        .last()
-                        .ok_or(Error::Record("children page cannot continue without a row"))?;
-                    Some(children_cursor(&listed.hierarchy_version, &last.agent))
+                    let last =
+                        listed_paths
+                            .get(items.len().checked_sub(1).ok_or(Error::Record(
+                                "children page cannot continue without a row",
+                            ))?)
+                            .ok_or(Error::Record("children page lost its source cursor"))?;
+                    Some(children_cursor(&listed.hierarchy_version, last.as_str()))
                 } else {
                     None
                 };
@@ -955,29 +1381,12 @@ where
                             } else {
                                 None
                             };
-                            profile.continuation = Some(Box::new(crate::agent::Continuation {
-                                version: 1,
-                                parent_run_id: parent.clone(),
-                                stream_offset: *at,
-                                workspace_generations: saved
-                                    .volumes
-                                    .iter()
-                                    .map(|volume| crate::agent::HistoryVolume {
-                                        binding: volume.binding.clone(),
-                                        generation: volume.generation,
-                                    })
-                                    .collect(),
+                            profile.continuation = Some(Box::new(crate::agent::Continuation::at(
+                                parent,
+                                *at,
+                                &saved,
                                 override_item,
-                                live_children_at_cut: saved.live_children,
-                                non_replay_manifest: [
-                                    "wall_clocks",
-                                    "web_network",
-                                    "external_machine_state",
-                                    "model_sampling",
-                                ]
-                                .map(str::to_owned)
-                                .to_vec(),
-                            }));
+                            )));
                         }
                         Some(crate::agent::HistorySelection {
                             conversation: saved.conversation,
@@ -1145,13 +1554,13 @@ fn text(content: &ModelContent) -> Result<&str, Error> {
 
 /// AgentPath admits only fixed ASCII segments and hex identities, so this
 /// cursor's content needs no JSON escaping. Share its size with allocation.
-fn children_cursor_bytes(version: &CommitId, after: &AgentPath) -> usize {
-    version.as_bytes().len() * 2 + 1 + after.as_str().len()
+fn children_cursor_bytes(version: &CommitId, after: &str) -> usize {
+    version.as_bytes().len() * 2 + 1 + after.len()
 }
 
 /// A children page's continuation: the listing's hierarchy version, which a
 /// later page must name, and the last returned agent.
-fn children_cursor(version: &CommitId, after: &AgentPath) -> String {
+fn children_cursor(version: &CommitId, after: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut cursor = String::with_capacity(children_cursor_bytes(version, after));
     for byte in version.as_bytes() {
@@ -1159,12 +1568,12 @@ fn children_cursor(version: &CommitId, after: &AgentPath) -> String {
         cursor.push(char::from(HEX[usize::from(byte & 0xf)]));
     }
     cursor.push(':');
-    cursor.push_str(after.as_str());
+    cursor.push_str(after);
     cursor
 }
 
 fn page_json_bytes(value: &impl serde::Serialize) -> Result<u64, Error> {
-    crate::executor::json::json_byte_length(value, u64::MAX, &mut None)
+    crate::executor::json::json_byte_length(value, None, &mut None)
         .map_err(|_| Error::Record("agent page encoding failed"))
 }
 
@@ -1310,7 +1719,7 @@ where
                 .map_err(|_| StreamError::InvalidArgument)?;
             let authorize = async |command: &AgentCommand| {
                 let policy = server.platform.policy(&principal, command).await?;
-                authorization.authorize(&server.resource, &[], &attributes, policy)
+                server.authorize_command(&authorization, command, &attributes, policy)
             };
             // Every command, a staged head included, is authorized as it
             // arrives: a head names its agent and kind, so a denied caller
@@ -1360,19 +1769,31 @@ where
             let query = match call.command() {
                 AgentCommand::Bind { .. }
                 | AgentCommand::Root {}
+                | AgentCommand::ResolveSession { .. }
+                | AgentCommand::LatestSession {}
+                | AgentCommand::Sessions { .. }
                 | AgentCommand::Children { .. }
                 | AgentCommand::ProjectHeads { .. }
                 | AgentCommand::History { .. }
                 | AgentCommand::Directory { .. }
+                | AgentCommand::ChildWakes { .. }
                 | AgentCommand::Approvals { .. }
                 | AgentCommand::Reply { .. }
                 | AgentCommand::Settlement { .. }
                 | AgentCommand::Diff { .. }
                 | AgentCommand::Usage { .. }
                 | AgentCommand::Events { .. }
+                | AgentCommand::AgentFilePreviews { .. }
+                | AgentCommand::AgentFiles { .. }
                 | AgentCommand::ClientFiles { .. }
                 | AgentCommand::Read { .. } => true,
-                AgentCommand::Prompt { .. }
+                AgentCommand::NewSession { .. }
+                | AgentCommand::NameSession { .. }
+                | AgentCommand::SelectSession { .. }
+                | AgentCommand::ForkSession { .. }
+                | AgentCommand::Pause { .. }
+                | AgentCommand::MergeSession { .. }
+                | AgentCommand::Prompt { .. }
                 | AgentCommand::Cancel { .. }
                 | AgentCommand::Compact { .. }
                 | AgentCommand::Rewind { .. }
@@ -1381,6 +1802,8 @@ where
                 | AgentCommand::Spawn { .. }
                 | AgentCommand::Fork { .. }
                 | AgentCommand::Decide { .. }
+                | AgentCommand::PublishAgentFiles { .. }
+                | AgentCommand::Archive { .. }
                 | AgentCommand::PublishClientFiles { .. }
                 | AgentCommand::Stage { .. }
                 | AgentCommand::Staged { .. } => false,
@@ -1391,7 +1814,7 @@ where
                 // receipts retain their original commit outcome semantics.
                 let principal = authorization.principal()?;
                 let policy = server.platform.policy(&principal, call.command()).await?;
-                authorization.authorize(&server.resource, &[], &attributes, policy)?;
+                server.authorize_command(&authorization, call.command(), &attributes, policy)?;
             }
             reply(&call, &result)
         })

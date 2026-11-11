@@ -1,5 +1,5 @@
 //! Local defaults and the root agent host through the public API.
-#![cfg(feature = "filesystem-local")]
+#![cfg(not(target_arch = "wasm32"))]
 
 use crate as acyclic_harness;
 use crate::test_support::{ScriptedModelProvider, ScriptedTurn};
@@ -78,7 +78,7 @@ impl ObservedConversation {
 }
 
 /// Inspect the immutable text bodies delivered through the real content reader.
-async fn request_text(
+pub(super) async fn request_text(
     harness: &LocalHarness,
     request: &crate::model::ModelRequest,
 ) -> Result<String> {
@@ -155,14 +155,14 @@ fn checkout_config(
         .compaction(crate::context::CompactionPolicy::Disabled))
 }
 
-mod checked_commands {
+pub(super) mod checked_commands {
     use crate::{
         model::{ModelEvent, ToolCall},
         test_support::{ScriptedEvent, ScriptedTurn},
     };
 
     /// One scripted command call on the named shell tool.
-    pub(super) fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
+    pub(in crate::local) fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
                 format!("checkout-{index}"),
@@ -194,7 +194,11 @@ async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Resul
     let provider = text();
     let mut config = volume_config(directory.path(), project, provider.clone())?;
     let owner_path = config.resolved_state_directory()?.join("owner.v2");
-    config = config.compaction(acyclic_harness::context::CompactionPolicy::default());
+    config = config.compaction(crate::context::CompactionPolicy::Capacity(
+        crate::context::CapacityCompaction {
+            response_reserve_tokens: capacity().context_tokens,
+        },
+    ));
     assert!(matches!(
         LocalHarness::open(config).await,
         Err(Error::Invalid(_))

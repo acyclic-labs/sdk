@@ -84,9 +84,9 @@ pub(crate) async fn retained_model_step<'a>(
     Option<crate::conversation::ContentHold<'a>>,
 )> {
     validate_journal(journal, io)?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         io.retain_owned(std::mem::size_of::<RetainedModelStep>() as u64)?;
     }
@@ -96,14 +96,13 @@ pub(crate) async fn retained_model_step<'a>(
     #[cfg(feature = "research")]
     let mut journal_cut = None;
     for record in records {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.charge(acyclic_fs::WorkCounters {
                 items_examined: 1,
                 ..Default::default()
             })?;
         }
-        if matches!(&record.event, ExecutionEvent::ModelStopped { step: recorded, purpose: recorded_purpose }
+        if matches!(&record.event, ExecutionEvent::ModelStopped { step: recorded, purpose: recorded_purpose, .. }
             if *recorded == step && *recorded_purpose == purpose)
         {
             return Err(Error::InteractionRejected(
@@ -116,11 +115,12 @@ pub(crate) async fn retained_model_step<'a>(
                 purpose: event_purpose,
                 request_digest,
                 request,
+                context,
             } = &record.event
             && *event_step == step
             && *event_purpose == purpose
         {
-            started = Some((*request_digest, request));
+            started = Some((*request_digest, request, *context));
         }
         if super::model_observation::matches_turn(&record.event, step, purpose) {
             let event = super::model_observation::load(journal, &record.event, io)
@@ -132,7 +132,7 @@ pub(crate) async fn retained_model_step<'a>(
                         "model observation is missing",
                     )
                 })?;
-            stock_vec_push(&mut events, event, io)?;
+            stock_push_model_event(&mut events, event, io)?;
             let event = events.last().ok_or_else(|| {
                 stock_boundary(
                     io,
@@ -158,14 +158,17 @@ pub(crate) async fn retained_model_step<'a>(
             "model observations exist without an admitted attempt",
         ));
     }
-    let request = if let Some((digest, reference)) = started {
-        let recorded = load_model_request(journal, reference, limits, io).await?;
+    let request = if let Some((digest, reference, context)) = started {
+        let mut recorded = load_model_request(journal, reference, limits, io).await?;
         if recorded.request_digest() != digest {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "recorded model request digest differs from admission",
             ));
+        }
+        if let Some(context) = context {
+            recorded.retain_context_window(context)?;
         }
         Some(recorded)
     } else {
@@ -178,18 +181,18 @@ pub(crate) async fn retained_model_step<'a>(
         admission,
         events,
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let hold = if stock_is_native(io) {
         super::payload::preparation_output(io, before, retained.logical_owned_bytes()?)?
     } else {
         None
     };
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let hold = None;
     Ok((retained, hold))
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl RetainedModelStep {
     fn logical_owned_bytes(&self) -> Result<u64> {
         use std::mem::size_of;

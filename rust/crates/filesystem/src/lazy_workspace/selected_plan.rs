@@ -2,11 +2,11 @@ use super::*;
 /// Metadata-only selection frozen from an authenticated lazy cut.
 #[derive(Debug)]
 pub struct SelectedImportPlan {
-    #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) source: LazySnapshotRef,
-    #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) source_config: VolumeConfig,
-    #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) source_used: bool,
     pub(crate) roots: Vec<String>,
     pub(crate) entries: Vec<SelectedImportRecord>,
@@ -50,7 +50,7 @@ impl SelectedImportPlan {
         Ok((total, regular))
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn input_digest(
         &self,
         destination: &LazySnapshotRef,
@@ -192,11 +192,11 @@ impl<
         entries.allocation.absorb(&mut roots.allocation)?;
         Ok((
             SelectedImportPlan {
-                #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
+                #[cfg(not(target_arch = "wasm32"))]
                 source: cut,
-                #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
+                #[cfg(not(target_arch = "wasm32"))]
                 source_config: self.workspace.volume.config,
-                #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
+                #[cfg(not(target_arch = "wasm32"))]
                 source_used: _used,
                 roots: roots.value,
                 entries: entries.value,
@@ -269,7 +269,7 @@ impl<
         Ok((paths, used))
     }
 
-    #[cfg(any(feature = "native-mount", test))]
+    #[cfg(any(not(target_arch = "wasm32"), test))]
     pub(super) async fn authored_record(
         &self,
         checkout: &mut crate::Checkout<A, O>,

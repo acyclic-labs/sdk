@@ -66,7 +66,10 @@ impl DiscoveredContext {
             .ok_or_else(|| {
                 stock_boundary(io, ErrorCode::Invalid, "discovered context count overflows")
             })?;
-        if count > limits.context_messages {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| count > maximum.get())
+        {
             return Err(stock_boundary(
                 io,
                 ErrorCode::Invalid,
@@ -74,7 +77,7 @@ impl DiscoveredContext {
             ));
         }
         let skill_bytes = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&self.skills, limits.render_bytes, work)
+            crate::executor::json::json_byte_length(&self.skills, Some(limits.render_bytes), work)
         })?;
         crate::executor::with_history_io(io, |work| {
             for file in &self.instructions {
@@ -111,7 +114,7 @@ impl DiscoveredContext {
         skill_bytes: u64,
         sources: &crate::model::InstructionSources<'_>,
     ) -> Result<Vec<ModelMessage>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io
             && let Some(work) = io.original_native_work()
         {
@@ -161,7 +164,7 @@ impl DiscoveredContext {
     /// Composes this immutable revision through the existing source/stage path.
     pub fn stage(self, placement: ContextPlacement) -> Result<SourceStage> {
         self.validate(&mut None)?;
-        let revision = crate::executor::json::canonical_json_digest(&self, u64::MAX, &mut None)?;
+        let revision = crate::executor::json::canonical_json_digest(&self, None, &mut None)?;
         let revision = blake3::Hash::from_bytes(revision).to_hex().to_string();
         Ok(SourceStage::new(
             "declared-context",
@@ -185,7 +188,7 @@ impl ContextSource for DiscoveredContext {
         )
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native(&self) -> bool {
         true
     }

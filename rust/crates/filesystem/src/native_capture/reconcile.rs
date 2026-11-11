@@ -10,21 +10,22 @@ pub(super) async fn capture_observed_paths_from_root<
     maximum_extent_spans: u32,
     source_root: &HostRoot,
     baseline: Option<&NativeViewBaseline>,
+    source_namespace: Option<[u8; 16]>,
     meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
     let states = lookup_capture_states(checkout, observed, batch_size, meter).await?;
-    let bytes = vector_bytes(&states);
-    let count = states.len();
-    let mut batch = CaptureBatch {
+    let mut batch = CaptureBatch::new(
         source_root,
-        watch_epoch: None,
         baseline,
+        source_namespace,
         maximum_extent_spans,
         meter,
-        host_links: Vec::new(),
-        mutations: Vec::new(),
-        receipt: CaptureReceipt::default(),
-    };
+    );
+    let (relocated, states) =
+        super::relocate::observed_paths(checkout, states, batch_size, &batch).await?;
+    batch.receipt.changed_paths = relocated;
+    let bytes = vector_bytes(&states);
+    let count = states.len();
     for (index, (observation, path, current)) in states.into_iter().enumerate() {
         batch
             .prepare(
@@ -134,6 +135,7 @@ pub(super) struct CaptureBatch<'a> {
     pub(super) source_root: &'a HostRoot,
     pub(super) watch_epoch: Option<u64>,
     pub(super) baseline: Option<&'a NativeViewBaseline>,
+    pub(super) source_namespace: Option<[u8; 16]>,
     pub(super) maximum_extent_spans: u32,
     pub(super) meter: &'a NativeMaterializationWork,
     pub(super) host_links: Vec<([u8; 16], NamespacePath)>,
@@ -141,7 +143,27 @@ pub(super) struct CaptureBatch<'a> {
     pub(super) receipt: CaptureReceipt,
 }
 
-impl CaptureBatch<'_> {
+impl<'a> CaptureBatch<'a> {
+    pub(super) fn new(
+        source_root: &'a HostRoot,
+        baseline: Option<&'a NativeViewBaseline>,
+        source_namespace: Option<[u8; 16]>,
+        maximum_extent_spans: u32,
+        meter: &'a NativeMaterializationWork,
+    ) -> Self {
+        Self {
+            source_root,
+            baseline,
+            source_namespace,
+            maximum_extent_spans,
+            meter,
+            watch_epoch: None,
+            host_links: Vec::new(),
+            mutations: Vec::new(),
+            receipt: CaptureReceipt::default(),
+        }
+    }
+
     pub(super) async fn prepare<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &mut self,
         checkout: &mut Checkout<A, O>,
@@ -293,6 +315,18 @@ impl CaptureBatch<'_> {
         } else {
             None
         };
+        let source_file_id =
+            if let Some(namespace) = self.source_namespace.filter(|_| !exists_with_kind) {
+                Some(source_capture_id(
+                    self.source_root,
+                    &host_path,
+                    &metadata,
+                    namespace,
+                    self.meter,
+                )?)
+            } else {
+                None
+            };
         let changed = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
             self.metadata_only(
                 path,
@@ -311,6 +345,7 @@ impl CaptureBatch<'_> {
                 (
                     current.filter(|_| exists_with_kind),
                     !linked_regular && prior_metadata == Some(canonical_metadata),
+                    source_file_id,
                 ),
             )
             .await?
@@ -321,9 +356,12 @@ impl CaptureBatch<'_> {
                 &metadata,
                 host_kind,
                 canonical_metadata,
-                current
-                    .filter(|_| exists_with_kind)
-                    .map(|record| record.file_id),
+                (
+                    current
+                        .filter(|_| exists_with_kind)
+                        .map(|record| record.file_id),
+                    source_file_id,
+                ),
             )?;
             true
         };
@@ -417,7 +455,7 @@ impl CaptureBatch<'_> {
         host_path: CaptureHostPath,
         metadata: &HostStat,
         canonical_metadata: FileMetadata,
-        existing: (Option<FileRecord>, bool),
+        existing: (Option<FileRecord>, bool, Option<crate::FileId>),
     ) -> Result<bool, CaptureError> {
         // Staging opens the file once and proves it is still the observed node before reading a byte.
         let staged = stage_regular_body(
@@ -435,7 +473,7 @@ impl CaptureBatch<'_> {
         let ranges = staged.ranges;
         let ranges_bytes =
             ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
-        let unchanged = if let (Some(record), true) = existing
+        let unchanged = if let (Some(record), true, _) = existing
             && record.link_count == 1
             && let crate::kernel::FilePayload::InlineRegular(data) = record.payload
         {
@@ -525,6 +563,7 @@ impl CaptureBatch<'_> {
             });
         } else {
             self.mutations.push(AuthoredMutation::CreateFile {
+                file_id: existing.2,
                 path: clone_capture_path(&path, self.meter)?,
                 bytes: acyclic_stream::OwnedBytes::new(),
                 metadata: canonical_metadata,
@@ -561,8 +600,9 @@ impl CaptureBatch<'_> {
         metadata: &HostStat,
         host_kind: FileKind,
         canonical_metadata: FileMetadata,
-        existing_file_id: Option<crate::FileId>,
+        identities: (Option<crate::FileId>, Option<crate::FileId>),
     ) -> Result<(), CaptureError> {
+        let (existing_file_id, file_id) = identities;
         let exists_with_kind = existing_file_id.is_some();
         capture_reserve(
             &mut self.mutations,
@@ -578,6 +618,7 @@ impl CaptureBatch<'_> {
                 }
             } else {
                 AuthoredMutation::CreateDirectory {
+                    file_id,
                     path,
                     metadata: canonical_metadata,
                 }
@@ -592,6 +633,7 @@ impl CaptureBatch<'_> {
                 }
                 let target = capture_link_target(target, self.meter)?;
                 self.mutations.push(AuthoredMutation::CreateSymbolicLink {
+                    file_id,
                     path,
                     target: target.into(),
                     metadata: canonical_metadata,
@@ -604,6 +646,7 @@ impl CaptureBatch<'_> {
                 }
             } else {
                 AuthoredMutation::CreateEmptySpecial {
+                    file_id,
                     path,
                     kind: host_kind,
                     metadata: canonical_metadata,
@@ -618,6 +661,7 @@ impl CaptureBatch<'_> {
                     });
                 }
                 self.mutations.push(AuthoredMutation::CreateDevice {
+                    file_id,
                     path,
                     kind: host_kind,
                     major,
@@ -633,6 +677,35 @@ impl CaptureBatch<'_> {
         capture_drop_host_path(host_path, self.meter)?;
         Ok(())
     }
+}
+
+pub(super) fn source_capture_id(
+    root: &HostRoot,
+    path: &CaptureHostPath,
+    metadata: &HostStat,
+    namespace: [u8; 16],
+    meter: &NativeMaterializationWork,
+) -> Result<crate::FileId, CaptureError> {
+    // Metadata-only Linux stats omit generation cookies. This identity stat
+    // buys the same inode-reuse protection and identity as lazy reads.
+    #[cfg(target_os = "linux")]
+    let observed = {
+        let observed = root
+            .stat(path, &mut meter.clone())
+            .map_err(capture_demand_error)?;
+        ensure_same_host_node(metadata, &observed)?;
+        observed
+    };
+    #[cfg(target_os = "linux")]
+    let metadata = &observed;
+    #[cfg(not(target_os = "linux"))]
+    let _ = (root, path);
+    let identity = crate::demand::native::file_identity(metadata);
+    Ok(crate::demand::source_file_id(
+        &namespace,
+        &identity,
+        &mut crate::kernel::KernelAccounting::native(meter, meter.cancellation()),
+    )?)
 }
 
 /// Whether an observation proves that the path is absent, including a descendant

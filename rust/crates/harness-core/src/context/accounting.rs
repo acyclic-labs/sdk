@@ -52,6 +52,30 @@ impl ModelContextCapacity {
     }
 }
 
+/// Current input occupancy from one original verified model admission.
+/// This fixed-size receipt never enters provider request bytes or the prompt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct ContextWindow {
+    /// Verified input upper bound for this exact request, including provider framing.
+    pub input_tokens: u64,
+    /// Selected model's complete context capacity, including generated output.
+    pub capacity_tokens: u32,
+}
+
+impl ContextWindow {
+    /// Rejects impossible receipts instead of inventing a percentage.
+    pub fn validate(self) -> Result<()> {
+        if self.capacity_tokens == 0 || self.input_tokens > u64::from(self.capacity_tokens) {
+            return Err(Error::Invalid(
+                "context occupancy exceeds selected model capacity".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Verified input admission count and separate planning weights for one request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -124,7 +148,7 @@ fn token_count_invalid(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
     reason: &'static str,
 ) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if work
         .as_deref()
         .is_some_and(|io| io.original_native_work().is_some())

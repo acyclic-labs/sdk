@@ -139,9 +139,9 @@
   ],
   "assert": {
     "requests": 9,
-    "absent_files": [
-      "child.txt"
-    ]
+    "files": {
+      "child.txt": "child\n"
+    }
   },
   "ntfs": true,
   "physical": true

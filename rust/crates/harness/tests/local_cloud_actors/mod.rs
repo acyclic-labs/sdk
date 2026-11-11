@@ -186,9 +186,9 @@ fn create() -> wire::DeploymentRequest {
         code_sha256: digest(CODE),
 
         limits: Some(wire::ActorLimits {
-            handler_timeout_millis: 1000,
-            memory_bytes: 1 << 20,
-            checkpoint_bytes: 1 << 16,
+            handler_timeout_millis: Some(1000),
+            memory_bytes: Some(1 << 20),
+            checkpoint_bytes: Some(1 << 16),
         }),
         idempotency_key: "e2e-create".into(),
         ..Default::default()
@@ -484,7 +484,7 @@ async fn subscription_controls(
             .await?
             .into_inner()
             .actor,
-        2,
+        1,
     )?;
     let expected_subscriptions = [subscription(start)];
     subscriptions(&added, &expected_subscriptions)?;
@@ -495,7 +495,7 @@ async fn subscription_controls(
                 .await?
                 .into_inner()
                 .actor,
-            2
+            1
         )?,
         added
     );
@@ -511,12 +511,12 @@ async fn subscription_controls(
             .await?
             .into_inner()
             .actor,
-        3,
+        1,
     )?;
     subscriptions(&removed, &[])?;
     let mut readd = add;
     readd.idempotency_key = "sdk-readd".into();
-    let readded = observation(actors.add_subscription(readd).await?.into_inner().actor, 4)?;
+    let readded = observation(actors.add_subscription(readd).await?.into_inner().actor, 1)?;
     subscriptions(&readded, &expected_subscriptions)?;
     Ok(expected_subscriptions)
 }
@@ -666,7 +666,7 @@ mod full_cloud {
                 .await?
                 .into_inner()
                 .actor,
-            2,
+            1,
         )?;
         subscriptions(&added, &[subscription(start)])?;
         let boundary = streams
@@ -689,7 +689,7 @@ mod full_cloud {
                 })
             })
             .await?;
-        let delivered = observation(Some(delivered), 2)?;
+        let delivered = observation(Some(delivered), 1)?;
         let mut expected = subscription(receipt.end);
         expected.recoverable_cursor = start;
         subscriptions(&delivered, &[expected])?;
@@ -709,7 +709,7 @@ mod full_cloud {
                 .await?
                 .into_inner()
                 .actor,
-            2,
+            1,
         )?;
         subscriptions(&saved, &[subscription(receipt.end)])?;
         let (followed, _) =

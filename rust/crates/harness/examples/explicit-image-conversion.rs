@@ -126,10 +126,10 @@ impl ToolExecutor for ImageConversion {
         scope: Option<&acyclic_harness::runtime::RuntimeScope>,
         context: Option<&acyclic_harness::runtime::ToolContext>,
         invocation: &acyclic_harness::tool::ToolInvocation,
-        work: acyclic_harness::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> acyclic_harness::Result<()> {
         let _ = (scope, context, invocation, work);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_some() {
             return Err(acyclic_harness::Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unsupported,
@@ -201,8 +201,8 @@ impl ToolProjection for ImageConversion {
         &self,
         invocation: &ToolInvocation,
         result: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>,
-    ) -> Result<(Value, acyclic_harness::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         self.supports_native_projection(work)?;
         let input = Self::input(invocation)?;
         let output = ConvertedImage::deserialize(&result.value)

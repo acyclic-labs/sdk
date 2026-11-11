@@ -58,8 +58,8 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
         Ok(())
     };
     let bounds = JsonBounds {
-        maximum_bytes: 65536,
-        maximum_items: 65536,
+        maximum_bytes: Some(65536),
+        maximum_items: Some(65536),
         maximum_depth: 256,
     };
     let mut actual = if canonical {
@@ -150,8 +150,8 @@ fn check_comparison(value: &Value, expected: &[u8], buffered: bool) -> TestCaseR
     let mut encoded = 0;
     let mut storage = 0;
     let bounds = JsonBounds {
-        maximum_bytes: 65536,
-        maximum_items: 65536,
+        maximum_bytes: Some(65536),
+        maximum_items: Some(65536),
         maximum_depth: 256,
     };
     let mut charge = |event| {
@@ -173,7 +173,7 @@ fn check_comparison(value: &Value, expected: &[u8], buffered: bool) -> TestCaseR
                 json_bytes_match_bounded(&once, expected, bounds, None, &mut charge).unwrap()
             }
         };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             let mut actual = None;
             let physical = acyclic_test_support::measure(|| actual = Some(compare()));
@@ -183,7 +183,7 @@ fn check_comparison(value: &Value, expected: &[u8], buffered: bool) -> TestCaseR
             );
             actual.unwrap()
         }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         compare()
     };
     let bytes = serde_json::to_vec(value).unwrap();
@@ -267,8 +267,8 @@ fn index_scan_examines_exactly_its_admitted_items() {
     let document = br#"{"a":7,"z":["a",["b\"]"],[],true]}"#;
     let items = lexical_items(document);
     let bounds = JsonBounds {
-        maximum_bytes: 65536,
-        maximum_items: 65536,
+        maximum_bytes: Some(65536),
+        maximum_items: Some(65536),
         maximum_depth: 256,
     };
     for (funded, reason) in [
@@ -291,7 +291,7 @@ fn index_scan_examines_exactly_its_admitted_items() {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod allocation_prefixes {
     use super::*;
     #[derive(Clone, Copy)]
@@ -326,8 +326,8 @@ mod allocation_prefixes {
             output = json_bytes_bounded(
                 value,
                 JsonBounds {
-                    maximum_bytes: 65536,
-                    maximum_items: 65536,
+                    maximum_bytes: Some(65536),
+                    maximum_items: Some(65536),
                     maximum_depth: 256,
                 },
                 Some(crate::wire::ErrorCode::Invalid),

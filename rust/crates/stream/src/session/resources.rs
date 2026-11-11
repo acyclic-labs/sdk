@@ -69,7 +69,13 @@ impl ResourceAuthorization {
         attributes: &RecordAttributes,
         policy: PolicyDecision,
     ) -> Result<(), StreamError> {
-        self.authorize_account(resource, keys, attributes, policy, None)
+        self.authorize_account(
+            resource,
+            keys,
+            attributes,
+            policy,
+            (None, acyclic_auth::authority::Scope::Exact),
+        )
     }
 
     /// Check the certified account and resource against the same current
@@ -82,7 +88,28 @@ impl ResourceAuthorization {
         attributes: &RecordAttributes,
         policy: PolicyDecision,
     ) -> Result<(), StreamError> {
-        self.authorize_account(resource, keys, attributes, policy, Some(account))
+        self.authorize_account(
+            resource,
+            keys,
+            attributes,
+            policy,
+            (Some(account), acyclic_auth::authority::Scope::Exact),
+        )
+    }
+
+    /// Revalidates a candidate against the admitted follow's original resource.
+    /// It discloses no concrete path facts: expanded entries must still pass
+    /// `authorize` with their full paths, keys, attributes and current policy.
+    pub fn authorize_candidate(&self) -> Result<(), StreamError> {
+        let attributes =
+            RecordAttributes::try_new(vec![]).map_err(|_| StreamError::InvalidArgument)?;
+        self.authorize_account(
+            &self.resource.name,
+            &[],
+            &attributes,
+            PolicyDecision::Allow,
+            (None, acyclic_auth::authority::Scope::ResourceFollow),
+        )
     }
 
     fn authorize_account(
@@ -91,7 +118,7 @@ impl ResourceAuthorization {
         keys: &[Vec<u8>],
         attributes: &RecordAttributes,
         policy: PolicyDecision,
-        account: Option<&[u8]>,
+        (account, scope): (Option<&[u8]>, acyclic_auth::authority::Scope),
     ) -> Result<(), StreamError> {
         if !acyclic_auth::valid_resource(resource)
             || !acyclic_auth::authority::resource_matches(&self.resource, resource)
@@ -134,14 +161,9 @@ impl ResourceAuthorization {
             cpu_millis: 0,
             memory_bytes: 0,
         };
-        let authorize = |request: &Request<'_>, policy| {
+        let authorize = |request: &Request<'_>, policy, scope| {
             capability
-                .authorize(
-                    snapshot.trust.as_ref(),
-                    request,
-                    policy,
-                    acyclic_auth::authority::Scope::Exact,
-                )
+                .authorize(snapshot.trust.as_ref(), request, policy, scope)
                 .map_err(|_| StreamError::AccessDenied)
         };
         if let Some((resource, action)) = &self.call {
@@ -160,9 +182,10 @@ impl ResourceAuthorization {
                     ..request
                 },
                 PolicyDecision::Allow,
+                acyclic_auth::authority::Scope::Exact,
             )?;
         }
-        authorize(&request, policy)
+        authorize(&request, policy, scope)
     }
     /// Pushes semantic filesystem grant prefixes into the provider index. The
     /// full lossless path is still authorized per entry after indexed selection.
@@ -218,6 +241,7 @@ impl ResourceAuthorization {
                     keys: ranges,
                     attributes: vec![],
                     all_keys: true,
+                    projection_key: None,
                 });
             }
         }
@@ -240,6 +264,7 @@ impl ResourceAuthorization {
                     keys: ranges,
                     attributes: vec![],
                     all_keys: true,
+                    projection_key: None,
                 });
             }
         }
@@ -295,6 +320,9 @@ pub struct ResourceFollowRequest {
 
 /// Owning-product follow with an independent revocation observation.
 pub struct ResourceSubscription {
+    /// Original live channel authority retained for exact checks after an
+    /// indirect change is expanded. Renewal updates this same credential.
+    pub authorization: ResourceAuthorization,
     /// Synchronous policy fence checked again before queued data is disclosed.
     pub revalidate: ResourceRevalidation,
     /// Completes on policy revocation even when record credit is exhausted.

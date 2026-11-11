@@ -184,7 +184,7 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
         };
         assert_eq!(denied, 0, "physical work preceded {counter} admission");
     }
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let directory = tempfile::tempdir()?;
         let provider = Arc::new(Counted::new(

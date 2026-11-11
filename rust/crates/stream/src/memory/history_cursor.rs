@@ -238,7 +238,7 @@ impl HistoryCursor {
 struct FiniteRead {
     history: PinnedHistory,
     window: Option<HistoryWindow>,
-    key: Option<crate::ReadKeySeek>,
+    key: Option<(crate::ReadKeySeek, KeyTree)>,
     next: u64,
     remaining: u32,
 }
@@ -268,7 +268,7 @@ impl FiniteRead {
                 .is_none()
                 .then(|| path.prefix_window(request.from, tail))
                 .flatten(),
-            key: request.key,
+            key: request.key.map(|key| (key, path.keys.clone())),
             next: request.from,
             remaining: request.limit,
         }
@@ -289,11 +289,8 @@ impl FiniteRead {
             .as_ref()
             .is_none_or(|window| window.start == window.end)
         {
-            let after = if let Some(key) = &self.key {
-                let Some(root) = &self.history.root else {
-                    return Ok(None);
-                };
-                let Some(sequence) = root.keys().seek(
+            let after = if let Some((key, keys)) = &self.key {
+                let Some(sequence) = keys.seek(
                     key,
                     self.next,
                     key.before.min(self.history.tail),
@@ -338,7 +335,7 @@ impl FiniteRead {
     fn take_record(&mut self) -> Option<Record> {
         let record = self.window.as_mut()?.next()?;
         match &mut self.key {
-            Some(key) => key
+            Some((key, _)) => key
                 .advance(&mut self.next, record.sequence, record.headers.keys())
                 .ok()?,
             None => self.next = record.sequence.checked_add(1)?,

@@ -11,10 +11,17 @@ pub struct InputAnchor {
     bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ByteProjectionRefusal {
+    Adapter,
+    Work,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct InputStats {
     extra: u64,
     native: bool,
+    byte_projection_refusal: Option<ByteProjectionRefusal>,
     expanding: bool,
 }
 
@@ -36,8 +43,18 @@ impl InputStats {
             }
             for (file, policy) in message.content.file_parts() {
                 charge_items(io, 1)?;
-                let bytes = policy.projected_bytes(file, u64::MAX)?;
-                self.native |= matches!(policy, FileProjectionPolicy::Native(_));
+                let bytes = policy.projected_bytes(file, None)?;
+                if let FileProjectionPolicy::Native(native) = policy {
+                    self.native = true;
+                    let refusal = if !policy.supports_byte_projection(file) {
+                        Some(ByteProjectionRefusal::Adapter)
+                    } else if bytes > native.maximum_work {
+                        Some(ByteProjectionRefusal::Work)
+                    } else {
+                        None
+                    };
+                    self.byte_projection_refusal = self.byte_projection_refusal.or(refusal);
+                }
                 if !matches!(policy, FileProjectionPolicy::Reference) {
                     self.extra = bytes
                         .checked_mul(6)
@@ -93,15 +110,30 @@ impl PreparedModelRequest {
     /// Total admitted source bytes, including instruction framing, bounded by
     /// the reader's aggregate credit before any file I/O. Reference-only
     /// attachments contribute zero. Warm requests never revisit history.
-    pub fn projected_file_bytes(&self, maximum: u64) -> Result<u64> {
+    pub fn projected_file_bytes(&self, maximum: Option<u64>) -> Result<u64> {
         let bytes = self.input.stats(&self.request)?.extra / 6;
-        if bytes > maximum {
+        if maximum.is_some_and(|maximum| bytes > maximum) {
             return Err(invalid(
                 None,
                 "model files exceed projection aggregate byte limit",
             ));
         }
         Ok(bytes)
+    }
+
+    /// Admits direct image/PDF byte projection before an adapter reads files.
+    /// Custom media processing must instead enforce its own work units and
+    /// supported formats. Uses the original cached plan without another scan.
+    pub fn validate_byte_projection(&self) -> Result<()> {
+        match self.input.stats(&self.request)?.byte_projection_refusal {
+            Some(ByteProjectionRefusal::Adapter) => Err(Error::Unsupported(
+                "unsupported native model media policy".into(),
+            )),
+            Some(ByteProjectionRefusal::Work) => {
+                Err(invalid(None, "model files exceed projection work limit"))
+            }
+            None => Ok(()),
+        }
     }
 
     /// Canonical input plus a conservative JSON expansion of pinned bodies.
@@ -151,7 +183,7 @@ impl PreparedModelRequest {
                 acyclic_differential::record(("input prefix rebuilds", 1u64));
                 crate::executor::json::canonical_json_digest(
                     &Envelope::new(&self.request, messages),
-                    u64::MAX,
+                    None,
                     &mut None,
                 )? == anchor.digest
             };
@@ -210,7 +242,6 @@ fn encode<T: Serialize>(
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
     match io {
-        #[cfg(feature = "filesystem")]
         Some(io) => io.encode(value, io.remaining()?.bytes_encoded, true),
         _ => Ok(crate::contract::canonical_json_bytes(value)?.into()),
     }
@@ -227,7 +258,7 @@ fn hash(digest: &mut blake3::Hasher, bytes: &[u8], io: Option<&PreparationIo>) -
 }
 
 fn storage_error(error: std::io::Error, io: Option<&PreparationIo>) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
         return work.runtime_error(error).into();
     }
@@ -252,7 +283,6 @@ fn envelope(
 
 fn fresh(request: &ModelRequest, io: Option<&PreparationIo>) -> Result<Encoded> {
     let bytes = encode(request, io)?;
-    #[cfg(feature = "filesystem")]
     if let Some(hold) = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten() {
         hold.into_retained()?;
     }
@@ -262,7 +292,6 @@ fn fresh(request: &ModelRequest, io: Option<&PreparationIo>) -> Result<Encoded> 
 
 enum Buffer {
     Unique(acyclic_stream::UniqueOwnedBytes),
-    #[cfg(feature = "filesystem")]
     Finite(Vec<u8>),
 }
 
@@ -270,7 +299,6 @@ impl Buffer {
     fn as_slice(&self) -> &[u8] {
         match self {
             Self::Unique(bytes) => bytes.as_slice(),
-            #[cfg(feature = "filesystem")]
             Self::Finite(bytes) => bytes,
         }
     }
@@ -279,7 +307,6 @@ impl Buffer {
         bytes: acyclic_stream::OwnedBytes,
         io: Option<&PreparationIo>,
     ) -> std::result::Result<Self, acyclic_stream::OwnedBytes> {
-        #[cfg(feature = "filesystem")]
         if io.is_some_and(|io| {
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -300,7 +327,6 @@ impl Buffer {
     fn capacity(&self) -> usize {
         match self {
             Self::Unique(bytes) => bytes.capacity(),
-            #[cfg(feature = "filesystem")]
             Self::Finite(bytes) => bytes.capacity(),
         }
     }
@@ -310,7 +336,6 @@ impl Buffer {
             Self::Unique(bytes) => bytes
                 .reserve_capacity(capacity)
                 .map_err(|error| storage_error(error, io)),
-            #[cfg(feature = "filesystem")]
             Self::Finite(bytes) => crate::executor::stock_vec_reserve(bytes, capacity, io),
         }
     }
@@ -326,7 +351,6 @@ impl Buffer {
             Self::Unique(bytes) => bytes
                 .replace_range(prefix..prefix, &[separator, appended])
                 .map_err(|error| storage_error(error, io)),
-            #[cfg(feature = "filesystem")]
             Self::Finite(bytes) => with_history_io(io, |work| {
                 let copied = bytes.len() - prefix + separator.len() + appended.len();
                 if let Some(work) = work.as_deref_mut() {
@@ -344,7 +368,6 @@ impl Buffer {
     fn freeze(self) -> acyclic_stream::OwnedBytes {
         match self {
             Self::Unique(bytes) => bytes.freeze(),
-            #[cfg(feature = "filesystem")]
             Self::Finite(bytes) => bytes.into(),
         }
     }
@@ -363,7 +386,6 @@ impl EncodingPrefix {
     ) -> Result<Encoded> {
         if state.is_empty() {
             let (envelope, open) = envelope(request, io)?;
-            #[cfg(feature = "filesystem")]
             let _envelope_hold = io
                 .map(|io| io.guard_bytes(&envelope))
                 .transpose()?
@@ -386,7 +408,6 @@ impl EncodingPrefix {
         }
         prefix.previous = Some((old_count, prefix.messages_digest(io)?));
         let encoded = encode(&suffix, io)?;
-        #[cfg(feature = "filesystem")]
         let _encoded_hold = io.map(|io| io.guard_bytes(&encoded)).transpose()?.flatten();
         let appended = encoded
             .get(1..encoded.len().saturating_sub(1))

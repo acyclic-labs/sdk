@@ -687,6 +687,7 @@ dependencies = [
  "arrow-array",
  "arrow-ipc",
  "arrow-schema",
+ "async-stream",
  "async-trait",
  "base64 0.23.1",
  "blake3",
@@ -699,9 +700,11 @@ dependencies = [
  "hex",
  "http",
  "httpdate",
+ "humantime",
  "js-sys",
  "jsonschema",
  "loom",
+ "memchr",
  "notify",
  "once_cell",
  "oxc_allocator",
@@ -1325,6 +1328,7 @@ dependencies = [
  "blake3",
  "clap",
  "futures",
+ "rustix-openpty",
  "serde",
  "serde_json",
  "tempfile",
@@ -1650,10 +1654,6 @@ dependencies = [
  "cipher",
  "cpufeatures 0.2.17",
 ]
-
-[[package]]
-name = "agent-spawn-slot-proofs"
-version = "0.0.0"
 
 [[package]]
 name = "ahash"

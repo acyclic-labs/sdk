@@ -69,10 +69,11 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     Ok(())
 }
 
-pub(crate) fn volume(name: &str, agent: AgentId) -> Result<VolumeBinding> {
-    Ok(VolumeBinding {
-        name: name.into(),
-        volume: VolumeRef::new(
+pub(crate) fn volume(role: WorkspaceRole, name: &str, agent: AgentId) -> Result<WorkspaceEntry> {
+    Ok(WorkspaceEntry::initial_volume(
+        role,
+        name.into(),
+        VolumeRef::new(
             ProviderRef::new(
                 "conformance".into(),
                 "filesystem".into(),
@@ -84,7 +85,7 @@ pub(crate) fn volume(name: &str, agent: AgentId) -> Result<VolumeBinding> {
             VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(agent.to_bytes())),
             &mut None,
         )?,
-    })
+    ))
 }
 
 async fn run(backend: &dyn Backend, case: Case) -> Result {
@@ -104,26 +105,28 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
     let clock = Arc::new(super::fixtures::AuthorityClock::new());
     let issuer = AuthorityRoot::with_clock("conformance", [7; 32], issued.clone(), clock.clone());
     let agent = crate::conformance::fixtures::adopted().agent;
-    let private = volume(PRIVATE_VOLUME, agent.clone())?;
-    let shared = volume("shared", agent.clone())?;
+    let private = volume(WorkspaceRole::Private, PRIVATE_VOLUME, agent.clone())?;
+    let shared = volume(WorkspaceRole::Shared, "shared", agent.clone())?;
     let mut grants = vec![
         INTERACTION_ROUTE.to_owned(),
         private
-            .volume
+            .volume()?
             .capability(VolumeOperation::Read, &mut None)?,
-        shared.volume.capability(VolumeOperation::Read, &mut None)?,
+        shared
+            .volume()?
+            .capability(VolumeOperation::Read, &mut None)?,
     ];
     if case != Case::ReadOnlyPrivate {
         grants.push(
             private
-                .volume
+                .volume()?
                 .capability(VolumeOperation::Write, &mut None)?,
         );
     }
     if case != Case::ReadOnlyShared {
         grants.push(
             shared
-                .volume
+                .volume()?
                 .capability(VolumeOperation::Write, &mut None)?,
         );
     }
@@ -131,7 +134,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         grants = vec![
             INTERACTION_ROUTE.to_owned(),
             acyclic_fs::access::Capability::whole_volume(
-                Some(private.volume.id().to_owned()),
+                Some(private.volume()?.id().to_owned()),
                 &acyclic_fs::access::Action::ALL,
             )
             .to_scope_label()?,
@@ -168,7 +171,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
                 objects,
                 capabilities,
             ),
-            provider: private.volume.provider().clone(),
+            provider: private.volume()?.provider().clone(),
             within: ActorReference::new(b"conformance", b"agents", b"host")?,
         },
         Turns {

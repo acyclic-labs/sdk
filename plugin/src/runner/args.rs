@@ -48,12 +48,21 @@ pub enum Template {
     about = "Coding agent on the local harness's agents or an endpoint's"
 )]
 pub struct Args {
+    /// Force delegation: single, team:N (N total workers, depth 1), or unbounded swarm.
+    #[arg(global = true, long, conflicts_with_all = ["host_workspace", "endpoint"])]
+    pub topology: Option<String>,
+
+    /// Internal detached owner, started through the shared readiness protocol.
+    #[arg(long, hide = true)]
+    pub local_service: bool,
+    #[arg(long, hide = true, requires = "local_service")]
+    pub signal_ready: bool,
     /// Select the shipped agent preset; configuration remains ordinary files.
     #[arg(global = true, long, value_enum, default_value_t)]
     pub template: Template,
     /// Own workspace files for native coding hosts, without a provider or agent loop.
     /// Emits a `workspace-owner-ready` JSONL event on stdout after request events are installed.
-    #[arg(global = true, long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "transcripts", "resume", "agent"])]
+    #[arg(global = true, long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "transcripts", "resume", "agent", "continue_session", "new_session"])]
     pub host_workspace: bool,
     /// Explicit durable storage for the local owner or a selected agent.
     #[arg(global = true, long, conflicts_with = "endpoint")]
@@ -102,7 +111,8 @@ pub struct Args {
     /// Follow every agent's own journal to DIR/<stable-agent-id>.jsonl.
     /// Uses the root event output's version-one execution and payload envelopes.
     /// Also writes DIR/agents.jsonl, appending once on discovery:
-    /// {"version":1,"id":"<file stem>","agent_path":"<usage.agent_path>","parent":null}.
+    /// {"version":1,"id":"<file stem>","agent_path":"<usage.agent_path>","parent":null,
+    /// "role":"<role>","model":"<provider/model>","topology":{"version":1,"mode":"swarm"}}.
     /// parent is the parent file-stem id, or null for a root; agent_path is
     /// byte-identical to --usage-jsonl's usage.agent_path. Files are replaced on replay.
     #[arg(global = true, long, value_name = "DIR")]
@@ -152,14 +162,20 @@ pub struct Args {
     /// instead of sending its prompts again.
     #[arg(global = true, long)]
     pub operation: Option<String>,
-    /// Reopen the last interactive conversation, including after a normal quit.
-    #[arg(global = true, long)]
-    pub resume: bool,
+    /// Continue the latest session for this checkout.
+    #[arg(short = 'c', long = "continue", global = true, conflicts_with_all = ["resume", "new_session", "agent", "fork_from", "host_workspace"])]
+    pub continue_session: bool,
+    /// Resume a session by id or name, or open the paged picker when omitted.
+    #[arg(short = 'r', long, global = true, num_args = 0..=1, value_name = "SESSION", conflicts_with_all = ["new_session", "agent", "fork_from"])]
+    pub resume: Option<Option<String>>,
+    /// Start an independent session for this checkout.
+    #[arg(long, global = true, conflicts_with_all = ["agent", "fork_from", "host_workspace"])]
+    pub new_session: bool,
     /// Select an existing session by its canonical agent path.
     #[arg(global = true, long)]
     pub agent: Option<String>,
     /// Fork a decider's retained conversation event and workspace generation.
-    #[arg(global = true, long, value_name = "AGENT_PATH@EVENT_OFFSET", conflicts_with_all = ["agent", "resume", "host_workspace"])]
+    #[arg(global = true, long, value_name = "AGENT_PATH@EVENT_OFFSET", conflicts_with_all = ["agent", "resume", "continue_session", "new_session", "host_workspace"])]
     pub fork_from: Option<String>,
     /// Version-one continuation JSON: {"version":1,"override_item":...}.
     #[arg(long = "override", global = true, value_name = "FILE")]
@@ -202,7 +218,9 @@ impl Args {
                 || self.input_format != InputFormat::Text
                 || self.operation.is_some()
                 || self.agent.is_some()
-                || self.resume)
+                || self.resume.is_some()
+                || self.continue_session
+                || self.new_session)
         {
             return Err(
                 "serve input: execution inputs cannot select a server; recovery: acyclic serve ADDRESS --workspace PATH",
@@ -417,8 +435,17 @@ pub enum Command {
         #[arg(id = "task")]
         prompt: Option<String>,
     },
-    /// Read one lazy page of the selected session's direct children.
-    Sessions(Page),
+    /// Read one lazy page of this checkout's root sessions.
+    Sessions(Sessions),
+    /// Create a session and optionally author its title.
+    #[command(name = "new")]
+    NewSession { title: Option<String> },
+    /// Rename the selected session by conditionally writing ui/title.
+    Rename { title: String },
+    /// Give the selected session a stable alias for -r NAME.
+    Name { name: String },
+    /// Freeze the selected session and release its owned resources.
+    Archive,
     /// Read one immutable page of the selected session's saved turns.
     History(Page),
     /// Run a paired study: the arms file's source task once, then every
@@ -448,6 +475,28 @@ pub struct Page {
     /// Encoded reply credit; increase it if one row and its continuation cannot fit.
     #[arg(long, default_value_t = AgentPageRequest::default().bytes())]
     pub page_bytes: u32,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct Sessions {
+    #[command(flatten)]
+    pub page: Page,
+    /// Case-insensitive title or root-id substring within each requested page.
+    #[arg(long)]
+    pub title: Option<String>,
+    /// Match these states (repeat or comma-separate): idle, running,
+    /// waiting-approval, waiting, done, archived.
+    #[arg(long, value_delimiter = ',')]
+    pub state: Vec<acyclic_harness::local::sessions::State>,
+    /// Inclusive UTC creation bound in Unix microseconds.
+    #[arg(long)]
+    pub created_after: Option<u64>,
+    /// Exclusive UTC creation bound in Unix microseconds.
+    #[arg(long)]
+    pub created_before: Option<u64>,
+    /// Inclusive UTC status-commit bound in Unix microseconds.
+    #[arg(long)]
+    pub updated_after: Option<u64>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -553,6 +602,20 @@ mod tests {
                 .unwrap();
                 assert!(args.prepare_input().is_err());
             }
+        }
+        for selection in [
+            vec!["-r"],
+            vec!["-r", "previous"],
+            vec!["-c"],
+            vec!["--new-session"],
+        ] {
+            let mut args = Args::try_parse_from(
+                ["acyclic", "serve", "127.0.0.1:0"]
+                    .into_iter()
+                    .chain(selection),
+            )
+            .unwrap();
+            assert!(args.prepare_input().is_err());
         }
     }
 

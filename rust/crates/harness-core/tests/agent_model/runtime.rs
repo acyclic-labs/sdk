@@ -28,7 +28,6 @@ impl TurnDriver for Spawner {
         let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
             Ok(TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {
@@ -53,19 +52,24 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
-async fn same_phase_settlement_advances_the_actor_without_appending_status() -> Result {
+async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Result {
     use acyclic_stream::StreamProvider as _;
     use futures::TryStreamExt as _;
     let provider = Arc::new(MemoryStream::default());
     let within = ActorReference::new(b"account", b"agents", b"owner")?;
+    let answers = [
+        b"answer".to_vec(),
+        vec![b'x'; MAX_RECORD_BYTES + 1],
+        vec![b'y'; acyclic_stream::MAX_RECORD_BYTES],
+    ];
     let host = AgentHost::new(
         provider.clone(),
         super::script(
-            (0..3)
-                .map(|_| TurnStep {
-                    reserved_children: 0,
+            answers
+                .iter()
+                .map(|answer| TurnStep {
                     checkpoint: None,
-                    outs: vec![Out::Conversation(b"answer".to_vec())],
+                    outs: vec![Out::Conversation(answer.clone())],
                     wait: Wait::Input,
                     drops: None,
                 })
@@ -103,15 +107,12 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
                 answer: Some(n),
             }
         );
-        let statuses = values(provider.as_ref(), root.status()?).await?;
-        assert_eq!(statuses.len(), 1);
-        let stale = StatusRecord::decode(&statuses[0])?;
-        assert!(
-            stale.cursor <= inbox,
-            "the former status-only observer cannot settle this input"
-        );
     }
     assert_eq!(host.state(&root).await?.conversation_tail, 3);
+    assert_eq!(
+        values(provider.as_ref(), root.conversation()?).await?,
+        answers
+    );
     Ok(())
 }
 
@@ -139,7 +140,6 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
             self.count.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: if self.pause {
@@ -250,7 +250,6 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
                     cancellation.cancelled().await;
                 }
                 Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: Wait::Input,
@@ -294,32 +293,30 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
             "ordinary input interrupted the turn"
         );
 
-        let delivered = if archive {
-            host.archive(&root, &user(), &intent("stop")).await?
-        } else {
-            host.send(
-                &root,
-                &user(),
-                &InboxRecord::Cancel(Control {
-                    by: user(),
-                    id: intent("stop"),
-                }),
-            )
-            .await?
+        // Archive resumes the actor under its delivery fence. Keep driving
+        // the held delivery while that control waits for its completion.
+        let control = async {
+            if archive {
+                host.archive(&root, &user(), &intent("stop")).await
+            } else {
+                host.send(
+                    &root,
+                    &user(),
+                    &InboxRecord::Cancel(Control {
+                        by: user(),
+                        id: intent("stop"),
+                    }),
+                )
+                .await
+            }
         };
+        let (delivered, failures) = tokio::join!(control, &mut drain);
+        let delivered = delivered?;
         assert!(matches!(delivered, Delivered::Committed { .. }));
-        // MemoryStream has the committed control ready. One delivery poll must
-        // signal the original token; an obsolete or overbroad prefix fails
-        // directly, without waiting for the handler's deadline.
-        let completed = futures::poll!(&mut drain);
         assert!(
             cancellation.is_cancelled(),
             "committed control missed the held turn"
         );
-        let failures = match completed {
-            std::task::Poll::Ready(failures) => failures,
-            std::task::Poll::Pending => drain.await,
-        };
         assert!(failures.is_empty(), "{failures:?}");
         let state = host.state(&root).await?;
         assert_eq!(state.closed, archive);
@@ -348,7 +345,6 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
         let directory = tempfile::tempdir()?;
         let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
         let idle = || TurnStep {
-            reserved_children: 0,
             checkpoint: None,
             outs: Vec::new(),
             wait: Wait::Input,
@@ -369,7 +365,6 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
                 ..idle()
             },
             TurnStep {
-                reserved_children: 0,
                 checkpoint: Some(vec![7; if oversized { MAX_CHECKPOINT_BYTES } else { 8 }]),
                 outs: vec![
                     Out::Conversation(b"first".to_vec()),
@@ -408,15 +403,18 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
         let parent_before = host.state(&root).await?;
         assert_eq!(parent_before.open_children.len(), 3);
         agents.push(root.clone());
-        agents.extend(parent_before.open_children.iter().cloned());
-        for child in &parent_before.open_children {
-            host.drain(child).await?;
+        for id in parent_before.open_children.page(None, 3).await? {
+            let child = root.child(&id)?;
+            agents.push(child.clone());
+            host.drain(&child).await?;
         }
-        let child = parent_before
-            .open_children
-            .first()
-            .expect("spawned child")
-            .clone();
+        let child = root.child(
+            &parent_before
+                .open_children
+                .first()
+                .await?
+                .expect("spawned child"),
+        )?;
         let before = host.state(&child).await?;
         assert_eq!(before.parent.as_ref(), Some(&root));
         let Delivered::Committed { inbox } = host.send(&child, &user(), &input).await? else {
@@ -449,9 +447,10 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
             "shed checkpoint lost its parent report"
         );
         host.drain(&root).await?;
-        let mut expected_children = parent_before.open_children;
+        let mut expected_children = parent_before.open_children.clone();
+        drop(parent_before);
         if oversized {
-            expected_children.remove(&child);
+            expected_children.remove(&child).await?;
         }
         let parent_committed = host.state(&root).await?;
         assert_eq!(parent_committed.open_children, expected_children);
@@ -517,6 +516,11 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
         let actor_state = snapshot.state().expect("committed child actor").clone();
         assert!(actor_state.alarm().pending().is_none());
         assert_eq!(actor_state.cursor(INBOX), Some(inbox + 1));
+        let committed = serde_json::to_value(committed)?;
+        let parent_committed = serde_json::to_value(parent_committed)?;
+        drop(expected_children);
+        drop(before);
+        drop(snapshot);
         drop(host);
         drop(provider);
         let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
@@ -527,8 +531,12 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             Arc::new(SystemClock),
         )?;
-        assert_eq!(host.state(&child).await?, committed);
-        assert_eq!(host.state(&root).await?, parent_committed);
+        let child_state = host.state(&child).await?;
+        assert_eq!(serde_json::to_value(&child_state)?, committed);
+        assert_eq!(
+            serde_json::to_value(host.state(&root).await?)?,
+            parent_committed
+        );
         let reopened = host.runtime().store().load(&host.actor(&child)?).await?;
         assert_eq!(
             reopened.state(),
@@ -550,10 +558,15 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
                 parent_records,
                 "archive reported a completed child again"
             );
-            let mut expected = committed;
+            let mut expected = child_state;
             expected.closed = true;
             expected.dropped_before = expected.dropped_before.max(inbox);
+            expected.status_tail += 1;
             assert_eq!(host.state(&child).await?, expected);
+            let statuses = values(provider.as_ref(), child.status()?).await?;
+            let status = StatusRecord::decode(statuses.last().expect("archive acknowledgement"))?;
+            assert_eq!(status.cursor, inbox + 1);
+            assert_eq!(status.phase, expected.phase);
             let archived = host.runtime().store().load(&host.actor(&child)?).await?;
             let archived = archived.state().expect("archived child actor");
             assert_eq!(archived.cursor(INBOX), Some(inbox + 1));
@@ -575,7 +588,6 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         let clock = Arc::new(clock);
         let within = ActorReference::new(b"account", b"agents", b"owner")?;
         let waiting = |checkpoint: &[u8], timeout, outs| TurnStep {
-            reserved_children: 0,
             checkpoint: Some(checkpoint.to_vec()),
             outs,
             wait: Wait::Until(Until::sleep(timeout)),
@@ -616,11 +628,13 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         );
         let first = host.state(&root).await?;
         assert_eq!(first.open_children.len(), 3);
-        for child in &first.open_children {
-            host.drain(child).await?;
+        for child in first.open_children.page(None, 3).await? {
+            host.drain(&root.child(&child)?).await?;
         }
         let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
         let first_actor = snapshot.state().ok_or("missing waiting actor")?.clone();
+        let first = serde_json::to_value(first)?;
+        drop(snapshot);
         drop(host);
         drop(provider);
 
@@ -633,9 +647,14 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
             clock.clone(),
         )?;
         assert_eq!(host.drain_event(&root).await?, Some(10));
-        assert_eq!(host.state(&root).await?, first, "deadline fired early");
+        assert_eq!(
+            serde_json::to_value(host.state(&root).await?)?,
+            first,
+            "deadline fired early"
+        );
         let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
         assert_eq!(snapshot.state(), Some(&first_actor));
+        drop(snapshot);
         time.advance_to(10)?;
         assert_eq!(
             host.drain_event(&root).await?,
@@ -651,6 +670,8 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         let second_actor = snapshot.state().ok_or("missing resumed actor")?.clone();
         assert!(second_actor.alarm().generation() > first_actor.alarm().generation());
         assert_eq!(second_actor.alarm().pending(), Some(30));
+        drop(second);
+        drop(snapshot);
         drop(host);
         drop(provider);
 
@@ -720,7 +741,6 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
     let host = AgentHost::new(
         provider.clone(),
         super::script(vec![TurnStep {
-            reserved_children: 3,
             checkpoint: Some(vec![7; 8]),
             outs: vec![spawn("existing-a"), spawn("existing-b")],
             wait: Wait::Approval {
@@ -747,11 +767,11 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
     host.drain(&root).await?;
     let paused = host.state(&root).await?;
     assert_eq!(paused.open_children.len(), 2);
-    assert_eq!(paused.reserved_children, 3);
     assert_eq!(
         paused.turn.as_ref().map(|turn| turn.checkpoint.as_slice()),
         Some([7; 8].as_slice())
     );
+    let paused = serde_json::to_value(paused)?;
     // Neither the runtime nor the native provider survives the reopen.
     drop(host);
     drop(provider);
@@ -760,7 +780,6 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
         provider,
         super::script(vec![
             TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: vec![
                     spawn("recorded-a"),
@@ -772,7 +791,6 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
             },
             // Once that turn settles, the unrelated queued input can run.
             TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: Vec::new(),
                 wait: Wait::Input,
@@ -783,7 +801,7 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),
     )?;
-    assert_eq!(host.state(&root).await?, paused);
+    assert_eq!(serde_json::to_value(host.state(&root).await?)?, paused);
     for decision in ["unrelated", "decision"] {
         host.send(
             &root,
@@ -796,16 +814,16 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
         host.drain(&root).await?;
         let state = host.state(&root).await?;
         if decision == "unrelated" {
-            assert_eq!(state.turn, paused.turn);
-            assert_eq!(state.phase, paused.phase);
-            assert_eq!(state.reserved_children, 3);
-            assert_eq!(state.open_children, paused.open_children);
+            let actual = serde_json::to_value(state)?;
+            for field in ["turn", "phase", "open_children"] {
+                assert_eq!(actual[field], paused[field], "{field}");
+            }
         } else {
             assert_eq!(state.phase, Phase::Idle);
             assert_eq!(state.turn, None);
-            assert_eq!(state.reserved_children, 0);
             assert_eq!(state.open_children.len(), 5);
-            for child in state.open_children {
+            for id in state.open_children.page(None, 5).await? {
+                let child = root.child(&id)?;
                 assert_eq!(host.state(&child).await?.parent.as_ref(), Some(&root));
             }
         }
@@ -1043,16 +1061,17 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
     assert!(host.runtime().drain().await.is_empty());
     assert_eq!(host.create(&intent("create"), adopted(id(1))).await?, root);
     let mut changed = adopted(id(1));
-    changed.volumes.push(VolumeBinding {
-        name: "private".into(),
-        volume: VolumeRef::new(
+    changed.volumes.push(WorkspaceEntry::initial_volume(
+        acyclic_harness_core::agent::WorkspaceRole::Private,
+        "private".into(),
+        VolumeRef::new(
             ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?,
             "changed".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(id(1).to_bytes())),
             &mut None,
         )?,
-    });
+    ));
     assert!(matches!(
         host.create(&intent("create"), changed).await,
         Err(Error::Stream(StreamError::IdempotencyMismatch))
@@ -1114,7 +1133,7 @@ async fn pending_request_host<P: acyclic_harness_core::store::JournalProvider + 
 
 #[tokio::test]
 async fn reply_waits_require_original_committed_requests() -> Result {
-    #[cfg(feature = "filesystem-local")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let directory = Arc::new(tempfile::tempdir()?);
         let provider = acyclic_stream::LocalStream::open_with_ownership_anchor(
@@ -1140,6 +1159,7 @@ async fn reply_waits_require_original_committed_requests() -> Result {
     }
     let request = InboxRecord::Spawn(SpawnRequest {
         profile: acyclic_harness_core::agent::CreationConfig {
+            topology: None,
             model: None,
             continuation: None,
             context: acyclic_harness_core::agent::SpawnContext::Fork,
@@ -1214,55 +1234,47 @@ async fn reply_waits_require_original_committed_requests() -> Result {
         host.spawned(&root, inbox, &intent("s")).await,
         Err(Error::Conflict(_))
     ));
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
-    // Every open child is in the root's checkpoint, so a root at the limit
-    // is the largest the child set makes it; that state must commit.
-    let provider = Arc::new(MemoryStream::default());
-    let host = AgentHost::new(
-        provider,
-        Spawner(AtomicUsize::new(1)),
-        ActorReference::new(b"account", b"agents", b"owner")?,
-        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
-        Arc::new(SystemClock),
-    )?;
-    let root = host.create(&intent("create"), adopted(id(1))).await?;
-    let request = |n: usize| {
-        InboxRecord::Spawn(SpawnRequest {
-            profile: acyclic_harness_core::agent::CreationConfig {
-                model: None,
-                continuation: None,
-                context: acyclic_harness_core::agent::SpawnContext::Fork,
-                template: None,
-                peers: Default::default(),
-            },
-            history: None,
-            by: user(),
-            id: intent(&format!("s{n}")),
-            brief: Some(Box::new(super::driver::file("task").expect("file"))),
-        })
-    };
-    let mut last = 0;
-    for n in 0..=MAX_OPEN_CHILDREN {
-        let Delivered::Committed { inbox } = host.send(&root, &user(), &request(n)).await? else {
-            return Err("spawn request was not committed".into());
+    // Replay the original committed requests through a lineage beyond the
+    // former depth ceiling. Path construction alone cannot prove delivery.
+    let mut deepest = descendant;
+    while deepest.depth() < 128 {
+        let Delivered::Committed { inbox } = host.send(&deepest, &user(), &request).await? else {
+            return Err("deep spawn was not committed".into());
         };
-        last = inbox;
+        let (spawn, child) = requested_child(&deepest, inbox)?;
+        host.drain(&deepest).await?;
+        assert_eq!(
+            host.spawned(&deepest, inbox, &spawn).await?,
+            SpawnOutcome::Spawned {
+                child: child.clone()
+            }
+        );
+        let later = InboxRecord::Approval(Approval {
+            id: intent("after-spawn"),
+        });
+        let Delivered::Committed { inbox: later_inbox } =
+            host.send(&deepest, &user(), &later).await?
+        else {
+            return Err("later deep input was not committed".into());
+        };
+        host.drain(&deepest).await?;
+        assert_eq!(
+            host.spawned(&deepest, inbox, &spawn).await?,
+            SpawnOutcome::Spawned {
+                child: child.clone()
+            }
+        );
+        assert!(matches!(
+            host.spawned(
+                &deepest,
+                later_inbox,
+                &intent(&format!("request:{later_inbox}"))
+            )
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        deepest = child;
     }
-    let failures = host.runtime().drain().await;
-    assert!(failures.is_empty(), "{failures:?}");
-    let state = host.state(&root).await?;
-    assert_eq!(state.open_children.len(), MAX_OPEN_CHILDREN);
-    let (spawn, _) = requested_child(&root, last)?;
-    assert_eq!(
-        host.spawned(&root, last, &spawn).await?,
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
-        }
-    );
     Ok(())
 }
 
@@ -1280,6 +1292,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                topology: None,
                 model: None,
                 continuation: None,
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
@@ -1316,5 +1329,144 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(host.state(&root).await?.open_children.len(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn topology_spawn_outcomes_remain_original_after_archival() -> Result {
+    struct Forced(acyclic_harness_core::topology::Topology);
+    impl SpawnTemplates for Forced {
+        fn topology(&self) -> Option<&acyclic_harness_core::topology::Topology> {
+            Some(&self.0)
+        }
+        fn child<'a>(
+            &'a self,
+            _: &'a CreationConfig,
+            _: &'a AgentPath,
+            _: &'a [WorkspaceEntry],
+            _: &'a str,
+            _: Option<&'a acyclic_harness_core::Capabilities>,
+        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<CreationConfig>>
+        {
+            Box::pin(async {
+                Err(acyclic_harness_core::Error::Unsupported(
+                    "no model-driven spawn in this schedule".into(),
+                ))
+            })
+        }
+    }
+    for mode in ["team:0", "team:1", "swarm"] {
+        let provider = Arc::new(MemoryStream::default());
+        let host = AgentHost::new(
+            provider,
+            Spawner(AtomicUsize::new(1)),
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?
+        .with_templates(Arc::new(Forced(
+            acyclic_harness_core::topology::Topology::select(mode)?,
+        )));
+        let root = host.create(&intent("create"), adopted(id(1))).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        let Wake::Inbox { mut record, .. } = super::spawn_request(1) else {
+            unreachable!()
+        };
+        // Caller-selected role data cannot weaken the pinned run policy.
+        let InboxRecord::Spawn(request) = &mut record else {
+            unreachable!()
+        };
+        request.profile.topology = Some(acyclic_harness_core::topology::Topology::select("swarm")?);
+        let Delivered::Committed { inbox } = host.send(&root, &user(), &record).await? else {
+            return Err("spawn not committed".into());
+        };
+        assert!(host.runtime().drain().await.is_empty());
+        let (spawn, child) = requested_child(&root, inbox)?;
+        let expected = if mode == "team:0" {
+            SpawnOutcome::Refused {
+                reason: SpawnRefusal::Topology,
+            }
+        } else {
+            SpawnOutcome::Spawned {
+                child: child.clone(),
+            }
+        };
+        assert_eq!(host.spawned(&root, inbox, &spawn).await?, expected);
+        if mode != "team:0" {
+            // This fixture drives only locally enrolled actors; it does not
+            // run the hosted activation dispatcher that discovers new actors.
+            host.host(&child)?;
+            assert_eq!(
+                host.state(&child)
+                    .await?
+                    .profile
+                    .and_then(|profile| profile.topology),
+                Some(acyclic_harness_core::topology::Topology::select(mode)?)
+            );
+            let Delivered::Committed { inbox: nested } =
+                host.send(&child, &user(), &record).await?
+            else {
+                return Err("nested spawn not committed".into());
+            };
+            assert!(host.runtime().drain().await.is_empty());
+            let (nested_intent, descendant) = requested_child(&child, nested)?;
+            let expected_nested = if mode == "team:1" {
+                SpawnOutcome::Refused {
+                    reason: SpawnRefusal::Topology,
+                }
+            } else {
+                SpawnOutcome::Spawned {
+                    child: descendant.clone(),
+                }
+            };
+            assert_eq!(
+                host.spawned(&child, nested, &nested_intent).await?,
+                expected_nested
+            );
+            if mode == "swarm" {
+                host.host(&descendant)?;
+            }
+        }
+        host.archive(&root, &user(), &intent("archive")).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(host.spawned(&root, inbox, &spawn).await?, expected);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_root_crosses_the_former_child_ceiling_with_a_paged_checkpoint() -> Result {
+    // The original actor runtime commits membership roots, not its population.
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider,
+        Spawner(AtomicUsize::new(1)),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    let request = |n: usize| {
+        let Wake::Inbox { record, .. } = super::spawn_request(n as u64) else {
+            unreachable!()
+        };
+        record
+    };
+    let mut last = 0;
+    for n in 0..257 {
+        let Delivered::Committed { inbox } = host.send(&root, &user(), &request(n)).await? else {
+            return Err("spawn request was not committed".into());
+        };
+        last = inbox;
+    }
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let state = host.state(&root).await?;
+    assert_eq!(state.open_children.len(), 257);
+    let (spawn, child) = requested_child(&root, last)?;
+    assert_eq!(
+        host.spawned(&root, last, &spawn).await?,
+        SpawnOutcome::Spawned { child }
+    );
     Ok(())
 }

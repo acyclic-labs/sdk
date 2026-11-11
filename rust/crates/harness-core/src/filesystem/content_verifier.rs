@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::{PrivateDirectoryEntry, PrivateDirectoryEntryKind};
 
 /// Filesystem-backed admission barrier for version-pinned conversation content.
 pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
@@ -277,7 +278,7 @@ where
         })
     }
 
-    fn list_private_directory<'a>(
+    fn list_private_directory<'a, 'io: 'a>(
         &'a self,
         volume: &'a VolumeRef,
         granted_prefix: &'a str,
@@ -286,39 +287,135 @@ where
         after: Option<&'a str>,
         maximum_entries: u32,
         ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<PrivateDirectoryPage>>> {
-        if io.is_some() {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unsupported,
-                "finite private directory discovery is unavailable",
-            ));
-        }
+        io: Option<&'io PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            Option<(
+                PrivateDirectoryPage,
+                Option<crate::conversation::ContentHold<'io>>,
+            )>,
+        >,
+    > {
         crate::conversation::BoundedContentFuture::new(io, || async move {
+            let unmeasured;
+            let ledger = match io {
+                Some(io) => io,
+                None => {
+                    unmeasured =
+                        PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                    &unmeasured
+                }
+            };
+            self.verify_exact_file(None, Some(ledger))?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = ledger.original_native_work() {
+                self.supports_native_directory_list(volume, work)?;
+            }
+            let grant = crate::executor::with_history_io(Some(ledger), |history| {
+                ContentGrant::verify_directory_read(
+                    self.authority.verifier(),
+                    self.authority.scope(),
+                    volume,
+                    granted_prefix,
+                    history,
+                )
+            })?;
+            let _grant_hold = ledger.guard_owned(grant.logical_owned_bytes()?)?;
             let after = after
                 .map(|name| {
-                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
-                        .map_err(|error| Error::Invalid(error.to_string()))
+                    let bytes = crate::executor::with_history_io(Some(ledger), |history| {
+                        let mut quota = crate::wire_codec::CodecQuota::new(history, 0)?;
+                        let bytes = crate::core::copy_copy_vector(name.as_bytes(), &mut quota)?;
+                        quota.transfer();
+                        Ok::<_, Error>(bytes)
+                    })?;
+                    LogicalName::new(NameEncoding::Utf8, bytes, u32::MAX)
+                        .map_err(|_| ledger.invalid("directory cursor is not a child name"))
                 })
                 .transpose()?;
-            let selected = FilesystemContentVerifier::list_private_directory(
-                self,
-                volume,
-                granted_prefix,
-                path,
-                crate::filesystem::DirectoryOptions {
-                    generation: expected_generation,
-                    after: after.as_ref(),
-                    maximum_entries,
-                    ceiling,
-                },
-            )
-            .await?;
-            let Some((generation, page)) = selected else {
+            let _after_hold = after
+                .as_ref()
+                .map(|name| ledger.guard_owned(name.logical_owned_bytes()))
+                .transpose()?;
+            let Some(((generation, page), page_hold)) = self
+                .host
+                .list_directory_page(
+                    host::DirectoryListing {
+                        volume,
+                        grant: &grant,
+                        path,
+                        generation: expected_generation,
+                        after: after.as_ref(),
+                        maximum_entries,
+                        ceiling,
+                    },
+                    ledger,
+                    &mut || std::future::ready(Ok(())),
+                )
+                .await?
+            else {
                 return Ok(None);
             };
-            PrivateDirectoryPage::from_filesystem(generation, page).map(Some)
+            let (page, held) =
+                PrivateDirectoryPage::from_filesystem(generation, page, page_hold, ledger)?;
+            self.authority
+                .recheck(&mut Some(&mut ledger.history_io()))?;
+            // Only caller-funded results transfer custody out of this future.
+            match io {
+                Some(io) => {
+                    let bytes = held.bytes();
+                    held.into_retained()?;
+                    Ok(Some((page, Some(io.guard_owned(bytes)?))))
+                }
+                None => Ok(Some((page, None))),
+            }
+        })
+    }
+
+    fn diff_private_paths<'a>(
+        &'a self,
+        roots: &'a [&'a crate::context::ContextRoot],
+        generations: (&'a GenerationRef, &'a GenerationRef),
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<crate::context::DiffPublication>>>
+    {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.verify_exact_file(None, io)?;
+            let unmeasured;
+            let io = if let Some(io) = io {
+                io
+            } else {
+                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &unmeasured
+            };
+            let first = roots
+                .first()
+                .ok_or_else(|| io.invalid("comparison has no roots"))?;
+            let mut grants = Vec::new();
+            let mut holds = Vec::new();
+            for root in roots {
+                if root.volume != first.volume {
+                    return Err(io.invalid("comparison roots belong to different volumes"));
+                }
+                let grant = ContentGrant::verify_directory_read(
+                    self.authority.verifier(),
+                    self.authority.scope(),
+                    &root.volume,
+                    &root.directory,
+                    &mut Some(&mut io.history_io()),
+                )?;
+                holds.push(io.guard_owned(grant.logical_owned_bytes()?)?);
+                grants.push(grant);
+            }
+            let selected: Vec<_> = roots.iter().copied().zip(&grants).collect();
+            let publication = self
+                .host
+                .diff_private_publications(&selected, generations, io)
+                .await?;
+            drop(grants);
+            drop(holds);
+            Ok(publication)
         })
     }
 
@@ -709,6 +806,29 @@ where
             .await
     }
 
+    /// Demand-driven exact fork changes under the original read authority.
+    /// Empty steps report filtered source work; only stream exhaustion means
+    /// completion. No hidden changed-path suffix is collected or replayed.
+    pub fn diff_steps<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        base: &'a GenerationRef,
+        current: &'a GenerationRef,
+    ) -> impl futures::Stream<Item = Result<Option<crate::context::DiffPath>>> + 'a {
+        async_stream::try_stream! {
+            use futures::TryStreamExt as _;
+            self.verify_exact_file(None, None)?;
+            let grant = ContentGrant::verify_directory_read(
+                self.authority.verifier(), self.authority.scope(), volume, "", &mut None,
+            )?;
+            let steps = self.host.diff_steps(volume, &grant, base, current);
+            futures::pin_mut!(steps);
+            while let Some(step) = steps.try_next().await? {
+                yield step;
+            }
+        }
+    }
+
     /// Whether this authority may still list each of `paths` of a
     /// [`Self::diff_publication`] it was given (see
     /// [`FilesystemHost::diff_disclosure`]).
@@ -768,13 +888,14 @@ where
         maximum_entries: u32,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        crate::NativeFutureBundle<
+        acyclic_fs::NativeFutureBundle<
             'a,
             ((GenerationRef, DirectoryPage), acyclic_fs::NativeAllocation),
+            crate::Error,
         >,
     > {
         self.supports_native_directory_list(volume, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             self.verify_exact_file(None, Some(&PreparationIo::from_native_work(work)?))?;
             let mut observer = crate::store::HistoryWork::new(
                 crate::filesystem::PreparationIo::from_native_work(work)?,
@@ -787,9 +908,18 @@ where
                 &mut Some(&mut observer),
             )?;
             let grant_custody = observer.into_custody()?;
-            if path.len() > context.effective_scope().limits().path_bytes
-                || after
-                    .is_some_and(|name| name.len() > context.effective_scope().limits().path_bytes)
+            if context
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+                || after.is_some_and(|name| {
+                    context
+                        .effective_scope()
+                        .limits()
+                        .path_bytes
+                        .is_some_and(|maximum| name.len() > maximum.get())
+                })
                 || (after.is_some() && expected_generation.is_none())
             {
                 return Err(Error::NativeBoundary {
@@ -916,3 +1046,48 @@ use crate::executor::stock_boundary;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+
+impl PrivateDirectoryPage {
+    /// The one conversion from filesystem names into the public Unicode page.
+    /// The source reservation retains the generation and original name storage
+    /// while the same caller funds the Unicode projection.
+    pub(crate) fn from_filesystem<'io>(
+        generation: GenerationRef,
+        page: acyclic_fs::DirectoryPage,
+        mut source: crate::filesystem::DecodeReservation<'io>,
+        ledger: &'io crate::filesystem::PreparationIo,
+    ) -> Result<(Self, crate::filesystem::DecodeReservation<'io>)> {
+        let mut held = ledger.reserve_decode(std::mem::size_of::<Self>() as u64)?;
+        let mut entries = Vec::new();
+        let mut history = ledger.history_io();
+        crate::store::history::reserve(&mut entries, page.entries.len(), &mut history)?;
+        held.adopt((entries.capacity() * std::mem::size_of::<PrivateDirectoryEntry>()) as u64)?;
+        let has_more = page.has_more;
+        for entry in page.entries {
+            let name = ledger.sdk(entry.name.unicode_text(ledger, ledger.cancellation()))?;
+            held.adopt(name.capacity() as u64)?;
+            let kind = match entry.kind {
+                acyclic_fs::kernel::FileKind::Regular => PrivateDirectoryEntryKind::File,
+                acyclic_fs::kernel::FileKind::Directory => PrivateDirectoryEntryKind::Directory,
+                _ => {
+                    return Err(crate::executor::stock_boundary(
+                        Some(ledger),
+                        crate::wire::ErrorCode::Unsupported,
+                        "private directory contains an unsupported entry kind",
+                    ));
+                }
+            };
+            entries.push(PrivateDirectoryEntry { name, kind });
+        }
+        source.substitute(generation.logical_owned_bytes()?)?;
+        held.absorb(source)?;
+        Ok((
+            Self {
+                generation,
+                entries,
+                has_more,
+            },
+            held,
+        ))
+    }
+}

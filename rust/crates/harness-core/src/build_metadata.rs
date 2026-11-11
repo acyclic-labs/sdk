@@ -4,10 +4,7 @@
     reason = "explicit Cargo metadata only; user environment discovery is forbidden"
 )]
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    any(feature = "mcp-stdio", feature = "mcp-http")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const DESCRIPTOR_DIGEST: &str = env!("HARNESS_DESCRIPTOR_DIGEST");
 pub(crate) const FILE_DESCRIPTOR_SET: &[u8] =

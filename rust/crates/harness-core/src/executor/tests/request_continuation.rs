@@ -238,11 +238,8 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
     };
     let execution = StockExecution::ordinary(&executor);
     execution.ensure_started(journal, &input).await?;
-    let (tail, _) = execution
-        .model_records(journal, input.operation_id, 0, ModelPurpose::Response)
-        .await?;
     let (projection, accounting, prepared) = execution
-        .capture_response(journal, &input, 0, &[], tail, None)
+        .capture_response(journal, &input, 0, &[], None)
         .await?;
     let (_, records) = execution
         .model_records(journal, input.operation_id, 0, ModelPurpose::Response)
@@ -254,12 +251,13 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
             _ => None,
         })
         .unwrap();
-    let bytes = journal.load(&reference, None)?.await?;
+    let (persisted, _) =
+        transcript::load_projection(journal, &reference, executor.limits, None).await?;
     let mut retained = projection;
     retained.context.messages = prepared.request().messages.clone();
     retained.accounting = accounting;
     assert_eq!(
-        &*bytes,
+        crate::contract::canonical_json_bytes(&persisted)?,
         crate::contract::canonical_json_bytes(&retained)?,
         "projection and accounting must share one immutable publication"
     );

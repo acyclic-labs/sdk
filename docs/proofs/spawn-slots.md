@@ -1,11 +1,10 @@
 # Agent boundary proofs
 
-The Kani package includes the production slot arithmetic by path. Its four
-harnesses quantify over all machine-sized counts, with a valid starting state
-(`open <= 256`, `reserved <= 256 - open`) where needed. They establish the
-client ceiling, room for each reserved child, preservation of a paused turn's
-capacity when a child finishes, and overflow-safe replay admission. They do
-not assume a second implementation of the arithmetic.
+The fixed 256-child slot arithmetic and its Kani crate are retired. Child
+admission no longer reserves or reclaims slots. Persistent membership roots
+and counts keep checkpoints independent of width; child-node IO is paged.
+The historical proof manifest retains the retired component's evidence and
+does not qualify the current uncapped mechanism.
 
 `agent-model::slot_schedules` executes the production serialized actor step:
 60 pause/client/resume schedules, client response-loss replay, and completion
@@ -14,13 +13,13 @@ steps commit serially; this is a deterministic transition simulation rather
 than a model of different concurrency primitives. It does not qualify a
 provider's crash recovery or hosted endpoint.
 
-The completion regression found a lost reservation: a recorded spawn can
-already name an open child, so it initially reserves no additional capacity.
-If that child finishes while the turn pauses, a client could take the vacated
-slot before the recorded spawn settles. The transition now holds vacated
-slots until the driver reconciles its recorded effects. Duplicate completion
-does not reserve twice. This conservatively holds other vacated slots during
-the active turn as well; settlement releases them.
+The completion burst control leaves the parent waiting after N-1 children,
+then resumes it on the final original completion. Wait telemetry retains a
+cursor into original status facts instead of a per-child checkpoint vector.
+The native Actors control admits 65 held deliveries under default scheduling
+and exactly 64 under explicit credit, then settles every original input.
+Forced team reservations separately count lifetime admissions; worker
+settlement never replenishes that user-selected reservation.
 
 The generated `ExplicitStreamProvider` removes defaults from the canonical
 provider declaration. Missing adapter implementations fail compilation,
@@ -32,18 +31,21 @@ an external `Attestor` must still satisfy its documented deterministic-function
 contract. The admitted-authority probe is not a deployed Cloud receipt.
 
 The record property includes every agent inbox/status/closed/conversation
-variant, maximal field lengths and collection cardinalities, the deepest
-paths, largest counters, every outcome, and maximal JSON escape expansion.
+variant, maximal bounded field lengths, representative long paths, largest
+counters, every outcome, and maximal JSON escape expansion.
 It checks canonical bytes before the bounded encoder's refusal. An oversized
 record refused by the encoder therefore fails the property. The settled
 checkpoint and actor envelope bound retain their separate maximum-size test.
 
-`rust/proofs/spawn-slots/proofs.json` declares actual production mutations. The producer changes one
+`rust/proofs/spawn-slots/proofs.json` retains historical production mutations. The historical producer changes one
 production file in a job-owned derivative and checks its complete tracked
 input manifest before compiling; the tests and proof harnesses stay unchanged.
 It records commands, toolchain, raw output hashes, timings, mutation hashes and Cargo-selected executable hashes.
 
-Install the pinned Rust toolchain and Kani. Run `python3 rust/proofs/spawn-slots/run.py MODE --evidence /path/to/new/output` from a clean checkout, selecting `rust`, `kani`, `mutants` or `finish`. Each invocation requires a fresh evidence directory. Configure Kani through its standard environment or PATH. `remaining` resumes only the compiler check and missing-method control after the captured successful doctests; it does not replay the positive properties.
+Current checks use `cargo test --locked -p acyclic-harness-core --test main agent_model::`
+and `node scripts/qualify-topology-modes.mjs GRAPHCODER MOCK_MODEL FRESH_OUTPUT`.
+The latter exercises the shipping binary beyond the retired width/depth caps
+and runs contrary-policy negative controls against the same assertions.
 
 Main's correlated-turn revision adds WaitingHost. Its host must satisfy the same
 1–128 byte, non-control name bound as inbox host names. The transition turns an

@@ -67,8 +67,8 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
             source: (),
         })
     };
-    compose(
-        root,
+    let mut mounts = compose(
+        root.clone(),
         &principal,
         &capability,
         Context {
@@ -76,8 +76,16 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
             approvals: 0,
         },
         volume("project")?,
-        [volume("data")?],
-    )
+        [volume("data")?, volume("shared")?],
+    )?;
+    for (relative, mount) in mounts.mounts_mut() {
+        if relative == ".volumes/shared" {
+            mount.native_root = crate::workspace::NativeRoot::Logical;
+        } else if !relative.is_empty() {
+            mount.native_root = crate::workspace::NativeRoot::Path(root.join(relative));
+        }
+    }
+    Ok(mounts)
 }
 
 fn invocation(root: &Path) -> Invocation {
@@ -89,10 +97,96 @@ fn invocation(root: &Path) -> Invocation {
         inherit_environment: false,
         execution_grant: None,
         schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-        maximum_output_bytes: 32_768,
+        maximum_output_bytes: Some(32_768),
         process_custody: None,
         standard_input: None,
     }
+}
+
+// GC-66's retained call failed during admission, before any command executed.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn recon_shell_admission_does_not_require_a_logical_volume_path() -> Result<()> {
+    let temp = tempfile::tempdir().map_err(Error::process_io)?;
+    let root = temp.path().canonicalize().map_err(Error::process_io)?;
+    std::fs::create_dir_all(root.join(".volumes/data")).map_err(Error::process_io)?;
+    for args in [
+        vec!["init", "--quiet"],
+        vec![
+            "-c",
+            "user.name=Regression",
+            "-c",
+            "user.email=regression@example.invalid",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .status()
+            .map_err(Error::process_io)?;
+        assert!(status.success());
+    }
+    let mut mounts = table(root.clone())?;
+    let missing = root.join(".volumes/shared");
+    assert!(!missing.try_exists().map_err(Error::process_io)?);
+    const SAVED_COMMAND: &str = "pwd && git rev-parse HEAD && git status --short && ls -la && if [ -f RECON-COVERAGE.json ]; then cat RECON-COVERAGE.json; fi";
+    let input = || ShellInput {
+        command: crate::tools::ShellCommand::Source(SAVED_COMMAND.into()),
+        cwd: Some(".".into()),
+        timeout_ms: Some(20000),
+        background: false,
+        target: None,
+    };
+    // A claimed physical binding must fail with its real filesystem class;
+    // omitting absent roots by existence would silently weaken authority.
+    for (relative, mount) in mounts.mounts_mut() {
+        if relative == ".volumes/shared" {
+            mount.native_root = crate::workspace::NativeRoot::Composed;
+        }
+    }
+    let error = match prepare(input(), &mounts, invocation(&root), 1) {
+        Err(error) => error,
+        Ok(_) => panic!("missing physical root admitted"),
+    };
+    assert!(
+        matches!(&error, Error::Process(crate::ProcessError::NotFound { .. })),
+        "{error:?}"
+    );
+    assert_eq!(
+        crate::executor::ToolErrorClass::of(&error),
+        crate::executor::ToolErrorClass::NotFound
+    );
+    assert!(
+        error
+            .to_string()
+            .contains(missing.to_str().expect("fixture path")),
+        "{error}"
+    );
+    for (relative, mount) in mounts.mounts_mut() {
+        if relative == ".volumes/shared" {
+            mount.native_root = crate::workspace::NativeRoot::Logical;
+        }
+    }
+    let mut native = invocation(&root);
+    native
+        .environment
+        .insert("PATH".into(), std::env::var("PATH").expect("test PATH"));
+    let output = run(input(), &mounts, native, 1, None, || Ok(()))
+        .await?
+        .expect("completed call");
+    assert!(output.success, "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(".git"),
+        "{output:?}"
+    );
+    assert!(!missing.try_exists().map_err(Error::process_io)?);
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -110,9 +204,46 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
     let mut mounts = table(root.canonicalize().map_err(Error::process_io)?)?;
     for (relative, mount) in mounts.mounts_mut() {
         if !relative.is_empty() {
-            mount.native_root = Some(volume.clone());
+            mount.native_root = crate::workspace::NativeRoot::Logical;
         }
     }
+    // A logical binding grants file-tool access without fabricating an OS
+    // projection, even when a same-named native directory happens to exist.
+    assert!(!mounts.environment()?.contains_key("ACYCLIC_VOLUME_DATA"));
+    assert!(matches!(
+        prepare(
+            ShellInput {
+                command: crate::tools::ShellCommand::Source("true".into()),
+                cwd: Some(".volumes/data".into()),
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            &mounts,
+            invocation(&mounts.root),
+            1,
+        ),
+        Err(Error::Unsupported(_))
+    ));
+    for (relative, mount) in mounts.mounts_mut() {
+        if relative == ".volumes/data" {
+            mount.native_root = crate::workspace::NativeRoot::Path(volume.clone());
+        }
+    }
+    assert!(!mounts.environment()?.contains_key("ACYCLIC_VOLUME_SHARED"));
+    let logical = prepare(
+        crate::tools::ShellInput {
+            cwd: Some(".volumes/shared".into()),
+            command: crate::tools::ShellCommand::Source("true".into()),
+            timeout_ms: None,
+            background: false,
+            target: None,
+        },
+        &mounts,
+        invocation(&root),
+        1,
+    );
+    assert!(matches!(logical, Err(Error::Unsupported(_))));
     // Both source and literal argv use production preparation and the original
     // native capture owner. No optional-kernel skip: this is Linux qualification.
     for (cwd, command) in [
@@ -121,8 +252,8 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
             crate::tools::ShellCommand::Source(
                 r#"printf inside > inside; printf volume > .volumes/data/written;
              printf temp > "$TMPDIR/tempfile";
-             test "$(/bin/cat "$OUTSIDE")" = original || exit 13;
-             /bin/cat /proc/self/environ >/dev/null 2>&1 || exit 14;
+             /bin/cat "$OUTSIDE" >/dev/null 2>&1 && exit 13;
+             /bin/cat /proc/self/environ >/dev/null 2>&1 && exit 14;
              (printf escaped > escape) 2>/dev/null && exit 10;
              /bin/sh -c 'printf escaped > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11;
              /bin/cat "/proc/$OWNER/environ" >/dev/null 2>&1 && exit 12;
@@ -206,8 +337,8 @@ fn bound_volume_cwd_keeps_its_authority() {
     let native = native.canonicalize().unwrap();
     let mut mounts = table(root.canonicalize().unwrap()).unwrap();
     for (relative, mount) in mounts.mounts_mut() {
-        if !relative.is_empty() {
-            mount.native_root = Some(native.clone());
+        if relative == ".volumes/data" {
+            mount.native_root = crate::workspace::NativeRoot::Path(native.clone());
         }
     }
     // The task root has no native binding; it must refuse the same escape at
@@ -295,8 +426,8 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     use proptest::prelude::*;
     use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
     const CHILD: &str = "ACYCLIC_TEST_BASH_HOST_ENVIRONMENT";
-    let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     if crate::native_environment::variable(CHILD).is_none() {
+        let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let bin = temp.path().join("bin");
         let home = temp.path().join("home");
         std::fs::create_dir(&bin).map_err(|error| Error::Storage(error.to_string()))?;
@@ -371,10 +502,13 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     }
     let home = crate::native_environment::variable(CHILD).expect("fixture-owned child home");
     let home = home.to_str().expect("UTF-8 fixture path");
-    std::fs::create_dir_all(temp.path().join(".volumes/data"))
+    // The PATH-only fixture tool is part of this fixture's workspace, rather
+    // than an unrelated directory whose readability the default must deny.
+    let workspace = Path::new(home).parent().expect("fixture home has a parent");
+    std::fs::create_dir_all(workspace.join(".volumes/data"))
         .map_err(|error| Error::Storage(error.to_string()))?;
     let mounts = table(
-        temp.path()
+        workspace
             .canonicalize()
             .map_err(|error| Error::Storage(error.to_string()))?,
     )?;
@@ -550,5 +684,93 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
     assert_eq!(output.exit_code, Some(0));
     assert_eq!(output.stdout, format!("{literal}\n\n").as_bytes());
     assert!(!root.join("injected").exists());
+    Ok(())
+}
+
+#[test]
+fn missing_shell_inputs_are_preflight_results_with_paths() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(Error::process_io)?;
+    let root = directory.path().canonicalize().map_err(Error::process_io)?;
+    std::fs::write(root.join("file-cwd"), b"file").map_err(Error::process_io)?;
+    let mounts = table(root)?;
+    for (cwd, command) in [
+        (
+            Some(".volumes/data".into()),
+            crate::tools::ShellCommand::Source("pwd".into()),
+        ),
+        (
+            Some("missing-cwd".into()),
+            crate::tools::ShellCommand::Source("pwd".into()),
+        ),
+        (
+            None,
+            crate::tools::ShellCommand::Argv(vec!["/missing-executable-gc65".into()]),
+        ),
+    ] {
+        let expected_cwd = cwd.clone();
+        let error = prepare(
+            ShellInput {
+                command,
+                cwd,
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            &mounts,
+            invocation(&mounts.root),
+            1,
+        )
+        .err()
+        .ok_or_else(|| Error::Invalid("missing shell input was accepted".into()))?;
+        assert!(
+            matches!(error, Error::Process(crate::ProcessError::NotFound { .. })),
+            "{error:?}"
+        );
+        assert!(error.is_tool_failure());
+        if let Some(cwd) = expected_cwd {
+            let Error::Process(crate::ProcessError::NotFound { message, .. }) = &error else {
+                return Err(Error::Invalid(
+                    "missing cwd lost its process classification".into(),
+                ));
+            };
+            assert_eq!(message, &format!("cwd {cwd} does not exist"));
+        }
+    }
+    for (cwd, command) in [
+        (
+            Some("file-cwd".into()),
+            crate::tools::ShellCommand::Source("pwd".into()),
+        ),
+        (
+            Some("file-cwd/child".into()),
+            crate::tools::ShellCommand::Source("pwd".into()),
+        ),
+        (
+            Some("../escape".into()),
+            crate::tools::ShellCommand::Source("pwd".into()),
+        ),
+        (None, crate::tools::ShellCommand::Argv(Vec::new())),
+        (
+            None,
+            crate::tools::ShellCommand::Source("nul\0command".into()),
+        ),
+    ] {
+        let error = prepare(
+            ShellInput {
+                command,
+                cwd,
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            &mounts,
+            invocation(&mounts.root),
+            1,
+        )
+        .err()
+        .ok_or_else(|| Error::Invalid("invalid shell input was accepted".into()))?;
+        assert!(error.is_tool_failure(), "{error:?}");
+        assert!(!error.uncertain());
+    }
     Ok(())
 }

@@ -11,6 +11,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[test]
 fn shell_job_child() {
+    if let Ok(address) = std::fs::read_to_string("shell-job.exit") {
+        let mut release = std::net::TcpStream::connect(address).unwrap();
+        let mut byte = [0];
+        release.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [b'E']);
+        return;
+    }
     let Ok(address) = std::fs::read_to_string("shell-job.addr") else {
         return;
     };
@@ -75,6 +82,19 @@ async fn terminal(harness: &LocalHarness, directory: &str) -> Result<serde_json:
     }
 }
 
+async fn ready_connection(
+    harness: &LocalHarness,
+    listener: &tokio::net::TcpListener,
+    directory: &str,
+) -> Result<tokio::net::TcpStream> {
+    tokio::select! {
+        connection = listener.accept() => connection.map(|(socket, _)| socket).map_err(storage),
+        ended = terminal(harness, directory) => Err(Error::Conflict(format!(
+            "background shell ended before child readiness: {}", ended?
+        ))),
+    }
+}
+
 #[tokio::test]
 async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
@@ -108,16 +128,34 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
     let selector = "local::checkout_tools::shell::job::tests::shell_job_child";
     let mut jobs = Vec::new();
     let mut gates = Vec::new();
-    for name in ["one", "two", "disconnect"] {
+    for (name, requires_ready) in [
+        ("early", false),
+        ("one", true),
+        ("two", true),
+        ("disconnect", true),
+    ] {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(storage)?;
         std::fs::create_dir(directory.path().join(name)).map_err(storage)?;
-        std::fs::write(
-            directory.path().join(name).join("shell-job.addr"),
-            listener.local_addr().map_err(storage)?.to_string(),
-        )
-        .map_err(storage)?;
+        let exit = if requires_ready {
+            std::fs::write(
+                directory.path().join(name).join("shell-job.addr"),
+                listener.local_addr().map_err(storage)?.to_string(),
+            )
+            .map_err(storage)?;
+            None
+        } else {
+            let exit = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(storage)?;
+            std::fs::write(
+                directory.path().join(name).join("shell-job.exit"),
+                exit.local_addr().map_err(storage)?.to_string(),
+            )
+            .map_err(storage)?;
+            Some(exit)
+        };
         let context = ToolContext::new(task.clone(), crate::OperationId::new(), name)?;
         let invocation = ToolInvocation {
             operation_id: context.operation_id(),
@@ -125,14 +163,44 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
             name: "shell".into(),
             arguments: serde_json::json!({"command": [child, "--exact", selector, "--nocapture"], "cwd": name, "background": true}),
         };
+        eprintln!("shell job {name}: executing");
         let result = executor
             .execute(invocation.clone(), Some(context.clone()))
             .await?;
         assert_eq!(result.value["background"], true, "{result:?}");
-        let (mut gate, _) = listener.accept().await.map_err(storage)?;
+        eprintln!("shell job {name}: awaiting child readiness");
+        if let Some(exit) = exit {
+            // Keep the child alive until admission has returned. Releasing it
+            // then proves terminal delivery ends a wait for a connection it
+            // will never make, without depending on scheduling or a timer.
+            let mut release = ready_connection(
+                &harness,
+                &exit,
+                result.value["output_directory"].as_str().unwrap(),
+            )
+            .await?;
+            release.write_all(b"E").await.map_err(storage)?;
+        }
+        let connection = ready_connection(
+            &harness,
+            &listener,
+            result.value["output_directory"].as_str().unwrap(),
+        )
+        .await;
+        if !requires_ready {
+            // A real child exits without connecting. Its committed result must
+            // end readiness even when no connection can ever be produced.
+            assert!(
+                matches!(&connection, Err(Error::Conflict(_))),
+                "{connection:?}"
+            );
+            continue;
+        }
+        let mut gate = connection?;
         let mut ready = [0];
         gate.read_exact(&mut ready).await.map_err(storage)?;
         assert_eq!(ready, [b'R']);
+        eprintln!("shell job {name}: ready");
         // Reconciliation recovers the original durable admission, without
         // restarting the command or waiting for its lifetime to end.
         assert_eq!(
@@ -147,6 +215,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
         gates.push(gate);
     }
     // A foreground command can run while both independent jobs are waiting.
+    eprintln!("shell jobs ready: executing foreground command");
     let context = ToolContext::new(task, crate::OperationId::new(), "foreground")?;
     let result = executor
         .execute(
@@ -160,6 +229,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
         )
         .await?;
     assert_eq!(result.value["exit_code"], 0);
+    eprintln!("foreground complete: cancelling first shell job");
     std::fs::write(
         directory.path().join(jobs[0].1["cancel"].as_str().unwrap()),
         b"cancel",
@@ -169,6 +239,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
     assert_eq!(cancelled["stop"]["kind"], "control_stopped", "{cancelled}");
     assert_eq!(cancelled["stop"]["cleanup_completed"], true);
     assert!(!directory.path().join("one/completed").exists());
+    eprintln!("first job cancelled: releasing second shell job");
     let mut byte = [0];
     assert!(
         gates[1].read(&mut byte).now_or_never().is_none(),
@@ -178,6 +249,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
     let finished = terminal(&harness, jobs[1].1["output_directory"].as_str().unwrap()).await?;
     assert_eq!(finished["exit_code"], 0, "{finished}");
     assert!(finished["omitted_bytes"].as_u64().unwrap() > 0);
+    eprintln!("second job completed: inspecting captured output");
     let grant = ContentGrant::verify_directory_read(
         &harness.verifier,
         &harness.signed,
@@ -211,7 +283,9 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
         b"committed"
     );
     drop(jobs);
+    eprintln!("disconnecting shell workspace owner");
     harness.disconnect().await?;
+    eprintln!("workspace owner disconnected: awaiting child socket closure");
     let mut byte = [0];
     assert_eq!(gates[2].read(&mut byte).await.map_err(storage)?, 0);
     assert!(!directory.path().join("disconnect/completed").exists());
@@ -236,5 +310,35 @@ async fn cancellation_watches_the_target_of_a_home_alias() -> Result<()> {
     })
     .await;
     written.map_err(storage)?;
-    waited
+    waited?;
+
+    // An already observed invalidation is not a permanently ready tree batch.
+    // The next wait parks until the selected input actually appears.
+    let operation = crate::OperationId::new();
+    let cancellation = Cancellation::open(&alias, operation)?;
+    cancellation.watcher.invalidate();
+    let mut waiting = std::pin::pin!(cancellation.wait());
+    assert!(futures::poll!(&mut waiting).is_pending());
+    std::fs::write(alias.join(format!("shell-{operation}.cancel")), b"cancel").map_err(storage)?;
+    waiting.await?;
+
+    // An alias retarget after registration must not leave cancellation bound
+    // to the old home. The original wait observes both the move and new input.
+    let replacement = directory.path().join("replacement");
+    std::fs::create_dir(&replacement).map_err(storage)?;
+    let operation = crate::OperationId::new();
+    let cancellation = Cancellation::open(&alias, operation)?;
+    let mut waiting = std::pin::pin!(cancellation.wait());
+    assert!(futures::poll!(&mut waiting).is_pending());
+    #[cfg(unix)]
+    std::fs::remove_file(&alias).map_err(storage)?;
+    #[cfg(windows)]
+    std::fs::remove_dir(&alias).map_err(storage)?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&replacement, &alias).map_err(storage)?;
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&replacement, &alias).map_err(storage)?;
+    std::fs::write(alias.join(format!("shell-{operation}.cancel")), b"cancel").map_err(storage)?;
+    waiting.await?;
+    Ok(())
 }

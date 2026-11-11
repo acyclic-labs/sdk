@@ -34,6 +34,7 @@ pub(super) async fn usage_request(
     }
     let bytes = journal.load(request, None)?.await?;
     let header = if request.descriptor().media_type() == REQUEST_MEDIA {
+        admit_manifest(request, &bytes, None)?;
         let manifest: Manifest = serde_json::from_slice(&bytes)
             .map_err(|_| Error::Storage("usage request manifest is malformed".into()))?;
         journal.load(&manifest.header, None)?.await?
@@ -45,10 +46,10 @@ pub(super) async fn usage_request(
     Ok(header)
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
+#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 mod tests;
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
+#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 mod metadata_tests;
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
@@ -68,16 +69,22 @@ pub(crate) struct RequestManifest {
 
 /// Admission is monotone in these bounds. Control-loop limits do not affect
 /// `ModelRequest` validation and therefore are not part of this comparison.
-#[cfg(feature = "filesystem")]
 pub(crate) fn limits_admit(admitted: Limits, current: Limits) -> bool {
     admitted.file_bytes <= current.file_bytes
-        && admitted.path_bytes <= current.path_bytes
-        && admitted.attachments <= current.attachments
+        && current
+            .path_bytes
+            .is_none_or(|maximum| admitted.path_bytes.is_some_and(|limit| limit <= maximum))
+        && current
+            .attachments
+            .is_none_or(|maximum| admitted.attachments.is_some_and(|limit| limit <= maximum))
         && admitted.render_bytes <= current.render_bytes
-        && admitted.context_messages <= current.context_messages
+        && current.context_messages.is_none_or(|maximum| {
+            admitted
+                .context_messages
+                .is_some_and(|limit| limit <= maximum)
+        })
 }
 
-#[cfg(feature = "filesystem")]
 impl RequestManifest {
     fn payload_digest(&self, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
         preparation_digest(
@@ -195,7 +202,6 @@ struct ProjectionRecordView<'a> {
     projection: ProjectionView<'a>,
 }
 
-#[cfg(feature = "filesystem")]
 impl PreparationRecord for ProjectionRecord {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ProjectionRecord
@@ -254,7 +260,6 @@ struct ContextView<'a> {
     current_input_index: Option<u32>,
 }
 
-#[cfg(feature = "filesystem")]
 impl PreparationRecord for RequestManifest {
     fn diagnostic_label_bytes() -> u64 {
         // This closed record cannot reach model/tool/workflow diagnostics.
@@ -287,13 +292,11 @@ impl PreparationRecord for RequestManifest {
         .map(Some)
     }
 }
-#[cfg(feature = "filesystem")]
 impl PreparationRecord for RequestHeader {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ModelRequest
     }
 }
-#[cfg(feature = "filesystem")]
 impl PreparationRecord for MessageSegment {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::MessageSegment
@@ -352,17 +355,31 @@ pub(crate) async fn load_manifest(
         return Err(invalid(io));
     }
     let bytes = journal.load(reference, io)?.await?;
-    #[cfg(feature = "filesystem")]
     let _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
-    with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
+    decode_manifest(reference, &bytes, io)
+}
+
+/// Admit the immutable format before either ordinary loading or cached proof
+/// verification can decode its payload. A valid proof does not admit a version.
+pub(crate) fn decode_manifest(
+    reference: &FileRef,
+    bytes: &[u8],
+    io: Option<&PreparationIo>,
+) -> Result<RequestManifest> {
+    admit_manifest(reference, bytes, io)?;
+    retain_preparation(super::payload::decode_json::<RequestManifest>(bytes, io)?)
+}
+
+fn admit_manifest(reference: &FileRef, bytes: &[u8], io: Option<&PreparationIo>) -> Result<()> {
+    with_history_io(io, |work| reference.descriptor().verify(bytes, work))?;
     acyclic_auth::format::header(
-        &bytes,
+        bytes,
         b"{\"$version\":",
-        b"1,",
+        b"3,",
         || unsupported_manifest(io),
         || unsupported_manifest(io),
-    )?;
-    retain_preparation(super::payload::decode_json::<RequestManifest>(&bytes, io)?)
+    )
+    .map(|_| ())
 }
 
 fn unsupported_manifest(io: Option<&PreparationIo>) -> Error {
@@ -381,10 +398,8 @@ async fn stage_manifest(
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
     validate_journal(journal, io)?;
-    #[cfg(feature = "filesystem")]
     let _hold;
     let bytes: acyclic_stream::OwnedBytes = match io {
-        #[cfg(feature = "filesystem")]
         Some(io) => {
             let bytes = io.encode(manifest, io.remaining()?.bytes_encoded, true)?;
             _hold = io.guard_bytes(&bytes)?;
@@ -422,15 +437,12 @@ async fn previous_manifest(
     Ok(match previous {
         Some(reference) if reference.descriptor().media_type() == REQUEST_MEDIA => {
             let manifest = load_manifest(journal, reference, io).await?;
-            #[cfg(feature = "filesystem")]
             let authenticated = verifier
                 .map(|verifier| {
                     manifest.authenticates(verifier, limits, manifest.request_digest, io)
                 })
                 .transpose()?
                 .unwrap_or(false);
-            #[cfg(not(feature = "filesystem"))]
-            let authenticated = false;
             if !authenticated {
                 // An untrusted descriptor is not evidence that its claimed
                 // prefix was admitted. Reconstruct and validate before reuse.
@@ -486,7 +498,7 @@ async fn stage_request_inner(
     )
     .await?;
     let manifest = RequestManifest {
-        version: 1,
+        version: 3,
         header,
         header_digest,
         messages,
@@ -494,7 +506,6 @@ async fn stage_request_inner(
         admitted_limits: prepared.admitted_limits(),
         proof: None,
     };
-    #[cfg(feature = "filesystem")]
     let manifest = if let Some(verifier) = verifier {
         let proof = Some(manifest.attestation(verifier, io).await?);
         RequestManifest { proof, ..manifest }
@@ -552,7 +563,11 @@ async fn load_request_inner(
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::PreparedModelRequest> {
     let manifest = load_manifest(journal, reference, io).await?;
-    if manifest.messages.count == 0 || manifest.messages.count as usize > limits.context_messages {
+    if manifest.messages.count == 0
+        || limits
+            .context_messages
+            .is_some_and(|maximum| manifest.messages.count as usize > maximum.get())
+    {
         return Err(invalid(io));
     }
     let header =
@@ -613,12 +628,9 @@ async fn load_segment(
     reference: &FileRef,
     io: Option<&PreparationIo>,
 ) -> Result<MessageSegment> {
-    #[cfg(feature = "filesystem")]
     let scope = crate::filesystem::PreparationScope::new(io)?;
-    #[cfg(feature = "filesystem")]
     let io = scope.io();
     let segment = retain_preparation(load_json::<MessageSegment>(journal, reference, io).await?)?;
-    #[cfg(feature = "filesystem")]
     {
         let retained = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         scope.finish(retained)?;
@@ -626,7 +638,7 @@ async fn load_segment(
     Ok(segment)
 }
 
-pub(super) async fn stage_request(
+pub(crate) async fn stage_request(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     key: &str,
@@ -653,7 +665,6 @@ pub(super) async fn stage_request(
     .await
 }
 
-#[cfg(any(test, feature = "filesystem"))]
 pub(crate) async fn stage_attested_request(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
@@ -683,12 +694,9 @@ async fn stage_scoped_request(
     verifier: Option<&crate::core::AuthorityVerifier>,
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
-    #[cfg(feature = "filesystem")]
     let scope = crate::filesystem::PreparationScope::new(io)?;
-    #[cfg(feature = "filesystem")]
     let io = scope.io();
     let reference = stage_request_inner(journal, staging, verifier, io).await?;
-    #[cfg(feature = "filesystem")]
     scope.finish(reference.logical_owned_bytes()?)?;
     Ok(reference)
 }
@@ -699,12 +707,9 @@ pub(crate) async fn load_request(
     limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::PreparedModelRequest> {
-    #[cfg(feature = "filesystem")]
     let scope = crate::filesystem::PreparationScope::new(io)?;
-    #[cfg(feature = "filesystem")]
     let io = scope.io();
     let request = load_request_inner(journal, reference, limits, io).await?;
-    #[cfg(feature = "filesystem")]
     {
         let retained = io.map_or(Ok(0), |io| request.preparation_owned_bytes(io))?;
         scope.finish(retained)?;
@@ -712,7 +717,7 @@ pub(crate) async fn load_request(
     Ok(request)
 }
 
-pub(super) async fn stage_projection(
+pub(crate) async fn stage_projection(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     key: &str,
@@ -756,12 +761,8 @@ pub(super) async fn working_reference(
     reference: &FileRef,
     original: Option<&PreparationIo>,
 ) -> Result<Option<FileRef>> {
-    #[cfg(feature = "filesystem")]
     let scope = crate::filesystem::PreparationScope::new(original)?;
-    #[cfg(feature = "filesystem")]
     let io = scope.io();
-    #[cfg(not(feature = "filesystem"))]
-    let io = original;
     let stored = load_projection_record(journal, reference, io)
         .await?
         .projection;
@@ -773,7 +774,6 @@ pub(super) async fn working_reference(
         stored.checkpoint,
         stored.accounting,
     ));
-    #[cfg(feature = "filesystem")]
     {
         let retained = working
             .as_ref()

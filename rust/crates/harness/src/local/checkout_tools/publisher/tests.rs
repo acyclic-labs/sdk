@@ -90,6 +90,7 @@ async fn open_fixture(
             &workspace::Attach {
                 volume: &project,
                 scratch: &private,
+                shared: None,
                 directory: state.path(),
                 operation: acyclic_fs::OperationId::new(),
                 native_mounts: false,
@@ -861,6 +862,18 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         "local bash",
     )
     .await?;
+    let whole = Capability::whole_volume(None, &Action::ALL)
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let structured_only = Capabilities::new([shell_grant.as_str(), whole.as_str()]);
+    super::super::access::require_mount_access(
+        tools.workspace.view().workspace(),
+        &tools.workspace.mounts,
+        &tools.signed,
+        &structured_only,
+        "local shell",
+    )
+    .await?;
     let restricted = Capability {
         layers: vec![vec![Grant {
             actions: Action::ALL.into_iter().collect(),
@@ -877,14 +890,9 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         .to_scope_label()
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let restricted = Capabilities::new(all.iter().chain([label.as_str()]));
-    // Grants without whole-volume authority stop at the task's authority;
-    // whole-volume grants that a ceiling or policy narrows stop at the mount
-    // access check. Both refuse before dispatch.
-    async fn execute(
-        tools: Arc<CheckoutTools>,
-        grants: Capabilities,
-        authority: bool,
-    ) -> Result<()> {
+    // Missing volume authority and a restrictive structured grant both stop
+    // at the shared mount access check, before dispatch.
+    async fn execute(tools: Arc<CheckoutTools>, grants: Capabilities) -> Result<()> {
         let task = Arc::new(crate::runtime::test_context::agent_context(
             RuntimeScope::new(grants, crate::conversation::Limits::default())?,
             None,
@@ -898,8 +906,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             arguments: serde_json::json!({"command": "echo compromised > secrets/key"}),
         };
         match tools.execute(invocation, Some(context)).await {
-            Err(Error::Unauthorized(_)) if authority => {}
-            Err(Error::FilesystemAccessConfiguration(_)) if !authority => {}
+            Err(Error::FilesystemAccessConfiguration(_)) => {}
             result => {
                 return Err(Error::Invalid(format!(
                     "{name} must refuse before dispatch: {result:?}"
@@ -968,7 +975,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             "local checkout publication"
         ))
     ));
-    execute(tools.clone(), restricted, false).await?;
+    execute(tools.clone(), restricted).await?;
     // Legacy directory/file labels carry no whole-volume authority. Preserve
     // the task/tool grants but remove every whole-volume read/write label.
     let directory_grant = fixture
@@ -994,7 +1001,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         .await,
         Err(Error::FilesystemAccessConfiguration("local bash"))
     ));
-    execute(tools.clone(), legacy_path_only, true).await?;
+    execute(tools.clone(), legacy_path_only).await?;
     let mut policy: Policy =
         serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY).map_err(storage)?;
     policy.version += 1;
@@ -1084,7 +1091,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             .value
             .id()
     );
-    execute(tools, all, false).await?;
+    execute(tools, all).await?;
     assert_eq!(
         std::fs::read(directory.path().join("secrets/key")).map_err(storage)?,
         b"must not be disclosed"

@@ -882,12 +882,32 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             Error::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
+                let mut transition = transition;
+                self.resolve_starts(&mut transition).await?;
                 self.submit(
                     self.prepare_publish(previous, epoch, trigger, delivered, transition, key)?,
                 )
                 .await
             }
         )
+    }
+
+    /// Bind each head-start subscription in `transition` to its stream's
+    /// current tail: one head read per such subscription, before publication,
+    /// so every record committed after the publication is delivered. A stream
+    /// that does not exist yet starts at zero.
+    pub async fn resolve_starts(&self, transition: &mut Transition) -> Result<(), Error> {
+        for change in &mut transition.subscriptions {
+            if let crate::guest::SubscriptionChange::Add {
+                path,
+                from: from @ None,
+                ..
+            } = change
+            {
+                *from = Some(self.head(path).await?.map_or(0, |head| head.tail));
+            }
+        }
+        Ok(())
     }
 
     /// Build the one publication without submitting it.
@@ -949,7 +969,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             None
         };
         let previous_checkpoint = state.checkpoint.take();
-        let state = next(state, original_alarm, trigger, &transition)?;
+        let state = next(state, &previous.path, original_alarm, trigger, &transition)?;
         // The participant is a request from a possibly untrusted handler:
         // the host composer validates it before any custody exists.
         let composition = match &transition.participant {
@@ -1228,14 +1248,56 @@ fn owned(previous: &Snapshot, epoch: u64) -> Result<&State, Error> {
 /// alarm change. Checkpoint, cursor and alarm move together or not at all.
 fn next(
     mut state: State,
+    own: &StreamPath,
     original_alarm: &Alarm,
     trigger: &Trigger,
     transition: &Transition,
 ) -> Result<State, Error> {
     consume(&mut state, original_alarm, trigger)?;
     change_alarm(&mut state.alarm, transition.alarm)?;
+    subscribe(&mut state.subscriptions, own, &transition.subscriptions)?;
     state.checkpoint = Some(transition.checkpoint.clone());
     Ok(state)
+}
+
+/// Apply the actor's own subscription changes in order. A start the host has
+/// not resolved is refused, so every bound cursor is an explicit sequence.
+fn subscribe(
+    subscriptions: &mut BTreeMap<String, Subscription>,
+    own: &StreamPath,
+    changes: &[crate::guest::SubscriptionChange],
+) -> Result<(), Error> {
+    use crate::guest::SubscriptionChange;
+    for change in changes {
+        match change {
+            SubscriptionChange::Add { id, path, from } => {
+                if id.is_empty() {
+                    return Err(Error::Invalid("subscription has no id"));
+                }
+                if path == own {
+                    return Err(Error::Invalid("actor subscribes to its own state"));
+                }
+                let cursor = from.ok_or(Error::Invalid("subscription start is unresolved"))?;
+                match subscriptions.get(id) {
+                    Some(bound) if &bound.path == path => {}
+                    Some(_) => return Err(Error::Invalid("subscription id is bound elsewhere")),
+                    None => {
+                        subscriptions.insert(
+                            id.clone(),
+                            Subscription {
+                                path: path.clone(),
+                                cursor,
+                            },
+                        );
+                    }
+                }
+            }
+            SubscriptionChange::Remove { id } => {
+                subscriptions.remove(id);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Result<(), Error> {
