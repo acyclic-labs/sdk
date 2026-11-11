@@ -453,6 +453,69 @@ mod original {
         Ok(())
     }
     #[test]
+    fn completed_directory_error_retires_without_losing_the_hub() -> TestResult {
+        use super::super::{
+            ERROR_IO_INCOMPLETE, ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED,
+            GetOverlappedResult, READ,
+        };
+        use crate::native_host::NativeHostWork;
+
+        let budget = budget();
+        let (root, directory) = held()?;
+        let origin = birth(budget, &CancellationToken::new());
+        let mut work = crate::NativeMaterializationWork::from_meter(origin.clone());
+        let watch = driver(&directory, &mut work)?;
+        let completion = Arc::clone(&watch.shared);
+        let before = origin.with_original_leaf(|work| work.work);
+        let mut reads = completion.lock_reads();
+        assert!(reads.pending);
+        // Holding the original reads keeps the hub from draining this terminal
+        // completion before the physical retirement engine observes it.
+        std::fs::remove_dir(root.path())?;
+        assert!(completion.await_completion(&reads)?);
+        work.started_io(READ)?;
+        let mut transferred = 0;
+        // SAFETY: the actual deleted directory and its completed storage stay
+        // owned under the same reads guard as the cleanup operation below.
+        let error = unsafe {
+            GetOverlappedResult(
+                HANDLE(completion.directory.load(Ordering::Acquire)),
+                &raw const *reads.overlapped,
+                &mut transferred,
+                false,
+            )
+        }
+        .expect_err("deleting the watched directory completes its read with an error");
+        assert_ne!(error.code(), ERROR_IO_INCOMPLETE.to_hresult());
+        assert_ne!(error.code(), ERROR_OPERATION_ABORTED.to_hresult());
+        assert_ne!(error.code(), ERROR_NOTIFY_ENUM_DIR.to_hresult());
+        let original = io::Error::from(error).raw_os_error();
+        assert!(original.is_some());
+        completion.retire_native(&mut reads);
+        assert!(completion.retired(&reads));
+        drop(reads);
+        assert!(watch.is_stopped());
+        no_growth(&origin, before, budget);
+        origin.with_original_leaf(|work| {
+            assert!(matches!(work.take_native_io_failure(),
+                Some(DemandError::Io(error)) if error.raw_os_error() == original));
+        });
+        let (complete, completed) = std::sync::mpsc::channel();
+        watch.observe_data_drop(complete)?;
+        drop(watch);
+        drop(completion);
+        assert!(completed.recv().is_err(), "original watch payload retired");
+
+        // The process-wide collector must still admit and retire another watch.
+        let (_next_root, next_held) = held()?;
+        let mut next_work =
+            crate::NativeMaterializationWork::from_meter(birth(budget, &CancellationToken::new()));
+        let next = driver(&next_held, &mut next_work)?;
+        next.stop_with_work(&mut next_work)?;
+        assert!(next.is_stopped());
+        Ok(())
+    }
+    #[test]
     fn actual_close_failure_parks_the_same_owner_and_preserves_the_original_cause() -> TestResult {
         use windows::Win32::Foundation::{
             HANDLE_FLAG_PROTECT_FROM_CLOSE, HANDLE_FLAGS, SetHandleInformation,

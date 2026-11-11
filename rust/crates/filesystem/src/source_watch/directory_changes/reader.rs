@@ -146,17 +146,12 @@ impl Shared {
                 false,
             )
         };
-        if !matches!(&result, Err(error) if error.code() == ERROR_IO_INCOMPLETE.to_hresult()) {
-            reads.cancelling = false;
-        }
+        reads.observe_completion(&result);
         match result {
             Err(error) if error.code() == ERROR_IO_INCOMPLETE.to_hresult() => return Ok(false),
             Err(error) if error.code() == ERROR_OPERATION_ABORTED.to_hresult() => {}
             Err(error) if error.code() == ERROR_NOTIFY_ENUM_DIR.to_hresult() => reads.loss = true,
-            Err(error) => {
-                reads.pending = false;
-                return Err(io::Error::from(error).into());
-            }
+            Err(error) => return Err(io::Error::from(error).into()),
             Ok(()) => {
                 // No bytes from a completed read: the kernel dropped changes
                 // that overflowed its buffer.
@@ -164,14 +159,12 @@ impl Shared {
                     .map_err(|_| DemandError::InvalidRequest)?;
                 reads.cursor = 0;
                 reads.loss |= transferred == 0 || u64::from(transferred) > capacity;
-                reads.pending = false;
                 work.record(WorkCounters {
                     source_bytes_read: reads.filled as u64,
                     ..WorkCounters::UNCHARGED
                 })?;
             }
         }
-        reads.pending = false;
         Ok(true)
     }
     fn drain<W: SourceDemandReadWork>(
