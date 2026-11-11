@@ -380,7 +380,7 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_filter_admission_precedes_request_transport_custody() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
@@ -420,7 +420,7 @@ async fn native_filter_admission_precedes_request_transport_custody() -> TestRes
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn request_transport_copy_denial_retires_and_reports_its_completed_prefix() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
@@ -474,7 +474,7 @@ async fn request_transport_copy_denial_retires_and_reports_its_completed_prefix(
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn request_semantic_denial_preserves_an_existing_original_ledger_failure() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;

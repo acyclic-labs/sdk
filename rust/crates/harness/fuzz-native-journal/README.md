@@ -43,7 +43,7 @@ exercise admission with an absent task and a null task.
 | `derived-task-type` | `f7d147326d8223b27b438cdcae69640fc76859270960341bec3fced6644b0fee` |
 
 Run the producer control with
-`cargo test -p acyclic-harness --no-default-features --features filesystem-local,native-execution --test native_receipt -- --nocapture`.
+`cargo test -p acyclic-harness --no-default-features --test native_receipt -- --nocapture`.
 Run the retained target with
 `cargo fuzz run native_receipt --fuzz-dir rust/crates/harness/fuzz-native-journal`.
 Coverage must include the called harness library; instrumenting only this
@@ -208,7 +208,7 @@ The retained request seeds and their SHA-256 digests are:
 Native request presence is checked by the real-file custody control:
 
 ```sh
-cargo test --locked -p acyclic-harness --features filesystem-local,native-execution --lib local::host_files::tests::request_observation_failure_preserves_accepted_work_until_real_withdrawal -- --exact --nocapture
+cargo test --locked -p acyclic-harness --lib local::host_files::tests::request_observation_failure_preserves_accepted_work_until_real_withdrawal -- --exact --nocapture
 ```
 
 It uses the production request serializer, immutable projection writer and

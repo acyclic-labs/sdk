@@ -13,7 +13,7 @@
 //! batches. Interrupted collections can leave any number of epochs between
 //! the two unreleased, so a switch releases all of them.
 
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -22,22 +22,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub struct Epoch {
     current: AtomicU64,
     /// The oldest epoch that may still hold batches.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     unreleased: AtomicU64,
     /// Where the current epoch survives a restart, for a store that collects.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     pointer: Option<PathBuf>,
     #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(crate) hooks: hooks::Hooks,
 }
 
 const ROOT: &[u8] = b"fs-epoch/";
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 const FORMAT: &[u8; 8] = b"FSEPOCH\x01";
 
 impl Epoch {
     /// Resumes the epoch recorded at `pointer`, or the first.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     pub(crate) fn open(pointer: PathBuf) -> std::io::Result<Self> {
         let (current, unreleased) = match std::fs::read(&pointer) {
             Ok(bytes) => {
@@ -94,13 +94,13 @@ impl Epoch {
         acyclic_objects::RootId::new(bytes).expect("a fixed-width epoch root is a valid root")
     }
 
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     /// The oldest epoch that may still hold batches.
     pub(crate) fn unreleased(&self) -> u64 {
         self.unreleased.load(Ordering::Acquire)
     }
 
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     /// Records that every epoch before `epoch` is released. A restart learns
     /// it at the next [`Epoch::persist`]; until then it releases them again,
     /// which finds nothing.
@@ -115,7 +115,7 @@ impl Epoch {
     /// finishes, so a dropped caller never lets the next collection's write
     /// race it. The original store owner keeps the root open through that
     /// same physical terminal.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     pub(crate) async fn persist(
         &self,
         next: u64,
@@ -155,7 +155,7 @@ impl Epoch {
         write.await?
     }
 
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     /// Opens `next` for new publications. The caller holds every publication
     /// out while it does.
     pub(crate) fn switch(&self, next: u64) {
@@ -165,7 +165,7 @@ impl Epoch {
 
 /// A step of a collection that opens an epoch, after which a crash leaves
 /// its own durable state.
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Step {
     Persisted,

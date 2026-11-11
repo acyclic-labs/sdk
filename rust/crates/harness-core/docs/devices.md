@@ -63,7 +63,7 @@ original idempotent releases when its journal publication retries.
 The real native integration control runs with:
 
 ```sh
-cargo test -p acyclic-harness-core --features filesystem-local,native-execution,machines --test main machine_workspace::device_runner::committed_device_handover_runs_once_and_archive_fences_its_grant -- --exact
+cargo test -p acyclic-harness-core --test main machine_workspace::device_runner::committed_device_handover_runs_once_and_archive_fences_its_grant -- --exact
 ```
 
 It retains the actual local Machine, authenticated Actor socket, committed

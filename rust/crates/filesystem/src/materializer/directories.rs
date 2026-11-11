@@ -22,7 +22,7 @@ pub(super) fn native_utf16_name_bytes(
     })
 }
 
-#[cfg(all(any(test, feature = "local"), feature = "native-mount"))]
+#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 pub(super) fn native_compare<T: Ord>(
     mut a: impl Iterator<Item = T>,
     mut b: impl Iterator<Item = T>,

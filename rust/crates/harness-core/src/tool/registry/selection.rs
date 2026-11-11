@@ -101,13 +101,11 @@ impl ToolRegistry {
                     )?),
                     Err(_) => ModelSelection::Hidden,
                 };
-                #[cfg(feature = "filesystem")]
                 let old_bytes = match selection {
                     ModelSelection::Revision(revision) => revision.capacity(),
                     _ => 0,
                 };
                 *selection = replacement;
-                #[cfg(feature = "filesystem")]
                 if let Some(io) = io {
                     io.release(old_bytes as u64)?;
                 }
@@ -236,7 +234,6 @@ impl ToolRegistry {
         revision: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Arc<Tool>>> {
-        #[cfg(feature = "filesystem")]
         if revision.is_none()
             && let Some(io) = io
         {
@@ -345,7 +342,6 @@ impl ToolRegistry {
         capabilities: bool,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ToolDefinition>> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.retain_owned(std::mem::size_of::<Vec<ToolDefinition>>() as u64)?;
         }

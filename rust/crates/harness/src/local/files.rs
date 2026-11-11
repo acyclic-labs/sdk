@@ -5,7 +5,7 @@ impl LocalHarness {
     /// An authorized fork uses the tools' shared Git facade and request receipt.
     /// Host checkout merges retain native capture and publication; retained
     /// unbound parent volumes need no OS projection or additional authority.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) async fn merge_session(
         &self,
         agent: &crate::agent::AgentPath,
@@ -139,7 +139,7 @@ impl LocalHarness {
         .await
     }
 
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn merge_checkout(
         &self,
         workspace: &Arc<super::workspace::LocalWorkspace>,
@@ -212,7 +212,7 @@ impl LocalHarness {
     /// complete baseline the query refuses to certify a diff. Projection, disclosure
     /// authority and paging are the shared [`crate::hosting::DiffPages`],
     /// which retains this checkout's projection in `diffs`.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) async fn project_diff(
         &self,
         diffs: &crate::hosting::DiffPages,
@@ -286,7 +286,7 @@ impl LocalHarness {
     }
 }
 
-#[cfg(any(test, feature = "native-execution"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn merge_commit(output: acyclic_fs::GitCommandOutput) -> Result<Option<String>> {
     match output {
         acyclic_fs::GitCommandOutput::Committed(commit) => Ok(Some(commit.id.to_hex())),

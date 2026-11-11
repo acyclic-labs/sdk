@@ -128,7 +128,6 @@ impl StockExecution<'_> {
             ));
         }
         let source_bytes: acyclic_stream::OwnedBytes = match self.io {
-            #[cfg(feature = "filesystem")]
             Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
             _ => {
                 stock_json_bound(source, self.stock.limits.file_bytes, self.io)?;
@@ -140,7 +139,6 @@ impl StockExecution<'_> {
     }
 
     fn collect_summary_text(&self, events: Vec<ModelEvent>) -> Result<String> {
-        #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::with_input(
             self.io,
             self.io
@@ -148,13 +146,9 @@ impl StockExecution<'_> {
                 .transpose()?
                 .unwrap_or(0),
         )?;
-        #[cfg(feature = "filesystem")]
         let io = scope.io();
-        #[cfg(not(feature = "filesystem"))]
-        let io = self.io;
         // Input and output die before the scope on every early return.
         let events = events;
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.check_cancellation()?;
         }
@@ -204,7 +198,6 @@ impl StockExecution<'_> {
                 "summary operation returned no content",
             ));
         }
-        #[cfg(feature = "filesystem")]
         scope.finish(text.capacity() as u64)?;
         Ok(text)
     }
@@ -247,25 +240,20 @@ pub(super) async fn stage_summary_provenance(
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     let key = with_history_io(io, |work| summary.output.read_capability(work))?;
-    #[cfg(feature = "filesystem")]
     let key_hold = io
         .map(|io| io.guard_owned(key.capacity() as u64))
         .transpose()?;
     let bytes: acyclic_stream::OwnedBytes = match io {
-        #[cfg(feature = "filesystem")]
         Some(io) => io.encode(summary, io.remaining()?.bytes_encoded, true)?,
         _ => crate::contract::canonical_json_bytes(summary)?.into(),
     };
-    #[cfg(feature = "filesystem")]
     let bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
     // The exact output identity is already the immutable retry key. Appending
     // the provenance payload's digest would make this file unqueryable by ref.
     stage_bytes(journal, summary.operation_id, &key, &bytes, false, io).await?;
     drop(bytes);
-    #[cfg(feature = "filesystem")]
     drop(bytes_hold);
     drop(key);
-    #[cfg(feature = "filesystem")]
     drop(key_hold);
     Ok(())
 }

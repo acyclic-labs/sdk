@@ -14,7 +14,7 @@ impl ConversationState {
         &mut self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = work
             .as_deref_mut()
             .filter(|io| io.original_native_work().is_some())
@@ -65,14 +65,14 @@ impl ConversationState {
         let retained = grow_conversation_buffer(
             &mut self.messages,
             cache.work(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             &mut self.native_custody.messages,
         )?;
         cache.adopt(retained)?;
         let retained = grow_conversation_buffer(
             &mut self.prefix_digests,
             cache.work(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             &mut self.native_custody.digests,
         )?;
         cache.adopt(retained)?;

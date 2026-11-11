@@ -220,8 +220,8 @@ against the target PostgreSQL deployment through its intended TLS/socket boundar
 verify synchronous commit and failover durability settings, then run:
 
 ```sh
-cargo run --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance -- --postgres
-cargo run --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance -- --postgres --scale
+cargo run --locked -p acyclic-stream --no-default-features --features conformance --example provider-conformance -- --postgres
+cargo run --locked -p acyclic-stream --no-default-features --features conformance --example provider-conformance -- --postgres --scale
 ```
 
 The first command also checks all three follow APIs after their creator's last

@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 mod allocator;
 mod interpreter;
-#[cfg(all(feature = "test-support", feature = "filesystem"))]
+#[cfg(feature = "test-support")]
 pub(super) mod model;
 pub(crate) use interpreter::MEMORY_BYTES;
 
@@ -126,7 +126,6 @@ impl ProgramLogs {
         source: &'de str,
         io: Option<&'a PreparationIo>,
     ) -> Result<(T, Option<crate::conversation::ContentHold<'a>>)> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             let (value, hold) = io.decode_seed(
                 std::marker::PhantomData::<T>,
@@ -202,7 +201,7 @@ fn encode_reply(
         version: Option<&'a str>,
     }
     let reply = Reply { ok, value, version };
-    #[cfg(feature = "filesystem")]
+
     if let Some(io) = io {
         return io.encode(&reply, u64::MAX, false);
     }
@@ -273,13 +272,10 @@ impl StockExecution<'_> {
                 })?;
             let definitions =
                 stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?;
-            #[cfg(feature = "filesystem")]
             let funded = self
                 .io
                 .map(|io| io.encode(&definitions, u64::MAX, false))
                 .transpose()?;
-            #[cfg(not(feature = "filesystem"))]
-            let funded: Option<acyclic_stream::OwnedBytes> = None;
             let definitions = match funded {
                 Some(bytes) => bytes,
                 None => serde_json::to_vec(&definitions)
@@ -301,7 +297,6 @@ impl StockExecution<'_> {
             // time. Promise.all remains usable without an unbounded host work queue.
             let (send, mut receive) = mpsc::channel(1);
             let allocator = allocator::EngineAllocator::new(self.native_work());
-            #[cfg(feature = "filesystem")]
             let engine_failure = allocator.failure();
             let code = stock_string_copy(code, self.io)?;
             let mut worker = Box::pin(acyclic_native_runtime::blocking_future(interpreter::run(
@@ -344,7 +339,7 @@ impl StockExecution<'_> {
                                 let entry = Log { kind: "code.log", call_id: &parent.call_id, ordinal: log_ordinal, values };
                                 logs.observe(values, maximum, self.io)?;
                                 let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:log:{log_ordinal}:result", parent.operation_id), work))?;
-                                #[cfg(feature = "filesystem")]
+
                                 let _key_hold = self.io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
                                 tokio::select! {
                                     biased;
@@ -396,8 +391,7 @@ impl StockExecution<'_> {
                         let output_bytes = with_history_io(self.io, |work| crate::executor::json::json_byte_length(&value, u64::MAX, work))?;
                         let entry = CallLog { kind: "code.call", call_id: &parent.call_id, ordinal, tool: &call.name.value, ok, input_bytes, output_bytes };
                         let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:{ordinal}:result", parent.operation_id), work))?;
-                        #[cfg(feature = "filesystem")]
-                        let _key_hold = self.io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
+                                                let _key_hold = self.io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
                         // The ordinary journal publishes one immutable tool-output
                         // file per settled call. Following that directory streams
                         // logs without retaining call history in the caller or VM.
@@ -416,7 +410,6 @@ impl StockExecution<'_> {
                     }
                 }
             };
-            #[cfg(feature = "filesystem")]
             if let Some(error) = engine_failure
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -426,7 +419,6 @@ impl StockExecution<'_> {
             }
             let mut value = match program {
                 Ok(result) => {
-                    #[cfg(feature = "filesystem")]
                     if let Some(custody) = result.custody {
                         let io = self.io.ok_or_else(|| {
                             stock_boundary(
@@ -445,12 +437,10 @@ impl StockExecution<'_> {
                                 "JavaScript result wrapper size overflow",
                             )
                         })?;
-                    #[cfg(feature = "filesystem")]
+
                     if let Some(io) = self.io {
                         io.retain_owned(slots)?;
                     }
-                    #[cfg(not(feature = "filesystem"))]
-                    let _ = slots;
                     let key = stock_string_copy("value", self.io)?;
                     let mut fields = serde_json::Map::new();
                     fields.insert(key, result.value);
@@ -538,7 +528,7 @@ impl StockExecution<'_> {
             },
             None => stock_string_copy(&call.name.value, self.io)?,
         };
-        #[cfg(feature = "filesystem")]
+
         let decoded = self
             .io
             .map(|io| {
@@ -549,8 +539,6 @@ impl StockExecution<'_> {
                 )
             })
             .transpose()?;
-        #[cfg(not(feature = "filesystem"))]
-        let decoded: Option<(Value, crate::conversation::ContentHold<'_>)> = None;
         let (arguments, _arguments_hold) = match decoded {
             Some((value, hold)) => (value, Some(hold)),
             None => (

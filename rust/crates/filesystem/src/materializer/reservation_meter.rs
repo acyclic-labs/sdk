@@ -268,7 +268,7 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
         .map_err(|error| self.work().runtime_error(error))
     }
     #[cfg(any(target_os = "linux", all(test, unix)))]
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         drop(reservation);
     }

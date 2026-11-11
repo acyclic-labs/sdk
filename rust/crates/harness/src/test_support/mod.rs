@@ -2,17 +2,13 @@
 
 pub use acyclic_harness_core::test_support::*;
 
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::local::host_process::children::answer::validation as native_answer;
 
 pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
 /// Runs the production local state-directory separation and preparation boundary.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn separated_local_state_directory(
     path: &std::path::Path,
     checkout: Option<&std::path::Path>,
@@ -23,11 +19,7 @@ pub fn separated_local_state_directory(
 /// Checks arbitrary sequential schedules against the native child ready queue.
 /// This exercises the production registrations, queue and waiter callbacks;
 /// physical event-hub concurrency remains a separate contract.
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn check_native_readiness(input: &[u8]) {
     crate::local::host_process::children::readiness_validation::verify(input, 16);
 }
@@ -35,11 +27,7 @@ pub fn check_native_readiness(input: &[u8]) {
 /// Checks the native mount-reference parser used before committing a spawn.
 /// Arbitrary bytes cover refusal; generated portable components also require
 /// admission, so rejecting every input cannot satisfy the safety oracle.
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn check_native_child_reference(input: &[u8]) {
     use crate::local::host_workspace::child_reference;
     use std::path::{Component, Path};
@@ -88,7 +76,7 @@ pub fn check_native_child_reference(input: &[u8]) {
 }
 
 /// Local test composition with temporary state and settings, independent of the per-user store, HOME and CODEX_HOME.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn local_harness_config(
     workspace: impl Into<std::path::PathBuf>,
     model: (
@@ -97,14 +85,14 @@ pub fn local_harness_config(
     ),
 ) -> crate::Result<crate::LocalHarnessConfig> {
     let workspace = workspace.into();
-    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
     // Store opening supplies temporary state only when no explicit root was selected.
     let policy = crate::approvals::ApprovalPolicy::accept_all("graphcoder-default");
     let config = crate::LocalHarnessConfig::new(workspace, model)
         .hermetic()
         .approval_policy(policy);
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     let config = {
         let mut config = config;
         config.environment_platform = crate::native_environment::PlatformPolicy::Fixture {
@@ -116,13 +104,13 @@ pub fn local_harness_config(
         };
         config
     };
-    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     let config = config.settings(settings);
     Ok(config)
 }
 
 /// How one root-agent prompt settled.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub enum PromptOutcome {
     /// The turn settled; its conversation entry and decoded output.
@@ -135,7 +123,7 @@ pub enum PromptOutcome {
 /// Prompts `harness`'s root agent as message `id`, then follows its conversation
 /// and phase until that message's turn settles or fails. The one prompt path of
 /// every local scenario, DST replay and provider test.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn prompt_settled(
     harness: &std::sync::Arc<crate::LocalHarness>,
     id: &str,

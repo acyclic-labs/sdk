@@ -43,7 +43,7 @@ function qualifyGate(run) {
   return gateQualifications.map(step => dispatch(step.args, run));
 }
 
-export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = runCommand) {
+export function qualifyMcpLoom(features = [], run = runCommand) {
   return qualifyLoom("acyclic-harness-core", "main", [...features, "--features", "model-checking"], run, {
     env: loomEnvironment(), targetCfg: [], suites: [["mcp_loom::", 6]],
   });
@@ -51,7 +51,7 @@ export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-ht
 
 export function qualifySkillMaterializerLoom(run = runCommand) {
   return qualifyLoom("acyclic-harness-core", "main",
-    ["--features", "filesystem-local,native-execution,test-support"], run, {
+    ["--features", "test-support"], run, {
       targetCfg: ["--", "--cfg", "loom"],
       filters: ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::cancelled_waiter_does_not_take_the_next_owners_wake"],
     });
@@ -90,7 +90,7 @@ export function qualifySkillMaterializerMutationsLoom(run = runCommand) {
     model: "../rust/crates/harness-core/tests/skill_materializer_loom.rs",
     mutations: [["lock_owned(self.0.clone()).await", "lock_owned(Arc::new(Mutex::new(()))).await", "materialization conflict"]],
     qualify: (run, expectedFailure) => qualifyLoom("acyclic-harness-core", "main",
-      ["--features", "filesystem-local,native-execution,test-support"], run, {
+      ["--features", "test-support"], run, {
         targetCfg: ["--", "--cfg", "loom"], expectedFailure, recovery,
         filter: "skill_materializer_loom::journal_owner_serializes_first_publications",
       }),
@@ -200,7 +200,7 @@ export function qualifyCaptureCursorMutations(run = runCommand) {
 function qualifyNativeSourceMutation({ name, selector, source, model, test, mutation, mutations = [mutation] }, run) {
   const recovery = `node scripts/qualify-mcp-loom.mjs ${selector}`;
   const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
-    ["--features", "filesystem-local,native-execution,test-support"], run, {
+    ["--features", "test-support"], run, {
       kind: "--lib", modelFeatures: [], targetCfg: [], expectedFailure, recovery, filter: test,
     });
   const root = "../rust/crates/harness/src/local/";
@@ -262,7 +262,7 @@ function qualifySourceMutationsLoom({ name, source, model, mutations, qualify, r
 }
 
 // These models check shared projection ownership; native process cleanup is separate.
-export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = runCommand) {
+export function qualifyHookLifecycleLoom(features = ["--features", "test-support"], run = runCommand) {
   return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filters: [
       "local::workspace::projection::tests::first_native_users_share_one_initialization",
@@ -288,7 +288,7 @@ export function qualifyNativeRegistryLoom(run = runCommand) {
 
 export function qualifyStreamRetryLoom(run = runCommand) {
   return qualifyLoom("acyclic-stream", "main", [
-    "--no-default-features", "--features", "local",
+    "--no-default-features",
   ], run, {
     env: loomEnvironment(), targetCfg: [], suites: [["retry_recovery_loom::", 2]],
   });
@@ -300,7 +300,7 @@ export function qualifyGuestLoom(run = runCommand) {
   });
 }
 
-export function qualifyE2eProgressLoom(features = ["--features", "filesystem-local,native-execution,test-support,grpc"], run = runCommand) {
+export function qualifyE2eProgressLoom(features = ["--features", "test-support"], run = runCommand) {
   return qualifyLoom("acyclic-harness", "main", features, run, {
     targetCfg: ["--", "--cfg", "loom"],
     filters: ["e2e_progress_model::registration_reporting_and_cancel_or_panic_cleanup_are_atomic", "e2e_progress_model::forgotten_cleanup_is_detected_on_the_real_registration",
@@ -460,7 +460,7 @@ export function qualifyFsBindingLoom(features = [], run = runCommand) {
 
 export function qualifyFsPolicyLoom(run = runCommand) {
   return qualifyLoom("acyclic-fs", "acyclic_fs", [
-    "--no-default-features", "--features", "memory,model-checking",
+    "--no-default-features", "--features", "model-checking",
   ], run, {
     kind: "--lib", targetCfg: [],
     env: loomEnvironment(),
@@ -470,7 +470,7 @@ export function qualifyFsPolicyLoom(run = runCommand) {
 
 export function qualifySessionFsLoom(run = runCommand) {
   return qualifyLoom("acyclic-fs", "main", [
-    "--no-default-features", "--features", "memory,session,acyclic-stream/local",
+    "--no-default-features",
   ], run, {
     env: loomEnvironment(),
     targetCfg: [],

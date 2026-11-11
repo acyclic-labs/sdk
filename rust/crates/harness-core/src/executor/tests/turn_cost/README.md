@@ -8,10 +8,10 @@ remain outside it. Both standalone and native owners cover all 16 nonempty
 pages, including every capacity crossing in the original 1,001-record storage.
 
 ```sh
-cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib executor::tests::turn_cost::native_growth::a_thousand_records_retain_live_metadata_without_decoder_scratch -- --exact
+cargo test --locked -p acyclic-harness-core --features test-support --lib executor::tests::turn_cost::native_growth::a_thousand_records_retain_live_metadata_without_decoder_scratch -- --exact
 git apply rust/crates/harness-core/src/model/instruction_radix.patch
 git apply rust/crates/harness-core/src/executor/tests/turn_cost/record_relocating.patch
-cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib executor::tests::turn_cost::native_growth::a_thousand_records_retain_live_metadata_without_decoder_scratch -- --exact
+cargo test --locked -p acyclic-harness-core --features test-support --lib executor::tests::turn_cost::native_growth::a_thousand_records_retain_live_metadata_without_decoder_scratch -- --exact
 git apply -R rust/crates/harness-core/src/executor/tests/turn_cost/record_relocating.patch
 git apply -R rust/crates/harness-core/src/model/instruction_radix.patch
 ```

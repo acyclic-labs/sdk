@@ -146,7 +146,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn restored_owned_volume_hash_exceeds_the_same_copy_allowance() -> Result<()> {
         use acyclic_fs::{
@@ -194,7 +194,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_volume_labels_only_copy_the_returned_labels() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};

@@ -22,11 +22,7 @@ pub(super) fn file(path: &str, body: &str, label: &str) -> FileRef {
     .unwrap()
 }
 
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[test]
 fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
     let body = "verbatim project instructions λ";

@@ -10,7 +10,7 @@ index ece7b5f03ba..6eabd13f60c 100644
 -
  const PAGE: usize = 1000;
  
- #[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
+ #[cfg(all(test, not(target_arch = "wasm32")))]
 @@ -1461,6 +1459,61 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
          Manifest::decode_admitted(&self.read_payload(digest, envelope, None).await?, self)
      }
@@ -312,7 +312,7 @@ index f82f26e1d43c818aa9054d48e533832123c1c11f..00000000000000000000000000000000
 -    }
 -}
 -
--#[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
+-#[cfg(all(test, not(target_arch = "wasm32")))]
 -mod tests {
 -    use super::*;
 -    use crate::Blobs;

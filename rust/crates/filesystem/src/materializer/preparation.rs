@@ -1,5 +1,5 @@
 use super::*;
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 /// Accepted staging whose completion has not been acknowledged durably.
@@ -9,7 +9,7 @@ pub struct NativeStageUncertainty<E> {
     _allocation: NativeAllocation,
 }
 impl<E> NativeStageUncertainty<E> {
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     fn new(work: &NativeMaterializationWork) -> Result<Self, NativeTreeMaterializationError> {
         let bytes = std::mem::size_of::<Option<E>>() as u64;
         let allocation =
@@ -19,7 +19,7 @@ impl<E> NativeStageUncertainty<E> {
             _allocation: allocation,
         })
     }
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     fn fail(mut self, error: E) -> Self {
         *self.cause = Some(error);
         self
@@ -41,7 +41,7 @@ impl<E: std::error::Error + 'static> std::error::Error for NativeStageUncertaint
     }
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 impl<S: MaterializationJournalStore>
     JournaledMaterializer<S, Arc<NativeTreeMaterializationBackend>>
 {

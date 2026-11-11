@@ -7,12 +7,12 @@ pub trait ToolProjection: acyclic_stream::ProviderPlatform {
         &self,
         invocation: &ToolInvocation,
         result: &ToolResult,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(Value, crate::NativeCustody)>;
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)>;
 
     /// Rejects an unaudited projector before dispatch, not after its effects.
-    fn supports_native_projection(&self, _work: crate::NativeWork<'_>) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_projection(&self, _work: acyclic_fs::NativeWork<'_>) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
         if _work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
@@ -32,13 +32,13 @@ impl ToolProjection for JsonToolProjection {
         &self,
         _invocation: &ToolInvocation,
         result: &ToolResult,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(Value, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         schema::project_json(&result.value, work)
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_projection(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
         if let Some(work) = work {
             work.remaining()?;
         }

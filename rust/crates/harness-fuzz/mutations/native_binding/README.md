@@ -3,7 +3,7 @@
 Apply `prepare-before-reservation.patch`, then run:
 
 ```sh
-cargo nextest run --locked -p acyclic-harness-core --lib --features filesystem,test-support -E 'test(tools::native::tests::family_shell_binding_keeps_one_selection_and_the_original_capability)'
+cargo nextest run --locked -p acyclic-harness-core --lib --features test-support -E 'test(tools::native::tests::family_shell_binding_keeps_one_selection_and_the_original_capability)'
 ```
 
 The mutation restores preparation before the once-cell reservation. Concurrent

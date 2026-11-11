@@ -356,7 +356,6 @@ mod write;
 pub use epoch::Epoch;
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 mod tests;
 
 mod sealing;

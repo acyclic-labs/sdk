@@ -20,7 +20,7 @@ pub(crate) enum FileTool {
 pub(super) struct Source {
     pub file: FileRef,
     pub bytes: Option<acyclic_stream::OwnedBytes>,
-    _custody: crate::NativeCustody,
+    _custody: acyclic_fs::NativeCustody,
 }
 
 impl Source {
@@ -28,7 +28,7 @@ impl Source {
         context: &ToolContext,
         path: &str,
         original: super::source::ReadSource,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
         match original {
@@ -80,15 +80,15 @@ impl FileTool {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
+        #[cfg(not(target_arch = "wasm32"))]
         let owned_io = work
             .map(crate::executor::PreparationIo::from_native_work)
             .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = owned_io.as_ref();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let io: Option<&crate::executor::PreparationIo> = None;
         self.authorize(
             Some(context.effective_scope()),
@@ -144,9 +144,9 @@ impl FileTool {
                 let (receipt, retained) = context
                     .stage_tool_changes(invocation.operation_id, volume, &[change], io)
                     .await?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let _receipt_custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let _ = retained;
                 return self.batch_result(receipt, &path, work);
             }
@@ -214,7 +214,7 @@ impl FileTool {
                 .await?
             }
         };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let _file_custody = io.map(|io| io.take_native_custody(file.1)).transpose()?;
         let encoded = super::value(&FileResult { file: file.0 }, u64::MAX, work)?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
@@ -224,9 +224,9 @@ impl FileTool {
         context: &ToolContext,
         invocation: &ToolInvocation,
         bounds: (super::text::SearchOptions, u64),
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
+    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
         let (options, maximum_result_bytes) = bounds;
         let invalid = |reason| rejection(work, reason);
 
@@ -253,7 +253,7 @@ impl FileTool {
         context: &ToolContext,
         invocation: &ToolInvocation,
         bounds: (u64, u32),
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, u64)> {
         let (maximum_work, maximum_hunks) = bounds;
@@ -292,7 +292,7 @@ impl FileTool {
         context: &ToolContext,
         path: &str,
         version: Option<&str>,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Source> {
         let original = super::source::ReadSource::decode(context, path, version, work)?;
@@ -302,7 +302,7 @@ impl FileTool {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, u64)> {
         let invalid = |reason| rejection(work, reason);
@@ -372,10 +372,10 @@ impl ToolExecutor for FileTool {
         scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
         let unauthorized = || {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if work.is_some() {
                 return Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
@@ -420,13 +420,13 @@ impl ToolExecutor for FileTool {
                 // by accepting the unresolved path here.
                 return Ok(());
             }
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             let owned_io = work
                 .map(crate::executor::PreparationIo::from_native_work)
                 .transpose()?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             let io = owned_io.as_ref();
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            #[cfg(target_arch = "wasm32")]
             let io = None;
             // Effective reads were authorized against their selected layer in preflight.
             if !path.starts_with(crate::layers::EFFECTIVE_PATH) {
@@ -436,7 +436,7 @@ impl ToolExecutor for FileTool {
                 return Ok(());
             }
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             return if self.is_read() {
                 context.authorize_file_selection_with_native_work(
@@ -465,7 +465,7 @@ impl ToolExecutor for FileTool {
             )
         }
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -473,14 +473,20 @@ impl ToolExecutor for FileTool {
         work.remaining()?;
         Ok(())
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_context<'a>(
         &'a self,
         context: &'a ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (ToolResult, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let (result, custody) = self.run(context, invocation, Some(work)).await?;
             Ok((
                 result,
@@ -492,15 +498,20 @@ impl ToolExecutor for FileTool {
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_context<'a>(
         &'a self,
         context: &'a ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
-    {
-        crate::NativeFutureBundle::new(work, || async move {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (Option<ToolResult>, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             self.authorize(
                 Some(context.effective_scope()),
                 Some(context),
@@ -709,9 +720,9 @@ impl FileTool {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(Option<ToolResult>, crate::NativeCustody)> {
+    ) -> Result<(Option<ToolResult>, acyclic_fs::NativeCustody)> {
         let path = invocation
             .arguments
             .get("path")
@@ -721,18 +732,18 @@ impl FileTool {
         let (receipt, retained) = context
             .observe_tool_changes(invocation.operation_id, volume, io)
             .await?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let _hold = io.map(|io| io.take_native_custody(retained)).transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let _ = retained;
         match receipt {
             Some(receipt) => self
                 .batch_result(receipt, &relative, work)
                 .map(|(result, custody)| (Some(result), custody)),
             None => {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let custody = io.map(|io| io.take_native_custody(0)).transpose()?;
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let custody = None;
                 Ok((None, custody))
             }
@@ -743,8 +754,8 @@ impl FileTool {
         &self,
         mut receipt: crate::conversation::ContentChanges,
         path: &str,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
         let encoded = if matches!(self, Self::Remove) {
             if receipt.members.len() != 1
                 || !matches!(receipt.members.pop(),
@@ -767,7 +778,7 @@ impl FileTool {
 fn created_file(
     mut receipt: crate::conversation::ContentChanges,
     path: &str,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<FileRef> {
     if receipt.members.len() == 1
         && let Some(crate::conversation::ContentChangeResult::Created(file)) = receipt.members.pop()
@@ -782,7 +793,7 @@ fn created_file(
 }
 
 /// Only content/selection rejections use this path. Accounting and provider errors propagate.
-pub(super) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
+pub(super) fn rejection(work: acyclic_fs::NativeWork<'_>, reason: &'static str) -> Error {
     if work.is_some() {
         Error::tool_rejected(reason)
     } else {
@@ -793,7 +804,7 @@ pub(super) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Er
 pub(super) fn read_text<'a>(
     bytes: &'a [u8],
     empty: bool,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<&'a str> {
     if empty {
         if bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {

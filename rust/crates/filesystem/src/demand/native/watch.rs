@@ -6,7 +6,7 @@ struct NativeWatch {
 #[cfg(all(
     test,
     any(target_os = "linux", target_os = "macos"),
-    feature = "native-mount"
+    not(target_arch = "wasm32")
 ))]
 pub(crate) fn native_watch_fixture(
     watch: Arc<crate::source_watch::NativeSourceWatch>,
@@ -81,7 +81,7 @@ struct NativeChanges {
 }
 impl NativeDemandSource {
     /// Observes the actual watch created by the production subscription path.
-    #[cfg(all(test, target_os = "linux", feature = "native-mount"))]
+    #[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
     pub(crate) fn physical_watch_for_test(
         &self,
     ) -> Option<Arc<crate::source_watch::NativeSourceWatch>> {

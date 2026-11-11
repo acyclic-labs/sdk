@@ -11,7 +11,7 @@ ownership of a received publication before the awaited content read completes.
 Apply it with `git apply`, then run the unchanged model:
 
 ```sh
-cargo test --locked -p acyclic-harness --no-default-features --features filesystem,test-support --test main client_diff::model::follow_has_no_lost_wakeup_or_torn_publication_across_cancellation -- --exact --nocapture
+cargo test --locked -p acyclic-harness --no-default-features --features test-support --test main client_diff::model::follow_has_no_lost_wakeup_or_torn_publication_across_cancellation -- --exact --nocapture
 ```
 
 The mutant must fail the original `publication` expectation in

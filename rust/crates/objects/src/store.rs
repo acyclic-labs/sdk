@@ -74,7 +74,7 @@ mod read;
 
 const PAGE: usize = 1000;
 
-#[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod format_recovery_tests {
     use super::*;
 
@@ -582,7 +582,7 @@ impl<M, P: Deref<Target = M>> Account<M, P> {
 
 impl<M> Account<M> {
     /// Transfers the original medium owner while retiring account-local state.
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_medium(self) -> Arc<M> {
         self.medium
     }

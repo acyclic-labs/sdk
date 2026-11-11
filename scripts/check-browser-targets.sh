@@ -12,7 +12,7 @@ check() {
 }
 
 check -p acyclic-fs --no-default-features
-check -p acyclic-fs --no-default-features --features memory,browser
+check -p acyclic-fs --no-default-features --features browser
 for package in acyclic-auth-wasm acyclic-actors-wasm acyclic-fs-wasm \
   acyclic-objects-wasm acyclic-machines-wasm acyclic-inference-wasm acyclic-manifest; do
   check -p "$package"

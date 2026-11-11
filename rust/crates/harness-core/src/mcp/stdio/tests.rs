@@ -202,12 +202,12 @@ fn admitted_deep_json_and_crlf_bom_survive_stream_cuts() {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 fn finite_budget() -> acyclic_fs::WorkBudget {
     acyclic_fs::performance::work_budget(100_000_000, 100_000_000)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 fn native_work() -> acyclic_fs::NativeMaterializationWork {
     acyclic_fs::NativeMaterializationWork::new(
         finite_budget(),
@@ -216,7 +216,7 @@ fn native_work() -> acyclic_fs::NativeMaterializationWork {
     .unwrap()
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
     let (initialization, operation) = ids();
@@ -299,7 +299,7 @@ fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_native_partial_line_max_denial_and_failed_state_precede_capture() {
     let (initialization, operation) = ids();
@@ -331,7 +331,7 @@ fn original_native_partial_line_max_denial_and_failed_state_precede_capture() {
     );
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
     let (initialization, operation) = ids();
@@ -387,7 +387,7 @@ fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
     drop(exchange);
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn malformed_native_frame_preserves_owned_cause() {
     let (initialization, operation) = ids();

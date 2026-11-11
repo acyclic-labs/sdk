@@ -74,9 +74,9 @@ pub(super) async fn read(
     source: super::source::ReadSource,
     offset: u64,
     limit: Option<u64>,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(ToolResult, crate::NativeCustody)> {
+) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
     let maximum = context.effective_scope().limits().render_bytes;
     let quantum = maximum
         .min(crate::tool::output::VIEW_BYTES)

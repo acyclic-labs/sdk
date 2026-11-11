@@ -34,7 +34,7 @@ impl Serialize for Descriptor<'_> {
 mod tests {
     use super::*;
 
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     #[test]
     fn non_native_publication_domains_have_no_custody_padding() {
         assert_eq!(
@@ -154,7 +154,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn immutable_file_identity_uses_original_hash_work_without_owned_json_copies() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
@@ -190,7 +190,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn restored_owned_file_hash_is_denied_by_the_same_copy_allowance() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};

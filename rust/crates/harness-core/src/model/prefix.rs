@@ -66,7 +66,6 @@ impl ModelPrefix {
         &self,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             return io.encode(self, io.remaining()?.bytes_encoded, true);
         }
@@ -179,7 +178,6 @@ impl PreparedModelRequest {
             .await?;
             let _bytes_hold = hold;
             let segment: ModelPrefix = match io {
-                #[cfg(feature = "filesystem")]
                 Some(io) => crate::filesystem::retain_decoded(io.decode(
                     std::marker::PhantomData::<ModelPrefix>,
                     &bytes,
@@ -188,10 +186,8 @@ impl PreparedModelRequest {
                 _ => crate::contract::json_from_slice(&bytes)
                     .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
             };
-            #[cfg(feature = "filesystem")]
             let _canonical_hold;
             let canonical = segment.canonical_bytes(io)?;
-            #[cfg(feature = "filesystem")]
             {
                 _canonical_hold = io
                     .map(|io| io.guard_bytes(&canonical))
@@ -246,17 +242,14 @@ fn update_hasher(
     bytes: &[u8],
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    #[cfg(feature = "filesystem")]
     let charge = acyclic_fs::WorkCounters {
         bytes_hashed: bytes.len() as u64,
         ..Default::default()
     };
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.preflight(charge)?;
     }
     hasher.update(bytes);
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.charge(charge)?;
     }
