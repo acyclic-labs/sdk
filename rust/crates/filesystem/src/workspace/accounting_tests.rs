@@ -377,11 +377,9 @@ async fn generation_parents_keep_original_work_and_result_custody()
     assert_eq!(live, baseline);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = selected
-        .parents(budget, &cancelled)
-        .await
-        .err()
-        .expect("cancelled parent read must fail");
+    let Err(failure) = selected.parents(budget, &cancelled).await else {
+        panic!("cancelled parent read must fail");
+    };
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(failure.work.backend_read_operations, 0);
 
@@ -987,11 +985,12 @@ async fn workspace_extent_projection_keeps_original_work_and_single_output_backi
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = generation
+    let Err(failure) = generation
         .plan_extents("/regular", 0, 1, 8, budget, &cancelled)
         .await
-        .err()
-        .expect("cancelled extent planning must fail");
+    else {
+        panic!("cancelled extent planning must fail");
+    };
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(failure.work.backend_read_operations, 0);
 
@@ -1126,7 +1125,9 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                 .list_directory("/", None, 1, budget, &cancelled)
                 .await
         };
-        let failure = result.err().expect("cancelled directory listing must fail");
+        let Err(failure) = result else {
+            panic!("cancelled directory listing must fail");
+        };
         assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
         assert_eq!(failure.work.backend_read_operations, 0);
     }
