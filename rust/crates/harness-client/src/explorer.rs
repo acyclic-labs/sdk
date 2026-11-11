@@ -147,6 +147,14 @@ mod tests {
                     idempotency_key: IdempotencyKey::new(b"parent".to_vec())?,
                 })
                 .await?;
+            memory
+                .append(AppendRequest {
+                    path: root.membership()?,
+                    records: vec![b"root membership".as_slice().into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new(b"root membership".to_vec())?,
+                })
+                .await?;
             // Batch fixture publication, never a per-agent task or thread.
             for first in (0..count).step_by(100) {
                 let mut mutations = Vec::new();
@@ -161,7 +169,15 @@ mod tests {
                         path: child.status()?,
                         records: vec![status.append_record()?],
                     });
+                    mutations.push(CommitMutation::Append {
+                        path: child.membership()?,
+                        records: vec![b"self membership".as_slice().into()],
+                    });
                 }
+                mutations.push(CommitMutation::Append {
+                    path: root.membership()?,
+                    records: vec![b"children created".as_slice().into()],
+                });
                 let committed = memory
                     .commit(CommitRequest {
                         deadline_unix_millis: None,
@@ -232,7 +248,9 @@ mod tests {
             large.view.reader_ref().issued()
         );
         assert_eq!(small_work, large_work);
-        assert!(large.view.reader_ref().issued() <= 16);
+        // One root witness and page; each visible row admits its status,
+        // children's witness and first page. No request depends on total size.
+        assert!(large.view.reader_ref().issued() <= 2 + 3 * large.view.rows().len());
         let before = large.view.reader_ref().issued();
         large.view.scroll(64);
         loop {
@@ -327,6 +345,19 @@ mod tests {
                 idempotency_key: IdempotencyKey::new(b"nested-status".to_vec())?,
             })
             .await?;
+        for (agent, key) in [
+            (&parent, b"parent-created".as_slice()),
+            (&nested, b"nested-self".as_slice()),
+        ] {
+            small_provider
+                .append(AppendRequest {
+                    path: agent.membership()?,
+                    records: vec![key.into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new(key.to_vec())?,
+                })
+                .await?;
+        }
         status.cursor += 1;
         small_provider
             .append(AppendRequest {
@@ -715,22 +746,25 @@ mod tests {
                     .await
                     .unwrap();
             }
-            let status = target.status().unwrap();
+            let membership = target.membership().unwrap();
             provider
                 .append(AppendRequest {
-                    path: status.clone(),
+                    path: membership.clone(),
                     records: vec![b"parent witness".as_slice().into()],
                     if_tail: Some(0),
                     idempotency_key: IdempotencyKey::new(b"witness".to_vec()).unwrap(),
                 })
                 .await
                 .unwrap();
-            let head = provider.head(status.clone()).await.unwrap();
-            explorer.reader.cache_mut().observe_tail(&status, head.tail);
+            let head = provider.head(membership.clone()).await.unwrap();
             explorer
                 .reader
                 .cache_mut()
-                .observe_origin(&status, head.origin);
+                .observe_tail(&membership, head.tail);
+            explorer
+                .reader
+                .cache_mut()
+                .observe_origin(&membership, head.origin);
             let children = target.children().unwrap();
             let page = provider
                 .children_page(ChildrenPageRequest {
@@ -767,7 +801,7 @@ mod tests {
             assert_eq!(explorer.rows().len(), 2);
             assert_eq!(
                 explorer.reader.follows().collect::<Vec<_>>(),
-                vec![(&status, head.tail)]
+                vec![(&membership, head.tail)]
             );
             assert_eq!(
                 explorer.reader.take_follow_selection_visits(),
@@ -1288,10 +1322,10 @@ impl Explorer {
         }
     }
 
-    /// The want for one listing page. An agent's children change only in a
-    /// step that also writes its status, so that status witnesses the page.
+    /// Creation appends the parent's membership feed in the same commit.
+    /// A spawn need not change its phase, so status cannot witness a listing.
     fn page(&self, parent: StreamPath, index: u32) -> Want {
-        let witness = owner(&parent).and_then(|owner| owner.status().ok());
+        let witness = owner(&parent).and_then(|owner| owner.membership().ok());
         Want::Listing {
             parent,
             index,
@@ -1695,8 +1729,8 @@ impl Explorer {
             })
             .chain(ancestors.iter().map(|(parent, _)| parent));
         for parent in pages {
-            if let Some(status) = owner(parent).and_then(|owner| owner.status().ok()) {
-                follows.push(status);
+            if let Some(membership) = owner(parent).and_then(|owner| owner.membership().ok()) {
+                follows.push(membership);
             }
         }
         // An advancing status marks its agent recently active.
