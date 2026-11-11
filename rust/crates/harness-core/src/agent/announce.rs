@@ -74,13 +74,63 @@ pub struct AnnouncedDocument {
     #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
     pub file: crate::conversation::FileRef,
     /// Newly discovered instructions in this same delta.
-    pub instructions: Vec<WorkspaceInstructions>,
+    pub instructions: Option<AnnouncedInstructions>,
+}
+
+/// Fixed-size references to one immutable instruction delta. Neither the
+/// provenance list nor its rendered bodies live in records or checkpoints.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
+pub struct AnnouncedInstructions {
+    /// Version-one provenance, used to recover the retained discovery frontier.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
+    pub manifest: crate::conversation::FileRef,
+    /// Original instruction bodies, in discovery order, labelled by entry.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
+    pub content: crate::conversation::FileRef,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InstructionManifest {
+    pub(crate) version: u32,
+    pub(crate) entries: Vec<WorkspaceInstructions>,
+}
+
+impl AnnouncedInstructions {
+    /// Load exactly the selected provenance, independently of current bindings.
+    pub async fn entries(
+        &self,
+        reader: &dyn crate::conversation::ContentResidencyVerifier,
+    ) -> crate::Result<Vec<WorkspaceInstructions>> {
+        let bytes = reader
+            .read(
+                &self.manifest,
+                self.manifest.descriptor().byte_length(),
+                None,
+                None,
+            )?
+            .await?;
+        let manifest: InstructionManifest = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        if manifest.version != 1 {
+            return Err(crate::Error::Invalid(
+                "instruction manifest is not v1".into(),
+            ));
+        }
+        Ok(manifest.entries)
+    }
 }
 
 impl AnnouncedDocument {
     /// Every exact file needed to replay this delta, without granting a directory.
     pub fn files(&self) -> impl Iterator<Item = &crate::conversation::FileRef> {
-        std::iter::once(&self.file).chain(self.instructions.iter().flat_map(|entry| &entry.files))
+        std::iter::once(&self.file).chain(
+            self.instructions
+                .iter()
+                .flat_map(|selection| [&selection.manifest, &selection.content]),
+        )
     }
 }
 
@@ -95,14 +145,8 @@ pub fn announcement_message(documents: &[AnnouncedDocument]) -> crate::model::Mo
     };
     for document in documents {
         parts.push(file_part(&document.file));
-        for instructions in &document.instructions {
-            if !instructions.files.is_empty() {
-                parts.push(ModelContentPart::text(format!(
-                    "Instructions for workspace {}:",
-                    instructions.entry
-                )));
-                parts.extend(instructions.files.iter().map(file_part));
-            }
+        if let Some(instructions) = &document.instructions {
+            parts.push(file_part(&instructions.content));
         }
     }
     if parts.len() == 1 {

@@ -168,23 +168,21 @@ async fn workspace_deltas_keep_local_turns_on_the_same_primary() -> Result<()> {
             .flat_map(|message| message.content.file_parts())
             .any(|(file, _)| file == &instructions)
     );
-    assert!(
-        requests[2]
-            .messages
-            .iter()
-            .flat_map(|message| message.content.file_parts())
-            .any(|(file, _)| file == &instructions)
-    );
     let announced = after
         .announcements
         .iter()
         .find(|document| document.kind == crate::agent::AnnouncementKind::Workspaces)
         .ok_or_else(|| Error::NotFound("workspace delta".into()))?;
+    let selection = announced
+        .instructions
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("instruction delta".into()))?;
     assert!(
-        announced
-            .instructions
+        requests[2]
+            .messages
             .iter()
-            .any(|bundle| bundle.files.contains(&instructions))
+            .flat_map(|message| message.content.file_parts())
+            .any(|(file, _)| file == &selection.content)
     );
     assert!(
         super::request_text(&harness, &requests[2])

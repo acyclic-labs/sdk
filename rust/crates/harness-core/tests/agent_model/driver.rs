@@ -279,7 +279,7 @@ impl TurnHost for Announcing {
                     kind: AnnouncementKind::Targets,
                     digest,
                     file: file("targets.json")?,
-                    instructions: Vec::new(),
+                    instructions: None,
                 }],
                 None => Vec::new(),
             };

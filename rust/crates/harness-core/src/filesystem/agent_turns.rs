@@ -1401,13 +1401,22 @@ impl<'a> TurnContext<'a> {
             .is_some_and(|document| document.digest == digest)
     }
 
-    fn instruction_entries(&self) -> std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]> {
-        self.settled
+    async fn instruction_entries(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+    ) -> Result<std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]>> {
+        let mut seen = std::collections::BTreeMap::new();
+        for selection in self
+            .settled
             .iter()
             .flat_map(|turn| &turn.announcements)
             .flat_map(|document| &document.instructions)
-            .map(|instructions| (instructions.entry, instructions.source))
-            .collect()
+        {
+            for entry in selection.entries(reader).await? {
+                seen.insert(entry.entry, entry.source);
+            }
+        }
+        Ok(seen)
     }
 
     /// Every file the turn can reach, each by its exact version: the files
@@ -1897,11 +1906,13 @@ where
                                             bytes,
                                         )
                                         .await?,
-                                    instructions: Vec::new(),
+                                    instructions: None,
                                 });
                             }
                         }
-                        let seen = context.instruction_entries();
+                        let seen = context
+                            .instruction_entries(bindings.content.reader.as_ref())
+                            .await?;
                         if let Some(update) = self
                             .executors
                             .workspaces(
@@ -1927,7 +1938,12 @@ where
                                             bytes,
                                         )
                                         .await?,
-                                    instructions: update.instructions,
+                                    instructions: files
+                                        .stage_instructions(
+                                            update.instructions,
+                                            bindings.content.reader.as_ref(),
+                                        )
+                                        .await?,
                                 });
                             }
                         }

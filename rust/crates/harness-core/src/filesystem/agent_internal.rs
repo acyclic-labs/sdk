@@ -226,8 +226,55 @@ where
             name,
             IdempotencyKey(format!("{family}:{digest}")),
             bytes,
+            "application/json",
         )
         .await
+    }
+
+    /// Persist growing provenance and original verified bodies outside bounded
+    /// conversation records. Both files are immutable and selected together.
+    pub(in crate::filesystem) async fn stage_instructions(
+        &self,
+        entries: Vec<crate::agent::WorkspaceInstructions>,
+        reader: &dyn crate::conversation::ContentResidencyVerifier,
+    ) -> Result<Option<crate::agent::AnnouncedInstructions>> {
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        let mut content = Vec::new();
+        for entry in &entries {
+            content.extend_from_slice(
+                format!("Instructions for workspace {}:\n", entry.entry).as_bytes(),
+            );
+            for file in &entry.files {
+                let bytes = reader
+                    .read(file, file.descriptor().byte_length(), None, None)?
+                    .await?;
+                content.extend_from_slice(format!("\n{}:\n", file.path()).as_bytes());
+                content.extend_from_slice(&bytes);
+                content.push(b'\n');
+            }
+        }
+        let manifest = crate::contract::canonical_json_bytes(&crate::agent::InstructionManifest {
+            version: 1,
+            entries,
+        })
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let stage = |name, bytes: Vec<u8>, media_type| async move {
+            let digest = blake3::hash(&bytes).to_hex();
+            self.conversation_file(
+                format!("instructions/{digest}/{name}"),
+                name,
+                IdempotencyKey(format!("instructions:{digest}:{name}")),
+                &bytes,
+                media_type,
+            )
+            .await
+        };
+        Ok(Some(crate::agent::AnnouncedInstructions {
+            manifest: stage("manifest.json", manifest, "application/json").await?,
+            content: stage("instructions.md", content, "text/markdown").await?,
+        }))
     }
 
     /// Creates the conversation-area file `path` once, keyed by `key`.
@@ -237,6 +284,7 @@ where
         name: &'static str,
         key: IdempotencyKey,
         bytes: &[u8],
+        media_type: &'static str,
     ) -> Result<FileRef> {
         let path = format!("{}{path}", InternalContentClass::Conversation.prefix());
         self.host
@@ -245,7 +293,7 @@ where
                 &self.grant,
                 &path,
                 bytes,
-                "application/json",
+                media_type,
                 name,
                 bytes.len() as u64,
                 &key,
@@ -396,6 +444,7 @@ where
             "output.json",
             IdempotencyKey(format!("turn-output:{turn}")),
             bytes,
+            "application/json",
         ))
     }
 

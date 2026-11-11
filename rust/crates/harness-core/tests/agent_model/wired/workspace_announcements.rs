@@ -156,6 +156,77 @@ fn exposed(turns: Arc<dyn TurnExecutors>) -> Result<Exposed> {
     })
 }
 
+async fn selected_instructions(
+    files: &Host,
+    document: &AnnouncedDocument,
+) -> Result<Vec<WorkspaceInstructions>> {
+    let Some(selection) = &document.instructions else {
+        return Ok(Vec::new());
+    };
+    let issuer = AuthorityRoot::new(
+        "proof",
+        [8; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "proof".into(),
+        },
+    );
+    let grants = Capabilities::new([selection.manifest.read_capability(&mut None)?]);
+    let scope = issuer.bootstrap_scope("proof", &grants, None, &mut None)?;
+    let reader = FilesystemContentVerifier::new(
+        files.clone(),
+        &issuer.verifier(&mut None)?,
+        &scope,
+        acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
+    Ok(selection.entries(reader.as_ref()).await?)
+}
+
+async fn large_instruction_selection(
+    files: &Host,
+    issuer: &AuthorityRoot,
+    source: &WorkspaceEntry,
+) -> Result<Vec<WorkspaceEntry>> {
+    let volume = source.volume()?;
+    let grants = Capabilities::new([volume.capability(VolumeOperation::Write, &mut None)?]);
+    let scope = issuer.bootstrap_scope("large-instructions", &grants, None, &mut None)?;
+    let grant = ContentGrant::verify(
+        &issuer.verifier(&mut None)?,
+        &scope,
+        volume,
+        VolumeOperation::Write,
+        LIMITS.maximum_bytes,
+        &mut None,
+    )?;
+    let prefix = vec!["r".repeat(240); 9].join("/");
+    let mut entries = Vec::new();
+    for n in 0_u8..32 {
+        let root = format!("{prefix}/w{n}");
+        files
+            .put_content(
+                volume,
+                &grant,
+                &format!("{root}/AGENTS.md"),
+                format!("instruction body {n}").as_bytes(),
+                "text/markdown",
+                "AGENTS.md",
+                LIMITS.maximum_bytes,
+                &acyclic_harness_core::IdempotencyKey::new(format!("large-{n}"))?,
+                None,
+                ContentAccess::default(),
+            )
+            .await?;
+        entries.push(WorkspaceEntry {
+            id: EntryId::from_bytes([64 + n; 16]),
+            name: format!("extra-{n}"),
+            root,
+            ..source.clone()
+        });
+    }
+    Ok(entries)
+}
+
 fn tree(source: &WorkspaceEntry, path: &AgentPath) -> WorkspaceEntry {
     WorkspaceEntry {
         id: EntryId::from_bytes([33; 16]),
@@ -294,7 +365,8 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
                 "one new delta; restoring instructions retains the earlier document message"
             );
             if matches!(turn, 2 | 4 | 16) {
-                assert_eq!(document.instructions.len(), 1);
+                let instructions = selected_instructions(&files, document).await?;
+                assert_eq!(instructions.len(), 1);
                 let source = if turn == 16 {
                     0
                 } else if turn == 4 {
@@ -303,11 +375,11 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
                     1
                 };
                 assert_eq!(
-                    document.instructions[0].entry,
+                    instructions[0].entry,
                     if turn == 16 { users[0].id } else { second.id }
                 );
                 assert_eq!(
-                    document.instructions[0].files,
+                    instructions[0].files,
                     vec![instruction_files[source].clone()]
                 );
                 let requests = model.requests();
@@ -327,7 +399,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
                     delta
                         .content
                         .file_refs()
-                        .any(|file| *file == document.instructions[0].files[0])
+                        .any(|file| *file == document.instructions.as_ref().unwrap().content)
                 );
             }
             if turn == 4 {
@@ -350,7 +422,10 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
                     previous.digest, document.digest,
                     "history cut retains the current table document"
                 );
-                assert_eq!(previous.instructions[0].entry, second.id);
+                assert_eq!(
+                    selected_instructions(&files, previous).await?[0].entry,
+                    second.id
+                );
             }
             previous_document = Some(document.clone());
         }
@@ -385,8 +460,10 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             private,
             issuer,
             users,
-            instruction_files,
+            instruction_files: _,
         } = fixture().await?;
+        let extra = large_instruction_selection(&files, &issuer, &users[0]).await?;
+        let proof_files = files.clone();
         let model = Arc::new(
             ScriptedModelProvider::new([
                 ScriptedTurn::Events(vec![
@@ -435,6 +512,10 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
         let mut adoption = adopted(path.id());
         adoption.volumes = vec![tree(&users[0], &path), private, users[0].clone()];
         host.create(&intent("paused-root"), adoption).await?;
+        for entry in &extra {
+            change(&stream, &path, WorkspaceOp::Add, entry.clone(), &entry.name).await?;
+        }
+        host.drain(&path).await?;
         let waiting = deliver(&host, &path, requested("pause-with-instructions", &path)).await?;
         assert_eq!(
             waiting.phase,
@@ -444,6 +525,22 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             }
         );
         let pinned = turn_announcements(&waiting)?.ok_or("missing pinned delta")?;
+        let document = pinned
+            .iter()
+            .find(|document| document.kind == AnnouncementKind::Workspaces)
+            .ok_or("missing workspace announcement")?;
+        let selection = document
+            .instructions
+            .as_ref()
+            .ok_or("missing instruction selection")?;
+        assert!(
+            selection.manifest.descriptor().byte_length() > MAX_RECORD_BYTES as u64,
+            "the reported instruction selection must exceed the record envelope"
+        );
+        assert_eq!(
+            selected_instructions(&proof_files, document).await?.len(),
+            33
+        );
         let mut replacement = users[0].clone();
         let op = if remove {
             WorkspaceOp::Remove
@@ -475,7 +572,10 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
                 .messages
                 .iter()
                 .flat_map(|message| message.content.file_refs())
-                .any(|file| *file == instruction_files[0])
+                .any(|file| pinned
+                    .iter()
+                    .filter_map(|document| document.instructions.as_ref())
+                    .any(|selection| *file == selection.content))
         );
     }
     Ok(())

@@ -7,10 +7,11 @@
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
 mod announce;
+pub(crate) use announce::InstructionManifest;
 pub use announce::{
-    AnnouncedDocument, Announcement, AnnouncementDocument, AnnouncementKind, WorkspaceAnnouncement,
-    WorkspaceExposure, WorkspaceInstructions, WorkspaceUpdate, announcement_message,
-    discover_workspace_instructions,
+    AnnouncedDocument, AnnouncedInstructions, Announcement, AnnouncementDocument, AnnouncementKind,
+    WorkspaceAnnouncement, WorkspaceExposure, WorkspaceInstructions, WorkspaceUpdate,
+    announcement_message, discover_workspace_instructions,
 };
 pub(crate) mod checkpoint;
 mod children;

@@ -550,7 +550,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                             kind: super::AnnouncementKind::Targets,
                             digest: [31; 32],
                             file: file.clone(),
-                            instructions: Vec::new(),
+                            instructions: None,
                         }],
                         tool_results: Some("tools/.results/captured-turn".into()),
                         steering: Some(super::SteeringTranscript {

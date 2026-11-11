@@ -583,7 +583,7 @@ mod tests {
                     kind: crate::agent::AnnouncementKind::Targets,
                     digest: [255; 32],
                     file: file(),
-                    instructions: Vec::new(),
+                    instructions: None,
                 }],
                 steering: Some(crate::agent::SteeringTranscript {
                     through: u64::MAX,
@@ -796,7 +796,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { observed_through: u64::MAX, inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Failed { message: widest_text(MAX_MESSAGE_BYTES) }, goal: Some(crate::OperationId::from_bytes([255; 16])), announcements: vec![crate::agent::AnnouncedDocument { kind: crate::agent::AnnouncementKind::Targets, digest: [255; 32], file: file(), instructions: Vec::new() }], steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
+                let record = ConversationEntry { observed_through: u64::MAX, inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Failed { message: widest_text(MAX_MESSAGE_BYTES) }, goal: Some(crate::OperationId::from_bytes([255; 16])), announcements: vec![crate::agent::AnnouncedDocument { kind: crate::agent::AnnouncementKind::Targets, digest: [255; 32], file: file(), instructions: None }], steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
