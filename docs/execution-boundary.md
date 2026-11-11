@@ -1,5 +1,19 @@
 # Native execution capabilities
 
+Automatic child-publication journals use payload format v2: source entries pin
+the completed generation, and cursors retain the acknowledged operation until
+its result is released. Version 1 journals cannot prove those facts. They are
+retained and refused with an explicit unsupported-format error; start a fresh
+session rather than migrate or reinterpret their pending work. The existing
+stream identity is retained so incompatible pending debt cannot be hidden by
+opening a different journal. Idempotency identities include the payload version.
+
+The composed mount table distinguishes physical directories, independent native
+projections and logical-only volumes. No-FUSE physical mode keeps auxiliary
+volumes available through filesystem tools; it does not advertise nonexistent
+OS paths or include them in shell execution grants. Selecting a logical-only
+volume as a shell directory returns an explicit unsupported-boundary error.
+
 The native process launch owner accepts explicit execution capabilities.
 The shared launch core enforces grants on supported Linux kernels and returns
 typed refusals on unsupported platforms. On Linux, macOS and supported Windows, stock workspace shell calls and lifecycle hooks default to
@@ -40,7 +54,8 @@ The default denies filesystem reads and writes outside its granted roots.
 `ExecutionGrant::workspace_default` selects the composed workspace, visible
 volumes and explicit read-only runtime dependencies in one shared policy core.
 Linux runtime grants are `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` and
-`/etc/ld.so.cache`; macOS grants are `/System/Library`, `/usr`, `/bin`, `/sbin`
+`/etc/ld.so.cache` and `/etc/ssl/openssl.cnf` (the system OpenSSL runtime
+configuration); macOS grants are `/System/Library`, `/usr`, `/bin`, `/sbin`
 `/Library/Apple/System/Library`, the OS and App Cryptex graft points used by
 dyld, and the null device `/dev/null`; Windows grants
 its `SystemRoot`. All three also grant the host's once-selected shell installation

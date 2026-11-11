@@ -402,6 +402,7 @@ impl HostWorkspaceOwner {
             .requests
             .clone()
             .map(|requests| acyclic_fs::GitRequest {
+                merge_source: None,
                 operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
                 unanswered: std::sync::Arc::new(move |request: acyclic_fs::OperationId| {
                     let file = format!("{}.json", OperationId::from_bytes(request.into_bytes()));

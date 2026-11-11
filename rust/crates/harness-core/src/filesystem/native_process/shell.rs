@@ -50,12 +50,17 @@ pub fn prepare<T>(
     let relative = Path::new(input.cwd.as_deref().unwrap_or(""));
     let (mount, path) = mounts.resolve(relative)?;
     mount.check(Action::List, &path, now)?;
+    if matches!(mount.native_root, crate::workspace::NativeRoot::Logical) {
+        return Err(Error::Unsupported(
+            "logical volume has no native shell directory".into(),
+        ));
+    }
     let io = |cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause));
     // A volume's root is its binding, which may link to the view projecting
     // it, so the canonical cwd is checked against the canonical root.
     let native_root = mount
         .native_root
-        .as_deref()
+        .override_path()
         .map(std::fs::canonicalize)
         .transpose()
         .map_err(io)?;
@@ -69,7 +74,7 @@ pub fn prepare<T>(
     let selected = cwd
         .strip_prefix(root)
         .map_err(|_| Error::Invalid("shell cwd escapes the task view".into()))?;
-    if mount.native_root.is_some() {
+    if mount.native_root.override_path().is_some() {
         let selected = selected
             .to_str()
             .ok_or_else(|| Error::Invalid("shell cwd is not UTF-8".into()))?;
@@ -151,9 +156,13 @@ pub fn workspace_grant<T>(
         let io = Error::process_io;
         let mut primary = mounts.root.clone();
         for (relative, mount) in mounts.mounts() {
+            if matches!(mount.native_root, crate::workspace::NativeRoot::Logical) {
+                continue;
+            }
             let root = mount
                 .native_root
-                .clone()
+                .override_path()
+                .cloned()
                 .unwrap_or_else(|| mounts.root.join(relative));
             if relative.is_empty() {
                 primary = root;

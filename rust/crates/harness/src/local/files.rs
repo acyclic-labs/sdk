@@ -115,6 +115,7 @@ impl LocalHarness {
                         authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                             .unwrap_or(i64::MAX),
                         request: Some(acyclic_fs::GitRequest {
+                            merge_source: None,
                             operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
                             unanswered: Arc::new(|_| true),
                         }),
@@ -168,6 +169,7 @@ impl LocalHarness {
                     operation,
                     scope: &scope,
                     request: Some(acyclic_fs::GitRequest {
+                        merge_source: None,
                         operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
                         unanswered: Arc::new(|_| true),
                     }),

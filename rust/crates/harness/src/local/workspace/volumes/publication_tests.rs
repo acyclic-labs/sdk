@@ -229,7 +229,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         let alias = aliases.named(Some("home"))?.1;
         assert!(Arc::ptr_eq(alias.view.source.as_ref().unwrap(), original));
         assert_eq!(
-            alias.native_root.as_deref(),
+            alias.native_root.override_path().map(PathBuf::as_path),
             Some(original.destination.as_path())
         );
         assert_eq!(
@@ -250,7 +250,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         original
     ));
     assert_eq!(
-        retained.native_root.as_deref(),
+        retained.native_root.override_path().map(PathBuf::as_path),
         Some(original.destination.as_path())
     );
     assert_eq!(std::fs::read_link(&alias).map_err(storage)?, relative);
@@ -283,7 +283,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         original
     ));
     assert_ne!(
-        rebound.native_root.as_deref(),
+        rebound.native_root.override_path().map(PathBuf::as_path),
         Some(original.destination.as_path())
     );
     let alias = task.path().join(HOME_PATH);

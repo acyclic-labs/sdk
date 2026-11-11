@@ -23,6 +23,9 @@ pub struct GitRequest {
     pub operation: OperationId,
     /// Whether custody is still required under [`GitRequestUnanswered`].
     pub unanswered: GitRequestUnanswered,
+    /// Exact source cut of this request's join. Persisted in the prepared
+    /// action before effects, so recovery never reads a later source head.
+    pub merge_source: Option<GitGenerationRef>,
 }
 
 /// Compatibility history record produced by one distributed publication.
@@ -80,6 +83,22 @@ impl<S> GitCompatRepository<S> {
 }
 
 impl<S: GitCompatStore> GitCompatRepository<S> {
+    /// Releases a reply only after its caller has durably acknowledged it.
+    /// Repeating the acknowledgment is harmless; other requests keep custody.
+    pub async fn acknowledge_request(
+        &self,
+        operation: OperationId,
+    ) -> Result<(), GitCompatError<S::Error>> {
+        let mut state = self.load().await?;
+        if state.requests.remove(&operation).is_none() {
+            return Ok(());
+        }
+        if self.publish(state).await? {
+            return Ok(());
+        }
+        Err(GitCompatError::Contended)
+    }
+
     /// The saved result of this repository's request, if it already ran.
     pub async fn request_result(
         &self,

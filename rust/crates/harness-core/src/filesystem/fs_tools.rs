@@ -148,6 +148,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         )?;
         read_before_effect(&mut cancellation, access.require(&root)).await?;
         let request = acyclic_fs::GitRequest {
+            merge_source: None,
             operation: acyclic_fs::OperationId::from_bytes(context.operation_id().into_bytes()),
             unanswered: Arc::new(|_| true),
         };

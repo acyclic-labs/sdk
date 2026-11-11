@@ -387,88 +387,41 @@ impl LocalHarness {
             capture_policy: &capture_policy,
         };
         let scope = crate::runtime::RuntimeScope::new(authority.grants, Default::default())?;
-        let parsed = commands.fs_arguments(&format!("merge {branch}"), &scope)?;
-        let publication = acyclic_fs::OperationId::from_bytes(turn.into_bytes());
+        let source = child
+            .workspace()
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(storage)?
+            .value;
         let mut state = crate::sync::owned::lock_owned(super::workspace::StateArc::clone(
             &parent_workspace.state,
         ))
         .await;
-        let physical = parent_workspace
-            .selected_workspace(&mut state, &owner)
-            .await?;
-        if let Some(pending) = acyclic_fs::GitCompatRepository::new(
-            physical.view().workspace().id(),
-            physical.store.clone(),
-        )
-        .pending_transition()
-        .await
-        .map_err(storage)?
-            && pending.request != Some(publication)
-            && matches!(
-                pending.mutation,
-                acyclic_fs::GitPendingMutation::Join {
-                    conflicts: Some(_),
-                    ..
-                }
+        parent_workspace
+            .defer_publication(
+                turn,
+                branch,
+                acyclic_fs::GitGenerationRef {
+                    workspace_id: child.workspace().id(),
+                    generation: source.id(),
+                },
             )
-        {
-            // Let every worker settle so a parent waiting for all of them can
-            // resolve the conflict. The original request stays durable until
-            // the shared command path publishes it after that resolution.
-            return parent_workspace
-                .defer_publication(turn, branch, child.workspace().id())
-                .await;
-        }
-        let result = commands
-            .fs(
-                parsed,
+            .await?;
+        commands
+            .drain_publications(
                 &super::workspace::git::CommandContext {
                     owner: &owner,
                     operation: turn,
                     scope: &scope,
-                    request: Some(acyclic_fs::GitRequest {
-                        operation: publication,
-                        unanswered: Arc::new(|_| true),
-                    }),
+                    request: None,
                 },
                 &mut state,
-                &physical,
             )
-            .await?;
-        match result {
-            super::workspace::git::Outcome::Completed(_) => Ok(()),
-            super::workspace::git::Outcome::Rejected(error) => {
-                // A published conflict belongs to the parent's workspace, not
-                // the worker's conversation. Preserve the answer and allow
-                // follow-up work while the parent resolves the shared join.
-                if matches!(*error, Error::Conflict(_))
-                    && matches!(
-                        acyclic_fs::GitCompatRepository::new(
-                            physical.view().workspace().id(),
-                            physical.store.clone(),
-                        )
-                        .pending_transition()
-                        .await
-                        .map_err(storage)?,
-                        Some(acyclic_fs::GitPendingTransition {
-                            request: Some(request),
-                            mutation: acyclic_fs::GitPendingMutation::Join {
-                                conflicts: Some(_),
-                                rebase: false,
-                                source_branch,
-                                ..
-                            },
-                            ..
-                        }) if request == publication && source_branch == branch
-                    )
-                {
-                    return Ok(());
-                }
-                Err(*error)
-            }
-        }
+            .await
     }
-
     /// Bind a committed project using the same adapter for turns and human
     /// filesystem actions. Only an action needing native access binds a view.
     #[cfg(any(test, not(target_arch = "wasm32")))]

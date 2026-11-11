@@ -123,7 +123,13 @@ pub(super) async fn attach(
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     for (relative, mount) in mounts.mounts_mut() {
-        if relative.is_empty() || mount.view.source.is_some() {
+        if relative.is_empty() {
+            continue;
+        }
+        if !native {
+            mount.native_root = crate::workspace::NativeRoot::Logical;
+        }
+        if mount.view.source.is_some() {
             continue;
         }
         let source = filesystem
@@ -463,6 +469,10 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts, bindings: &Path) -> Result<
             .source
             .as_ref()
             .ok_or_else(|| Error::NotFound("volume mount is not bound".into()))?;
+        if source.options.is_none() {
+            mount.native_root = crate::workspace::NativeRoot::Logical;
+            continue;
+        }
         let target = source.destination.as_path();
         let relative = Path::new(relative);
         if let Some(parent) = relative.parent() {
@@ -477,7 +487,7 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts, bindings: &Path) -> Result<
         let previous =
             alias_target(&path)?.filter(|linked| names_binding(bindings, linked, relative));
         bind_alias(&path, target, previous.as_deref())?;
-        mount.native_root = Some(target.to_path_buf());
+        mount.native_root = crate::workspace::NativeRoot::Path(target.to_path_buf());
     }
     Ok(())
 }

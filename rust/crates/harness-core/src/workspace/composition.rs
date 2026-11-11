@@ -32,6 +32,26 @@ pub struct VolumeView<T> {
     pub source: T,
 }
 
+/// Native-path authority carried by one composed volume binding.
+#[doc(hidden)]
+pub enum NativeRoot {
+    /// A physical directory in the composed task root.
+    Composed,
+    /// A logical volume available through filesystem tools, with no OS path.
+    Logical,
+    /// An independently projected native volume.
+    Path(PathBuf),
+}
+
+impl NativeRoot {
+    pub fn override_path(&self) -> Option<&PathBuf> {
+        match self {
+            Self::Path(path) => Some(path),
+            Self::Composed | Self::Logical => None,
+        }
+    }
+}
+
 /// One independently captured source in a task's composed namespace.
 pub struct Mount<T> {
     /// Published volume selected by the task binding.
@@ -40,7 +60,7 @@ pub struct Mount<T> {
     pub mode: MountMode,
     access: PathTrie,
     #[doc(hidden)]
-    pub native_root: Option<PathBuf>,
+    pub native_root: NativeRoot,
 }
 
 impl<T> Mount<T> {
@@ -380,7 +400,7 @@ pub fn compose<T>(
             view,
             mode,
             access,
-            native_root: None,
+            native_root: NativeRoot::Composed,
         }));
     }
     let mut mounted = Vec::new();

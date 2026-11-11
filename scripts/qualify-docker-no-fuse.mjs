@@ -16,12 +16,19 @@ import { sha256File } from "./file-digest.mjs";
 
 // Reuse the original assertions, provider scripts, capture and event waits.
 // Auto must work without a flag; physical proves the explicit selection too.
-const cases = ["file-tools-responses", "file-tools-responses-physical",
+const defaultCases = ["file-tools-responses", "file-tools-responses-physical",
   "bash-capture", "bash-capture-physical", "child-fork-message-merge",
   "child-fork-message-merge-physical", "child-completion-merge",
   "child-completion-merge-physical", "jsonl-reopen", "kill-and-resume"];
 const root = fileURLToPath(new URL("../", import.meta.url));
 const recovery = "node scripts/qualify-docker-no-fuse.mjs IMAGE GRAPHCODER MOCK_MODEL FRESH_ABSOLUTE_OUTPUT";
+
+function selectedCases(requested) {
+  if (!requested.length) return defaultCases;
+  assert.ok(requested.every(id => defaultCases.includes(id)), "unknown no-FUSE acceptance case");
+  assert.equal(new Set(requested).size, requested.length, "duplicate no-FUSE acceptance case");
+  return defaultCases.filter(id => requested.includes(id));
+}
 
 export function confinement(status, fuse, helpers, mountinfo) {
   assert.equal(fuse, false, "docker-no-fuse requires /dev/fuse to be absent");
@@ -39,7 +46,8 @@ export function confinement(status, fuse, helpers, mountinfo) {
   assert.equal(fields.get("Seccomp"), "2", "Docker's seccomp filter must be active");
 }
 
-async function inside(binary, mock, output) {
+async function inside(binary, mock, output, ...requested) {
+  const cases = selectedCases(requested);
   await mkdir(output);
   const status = await readFile("/proc/self/status", "utf8");
   const mountinfo = await readFile("/proc/self/mountinfo", "utf8");
@@ -78,7 +86,8 @@ async function inside(binary, mock, output) {
   } finally { cancellation.dispose(); }
 }
 
-async function outside(image, binary, mock, output) {
+async function outside(image, binary, mock, output, ...requested) {
+  const cases = selectedCases(requested);
   assert.ok(image && [binary, mock, output].every(path => path && isAbsolute(path)), recovery);
   await mkdir(output); // Evidence is fresh; an earlier PASS can never qualify this run.
   await mkdir(join(output, "transcripts"));
@@ -123,7 +132,7 @@ async function outside(image, binary, mock, output) {
         "--network", "none", "--user", `${process.getuid()}:${process.getgid()}`,
         "--workdir", "/sdk", "--entrypoint", "node", id,
         "scripts/qualify-docker-no-fuse.mjs", "--inside", "/graphcoder",
-        "/harness-mock-model", "/tmp/evidence"]);
+        "/harness-mock-model", "/tmp/evidence", ...cases]);
       const result = await creating;
       assert.equal(result.code, 0, result.stderr);
       // Client paths need not exist in the daemon's filesystem namespace.

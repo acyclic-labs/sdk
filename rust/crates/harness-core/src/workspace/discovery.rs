@@ -8,6 +8,9 @@ impl<T> MountTable<T> {
     pub fn environment(&self) -> Result<BTreeMap<String, String>> {
         let mut environment = BTreeMap::new();
         for (relative, mount) in self.mounts() {
+            if matches!(mount.native_root, super::NativeRoot::Logical) {
+                continue;
+            }
             let mut key = String::from("ACYCLIC_VOLUME_");
             let name = if relative.is_empty() {
                 mount.view.name.as_str()
@@ -29,7 +32,8 @@ impl<T> MountTable<T> {
             }
             let path = mount
                 .native_root
-                .clone()
+                .override_path()
+                .cloned()
                 .unwrap_or_else(|| self.root.join(relative));
             let path = path
                 .to_str()

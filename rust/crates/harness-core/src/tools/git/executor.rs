@@ -187,13 +187,21 @@ where
             GitFilesystemAction::Join {
                 target_tree,
                 source_workspace: source,
+                source_generation,
                 rebase,
                 tracked_paths: tracked,
             } => {
                 // The join is the deepest facade action; it is erased so it
                 // never sizes, or deepens, every other command's future.
                 acyclic_stream::erase_provider_future(|| {
-                    self.join(operation_id, *target_tree, *source, *rebase, tracked)
+                    self.join(
+                        operation_id,
+                        *target_tree,
+                        *source,
+                        *source_generation,
+                        *rebase,
+                        tracked,
+                    )
                 })
                 .await
             }

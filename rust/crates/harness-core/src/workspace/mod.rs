@@ -3,4 +3,4 @@ mod composition;
 pub(crate) mod copied;
 mod discovery;
 pub use acyclic_fs::access::MountMode;
-pub use composition::{Mount, MountTable, VolumeView, compose};
+pub use composition::{Mount, MountTable, NativeRoot, VolumeView, compose};

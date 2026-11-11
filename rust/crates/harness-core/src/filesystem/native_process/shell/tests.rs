@@ -67,7 +67,7 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
             source: (),
         })
     };
-    compose(
+    let mut mounts = compose(
         root,
         &principal,
         &capability,
@@ -76,8 +76,14 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
             approvals: 0,
         },
         volume("project")?,
-        [volume("data")?],
-    )
+        [volume("data")?, volume("logical")?],
+    )?;
+    for (relative, mount) in mounts.mounts_mut() {
+        if relative == ".volumes/logical" {
+            mount.native_root = crate::workspace::NativeRoot::Logical;
+        }
+    }
+    Ok(mounts)
 }
 
 fn invocation(root: &Path) -> Invocation {
@@ -109,10 +115,24 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
     std::os::unix::fs::symlink(&volume, root.join(".volumes/data")).map_err(Error::process_io)?;
     let mut mounts = table(root.canonicalize().map_err(Error::process_io)?)?;
     for (relative, mount) in mounts.mounts_mut() {
-        if !relative.is_empty() {
-            mount.native_root = Some(volume.clone());
+        if relative == ".volumes/data" {
+            mount.native_root = crate::workspace::NativeRoot::Path(volume.clone());
         }
     }
+    assert!(!mounts.environment()?.contains_key("ACYCLIC_VOLUME_LOGICAL"));
+    let logical = prepare(
+        crate::tools::ShellInput {
+            cwd: Some(".volumes/logical".into()),
+            command: crate::tools::ShellCommand::Source("true".into()),
+            timeout_ms: None,
+            background: false,
+            target: None,
+        },
+        &mounts,
+        invocation(&root),
+        1,
+    );
+    assert!(matches!(logical, Err(Error::Unsupported(_))));
     // Both source and literal argv use production preparation and the original
     // native capture owner. No optional-kernel skip: this is Linux qualification.
     for (cwd, command) in [
@@ -206,8 +226,8 @@ fn bound_volume_cwd_keeps_its_authority() {
     let native = native.canonicalize().unwrap();
     let mut mounts = table(root.canonicalize().unwrap()).unwrap();
     for (relative, mount) in mounts.mounts_mut() {
-        if !relative.is_empty() {
-            mount.native_root = Some(native.clone());
+        if relative == ".volumes/data" {
+            mount.native_root = crate::workspace::NativeRoot::Path(native.clone());
         }
     }
     // The task root has no native binding; it must refuse the same escape at
