@@ -254,12 +254,13 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
             _ => None,
         })
         .unwrap();
-    let bytes = journal.load(&reference, None)?.await?;
+    let (persisted, _) =
+        transcript::load_projection(journal, &reference, executor.limits, None).await?;
     let mut retained = projection;
     retained.context.messages = prepared.request().messages.clone();
     retained.accounting = accounting;
     assert_eq!(
-        &*bytes,
+        crate::contract::canonical_json_bytes(&persisted)?,
         crate::contract::canonical_json_bytes(&retained)?,
         "projection and accounting must share one immutable publication"
     );
