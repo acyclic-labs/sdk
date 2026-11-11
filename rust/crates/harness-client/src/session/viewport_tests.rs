@@ -7,6 +7,7 @@ use acyclic_stream::{
     AppendRecord, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamProvider,
     StreamProviderExt as _, runtime::Executor, session::transport,
 };
+use futures::StreamExt as _;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -386,8 +387,20 @@ async fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
                 Vec::new()
             };
             let follow = Subscription {
+                id: if resource {
+                    session.resources[&name]
+                } else {
+                    session.follows[&path]
+                },
+                interest: if resource {
+                    Interest::Resource(name.as_str().into())
+                } else {
+                    Interest::Stream(path.clone())
+                },
                 state: SubscriptionState::Open(Box::pin(futures::stream::iter(terminal))),
+                report_open: false,
             };
+            session.register(follow);
             let mut context = Context::from_waker(std::task::Waker::noop());
             if resource {
                 fill(
@@ -395,12 +408,10 @@ async fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
                     None,
                 )
                 .await;
-                session.resources.insert(name.clone(), follow);
                 assert!(session.poll_resource(&name, &mut context).is_ready());
                 assert!(!session.is_resource_following(&name));
             } else {
                 fill(&mut session.views.get_mut(&path).unwrap().view, Some(&path)).await;
-                session.follows.insert(path.clone(), follow);
                 assert!(session.poll_stream(&path, &mut context).is_ready());
                 assert!(!session.is_following(&path));
             }
