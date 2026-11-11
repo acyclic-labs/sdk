@@ -175,10 +175,15 @@ impl StockExecution<'_> {
         input: &ContextInput,
         base: crate::context::Context,
     ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
+        let before = base.current_input_index.unwrap_or(0);
         let mut context = self
             .context_pipeline()
             .transform_required(input, base, self.stock.limits, self.io)
             .await?;
+        let prepended = context
+            .current_input_index
+            .unwrap_or(0)
+            .saturating_sub(before) as usize;
         let tools = self.request_tools()?;
         let compose_tools = self.code_composition(&tools)?;
         let message_count = context.messages.len();
@@ -230,6 +235,7 @@ impl StockExecution<'_> {
         self.context_pipeline().project_optional(
             &mut context,
             prefix_count,
+            prepended,
             self.stock.limits,
             request_frame,
             self.io,

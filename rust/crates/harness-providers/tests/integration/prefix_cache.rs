@@ -926,6 +926,8 @@ async fn chat_prefixes_extend_byte_for_byte() -> TestResult {
     .await
 }
 
+#[path = "prefix_cache/binding_facts.rs"]
+mod binding_facts;
 #[path = "prefix_cache/mixed_catalog.rs"]
 mod mixed_catalog;
 #[path = "prefix_cache/role_models.rs"]

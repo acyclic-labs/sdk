@@ -294,12 +294,21 @@ impl ContextStage for ManifestStage {
     fn project_optional(
         &self,
         context: &Context,
+        local_prefix_messages: usize,
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Option<ContextInsertion>> {
-        self.environment
+        let Some(mut insertion) = self
+            .environment
             .as_ref()
-            .map_or(Ok(None), |facts| facts.project(context, limits, io))
+            .map_or(Ok(None), |facts| facts.project(context, limits, io))?
+        else {
+            return Ok(None);
+        };
+        // Binding facts follow all required prepends. The pipeline's original
+        // input marker supplies this boundary without inspecting prompt text.
+        insertion.local_index = local_prefix_messages;
+        Ok(Some(insertion))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

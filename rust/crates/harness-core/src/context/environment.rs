@@ -86,7 +86,7 @@ impl EnvironmentFacts {
         let mut bodies = u64::MAX;
         crate::model::reserve_instruction_bodies(&context.messages, &mut bodies, io)?;
         let wrapper = ModelMessage {
-            role: ModelRole::System,
+            role: ModelRole::User,
             content: ModelContent::Text(String::new()),
         };
         let wrapper = crate::executor::with_history_io(io, |work| {
@@ -146,7 +146,7 @@ impl EnvironmentFacts {
         Ok(Some(ContextInsertion {
             local_index: 0,
             message: ModelMessage {
-                role: ModelRole::System,
+                role: ModelRole::User,
                 content: ModelContent::Text(text),
             },
         }))

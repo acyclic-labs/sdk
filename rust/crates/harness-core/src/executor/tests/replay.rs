@@ -702,7 +702,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         let request = &requests[0];
         assert!(request.messages.starts_with(&root.request().messages));
         assert_eq!(
-            request.messages[1 + usize::from(expect_environment)].content,
+            request.messages[1].content,
             ModelContent::Text("required convention".into())
         );
         assert_eq!(

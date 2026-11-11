@@ -149,6 +149,7 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
     fn project_optional(
         &self,
         _context: &Context,
+        _local_prefix_messages: usize,
         _limits: Limits,
         _io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<ContextInsertion>> {
@@ -367,8 +368,13 @@ impl ContextPipeline {
         limits: Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Context> {
+        let before = context.current_input_index.unwrap_or(0);
         let mut context = self.transform_required(input, context, limits, io).await?;
-        self.project_optional(&mut context, 0, limits, 0, io)?;
+        let prepended = context
+            .current_input_index
+            .unwrap_or(0)
+            .saturating_sub(before) as usize;
+        self.project_optional(&mut context, 0, prepended, limits, 0, io)?;
         Ok(context)
     }
 
@@ -422,6 +428,7 @@ impl ContextPipeline {
         &self,
         context: &mut Context,
         prefix_messages: usize,
+        local_prefix_messages: usize,
         limits: Limits,
         request_frame_bytes: u64,
         io: Option<&crate::executor::PreparationIo>,
@@ -441,7 +448,9 @@ impl ContextPipeline {
             ..limits
         };
         for stage in self.0.iter().filter(|stage| stage.has_optional()) {
-            if let Some(insertion) = stage.project_optional(context, optional_limits, io)? {
+            if let Some(insertion) =
+                stage.project_optional(context, local_prefix_messages, optional_limits, io)?
+            {
                 insertion.insert(context, prefix_messages, io)?;
             }
             validate_projected_context(context, limits, io)?;
