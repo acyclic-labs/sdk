@@ -62,6 +62,11 @@ variables and startup hooks. The default TMPDIR names the primary workspace, so 
 remain inside the writable view without a separate mount or directory.
 Linux grant construction also makes the trusted host process non-dumpable before launch, preventing same-user guests from reading its environment, memory or file-descriptor aliases through procfs. This is process-wide and is not restored at command exit; a concurrent command may still be active. This protects host-owned secrets without claiming confidentiality for arbitrary host files.
 
+Workspace reads include directory enumeration and stat, including ancestor
+inode metadata needed for path traversal. Linux extended-attribute queries
+return EOPNOTSUPP: Landlock cannot confine them, so the boundary exposes no
+xattr facility. Tools such as `ls -la` can enumerate and stat the workspace
+without accessing host attributes.
 The existing seccomp policy also denies filesystem metadata mutation such as
 chmod, including within the workspace; this limitation remains explicit.
 Unsupported kernels refuse before guest execution, with no unconfined fallback.

@@ -576,6 +576,22 @@ const fn compile_filter<const N: usize>(network: FilterNetwork) -> Filter<N> {
     // kernel syscall never acquires authority by being absent from a list.
     verdict(&mut code, libc::SYS_read, ALLOW);
     verdict(&mut code, libc::SYS_write, ALLOW);
+    // Landlock does not mediate extended attributes. Expose no xattr facility,
+    // including on readable objects. EOPNOTSUPP distinguishes this absence
+    // from a denied ordinary stat or directory read.
+    const ATTRIBUTES: &[libc::c_long] = &[
+        libc::SYS_getxattr,
+        libc::SYS_lgetxattr,
+        libc::SYS_fgetxattr,
+        libc::SYS_listxattr,
+        libc::SYS_llistxattr,
+        libc::SYS_flistxattr,
+    ];
+    let mut attributes = ATTRIBUTES;
+    while let Some((call, rest)) = attributes.split_first() {
+        verdict(&mut code, *call, 0x0005_0000 | libc::EOPNOTSUPP as u32);
+        attributes = rest;
+    }
     // clone3 has an indirect flag pointer, so force libc's ordinary clone
     // fallback. It is never continued after a racy userspace inspection.
     verdict(

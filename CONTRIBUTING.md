@@ -46,8 +46,12 @@ them before running Cargo:
 
 ```sh
 sudo apt-get update
-sudo apt-get install --no-install-recommends clang mold
+sudo apt-get install --no-install-recommends clang mold ripgrep
 ```
+
+Linux native-runtime policy tests execute `ls -la` and `rg --files` in the
+confined shell. Install ripgrep even when using a different linker; the shared
+Linux CI toolchain action provisions it too.
 
 To use the system C linker instead, override the workspace linker for the command:
 

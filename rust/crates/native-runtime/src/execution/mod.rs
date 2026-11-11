@@ -23,7 +23,9 @@ pub(crate) mod windows;
 /// Filesystem authority of an execution, including all its descendants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionAccess {
-    /// Read and execute the granted paths; no workspace mutation.
+    /// Read and execute granted paths, enumerate granted directories and query
+    /// their ordinary inode metadata; no mutation. Linux extended attributes
+    /// are unsupported because Landlock cannot confine their queries.
     ReadOnly,
     /// Read and execute granted paths; mutate only workspace and writable volume subtrees.
     WorkspaceWrite,
@@ -456,6 +458,9 @@ impl ExecutionGrant {
     /// runtime dependencies are readable, and network traffic cannot cross
     /// the execution boundary. Explicit authenticated grants can select
     /// additional filesystem or network authority through `composed`.
+    /// Workspace reads include directory enumeration and read-only inode
+    /// metadata queries. Native path traversal permits the ancestor metadata
+    /// needed to locate those granted objects without granting outside writes.
     pub fn workspace_default(
         workspace: &Path,
         access: ExecutionAccess,
