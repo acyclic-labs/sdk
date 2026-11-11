@@ -131,7 +131,11 @@ pub async fn select_model_context_wasm(
         selection.clone(),
         &resolver,
         crate::conversation::Limits {
-            context_messages: maximum_messages as usize,
+            context_messages: Some(
+                std::num::NonZeroUsize::new(maximum_messages as usize).ok_or_else(|| {
+                    JsValue::from_str("maximum context messages must be positive")
+                })?,
+            ),
             attachments: maximum_attachments as usize,
             render_bytes: maximum_render_bytes,
             ..Default::default()

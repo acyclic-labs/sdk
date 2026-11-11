@@ -317,7 +317,7 @@ fn default_turn_rejects_history_overflow_instead_of_selecting_a_suffix() -> Resu
     )?;
     let operation = OperationId::new();
     let mut bounded = limits();
-    bounded.context_messages = 2;
+    bounded.context_messages = std::num::NonZeroUsize::new(2);
     assert!(
         prepare_turn(
             &state,
@@ -333,7 +333,7 @@ fn default_turn_rejects_history_overflow_instead_of_selecting_a_suffix() -> Resu
         )
         .is_err()
     );
-    bounded.context_messages = 3;
+    bounded.context_messages = std::num::NonZeroUsize::new(3);
     let prepared = prepare_turn(
         &state,
         operation,

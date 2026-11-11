@@ -162,7 +162,11 @@ impl RuntimeScope {
                     .tool_calls_per_step
                     .is_some_and(|limit| limit <= maximum)
             })
-            && limits.context_messages <= self.limits.context_messages
+            && self.limits.context_messages.is_none_or(|maximum| {
+                limits
+                    .context_messages
+                    .is_some_and(|limit| limit <= maximum)
+            })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

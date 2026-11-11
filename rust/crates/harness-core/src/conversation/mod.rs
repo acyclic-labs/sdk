@@ -70,8 +70,8 @@ pub struct Limits {
     pub model_events_per_step: Option<std::num::NonZeroUsize>,
     /// Optional maximum distinct tool calls in one model round trip; `None` is unbounded.
     pub tool_calls_per_step: Option<std::num::NonZeroUsize>,
-    /// Maximum canonical messages selected into one model request.
-    pub context_messages: usize,
+    /// Optional maximum canonical messages selected into one model request.
+    pub context_messages: Option<std::num::NonZeroUsize>,
 }
 
 impl Default for Limits {
@@ -83,7 +83,7 @@ impl Default for Limits {
             render_bytes: MAX_EXACT_JS_INTEGER,
             model_events_per_step: None,
             tool_calls_per_step: None,
-            context_messages: u32::MAX as usize,
+            context_messages: None,
         }
     }
 }
@@ -100,8 +100,9 @@ impl Limits {
         if [self.file_bytes, self.render_bytes]
             .into_iter()
             .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
-            || [self.path_bytes, self.attachments, self.context_messages]
+            || [self.path_bytes, self.attachments]
                 .into_iter()
+                .chain(self.context_messages.map(std::num::NonZeroUsize::get))
                 .chain(self.model_events_per_step.map(std::num::NonZeroUsize::get))
                 .chain(self.tool_calls_per_step.map(std::num::NonZeroUsize::get))
                 .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64)

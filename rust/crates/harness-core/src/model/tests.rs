@@ -383,7 +383,7 @@ async fn prefix_depth_three_reopens_and_authenticates_history() -> Result<()> {
             &head,
             &reader,
             Limits {
-                context_messages: prepared.request().messages.len(),
+                context_messages: std::num::NonZeroUsize::new(prepared.request().messages.len()),
                 ..limits
             },
             None

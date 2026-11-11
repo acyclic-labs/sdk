@@ -93,7 +93,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         missing: std::sync::atomic::AtomicBool::new(false),
     });
     let limits = Limits {
-        context_messages: 8,
+        context_messages: std::num::NonZeroUsize::new(8),
         attachments: 4,
         ..Limits::default()
     };
@@ -158,7 +158,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             .run(
                 &input,
                 Limits {
-                    context_messages: 1,
+                    context_messages: std::num::NonZeroUsize::new(1),
                     ..limits
                 },
                 None

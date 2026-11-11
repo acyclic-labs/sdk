@@ -662,7 +662,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
             [],
         );
         let limits = Limits {
-            context_messages: message_limit,
+            context_messages: std::num::NonZeroUsize::new(message_limit),
             render_bytes,
             ..Limits::default()
         };

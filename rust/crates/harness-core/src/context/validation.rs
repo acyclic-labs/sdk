@@ -98,7 +98,11 @@ fn validate_projection_metadata(
         {
             return Err(invalid("current input index is outside context"));
         }
-        if message_count > limits.context_messages || context.metadata.len() > limits.attachments {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| message_count > maximum.get())
+            || context.metadata.len() > limits.attachments
+        {
             return Err(invalid("context projection exceeded declared bounds"));
         }
         for file in context.metadata.values() {
@@ -194,6 +198,10 @@ pub(crate) fn restrict_context_limits(
             .into_iter()
             .chain(admitted.tool_calls_per_step)
             .min(),
-        context_messages: pinned.context_messages.min(admitted.context_messages),
+        context_messages: pinned
+            .context_messages
+            .into_iter()
+            .chain(admitted.context_messages)
+            .min(),
     })
 }

@@ -251,7 +251,7 @@ async fn ref_only_metadata_admission_covers_physical_storage_without_workflow_sl
         )
         .await?;
     let manifest = RequestManifest {
-        version: 1,
+        version: 2,
         header: reference.clone(),
         header_digest: [255; 32],
         messages: MessagePrefix {

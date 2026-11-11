@@ -30,7 +30,7 @@ fuzz_target!(|input: &[u8]| {
     let limits = Limits {
         render_bytes: 4096,
         file_bytes: 4096,
-        context_messages: 16,
+        context_messages: std::num::NonZeroUsize::new(16),
         ..Default::default()
     };
     if let Ok(hooks) = serde_json::from_slice::<acyclic_harness::hooks::Hooks>(input)

@@ -149,7 +149,7 @@ fn canonical_checkpoint_selects_exact_bounded_delta_from_ten_thousand_records() 
     }
     let current = message(10_001, MessageKind::User, content, None);
     let limits = Limits {
-        context_messages: 3,
+        context_messages: std::num::NonZeroUsize::new(3),
         ..Limits::default()
     };
     assert!(select_turn_delta(&conversation, &current, true, None, limits).is_err());
@@ -194,7 +194,7 @@ fn canonical_checkpoint_selects_exact_bounded_delta_from_ten_thousand_records() 
             true,
             Some((&checkpoint, pinned.clone())),
             Limits {
-                context_messages: 2,
+                context_messages: std::num::NonZeroUsize::new(2),
                 ..limits
             }
         )
@@ -291,7 +291,7 @@ async fn manifest_projection_checks_limit_before_resolution_and_exact_count_afte
         ..Resolver::default()
     };
     let limits = Limits {
-        context_messages: 256,
+        context_messages: std::num::NonZeroUsize::new(256),
         attachments: 1,
         render_bytes: 128 * 1024,
         ..Limits::default()

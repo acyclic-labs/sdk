@@ -34,7 +34,7 @@ export interface WasmNativeLimitsWire {
     readonly render_bytes: bigint;
     readonly model_events_per_step: bigint | null;
     readonly tool_calls_per_step: bigint | null;
-    readonly context_messages: bigint;
+    readonly context_messages: bigint | null;
 }
 export interface WasmProviderRefWire {
     readonly namespace: string;
@@ -145,7 +145,7 @@ export interface WasmModelLimitsInput {
     readonly render_bytes: number | bigint;
     readonly model_events_per_step: number | bigint | null;
     readonly tool_calls_per_step: number | bigint | null;
-    readonly context_messages: number | bigint;
+    readonly context_messages: number | bigint | null;
 }
 export type WasmModelToolResultContentInput =
     | Readonly<{ kind: "json"; value: unknown }>

@@ -45,7 +45,9 @@ impl SelectedModelContext {
             Error::Invalid("selected context must end with the current user message".into())
         })?;
         if self.selection.conversation_revision == 0
-            || self.messages.len() > limits.context_messages
+            || limits
+                .context_messages
+                .is_some_and(|maximum| self.messages.len() > maximum.get())
             || self.messages.len() != self.selection.message_ids.len()
             || last.role != ModelRole::User
         {
@@ -113,11 +115,12 @@ pub async fn select_model_context(
     with_history_io(io, |work| {
         validate_model_context_selection(conversation, &selection, conversation_revision, work)
     })?;
-    if limits.context_messages == 0
-        || limits.render_bytes == 0
+    if limits.render_bytes == 0
         || limits.render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
         || maximum_projected_attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
-        || selection.message_ids.len() > limits.context_messages
+        || limits
+            .context_messages
+            .is_some_and(|maximum| selection.message_ids.len() > maximum.get())
     {
         return Err(stock_boundary(
             io,

@@ -34,6 +34,7 @@ pub(super) async fn usage_request(
     }
     let bytes = journal.load(request, None)?.await?;
     let header = if request.descriptor().media_type() == REQUEST_MEDIA {
+        admit_manifest(request, &bytes, None)?;
         let manifest: Manifest = serde_json::from_slice(&bytes)
             .map_err(|_| Error::Storage("usage request manifest is malformed".into()))?;
         journal.load(&manifest.header, None)?.await?
@@ -74,7 +75,11 @@ pub(crate) fn limits_admit(admitted: Limits, current: Limits) -> bool {
         && admitted.path_bytes <= current.path_bytes
         && admitted.attachments <= current.attachments
         && admitted.render_bytes <= current.render_bytes
-        && admitted.context_messages <= current.context_messages
+        && current.context_messages.is_none_or(|maximum| {
+            admitted
+                .context_messages
+                .is_some_and(|limit| limit <= maximum)
+        })
 }
 
 #[cfg(feature = "filesystem")]
@@ -354,15 +359,19 @@ pub(crate) async fn load_manifest(
     let bytes = journal.load(reference, io)?.await?;
     #[cfg(feature = "filesystem")]
     let _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
-    with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
-    acyclic_auth::format::header(
-        &bytes,
-        b"{\"$version\":",
-        b"1,",
-        || unsupported_manifest(io),
-        || unsupported_manifest(io),
-    )?;
+    admit_manifest(reference, &bytes, io)?;
     retain_preparation(super::payload::decode_json::<RequestManifest>(&bytes, io)?)
+}
+
+fn admit_manifest(reference: &FileRef, bytes: &[u8], io: Option<&PreparationIo>) -> Result<()> {
+    with_history_io(io, |work| reference.descriptor().verify(bytes, work))?;
+    acyclic_auth::format::header(
+        bytes,
+        b"{\"$version\":",
+        b"2,",
+        || unsupported_manifest(io),
+        || unsupported_manifest(io),
+    )
 }
 
 fn unsupported_manifest(io: Option<&PreparationIo>) -> Error {
@@ -486,7 +495,7 @@ async fn stage_request_inner(
     )
     .await?;
     let manifest = RequestManifest {
-        version: 1,
+        version: 2,
         header,
         header_digest,
         messages,
@@ -552,7 +561,11 @@ async fn load_request_inner(
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::PreparedModelRequest> {
     let manifest = load_manifest(journal, reference, io).await?;
-    if manifest.messages.count == 0 || manifest.messages.count as usize > limits.context_messages {
+    if manifest.messages.count == 0
+        || limits
+            .context_messages
+            .is_some_and(|maximum| manifest.messages.count as usize > maximum.get())
+    {
         return Err(invalid(io));
     }
     let header =

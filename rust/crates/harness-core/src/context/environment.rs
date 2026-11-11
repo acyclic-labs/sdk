@@ -74,7 +74,10 @@ impl EnvironmentFacts {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Option<ContextInsertion>> {
-        if context.messages.len() >= limits.context_messages {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| context.messages.len() >= maximum.get())
+        {
             return Ok(None);
         }
         let used = crate::executor::with_history_io(io, |work| {
@@ -224,18 +227,18 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]
         fn optional_environment_obeys_bytes_messages_and_current_input(
-            cwd in ".{0,60}", budget in 1_u64..1500, messages in 1_usize..4,
+            cwd in ".{0,60}", budget in 1_u64..1500, messages in proptest::option::of(1_usize..4),
         ) {
             let mut context = Context {
                 messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text("current".into()) }],
                 current_input_index: Some(0), ..Default::default()
             };
-            let limits = Limits { render_bytes: budget, context_messages: messages, ..Limits::default() };
+            let limits = Limits { render_bytes: budget, context_messages: messages.and_then(std::num::NonZeroUsize::new), ..Limits::default() };
             if let Some(insertion) = facts(cwd).project(&context, limits, None)? {
                 insertion.insert(&mut context, 0, None)?;
                 prop_assert_eq!(context.current_input_index, Some(1));
                 prop_assert!(crate::contract::canonical_json_bytes(&context)?.len() as u64 <= budget);
-                prop_assert!(context.messages.len() <= messages);
+                prop_assert!(messages.is_none_or(|maximum| context.messages.len() <= maximum));
             }
         }
     }
