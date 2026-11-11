@@ -353,6 +353,19 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         host.read_content(&second, &read, 16, None).await?,
         acyclic_stream::OwnedBytes::from_static(b"two")
     );
+    for (reference, expected) in [(&first, b"n"), (&second, b"w")] {
+        let selected = host
+            .read_pinned_range(
+                reference,
+                acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 1,
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(selected.as_ref(), expected);
+    }
     let delegated_scope = issuer.delegate_private_directory_read(
         &scope,
         AgentId::from_bytes([8; 16]),
