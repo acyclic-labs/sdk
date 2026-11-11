@@ -943,6 +943,9 @@ impl ToolContext {
             ))
             .tool_input());
         }
+        if let Some((binding, relative)) = self.task().private_content_path(path, io)? {
+            return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
+        }
         if let (Some(relative), Some(seed)) = (
             path.strip_prefix(SEED_PATH).or_else(|| {
                 (kind == crate::tool::ReadPathKind::Directory
@@ -967,9 +970,6 @@ impl ToolContext {
                 &self.task().output_content.volume,
                 std::borrow::Cow::Borrowed(relative),
             ));
-        }
-        if let Some((binding, relative)) = self.task().private_content_path(path, io)? {
-            return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let work = io.and_then(crate::executor::PreparationIo::original_native_work);
