@@ -242,7 +242,7 @@ fn encode<T: Serialize>(
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
     match io {
-        Some(io) => io.encode(value, io.remaining()?.bytes_encoded, true),
+        Some(io) => io.encode(value, Some(io.remaining()?.bytes_encoded), true),
         _ => Ok(crate::contract::canonical_json_bytes(value)?.into()),
     }
 }

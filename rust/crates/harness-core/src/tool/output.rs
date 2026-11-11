@@ -198,7 +198,7 @@ fn with_media<R>(
     let bytes;
     {
         bytes = if let Some(io) = io {
-            io.encode(view, io.remaining()?.bytes_encoded, false)?
+            io.encode(view, Some(io.remaining()?.bytes_encoded), false)?
         } else {
             serde_json::to_vec(view)
                 .map_err(|error| Error::Invalid(error.to_string()))?
@@ -224,7 +224,7 @@ pub(crate) async fn spill(
     let _bytes_hold;
     let bytes;
     let encoded = if let Some(io) = io {
-        bytes = io.encode(projection, io.remaining()?.bytes_encoded, false)?;
+        bytes = io.encode(projection, Some(io.remaining()?.bytes_encoded), false)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
         bytes.as_ref()
     } else {

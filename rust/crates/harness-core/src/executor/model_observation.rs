@@ -86,7 +86,7 @@ pub(crate) async fn append(
     let _hold;
     let bytes: acyclic_stream::OwnedBytes = match io {
         Some(io) => {
-            let bytes = io.encode(model, io.remaining()?.bytes_encoded, true)?;
+            let bytes = io.encode(model, Some(io.remaining()?.bytes_encoded), true)?;
             _hold = io.guard_bytes(&bytes)?;
             bytes
         }
