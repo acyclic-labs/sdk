@@ -127,6 +127,29 @@
         "text": [
           "TREE_RENAMED"
         ]
+      },
+      {
+        "when": {
+          "user": "TREE_VERIFY"
+        },
+        "tools": [
+          {
+            "id": "verify-merged",
+            "name": "read",
+            "arguments": {
+              "path": "tree.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TREE_VERIFY",
+          "tool_result": "TREE_PROJECT_EDIT"
+        },
+        "text": [
+          "TREE_VERIFIED"
+        ]
       }
     ]
   },
@@ -334,15 +357,30 @@
               "Discarded ·"
             ]
           },
+          "prompt": "TREE_VERIFY"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_VERIFIED",
+              "○"
+            ],
+            "cursor": true
+          },
           "send": "\u0004\u0004"
         }
       ]
     }
   ],
   "assert": {
-    "requests": 7,
-    "files": {
-      "tree.txt": "TREE_PROJECT_EDIT\n"
-    }
+    "requests": 9,
+    "tool_results": [
+      {
+        "text": "TREE_PROJECT_EDIT\n"
+      }
+    ],
+    "absent_files": [
+      "tree.txt"
+    ]
   }
 }
