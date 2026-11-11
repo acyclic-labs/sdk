@@ -1275,13 +1275,20 @@ mod tests {
             "a grandchild merge must not target the root checkout"
         );
         let parent = Conversation::open(descendants[0].clone());
-        let diff = parent
-            .diff(crate::client::AgentPageRequest::default())
-            .await?;
-        assert!(
-            diff.iter().any(|file| file.path.ends_with("nested.txt")),
-            "the direct parent must own the merged edit"
-        );
+        let mut diff = parent
+            .diff_query(
+                crate::client::AgentPageRequest::default(),
+                crate::client::DiffProjection::Patch,
+            )
+            .await
+            .map_err(storage)?;
+        let mut merged = false;
+        while let Some(event) = diff.next().await.map_err(storage)? {
+            if let crate::client::DiffQueryEvent::Page(files) = event {
+                merged |= files.iter().any(|file| file.path.ends_with("nested.txt"));
+            }
+        }
+        assert!(merged, "the direct parent must own the merged edit");
         parent
             .send("read-merged-checkout", "read the merged file using shell")
             .await?;
