@@ -20,7 +20,7 @@ pub(crate) enum FileTool {
 pub(super) struct Source {
     pub file: FileRef,
     pub bytes: Option<acyclic_stream::OwnedBytes>,
-    _custody: acyclic_fs::NativeCustody,
+    _custody: crate::conversation::FileSelectionCustody,
 }
 
 impl Source {
@@ -63,7 +63,7 @@ impl Source {
     ) -> Result<Self> {
         let custody;
         let (file, bytes, retained) = context.read_tool_path(path, generation, io).await?;
-        custody = super::window::custody(io, retained)?;
+        custody = super::source::selection_custody(super::window::custody(io, retained)?);
         Ok(Self {
             file,
             bytes: Some(bytes),

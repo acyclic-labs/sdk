@@ -433,12 +433,43 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
 /// publications, records each presented attestation, and can lose the
 /// first commit's acknowledgement after applying it.
 #[derive(Default)]
-struct Evidence {
+pub(super) struct Evidence {
+    missing: std::sync::Mutex<Option<(acyclic_stream::StreamPath, StreamError)>>,
     inner: MemoryStream,
     valid: bool,
     unknown_first: std::sync::atomic::AtomicBool,
     presented: std::sync::Mutex<Vec<Attestation>>,
     published: std::sync::atomic::AtomicUsize,
+}
+
+impl Evidence {
+    pub(super) fn missing(&self, path: acyclic_stream::StreamPath, error: StreamError) {
+        *self.missing.lock().expect("missing diagnostic") = Some((path, error));
+    }
+}
+
+pub(super) fn missing_refusal() -> StreamError {
+    let mut metadata = http::HeaderMap::new();
+    metadata.insert(
+        "acyclic-request-id",
+        "missing-record".parse().expect("header"),
+    );
+    StreamError::Refused(
+        acyclic_auth::refusal::Refusal::capture(
+            5,
+            "not published yet",
+            b"retained detail",
+            &metadata,
+            acyclic_auth::refusal::Canonical {
+                code: 5,
+                message: "not_found",
+                details: &[],
+                owned: &[],
+            },
+            None,
+        )
+        .expect("noncanonical status"),
+    )
 }
 
 impl AttestedProvider for Evidence {
@@ -474,7 +505,18 @@ impl StreamProvider for Evidence {
         &self,
         request: acyclic_stream::HeadsRequest,
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
-        self.inner.heads(request).await
+        let observed = self.inner.heads(request.clone()).await?;
+        if let Some((path, error)) = &*self.missing.lock().expect("missing diagnostic") {
+            if request
+                .paths
+                .iter()
+                .zip(&observed.heads)
+                .any(|(requested, head)| requested == path && head.is_none())
+            {
+                return Err(error.clone());
+            }
+        }
+        Ok(observed)
     }
     fn write(
         &self,
@@ -523,7 +565,19 @@ impl StreamProvider for Evidence {
         &self,
         request: acyclic_stream::ReadRequest,
     ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
-        self.inner.read(request).await
+        let path = request.path.clone();
+        match self.inner.read(request).await {
+            Err(StreamError::NotFound) => {
+                if let Some((selected, error)) = &*self.missing.lock().expect("missing diagnostic")
+                {
+                    if &path == selected {
+                        return Err(error.clone());
+                    }
+                }
+                Err(StreamError::NotFound)
+            }
+            result => result,
+        }
     }
     async fn follow(
         &self,
@@ -802,5 +856,61 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
         result = failure => return Err(result.map_err(|_| "actor failure producer ended")?.into()),
         result = exercise => result?,
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn conversation_creation_wait_retains_member_absence_diagnostics() -> Result {
+    use futures::TryStreamExt as _;
+    let provider = Arc::new(Evidence::default());
+    let host = AgentHost::new(
+        provider.clone(),
+        super::script(vec![TurnStep {
+            checkpoint: None,
+            outs: vec![Out::Conversation(b"answer".to_vec())],
+            wait: Wait::Input,
+            drops: None,
+        }]),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host
+        .create(&intent("diagnostic-create"), super::adopted(id(1)))
+        .await?;
+    assert!(host.runtime().drain().await.is_empty());
+    let diagnostic = missing_refusal();
+    provider.missing(root.conversation()?, diagnostic.clone());
+    assert!(matches!(host.follow_conversation(&root, 1).await,
+        Err(Error::Stream(error)) if error == diagnostic));
+    provider.missing(root.conversation()?, StreamError::AccessDenied);
+    assert!(matches!(
+        host.follow_conversation(&root, 0).await,
+        Err(Error::Stream(StreamError::AccessDenied))
+    ));
+    provider.missing(root.conversation()?, diagnostic);
+    let waiting = host.follow_conversation(&root, 0);
+    futures::pin_mut!(waiting);
+    assert!(futures::poll!(&mut waiting).is_pending());
+    host.send(
+        &root,
+        &super::user(),
+        &InboxRecord::ApprovalRequested(ApprovalRequested {
+            child: root.child(&id(2))?,
+            id: intent("publish-conversation"),
+        }),
+    )
+    .await?;
+    assert!(host.runtime().drain().await.is_empty());
+    let mut conversation = waiting.await?;
+    assert_eq!(
+        conversation
+            .try_next()
+            .await?
+            .ok_or("missing conversation")?
+            .value
+            .as_ref(),
+        b"answer"
+    );
     Ok(())
 }

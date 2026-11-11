@@ -1064,7 +1064,7 @@ impl ToolContext {
         std::borrow::Cow<'a, str>,
         Option<(
             crate::conversation::FilePathSelection,
-            acyclic_fs::NativeCustody,
+            crate::conversation::FileSelectionCustody,
         )>,
     )> {
         use crate::layers::{WHY_SUFFIX, equals_from_prefix, layered, off_from_prefix};
@@ -1129,7 +1129,7 @@ impl ToolContext {
             offset: 0,
             length: 32,
         };
-        let (selected, bytes, retained) =
+        let (selected, bytes, custody) =
             match self.read_tool_path_range(&home, None, probe, io).await {
                 Ok(read) => read,
                 Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
@@ -1141,27 +1141,13 @@ impl ToolContext {
                 }
                 Err(error) => return Err(error),
             };
-        #[cfg(not(target_arch = "wasm32"))]
-        let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let custody = {
-            let _ = retained;
-            None
-        };
         let continuation = |range: acyclic_fs::ByteRange| {
             let home = &home;
             let selected = &selected;
             async move {
-                let (_, bytes, retained) = self
+                let (_, bytes, custody) = self
                     .read_tool_path_range(home, Some(&selected.generation), range, io)
                     .await?;
-                #[cfg(not(target_arch = "wasm32"))]
-                let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-                #[cfg(target_arch = "wasm32")]
-                let custody = {
-                    let _ = retained;
-                    None::<()>
-                };
                 Ok(crate::layers::MarkerChunk {
                     bytes,
                     _hold: custody,
@@ -1186,15 +1172,6 @@ impl ToolContext {
             drop(custody);
             return Ok((seed()?.into(), None));
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let custody = {
-            if let Some(custody) = custody {
-                custody.into_retained()?;
-            }
-            io.filter(|io| io.original_native_work().is_some())
-                .map(|io| io.take_native_custody(retained))
-                .transpose()?
-        };
         Ok((home.into(), Some((selected, custody))))
     }
 
@@ -1306,20 +1283,14 @@ impl ToolContext {
                     )
                     .await
                 {
-                    Ok((selected, _, retained)) => {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-                        #[cfg(target_arch = "wasm32")]
-                        let _ = retained;
-                        Some(selected.generation)
-                    }
+                    Ok((selected, _, _custody)) => Some(selected.generation),
                     Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
                     Err(error) => return Err(error),
                 };
                 let resolved: Result<()> = async {
                     let (selected, authored) = self.effective_tool_path(path, None, io).await?;
                     if authored.is_none() {
-                        let (_, _, retained) = self
+                        let (_, _, _custody) = self
                             .read_tool_path_range(
                                 &selected,
                                 None,
@@ -1330,10 +1301,6 @@ impl ToolContext {
                                 io,
                             )
                             .await?;
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-                        #[cfg(target_arch = "wasm32")]
-                        let _ = retained;
                     }
                     Ok(())
                 }
@@ -1385,10 +1352,11 @@ impl ToolContext {
     ) -> Result<(
         crate::conversation::FilePathSelection,
         acyclic_stream::OwnedBytes,
-        u64,
+        crate::conversation::FileSelectionCustody,
     )> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
         let expected_generation = self.layer_generation(volume, expected_generation)?;
+        let mut retained;
         let (selected, bytes, hold) = self
             .task()
             .content_binding(Some(volume))
@@ -1406,6 +1374,7 @@ impl ToolContext {
                 },
             )?
             .await?;
+        retained = hold;
         crate::executor::with_history_io(io, |history| {
             selected.validate(history)?;
             if &selected.volume != volume
@@ -1425,11 +1394,11 @@ impl ToolContext {
             }
             Ok(())
         })?;
-        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        if let Some(hold) = hold {
-            hold.into_retained()?;
-        }
-        Ok((selected, bytes, retained))
+        let custody = retained
+            .as_mut()
+            .map(|hold| hold.take_custody())
+            .transpose()?;
+        Ok((selected, bytes, custody))
     }
 
     /// A supplied version of a read-only layer must name this run's pinned

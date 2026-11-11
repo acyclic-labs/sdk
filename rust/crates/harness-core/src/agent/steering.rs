@@ -82,8 +82,9 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
             .await;
         let mut records = match records {
             Ok(records) => records,
-            Err(acyclic_stream::StreamError::NotFound)
-                if !matches!(boundary, BoundaryEnd::Exact(_)) =>
+            Err(error)
+                if error.category() == acyclic_stream::StreamError::NotFound
+                    && !matches!(boundary, BoundaryEnd::Exact(_)) =>
             {
                 break;
             }

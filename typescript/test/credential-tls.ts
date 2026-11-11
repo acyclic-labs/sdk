@@ -1,5 +1,5 @@
 import { afterAll } from "bun:test";
-import { createSecureServer } from "node:http2";
+import { createSecureServer, type OutgoingHttpHeaders } from "node:http2";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { ownFixtureServer } from "../../scripts/fixture-server.mjs";
 let certificates: { directory: string; key: string; cert: string } | undefined;
 afterAll(() => { if (certificates) rmSync(certificates.directory, { recursive: true, force: true }); });
 
-export async function credentialTlsFixture(routes: (router: ConnectRouter) => void) {
+export async function credentialTlsFixture(routes: (router: ConnectRouter) => void, trailers?: OutgoingHttpHeaders) {
   if (certificates === undefined) {
     const directory = mkdtempSync(join(tmpdir(), "client-credential-"));
     const keyPath = join(directory, "key.pem"), certPath = join(directory, "cert.pem");
@@ -19,6 +19,10 @@ export async function credentialTlsFixture(routes: (router: ConnectRouter) => vo
     certificates = { directory, key: readFileSync(keyPath, "utf8"), cert: readFileSync(certPath, "utf8") };
   }
   const server = createSecureServer(certificates, connectNodeAdapter({ routes }));
+  if (trailers !== undefined) server.on("stream", stream => {
+    const send = stream.sendTrailers;
+    stream.sendTrailers = headers => send.call(stream, { ...headers, ...trailers });
+  });
   let connections = 0;
   server.on("session", () => { connections++; });
   const close = ownFixtureServer(server);
