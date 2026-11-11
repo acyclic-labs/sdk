@@ -228,11 +228,10 @@ impl StockExecutors {
     }
 
     fn sample(executor: StockExecutor, sampling: crate::config::Sampling) -> Result<StockExecutor> {
-        let executor = executor.with_sampling(crate::model::ModelSampling {
-            seed: None,
-            temperature: sampling.temperature,
-            top_p: sampling.top_p,
-        })?;
+        let executor = match sampling.model_sampling() {
+            Some(sampling) => executor.with_sampling(sampling)?,
+            None => executor,
+        };
         match sampling.max_output_tokens {
             Some(maximum) => executor.with_max_output_tokens(maximum),
             None => Ok(executor),

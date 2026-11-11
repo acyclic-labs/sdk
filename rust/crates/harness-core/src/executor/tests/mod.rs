@@ -696,6 +696,41 @@ impl ExecutionJournal for Journal {
         })
     }
 
+    fn load_range<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        range: acyclic_fs::ByteRange,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        if io.is_some() {
+            return Err(Error::Unsupported(
+                "finite test journal range IO is unavailable".into(),
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let start = usize::try_from(range.offset)
+                .map_err(|_| Error::Invalid("journal range offset overflows".into()))?;
+            let end = range
+                .offset
+                .checked_add(range.length)
+                .and_then(|end| usize::try_from(end).ok())
+                .ok_or_else(|| Error::Invalid("journal range end overflows".into()))?;
+            let stored = self.1.lock().unwrap();
+            let (_, bytes) = stored
+                .values()
+                .find(|(stored, _)| stored == reference)
+                .ok_or_else(|| Error::NotFound("journal content is missing".into()))?;
+            if end > bytes.len() {
+                return Err(Error::Invalid(
+                    "journal range exceeds original payload".into(),
+                ));
+            }
+            // This adapter owns immutable resident bytes already. Return only
+            // their selected view; no whole-payload load or copy is performed.
+            Ok(bytes.slice(start..end))
+        })
+    }
+
     fn open_interaction<'a>(
         &'a self,
         id: InteractionId,

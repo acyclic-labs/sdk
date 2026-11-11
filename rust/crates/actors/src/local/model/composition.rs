@@ -583,6 +583,7 @@ fn transition(remove_actor_fence: bool) -> Result<Transition, StreamError> {
             kind: "test".into(),
             plan: Bytes::from(vec![u8::from(remove_actor_fence)]),
         }),
+        subscriptions: Vec::new(),
     })
 }
 

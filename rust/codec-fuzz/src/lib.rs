@@ -641,6 +641,7 @@ pub fn actor_seeds()
         alarm: guest::AlarmChange::Keep,
         effects: effects.into(),
         participant: None,
+        subscriptions: Vec::new(),
     };
     for (name, alarm) in [
         ("transition-state-v2", guest::AlarmChange::Keep),
@@ -1187,6 +1188,7 @@ async fn actor_alarm_seeds()
                     alarm,
                     effects: Vec::new(),
                     participant: None,
+                    subscriptions: Vec::new(),
                 },
                 IdempotencyKey::unique(),
             )

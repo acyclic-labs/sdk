@@ -455,7 +455,10 @@ impl ToolContext {
                 file,
                 self.effective_scope(),
                 self.effective_scope().grants(),
-                range,
+                range.map_or(
+                    super::content_read::ReadExtent::Body,
+                    super::content_read::ReadExtent::Range,
+                ),
                 Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
             )
             .map(|_| ())
@@ -496,17 +499,27 @@ impl ToolContext {
             .await
     }
 
+    pub(crate) async fn observe_tool_path_once(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        let (binding, _) = self.task().tool_publication_path(path, io)?;
+        self.observe_once(binding, operation_id, io).await
+    }
+
     pub(crate) async fn observe_tool_source_file_once(
         &self,
         operation_id: OperationId,
-        source: Option<&FileRef>,
+        source_volume: Option<&VolumeRef>,
         replacement_path: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, u64)> {
-        let binding = self.task().tool_content(source.map(FileRef::volume));
+        let binding = self.task().tool_content(source_volume);
         let writer = super::content_write::content_writer(binding, io)?;
         let destination = replacement_path
-            .map(|path| writer.destination(source.map(FileRef::volume), path, io))
+            .map(|path| writer.destination(source_volume, path, io))
             .transpose()?;
         self.task()
             .observe_bound_file_once(
@@ -589,7 +602,7 @@ impl ToolContext {
                     source,
                     self.effective_scope(),
                     self.effective_scope().grants(),
-                    None,
+                    super::content_read::ReadExtent::Metadata,
                     io,
                 )?;
                 if source.volume() != volume {
@@ -598,10 +611,35 @@ impl ToolContext {
                     ));
                 }
             }
+            if let Some(source) = change.path_source() {
+                crate::executor::with_history_io(io, |work| {
+                    source.validate(work)?;
+                    if &source.volume != volume
+                        || !crate::core::directory_read_granted_with_work(
+                            self.effective_scope().grants(),
+                            volume,
+                            source
+                                .path
+                                .rsplit_once('/')
+                                .map_or("", |(parent, _)| parent),
+                            work,
+                        )?
+                    {
+                        return Err(crate::store::guarded_boundary(
+                            work,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "conditional path source requires its original directory read grant",
+                        ));
+                    }
+                    Ok(())
+                })?;
+            }
             let bytes = match change {
                 ContentChange::CreateAbsent { bytes, .. }
                 | ContentChange::UpdateExpected { bytes, .. } => bytes.len() as u64,
-                ContentChange::DeleteExpected { .. } => 0,
+                ContentChange::DeleteExpected { .. }
+                | ContentChange::DeleteAt { .. }
+                | ContentChange::Delete { .. } => 0,
             };
             if bytes > self.effective_scope().limits().file_bytes {
                 return Err(Error::tool_rejected(
@@ -641,7 +679,12 @@ impl ToolContext {
                 | (ContentChange::UpdateExpected { .. }, ContentChangeResult::Updated(file)) => {
                     file
                 }
-                (ContentChange::DeleteExpected { .. }, ContentChangeResult::Deleted(_)) => continue,
+                (
+                    ContentChange::DeleteExpected { .. }
+                    | ContentChange::DeleteAt { .. }
+                    | ContentChange::Delete { .. },
+                    ContentChangeResult::Deleted(_),
+                ) => continue,
                 _ => {
                     return Err(crate::executor::stock_boundary(
                         io,
@@ -662,7 +705,9 @@ impl ToolContext {
                     source.descriptor().media_type(),
                     source.display_name(),
                 ),
-                ContentChange::DeleteExpected { .. } => continue,
+                ContentChange::DeleteExpected { .. }
+                | ContentChange::DeleteAt { .. }
+                | ContentChange::Delete { .. } => continue,
             };
             if file.volume() != volume
                 || file.path() != change.path()
@@ -763,13 +808,7 @@ impl ToolContext {
         display_name: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, u64)> {
-        if crate::layers::read_only(path) {
-            return Err(Error::Unauthorized(format!(
-                "{path} is read-only; write under {HOME_PATH}"
-            ))
-            .tool_input());
-        }
-        let binding = self.task().tool_content(None);
+        let (binding, path) = self.task().tool_publication_path(path, io)?;
         self.stage_once(
             binding,
             operation_id,
@@ -840,8 +879,50 @@ impl ToolContext {
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        self.select_tool_read_path(path, crate::tool::ReadPathKind::File, io)
+    }
+
+    pub(crate) fn authorize_tool_directory_read<'a>(
+        &'a self,
+        path: &'a str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let path = if path == "." {
+            ""
+        } else {
+            path.strip_suffix('/')
+                .filter(|path| !path.is_empty())
+                .unwrap_or(path)
+        };
+        let (volume, relative) =
+            self.select_tool_read_path(path, crate::tool::ReadPathKind::Directory, io)?;
         crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
+            if !crate::core::directory_read_granted_with_work(
+                self.effective_scope().grants(),
+                volume,
+                &relative,
+                history,
+            )? {
+                return Err(crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "directory listing requires its original subtree grant",
+                )
+                .tool_input());
+            }
+            Ok(())
+        })?;
+        Ok((volume, relative))
+    }
+
+    fn select_tool_read_path<'a>(
+        &'a self,
+        path: &'a str,
+        kind: crate::tool::ReadPathKind,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        crate::executor::with_history_io(io, |history| {
+            kind.validate(path, history).map_err(Error::tool_input)?;
             if path.len() > self.effective_scope().limits().path_bytes
                 || crate::conversation::is_internal_path(path)
             {
@@ -856,14 +937,18 @@ impl ToolContext {
         })?;
         // The effective view is read-only: reads resolve it to one layer
         // first (`effective_tool_path`), and nothing writes through it.
-        if path.starts_with(EFFECTIVE_PATH) {
+        if path.starts_with(EFFECTIVE_PATH) || path == EFFECTIVE_PATH.trim_end_matches('/') {
             return Err(Error::Unauthorized(format!(
                 "{EFFECTIVE_PATH} is read-only; write {HOME_PATH} instead"
             ))
             .tool_input());
         }
         if let (Some(relative), Some(seed)) = (
-            path.strip_prefix(SEED_PATH),
+            path.strip_prefix(SEED_PATH).or_else(|| {
+                (kind == crate::tool::ReadPathKind::Directory
+                    && path == SEED_PATH.trim_end_matches('/'))
+                .then_some("")
+            }),
             self.task().harness.seed.as_ref(),
         ) {
             return Ok((&seed.volume, std::borrow::Cow::Borrowed(relative)));
@@ -888,24 +973,86 @@ impl ToolContext {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let work = None;
         if let Some(targets) = self.task().harness.targets.as_ref() {
-            return targets.read_path(path, work).map_err(Error::tool_input);
+            return targets
+                .read_path(path, kind, work)
+                .map_err(Error::tool_input);
         }
-        // Match the home mount's public path when no execution target is
-        // bound. Keep the same private reader and ordinary directory grants.
-        if let Some(relative) = path.strip_prefix(HOME_PATH) {
-            let binding = self
-                .task()
-                .harness
-                .artifacts
-                .as_ref()
-                .unwrap_or(&self.task().output_content);
-            if binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate {
-                return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
-            }
+        let home_path = if kind == crate::tool::ReadPathKind::Directory
+            && path == HOME_PATH.trim_end_matches('/')
+        {
+            HOME_PATH
+        } else {
+            path
+        };
+        if let Some((binding, relative)) = self.task().home_content_path(home_path) {
+            return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
         }
         Ok((
             &self.task().tool_read_content().volume,
             std::borrow::Cow::Borrowed(path),
+        ))
+    }
+
+    pub(crate) async fn list_tool_directory<'a, 'io: 'a>(
+        &'a self,
+        request: crate::conversation::DirectoryRead<'a>,
+        io: Option<&'io crate::conversation::ContentIo>,
+    ) -> Result<(
+        crate::conversation::PrivateDirectoryPage,
+        Option<crate::conversation::ContentHold<'io>>,
+    )> {
+        let request = crate::conversation::DirectoryRead {
+            generation: self.layer_generation(request.volume, request.generation)?,
+            ..request
+        };
+        self.task()
+            .list_bound_directory(request, self.effective_scope(), io)
+            .await
+    }
+
+    /// Maps an original effective-file selection back to its mounted layer.
+    /// The token selects a cut; ordinary read grants still authorize it.
+    pub(crate) fn effective_tool_layer<'a>(
+        &self,
+        path: &'a str,
+        source: Option<(&VolumeRef, &str)>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<std::borrow::Cow<'a, str>> {
+        let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
+            return Ok(path.into());
+        };
+        if relative.ends_with(crate::layers::WHY_SUFFIX) {
+            return Err(
+                Error::Unsupported("derived provenance requires its module reader".into())
+                    .tool_input(),
+            );
+        }
+        let prefixes = if (relative.starts_with("sys/models/")
+            || relative.starts_with("sys/secrets/"))
+            && self.task().harness.system.is_some()
+        {
+            &[SYSTEM_PATH][..]
+        } else if crate::layers::layered(relative) {
+            &[HOME_PATH, SEED_PATH][..]
+        } else {
+            &[SEED_PATH][..]
+        };
+        for prefix in prefixes {
+            if *prefix == SEED_PATH && self.task().harness.seed.is_none() {
+                continue;
+            }
+            let layer = crate::executor::with_history_io(io, |history| {
+                crate::executor::preparation_format(format_args!("{prefix}{relative}"), history)
+            })?;
+            let (volume, selected) = self.tool_path_selection(&layer, io)?;
+            if source.is_none_or(|(original, original_path)| {
+                original == volume && original_path == selected
+            }) {
+                return Ok(layer.into());
+            }
+        }
+        Err(Error::tool_rejected(
+            "file version belongs to another effective path or layer",
         ))
     }
 
@@ -932,8 +1079,12 @@ impl ToolContext {
             ))
             .tool_input());
         }
-        let seed = || format!("{SEED_PATH}{relative}");
         let seeded = self.task().harness.seed.is_some();
+        let seed = || {
+            crate::executor::with_history_io(io, |history| {
+                crate::executor::preparation_format(format_args!("{SEED_PATH}{relative}"), history)
+            })
+        };
         if !layered(relative) {
             let selected = if (relative.starts_with("sys/models/")
                 || relative.starts_with("sys/secrets/"))
@@ -941,7 +1092,7 @@ impl ToolContext {
             {
                 format!("{SYSTEM_PATH}{relative}")
             } else if seeded {
-                seed()
+                seed()?
             } else {
                 return Err(missing());
             };
@@ -967,7 +1118,7 @@ impl ToolContext {
                 .as_ref()
                 .is_some_and(|seed| &seed.volume == original)
             {
-                return Ok((seed().into(), None));
+                return Ok((seed()?.into(), None));
             }
             return Err(
                 Error::Conflict("effective version belongs to another layer".into()).tool_input(),
@@ -984,7 +1135,7 @@ impl ToolContext {
                 Ok(read) => read,
                 Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
                     return if seeded {
-                        Ok((seed().into(), None))
+                        Ok((seed()?.into(), None))
                     } else {
                         Err(missing())
                     };
@@ -1034,7 +1185,7 @@ impl ToolContext {
         if inherits_seed {
             drop(selected);
             drop(custody);
-            return Ok((seed().into(), None));
+            return Ok((seed()?.into(), None));
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = {
@@ -1093,10 +1244,7 @@ impl ToolContext {
                 file,
                 self.effective_scope(),
                 self.effective_scope().grants(),
-                Some(acyclic_fs::ByteRange {
-                    offset: 0,
-                    length: 0,
-                }),
+                super::content_read::ReadExtent::Metadata,
                 io,
             )
             .map(|_| ())
@@ -1297,14 +1445,14 @@ impl ToolContext {
     /// run, whichever form (content or authored) carries the version.
     pub(crate) fn check_layer_version(
         &self,
-        source: &crate::tool::files::FileReadSource,
+        source: &crate::tool::files::SelectedVersion,
     ) -> Result<()> {
-        use crate::tool::files::FileReadSource;
+        use crate::tool::files::SelectedVersion;
         let current = match source {
-            FileReadSource::Content(file) => self
+            SelectedVersion::Content(file) => self
                 .layer_generation(file.volume(), None)?
                 .is_none_or(|pinned| crate::conversation::names_generation(file, pinned)),
-            FileReadSource::Authored(selected) => {
+            SelectedVersion::Authored(selected) => {
                 self.layer_generation(&selected.volume, Some(&selected.generation))?;
                 true
             }
@@ -1350,8 +1498,9 @@ impl ToolContext {
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let (binding, path) = self.task().tool_publication_path(path, io)?;
         let (_, volume, relative) = super::content_write::publication_destination(
-            self.task().tool_content(None),
+            binding,
             self.effective_scope(),
             None,
             path,

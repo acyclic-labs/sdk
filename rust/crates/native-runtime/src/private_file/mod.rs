@@ -13,6 +13,8 @@ use std::{
     reason = "Windows private-file security uses held handles and protected current-user DACLs"
 )]
 mod windows;
+#[cfg(windows)]
+pub(crate) use windows::user_data_directory;
 
 /// Create a new owner-only regular file, without replacing an existing entry.
 pub fn create(path: &Path) -> io::Result<File> {

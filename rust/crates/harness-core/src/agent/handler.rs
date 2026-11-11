@@ -410,6 +410,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 Alarm::At(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },
             },
             effects,
+            subscriptions: Vec::new(),
         })
     }
 }

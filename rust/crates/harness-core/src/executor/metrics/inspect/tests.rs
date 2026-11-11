@@ -118,6 +118,8 @@ fn usage(call: &Call<'_>) -> ModelUsageRecord {
             ..Default::default()
         },
         latency_ns: None,
+        started_at: None,
+        completed_at: None,
         provider_request_id: None,
         system_fingerprint: None,
         ttft_ns: None,
@@ -543,6 +545,8 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         sampling: request.sampling,
         max_output_tokens: None,
         tokens: super::super::super::ModelTokenUsage::reported(&metadata),
+        started_at: None,
+        completed_at: None,
         latency_ns: None,
         provider_request_id: Some("generated-request"),
         system_fingerprint: None,

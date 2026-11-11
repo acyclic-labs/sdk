@@ -263,18 +263,22 @@ fn an_exited_owner_whose_process_lock_is_still_held_owns_nothing() -> io::Result
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("owner.lock");
     let mut owner = Owner::spawn(&path)?;
-    let lock = recorded_process_lock(&path)?;
+    // Open the lock while its owner lives, without FILE_SHARE_DELETE (as the
+    // owner holds it): another test's sweep cannot remove the dead owner's
+    // name, so the claim below must judge this held lock.
+    let lock = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0x1 | 0x2)
+            .open(recorded_process_lock(&path)?)?
+    };
     owner.0.kill()?;
     owner.0.wait()?;
     // Stand in for the OS's not yet released lock of the exited owner. The
     // blocking acquire waits on the OS release itself, never on its timing.
-    let held = crate::FileLock::acquire(
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&lock)?,
-        crate::FileLockMode::Exclusive,
-    )?;
+    let held = crate::FileLock::acquire(lock, crate::FileLockMode::Exclusive)?;
     drop(StoreClaim::acquire(&path)?);
     drop(held);
     Ok(())

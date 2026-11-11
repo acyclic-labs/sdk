@@ -176,6 +176,32 @@ pub struct Transition {
     /// One participant to join to the publication, as a request the host's
     /// [`Composer`] validates and composes; never guest-held custody.
     pub participant: Option<Participant>,
+    /// Subscription changes, applied in order after the consumed input and
+    /// committed with the checkpoint. Subscriptions are the actor's runtime
+    /// state: a running actor binds and unbinds its own inputs.
+    pub subscriptions: Vec<SubscriptionChange>,
+}
+
+/// One change to the actor's own subscriptions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubscriptionChange {
+    /// Bind `id` to `path`. Re-binding the same path keeps its cursor; another
+    /// path under a bound id is refused.
+    Add {
+        /// Subscription identity, unique within this actor.
+        id: String,
+        /// Source stream; never the actor's own state stream.
+        path: StreamPath,
+        /// First unconsumed sequence. `None` starts at the stream's head,
+        /// which the host reads before publication: every record committed
+        /// after the publication is delivered.
+        from: Option<u64>,
+    },
+    /// Unbind `id`. Its committed history is untouched; an absent id is a no-op.
+    Remove {
+        /// Subscription identity.
+        id: String,
+    },
 }
 
 /// A request to join one host participant (for example spawned volumes) to

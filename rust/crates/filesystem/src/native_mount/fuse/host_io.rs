@@ -6,7 +6,7 @@ use acyclic_native_runtime::ProcessWake;
 use std::fs::File;
 use std::io::{self, IoSlice, Read, Write};
 use std::os::fd::AsFd;
-use std::sync::{Arc, OnceLock, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 /// An acquired abort control for one kernel FUSE connection.
 #[derive(Debug)]
@@ -59,6 +59,9 @@ pub(super) struct HostIo {
     // retain this control, never a live device after its server has stopped.
     device: RwLock<Option<File>>,
     wake: ProcessWake,
+    // Readiness is advisory. One owner keeps this queue's claim through the
+    // physical read, then releases it before any source callback or reply.
+    receiver: Mutex<Option<transport_io::PacketReader>>,
     #[cfg(test)]
     receive_counts: [std::sync::atomic::AtomicU64; 3],
     _allocation: crate::NativeAllocation,
@@ -84,10 +87,13 @@ impl HostIo {
             crate::WorkCounters::UNCHARGED,
         )?;
         super::transport_io::nonblocking(&device)?;
+        let wake = ProcessWake::new()?;
+        let receiver = transport_io::PacketReader::new(&wake, device.as_fd())?;
         Ok(Self {
             connection: OnceLock::new(),
             device: RwLock::new(Some(device)),
-            wake: ProcessWake::new()?,
+            wake,
+            receiver: Mutex::new(Some(receiver)),
             #[cfg(test)]
             receive_counts: std::array::from_fn(|_| std::sync::atomic::AtomicU64::new(0)),
             _allocation: allocation,
@@ -96,10 +102,14 @@ impl HostIo {
 
     pub(super) fn stop(&self) {
         let _ = self.wake.stop();
-        // Wake every physical borrower before waiting for its read guard.
-        // Closing the last device aborts unanswered kernel requests.
+        // Wake the physical borrower before closing the device and its queue.
+        // Other receivers observe closure through the same receive lock.
         self.device
             .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        self.receiver
+            .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
     }
@@ -127,15 +137,6 @@ impl HostIo {
         Ok(ready)
     }
 
-    pub(super) fn reader(&self) -> io::Result<transport_io::PacketReader> {
-        self.with_device(|device| {
-            transport_io::PacketReader::new(
-                &self.wake,
-                device.ok_or_else(|| io::Error::from_raw_os_error(libc::ENODEV))?,
-            )
-        })
-    }
-
     #[cfg(test)]
     pub(super) fn receive_counts(&self) -> [u64; 3] {
         self.receive_counts
@@ -143,11 +144,11 @@ impl HostIo {
             .map(|count| count.load(std::sync::atomic::Ordering::Relaxed))
     }
 
-    pub(super) fn receive(
-        &self,
-        reader: &transport_io::PacketReader,
-        bytes: &mut [u8],
-    ) -> io::Result<Received> {
+    pub(super) fn receive(&self, bytes: &mut [u8]) -> io::Result<Received> {
+        let receiver = self.receiver.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(reader) = receiver.as_ref() else {
+            return Ok(Received::Closed);
+        };
         loop {
             match reader.wait(&self.wake)? {
                 Ready::Closed => return Ok(Received::Closed),

@@ -213,7 +213,7 @@ async fn closure(
 ) -> Result<std::result::Result<Vec<(String, Module)>, String>> {
     observations.observe(path, Some(source));
     let mut modules = BTreeMap::new();
-    match strip(path, source) {
+    match compile_module(path, source) {
         Ok(module) => modules.insert(path.to_owned(), (module, true)),
         Err(error) => return Ok(Err(error)),
     };
@@ -247,7 +247,7 @@ async fn closure(
                 "{current} imports {next}, which no layer holds"
             )));
         };
-        match strip(&next, &bytes) {
+        match compile_module(&next, &bytes) {
             Ok(module) => modules.insert(next.clone(), (module, true)),
             Err(error) => return Ok(Err(error)),
         };
