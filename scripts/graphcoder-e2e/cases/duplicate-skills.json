@@ -32,7 +32,8 @@
       "outcome": {
         "completion": "failed",
         "error": "conflict: ambiguous skill: repeated"
-      }
+      },
+      "operation": "00000000-0000-0000-0000-000000000002"
     },
     {
       "mode": "jsonl",
