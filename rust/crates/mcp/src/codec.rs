@@ -1,32 +1,71 @@
-use crate::{Arc, AtomicU32, Ordering};
+use crate::{Arc, AtomicU64, Ordering};
 use bytes::{BufMut as _, BytesMut};
 use rmcp::transport::async_rw::JsonRpcMessageCodec;
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::{self, Write};
 use tokio_util::codec::{Decoder, Encoder};
 
-/// JSON-line codec with a shared, atomically published frame bound.
+/// One shared frame policy, published atomically for both directions.
+/// An absent policy adds no byte ceiling; a supplied zero admits no payload.
+pub struct FrameBytePolicy {
+    // Bit 32 marks Some; the low 32 bits retain every u32 value, including zero.
+    // None is zero storage, not a byte-capacity fallback.
+    encoded: AtomicU64,
+}
+
+impl FrameBytePolicy {
+    /// Retains the selected policy without allocation or I/O.
+    pub fn new(maximum: impl Into<Option<u32>>) -> Self {
+        Self {
+            encoded: AtomicU64::new(Self::encode(maximum.into())),
+        }
+    }
+
+    /// Publishes the policy observed by the next encoder or decoder operation.
+    pub fn set(&self, maximum: impl Into<Option<u32>>) {
+        self.encoded
+            .store(Self::encode(maximum.into()), Ordering::Release);
+    }
+
+    fn get(&self) -> Option<u32> {
+        let [a, b, c, d, present, ..] = self.encoded.load(Ordering::Acquire).to_le_bytes();
+        (present != 0).then_some(u32::from_le_bytes([a, b, c, d]))
+    }
+
+    fn encode(maximum: Option<u32>) -> u64 {
+        maximum.map_or(0, |maximum| (1_u64 << 32) | u64::from(maximum))
+    }
+}
+
+/// JSON-line codec over one shared, atomically published optional byte policy.
 pub struct BoundedCodec<T> {
     decoder: JsonRpcMessageCodec<T>,
-    maximum: Arc<AtomicU32>,
-    decoder_maximum: u32,
+    maximum: Arc<FrameBytePolicy>,
+    decoder_maximum: Option<u32>,
 }
 
 impl<T> BoundedCodec<T> {
-    /// Creates a codec that observes updates to `maximum` on each operation.
-    pub fn new(maximum: Arc<AtomicU32>) -> Self {
-        let decoder_maximum = maximum.load(Ordering::Acquire);
+    /// Creates a codec that observes updates to the same original policy owner.
+    pub fn new(maximum: Arc<FrameBytePolicy>) -> Self {
+        let decoder_maximum = maximum.get();
         Self {
-            decoder: JsonRpcMessageCodec::new_with_max_length(decoder_maximum as usize),
+            decoder: Self::decoder(decoder_maximum),
             maximum,
             decoder_maximum,
         }
     }
 
+    fn decoder(maximum: Option<u32>) -> JsonRpcMessageCodec<T> {
+        match maximum {
+            Some(maximum) => JsonRpcMessageCodec::new_with_max_length(maximum as usize),
+            None => JsonRpcMessageCodec::new(),
+        }
+    }
+
     fn refresh_decoder_bound(&mut self) {
-        let maximum = self.maximum.load(Ordering::Acquire);
+        let maximum = self.maximum.get();
         if maximum != self.decoder_maximum {
-            self.decoder = JsonRpcMessageCodec::new_with_max_length(maximum as usize);
+            self.decoder = Self::decoder(maximum);
             self.decoder_maximum = maximum;
         }
     }
@@ -63,9 +102,15 @@ impl<T: Serialize> Encoder<T> for BoundedCodec<T> {
 
     fn encode(&mut self, item: T, buffer: &mut BytesMut) -> io::Result<()> {
         let start = buffer.len();
-        let maximum = start
-            .checked_add(self.maximum.load(Ordering::Acquire) as usize)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let maximum = self
+            .maximum
+            .get()
+            .map(|maximum| {
+                start
+                    .checked_add(maximum as usize)
+                    .ok_or(io::ErrorKind::InvalidInput)
+            })
+            .transpose()?;
         let result = serde_json::to_writer(
             BoundedWrite {
                 buffer: &mut *buffer,
@@ -84,7 +129,7 @@ impl<T: Serialize> Encoder<T> for BoundedCodec<T> {
 
 struct BoundedWrite<'a> {
     buffer: &'a mut BytesMut,
-    maximum: usize,
+    maximum: Option<usize>,
 }
 
 impl Write for BoundedWrite<'_> {
@@ -93,7 +138,7 @@ impl Write for BoundedWrite<'_> {
             .buffer
             .len()
             .checked_add(bytes.len())
-            .is_none_or(|length| length > self.maximum)
+            .is_none_or(|length| self.maximum.is_some_and(|maximum| length > maximum))
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -114,6 +159,28 @@ mod frame_tests {
     use super::*;
 
     #[test]
+    fn published_policy_keeps_zero_distinct_from_absence_and_preserves_output() -> io::Result<()> {
+        let policy = Arc::new(FrameBytePolicy::new(Some(0)));
+        let mut codec = BoundedCodec::<serde_json::Value>::new(Arc::clone(&policy));
+        let value = serde_json::json!({"payload": "x".repeat(65_537)});
+        let mut output = BytesMut::from(b"retained".as_slice());
+        assert!(codec.encode(value.clone(), &mut output).is_err());
+        assert_eq!(output.as_ref(), b"retained");
+
+        policy.set(None);
+        codec.encode(value.clone(), &mut output)?;
+        let mut frame = output.split_off(b"retained".len());
+        assert_eq!(codec.decode(&mut frame)?, Some(value.clone()));
+        assert!(frame.is_empty());
+        assert_eq!(output.as_ref(), b"retained");
+
+        policy.set(64);
+        assert!(codec.encode(value, &mut output).is_err());
+        assert_eq!(output.as_ref(), b"retained");
+        Ok(())
+    }
+
+    #[test]
     fn skipped_notification_does_not_hide_the_next_buffered_frame() -> io::Result<()> {
         // The current rmcp server enum accepts extension notifications.
         // Use a response-only receiver to exercise an actual ignored frame.
@@ -127,7 +194,7 @@ mod frame_tests {
             id: 1,
             result: serde_json::json!({}),
         };
-        let mut codec = BoundedCodec::<Response>::new(Arc::new(AtomicU32::new(256)));
+        let mut codec = BoundedCodec::<Response>::new(Arc::new(FrameBytePolicy::new(256)));
         assert_eq!(
             codec.decode(&mut BytesMut::from(messages.as_slice()))?,
             Some(expected)
@@ -153,9 +220,9 @@ mod tests {
     use super::*;
     use loom::sync::mpsc;
 
-    fn handoff_model(omit_publication: bool) {
+    fn handoff_model(omit_publication: bool, selected: Option<u32>) {
         loom::model(move || {
-            let limit = Arc::new(AtomicU32::new(16));
+            let limit = Arc::new(FrameBytePolicy::new(16));
             let follower_limit = Arc::clone(&limit);
             let (ready_send, ready_receive) = mpsc::channel();
             let (tool_send, tool_receive) = mpsc::channel();
@@ -173,7 +240,7 @@ mod tests {
             ready_receive.recv().unwrap();
             // Negative control omits the catalog-to-tool bound publication.
             if !omit_publication {
-                limit.store(64, Ordering::Release);
+                limit.set(selected);
             }
             tool_send.send(()).unwrap();
             follower.join().unwrap();
@@ -182,12 +249,14 @@ mod tests {
 
     #[test]
     fn catalog_to_tool_handoff_updates_the_real_encoder_and_decoder() {
-        handoff_model(false);
+        for selected in [None, Some(64)] {
+            handoff_model(false, selected);
+        }
     }
 
     #[test]
     #[should_panic(expected = "tool bound must reach encoder")]
     fn negative_control_missing_publication_is_detected() {
-        handoff_model(true);
+        handoff_model(true, None);
     }
 }

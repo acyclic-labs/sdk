@@ -85,11 +85,11 @@ fn callback(mut request: McpCallbackRequest) {
 
 /// Compare the actual buffered codec with blocking admission under pipe fragmentation.
 fn frames(bytes: &[u8]) {
-    use acyclic_mcp::{BoundedCodec, JsonLineReader};
+    use acyclic_mcp::{BoundedCodec, FrameBytePolicy, JsonLineReader};
     use bytes::BytesMut;
     use std::{
         io::{self, Read},
-        sync::{Arc, atomic::AtomicU32},
+        sync::Arc,
     };
     use tokio_util::codec::Decoder as _;
 
@@ -103,8 +103,8 @@ fn frames(bytes: &[u8]) {
             self.bytes.read(&mut buffer[..length])
         }
     }
-    for maximum in [64, 65_536] {
-        let mut codec = BoundedCodec::<Value>::new(Arc::new(AtomicU32::new(maximum)));
+    for maximum in [Some(64), Some(65_536), None] {
+        let mut codec = BoundedCodec::<Value>::new(Arc::new(FrameBytePolicy::new(maximum)));
         let mut buffer = BytesMut::from(bytes);
         let mut expected = Vec::new();
         loop {
