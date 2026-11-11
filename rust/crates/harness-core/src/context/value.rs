@@ -111,7 +111,11 @@ impl BorrowedContext<'_> {
                     .context_messages
                     .is_none_or(|maximum| *count <= maximum.get())
             });
-        if count.is_none() || self.metadata.len() > limits.attachments {
+        if count.is_none()
+            || limits
+                .attachments
+                .is_some_and(|maximum| self.metadata.len() > maximum.get())
+        {
             return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,

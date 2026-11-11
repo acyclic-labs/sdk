@@ -73,7 +73,9 @@ pub(crate) struct RequestManifest {
 pub(crate) fn limits_admit(admitted: Limits, current: Limits) -> bool {
     admitted.file_bytes <= current.file_bytes
         && admitted.path_bytes <= current.path_bytes
-        && admitted.attachments <= current.attachments
+        && current
+            .attachments
+            .is_none_or(|maximum| admitted.attachments.is_some_and(|limit| limit <= maximum))
         && admitted.render_bytes <= current.render_bytes
         && current.context_messages.is_none_or(|maximum| {
             admitted

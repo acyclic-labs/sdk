@@ -101,7 +101,9 @@ fn validate_projection_metadata(
         if limits
             .context_messages
             .is_some_and(|maximum| message_count > maximum.get())
-            || context.metadata.len() > limits.attachments
+            || limits
+                .attachments
+                .is_some_and(|maximum| context.metadata.len() > maximum.get())
         {
             return Err(invalid("context projection exceeded declared bounds"));
         }
@@ -186,7 +188,11 @@ pub(crate) fn restrict_context_limits(
     Ok(Limits {
         file_bytes: pinned.file_bytes.min(admitted.file_bytes),
         path_bytes: pinned.path_bytes.min(admitted.path_bytes),
-        attachments: pinned.attachments.min(admitted.attachments),
+        attachments: pinned
+            .attachments
+            .into_iter()
+            .chain(admitted.attachments)
+            .min(),
         render_bytes: pinned.render_bytes.min(admitted.render_bytes),
         model_events_per_step: pinned
             .model_events_per_step

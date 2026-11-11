@@ -62,8 +62,8 @@ pub struct Limits {
     pub file_bytes: u64,
     /// Maximum normalized UTF-8 path bytes.
     pub path_bytes: usize,
-    /// Maximum attachments in one message, inline or manifest-backed.
-    pub attachments: usize,
+    /// Optional maximum attachments in one message, inline or manifest-backed.
+    pub attachments: Option<std::num::NonZeroUsize>,
     /// Maximum bytes rendered directly into one model context part.
     pub render_bytes: u64,
     /// Optional maximum streamed observations in one model round trip; `None` is unbounded.
@@ -79,7 +79,7 @@ impl Default for Limits {
         Self {
             file_bytes: MAX_EXACT_JS_INTEGER,
             path_bytes: u32::MAX as usize,
-            attachments: u32::MAX as usize,
+            attachments: None,
             render_bytes: MAX_EXACT_JS_INTEGER,
             model_events_per_step: None,
             tool_calls_per_step: None,
@@ -100,8 +100,9 @@ impl Limits {
         if [self.file_bytes, self.render_bytes]
             .into_iter()
             .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
-            || [self.path_bytes, self.attachments]
+            || [self.path_bytes]
                 .into_iter()
+                .chain(self.attachments.map(std::num::NonZeroUsize::get))
                 .chain(self.context_messages.map(std::num::NonZeroUsize::get))
                 .chain(self.model_events_per_step.map(std::num::NonZeroUsize::get))
                 .chain(self.tool_calls_per_step.map(std::num::NonZeroUsize::get))
@@ -211,7 +212,10 @@ impl Limits {
                 item_count,
             } => (&[][..], Some(manifest), *item_count as usize),
         };
-        if count > self.attachments {
+        if self
+            .attachments
+            .is_some_and(|maximum| count > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,

@@ -149,14 +149,15 @@ The new table appends its 84
 messages after the original 403, preserving the captured selectors.
 
 Harness v2 `RuntimeLimits.model_events_per_step` (field 6) and
-`tool_calls_per_step` (field 7) and `context_messages` (field 8) have explicit
+`tool_calls_per_step` (field 7), `context_messages` (field 8), and `attachments`
+(field 3) have explicit
 protobuf presence. Absence
 means unbounded; a supplied limit must be positive. This is an intentional
 contract change, bound by the generated negotiated descriptor identity and
 the Harness schema digest in `manifest.json`.
 
 The segmented model request manifest persists these limits as positive integers
-or JSON `null`. Version 2 also makes the context-message allowance optional;
+or JSON `null`. Version 2 also makes context-message and attachment allowances optional;
 `None` is unbounded while finite allowances remain positive. Its canonical JSON
 starts with `{"$version":2,`; the reserved
 version key sorts before all payload keys in both canonical encoding paths.

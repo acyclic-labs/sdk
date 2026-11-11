@@ -136,7 +136,10 @@ pub async fn select_model_context_wasm(
                     JsValue::from_str("maximum context messages must be positive")
                 })?,
             ),
-            attachments: maximum_attachments as usize,
+            attachments: Some(
+                std::num::NonZeroUsize::new(maximum_attachments as usize)
+                    .ok_or_else(|| JsValue::from_str("maximum attachments must be positive"))?,
+            ),
             render_bytes: maximum_render_bytes,
             ..Default::default()
         },

@@ -150,7 +150,10 @@ impl RuntimeScope {
         grants.is_subset_of(&self.grants)
             && limits.file_bytes <= self.limits.file_bytes
             && limits.path_bytes <= self.limits.path_bytes
-            && limits.attachments <= self.limits.attachments
+            && self
+                .limits
+                .attachments
+                .is_none_or(|maximum| limits.attachments.is_some_and(|limit| limit <= maximum))
             && limits.render_bytes <= self.limits.render_bytes
             && self.limits.model_events_per_step.is_none_or(|maximum| {
                 limits

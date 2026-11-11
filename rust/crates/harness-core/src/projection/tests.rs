@@ -292,7 +292,7 @@ async fn manifest_projection_checks_limit_before_resolution_and_exact_count_afte
     };
     let limits = Limits {
         context_messages: std::num::NonZeroUsize::new(256),
-        attachments: 1,
+        attachments: std::num::NonZeroUsize::new(1),
         render_bytes: 128 * 1024,
         ..Limits::default()
     };
@@ -311,7 +311,7 @@ async fn manifest_projection_checks_limit_before_resolution_and_exact_count_afte
     );
     assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
     let limits = Limits {
-        attachments: 2,
+        attachments: std::num::NonZeroUsize::new(2),
         ..limits
     };
     assert!(
@@ -468,16 +468,21 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
         Invalid
     };
     assert!(matches!(
-        attachments::resolve(&message, &resolver, 1, Some(&io)).await,
+        attachments::resolve(&message, &resolver, std::num::NonZeroUsize::new(1), Some(&io)).await,
         Err(Error::NativeBoundary { code, .. }) if code == expected
     ));
     assert_eq!(resolver.ordinary.load(Ordering::SeqCst), 0);
     assert_eq!(resolver.native.load(Ordering::SeqCst), 1);
     work.cancellation().cancel();
     assert!(
-        attachments::resolve(&message, &resolver, 1, Some(&io))
-            .await
-            .is_err()
+        attachments::resolve(
+            &message,
+            &resolver,
+            std::num::NonZeroUsize::new(1),
+            Some(&io)
+        )
+        .await
+        .is_err()
     );
     assert_eq!(resolver.native.load(Ordering::SeqCst), 1);
     Ok(())

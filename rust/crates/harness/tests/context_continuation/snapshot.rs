@@ -94,7 +94,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
     });
     let limits = Limits {
         context_messages: std::num::NonZeroUsize::new(8),
-        attachments: 4,
+        attachments: std::num::NonZeroUsize::new(4),
         ..Limits::default()
     };
     let stage = Arc::new(
@@ -220,7 +220,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             snapshot.clone(),
             delta.clone(),
             Limits {
-                attachments: 1,
+                attachments: std::num::NonZeroUsize::new(1),
                 ..limits
             },
             None,

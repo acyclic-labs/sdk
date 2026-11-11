@@ -184,10 +184,8 @@ fn configured_limits_reject_oversized_references() -> Result<()> {
     limits.validate_file(&file, &mut None)?;
     limits.model_events_per_step = std::num::NonZeroUsize::new(1);
     limits.validate(&mut None)?;
-    limits.attachments = 0;
-    assert!(limits.validate(&mut None).is_err());
     Limits {
-        attachments: 65_537,
+        attachments: std::num::NonZeroUsize::new(65_537),
         model_events_per_step: std::num::NonZeroUsize::new(1_000_001),
         tool_calls_per_step: std::num::NonZeroUsize::new(1_000_001),
         context_messages: std::num::NonZeroUsize::new(1_000_001),
