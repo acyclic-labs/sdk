@@ -180,12 +180,11 @@ pub fn charge(work: &NativeCustody, bytes_copied: u64, items_examined: u64) -> R
     Ok(())
 }
 
-/// Rejects unbounded or empty allowances at both transformation and I/O boundaries.
+/// Rejects empty selected credit at the shared I/O boundary. Every positive
+/// u64 is finite; absence is represented separately by the policy owner.
 pub(crate) fn validate_edit_bound(maximum_bytes: u64) -> Result<()> {
-    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-        return Err(Error::Invalid(
-            "edit byte bound must be positive and finite".into(),
-        ));
+    if maximum_bytes == 0 {
+        return Err(Error::Invalid("edit byte bound must be positive".into()));
     }
     Ok(())
 }
@@ -463,7 +462,11 @@ mod tests {
         assert!(replace("abc", "b", "long", false, Some(4), &mut work).is_err());
         assert!(replace("abc", "abc", "a", false, Some(2), &mut work).is_err());
         assert!(replace("abc", "a", "a", false, Some(0), &mut work).is_err());
-        assert!(replace("abc", "a", "a", false, Some(u64::MAX), &mut work).is_err());
+        validate_edit_bound(u64::MAX)?;
+        assert_eq!(
+            replace("abc", "a", "a", false, Some(u64::MAX), &mut work)?,
+            "abc"
+        );
         assert!(replace("é", "é", "🦀", false, Some(3), &mut work).is_err());
         Ok(())
     }
