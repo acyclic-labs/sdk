@@ -227,6 +227,7 @@ pub async fn serve<C: Composition>(
         acyclic_stream::session::Limits::default(),
     )
     .with_products(host.resources.clone(), server.clone())
+    .with_sockets(server.clone())
     .with_lifetime(ended);
     let tls = match config.tls {
         Some(identity) => {

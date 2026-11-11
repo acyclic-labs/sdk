@@ -3910,6 +3910,30 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         source[..1]
     );
     let selected_branch = Conversation::open(connection.select(branch.clone()).await?);
+    let mut baseline = selected_branch
+        .diff_query(
+            crate::client::AgentPageRequest::new(2, 2048, None).map_err(agent)?,
+            crate::client::DiffProjection::Summary,
+        )
+        .await
+        .map_err(agent)?;
+    let Some(crate::client::DiffQueryEvent::Snapshot(snapshot)) =
+        baseline.next().await.map_err(agent)?
+    else {
+        return Err(Error::Invalid(
+            "missing historical fork diff snapshot".into(),
+        ));
+    };
+    assert_eq!(
+        snapshot.base, snapshot.current,
+        "a historical fork starts against its own creation cut, not the later checkout"
+    );
+    while let Some(event) = baseline.next().await.map_err(agent)? {
+        assert!(
+            matches!(event, crate::client::DiffQueryEvent::Progress),
+            "a freshly forked historical volume has no changes"
+        );
+    }
     let inherited = ConversationEntry::decode(&source[0]).map_err(agent)?;
     let shown = selected_branch.turn_at(0, &inherited).await?;
     assert_eq!(shown.prompt.as_deref(), Some("first decision"));
@@ -4079,6 +4103,196 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         3,
         "forking retained archived history cannot dispatch a model"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_diff_queries_pin_endpoints_and_keep_client_lifetimes_independent() -> Result<()> {
+    use crate::client::{AgentPageRequest, DiffProjection, DiffQueryEvent};
+    use crate::filesystem::{WorkspaceMutation, workspace_ref};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted([super::ScriptedTurn::Text("unused".into())]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .without_default_tools()
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let original = workspace_ref(
+        project.provider().clone(),
+        &project.storage_name(&mut None)?,
+    )?;
+    harness
+        .files
+        .apply(
+            &original,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: "/plan.md".into(),
+                bytes: acyclic_stream::OwnedBytes::copy_from_slice(b"base\n"),
+            }],
+            &crate::IdempotencyKey::new("diff-base")?,
+        )
+        .await?;
+    let directory_connection = harness.connect_sessions().await?;
+    let selected = crate::local::sessions::create(&directory_connection, "diff-session").await?;
+    let conversation = Conversation::open(selected.clone());
+    let (agents, _) = harness.agents().await?;
+    let state = agents.state(selected.root()).await.map_err(agent)?;
+    let project = state
+        .volumes
+        .iter()
+        .find(|binding| binding.name == "project")
+        .ok_or_else(|| Error::Invalid("missing selected project".into()))?;
+    let workspace = workspace_ref(
+        project.volume.provider().clone(),
+        &project.volume.storage_name(&mut None)?,
+    )?;
+    harness
+        .files
+        .apply(
+            &workspace,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: "/plan.md".into(),
+                bytes: acyclic_stream::OwnedBytes::from("changed\n".repeat(32).into_bytes()),
+            }],
+            &crate::IdempotencyKey::new("diff-change")?,
+        )
+        .await?;
+    let page = || AgentPageRequest::new(2, 2048, None).map_err(agent);
+    let mut patches = conversation
+        .diff_query(page()?, DiffProjection::Patch)
+        .await
+        .map_err(agent)?;
+    let Some(DiffQueryEvent::Snapshot(first)) = patches.next().await.map_err(agent)? else {
+        return Err(Error::Invalid("missing patch snapshot".into()));
+    };
+    let first_page = loop {
+        match patches.next().await.map_err(agent)? {
+            Some(DiffQueryEvent::Page(items)) => break items,
+            Some(DiffQueryEvent::Progress) => {}
+            _ => return Err(Error::Invalid("missing first patch page".into())),
+        }
+    };
+    assert!(
+        first_page.last().is_some_and(|item| item.next.is_some()),
+        "two rows must leave a real file continuation"
+    );
+    let mut summary = conversation
+        .diff_query(page()?, DiffProjection::Summary)
+        .await
+        .map_err(agent)?;
+    let Some(DiffQueryEvent::Snapshot(second)) = summary.next().await.map_err(agent)? else {
+        return Err(Error::Invalid("missing summary snapshot".into()));
+    };
+    assert_eq!(first.current, second.current);
+    // Replacing one client releases only that original query, including when
+    // it has an unfinished file. The other client's source stays usable.
+    let mut partial = conversation
+        .diff_query(page()?, DiffProjection::Patch)
+        .await
+        .map_err(agent)?;
+    assert!(matches!(
+        partial.next().await.map_err(agent)?,
+        Some(DiffQueryEvent::Snapshot(_))
+    ));
+    loop {
+        match partial.next().await.map_err(agent)? {
+            Some(DiffQueryEvent::Page(items)) => {
+                assert!(items.last().is_some_and(|item| item.next.is_some()));
+                break;
+            }
+            Some(DiffQueryEvent::Progress) => {}
+            _ => return Err(Error::Invalid("missing partial file".into())),
+        }
+    }
+    drop(partial);
+    harness
+        .files
+        .apply(
+            &workspace,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: "/later.md".into(),
+                bytes: acyclic_stream::OwnedBytes::copy_from_slice(b"later\n"),
+            }],
+            &crate::IdempotencyKey::new("diff-later")?,
+        )
+        .await?;
+    let mut patch = String::new();
+    for item in first_page {
+        patch.push_str(&item.patch);
+    }
+    while let Some(event) = patches.next().await.map_err(agent)? {
+        match event {
+            DiffQueryEvent::Page(items) => {
+                for item in items {
+                    assert_eq!(
+                        item.path, "plan.md",
+                        "later generations cannot enter a pinned query"
+                    );
+                    patch.push_str(&item.patch);
+                }
+            }
+            DiffQueryEvent::Progress => {}
+            _ => return Err(Error::Invalid("unexpected patch query event".into())),
+        }
+    }
+    assert!(patch.contains("-base\n"));
+    assert_eq!(patch.matches("+changed\n").count(), 32);
+    let mut totals = crate::client::DiffSummary::default();
+    while let Some(event) = summary.next().await.map_err(agent)? {
+        match event {
+            DiffQueryEvent::Summary(value) => totals = value,
+            DiffQueryEvent::Progress => {}
+            _ => return Err(Error::Invalid("summary transferred patch bytes".into())),
+        }
+    }
+    assert_eq!(
+        (totals.files, totals.added, totals.removed, totals.omitted),
+        (1, 32, 1, 0)
+    );
+    let mut fresh = conversation
+        .diff_query(page()?, DiffProjection::Summary)
+        .await
+        .map_err(agent)?;
+    let mut fresh_totals = crate::client::DiffSummary::default();
+    while let Some(event) = fresh.next().await.map_err(agent)? {
+        match event {
+            DiffQueryEvent::Snapshot(snapshot) => assert_ne!(snapshot.current, first.current),
+            DiffQueryEvent::Summary(value) => fresh_totals = value,
+            DiffQueryEvent::Progress => {}
+            _ => return Err(Error::Invalid("summary transferred patch bytes".into())),
+        }
+    }
+    assert_eq!(
+        (fresh_totals.files, fresh_totals.added, fresh_totals.removed),
+        (2, 33, 1)
+    );
+    assert_eq!(
+        provider.request_count(),
+        0,
+        "query lifetime never starts a model"
+    );
+    let tree_only = harness.connect().await?;
+    let refused = tree_only
+        .controls
+        .diff_query(selected.root().clone(), page()?, DiffProjection::Summary)
+        .await;
+    match refused {
+        Err(acyclic_harness_client::AgentExchangeError::Session(StreamError::AccessDenied)) => {}
+        Ok(mut query) => assert!(matches!(
+            query.next().await,
+            Err(acyclic_harness_client::AgentExchangeError::Session(
+                StreamError::AccessDenied
+            ))
+        )),
+        Err(error) => return Err(agent(error)),
+    }
     Ok(())
 }
 

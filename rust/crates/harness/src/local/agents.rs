@@ -146,47 +146,27 @@ impl crate::hosting::Platform for LocalUser {
         page: &'a acyclic_harness_client::AgentPageRequest,
     ) -> BoxProviderFuture<'a, Result<Vec<crate::context::DiffFilePage>>> {
         Box::pin(async move {
-            let local = self.harness()?;
-            if local.agents.get().map(Hosted::root) == Some(agent) {
-                return local.project_diff(&self.diffs, page).await;
-            }
-            let state = local
-                .agents()
-                .await?
-                .0
-                .state(agent)
-                .await
-                .map_err(storage)?;
-            let project = state
-                .volumes
-                .iter()
-                .find(|binding| binding.name == "project")
-                .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
-            let operation = crate::filesystem::spawned_operation(agent, &project.name);
-            let base = local
-                .files
-                .creation_generation(&project.volume, operation)
-                .await?
-                .ok_or_else(|| {
-                    Error::Unsupported("selected project has no fork creation receipt".into())
-                })?;
-            let reference = crate::filesystem::workspace_ref(
-                project.volume.provider().clone(),
-                &project.volume.storage_name(&mut None)?,
-            )?;
-            let current = local.files.resolve(&reference, None).await?.generation;
-            let reader = local
-                .agents
-                .get()
-                .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
-                .server
-                .bound()
-                .content_reader(agent)
-                .await
-                .map_err(storage)?;
+            let (reader, selection) = self.diff_selection(agent).await?;
             self.diffs
-                .page(&*reader, &project.volume, (&base, &current), page)
+                .page(
+                    reader.as_ref(),
+                    &selection.volume,
+                    (&selection.base, &selection.current),
+                    page,
+                )
                 .await
+        })
+    }
+
+    #[cfg(any(test, feature = "native-execution"))]
+    fn diff_source<'a>(
+        &'a self,
+        _: &'a acyclic_stream::session::CallAuthorization,
+        agent: &'a AgentPath,
+    ) -> BoxProviderFuture<'a, Result<crate::hosting::DiffSource>> {
+        Box::pin(async move {
+            let (reader, selection) = self.diff_selection(agent).await?;
+            Ok(crate::hosting::DiffSource::new(reader, selection))
         })
     }
 
@@ -194,6 +174,67 @@ impl crate::hosting::Platform for LocalUser {
     /// human approver, the one a tool hook's escalation asks.
     fn approver(&self, _: &Principal) -> String {
         crate::approvals::HUMAN_APPROVER.to_owned()
+    }
+}
+
+impl LocalUser {
+    #[cfg(any(test, feature = "native-execution"))]
+    async fn diff_selection(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<(
+        Arc<
+            crate::filesystem::FilesystemContentVerifier<LocalAuthorityBackend, LocalObjectBackend>,
+        >,
+        acyclic_harness_client::DiffSnapshot,
+    )> {
+        let local = self.harness()?;
+        if local.agents.get().map(Hosted::root) == Some(agent) {
+            return local.project_diff_selection().await;
+        }
+        let state = local
+            .agents()
+            .await?
+            .0
+            .state(agent)
+            .await
+            .map_err(storage)?;
+        let project = state
+            .volumes
+            .iter()
+            .find(|binding| binding.name == "project")
+            .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
+        let operation = crate::filesystem::spawned_operation(agent, &project.name);
+        let base = local
+            .files
+            .creation_generation(&project.volume, operation)
+            .await?
+            .ok_or_else(|| {
+                Error::Unsupported("selected project has no fork creation receipt".into())
+            })?;
+        let reference = crate::filesystem::workspace_ref(
+            project.volume.provider().clone(),
+            &project.volume.storage_name(&mut None)?,
+        )?;
+        let current = local.files.resolve(&reference, None).await?.generation;
+        let reader = local
+            .agents
+            .get()
+            .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+            .server
+            .bound()
+            .content_reader(agent)
+            .await
+            .map_err(storage)?;
+        Ok((
+            reader,
+            acyclic_harness_client::DiffSnapshot {
+                agent: agent.clone(),
+                volume: project.volume.clone(),
+                base,
+                current,
+            },
+        ))
     }
 }
 

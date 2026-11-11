@@ -486,6 +486,7 @@ impl WasmAgentServer {
             self.authority.clone(),
             None,
             self.served()?,
+            Some(self.served()?),
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
             Some(self.lifetime()?),
         );

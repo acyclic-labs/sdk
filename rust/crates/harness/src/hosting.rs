@@ -30,7 +30,8 @@ mod runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::Runtime;
 mod diff;
-pub use diff::{DIFF_FILE_BYTES, DiffPages};
+mod queries;
+pub use diff::{DIFF_FILE_BYTES, DiffPages, DiffSource};
 
 use crate::{
     agent::{
@@ -163,6 +164,21 @@ pub trait Platform: ProviderPlatform + 'static {
         Box::pin(async {
             Err(crate::Error::Unsupported(
                 "workspace diff query is unavailable".into(),
+            ))
+        })
+    }
+
+    /// Select one immutable workspace diff under the original admission.
+    /// The returned source owns its frontier for exactly the live client query.
+    fn diff_source<'a>(
+        &'a self,
+        authorization: &'a CallAuthorization,
+        agent: &'a AgentPath,
+    ) -> BoxProviderFuture<'a, crate::Result<DiffSource>> {
+        let _ = (authorization, agent);
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "workspace diff source is unavailable".into(),
             ))
         })
     }

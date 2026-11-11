@@ -218,6 +218,29 @@ impl LocalHarness {
         diffs: &crate::hosting::DiffPages,
         page: &acyclic_harness_client::AgentPageRequest,
     ) -> Result<Vec<crate::context::DiffFilePage>> {
+        let (reader, selection) = self.project_diff_selection().await?;
+        diffs
+            .page(
+                reader.as_ref(),
+                &selection.volume,
+                (&selection.base, &selection.current),
+                page,
+            )
+            .await
+    }
+
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) async fn project_diff_selection(
+        &self,
+    ) -> Result<(
+        Arc<
+            crate::filesystem::FilesystemContentVerifier<
+                acyclic_fs::LocalAuthorityBackend,
+                acyclic_fs::LocalObjectBackend,
+            >,
+        >,
+        acyclic_harness_client::DiffSnapshot,
+    )> {
         let workspace = self
             .workspace
             .as_ref()
@@ -257,17 +280,20 @@ impl LocalHarness {
             .map_err(storage)?
             .value
             .id();
-        diffs
-            .page(
-                &*self.signed_reader()?,
-                &self.project,
-                (
-                    &self.files.generation_ref_id(base, None)?,
-                    &self.files.generation_ref_id(current, None)?,
-                ),
-                page,
-            )
-            .await
+        Ok((
+            self.signed_reader()?,
+            acyclic_harness_client::DiffSnapshot {
+                agent: self
+                    .agents
+                    .get()
+                    .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+                    .root()
+                    .clone(),
+                volume: self.project.clone(),
+                base: self.files.generation_ref_id(base, None)?,
+                current: self.files.generation_ref_id(current, None)?,
+            },
+        ))
     }
 
     /// Publisher of this harness's prompt inputs on its private journal volume.

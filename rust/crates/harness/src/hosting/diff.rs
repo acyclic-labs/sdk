@@ -207,3 +207,7 @@ fn credit_error(error: Error) -> crate::Error {
         error => crate::Error::Invalid(error.to_string()),
     }
 }
+
+mod source;
+pub use source::DiffSource;
+pub(in crate::hosting) use source::frame;

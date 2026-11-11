@@ -376,6 +376,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             acyclic_stream::session::testing::authority(),
             resources,
             server.clone(),
+            Some(server.clone()),
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
             None,
         );
@@ -613,6 +614,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         acyclic_stream::session::testing::authority(),
         None,
         server.clone(),
+        Some(server.clone()),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
         None,
     );
@@ -1202,6 +1204,7 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
         acyclic_stream::session::testing::authority(),
         None,
         server.clone(),
+        Some(server.clone()),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
         None,
     );

@@ -107,6 +107,22 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    /// Open a demand-driven diff on the original authenticated client socket.
+    /// Dropping it releases the server's immutable traversal and comparison.
+    ///
+    /// # Errors
+    /// The original typed admission, framing or transport failure.
+    pub async fn diff_query(
+        &self,
+        page: AgentPageRequest,
+        projection: crate::client::DiffProjection,
+    ) -> std::result::Result<crate::client::DiffQuery, AgentExchangeError> {
+        self.connection
+            .controls
+            .diff_query(self.agent().clone(), page, projection)
+            .await
+    }
+
     /// Requests one visible diff page through this connection's authenticated
     /// session. The cursor is returned unchanged to the same query owner; no
     /// local filesystem or frontend-specific access bypasses the server.

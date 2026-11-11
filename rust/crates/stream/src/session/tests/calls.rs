@@ -86,6 +86,7 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         authority,
         None,
         Arc::new(DependentCalls { admitted }),
+        None,
         Arc::new(crate::runtime::PlatformExecutor),
         None,
     );
@@ -657,6 +658,7 @@ async fn follow_authority_cannot_dispatch_calls_or_stop_healthy_follows() -> Tes
             calls: calls.clone(),
             body: Bytes::from_static(b"unused"),
         }),
+        None,
         Arc::new(crate::runtime::PlatformExecutor),
         None,
     );
@@ -727,6 +729,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
             calls: calls.clone(),
             body: body.clone(),
         }),
+        None,
         Arc::new(crate::runtime::PlatformExecutor),
         Some(lifetime),
     );

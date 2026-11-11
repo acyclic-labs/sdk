@@ -90,6 +90,7 @@ async fn ten_thousand_sessions_keep_discovery_at_two_bounded_head_views() -> Res
             acyclic_stream::session::testing::authority(),
             None,
             server.clone(),
+            Some(server.clone()),
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
             None,
         );

@@ -79,6 +79,7 @@ impl Client {
         authority: Arc<super::Authority>,
         resources: Option<Arc<dyn ResourceProvider>>,
         calls: Arc<dyn CallProvider>,
+        sockets: Option<Arc<dyn SocketProvider>>,
         executor: Arc<dyn Executor>,
         lifetime: Option<tokio::sync::watch::Receiver<()>>,
     ) -> Self {
@@ -88,7 +89,7 @@ impl Client {
             Products {
                 resources,
                 calls: Some(calls),
-                sockets: None,
+                sockets,
             },
             executor,
             lifetime,
