@@ -33,11 +33,25 @@ impl DecodeWork for OriginalDecodeWork<'_, '_> {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum MetadataDecodeError {
+pub enum MetadataDecodeError {
+    /// Work, cancellation or allocation admission failed.
     #[error(transparent)]
     Work(#[from] crate::FsError),
+    /// The selected bytes do not encode the requested JSON value.
     #[error(transparent)]
     Codec(#[from] serde_json::Error),
+}
+
+impl KernelAccounting<'_> {
+    /// Decodes JSON with the shared funded visitor, retaining every owned
+    /// destination allocation on this caller's original ledger. Unselected
+    /// fields are parsed without materializing their strings or collections.
+    pub fn decode_json<T: serde::de::DeserializeOwned>(
+        &mut self,
+        input: &[u8],
+    ) -> Result<Retained<T>, MetadataDecodeError> {
+        from_slice(input, self)
+    }
 }
 
 /// Retains decoded metadata on the caller's original allocation ledger.

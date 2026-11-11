@@ -1,7 +1,8 @@
 //! One funded serde visitor for persisted metadata on every backend.
 
 mod original;
-pub(crate) use original::{MetadataDecodeError, from_slice};
+pub use original::MetadataDecodeError;
+pub(crate) use original::from_slice;
 
 /// Backend adapter for the original work and allocation owner. Failures remain
 /// typed in `MaterializationDecode::failure` while serde unwinds its visitor.
