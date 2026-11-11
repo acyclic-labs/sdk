@@ -134,8 +134,8 @@ impl LocalMachine {
     }
 }
 
-fn admit(command: &ExecCommand) -> Result<(usize, ProcessControl), ProviderError> {
-    let maximum = command.maximum_output_bytes.map_or(Ok(usize::MAX), usize::try_from)
+fn admit(command: &ExecCommand) -> Result<(Option<usize>, ProcessControl), ProviderError> {
+    let maximum = command.maximum_output_bytes.map(usize::try_from).transpose()
         .map_err(|_| ProviderError::Invalid("local output allowance is not representable; recovery: select an addressable byte allowance".into()))?;
     let control = match command.expiry_unix_ms {
         Some(expiry) => ProcessControl::open(expiry),

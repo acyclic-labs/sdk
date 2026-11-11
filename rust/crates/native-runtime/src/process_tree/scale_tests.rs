@@ -195,7 +195,7 @@ fn capture_observer_loss_retains_original_physical_custody() -> io::Result<()> {
                 Ok::<_, io::Error>(())
             })?;
         } else {
-            drop(tree.capture_owned(CaptureSchedule::Unbounded, 0, None, handler));
+            drop(tree.capture_owned(CaptureSchedule::Unbounded, Some(0), None, handler));
             assert!(runtime.block_on(armed).is_err());
             assert!(runtime.block_on(retired).is_err());
             drop(release);

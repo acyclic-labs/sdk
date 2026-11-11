@@ -38,7 +38,7 @@ impl CheckoutTools {
             execution_grant,
             schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
             // Presentation is bounded below; streaming output is not a reason to stop a command.
-            maximum_output_bytes: usize::MAX,
+            maximum_output_bytes: None,
             standard_input: None,
             process_custody: workspace.processes.clone(),
         };
