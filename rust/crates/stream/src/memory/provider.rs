@@ -132,6 +132,7 @@ impl MemoryStream {
 
     fn empty_heads(&self, request: &crate::HeadsRequest) -> crate::Heads {
         crate::Heads {
+            applied: self.revisions.at(0),
             retained: Default::default(),
             projection: request.projection,
             snapshot: self.revisions.at(0),
@@ -150,13 +151,50 @@ impl MemoryStream {
         allocation: &mut Allocation,
     ) -> Result<(), StreamError> {
         let state = self.state.read().await;
+        let applied = self.revisions.at(state.decision);
+        let index = if let Some(at) = &request.at {
+            if !at.same_authority(&applied) {
+                return Err(StreamError::RevisionForeign);
+            }
+            if at.index > state.decision {
+                return Err(StreamError::Unavailable);
+            }
+            at.index
+        } else {
+            state.decision
+        };
+        let empty = Namespace::default();
+        let (paths, hierarchy) = if index == state.decision {
+            (&state.paths, state.hierarchy_version)
+        } else if index == 0 {
+            (&empty, CommitId::from_bytes([0; 32]))
+        } else {
+            let cut = state
+                .namespace_at(index, || {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = _work {
+                        return work.record(work.meter.examine(1, 0));
+                    }
+                    Ok::<_, StreamError>(())
+                })?
+                .ok_or(StreamError::PrefixNotRetained)?;
+            (&cut.paths, cut.hierarchy_version)
+        };
         view.retained = request
             .retained
             .iter()
             .map(|selected| crate::RetainedRecordObservation {
                 path: selected.path.clone(),
                 record: (|| {
-                    let envelope = state.commit(&selected.commit_id)?;
+                    let fact = state
+                        .find_commit_fact(&selected.commit_id, |_| {
+                            Ok::<_, std::convert::Infallible>(())
+                        })
+                        .ok()??;
+                    if fact.index > index {
+                        return None;
+                    }
+                    let envelope = fact.envelope()?;
                     let index = envelope
                         .mutations
                         .binary_search_by(|mutation| {
@@ -175,7 +213,7 @@ impl MemoryStream {
         for path in &request.paths {
             let capture = || {
                 head_at(
-                    &state,
+                    paths,
                     path,
                     request.projection,
                     request.durable_through,
@@ -193,16 +231,19 @@ impl MemoryStream {
             let head = capture()?;
             view.heads.push(head);
         }
-        view.snapshot = self.revisions.at(state.decision);
+        view.snapshot = self.revisions.at(index);
+        view.applied = applied;
         view.children = if let Some(children) = &request.children {
             let limit = children
                 .limit
                 .min(request.limit - request.selection_count()?);
-            Some(children_at(&state, children, limit, _work, allocation)?)
+            Some(children_at(
+                paths, hierarchy, children, limit, _work, allocation,
+            )?)
         } else {
             None
         };
-        if !request.at_least.proven_by(Some(&view.snapshot)) {
+        if !request.at_least.proven_by(Some(&view.applied)) {
             return Err(StreamError::InvalidResponse);
         }
         Ok(())
@@ -210,15 +251,14 @@ impl MemoryStream {
 }
 
 fn head_at(
-    state: &State,
+    paths: &Namespace,
     path: &StreamPath,
     projection: crate::HeadProjection,
     through: Option<u64>,
     durable: bool,
     _work: CaptureWork<'_>,
 ) -> Result<Option<crate::PathHead>, StreamError> {
-    state
-        .paths
+    paths
         .observation_with(path, || {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = _work {
@@ -250,7 +290,7 @@ fn head_at(
                     0
                 },
                 origin: if projection == crate::HeadProjection::History {
-                    capture_origin(&state.paths, path, _work)?
+                    capture_origin(paths, path, _work)?
                 } else {
                     None
                 },
@@ -454,7 +494,8 @@ fn native_last_record(stream: &PathState, work: &Work) -> Result<Option<Record>,
 }
 
 fn children_at(
-    state: &State,
+    paths: &Namespace,
+    hierarchy_version: CommitId,
     request: &ChildrenPageRequest,
     limit: u32,
     work: CaptureWork<'_>,
@@ -463,15 +504,15 @@ fn children_at(
     request.validate()?;
     if request
         .hierarchy_version
-        .is_some_and(|version| version != state.hierarchy_version)
+        .is_some_and(|version| version != hierarchy_version)
     {
         return Err(StreamError::HierarchyChanged);
     }
     let children = request
         .parent
         .as_ref()
-        .map_or(Some(&state.paths.roots), |parent| {
-            state.paths.node(parent).map(|node| &node.children)
+        .map_or(Some(&paths.roots), |parent| {
+            paths.node(parent).map(|node| &node.children)
         });
     let empty = None;
     let index = children.unwrap_or(&empty);
@@ -503,9 +544,8 @@ fn children_at(
     let mut page_bytes = 64usize;
     page.visit(&mut examine, &mut |name| {
         let path = capture_child_path(request.parent.as_ref(), name, work)?;
-        let (tail, tail_record) =
-            projected_tail(&state.paths, &path, request.tail_stream.as_ref(), work)?;
-        let origin = capture_origin(&state.paths, &path, work)?;
+        let (tail, tail_record) = projected_tail(paths, &path, request.tail_stream.as_ref(), work)?;
+        let origin = capture_origin(paths, &path, work)?;
         let child = Child {
             path,
             tail,
@@ -553,7 +593,7 @@ fn children_at(
         return Err(StreamError::LimitExceeded);
     }
     Ok(ChildrenPage {
-        hierarchy_version: state.hierarchy_version,
+        hierarchy_version,
         children: rows,
         next_after,
     })

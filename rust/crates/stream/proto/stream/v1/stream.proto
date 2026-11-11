@@ -113,6 +113,8 @@ enum HeadProjection {
 }
 
 message HeadsRequest {
+  // Exact retained namespace cut, independent of the replica-applied floor.
+  Revision at = 8;
   repeated string paths = 1;
   ChildrenPageRequest children = 2;
   uint32 limit = 3;
@@ -144,6 +146,8 @@ message HeadObservation {
 }
 
 message HeadsResponse {
+  // Replica progress; snapshot remains the selected immutable namespace cut.
+  Revision applied = 6;
   Revision snapshot = 1;
   // In exact request order, including explicit absent observations.
   repeated HeadObservation heads = 2;

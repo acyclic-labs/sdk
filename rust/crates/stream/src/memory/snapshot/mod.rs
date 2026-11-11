@@ -315,7 +315,13 @@ fn reconstruct(
     let inventory = std::mem::take(&mut state.retained);
     state.decision = 0;
     let builder = MemoryStream::default();
-    for envelope in inventory.iter().filter_map(Retained::envelope) {
+    for retained in &inventory {
+        let Some(envelope) = retained.envelope() else {
+            retained
+                .namespace
+                .get_or_init(|| super::NamespaceCut::capture(&state));
+            continue;
+        };
         if envelope.committed_at_micros < state.last_committed_at_micros
             || envelope.committed_at_micros > time
         {
@@ -361,6 +367,9 @@ fn reconstruct(
         install_namespace(&mut state, namespace, envelope).ok()?;
         state.decision = state.decision.checked_add(1)?;
         state.last_committed_at_micros = envelope.committed_at_micros;
+        retained
+            .namespace
+            .get_or_init(|| super::NamespaceCut::capture(&state));
     }
     state.retained = inventory;
     state.decision = decision;

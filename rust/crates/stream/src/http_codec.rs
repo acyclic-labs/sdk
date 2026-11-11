@@ -240,10 +240,12 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 "commitId": STANDARD.encode(selected.commit_id.as_bytes()),
                 "path": selected.path.to_string(), "sequence": selected.sequence.to_string(),
             })).collect();
-            Ok(with_at_least(
-                json!({ "retained": retained, "durableThrough": request.durable_through.map(|through| through.to_string()), "paths": request.paths.iter().map(ToString::to_string).collect::<Vec<_>>(), "children": children, "limit": request.limit, "projection": match request.projection { crate::HeadProjection::History => "history", crate::HeadProjection::Watermarks => "watermarks", crate::HeadProjection::Tail => "tail" } }),
-                &wire.at_least,
-            ))
+            let mut value = json!({ "retained": retained, "durableThrough": request.durable_through.map(|through| through.to_string()), "paths": request.paths.iter().map(ToString::to_string).collect::<Vec<_>>(), "children": children, "limit": request.limit, "projection": match request.projection { crate::HeadProjection::History => "history", crate::HeadProjection::Watermarks => "watermarks", crate::HeadProjection::Tail => "tail" } });
+            if let Some(at) = &request.at {
+                value["at"] =
+                    crate::http_response::revision_json(Some(&wire_codec::revision_to_wire(at)));
+            }
+            Ok(with_at_least(value, &wire.at_least))
         }
         "head" => {
             let request = wire::HeadRequest::decode(input).map_err(|_| "invalid_argument")?;

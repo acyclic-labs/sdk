@@ -23,6 +23,7 @@ async fn input_revisions_follow_only_own_history_membership_and_grafts_across_re
     async fn observe(provider: &dyn crate::StreamProvider, paths: &[&str]) -> Result<crate::Heads> {
         Ok(provider
             .heads(crate::HeadsRequest {
+                at: None,
                 paths: paths
                     .iter()
                     .map(StreamPath::new)
@@ -137,6 +138,67 @@ async fn input_revisions_follow_only_own_history_membership_and_grafts_across_re
         };
         let replayed = observe(&*reopened, &selected).await?;
         assert_eq!(replayed.heads, pinned.heads);
+        let late = reopened
+            .head(StreamPath::new(paths[2])?)
+            .await?
+            .last
+            .ok_or("missing latest row")?;
+        let historical_request = crate::HeadsRequest {
+            at: Some(crate::Revision {
+                index: before.snapshot.index,
+                ..replayed.snapshot.clone()
+            }),
+            at_least: crate::RevisionCut::of(replayed.applied.clone()),
+            paths: [
+                StreamPath::new(paths[2])?,
+                StreamPath::new("stable/source/kids/b/status")?,
+            ]
+            .into(),
+            retained: [crate::RetainedRecord {
+                commit_id: late.commit_id,
+                path: StreamPath::new(paths[2])?,
+                sequence: late.sequence,
+            }]
+            .into(),
+            children: Some(crate::ChildrenPageRequest {
+                parent: Some(StreamPath::new("stable/source/kids")?),
+                after: None,
+                offset: 0,
+                hierarchy_version: None,
+                limit: 1,
+                tail_stream: Some(StreamPath::new("status")?),
+            }),
+            limit: 4,
+            projection: crate::HeadProjection::Tail,
+            durable_through: None,
+        };
+        let historical = reopened.heads(historical_request.clone()).await?;
+        historical.validate_for(&historical_request)?;
+        assert_eq!(historical.snapshot.index, before.snapshot.index);
+        assert_eq!(historical.applied, replayed.applied);
+        assert_eq!(historical.heads[0], before.heads[2]);
+        assert!(historical.heads[1].is_none());
+        assert!(
+            historical.retained[0].record.is_none(),
+            "a future publication leaked into an old cut"
+        );
+        let page = historical
+            .children
+            .as_ref()
+            .ok_or("missing old membership")?;
+        assert_eq!(page.children.len(), 1);
+        assert_eq!(page.children[0].path.as_str(), "stable/source/kids/a");
+        assert_eq!(page.children[0].tail, Some(1));
+        assert!(page.next_after.is_none());
+        let mut foreign = historical_request.clone();
+        foreign.at.as_mut().ok_or("cut")?.incarnation ^= 1;
+        assert_eq!(
+            reopened.heads(foreign).await,
+            Err(StreamError::RevisionForeign)
+        );
+        let mut future = historical_request;
+        future.at.as_mut().ok_or("cut")?.index = replayed.applied.index + 1;
+        assert_eq!(reopened.heads(future).await, Err(StreamError::Unavailable));
         let wire = crate::wire_codec::heads_to_wire(replayed.clone())?;
         assert_eq!(
             crate::wire_codec::heads_from_response(wire.clone())?,

@@ -85,6 +85,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             )
             .map_err(Error::Stream)?;
             let request = acyclic_stream::HeadsRequest {
+                at: None,
                 paths: [path.clone()].into_iter().collect(),
                 retained: Default::default(),
                 durable_through: None,

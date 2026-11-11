@@ -103,6 +103,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
             let mut future_follow = crate::FollowRequest::new(path.clone(), 1);
             future_follow.at_least = minimum.clone();
             let future_heads = crate::HeadsRequest {
+                at: None,
                 paths: std::iter::once(path.clone()).collect(),
                 retained: Default::default(),
                 projection: crate::HeadProjection::Tail,

@@ -161,6 +161,18 @@ struct Branch {
 struct Namespace {
     roots: Index,
 }
+struct NamespaceCut {
+    paths: Namespace,
+    hierarchy_version: CommitId,
+}
+impl NamespaceCut {
+    fn capture(state: &State) -> Self {
+        Self {
+            paths: state.paths.clone(),
+            hierarchy_version: state.hierarchy_version,
+        }
+    }
+}
 impl NamespaceNode {
     fn count(&self) -> usize {
         1 + self.children.as_ref().map_or(0, |n| n.count)

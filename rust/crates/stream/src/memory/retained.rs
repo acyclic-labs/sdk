@@ -8,6 +8,9 @@ struct Retained {
 /// The original immutable fact and its allocation custody. Derived indexes
 /// remain in the retained inventory; a snapshot pins only this ownership chain.
 struct RetainedFact {
+    /// The accepted namespace shares persistent nodes on this original owner.
+    /// Replay binds it once from the same publication facts; never per query.
+    namespace: std::sync::OnceLock<NamespaceCut>,
     previous: Option<RetainedFactRef>,
     next: std::sync::OnceLock<RetainedLink>,
     replay: Option<Bytes>,
@@ -31,6 +34,7 @@ struct RetainedLink {
 impl RetainedFact {
     fn reserved(header: Allocation) -> RetainedFactRef {
         RetainedFactRef::new(Self {
+            namespace: std::sync::OnceLock::new(),
             previous: None,
             next: std::sync::OnceLock::new(),
             replay: None,

@@ -600,6 +600,7 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
         .await?;
     let client = local(&provider)?;
     let request = crate::HeadsRequest {
+        at: None,
         retained: Default::default(),
         durable_through: None,
         projection: Default::default(),
@@ -849,6 +850,53 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
 }
 
 #[tokio::test]
+async fn historical_heads_keep_the_selected_cut_after_newer_session_progress() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    tree(&provider).await?;
+    let client = local(&provider)?;
+    let request = crate::HeadsRequest {
+        at: None,
+        retained: Default::default(),
+        durable_through: None,
+        projection: crate::HeadProjection::History,
+        paths: [
+            StreamPath::new("tree/a/status")?,
+            StreamPath::new("tree/new/status")?,
+        ]
+        .into(),
+        children: Some(page("tree", 10)?),
+        limit: 12,
+        at_least: Default::default(),
+    };
+    let old = client.heads(request.clone(), 0).await?;
+    for path in ["tree/a/status", "tree/new/status"] {
+        provider
+            .append(crate::AppendRequest {
+                path: StreamPath::new(path)?,
+                records: vec![OwnedBytes::from_static(b"later").into()],
+                if_tail: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    let latest = client.heads(request.clone(), 0).await?;
+    assert!(latest.applied.index > old.snapshot.index);
+    assert!(latest.heads[1].is_some());
+    let historical_request = crate::HeadsRequest {
+        at: Some(old.snapshot.clone()),
+        ..request.clone()
+    };
+    let historical = client.heads(historical_request.clone(), 0).await?;
+    historical.validate_for(&historical_request)?;
+    assert_eq!(historical.snapshot, old.snapshot);
+    assert_eq!(historical.applied, latest.applied);
+    assert_eq!(historical.heads, old.heads);
+    assert_eq!(historical.children, old.children);
+    assert_eq!(client.heads(request, 0).await?, latest);
+    Ok(())
+}
+
+#[tokio::test]
 async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     tree(&provider).await?;
@@ -870,6 +918,7 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
         .await?;
     let client = local(&provider)?;
     let request = crate::HeadsRequest {
+        at: None,
         retained: Default::default(),
         durable_through: None,
         projection: Default::default(),
@@ -1073,6 +1122,7 @@ async fn remote_provider_reads_and_pages_never_use_unary_rpcs() -> TestResult {
         provider.children_page(page("tree", 10)?).await?
     );
     let view = crate::HeadsRequest {
+        at: None,
         retained: Default::default(),
         durable_through: None,
         projection: Default::default(),

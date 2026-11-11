@@ -3,6 +3,7 @@ use super::*;
 /// Validates the canonical mixed observation request before provider admission.
 pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest, StreamError> {
     let request = crate::HeadsRequest {
+        at: value.at.map(revision_from_wire).transpose()?,
         retained: value
             .retained
             .into_iter()
@@ -33,6 +34,7 @@ pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest,
 /// Encodes one mixed observation without splitting it into separate requests.
 pub fn heads_request_to_wire(value: crate::HeadsRequest) -> wire::HeadsRequest {
     wire::HeadsRequest {
+        at: value.at.as_ref().map(revision_to_wire),
         retained: value
             .retained
             .into_iter()
@@ -63,6 +65,7 @@ pub fn heads_to_wire(value: crate::Heads) -> Result<wire::HeadsResponse, StreamE
         return Err(StreamError::LimitExceeded);
     }
     Ok(wire::HeadsResponse {
+        applied: Some(revision_to_wire(&value.applied)),
         retained: value
             .retained
             .into_iter()
@@ -90,6 +93,7 @@ pub fn heads_to_wire(value: crate::Heads) -> Result<wire::HeadsResponse, StreamE
 pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, StreamError> {
     let projection = projection_from_wire(value.projection)?;
     let heads = crate::Heads {
+        applied: issued_from_wire(value.applied)?,
         retained: value
             .retained
             .into_iter()
@@ -223,6 +227,7 @@ mod tests {
             positions in prop::collection::vec((any::<[u8; 32]>(), "[a-z]{1,24}", any::<u64>()), 0..8),
         ) {
             let request = crate::HeadsRequest {
+                at: None,
                 retained: positions.into_iter().map(|(id, path, sequence)| crate::RetainedRecord {
                     commit_id: crate::CommitId::from_bytes(id), path: StreamPath::new(path).unwrap(), sequence,
                 }).collect(),
@@ -233,6 +238,7 @@ mod tests {
             let decoded = wire::HeadsRequest::decode(wire.encode_to_vec().as_slice()).unwrap();
             prop_assert_eq!(heads_from_wire(decoded).unwrap(), request.clone());
             let view = crate::Heads {
+                applied: crate::Revision { scope: crate::RevisionScope::new(Vec::new()), incarnation: 1, index: 0 },
                 retained: request.retained.iter().map(|selected| crate::RetainedRecordObservation {
                     path: selected.path.clone(),
                     record: (selected.sequence % 2 == 0).then(|| crate::Record {

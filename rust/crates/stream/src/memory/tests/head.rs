@@ -78,6 +78,7 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     let fork_facts = provider.read_commit(fork_receipt.commit_id).await?;
     assert!(fork_receipt.matches_envelope(&fork_facts));
     let selected = crate::HeadsRequest {
+        at: None,
         retained: [
             crate::RetainedRecord {
                 commit_id: receipt.commit_id,

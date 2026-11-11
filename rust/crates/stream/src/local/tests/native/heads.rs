@@ -86,6 +86,22 @@ async fn native_indexed_children_share_the_head_cut_and_original_output_owner()
         drop(alias);
         meter.assert_refunded();
 
+        selected.at = Some(expected.snapshot.clone());
+        provider
+            .append(keyed_append("native/child/kids/aa/status", 0)?)
+            .await?;
+        let historical_meter = Arc::new(Meter::default());
+        let historical = provider
+            .native_heads(selected.clone(), historical_meter.original())
+            .await??;
+        historical.value().validate_for(&selected)?;
+        assert_eq!(historical.value().snapshot, expected.snapshot);
+        assert!(historical.value().applied.index > expected.snapshot.index);
+        assert_eq!(historical.value().children, expected.children);
+        assert_eq!(historical.value().heads, expected.heads);
+        drop(historical);
+        historical_meter.assert_refunded();
+
         let denied = Arc::new(Meter::default());
         let future = provider.native_heads(selected.clone(), denied.original());
         denied.deny_allocation.store(true, Ordering::SeqCst);
@@ -109,6 +125,7 @@ async fn native_indexed_children_share_the_head_cut_and_original_output_owner()
 
 fn request(paths: &[&str]) -> Result<HeadsRequest, StreamError> {
     Ok(HeadsRequest {
+        at: None,
         paths: paths
             .iter()
             .map(StreamPath::new)

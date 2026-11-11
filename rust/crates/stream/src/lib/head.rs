@@ -61,6 +61,9 @@ pub struct RetainedRecordObservation {
 /// Named observations and an optional hierarchy page at one authority cut.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeadsRequest {
+    /// Exact retained namespace cut, or the current accepted cut when absent.
+    /// A lagging replica can be parked with the independent `at_least` floor.
+    pub at: Option<Revision>,
     /// Original retained records, in response order. A missing publication or
     /// position yields `None`, never proof that a command did not execute.
     /// Every selected path requires read authorization for the whole view.
@@ -110,6 +113,8 @@ impl HeadsRequest {
 /// A coherent view. No component was observed before or after `snapshot`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Heads {
+    /// Applied authority progress at observation, including for an older selected cut.
+    pub applied: Revision,
     /// Original retained records in selection order at this snapshot. Returned
     /// bytes, sequence, publication identity and time are the original facts;
     /// they do not certify that the current path still contains that prefix.
@@ -147,7 +152,11 @@ impl Heads {
                 .saturating_add(self.retained.len())
                 .saturating_add(child_count)
                 > request.limit as usize
-            || !request.at_least.proven_by(Some(&self.snapshot))
+            || !request.at_least.proven_by(Some(&self.applied))
+            || request
+                .at
+                .as_ref()
+                .map_or(self.snapshot != self.applied, |at| at != &self.snapshot)
         {
             return Err(StreamError::InvalidResponse);
         }
@@ -174,11 +183,13 @@ impl Heads {
     }
 
     pub(crate) fn validate_revision(&self) -> Result<(), StreamError> {
-        if self
-            .heads
-            .iter()
-            .flatten()
-            .any(|head| head.changed_at > self.snapshot.index)
+        if !self.applied.same_authority(&self.snapshot)
+            || self.applied.index < self.snapshot.index
+            || self
+                .heads
+                .iter()
+                .flatten()
+                .any(|head| head.changed_at > self.snapshot.index)
         {
             return Err(StreamError::InvalidResponse);
         }

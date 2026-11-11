@@ -20,6 +20,7 @@ pub(crate) async fn large_retained_view<P: StreamProvider>(
         return Err(StreamError::InvalidResponse);
     };
     Ok(HeadsRequest {
+        at: None,
         retained: std::iter::repeat_n(
             RetainedRecord {
                 commit_id: receipt.commit_id,
@@ -91,6 +92,7 @@ async fn check_child_selection<P: StreamProvider>(provider: &P) -> Result<(), St
         })
         .await?;
     let request = HeadsRequest {
+        at: None,
         retained: Default::default(),
         durable_through: None,
         projection: HeadProjection::Watermarks,
@@ -437,6 +439,7 @@ async fn wire_tail_uses_one_head_view_for_offsets_receipt_and_revision() -> Resu
     // Retention is an explicit proof, never a crash-persistence watermark.
     assert_eq!(provider.watermarks(path.clone()).await?.durable, 0);
     let request = HeadsRequest {
+        at: None,
         retained: Default::default(),
         durable_through: Some(1),
         projection: HeadProjection::Watermarks,

@@ -791,6 +791,7 @@ where
                 };
                 let provider = agents.provider();
                 let request = HeadsRequest {
+                    at: None,
                     retained: Default::default(),
                     durable_through: None,
                     projection: HeadProjection::Watermarks,
@@ -837,6 +838,7 @@ where
                     // Observe its actual canonical path, at or after the page's
                     // creation cut, in one bounded view for the returned rows.
                     let request = HeadsRequest {
+                        at: None,
                         retained: Default::default(),
                         durable_through: None,
                         projection: HeadProjection::History,
