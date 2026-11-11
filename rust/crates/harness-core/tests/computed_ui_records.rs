@@ -72,6 +72,127 @@ fn status(path: &str) -> StatusRecord {
 }
 
 #[tokio::test]
+async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Result {
+    use acyclic_harness_core::{
+        OperationId,
+        agent::{AgentId, ConversationEntry, IntentId, TurnInput, create_root},
+        filesystem::MemoryHarnessStorage,
+        ui::{StreamUiProvider, View},
+    };
+    use std::sync::Arc;
+    let streams = Arc::new(MemoryStream::default());
+    let root = create_root(
+        &IntentId::try_from("file-backed".to_owned())?,
+        adoption(AgentId::from_bytes([11; 16])),
+    )?;
+    let agent = root.child;
+    streams.commit(root.request).await?;
+    let storage = MemoryHarnessStorage::with_stream(agent.id(), 16_384, streams.clone()).await?;
+    for (sequence, text) in [(0, "original é\nanswer"), (1, "later answer")] {
+        let bytes = serde_json::to_vec(
+            &serde_json::json!({"text": text, "transcript": [{"ignored": [1, 2, 3]}]}),
+        )?;
+        let file = storage
+            .stage(
+                OperationId::new(),
+                &format!("turns/{sequence}.json"),
+                &bytes,
+                "application/json",
+                "turn.json",
+            )
+            .await?;
+        let entry = ConversationEntry {
+            observed_through: sequence + 1,
+            inbox: sequence,
+            input: TurnInput::Brief {
+                brief: Box::new(file.clone()),
+            },
+            output: file,
+            outcome: Default::default(),
+            goal: None,
+            targets: None,
+            tool_results: None,
+            steering: None,
+            notices: None,
+        };
+        streams
+            .append(AppendRequest {
+                path: agent.conversation()?,
+                records: vec![entry.encode()?.into()],
+                if_tail: Some(sequence),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    let source = StreamUiProvider::new(
+        streams.clone(),
+        storage.content_bindings().reader,
+        agent.clone(),
+        View::new(1)?,
+        [5; 16],
+        navigation,
+    )
+    .into_source();
+    let cancellation = CancellationToken::new();
+    let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut ctx = KernelAccounting::NativeOriginal {
+        work: &native,
+        cancellation: &cancellation,
+    };
+    let frozen = source.reference(&mut ctx).await?;
+    let path = namespace("/turns/0.md");
+    let node = source
+        .lookup(frozen.clone(), &path, &native, &cancellation)
+        .await?
+        .ok_or("missing turn page")?;
+    let opened = source
+        .open_file(frozen.clone(), &path, node.version, &native, &cancellation)
+        .await?;
+    let before = opened.read_range(0, u64::MAX, &mut ctx)?;
+    assert!(std::str::from_utf8(&before.bytes)?.contains("original é\nanswer"));
+    assert!(!std::str::from_utf8(&before.bytes)?.contains("later answer"));
+    storage
+        .stage(
+            OperationId::new(),
+            "turns/0.json",
+            br#"{"text":"replacement at the same path"}"#,
+            "application/json",
+            "turn.json",
+        )
+        .await?;
+    streams
+        .append(AppendRequest {
+            path: agent.status()?,
+            records: vec![status("new-question.md").encode()?.into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let refreshed = source.reference(&mut ctx).await?;
+    assert_ne!(refreshed, frozen);
+    let offset = before.bytes.len().saturating_sub(9) as u64;
+    let interval = opened.read_range(offset, 7, &mut ctx)?;
+    assert_eq!(
+        interval.bytes.as_ref(),
+        &before.bytes[offset as usize..(offset as usize + 7).min(before.bytes.len())]
+    );
+    let repeated = source
+        .read_range(
+            frozen,
+            &path,
+            node.version,
+            0,
+            u64::MAX,
+            &native,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(repeated.bytes, before.bytes);
+    Ok(())
+}
+
+#[tokio::test]
 async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> Result {
     use acyclic_fs::demand::{SourceChange, SourceChangeSink, SourceFence};
     use acyclic_harness_core::{
