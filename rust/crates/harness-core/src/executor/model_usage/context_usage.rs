@@ -197,7 +197,8 @@ mod tests {
                 "type": "object", "properties": {"nested": schema},
             });
             let cancellation = acyclic_fs::CancellationToken::new();
-            let io = PreparationIo::from_budget(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)?;
+            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let io = PreparationIo::from_budget(budget, &cancellation)?;
             let prepared = PreparedModelRequest::prepare(
                 ModelRequest {
                     summary: false,
