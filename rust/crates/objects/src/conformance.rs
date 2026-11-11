@@ -351,7 +351,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         matches!(&referenced, Ok(deletion) if deletion.outcome == Delete::Referenced && deletion.references.is_empty()),
         referenced
     );
-    let root = RootId::new(format!("{run}/root").into_bytes())
+    let root = RootId::new(format!("{run}/{}", "root".repeat(300)).into_bytes())
         .map_err(|error| fail("delete-refuses-live-references", error))?;
     let rooted_body = bytes(&format!("{run}/rooted"), 32);
     let rooted = put(

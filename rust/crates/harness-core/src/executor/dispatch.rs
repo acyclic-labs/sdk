@@ -135,13 +135,24 @@ impl StockExecution<'_> {
                         &live
                     }
                 };
-                let mut context = crate::context::Context {
-                    messages: std::mem::take(history),
-                    ..Default::default()
-                };
-                let result = self.tools_notice(&mut context, tools);
-                **history = context.messages;
-                result?;
+                {
+                    let mut context = crate::context::Context {
+                        messages: std::mem::take(history),
+                        ..Default::default()
+                    };
+                    let retained_tables = retained.request.as_ref().is_some_and(|recorded| {
+                        recorded.request().messages.iter().any(|message| {
+                            message.content.notice_parts().is_some_and(|(notices, _)| {
+                                notices.iter().any(|notice| {
+                                    notice.source == "tools" && notice.kind == "tools.changed"
+                                })
+                            })
+                        })
+                    });
+                    let result = self.tools_notice(&mut context, tools, retained_tables);
+                    **history = context.messages;
+                    result?;
+                }
             }
             let prior_messages = match &prior_messages {
                 request::ModelStepHistory::Turn(history, _) => history.as_slice(),
@@ -374,7 +385,7 @@ impl StockExecution<'_> {
             .transpose()
     }
 
-    async fn retained_dispatch_step(
+    pub(super) async fn retained_dispatch_step(
         &self,
         journal: &dyn ExecutionJournal,
         operation: OperationId,

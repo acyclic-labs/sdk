@@ -7,7 +7,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let objects = HttpObjects::new(
         &std::env::var("OBJECTS_ENDPOINT")?,
         &std::env::var("ACYCLIC_API_KEY")?,
-        1024 * 1024,
+        Some(1024 * 1024),
         None,
     )?;
     let put = objects.put(b"hello".to_vec().into(), Vec::new()).await?;

@@ -94,11 +94,13 @@ pub(super) fn liveness(
     match crate::namespace::open_read_encoded(process.lock, meter)? {
         Ok(lock) => match identity_bytes(&lock, meter) {
             Ok(identity) if identity.bytes.as_slice() == process.lock_identity => {
-                Ok(match read_operation(meter, || probe(lock))? {
-                    Ok(_) => Liveness::Dead,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => Liveness::Alive,
-                    Err(_) => Liveness::Unknown,
-                })
+                match read_operation(meter, || probe(lock))? {
+                    Ok(_) => Ok(Liveness::Dead),
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        held_lock(process, probes, meter)
+                    }
+                    Err(_) => Ok(Liveness::Unknown),
+                }
             }
             Ok(_) => without_lock(process, probes, meter),
             Err(ProbeError::Io(_)) => Ok(Liveness::Unknown),
@@ -108,6 +110,37 @@ pub(super) fn liveness(
             without_lock(process, probes, meter)
         }
         Err(_) => Ok(Liveness::Unknown),
+    }
+}
+
+/// Windows may retain byte-range locks after process exit. Its original
+/// creation identity proves whether that held lock still names a live owner.
+fn held_lock(
+    process: &Process<&[u8]>,
+    probes: &mut u64,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<Liveness> {
+    #[cfg(windows)]
+    {
+        if process.start.is_empty() {
+            return Ok(Liveness::Alive);
+        }
+        *probes += 1;
+        match start_identity(process.pid, meter) {
+            Ok(start) if start.bytes.as_slice() == process.start => Ok(Liveness::Alive),
+            Ok(_) => Ok(Liveness::Dead),
+            Err(ProbeError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                Ok(Liveness::Dead)
+            }
+            Err(ProbeError::Io(_)) => Ok(Liveness::Unknown),
+            Err(ProbeError::Work(error)) => Err(error),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // Unix releases its locks before exit is observable.
+        let _ = (process, probes, meter);
+        Ok(Liveness::Alive)
     }
 }
 
@@ -510,7 +543,23 @@ fn read_bounded<'a>(
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData).into())
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Preserve creation identity across PID reuse and account every original probe.
+#[cfg(windows)]
+fn start_identity(
+    pid: u32,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> Result<Identity, ProbeError> {
+    let probe = read_operation(meter, || crate::process_identity::ProcessProbe::open(pid))
+        .map_err(ProbeError::Work)??
+        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    if read_operation(meter, || probe.exited()).map_err(ProbeError::Work)?? {
+        return Err(io::Error::from(io::ErrorKind::NotFound).into());
+    }
+    let start = read_operation(meter, || probe.started()).map_err(ProbeError::Work)??;
+    Identity::copy(&[&start.to_le_bytes()], meter).map_err(ProbeError::Work)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 fn start_identity(_: u32, _: Option<&Arc<dyn NativeReadMeter>>) -> Result<Identity, ProbeError> {
     Err(io::Error::from(io::ErrorKind::Unsupported).into())
 }

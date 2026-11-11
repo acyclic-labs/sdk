@@ -40,7 +40,7 @@
               "## Code"
             ]
           },
-          "prompt": "/theme light",
+          "send": "\u001b[200~/help\u001b[201~\r\u001b[27u\u001b[200~/theme light\u001b[201~\r",
           "assert": {
             "raw": [
               "\u001b]8;;https://example.com/docs\u001b\\"
@@ -92,6 +92,12 @@
                 ],
                 "bg": true
               }
+            ]
+          },
+          "assert": {
+            "absent": [
+              "Commands",
+              "Help"
             ]
           },
           "prompt": "/theme dark"

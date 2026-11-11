@@ -7,7 +7,7 @@ import { stageArtifacts } from "./graphcoder-e2e/artifacts.mjs";
 import { Processes } from "./graphcoder-e2e/process.mjs";
 import { executionSucceeded } from "./graphcoder-e2e/assertions.mjs";
 
-const [cargoJson, destination] = process.argv.slice(2);
+const [cargoJson, destination, ...selected] = process.argv.slice(2);
 assert.ok(cargoJson && destination, "usage: node scripts/qualify-shell-lifetime.mjs CARGO_JSON FRESH_DIRECTORY");
 const records = await readFile(cargoJson, "utf8"), root = resolve(destination);
 await mkdir(root);
@@ -15,8 +15,10 @@ const { artifacts } = await stageArtifacts(["graphcoder", "harness-mock-model"].
   ({ name, target: name, test: false, records })), join(root, "bin"));
 const processes = new Processes();
 try {
-  for (const id of ["bash-capture", "shell-background-job", "shell-no-deadline"].flatMap(id =>
-    process.platform === "linux" ? [id, id + "-physical"] : [id])) {
+  const cases = ["bash-capture", "shell-background-job", "shell-no-deadline"].flatMap(id =>
+    process.platform === "linux" ? [id, id + "-physical"] : [id]);
+  for (const id of selected.length ? selected : cases) {
+    assert.ok(cases.includes(id), `unknown shell lifetime case ${id}`);
     const output = join(root, id);
     const result = await processes.run(process.execPath, ["scripts/graphcoder-e2e/run.mjs",
       artifacts.graphcoder.path, artifacts["harness-mock-model"].path, id],

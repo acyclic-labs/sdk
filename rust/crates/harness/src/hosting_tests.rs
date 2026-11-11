@@ -188,6 +188,37 @@ async fn call(
     Ok(decode_agent_reply(&response.body, command)?)
 }
 
+#[test]
+fn serving_reply_codec_preserves_invalid_and_capacity_refusals() -> Result {
+    let command = AgentCommand::Root {};
+    let call = acyclic_harness_client::AgentCall::decode(&invocation("agents", &command)?)?;
+    assert!(matches!(
+        super::reply(&call, &Ok(AgentReply::Staged {})),
+        Err(StreamError::InvalidResponse)
+    ));
+    let oversized = AgentReply::Bound {
+        binding: "x".repeat(acyclic_harness_client::MAX_AGENT_COMMAND_BYTES + 1),
+        tools: String::new(),
+    };
+    assert!(matches!(
+        super::reply(&call, &Ok(oversized)),
+        Err(StreamError::LimitExceeded)
+    ));
+    let root = AgentPath::root(&AgentId::from_bytes([13; 16]));
+    let encoded = super::reply(
+        &call,
+        &Ok(AgentReply::Root {
+            agent: root.clone(),
+        }),
+    )?;
+    let response = wire::InvokeActorResponse::decode(encoded)?;
+    assert!(matches!(
+        decode_agent_reply(&response.body, &command)?,
+        Ok(AgentReply::Root { agent }) if agent == root
+    ));
+    Ok(())
+}
+
 fn binding()
 -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
     binding_with(Arc::new(Never), Default::default())
@@ -582,6 +613,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         input: 0,
         after: 0,
         wait: true,
+        observed_children: Some(0),
     };
     let mut live_usage = std::pin::pin!(call(&client, "agents", &usage));
     assert!(
@@ -598,7 +630,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     assert!(futures::poll!(&mut live_events).is_pending());
     assert!(server.bound().agents().runtime().drain().await.is_empty());
     assert!(
-        matches!(live_usage.await?, Ok(AgentReply::Usage { input: 0, page: Some(page), settled: true })
+        matches!(live_usage.await?, Ok(AgentReply::Usage { input: 0, page: Some(page), settled: true, .. })
         if page.end == 0 && page.items.is_empty()),
         "a consumed input with no model call must finish its original quiet query"
     );
@@ -679,13 +711,15 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         input: 2,
         after: 0,
         wait: false,
+        observed_children: Some(0),
     };
     assert!(matches!(
         call(&client, "agents", &usage).await?,
         Ok(AgentReply::Usage {
             input: 2,
             page: None,
-            settled: false
+            settled: false,
+            ..
         })
     ));
     let diff = AgentCommand::Diff {
@@ -962,7 +996,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
                     operation_id: OperationId::from_bytes([3; 16]),
                     action_digest: [4; 32],
                 },
-                approved: true,
+                verdict: true.into(),
                 reason: None,
             }
         )
@@ -1041,6 +1075,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
                     input: end,
                     after: 0,
                     wait: true,
+                    observed_children: Some(0),
                 }
             )
             .await?,

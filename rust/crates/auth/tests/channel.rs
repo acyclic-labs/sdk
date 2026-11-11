@@ -104,9 +104,9 @@ async fn tonic_dispatch_waits_for_its_owner_and_releases_cancelled_admission() {
         let mut operation = Box::pin(channel::call(
             Endpoint::from_static("https://fixture.invalid").connect_lazy(),
             &provider,
-            channel::Budget::Deadline(
+            channel::Budget::Deadline(Some(
                 tokio::time::Instant::now() + std::time::Duration::from_secs(30),
-            ),
+            )),
             Empty {},
             |channel, request| async move {
                 let mut client = tonic::client::Grpc::new(channel);
@@ -289,7 +289,9 @@ async fn local_dispatch_refusal_survives_the_tonic_client_without_remote_rejecti
     let result = channel::call(
         Endpoint::from_static("https://fixture.invalid").connect_lazy(),
         &provider,
-        channel::Budget::Deadline(tokio::time::Instant::now() + std::time::Duration::from_secs(30)),
+        channel::Budget::Deadline(Some(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        )),
         Empty {},
         move |channel, request| async move {
             // Expire after request preparation, before tonic service dispatch.
@@ -319,7 +321,7 @@ async fn local_dispatch_refusal_survives_the_tonic_client_without_remote_rejecti
 
 #[tokio::test]
 async fn successful_reply_requires_the_original_credential_to_remain_current() {
-    for change in ["account", "expiry", "unavailable", "unchanged"] {
+    for change in ["account", "expiry", "unavailable", "unchanged", "cancel"] {
         let validity = Arc::new(Mutex::new(CredentialValidity {
             now_unix_seconds: 1,
             revision: Some(CredentialRevision::from([1; 32])),
@@ -336,14 +338,21 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
         let provider = cache.clone().into();
         let (entered, started) = oneshot::channel();
         let (release, released) = oneshot::channel();
+        let (cancel, cancelled) = oneshot::channel::<()>();
+        let context = acyclic_auth::operation::Context::from_stopped(u64::MAX, async move {
+            let _ = cancelled.await;
+            acyclic_auth::operation::Stopped::Cancelled
+        });
         let call = channel::call(
             Endpoint::from_static("https://fixture.invalid").connect_lazy(),
             &provider,
-            channel::Budget::Deadline(
-                tokio::time::Instant::now() + std::time::Duration::from_secs(30),
-            ),
+            channel::Budget::Operation {
+                context: &context,
+                deadline: None,
+            },
             (),
-            move |_, _| async move {
+            move |_, request| async move {
+                assert!(!request.metadata().contains_key("grpc-timeout"));
                 entered.send(()).unwrap();
                 released.await.unwrap();
                 Ok(Response::new(()))
@@ -363,6 +372,9 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
                 _ => {}
             }
         }
+        if change == "cancel" {
+            cancel.send(()).unwrap();
+        }
         release.send(()).unwrap();
         let result = call.await;
         if change == "unchanged" {
@@ -371,7 +383,9 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
             let error = result.unwrap_err();
             assert_eq!(
                 error.code(),
-                if change == "expiry" {
+                if change == "cancel" {
+                    Code::Cancelled
+                } else if change == "expiry" {
                     Code::Unauthenticated
                 } else {
                     Code::Unavailable

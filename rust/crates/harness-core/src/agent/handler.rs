@@ -434,6 +434,7 @@ where
                 .await
                 .map_err(|error| match error {
                     Error::IncompatibleCheckpointCodec => GuestError::IncompatibleCodec,
+                    Error::Stream(error) => guest(format!("reading agent inbox replay: {error}")),
                     error => guest(error),
                 })
         })

@@ -17,11 +17,12 @@ use acyclic_harness::{
     },
     client::commands::{CommandCatalog, CommandQuery, CommandRequest, CommandResolution},
     executor::ToolCard,
-    interaction::ApprovalBinding,
+    interaction::{ApprovalBinding, ApprovalVerdict},
     tui::{
         Action, AppAction, BlockKind, Editor, InputEffect, PromptInput, QueryController, QueryPage,
         Screen, Thinking, TranscriptRows, Viewport,
         config::Token,
+        context_summary,
         key_event::InputEvent,
         ratatui::{
             layout::{Position, Rect, Size},
@@ -238,11 +239,10 @@ struct View {
     prompt: Option<Prompt>,
     /// A command's result or refusal, until the next prompt.
     notice: Option<String>,
-    /// Exact compact selection whose immutable request was displayed. A newer
-    /// status can clear it, but cannot silently replace the action being shown.
+    /// Original waiting-status identity of the action displayed by the pager.
+    approval_status: Option<u64>,
+    /// Exact immutable action whose final rows were painted.
     approval_shown: Option<acyclic_harness_client::PendingApproval>,
-    /// A bounded explanation preview; complete request bytes use the page query.
-    approval_prompt: Option<String>,
     /// Reports saved in this session.
     reports: Vec<String>,
 }
@@ -283,7 +283,7 @@ impl View {
     fn approval_answer(
         &self,
         text: &str,
-    ) -> Result<Option<(IntentId, ApprovalBinding, bool)>, &'static str> {
+    ) -> Result<Option<(IntentId, ApprovalBinding, ApprovalVerdict)>, &'static str> {
         let Some(Phase::WaitingApproval { id, binding }) = &self.phase else {
             return Ok(None);
         };
@@ -291,12 +291,14 @@ impl View {
         if answer.starts_with('/') {
             return Ok(None);
         }
-        let approved = if answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") {
-            true
+        let verdict = if answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") {
+            ApprovalVerdict::Approve
+        } else if answer.eq_ignore_ascii_case("r") || answer.eq_ignore_ascii_case("rule") {
+            ApprovalVerdict::ApproveRule
         } else if answer.eq_ignore_ascii_case("n") || answer.eq_ignore_ascii_case("no") {
-            false
+            ApprovalVerdict::Deny
         } else {
-            return Err("approval requires yes or no");
+            return Err("approval requires y (once), r (exact rule), or n (deny)");
         };
         let binding = binding.as_ref().ok_or("approval action is unavailable")?;
         if !self
@@ -304,9 +306,9 @@ impl View {
             .as_ref()
             .is_some_and(|shown| &shown.id == id && &shown.binding == binding)
         {
-            return Err("Enter view to read this exact approval request before deciding");
+            return Err("Review the complete approval action before deciding (PgDn: more)");
         }
-        Ok(Some((id.clone(), binding.clone(), approved)))
+        Ok(Some((id.clone(), binding.clone(), verdict)))
     }
 
     /// Applies `event`; `seen` is the next conversation sequence the
@@ -383,8 +385,12 @@ impl View {
                 {
                     self.approval_shown = None;
                 }
-                self.approval_prompt = match &status.phase {
-                    Phase::WaitingApproval { id, .. } => conversation.approval_prompt(id).await?,
+                self.approval_status = match &status.phase {
+                    Phase::WaitingApproval { id, binding } => conversation
+                        .pending_approval(id)
+                        .await?
+                        .filter(|pending| Some(&pending.binding) == binding.as_ref())
+                        .map(|pending| pending.status),
                     _ => None,
                 };
                 // A settled agent consumed every request before its cursor:
@@ -586,18 +592,6 @@ impl View {
         lines
     }
 
-    /// Controls stay visible when the immutable request panel is closed.
-    fn approval_rows(&self) -> Vec<Line<'static>> {
-        self.approval_prompt
-            .iter()
-            .flat_map(|prompt| prompt.lines())
-            .map(|line| Line::raw(line.to_owned()))
-            .chain(std::iter::once(Line::raw(
-                "view opens request · y approves · n declines · /feedback reports · Esc cancels",
-            )))
-            .collect()
-    }
-
     fn header(&self) -> Line<'static> {
         let mut spans = vec![
             Span::raw(if self.busy() { "● " } else { "○ " }),
@@ -646,10 +640,7 @@ impl View {
             );
         }
         match (&self.phase, self.approval()) {
-            (_, Some(id)) => format!(
-                "approval {} requested: view opens request · y approves · n declines",
-                id.as_str()
-            ),
+            (_, Some(id)) => format!("approval {} · y once · r exact rule · n deny", id.as_str()),
             (Some(Phase::Done { outcome }), _) => format!("conversation ended: {outcome:?}"),
             _ if self.busy() => "working · Esc or Ctrl+C interrupts".into(),
             _ => "Enter sends · Ctrl+F finds prompt text · Ctrl+D quits".into(),
@@ -713,8 +704,12 @@ pub async fn run(
     inline: bool,
     resume: bool,
     terminal: Option<Tty>,
+    price_file: Option<String>,
 ) -> Result<(), Failure> {
     let mut ui = session::Session::open(&conversation).await?;
+    if let Some(text) = price_file {
+        ui.prices(&conversation, text).await?;
+    }
     if !resume && ui.open_view().is_some() {
         ui.select(&conversation, None).await?;
     }
@@ -775,7 +770,10 @@ pub async fn run(
         Arc::clone(&conversation),
         ui.snapshot.generation.clone()
     ));
-    let mut usage_future = std::pin::pin!(Some(usage(conversation.usage_query())));
+    let mut usage_prices = Arc::clone(&ui.prices);
+    let mut usage_future = std::pin::pin!(Some(usage(
+        conversation.usage_query_with_prices(Arc::clone(&usage_prices))
+    )));
     let mut usage_page = QueryPage::<()>::new(vec![Line::raw("Loading usage…")], None, false);
     let usage_unavailable = [Line::raw("Usage unavailable")];
     // Retain the failed query's exact frontier and contribution. Redraw cannot
@@ -787,8 +785,27 @@ pub async fn run(
     let mut viewport = Viewport::default();
     // An open panel's first shown row; panels open at their top.
     let mut overlay_top = 0usize;
+    // Replacement cancels a consumer, not the approval. Only a failed read
+    // prevents reopening the same original action.
+    let mut approval_failed = None;
+    let mut approval_reviewed = None;
     let start = Instant::now();
     loop {
+        // Any session read can first observe a price publication, including
+        // a layout command racing the file follow. Replace the projection
+        // once for that original file, never for a redraw or layout-only cut.
+        if !Arc::ptr_eq(&usage_prices, &ui.prices) {
+            usage_prices = Arc::clone(&ui.prices);
+            usage_future.set(Some(usage(
+                conversation.usage_query_with_prices(Arc::clone(&usage_prices)),
+            )));
+            usage_stopped = None;
+            usage_page = QueryPage::new(vec![Line::raw("Loading usage…")], None, false);
+            if matches!(queries.source(), Some(query::Source::Cost)) {
+                queries.select(query::Source::Cost, query_future.as_mut());
+                overlay_top = 0;
+            }
+        }
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let size: Size = size()?;
         usage_page.wrap(size.width);
@@ -798,15 +815,40 @@ pub async fn run(
         if std::mem::take(&mut view.ring) {
             terminal.bell();
         }
-        let approval_rows = if overlay.is_none()
-            && queries.source().is_none()
-            && view.prompt.is_none()
-            && view.approval().is_some()
+        if let Some(query::Source::Approval { status, .. }) = queries.source()
+            && *status != view.approval_status
         {
-            view.approval_rows()
+            queries.close(query_future.as_mut());
+        }
+        if let Some(status) = view.approval_status {
+            if approval_failed != Some(status)
+                && overlay.is_none()
+                && queries.source().is_none()
+                && view.prompt.is_none()
+            {
+                queries.select(
+                    query::Source::Approval {
+                        request: view
+                            .approval()
+                            .ok_or("pending approval has no request")?
+                            .clone(),
+                        binding: match &view.phase {
+                            Some(Phase::WaitingApproval {
+                                binding: Some(binding),
+                                ..
+                            }) => binding.clone(),
+                            _ => return Err("pending approval has no binding".into()),
+                        },
+                        status: Some(status),
+                        offset: 0,
+                    },
+                    query_future.as_mut(),
+                );
+                overlay_top = 0;
+            }
         } else {
-            Vec::new()
-        };
+            approval_failed = None;
+        }
         let feedback = matches!(view.prompt, Some(Prompt::Feedback));
         if let Some(panel) = queries.page.as_mut() {
             let area = Rect::from((Position::ORIGIN, size));
@@ -836,7 +878,7 @@ pub async fn run(
                                 if queries.source().is_some() {
                                     &query_loading[..]
                                 } else {
-                                    &approval_rows[..]
+                                    &[]
                                 }
                             },
                             |panel| &panel.lines[..],
@@ -847,10 +889,8 @@ pub async fn run(
                 overlay_title: overlay.as_ref().map_or(
                     if let Some(source) = queries.source() {
                         source.title()
-                    } else if approval_rows.is_empty() {
-                        ""
                     } else {
-                        "Approval"
+                        ""
                     },
                     |(title, _)| title,
                 ),
@@ -869,6 +909,23 @@ pub async fn run(
                 areas = screen.render(frame, &input, &mut viewport, scroll, now);
                 screen.hyperlinks(&areas, scroll)
             })?;
+            if overlay.is_none()
+                && let Some(status) = query::reviewed(&queries, overlay_top, areas.overlay_rows(0))
+            {
+                approval_reviewed = Some(status);
+                if let Some(Phase::WaitingApproval {
+                    id,
+                    binding: Some(binding),
+                }) = &view.phase
+                    && view.approval_status == Some(status)
+                {
+                    view.approval_shown = Some(acyclic_harness_client::PendingApproval {
+                        id: id.clone(),
+                        binding: binding.clone(),
+                        status,
+                    });
+                }
+            }
             // Page keys scroll the open panel by its page, else the transcript.
             let page = if panel {
                 areas.overlay_rows(0)
@@ -881,7 +938,12 @@ pub async fn run(
         // a collapsed panel waits for the existing resize/input event.
         let credit = u32::from(areas.overlay_rows(1)).min(128);
         queries.start(credit, query_future.as_mut(), |source, rows| {
-            query::load(Arc::clone(&conversation), rows, source.clone())
+            query::load(
+                Arc::clone(&conversation),
+                rows,
+                source.clone(),
+                Arc::clone(&ui.prices),
+            )
         });
         // Older turns page in as the view nears them: one read at a time,
         // started by the frame that showed the need, never retried.
@@ -895,27 +957,15 @@ pub async fn run(
                 view.top,
             )));
         }
+        let mut previous_layout = None;
+        let mut files_changed = false;
         tokio::select! {
             snapshot = &mut files_future => {
                 let snapshot = snapshot?;
-                let layout_changed = ui.snapshot.files.get("layout.json").and_then(Option::as_ref).map(|file| &file.file)
-                    != snapshot.files.get("layout.json").and_then(Option::as_ref).map(|file| &file.file);
+                previous_layout = ui.layout_digest();
                 ui.snapshot = snapshot;
                 ui.project()?;
-                ui.complete(&mut input)?;
-                if overlay.as_ref().is_some_and(|(title, _)| *title == "Help") {
-                    overlay = Some(("Help", View::help(&ui.catalog, &input)));
-                }
-                ui.config.apply(&mut input, &profile).map_err(|errors| format!("UI configuration: {errors:?}"))?;
-                view.transcript.set_theme(input.theme);
-                view.pending_dirty = true;
-                view.tail_dirty = true;
-                if layout_changed {
-                    view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                        query_future.as_mut(), &ui.catalog, &input).or(view.notice.take());
-                    overlay_top = 0;
-                }
-                files_future.set(session::follow(Arc::clone(&conversation), ui.snapshot.generation.clone()));
+                files_changed = true;
             }
             () = async {
                 if areas.animation {
@@ -937,7 +987,9 @@ pub async fn run(
                 match result {
                     Ok(changed) => {
                         if changed && query.synchronized() {
-                            usage_page = QueryPage::new(vec![usage_summary(query.totals())], None, false);
+                            let mut cost = usage_summary(query.totals());
+                            cost.spans.insert(0, Span::raw("This agent · "));
+                            usage_page = QueryPage::new(vec![context_summary(query.model(), query.context(), query.open_children()), cost], None, false);
                         }
                         usage_future.set(Some(usage(query)));
                     }
@@ -969,15 +1021,20 @@ pub async fn run(
                     None => std::future::pending().await,
                 }
             } => {
-                if let (Ok(panel), Some(query::Source::Approval { request, binding, .. })) = (&result, queries.source())
-                    && let Some(status) = panel.context.approval_status
-                    && matches!(&view.phase, Some(Phase::WaitingApproval { id, binding: Some(current) }) if id == request && current == binding)
-                {
-                    view.approval_shown = Some(acyclic_harness_client::PendingApproval { id: request.clone(), binding: binding.clone(), status });
-                }
+                let approval = match queries.source() {
+                    Some(query::Source::Approval { status, .. }) => *status,
+                    _ => None,
+                };
                 match queries.finish(result, query_future.as_mut()) {
-                    Ok(()) => overlay_top = 0,
-                    Err(error) => view.notice = refusal(format_args!("Filesystem query ended: {error}")),
+                    Ok(()) => {
+                        overlay_top = 0;
+                    },
+                    Err(error) => {
+                        if approval.is_some() {
+                            approval_failed = approval;
+                        }
+                        view.notice = refusal(format_args!("Filesystem query ended: {error}"));
+                    },
                 }
             }
             event = events.next() => {
@@ -1021,7 +1078,7 @@ pub async fn run(
                 output_rows.reverse();
             }
             batch = keys.next() => {
-                let mut selection_changed = false;
+                previous_layout = ui.layout_digest();
                 for event in batch.ok_or("terminal input ended")?? {
                     let effects = areas
                         .event(&mut input, event, &mut viewport, now, &mut |_| None)
@@ -1145,7 +1202,7 @@ pub async fn run(
                                         view.prompt = Some(Prompt::History { at });
                                         queries.close(query_future.as_mut());
                                         ui.select(&conversation, None).await?;
-                                        selection_changed = true;
+                                        files_changed = true;
                                     } else {
                                         view.notice = Some("Enter an immutable cut displayed on this history page.".into());
                                     }
@@ -1153,22 +1210,19 @@ pub async fn run(
                                 }
                                 // Commands stay usable while an approval
                                 // waits; only other input answers it.
-                                if let Some(Phase::WaitingApproval { id, binding: Some(binding) }) = &view.phase
-                                    && !text.trim_start().starts_with('/')
-                                    && (text.trim() == "view" || view.approval_shown.is_none())
+                                if view.approval().is_some() && !text.trim_start().starts_with('/')
+                                    && (view.approval_status.is_none() || approval_reviewed != view.approval_status)
                                 {
-                                    overlay = None;
-                                    queries.select(query::Source::Approval {
-                                        request: id.clone(), binding: binding.clone(),
-                                        status: view.approval_shown.as_ref().map(|shown| shown.status), offset: 0,
-                                    }, query_future.as_mut());
-                                    overlay_top = 0;
-                                    view.notice = Some("Read the selected approval request, then enter y or n.".into());
+                                    view.notice = refusal("Review the complete approval action before deciding (PgDn: more)");
+                                    input.editor = Editor::new(&text);
                                     continue;
                                 }
                                 match view.approval_answer(&text) {
                                     Ok(Some((id, binding, approved))) => {
-                                        conversation.decide_with_binding(&id, binding, approved).await?;
+                                        if let Err(error) = conversation.decide_with_binding(&id, binding, approved).await {
+                                            view.notice = refusal(error);
+                                            input.editor = Editor::new(&text);
+                                        }
                                         continue;
                                     }
                                     Err(reason) => {
@@ -1183,13 +1237,17 @@ pub async fn run(
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
                                         return view.exit();
                                     }
-                                    Ok(Some(CommandResolution::Select { query: selected @ (CommandQuery::Shortcuts | CommandQuery::Diff | CommandQuery::History) })) => {
+                                    Ok(Some(resolution @ CommandResolution::Submit { request: CommandRequest::Theme { .. } })) => {
+                                        match ui.submit(&conversation, &resolution).await {
+                                            Ok(()) => files_changed = true,
+                                            Err(error) => view.notice = Some(error.to_string()),
+                                        }
+                                        continue;
+                                    }
+                                    Ok(Some(CommandResolution::Select { query: selected @ (CommandQuery::Shortcuts | CommandQuery::Diff | CommandQuery::History | CommandQuery::Cost) })) => {
                                         match ui.select(&conversation, Some(&selected)).await {
                                             Ok(()) => {
-                                                selection_changed = true;
-                                                view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                                                    query_future.as_mut(), &ui.catalog, &input).or(view.notice.take());
-                                                overlay_top = 0;
+                                                files_changed = true;
                                             }
                                             Err(error) => view.notice = Some(error.to_string()),
                                         }
@@ -1238,20 +1296,24 @@ pub async fn run(
                                 view.back = 0;
                                 view.pending_dirty = true;
                             }
+                            InputEffect::Host(Action::Escape) if view.prompt.is_some() => {
+                                view.prompt = None;
+                            }
+                            InputEffect::Host(Action::Escape)
+                                if matches!(queries.source(), Some(query::Source::Approval { .. })) =>
+                            {
+                                view.cancelling = true;
+                                conversation.cancel().await?;
+                            }
                             InputEffect::Host(Action::Escape) if overlay.is_some() || queries.source().is_some() => {
                                 match ui.select(&conversation, None).await {
                                     Ok(()) => {
-                                        selection_changed = true;
-                                        view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                                            query_future.as_mut(), &ui.catalog, &input).or(view.notice.take());
-                                        overlay_top = 0;
+                                        files_changed = true;
                                     }
                                     Err(error) => view.notice = Some(error.to_string()),
                                 }
                             }
-                            InputEffect::Host(Action::Escape) if view.prompt.is_some() => {
-                                view.prompt = None;
-                            }
+
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape)
                                 if view.busy() =>
                             {
@@ -1280,20 +1342,53 @@ pub async fn run(
                             _ => {}
                         }
                     }
-                }
-                if selection_changed {
-                    ui.complete(&mut input)?;
-                    ui.config.apply(&mut input, &profile)
-                        .map_err(|errors| format!("UI configuration: {errors:?}"))?;
-                    view.transcript.set_theme(input.theme);
-                    view.pending_dirty = true;
-                    view.tail_dirty = true;
-                    // Retire the older in-flight projection before following
-                    // the cut that supplied this batch's conditional sources.
-                    files_future.set(session::follow(Arc::clone(&conversation), ui.snapshot.generation.clone()));
+                    // A batch can submit a panel and then Escape. Publish its
+                    // visible state before the next event decides what to close.
+                    if files_changed
+                        && let Some(notice) = apply_session_layout(
+                            &ui,
+                            &mut previous_layout,
+                            &mut overlay,
+                            &mut queries,
+                            query_future.as_mut(),
+                            &input,
+                        )
+                    {
+                        view.notice = notice.or(view.notice.take());
+                        overlay_top = 0;
+                    }
                 }
                 input.refresh_completions();
             }
+        }
+        if files_changed {
+            ui.complete(&mut input)?;
+            ui.config
+                .apply(&mut input, &profile)
+                .map_err(|errors| format!("UI configuration: {errors:?}"))?;
+            view.transcript.set_theme(input.theme);
+            view.pending_dirty = true;
+            view.tail_dirty = true;
+            if overlay.as_ref().is_some_and(|(title, _)| *title == "Help") {
+                overlay = Some(("Help", View::help(&ui.catalog, &input)));
+            }
+            if let Some(notice) = apply_session_layout(
+                &ui,
+                &mut previous_layout,
+                &mut overlay,
+                &mut queries,
+                query_future.as_mut(),
+                &input,
+            ) {
+                view.notice = notice.or(view.notice.take());
+                overlay_top = 0;
+            }
+            // A command can reopen past an in-flight follow. Apply the whole
+            // committed projection before advancing either path's follow cut.
+            files_future.set(session::follow(
+                Arc::clone(&conversation),
+                ui.snapshot.generation.clone(),
+            ));
         }
     }
 }
@@ -1490,9 +1585,13 @@ mod tests {
         for (text, approved) in [("y", true), (" YES ", true), ("n", false), (" No ", false)] {
             assert_eq!(
                 view.approval_answer(text)?,
-                Some((id.clone(), binding.clone(), approved))
+                Some((id.clone(), binding.clone(), approved.into()))
             );
         }
+        assert_eq!(
+            view.approval_answer("r")?,
+            Some((id.clone(), binding.clone(), ApprovalVerdict::ApproveRule))
+        );
         assert!(view.approval_answer(" /feedback")?.is_none());
         assert!(view.approval_answer("approve something else").is_err());
         let prepared = view.approval_answer("yes")?.unwrap();
@@ -1502,7 +1601,7 @@ mod tests {
             id: id.clone(),
             binding: Some(replacement.clone()),
         });
-        assert_eq!(prepared, (id.clone(), binding.clone(), true));
+        assert_eq!(prepared, (id.clone(), binding.clone(), true.into()));
         assert_ne!(prepared.1, replacement);
         assert!(view.approval_answer("yes").is_err());
         view.approval_shown = Some(acyclic_harness_client::PendingApproval {
@@ -1512,7 +1611,7 @@ mod tests {
         });
         assert_eq!(
             view.approval_answer("yes")?,
-            Some((id.clone(), replacement, true))
+            Some((id.clone(), replacement, true.into()))
         );
         view.phase = Some(Phase::WaitingApproval { id, binding: None });
         assert!(view.approval_answer("yes").is_err());
@@ -1566,6 +1665,31 @@ mod tests {
     }
 }
 
+// Reopened commands and follows compare against the last displayed layout.
+// Compare content, since an unrelated file commit also changes file revisions.
+// An unchanged layout preserves the selected page and its retained read.
+fn apply_session_layout<F>(
+    ui: &session::Session,
+    previous: &mut Option<[u8; 32]>,
+    overlay: &mut Option<(&'static str, Vec<Line<'static>>)>,
+    queries: &mut QueryController<query::Source, query::Context>,
+    pending: std::pin::Pin<&mut Option<F>>,
+    input: &PromptInput,
+) -> Option<Option<String>> {
+    if *previous == ui.layout_digest() {
+        return None;
+    }
+    *previous = ui.layout_digest();
+    Some(apply_open_view(
+        ui.open_view(),
+        overlay,
+        queries,
+        pending,
+        &ui.catalog,
+        input,
+    ))
+}
+
 /// Projects the session's saved view onto the terminal. Total over every
 /// view name: `layout.json` is shared with other clients and the shared
 /// `view_changes` writer, so a view this terminal cannot render closes the
@@ -1580,6 +1704,7 @@ fn apply_open_view<F>(
 ) -> Option<String> {
     *overlay = None;
     match selected {
+        Some("cost") => queries.select(query::Source::Cost, pending),
         Some("diff") => queries.select(query::Source::Diff(None), pending),
         Some("history") => queries.select(query::Source::History(None), pending),
         Some("shortcuts") => {

@@ -13,7 +13,7 @@ const IDLE = "\u25cb GraphCoder";
 // The needles a PTY input watches in its raw output.
 export function rawNeedles(actions) {
   return [OVERFLOW, SHOW_CURSOR, HIDE_CURSOR,
-    ...actions.flatMap(action => [...(action.when?.raw ?? []), ...(action.assert?.raw ?? [])])];
+    ...actions.flatMap(action => [...(action.when?.raw ?? []), ...(action.assert?.raw ?? []), ...(action.reject?.raw ?? [])])];
 }
 
 // `raw` is the OutputWatch over the executable's raw terminal output.
@@ -44,7 +44,7 @@ export async function pty(processes, binary, fixture, input, capture) {
       { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
     screen.onData(data => running.child.stdin.write(data));
     const raw = new OutputWatch(rawNeedles(input.actions));
-    let index = 0, command, failure, errors;
+    let index = 0, failure, errors;
     // Model requests this case made, the newest one's arrival, and the count
     // when a prompt was sent: a delta's latency runs from its turn's request
     // reaching the mock, which then streams the chunks, to their paint.
@@ -59,18 +59,16 @@ export async function pty(processes, binary, fixture, input, capture) {
           process.stderr.write(`pty-startup: ${JSON.stringify({ case: fixture.id, first_paint_ms: firstPaint })}\n`);
         }
         const action = input.actions[index];
-        const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(diagnostic, action?.when, action?.assert);
+        const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(diagnostic, action?.when, action?.assert, visible);
         if (refusal) {
           const error = new Error(`step=admit terminal frame: shipping executable failed before terminal completion: ${refusal}\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
           error.code = "terminal_frame_failed";
           throw error;
         }
         if (!action || settled || !frames.available()) return;
-        const unavailable = command && `${command} is not available in this view`;
-        if (unavailable && visible.includes(unavailable)
-            && !(action.when.contains ?? []).some(text => text && unavailable.includes(text))) {
-          const error = new Error(`command_unavailable: ${unavailable}`);
-          error.code = "command_unavailable";
+        if (action.reject && matches(screen, raw, action.reject, visible, diagnostic)) {
+          const error = new Error(`step=await terminal action ${index}: rejected terminal state before the required observation\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
+          error.code = "terminal_action_rejected";
           throw error;
         }
         if (action.after_request && !fixture.requested(action.after_request)) return;
@@ -83,13 +81,11 @@ export async function pty(processes, binary, fixture, input, capture) {
         }
         if (action.assert) assert.ok(matches(screen, raw, action.assert, visible, diagnostic),
           `step=assert observed terminal frame: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
-        failures.accept(diagnostic, action.when, action.assert);
-        if (unavailable && visible.includes(unavailable)) command = undefined;
+        failures.accept(diagnostic, action.when, action.assert, visible);
         snapshots.push({ action: index, visible });
         if (action.prompt !== undefined || action.send !== undefined || action.kill) frames.consume();
         index++;
         if (action.prompt !== undefined) {
-          command = action.prompt.trim().startsWith("/") ? action.prompt.trim() : undefined;
           prompted = requests;
           running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
         }

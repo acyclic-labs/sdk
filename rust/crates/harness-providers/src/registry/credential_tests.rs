@@ -91,7 +91,9 @@ impl HttpTransport for Server {
     }
 }
 
-fn watched(sender: tokio::sync::watch::Sender<u64>) -> impl Fn() -> CredentialWatch + Send + Sync {
+pub(crate) fn watched(
+    sender: tokio::sync::watch::Sender<u64>,
+) -> impl Fn() -> CredentialWatch + Send + Sync {
     move || {
         let mut receiver = sender.subscribe();
         let mut revision = [0; 32];

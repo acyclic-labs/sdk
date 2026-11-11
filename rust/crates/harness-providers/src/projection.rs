@@ -26,18 +26,14 @@ use serde_json::{Value, json};
 use wire::{Item, Message, Request};
 
 pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
-    endpoint_for(
-        provider.config.adapter,
-        &provider.config.base_url,
-        &provider.model.name,
-    )
+    endpoint_for(&provider.config, &provider.model.name)
 }
 
-pub(crate) fn endpoint_for(adapter: Adapter, base: &str, model: &str) -> Result<String> {
-    let mut base = validate_url(base)?;
+pub(crate) fn endpoint_for(config: &crate::ProviderSpec, model: &str) -> Result<String> {
+    let mut base = validate_url(&config.base_url, config.allow_http_host.as_deref())?;
     let path = format!("{}/", base.path().trim_end_matches('/'));
     base.set_path(&path);
-    let suffix = match adapter {
+    let suffix = match config.adapter {
         Adapter::Anthropic => "messages".into(),
         Adapter::Responses => "responses".into(),
         Adapter::Chat => "chat/completions".into(),

@@ -137,7 +137,9 @@ impl StockExecution<'_> {
                 Some(reference) => {
                     let (mut projection, prepared) =
                         self.load_response_projection(journal, reference).await?;
-                    self.validate_response_request(&prepared)?;
+                    // The journal reference authenticates this original selection;
+                    // a live catalog update cannot replace an admitted request.
+                    self.validate_response_request(&prepared, &prepared.request().tools)?;
                     let accounting = projection.accounting.take();
                     (projection, accounting, prepared)
                 }
@@ -195,7 +197,7 @@ impl StockExecution<'_> {
         }
         if let Some((retained, proof)) = first {
             let (mut retained, request) = self.load_response_projection(journal, retained).await?;
-            self.validate_response_request(&request)?;
+            self.validate_response_request(&request, &request.request().tools)?;
             let proof = retain_preparation(
                 load_json::<crate::context::CompactionReference>(journal, proof, self.io).await?,
             )?;

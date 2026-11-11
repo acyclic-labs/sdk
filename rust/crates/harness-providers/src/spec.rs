@@ -58,8 +58,13 @@ pub struct ProviderSpec {
     pub adapter: Adapter,
     /// Credential policy supplied by the catalog, independent of its provider ID.
     pub authentication: Authentication,
-    /// HTTPS API root, or loopback HTTP API root.
+    /// HTTPS API root, or HTTP on loopback/an explicitly permitted host.
     pub base_url: String,
+    /// Explicitly permit HTTP to this exact canonical host, without wildcards.
+    /// Other hosts retain the HTTPS or loopback-only policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+    pub allow_http_host: Option<String>,
     /// Explicit endpoint headers; adapter authentication remains authoritative.
     #[serde(default)]
     #[cfg_attr(

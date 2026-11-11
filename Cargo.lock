@@ -201,6 +201,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-hosted-actors-conformance",
  "acyclic-stream",
  "base64 0.23.1",
  "bytes",
@@ -275,6 +276,7 @@ dependencies = [
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-observability",
  "acyclic-plugin",
  "acyclic-stream",
  "acyclic-test-support",
@@ -930,6 +932,20 @@ name = "acyclic-host-platform"
 version = "0.2.0"
 dependencies = [
  "proptest",
+]
+
+[[package]]
+name = "acyclic-hosted-actors-conformance"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-stream",
+ "futures",
+ "js-sys",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

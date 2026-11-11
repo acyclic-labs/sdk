@@ -6,7 +6,21 @@ impl StockExecution<'_> {
         &self,
         context: &mut crate::context::Context,
         tools: &[crate::tool::ToolDefinition],
+        retained_tables: bool,
     ) -> Result<()> {
+        if !retained_tables
+            && !self.stock.tools.has_sources()
+            && !self.code_composition(tools)?
+            && !context.messages.iter().any(|message| {
+                message.content.notice_parts().is_some_and(|(notices, _)| {
+                    notices
+                        .iter()
+                        .any(|notice| notice.source == "tools" && notice.kind == "tools.changed")
+                })
+            })
+        {
+            return Ok(());
+        }
         crate::model::charge_items(self.io, tools.len() as u64)?;
         // Native declarations already expose these exact call schemas. Only
         // dynamic tools use the appended surface for every tool source.
@@ -154,7 +168,10 @@ impl StockExecution<'_> {
             )> = None;
             decoded = match funded {
                 Some((table, hold)) => {
+                    #[cfg(feature = "filesystem")]
                     hold.into_retained()?;
+                    #[cfg(not(feature = "filesystem"))]
+                    let _ = hold;
                     table
                 }
                 None => serde_json::from_str(&previous)

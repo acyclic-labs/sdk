@@ -94,7 +94,7 @@ impl CredentialResolver for Host {
 impl HttpTransport for Protected {
     fn send(&self, mut request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
-            if crate::registry::validate_url(&request.url)?
+            if crate::registry::validate_url(&request.url, None)?
                 .origin()
                 .ascii_serialization()
                 != self.origin
@@ -206,9 +206,38 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
     // through that binding; Protected::send rejects any raw credential header.
     let mut native_spec = spec.clone();
     native_spec.authentication = Authentication::Optional;
-    registry.register("openai".into(), native_spec)?;
-    let protected_key = registry.resolve("openai/gpt-5")?;
+    registry.register("openai".into(), native_spec.clone())?;
+    assert!(
+        registry
+            .resolve("openai/gpt-5")?
+            .current_credentials()?
+            .key
+            .is_none()
+    );
+    // An initially anonymous selection must bind a key that appears later
+    // through the same host owner, rather than sending its raw value.
+    let late_key = Arc::new(Mutex::new(None::<String>));
+    let (changes, _) = watch::channel(0);
+    let mut credentials = Credentials::default()
+        .with_watch(crate::registry::credential_tests::watched(changes.clone()));
+    let observed = late_key.clone();
+    credentials.source = Some(Arc::new(move |_, source| {
+        Ok(if source == crate::credentials::Source::Environment {
+            observed.lock().unwrap().clone()
+        } else {
+            None
+        })
+    }));
+    let mut late = Registry::with_transport(credentials, Arc::new(ReqwestTransport::new()?))
+        .with_credential_resolver(host.clone());
+    late.register("openai".into(), native_spec)?;
+    let protected_key = late.resolve("openai/gpt-5")?;
+    assert!(protected_key.key.is_none() && protected_key.credential_scope.is_none());
+    let bindings = secrets.lock().unwrap().native_bindings;
+    *late_key.lock().unwrap() = Some("late-native-key".into());
+    changes.send_replace(1);
     assert!(protected_key.current_credentials()?.key.is_none());
+    assert_eq!(secrets.lock().unwrap().native_bindings, bindings + 1);
     let (started, accepted) = tokio::sync::oneshot::channel();
     let server_state = secrets.clone();
     let server = tokio::spawn(async move {
@@ -274,9 +303,9 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
             socket.shutdown().await.unwrap();
         }
     });
-    let (request, dispatch) = crate::tests::request(&protected_key)?;
+    let (protected_request, protected_dispatch) = crate::tests::request(&protected_key)?;
     let events = protected_key
-        .generate(&request, dispatch)
+        .generate(&protected_request, protected_dispatch)
         .try_collect::<Vec<_>>()
         .await?;
     assert!(events.iter().any(|event| matches!(event, acyclic_harness_core::model::ModelEvent::Content { delta } if delta.contains("Hello"))));
@@ -310,6 +339,12 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
     );
     drop(api_key);
     secrets.lock().unwrap().revoked = true;
+    let denied = protected_key
+        .generate(&protected_request, protected_dispatch)
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), ErrorCode::Unauthorized);
     let error = provider
         .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
@@ -381,9 +416,18 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
         result = &mut pending => panic!("pending HTTP completed before owner loss: {result:?}"),
         ready = accepted => ready.unwrap(),
     }
+    drop(late);
     drop(registry);
     drop(host);
     assert_eq!(pending.await.unwrap_err().code(), ErrorCode::Unavailable);
+    assert!(matches!(
+        protected_key
+            .generate(&protected_request, protected_dispatch)
+            .try_collect::<Vec<_>>()
+            .await,
+        Err(Error::ModelDiagnostic { code: ErrorCode::Unavailable, message, .. })
+            if message == "model credential owner closed"
+    ));
     server.await.unwrap();
     Ok(())
 }

@@ -242,7 +242,7 @@ impl ToolRegistry {
                 }
             }
         }
-        definitions.sort_by(|a, b| a.name.cmp(&b.name));
+        definitions.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         if definitions
             .windows(2)
             .any(|pair| pair[0].name == pair[1].name)
@@ -285,7 +285,7 @@ impl ToolRegistry {
                 }
             }
         }
-        definitions.sort_by(|a, b| a.name.cmp(&b.name));
+        definitions.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         if definitions
             .windows(2)
             .any(|pair| pair[0].name == pair[1].name)

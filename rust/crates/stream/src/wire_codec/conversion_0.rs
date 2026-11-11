@@ -268,12 +268,9 @@ pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, St
     })
 }
 
-#[cfg(any(
-    feature = "grpc",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-/// Decodes a read request from its generated wire representation.
+/// Decodes a read request from its generated wire representation. Like
+/// [`follow_from_wire`], it is transport-free: every host of the shared
+/// provider cursor compiles it, with or without a transport feature.
 pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
         key: read_key_from_wire(value.key)?,

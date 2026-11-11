@@ -627,6 +627,20 @@ const fn control_filter<const N: usize>(code: &mut Filter<N>) {
         remaining = rest;
     }
     code.push(instruction(RETURN, 0, 0, DENY));
+    // Like F_SETFL, FIONBIO changes only an already held descriptor's blocking
+    // mode. Async runtimes use it to open inherited capture pipes. Other ioctl
+    // requests can control devices, terminals or signal owners and stay closed.
+    const NONBLOCK_REQUEST: u32 = {
+        let [a, b, c, d, ..] = libc::FIONBIO.to_le_bytes();
+        u32::from_le_bytes([a, b, c, d])
+    };
+    code.extend(&[
+        instruction(EQUAL, 0, 4, number(libc::SYS_ioctl)),
+        instruction(LOAD, 0, 0, 24),
+        instruction(EQUAL, 0, 1, NONBLOCK_REQUEST),
+        instruction(RETURN, 0, 0, ALLOW),
+        instruction(RETURN, 0, 0, DENY),
+    ]);
     // Process-selected operations stay local to the caller. Group/session
     // identity reads are needed by ordinary shells; neither those queries
     // nor resource limits acquire authority over another named process.

@@ -52,16 +52,16 @@ mod config;
 #[cfg(all(feature = "search-http", not(target_arch = "wasm32")))]
 pub use config::{SearchBackend, SearchConfig};
 
-/// A bounded query, independent of a provider's wire protocol.
+/// A query, independent of a provider's wire protocol.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct SearchRequest {
-    /// Natural-language query, at most 4,096 Unicode characters, sent verbatim.
-    #[schemars(length(min = 1, max = 4096))]
+    /// Natural-language query, sent verbatim.
+    #[schemars(length(min = 1))]
     pub query: String,
     /// Maximum number of ranked results to return.
     #[serde(default = "default_results")]
-    #[schemars(range(min = 1, max = 20))]
+    #[schemars(range(min = 1))]
     pub max_results: u32,
 }
 
@@ -83,13 +83,12 @@ impl SearchRequest {
                 ..Default::default()
             })?;
         }
-        let mut length = 0;
-        let mut non_whitespace = false;
-        for character in self.query.chars().take(4097) {
-            length += 1;
-            non_whitespace |= !character.is_whitespace();
-        }
-        if !non_whitespace || length > 4096 || !(1..=20).contains(&self.max_results) {
+        if !self
+            .query
+            .chars()
+            .any(|character| !character.is_whitespace())
+            || self.max_results == 0
+        {
             return Err(rejection(work, "invalid web search query or result limit"));
         }
         Ok(())

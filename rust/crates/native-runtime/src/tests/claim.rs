@@ -254,6 +254,32 @@ fn another_process_claim_survives_removal_of_its_process_lock() -> io::Result<()
     Ok(())
 }
 
+/// Windows releases a dead process's byte-range locks asynchronously after its
+/// exit is observable. A process lock still held then must not keep the dead
+/// owner's claim: the owner's exit is proof enough.
+#[cfg(windows)]
+#[test]
+fn an_exited_owner_whose_process_lock_is_still_held_owns_nothing() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("owner.lock");
+    let mut owner = Owner::spawn(&path)?;
+    let lock = recorded_process_lock(&path)?;
+    owner.0.kill()?;
+    owner.0.wait()?;
+    // Stand in for the OS's not yet released lock of the exited owner. The
+    // blocking acquire waits on the OS release itself, never on its timing.
+    let held = crate::FileLock::acquire(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock)?,
+        crate::FileLockMode::Exclusive,
+    )?;
+    drop(StoreClaim::acquire(&path)?);
+    drop(held);
+    Ok(())
+}
+
 #[test]
 fn a_released_claim_admits_another_process() -> io::Result<()> {
     let directory = tempfile::tempdir()?;

@@ -56,7 +56,7 @@ pub(super) fn source_control<W: SourceDemandReadWork>(
     kind: acyclic_native_runtime::NativeOperationKind,
     work: &mut W,
 ) -> Result<acyclic_native_runtime::NativeControlCompletion, DemandError> {
-    work.with_native_read_meter(|meter| {
+    work.metered_read(|meter| {
         acyclic_native_runtime::device_control_in_place(
             file,
             code,

@@ -1,4 +1,5 @@
 [
+  {"name":"cost","aliases":[],"description":"Inspect original usage for this agent and descendants","arguments":"none","action":{"query":"cost","kind":"select"}},
   {"name":"compact","description":"Summarize the current context","arguments":"text","action":{"kind":"builtin","command":"compact"}},
   {"name":"rewind","description":"Restore the selected context checkpoint","arguments":"none","action":{"request":{"kind":"rewind"},"kind":"request"}},
   {"name":"model","description":"Select or inspect the model","arguments":"word","action":{"kind":"builtin","command":"model"}},

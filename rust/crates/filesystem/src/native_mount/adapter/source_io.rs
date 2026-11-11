@@ -20,13 +20,19 @@ impl std::fmt::Debug for CaptureProducer {
 
 /// One accepted physical source operation.
 pub struct CaptureProducer {
-    pub(super) signal: Arc<CaptureSourceSignal>,
-    pub(super) original: Option<crate::NativeMaterializationWork>,
     pub(super) _owner: Option<Arc<dyn Send + Sync>>,
+    pub(super) original: Option<crate::NativeMaterializationWork>,
     pub(super) _allocation: Option<crate::NativeAllocation>,
+    // Rust drops fields in declaration order, including during unwinding.
+    // Publish quiescence only after every original physical owner retires.
+    _completion: CaptureCompletion,
 }
 
-impl Drop for CaptureProducer {
+struct CaptureCompletion {
+    signal: Arc<CaptureSourceSignal>,
+}
+
+impl Drop for CaptureCompletion {
     fn drop(&mut self) {
         let mut gate = self
             .signal
@@ -118,10 +124,12 @@ impl<A, O> CheckoutMountSource<A, O> {
         gate.producers = producers;
         gate.ever_used = true;
         Ok(CaptureProducer {
-            signal: Arc::clone(&self.capture_signal),
-            original: None,
             _owner: None,
+            original: None,
             _allocation: None,
+            _completion: CaptureCompletion {
+                signal: Arc::clone(&self.capture_signal),
+            },
         })
     }
 

@@ -7,6 +7,11 @@ Changing the tool, call identity or arguments requires a new request. Accepted
 storage writes do not authorize execution until both the interaction resolution
 and its decision file have durable receipts.
 
+A before-tool hook must complete successfully before its result can admit the
+tool. A hook requesting approval keeps the tool pending until that exact action
+is approved. A denial or hook failure returns `tool execution failed: <reason>`
+to the model without dispatch; reporting a hook error never grants permission.
+
 `LocalHarnessConfig::approval_policy` selects an ordered chain. The harness
 default is a human approver. GraphCoder loads its separate shipped JSON policy,
 which contains one rule approver with an `allow` fallback. It uses the same

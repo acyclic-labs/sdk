@@ -252,8 +252,22 @@ fn success(reply: &AgentReply, command: &AgentCommand) {
         }
     }
     let quiet = match (reply, command) {
-        (AgentReply::Usage { page, settled, .. }, AgentCommand::Usage { after, .. }) => {
-            !settled && page.as_ref().is_none_or(|page| page.end == *after)
+        (
+            AgentReply::Usage {
+                page,
+                settled,
+                open_children,
+                ..
+            },
+            AgentCommand::Usage {
+                after,
+                observed_children,
+                ..
+            },
+        ) => {
+            *observed_children == Some(*open_children)
+                && !settled
+                && page.as_ref().is_none_or(|page| page.end == *after)
         }
         (AgentReply::Events { page, settled, .. }, AgentCommand::Events { after, .. }) => {
             !settled && page.as_ref().is_none_or(|page| page.end == *after)
@@ -390,9 +404,11 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
                 input: 3,
                 after: 0,
                 wait: false,
+                observed_children: Some(0),
             },
             AgentReply::Usage {
                 input: 3,
+                open_children: 0,
                 page: None,
                 settled: false,
             },

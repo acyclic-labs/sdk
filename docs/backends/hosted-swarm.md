@@ -329,3 +329,8 @@ serves the binding through the entry's second host-only `hostFetch` endpoint,
 `objectsEndpoint`: the same origin as the Machines endpoint, always with the
 account leaf. Like the Machines endpoint, neither its origin nor its leaf ever
 reaches the guest.
+
+`sharedStreams` is the harness `StreamLedger` (`register`, `dispatch`, `open`)
+over the admitted `streams:/…` binding. The host serves it through the entry's
+third host-only `hostFetch` endpoint, `streamsEndpoint`: the same origin and
+account leaf as `objectsEndpoint`, and likewise never in the guest.

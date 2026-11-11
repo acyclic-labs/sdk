@@ -95,6 +95,10 @@ pub struct Args {
     /// stdout and sends ordinary answers to stderr. Missing metrics stay null.
     #[arg(global = true, long, value_name = "PATH|-")]
     pub usage_jsonl: Option<PathBuf>,
+    /// Explicit version-one JSONL price records for token estimates. The
+    /// interactive client retains the selection in its session prices.jsonl.
+    #[arg(long, value_name = "FILE", conflicts_with = "host_workspace")]
+    pub prices: Option<PathBuf>,
     /// Follow every agent's own journal to DIR/<stable-agent-id>.jsonl.
     /// Uses the root event output's version-one execution and payload envelopes.
     /// Also writes DIR/agents.jsonl, appending once on discovery:
@@ -477,22 +481,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fork_override_is_accepted_after_exec() {
-        let mut args = Args::try_parse_from([
-            "graphcoder",
-            "--fork-from",
-            "agents/original@4",
-            "exec",
-            "Continue",
-            "--override",
-            "continuation.json",
-        ])
-        .unwrap();
-        assert!(args.prepare_input().is_ok());
-        assert_eq!(
-            args.override_file.as_deref(),
-            Some(std::path::Path::new("continuation.json"))
-        );
+    fn fork_override_is_accepted_after_exec_and_run() {
+        for argv in [
+            vec![
+                "graphcoder",
+                "--fork-from",
+                "agents/original@4",
+                "exec",
+                "Continue",
+                "--override",
+                "continuation.json",
+            ],
+            vec![
+                "acyclic",
+                "run",
+                "--fork-from",
+                "agents/original@4",
+                "--override",
+                "continuation.json",
+                "-p",
+                "Continue",
+            ],
+        ] {
+            let mut args = Args::try_parse_from(argv).unwrap();
+            assert!(args.prepare_input().is_ok());
+            assert_eq!(
+                args.override_file.as_deref(),
+                Some(std::path::Path::new("continuation.json"))
+            );
+        }
     }
 
     #[test]
