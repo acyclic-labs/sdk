@@ -110,6 +110,78 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
             );
         }
     }
+    // A historically signed finite manifest still authenticates after its count
+    // fields become optional. Both journal append paths must admit the format
+    // before that cached proof can bypass complete request reconstruction.
+    let verifier = storage.verifier();
+    let current_version = load_manifest(journal, &file, None).await?.version;
+    for version in std::iter::once(current_version)
+        .chain(1..current_version)
+        .chain(std::iter::once(current_version + 1))
+    {
+        let mut signed = load_manifest(journal, &file, None).await?;
+        signed.version = version;
+        signed.admitted_limits = Limits {
+            file_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
+            path_bytes: crate::conversation::MAX_PATH_BYTES,
+            attachments: std::num::NonZeroUsize::new(8),
+            render_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
+            context_messages: std::num::NonZeroUsize::new(128),
+            ..Limits::default()
+        };
+        signed.proof = Some(signed.attestation(&verifier, None).await?);
+        assert!(signed.authenticates(
+            &verifier,
+            Limits::default(),
+            prepared.request_digest(),
+            None
+        )?);
+        let reference =
+            stage_manifest(journal, OperationId::new(), "signed-version", &signed, None).await?;
+        for conditional in [false, true] {
+            let operation = OperationId::new();
+            journal
+                .append(
+                    operation,
+                    "started",
+                    &ExecutionEvent::Started {
+                        request_digest: prepared.request_digest(),
+                    },
+                    None,
+                )?
+                .await?;
+            let event = ExecutionEvent::ModelStarted {
+                step: 0,
+                purpose: ModelPurpose::Summary,
+                request_digest: prepared.request_digest(),
+                request: reference.clone(),
+                context: None,
+            };
+            let result = if conditional {
+                match journal.append_if_tail(operation, 1, "signed-start", &event, None) {
+                    Ok(future) => future.await.map(|committed| assert!(committed)),
+                    Err(error) => Err(error),
+                }
+            } else {
+                match journal.append(operation, "signed-start", &event, None) {
+                    Ok(future) => future.await,
+                    Err(error) => Err(error),
+                }
+            };
+            if version == current_version {
+                result?;
+            } else {
+                assert_eq!(
+                    result.err().unwrap().code(),
+                    crate::wire::ErrorCode::Unsupported
+                );
+            }
+            assert_eq!(
+                journal.records(operation, 0, 4, None).await?.len(),
+                if version == current_version { 2 } else { 1 },
+            );
+        }
+    }
     for native in [false, true] {
         // Exercise both funded encoders, as well as the ordinary writer above.
         // The actual persisted bytes must admit their version before payload
