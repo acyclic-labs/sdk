@@ -1174,3 +1174,54 @@ normalized entry; batch input yields the immutable index cursor. Delete the old
 single-key Work implementation and adapt its sibling-loss mutation to this
 shared driver. Keep its pinned-root and spine-IO controls unchanged. This avoids
 two COW mechanisms and adds no one-entry temporary index/frame IO to set.
+
+### Persisted stage identity bindings (before implementation)
+
+The shared registry is an immutable paged index of stage bindings. Begin binds
+commit id, retry key and owner-run id; stage id is the content digest of their
+versioned canonical identity bytes. It is therefore impossible to reuse one
+stage id for another commit except by breaking the content-address assumption,
+including after registry retirement. An opaque returned Binding carries these
+identity fields; it is data, not an authorization or publication capability.
+
+Seal verifies the persisted binding, staged commit/key and directory/body
+binding. It records the body and directory roots and their bounded header
+metadata in a versioned binding frame declaring both graph dependencies. A
+repeated identical seal returns the same index; a different body/directory or
+commit cannot replace it. Begin and Seal return unpublished successor registry
+indexes. Only the shared authority root owner may install them. Neither API
+checks Stream conditions, captures forks, assigns positions or consumes a stage.
+
+This is NOT physical page ownership or event GC. The authority root must retain
+the registry and serialize stage pin/retirement with final publication; consumed
+stage identity and terminal retry receipt still publish with namespace state.
+The registry has no delete/rebind API. Account/auth binding is supplied by the
+enclosing registry namespace and verified owner capability, never by trusting
+the id alone. The original-work admission boundary remains to be wired.
+
+Controls use the existing real immutable-file adapter: begin/seal/reopen, pinned
+open binding, graph retention of both sealed roots, identical retry, wrong
+commit/key/body refusal, and distinct identities across commit/owner/key. A
+mutation disabling commit/key verification must fail before a successor registry
+is returned. Share family tag encode/decode with staged ingestion rather than
+introducing another family interpretation. This is binding coverage, not the
+required production final-apply idempotency/concurrency proof.
+
+### Shared preparation validation: source 7acc9480727
+
+Linux compile --locked --all-targets passed for acyclic-stream and
+acyclic-objects with Stream local/http and Objects local/http/binary features
+(31.72s). All 33 focused content-tree/index/staged controls passed (1.08s),
+including 64MiB content, 100k staged ingestion and 100k COW preparation. All
+five Objects shared-conformance paths passed (memory/local/gRPC/HTTP plus
+binary integration). Five mutation patches produced six intended test
+rejections with their required markers, then source was restored cleanly.
+The final BATCH_SUMMARY_OBJECTS_CONTROLS_PASS_FIVE_MUTANTS_SIX_REJECTIONS_
+SOURCE_RESTORED marker named the exact sha; session86224 terminated0.
+Log: Q:/scratch/stream-unbounded/batch-7acc-ready-linux.log.
+These controls do not prove actual atomic Stream publication or backend cutover.
+bb2 availability is restored; the earlier host-unreachable blocker is stale.
+
+Registry refinement: its one directory dependency transitively retains the
+exact token-body root validated by Directory::open. Avoid a redundant direct
+body edge. The binding control verifies both roots in the retained graph.

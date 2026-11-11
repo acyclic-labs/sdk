@@ -1,0 +1,10 @@
+diff --git a/rust/crates/stream/src/staged/registry.rs b/rust/crates/stream/src/staged/registry.rs
+--- a/rust/crates/stream/src/staged/registry.rs
++++ b/rust/crates/stream/src/staged/registry.rs
+@@ -210,5 +210,5 @@
+             return Err(StreamError::InvalidArgument);
+         }
+-        if current.commit != staged.commit_id || current.key != staged.key {
++        if false {
+             return Err(StreamError::InvalidArgument);
+         }

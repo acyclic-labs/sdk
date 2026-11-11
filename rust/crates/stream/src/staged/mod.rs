@@ -17,9 +17,11 @@ mod decode;
 mod directory;
 mod effects;
 mod encode;
+mod registry;
 pub use decode::{Bookmark, Reader};
 pub use directory::{Cursor, Directory, Location};
 pub use effects::{Effect, Effects};
+pub use registry::{Binding, Registry};
 
 const MAGIC: &[u8] = b"acyclic-stream-staged-v1\0";
 
@@ -32,6 +34,24 @@ pub enum Family {
     Fork,
     /// Ordered coordinated effects.
     Commit,
+}
+
+impl Family {
+    fn byte(self) -> u8 {
+        match self {
+            Self::Append => 1,
+            Self::Fork => 2,
+            Self::Commit => 3,
+        }
+    }
+    fn decode(byte: u8) -> Result<Self, StreamError> {
+        match byte {
+            1 => Ok(Self::Append),
+            2 => Ok(Self::Fork),
+            3 => Ok(Self::Commit),
+            _ => Err(StreamError::InvalidResponse),
+        }
+    }
 }
 
 /// One bounded decoded token. Wide counts describe subsequent ordered tokens;

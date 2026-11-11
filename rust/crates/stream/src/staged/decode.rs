@@ -286,12 +286,7 @@ impl<'a, S: Storage> Reader<'a, S> {
         if cursor.exact::<32>().await? != *staged.commit_id.as_bytes() {
             return Err(StreamError::InvalidResponse);
         }
-        let family = match cursor.byte().await? {
-            1 => Family::Append,
-            2 => Family::Fork,
-            3 => Family::Commit,
-            _ => return Err(StreamError::InvalidResponse),
-        };
+        let family = Family::decode(cursor.byte().await?)?;
         if family != staged.family {
             return Err(StreamError::InvalidResponse);
         }

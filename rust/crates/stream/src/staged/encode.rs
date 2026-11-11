@@ -35,13 +35,7 @@ impl<'a, S: Storage> Encoder<'a, S> {
             .output
             .write(encoder.submission.commit_id.as_bytes())
             .await?;
-        encoder
-            .byte(match encoder.submission.family {
-                Family::Append => 1,
-                Family::Fork => 2,
-                Family::Commit => 3,
-            })
-            .await?;
+        encoder.byte(encoder.submission.family.byte()).await?;
         // Retain the original key owner while writing, without copying its bytes.
         let key = encoder.submission.idempotency_key.clone();
         encoder.bytes(key.as_bytes()).await?;
