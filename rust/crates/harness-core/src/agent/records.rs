@@ -109,17 +109,43 @@ fn write_payload<T: Serialize + ?Sized>(bytes: &mut Vec<u8>, value: &T) -> crate
 /// Decode exactly one value, including all of its fields. The library's
 /// from_slice helper accepts trailing values; a durable record must not.
 pub(super) fn decode_payload<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unopened> {
-    let mut decoder =
-        rmp_serde::Deserializer::new(std::io::Cursor::new(bytes)).with_human_readable();
-    let value = T::deserialize(&mut decoder).map_err(|_| Unopened::Malformed)?;
-    if decoder.get_ref().position() != bytes.len() as u64 {
-        return Err(Unopened::Malformed);
+    decode_payload_with(
+        bytes,
+        |decoder| T::deserialize(decoder).map_err(|_| Unopened::Malformed),
+        || Unopened::Malformed,
+    )
+}
+
+type PayloadDecoder<'a> = rmp_serde::Deserializer<
+    rmp_serde::decode::ReadRefReader<'a, [u8]>,
+    rmp_serde::config::HumanReadableConfig<rmp_serde::config::DefaultConfig>,
+>;
+
+fn decode_payload_with<T, E>(
+    bytes: &[u8],
+    decode: impl FnOnce(&mut PayloadDecoder<'_>) -> Result<T, E>,
+    malformed: impl FnOnce() -> E,
+) -> Result<T, E> {
+    // Both readers borrow strings instead of allocating codec scratch.
+    let mut decoder = rmp_serde::Deserializer::from_read_ref(bytes).with_human_readable();
+    let value = decode(&mut decoder)?;
+    // Only EOF at a marker proves exact consumption. A truncated trailing
+    // number is InvalidDataRead instead. This probe reads at most nine bytes.
+    if !matches!(u8::deserialize(&mut decoder),
+        Err(rmp_serde::decode::Error::InvalidMarkerRead(error))
+        if error.kind() == std::io::ErrorKind::UnexpectedEof)
+    {
+        return Err(malformed());
     }
     Ok(value)
 }
 
 /// Select the format before decoding any payload, even a malformed one.
 pub(crate) fn open<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unopened> {
+    decode_payload(versioned_payload(bytes)?)
+}
+
+fn versioned_payload(bytes: &[u8]) -> Result<&[u8], Unopened> {
     let (version, payload) = bytes.split_at_checked(4).ok_or(Unopened::Malformed)?;
     let found = u32::from_be_bytes(version.try_into().map_err(|_| Unopened::Malformed)?);
     if found != RECORD_VERSION {
@@ -128,20 +154,28 @@ pub(crate) fn open<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unop
             expected: RECORD_VERSION,
         }));
     }
-    decode_payload(payload)
+    Ok(payload)
 }
 
 /// The record of any agent stream as `T`, such as a JSON value for a
 /// reader of every record kind: bounded by [`MAX_RECORD_BYTES`], and of any
 /// version but [`RECORD_VERSION`] refused whole.
 pub fn decode_record<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Error> {
+    decode_payload(record_payload(bytes)?).map_err(record_decode_error)
+}
+
+fn record_payload(bytes: &[u8]) -> Result<&[u8], Error> {
     if bytes.len() > MAX_RECORD_BYTES {
         return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
     }
-    open(bytes).map_err(|unopened| match unopened {
+    versioned_payload(bytes).map_err(record_decode_error)
+}
+
+fn record_decode_error(unopened: Unopened) -> Error {
+    match unopened {
         Unopened::Version(version) => Error::UnsupportedRecordVersion(version),
         Unopened::Malformed => Error::Record("record is malformed"),
-    })
+    }
 }
 
 /// Stable caller-chosen identity of one intent (a message, cancel, archive, hook or approval).
@@ -700,6 +734,39 @@ pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let value: Self = decode_record(bytes)?;
         value.check()?;
+        Ok(value)
+    }
+
+    /// Reads this record on the original filesystem accounting context.
+    /// Version, whole-input and structural checks are identical to `decode`;
+    /// decoded fields retain their original allocation credit.
+    #[cfg(feature = "filesystem")]
+    fn decode_accounted(
+        bytes: &[u8],
+        accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
+    ) -> Result<acyclic_fs::kernel::Retained<Self>, acyclic_fs::kernel::MetadataDecodeError<Error>>
+    {
+        use acyclic_fs::kernel::MetadataDecodeError;
+        accounting.charge(acyclic_fs::WorkCounters {
+            items_examined: 1,
+            ..acyclic_fs::WorkCounters::UNCHARGED
+        })?;
+        let payload = record_payload(bytes).map_err(MetadataDecodeError::Codec)?;
+        let value = decode_payload_with(
+            payload,
+            |decoder| {
+                accounting
+                    .deserialize::<Self, _>(decoder)
+                    .map_err(|error| match error {
+                        MetadataDecodeError::Work(error) => MetadataDecodeError::Work(error),
+                        MetadataDecodeError::Codec(_) => {
+                            MetadataDecodeError::Codec(Error::Record("record is malformed"))
+                        }
+                    })
+            },
+            || MetadataDecodeError::Codec(Error::Record("record is malformed")),
+        )?;
+        value.check().map_err(MetadataDecodeError::Codec)?;
         Ok(value)
     }
 }

@@ -31,6 +31,11 @@ required-features = ["test-support"]
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "computed_ui_records"
+path = "tests/computed_ui_records.rs"
+required-features = ["filesystem"]
+
 [features]
 ui = ["dep:pulldown-cmark"]
 research = ["acyclic-observability/research"]
