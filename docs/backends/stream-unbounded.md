@@ -457,10 +457,25 @@ file read gated by a channel event must demonstrate that cancellation refuses
 reuse. This is a content-transfer guarantee, not the still-outstanding atomic
 publication/crash proof.
 
-Current ingestion validation remains unrun because the build target was
-terminated before compilation. The old validation client has now exited after
-cancellation; no second submission has been made. The existing recovery process
-was confirmed live. Once capacity returns, run the prepared source-specific
-compile-first command for the current head, followed by the ten content/staged
-controls and the paired writer/reader guard-removal negative controls. No pass
-is inferred from rustfmt, source inspection, or an earlier source's checks.
+Linux ingestion validation did not execute Rust: the original host terminated,
+and the replacement remained held by source-sync/owner-proof qualification
+failures. The canceled original client and the one replacement attempt are
+terminal; no duplicate Linux job is live. No test failure or pass is inferred
+from these pre-compilation infrastructure exits.
+
+Native macOS `cargo +1.98.1 check --locked --all-targets -p acyclic-stream
+--features local,http` passed at exact runtime source
+`51c07fd8384e7550364b412ed269ac808467c115`. It used the already installed
+toolchain, `CARGO_INCREMENTAL=0` and the shared target
+`/Users/var/foreman/target/lanes`. Log:
+`Q:/scratch/stream-unbounded/ivar-51c-check.log`. The subsequent commits only
+extend this design/inventory; they do not change the checked Rust source.
+
+The macOS focused run is now live at that same source: six `staged::tests::`
+cases and four `content::tree::tests::` cases, followed by paired guard-removal
+negative controls. It is waiting for the shared build target, not reporting a
+test result. Log: `Q:/scratch/stream-unbounded/ivar-51c-tests.log`; command:
+`Q:/scratch/stream-unbounded/ivar-51c-tests.sh`. The script requires each
+cancellation mutant to fail with its own invariant marker and restores the
+production source on exit. These are ingestion/content controls, not final-apply
+atomicity proofs. Linux and all-backend publication qualification remain due.
