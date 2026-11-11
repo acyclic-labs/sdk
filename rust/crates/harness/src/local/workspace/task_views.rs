@@ -61,8 +61,33 @@ impl LocalWorkspace {
             }
             mounts
         };
-        self.mount_task_view(view, owner, Some((mounts, binding_owner)), authority)
-            .await
+        {
+            let cached = binding_owner.workspace.lock().await;
+            if let Some(workspace) = cached.upgrade() {
+                drop(cached);
+                owner.verify().await?;
+                return Ok(workspace);
+            }
+        }
+        // Verify without the per-binding guard: another verified caller may
+        // finish the primary view while this owner's verification is pending.
+        owner.verify().await?;
+        let mut cached = binding_owner.workspace.lock().await;
+        if let Some(workspace) = cached.upgrade() {
+            drop(cached);
+            owner.verify().await?;
+            return Ok(workspace);
+        }
+        let workspace = self
+            .mount_task_view(
+                view,
+                owner,
+                Some((mounts, binding_owner.clone())),
+                authority,
+            )
+            .await?;
+        *cached = Arc::downgrade(&workspace);
+        Ok(workspace)
     }
 
     /// All task views enter the filesystem's shared instance. The host may

@@ -15,6 +15,8 @@ pub(in crate::local) struct Binding {
     // Physical views omit the home mount but retain the same source identity.
     scratch: [u8; 32],
     publication: crate::sync::SyncMutex<Publication>,
+    // One primary view/capture cursor while any returned workspace is live.
+    pub(super) workspace: AsyncMutex<std::sync::Weak<LocalWorkspace>>,
 }
 
 struct Publication {
@@ -138,6 +140,7 @@ impl Bindings {
                     index: index.clone(),
                     key,
                     scratch,
+                    workspace: AsyncMutex::new(std::sync::Weak::new()),
                     publication: crate::sync::SyncMutex::new(Publication {
                         preparing: preparing.downgrade(),
                         mounts: std::sync::Weak::new(),

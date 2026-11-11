@@ -93,6 +93,10 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         .send(())
         .map_err(|_| Error::Conflict("physical binding owner stopped".into()))?;
     let first = preparing.await?;
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "binding callers received separate primary views"
+    );
     assert!(Arc::ptr_eq(
         first.binding.as_ref().expect("first binding"),
         second.binding.as_ref().expect("reused binding"),
@@ -116,6 +120,10 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             &authority,
         )
         .await?;
+    assert!(
+        Arc::ptr_eq(&second, &third),
+        "completed binding lost its primary view"
+    );
     assert!(Arc::ptr_eq(
         second.binding.as_ref().expect("second binding"),
         third.binding.as_ref().expect("completed binding"),
