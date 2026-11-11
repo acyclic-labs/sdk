@@ -36,7 +36,6 @@ struct Invocation<'a> {
     checkout: &'a workspace::View,
     view: crate::tools::git::View<'a>,
     source: Option<&'a workspace::MountedVolume>,
-    reserved: &'a [String],
     lease: &'a acyclic_fs::OperationWindowLease,
     watcher: &'a mut Option<capture::Cursor>,
     access: &'a crate::filesystem::WorkspaceAccess,
@@ -94,24 +93,6 @@ impl Commands<'_> {
         let parsed = crate::tools::parse_fs_command(command)?;
         self.fs_source(self.workspace, &parsed, scope)?;
         Ok(parsed)
-    }
-
-    /// The volume an fs command targets with the root-relative paths its
-    /// history reserves. Volume paths are relative to the project root; a
-    /// volume repository owns no aliases of its own.
-    fn fs_target_with_reserved_paths(
-        &self,
-        workspace: &LocalWorkspace,
-        parsed: &crate::tools::FsCommand,
-        scope: &RuntimeScope,
-    ) -> Result<(Option<Arc<workspace::MountedVolume>>, Vec<String>)> {
-        let source = self.fs_source(workspace, parsed, scope)?.clone();
-        let reserved = if source.is_none() {
-            workspace.volume_owned_paths()?
-        } else {
-            Vec::new()
-        };
-        Ok((source, reserved))
     }
 
     fn fs_source<'a>(
@@ -293,8 +274,7 @@ impl Commands<'_> {
         state: &mut State,
         workspace: &Arc<LocalWorkspace>,
     ) -> Result<Option<Outcome>> {
-        let (source, reserved) =
-            self.fs_target_with_reserved_paths(workspace, &parsed, context.scope)?;
+        let source = self.fs_source(workspace, &parsed, context.scope)?.clone();
         let native = match &source {
             Some(source) => Some(source.publication().await?),
             None => None,
@@ -347,7 +327,6 @@ impl Commands<'_> {
                     checkout,
                     view,
                     source: source.as_deref(),
-                    reserved: &reserved,
                     lease: &lease,
                     watcher,
                     access: &access,
@@ -443,7 +422,6 @@ impl Commands<'_> {
             checkout,
             view,
             source,
-            reserved,
             lease,
             watcher,
             access,
@@ -483,7 +461,6 @@ impl Commands<'_> {
                 lease: Some(lease.clone()),
                 checkout: (source.is_none() && workspace.mounted.is_none())
                     .then_some(workspace.identity),
-                reserved,
                 author: "LocalHarness",
                 authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                     .unwrap_or(i64::MAX),

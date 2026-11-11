@@ -178,7 +178,7 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
         operation_id: crate::OperationId::new(),
         call_id: "deletion".into(),
         name: "read".into(),
-        arguments: serde_json::json!({"path":".volumes/effective/wanted","wait":true}),
+        arguments: serde_json::json!({"path":"volume:///effective/wanted","wait":true}),
     };
     let context = crate::runtime::ToolContext::new(
         Arc::new(task),

@@ -428,7 +428,6 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
         lease: None,
         #[cfg(not(target_arch = "wasm32"))]
         checkout: None,
-        reserved: &[],
         author: "test",
         authored_at_seconds: 1,
         request: None,

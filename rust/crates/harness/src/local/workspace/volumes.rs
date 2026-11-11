@@ -1,21 +1,15 @@
 use super::*;
-use acyclic_fs::{CancellationToken, MountPublication, WorkBudget, kernel::NamespacePath};
+use acyclic_fs::{CancellationToken, MountPublication, WorkBudget};
 use acyclic_native_runtime::spawn;
 
-pub(in crate::local) const HOME_PATH: &str = ".volumes/home";
-/// The directory in a checkout holding its incarnation token, outside every
-/// workspace view.
-pub(in crate::local) const INCARNATION_PATH: &str = ".volumes/.incarnation";
-
-mod exclude;
-pub(super) mod parents;
+#[cfg(test)]
+pub(in crate::local) const HOME_PATH: &str = "home";
 #[cfg(test)]
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(loom)))]
 mod publication_tests;
 #[cfg(test)]
 #[cfg(all(target_os = "linux", not(loom)))]
 mod recovery_tests;
-pub(super) mod seed;
 
 #[cfg(target_os = "linux")]
 pub(super) fn recover_after_crash(root: &acyclic_fs::HeldRoot, relative: &Path) -> Result<()> {
@@ -58,58 +52,6 @@ pub(in crate::local) fn require_available(
     })
 }
 
-/// Root-relative paths a bound volume owns inside a task view: its alias or
-/// mount destination and the mount control files beside it. Capture excludes
-/// them and the Git facade reserves them; neither is ever authored content.
-pub(in crate::local) fn owned(root: &Path, relative: &str) -> Result<Vec<String>> {
-    let destination = root.join(relative);
-    std::iter::once(destination.clone())
-        .chain(std::iter::once(root.join(".volumes/recovery")))
-        .chain(acyclic_fs::native_mount_control_paths(&destination).map_err(Error::from)?)
-        .filter(|path| path.starts_with(root))
-        .map(|path| {
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| Error::Invalid("mount metadata lies outside the task view".into()))?;
-            let relative = relative
-                .to_str()
-                .ok_or_else(|| Error::Invalid("mount path is not UTF-8".into()))?;
-            Ok(relative.replace('\\', "/"))
-        })
-        .collect()
-}
-
-pub(in crate::local) fn excluded(
-    root: &Path,
-    config: acyclic_fs::VolumeConfig,
-    relative: &str,
-) -> Result<Vec<NamespacePath>> {
-    owned(root, relative)?
-        .into_iter()
-        .map(|relative| namespace(root, config, &root.join(relative)))
-        .collect()
-}
-
-/// The namespace path of `path` below `root`.
-pub(in crate::local) fn namespace(
-    root: &Path,
-    config: acyclic_fs::VolumeConfig,
-    path: &Path,
-) -> Result<NamespacePath> {
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| Error::Invalid("mount metadata lies outside the task view".into()))?;
-    let relative = relative
-        .to_str()
-        .ok_or_else(|| Error::Invalid("mount path is not UTF-8".into()))?;
-    let path = acyclic_fs::path::PortablePath::parse(
-        &format!("/{}", relative.replace('\\', "/")),
-        config.limits,
-    )
-    .map_err(storage)?;
-    NamespacePath::from_portable_in_profile(&path, config.profile, config.limits).map_err(storage)
-}
-
 pub(super) async fn attach(
     filesystem: &acyclic_fs::LocalFs,
     store: &acyclic_fs::LocalCoreStateStore,
@@ -144,13 +86,10 @@ pub(super) async fn attach(
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
-        let destination = root.path().join(relative);
-        // Bind the namespace before the initial source/watch cut. Creating its
-        // parent during the first shell command would author a project change
-        // even when that command only reads. The projection itself stays absent.
-        if native && let Some(parent) = Path::new(relative).parent() {
-            held_directories(root, parent)?;
-        }
+        let binding = blake3::hash(mount.view.volume.storage_name(&mut None)?.as_bytes())
+            .to_hex()
+            .to_string();
+        let destination = root.path().join(&binding);
         let options = if native {
             Some(
                 authority
@@ -169,7 +108,7 @@ pub(super) async fn attach(
         };
         #[cfg(windows)]
         if native {
-            recover_volume_after_crash(root.path(), Path::new(relative), source.id().volume_id())?;
+            recover_volume_after_crash(root.path(), Path::new(&binding), source.id().volume_id())?;
         }
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source, &work, &cancellation)
@@ -183,6 +122,7 @@ pub(super) async fn attach(
             });
         mount.view.source = Some(Arc::new(MountedVolume {
             workspace: crate::tools::git::OwnedView::Volume(source),
+            binding_root: Arc::new(root.try_clone().map_err(storage)?),
             destination,
             options,
             task_view_admission: Arc::clone(admission),
@@ -221,7 +161,6 @@ fn ordered_mounts(mounts: &Mounts) -> Result<Vec<(&str, &BoundMount)>> {
             // The binding is validated even when another name already selects
             // this projection. Lock order belongs to the volume and physical
             // projection, never to aliases in a particular task's mount table.
-            projection_root(&source.destination, relative)?;
             let key = (
                 source.workspace.workspace().id(),
                 source.destination.clone(),
@@ -315,7 +254,7 @@ pub(in crate::local) async fn native_scope<T>(
         unverified: Unverified::default(),
     };
     let mut projected = Ok(());
-    for (relative, mount) in ordered_mounts(mounts)? {
+    for (_, mount) in ordered_mounts(mounts)? {
         if let Some(source) = &mount.view.source
             && source.options.is_some()
         {
@@ -324,16 +263,9 @@ pub(in crate::local) async fn native_scope<T>(
             // a command lifetime must not exclude other admitted commands.
             // A Linux task view aliases the original binding; mount at that
             // binding's root, never below another owner-only FUSE mount.
-            let root = match projection_root(&source.destination, relative) {
-                Ok(root) => root,
-                Err(error) => {
-                    projected = Err(error);
-                    break;
-                }
-            };
             let entry = async {
                 source.prepare_command().await?;
-                Box::pin(source.enter(root, relative, mount.mode.read_only())).await
+                Box::pin(source.enter(mount.mode.read_only())).await
             }
             .await;
             match entry {
@@ -417,59 +349,9 @@ pub(in crate::local) async fn retire(mounts: &Mounts) -> Result<()> {
     retired
 }
 
-pub(in crate::local) fn projection_root<'a>(
-    destination: &'a Path,
-    relative: &str,
-) -> Result<&'a Path> {
-    destination
-        .ancestors()
-        .nth(Path::new(relative).components().count())
-        .filter(|_| destination.ends_with(relative))
-        .ok_or_else(|| Error::Invalid("volume projection lies outside its binding".into()))
-}
-
-#[cfg(test)]
-mod binding_paths {
-    use super::*;
-    use proptest::prelude::*;
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(32))]
-        // Native aliases retain their source's composed root, independent of
-        // prefix spelling or a nested task's different physical root.
-        #[test]
-        fn projection_keeps_the_source_binding_root(
-            directories in prop::collection::vec("[a-zA-ZΩα]{1,8}", 0..4),
-            volume in "[a-zA-ZΩα]{1,8}",
-        ) {
-            let mut root=std::env::current_dir().map_err(|error| TestCaseError::fail(error.to_string()))?;
-            for directory in directories {root.push(directory);}
-            let relative=format!(".volumes/{volume}");
-            let destination=root.join(&relative);
-            let projected=projection_root(&destination,&relative)
-                .map_err(|error| TestCaseError::fail(error.to_string()))?;
-            prop_assert_eq!(projected,root.as_path());
-            let other=format!("{relative}x");
-            prop_assert!(projection_root(&destination,&other).is_err());
-            // Choosing the alias task's root loses the source binding.
-            let task_root=root.join("task-view");
-            prop_assert_ne!(task_root.as_path(),projected);
-        }
-    }
-}
-
-// FUSE's elevated helper cannot traverse an owner-only mount, and ProjFS cannot
-// start a virtualization root at a placeholder in another projection. Retain
-// the already bound volume instead of mounting again below the task view.
-//
-// A task view's aliases are authored, so a fork inherits whichever alias its
-// source view last published: that of any ancestor, at any depth. Every task
-// binding of this checkout lives in the one `bindings` namespace, so an alias
-// naming any binding there is SDK custody and is replaced; anything else is
-// refused as authored content.
-pub(super) fn link(root: &Path, mounts: &mut Mounts, bindings: &Path) -> Result<()> {
-    let held_root = acyclic_fs::hold_search_root(root)
-        .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+/// Route auxiliary tools and process discovery directly to host state. No
+/// aliases or mount parents are installed in the project tree.
+pub(super) fn bind_roots(mounts: &mut Mounts) -> Result<()> {
     for (relative, mount) in mounts.mounts_mut() {
         if relative.is_empty() {
             continue;
@@ -479,44 +361,14 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts, bindings: &Path) -> Result<
             .source
             .as_ref()
             .ok_or_else(|| Error::NotFound("volume mount is not bound".into()))?;
-        if source.options.is_none() {
-            mount.native_root = crate::workspace::NativeRoot::Logical;
-            continue;
-        }
-        let target = source.destination.as_path();
-        let relative = Path::new(relative);
-        if let Some(parent) = relative.parent() {
-            // Alias parents are disposable projection state. Creating or
-            // validating them needs search access, never directory listing
-            // or durable admission through the mounted projection.
-            held_root
-                .create_directories(parent)
-                .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-        }
-        let path = root.join(relative);
-        let previous =
-            alias_target(&path)?.filter(|linked| names_binding(bindings, linked, relative));
-        bind_alias(&path, target, previous.as_deref())?;
-        mount.native_root = crate::workspace::NativeRoot::Path(target.to_path_buf());
+        mount.native_root = source
+            .options
+            .as_ref()
+            .map_or(crate::workspace::NativeRoot::Logical, |_| {
+                crate::workspace::NativeRoot::Path(source.destination.clone())
+            });
     }
     Ok(())
-}
-
-/// Whether `linked` is the `relative` alias destination of a binding in
-/// `bindings`: exactly `<bindings>/<binding>/<relative>`, as written or as the
-/// filesystem resolves its parent.
-fn names_binding(bindings: &Path, linked: &Path, relative: &Path) -> bool {
-    let within = |bindings: &Path, linked: &Path| {
-        linked.strip_prefix(bindings).is_ok_and(|rest| {
-            let mut components = rest.components();
-            matches!(components.next(), Some(std::path::Component::Normal(_)))
-                && components.as_path() == relative
-        })
-    };
-    within(bindings, linked)
-        || std::fs::canonicalize(bindings).is_ok_and(|bindings| {
-            canonical_destination(linked).is_ok_and(|linked| within(&bindings, &linked))
-        })
 }
 
 /// Rebinds only an empty SDK directory or the exact preceding alias.
@@ -651,22 +503,6 @@ fn link_directory(target: &Path, path: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_dir(target, path)
 }
 
-/// Reserve SDK state in the original checkout once, before the source cut.
-/// Physical projections live under the shared root; aliases remain reserved.
-pub(super) fn exclude_state<'a>(
-    root: &acyclic_fs::HeldRoot,
-    names: impl IntoIterator<Item = &'a str>,
-) -> Result<()> {
-    let paths: Vec<_> = names
-        .into_iter()
-        .map(|name| Path::new(".volumes").join(name))
-        .chain([super::HOST_VIEW_ROOT.into(), ".acyclic-sdk".into()])
-        .collect();
-    exclude::exclude_mount_paths(
-        root,
-        &paths.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-    )
-}
 /// Each binding supplies its durable logical volume identity. The destination
 /// fence and physical receipt must agree before any authored file is moved.
 #[cfg(windows)]
@@ -752,7 +588,7 @@ mod tests {
         let outside = tempfile::tempdir().map_err(storage)?;
         std::os::unix::fs::symlink(outside.path(), root.path().join(".volumes"))
             .map_err(storage)?;
-        assert!(create_mount_directory(root.path(), Path::new(HOME_PATH)).is_err());
+        assert!(create_mount_directory(root.path(), Path::new(".volumes/home")).is_err());
         assert!(!outside.path().join("scratch").exists());
         Ok(())
     }

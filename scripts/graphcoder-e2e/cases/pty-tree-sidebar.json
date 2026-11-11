@@ -31,7 +31,7 @@
             "id": "row-title",
             "name": "write",
             "arguments": {
-              "path": ".volumes/private/ui/title",
+              "path": "volume:///private/ui/title",
               "content": "Oak"
             }
           },
@@ -39,7 +39,7 @@
             "id": "row-model",
             "name": "write",
             "arguments": {
-              "path": ".volumes/private/ui/model",
+              "path": "volume:///private/ui/model",
               "content": "M"
             }
           },
@@ -47,7 +47,7 @@
             "id": "row-cost",
             "name": "write",
             "arguments": {
-              "path": ".volumes/private/ui/cost",
+              "path": "volume:///private/ui/cost",
               "content": "$1"
             }
           },
@@ -55,7 +55,7 @@
             "id": "row-age",
             "name": "write",
             "arguments": {
-              "path": ".volumes/private/ui/age",
+              "path": "volume:///private/ui/age",
               "content": "2m"
             }
           },
@@ -113,7 +113,7 @@
             "id": "rename-tree",
             "name": "write",
             "arguments": {
-              "path": ".volumes/private/ui/title",
+              "path": "volume:///private/ui/title",
               "content": "Pine"
             }
           }

@@ -17,7 +17,7 @@ export async function award(request: File, offer: File) {
   await atomically([
     { check: request.path, version: request.version },
     { check: offer.path, version: offer.version },
-    { write: ".volumes/shared/market/award.json", ifVersion: "absent",
+    { write: "volume:///shared/market/award.json", ifVersion: "absent",
       data: { version: 1,
         request: { path: request.path, version: request.version },
         offer: { path: offer.path, version: offer.version } } },

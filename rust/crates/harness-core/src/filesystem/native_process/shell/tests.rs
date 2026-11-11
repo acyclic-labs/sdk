@@ -7,7 +7,8 @@ use crate::{
 use acyclic_fs::access::*;
 use std::{collections::BTreeMap, fs::OpenOptions, io::Write, path::PathBuf};
 
-fn table(root: PathBuf) -> Result<MountTable<()>> {
+fn table(root: PathBuf) -> Result<MountTable<Arc<tempfile::TempDir>>> {
+    let native = Arc::new(tempfile::tempdir().map_err(Error::process_io)?);
     let resource = ResourcePattern {
         lineage_root: None,
         volume: None,
@@ -64,11 +65,11 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
             head: 1,
             config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Ephemeral),
             policy: policy.clone(),
-            source: (),
+            source: Arc::clone(&native),
         })
     };
     let mut mounts = compose(
-        root.clone(),
+        root,
         &principal,
         &capability,
         Context {
@@ -79,10 +80,10 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
         [volume("data")?, volume("shared")?],
     )?;
     for (relative, mount) in mounts.mounts_mut() {
-        if relative == ".volumes/shared" {
+        if relative == "volume:///shared" {
             mount.native_root = crate::workspace::NativeRoot::Logical;
         } else if !relative.is_empty() {
-            mount.native_root = crate::workspace::NativeRoot::Path(root.join(relative));
+            mount.native_root = crate::workspace::NativeRoot::Path(native.path().to_path_buf());
         }
     }
     Ok(mounts)
@@ -108,8 +109,9 @@ fn invocation(root: &Path) -> Invocation {
 #[tokio::test]
 async fn recon_shell_admission_does_not_require_a_logical_volume_path() -> Result<()> {
     let temp = tempfile::tempdir().map_err(Error::process_io)?;
-    let root = temp.path().canonicalize().map_err(Error::process_io)?;
-    std::fs::create_dir_all(root.join(".volumes/data")).map_err(Error::process_io)?;
+    let root = temp.path().join("view");
+    std::fs::create_dir_all(&root).map_err(Error::process_io)?;
+    let root = root.canonicalize().map_err(Error::process_io)?;
     for args in [
         vec!["init", "--quiet"],
         vec![
@@ -132,7 +134,7 @@ async fn recon_shell_admission_does_not_require_a_logical_volume_path() -> Resul
         assert!(status.success());
     }
     let mut mounts = table(root.clone())?;
-    let missing = root.join(".volumes/shared");
+    let missing = temp.path().join("missing-shared");
     assert!(!missing.try_exists().map_err(Error::process_io)?);
     const SAVED_COMMAND: &str = "pwd && git rev-parse HEAD && git status --short && ls -la && if [ -f RECON-COVERAGE.json ]; then cat RECON-COVERAGE.json; fi";
     let input = || ShellInput {
@@ -145,8 +147,8 @@ async fn recon_shell_admission_does_not_require_a_logical_volume_path() -> Resul
     // A claimed physical binding must fail with its real filesystem class;
     // omitting absent roots by existence would silently weaken authority.
     for (relative, mount) in mounts.mounts_mut() {
-        if relative == ".volumes/shared" {
-            mount.native_root = crate::workspace::NativeRoot::Composed;
+        if relative == "volume:///shared" {
+            mount.native_root = crate::workspace::NativeRoot::Path(missing.clone());
         }
     }
     let error = match prepare(input(), &mounts, invocation(&root), 1) {
@@ -168,7 +170,7 @@ async fn recon_shell_admission_does_not_require_a_logical_volume_path() -> Resul
         "{error}"
     );
     for (relative, mount) in mounts.mounts_mut() {
-        if relative == ".volumes/shared" {
+        if relative == "volume:///shared" {
             mount.native_root = crate::workspace::NativeRoot::Logical;
         }
     }
@@ -196,11 +198,10 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
     let root = temp.path().join("view");
     let volume = temp.path().join("volume");
     let outside = temp.path().join("outside");
-    std::fs::create_dir_all(root.join(".volumes")).map_err(Error::process_io)?;
+    std::fs::create_dir_all(&root).map_err(Error::process_io)?;
     std::fs::create_dir(&volume).map_err(Error::process_io)?;
     std::fs::write(&outside, "original").map_err(Error::process_io)?;
     std::os::unix::fs::symlink(&outside, root.join("escape")).map_err(Error::process_io)?;
-    std::os::unix::fs::symlink(&volume, root.join(".volumes/data")).map_err(Error::process_io)?;
     let mut mounts = table(root.canonicalize().map_err(Error::process_io)?)?;
     for (relative, mount) in mounts.mounts_mut() {
         if !relative.is_empty() {
@@ -214,7 +215,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
         prepare(
             ShellInput {
                 command: crate::tools::ShellCommand::Source("true".into()),
-                cwd: Some(".volumes/data".into()),
+                cwd: Some("volume:///data".into()),
                 timeout_ms: None,
                 background: false,
                 target: None,
@@ -226,14 +227,14 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
         Err(Error::Unsupported(_))
     ));
     for (relative, mount) in mounts.mounts_mut() {
-        if relative == ".volumes/data" {
+        if relative == "volume:///data" {
             mount.native_root = crate::workspace::NativeRoot::Path(volume.clone());
         }
     }
     assert!(!mounts.environment()?.contains_key("ACYCLIC_VOLUME_SHARED"));
     let logical = prepare(
         crate::tools::ShellInput {
-            cwd: Some(".volumes/shared".into()),
+            cwd: Some("volume:///shared".into()),
             command: crate::tools::ShellCommand::Source("true".into()),
             timeout_ms: None,
             background: false,
@@ -250,7 +251,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
         (
             None,
             crate::tools::ShellCommand::Source(
-                r#"printf inside > inside; printf volume > .volumes/data/written;
+                r#"printf inside > inside; printf volume > "$ACYCLIC_VOLUME_DATA/written";
              printf temp > "$TMPDIR/tempfile";
              /bin/cat "$OUTSIDE" >/dev/null 2>&1 && exit 13;
              /bin/cat /proc/self/environ >/dev/null 2>&1 && exit 14;
@@ -262,7 +263,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
             ),
         ),
         (
-            Some(".volumes/data".into()),
+            Some("volume:///data".into()),
             crate::tools::ShellCommand::Argv(vec![
                 "/bin/sh".into(),
                 "-c".into(),
@@ -337,7 +338,7 @@ fn bound_volume_cwd_keeps_its_authority() {
     let native = native.canonicalize().unwrap();
     let mut mounts = table(root.canonicalize().unwrap()).unwrap();
     for (relative, mount) in mounts.mounts_mut() {
-        if relative == ".volumes/data" {
+        if relative == "volume:///data" {
             mount.native_root = crate::workspace::NativeRoot::Path(native.clone());
         }
     }
@@ -379,7 +380,7 @@ fn bound_volume_cwd_keeps_its_authority() {
                 let result = prepare(
                     ShellInput {
                         command: "pwd".into(),
-                        cwd: Some(format!(".volumes/data/{suffix}")),
+                        cwd: Some(format!("volume:///data/{suffix}")),
                         timeout_ms: lifetime,
                         background: false,
                         target: None,
@@ -505,8 +506,6 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     // The PATH-only fixture tool is part of this fixture's workspace, rather
     // than an unrelated directory whose readability the default must deny.
     let workspace = Path::new(home).parent().expect("fixture home has a parent");
-    std::fs::create_dir_all(workspace.join(".volumes/data"))
-        .map_err(|error| Error::Storage(error.to_string()))?;
     let mounts = table(
         workspace
             .canonicalize()
@@ -614,15 +613,20 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
 async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_code() -> Result<()> {
     let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let root = temp.path().join("view");
-    std::fs::create_dir_all(root.join(".volumes/data"))
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    std::fs::create_dir_all(&root).map_err(|error| Error::Storage(error.to_string()))?;
     std::fs::create_dir(root.join("src")).map_err(|error| Error::Storage(error.to_string()))?;
-    std::fs::write(root.join(".volumes/data/input"), b"from data\n")
-        .map_err(|error| Error::Storage(error.to_string()))?;
     let mounts = table(
         root.canonicalize()
             .map_err(|error| Error::Storage(error.to_string()))?,
     )?;
+    std::fs::write(
+        mounts
+            .native_root_for(mounts.named(Some("data"))?.1)
+            .expect("native data binding")
+            .join("input"),
+        b"from data\n",
+    )
+    .map_err(Error::process_io)?;
     let stdout = temp.path().join("stdout");
     let stderr = temp.path().join("stderr");
     let paths = (stdout.clone(), stderr.clone());
@@ -690,7 +694,9 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
 #[test]
 fn missing_shell_inputs_are_preflight_results_with_paths() -> Result<()> {
     let directory = tempfile::tempdir().map_err(Error::process_io)?;
-    let root = directory.path().canonicalize().map_err(Error::process_io)?;
+    let root = directory.path().join("view");
+    std::fs::create_dir(&root).map_err(Error::process_io)?;
+    let root = root.canonicalize().map_err(Error::process_io)?;
     std::fs::write(root.join("file-cwd"), b"file").map_err(Error::process_io)?;
     let mounts = table(root)?;
     for (cwd, command) in [

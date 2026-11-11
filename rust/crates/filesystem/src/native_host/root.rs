@@ -102,6 +102,17 @@ pub struct HostRoot {
     pub(crate) origin: Option<CachedRoot>,
 }
 impl HostRoot {
+    pub(crate) fn creation_time<W: NativeHostWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<Option<std::time::SystemTime>, W::Error> {
+        work.attempt_io(READ, || match self.file.as_file().metadata()?.created() {
+            Ok(time) => Ok(Some(time)),
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => Ok(None),
+            Err(error) => Err(error),
+        })
+    }
+
     /// A capability view borrows the same descriptor without cloning or closing
     /// it. The original file owner retains its durability evidence between uses.
     pub(crate) fn directory(&self) -> cap_std::io_lifetimes::views::FilelikeView<'_, Dir> {

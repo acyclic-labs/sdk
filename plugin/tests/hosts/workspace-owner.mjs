@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {resolve} from 'node:path';
+import {isAbsolute,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Processes,Spool,SpoolEnded} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
@@ -11,7 +11,9 @@ export async function startWorkspaceOwner({scope,binary,workspace,state,env,root
    {cwd:workspace,env,scopeCapture:capture,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})});
  const events=new Spool(owner.child.stdout,owner.closed,
   {key:event=>event?.type==='workspace-owner-ready'?['ready']:[],unique:true});
- try{await Promise.all([owner.reportReady,events.keyed('ready')]);}
+ try{const [,ready]=await Promise.all([owner.reportReady,events.keyed('ready')]);
+  assert.ok(isAbsolute(ready.directory??''),'workspace-owner-ready must announce its external carrier');
+  env.ACYCLIC_HOST_FILES_DIRECTORY=ready.directory;owner.directory=ready.directory;}
  catch(error){throw error instanceof SpoolEnded&&error.kind==='source'&&error.cause instanceof Error?error.cause:error;}
  return owner;
 }
@@ -32,7 +34,7 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   await withOwnedCase({processes:scope,signal:cancellation.signal,run:async()=>{
    const owner=await startWorkspaceOwner({scope,binary,workspace,state,root,env:process.env});
    ready=true;
-   console.log(JSON.stringify({event:'workspace-owner-ready'}));
+   console.log(JSON.stringify({event:'workspace-owner-ready',directory:owner.directory}));
    await Promise.race([input,owner.closed.then(()=>{throw new Error('workspace owner ended before input closure');})]);
   }});
  }catch(error){

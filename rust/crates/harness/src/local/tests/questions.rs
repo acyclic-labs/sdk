@@ -25,7 +25,7 @@ async fn headless_question_plugin_has_no_declaration_and_file_writes_cannot_ask(
     let provider = scripted([
         call(
             "write",
-            json!({"path":".volumes/private/ui/color.md","content":ASK,"ifVersion":"absent"}),
+            json!({"path":"volume:///private/ui/color.md","content":ASK,"ifVersion":"absent"}),
         ),
         ScriptedTurn::Text("I chose blue within the given authority.".into()),
     ]);
@@ -65,7 +65,7 @@ async fn interactive_orchestrator_asks_directly_and_receives_a_generation_bound_
     let provider = scripted([
         call(
             "ask_question",
-            json!({"path":".volumes/private/ui/color.md","content":ASK}),
+            json!({"path":"volume:///private/ui/color.md","content":ASK}),
         ),
         ScriptedTurn::Text("Awaiting your color.".into()),
         ScriptedTurn::Text("Blue selected.".into()),
@@ -132,7 +132,7 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
     let provider = scripted([
         call(
             "ask_question",
-            json!({"path":".volumes/private/ui/color.md","content":ASK}),
+            json!({"path":"volume:///private/ui/color.md","content":ASK}),
         ),
         ScriptedTurn::Text("Worker reports ambiguity to its parent.".into()),
         ScriptedTurn::Text("Nested orchestrator ready.".into()),
@@ -254,13 +254,16 @@ async fn sessions_pin_question_choice_independently_of_the_serving_workspace() -
 #[tokio::test]
 async fn question_tool_cannot_publish_workspace_files() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|e| Error::Storage(e.to_string()))?;
-    let provider = scripted([
-        call(
-            "ask_question",
-            json!({"path":"approved.txt", "content":"must not publish"}),
-        ),
-        ScriptedTurn::Text("The question tool rejected a workspace write.".into()),
-    ]);
+    let paths = ["approved.txt", ".volumes/private/ui/color.md"];
+    let provider = scripted(paths.into_iter().flat_map(|path| {
+        [
+            call(
+                "ask_question",
+                json!({"path":path, "content":"must not publish"}),
+            ),
+            ScriptedTurn::Text("The question tool rejected a workspace write.".into()),
+        ]
+    }));
     let harness = Arc::new(
         LocalHarness::open(
             volume_config(
@@ -273,15 +276,29 @@ async fn question_tool_cannot_publish_workspace_files() -> Result<()> {
         .await?,
     );
     let mut observed = ObservedConversation::open(&harness).await?;
-    observed
-        .send("restricted", "try a workspace write through question")
-        .await?;
-    let requests = provider.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(
-        request_text(&harness, &requests[1])
-            .await?
-            .contains("ask_question requires a private ui/ file")
-    );
+    for (index, _) in paths.iter().enumerate() {
+        observed
+            .send(
+                &format!("restricted-{index}"),
+                "try a workspace write through question",
+            )
+            .await?;
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2 * (index + 1));
+        assert!(
+            request_text(&harness, &requests[2 * index + 1])
+                .await?
+                .contains("ask_question requires a private ui/ file")
+        );
+        assert!(!matches!(
+            observed.conversation.phase().await?,
+            Phase::WaitingUser { .. }
+        ));
+        let private = observed
+            .conversation
+            .agent_files(vec!["ui/color.md".into()], None)
+            .await?;
+        assert!(private.files["ui/color.md"].is_none());
+    }
     Ok(())
 }

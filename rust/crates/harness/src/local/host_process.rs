@@ -8,9 +8,20 @@ use crate::agent::AgentPath;
 use acyclic_native_runtime::{
     FileLock, FileLockMode, ProcessCommand, ProcessCustody, ProcessDrain, ProcessTreeStorage,
 };
+use std::collections::BTreeMap;
 
 pub mod children;
 pub mod launch;
+
+fn admitted_environment(location: &serde_json::Value) -> Result<BTreeMap<String, String>> {
+    serde_json::from_value(
+        location
+            .get("environment")
+            .cloned()
+            .ok_or_else(|| Error::Invalid("native view environment absent".into()))?,
+    )
+    .map_err(storage)
+}
 
 /// The native event log of the turn `claim`, in its custody directory. Each
 /// turn claim owns its own log, so a settlement never reads another turn's.
@@ -49,6 +60,7 @@ pub fn run_root_session(
     .map_err(storage)?;
     let resolved = acyclic_native_runtime::host_command(program).map_err(storage)?;
     let host_args = serde_json::to_string(arguments).map_err(storage)?;
+    let environment = admitted_environment(&location)?;
     let status = if prompt.is_some() {
         let mut command = ProcessCommand::new(resolved.get_program());
         command
@@ -56,8 +68,15 @@ pub fn run_root_session(
             .args(native_arguments)
             .current_dir(cwd)
             .env("ACYCLIC_HOST_ARGS", host_args)
+            .env(
+                super::host_files::DIRECTORY_ENV,
+                super::host_files::selected_directory(cwd)?,
+            )
             .env("ACYCLIC_WORKSPACE", cwd)
             .env("ACYCLIC_TASK", task.to_string());
+        for (key, value) in &environment {
+            command.env(key, value);
+        }
         let model = launch::selected_model(host, arguments);
         let context = native_context(&task, cwd, model)?;
         run_headless(&mut command, &mut std::io::stdout().lock(), &context, model)?
@@ -67,8 +86,15 @@ pub fn run_root_session(
             .args(native_arguments)
             .current_dir(cwd)
             .env("ACYCLIC_HOST_ARGS", host_args)
+            .env(
+                super::host_files::DIRECTORY_ENV,
+                super::host_files::selected_directory(cwd)?,
+            )
             .env("ACYCLIC_WORKSPACE", cwd)
             .env("ACYCLIC_TASK", task.to_string());
+        for (key, value) in &environment {
+            command.env(key, value);
+        }
         command.status().map_err(storage)
     };
     // Capture only a quiescent tree. Once retirement is proved, preserve the
@@ -222,6 +248,8 @@ fn forward_events(
 pub struct HostProcessLease {
     task: AgentPath,
     view: PathBuf,
+    directory: PathBuf,
+    environment: BTreeMap<String, String>,
     custody: Arc<ProcessCustody>,
     _ownership: FileLock,
     root: acyclic_fs::HeldRoot,
@@ -288,30 +316,45 @@ impl HostProcessLease {
     pub fn admit(cwd: &Path, receipt: &Receipt, turn: &serde_json::Value) -> Result<Self> {
         let view = receipt.confirm(turn)?;
         // This process serves no view, so it may resolve paths through one.
-        Self::acquire(
+        let mut lease = Self::acquire(
+            &super::host_files::state_root(cwd)?,
             &std::fs::canonicalize(super::host_files::workspace_root(cwd)?).map_err(storage)?,
             &receipt.task,
             &std::fs::canonicalize(view).map_err(storage)?,
-        )
+        )?;
+        lease.environment = admitted_environment(turn)?;
+        Ok(lease)
     }
 
-    /// Acquires the task's workspace-local custody before claiming an input.
+    /// Acquires the task's external custody before claiming an input.
     /// A live owner refuses acquisition; a dead owner's trees are fenced using
     /// the runtime's existing cross-platform process containment implementation.
     /// Both paths name canonical locations; Windows drive/UNC prefixes may use
     /// equivalent verbatim spelling. The owner that serves `view` passes the
     /// path it mounted and never resolves it, since resolving a served view
     /// waits on the owner's own callbacks.
-    pub(super) fn acquire(workspace: &Path, task: &AgentPath, view: &Path) -> Result<Self> {
-        if acyclic_native_runtime::paths::strip_native_prefix(view, workspace).is_none() {
+    pub(super) fn acquire(
+        state: &Path,
+        workspace: &Path,
+        task: &AgentPath,
+        view: &Path,
+    ) -> Result<Self> {
+        super::owner::planned_separated_directory(state, Some(workspace))?;
+        if view != workspace
+            && acyclic_native_runtime::paths::strip_native_prefix(
+                view,
+                &state.join(super::workspace::HOST_VIEW_ROOT),
+            )
+            .is_none()
+        {
             return Err(Error::Unauthorized(
                 "step=admit native process view: outside workspace; recovery: reopen the task through acyclic host".into(),
             ));
         }
-        let root = acyclic_fs::hold_root(workspace)
+        let root = acyclic_fs::hold_root(state)
             .map_err(storage)?
             .create_directories(
-                &PathBuf::from(".acyclic-sdk/host-processes").join(task.id().as_str()),
+                &PathBuf::from("host-processes").join(task.id().as_str()),
                 acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;
@@ -328,6 +371,8 @@ impl HostProcessLease {
         Ok(Self {
             task: task.clone(),
             view: view.to_path_buf(),
+            directory: state.join(super::host_files::DIRECTORY),
+            environment: BTreeMap::new(),
             custody,
             _ownership: ownership,
             root,
@@ -493,7 +538,11 @@ impl HostSessionProcess {
         }
         command
             .env("ACYCLIC_WORKSPACE", &lease.view)
+            .env(super::host_files::DIRECTORY_ENV, &lease.directory)
             .env("ACYCLIC_TASK", lease.task.to_string());
+        for (key, value) in &lease.environment {
+            command.env(key, value);
+        }
         let context = native_context(&lease.task, &lease.view, model)?;
         // A relaunch of the same claim restarts its log.
         let log = event_log(claim);
@@ -773,9 +822,11 @@ mod tests {
     #[test]
     fn process_polls_never_spend_the_original_lifetime_allowance() -> Result<()> {
         let root = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
         let view = root.path().canonicalize().map_err(storage)?;
         let work = polling_work()?;
-        let mut process = HostProcessLease::acquire(&view, &test_agent(), &view)?.process(&work)?;
+        let mut process =
+            HostProcessLease::acquire(state.path(), &view, &test_agent(), &view)?.process(&work)?;
         let mut command = ProcessCommand::new(std::env::current_exe().map_err(storage)?);
         command
             .arg("--list")
@@ -822,6 +873,7 @@ mod tests {
     #[test]
     fn failed_spawn_keeps_physical_custody_until_shared_retirement() -> Result<()> {
         let root = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
         let task = test_agent();
         let view = root.path().canonicalize().map_err(storage)?;
         let work = acyclic_fs::NativeMaterializationWork::new(
@@ -829,7 +881,8 @@ mod tests {
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut process = HostProcessLease::acquire(&view, &task, &view)?.process(&work)?;
+        let mut process =
+            HostProcessLease::acquire(state.path(), &view, &task, &view)?.process(&work)?;
         let mut command = ProcessCommand::new(view.join("absent-native-program"));
         let host_view = acyclic_host_platform::paths::strip_verbatim(&view);
         command.current_dir(host_view.as_ref());
@@ -840,7 +893,7 @@ mod tests {
             matches!(error, Error::Storage(_)),
             "equivalent native cwd was refused before process creation: {error}"
         );
-        assert!(HostProcessLease::acquire(&view, &task, &view).is_err());
+        assert!(HostProcessLease::acquire(state.path(), &view, &task, &view).is_err());
         process.release()?;
         assert!(
             process
@@ -848,7 +901,7 @@ mod tests {
                 .is_err(),
             "retired owner cannot spawn again"
         );
-        HostProcessLease::acquire(&view, &task, &view)?
+        HostProcessLease::acquire(state.path(), &view, &task, &view)?
             .quiescent()
             .verify(&task, host_view.as_ref())?;
         Ok(())
@@ -857,16 +910,20 @@ mod tests {
     #[test]
     fn native_process_admission_rejects_a_different_view() -> Result<()> {
         let root = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
         let outside = tempfile::tempdir().map_err(storage)?;
         let task = test_agent();
-        assert!(HostProcessLease::acquire(root.path(), &task, outside.path()).is_err());
+        assert!(
+            HostProcessLease::acquire(state.path(), root.path(), &task, outside.path()).is_err()
+        );
         let view = root.path().canonicalize().map_err(storage)?;
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut process = HostProcessLease::acquire(&view, &task, &view)?.process(&work)?;
+        let mut process =
+            HostProcessLease::acquire(state.path(), &view, &task, &view)?.process(&work)?;
         let mut command = ProcessCommand::new("must-not-execute");
         command.current_dir(outside.path());
         let error = process
@@ -874,7 +931,7 @@ mod tests {
             .expect_err("foreign cwd admitted");
         assert!(error.to_string().contains("cwd differs from admitted view"));
         process.release()?;
-        let quiet = HostProcessLease::acquire(&view, &task, &view)?.quiescent();
+        let quiet = HostProcessLease::acquire(state.path(), &view, &task, &view)?.quiescent();
         assert!(quiet.verify(&task, outside.path()).is_err());
         quiet.verify(&task, &view)?;
         Ok(())

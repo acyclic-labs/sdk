@@ -53,11 +53,20 @@ Root model selection lives in the shared `agent.ts` settings or the host's
 explicit binding. A child role can choose another provider and model in its
 home volume's `templates/worker/AGENT.md`:
 
-Before the first local run, hosts may create `.volumes/home` as a real directory
-and write `agent.ts` and role files there. The harness admits that directory into
-the home volume before reading settings. No initialization command or flag is
-needed. Its original source is retained in the excluded SDK namespace; reopening
-uses the persisted volume, so later home edits are never overwritten by the seed.
+Configure `agent.ts` and role files in the selected home volume. Auxiliary
+volume projections, task views, shell temporary files and owner records live
+in host state outside the checkout. The volume context lists logical tool paths
+alongside their native paths; shell discovery variables name native paths.
+Completed shell overflow is streamed into the private output volume and its
+returned path can be read through the ordinary file tools.
+
+Checkout state selection reads immutable native root evidence without creating
+workspace markers or inspecting Git metadata. A kernel generation handle, or
+the root's object identity and creation time, distinguishes replacement at the
+same path. Filesystems reporting neither generation nor creation time refuse
+durable checkout state attachment. Native identity changes select fresh state;
+state selected by the former in-checkout token is not migrated. Explicit older
+state must be replaced with a fresh external state directory.
 
 ```yaml
 ---

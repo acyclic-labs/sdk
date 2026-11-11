@@ -160,11 +160,6 @@ impl HostWorkspaceOwner {
                 "multiple native sessions select this directory; use --task".into(),
             ));
         }
-        if cwd.starts_with(first.path().join(host_workspace::HOST_VIEW_ROOT)) {
-            return Err(Error::NotFound(
-                "native cwd selects no held agent view".into(),
-            ));
-        }
         first.verify().await?;
         Ok(json!({"task":agent,"cwd":first.host_cwd()}))
     }

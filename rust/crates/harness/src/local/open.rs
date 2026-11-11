@@ -187,8 +187,7 @@ impl Opening {
     }
 
     /// Captures the checkout and selects its control directory, refusing a
-    /// caller's overlapping control directory before capture can publish the
-    /// checkout's incarnation token.
+    /// caller's overlapping control directory before opening host state.
     fn checkout(&self) -> Result<(PathBuf, Option<owner::Checkout>)> {
         let state_location = self.config.state_location()?;
         let selected_directory = match (&state_location, &self.config.project) {

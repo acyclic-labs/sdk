@@ -8,7 +8,7 @@ decision point, not permission to overwrite a peer.
 ```ts
 import { read, write } from "acyclic";
 
-const path = ".volumes/shared/board/design.md";
+const path = "volume:///shared/board/design.md";
 const current = await read(path);
 const contribution = "A proposed design with its supporting evidence.\n";
 await write(path, contribution, current?.version ?? "absent");

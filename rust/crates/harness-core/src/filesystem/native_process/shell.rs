@@ -77,11 +77,7 @@ pub fn prepare<T>(
         .transpose()
         .map_err(io)?;
     let root = native_root.as_deref().unwrap_or(&mounts.root);
-    let requested = if native_root.is_some() {
-        root.join(&path)
-    } else {
-        mounts.root.join(relative)
-    };
+    let requested = root.join(&path);
     let cwd = std::fs::canonicalize(&requested).map_err(cwd_error)?;
     if !std::fs::metadata(&cwd).map_err(cwd_error)?.is_dir() {
         return Err(cwd_error(std::io::Error::from(
@@ -96,7 +92,7 @@ pub fn prepare<T>(
             .to_str()
             .ok_or_else(|| Error::Invalid("shell cwd is not UTF-8".into()))?;
         mount.check(Action::List, &selected.replace('\\', "/"), now)?;
-    } else if selected != relative {
+    } else if selected != Path::new(&path) {
         let (mount, path) = mounts.resolve(selected)?;
         mount.check(Action::List, &path, now)?;
     }
@@ -185,9 +181,13 @@ pub fn workspace_grant<T>(
                 write.push(root);
             }
         }
-        // Standard temporary-file APIs stay inside the same writable view;
-        // this adds no global /tmp allowance or per-agent mount/directory.
-        let temporary = if access == ExecutionAccess::ReadOnly {
+        if let Some(scratch) = &mounts.scratch_root {
+            write.push(scratch.clone());
+        }
+        // Harness-bound processes put temporary files in host scratch.
+        let temporary = if let Some(scratch) = &mounts.scratch_root {
+            scratch
+        } else if access == ExecutionAccess::ReadOnly {
             write.first().unwrap_or(&primary)
         } else {
             &primary

@@ -106,7 +106,6 @@ impl LocalHarness {
                         repository,
                         lease: None,
                         checkout: None,
-                        reserved: &[],
                         author: "LocalHarness",
                         authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                             .unwrap_or(i64::MAX),

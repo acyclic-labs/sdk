@@ -80,7 +80,9 @@ impl FileTool {
 
     fn public_path(&self, path: &str, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
+            crate::tool::ReadPathKind::File
+                .validate_address(path, history)
+                .map_err(Error::tool_input)?;
             if crate::conversation::is_internal_path(path) {
                 return Err(crate::store::guarded_boundary(
                     history,

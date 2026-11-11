@@ -21,10 +21,11 @@ test('workspace startup joins serving readiness, cancellation and the original p
   // This isolates the real process/pipe mechanism. Both ready frames come
   // from native captures; only the report generation is rebound to this launch.
   // Full workspace-owner acceptance uses the actual shipping executable.
+  const readyFrame={...workspaceReady,directory:root+'-external/host-files'};
   const program=mode==='exit'?'process.exit(3)':mode==='descriptor-without-ready'?'process.exit(0)':`
    const fs=require('node:fs'),net=require('node:net');
    const frame=JSON.stringify({...${JSON.stringify(nativeReady)},generation:process.env.ACYCLIC_REPORT_GENERATION})+'\\n';
-   const closed=()=>{${mode==='exit-capture'?'process.exit(3)':`console.log(JSON.stringify({started:true}));${mode.startsWith('ready')?'console.log('+JSON.stringify(JSON.stringify(workspaceReady))+');':''}process.stdin.resume();`}};
+   const closed=()=>{${mode==='exit-capture'?'process.exit(3)':`console.log(JSON.stringify({started:true}));${mode.startsWith('ready')?'console.log('+JSON.stringify(JSON.stringify(readyFrame))+');':''}process.stdin.resume();`}};
    const data=${mode==='control-without-ready'?"''":'frame'};
    if(process.env.ACYCLIC_REPORT_PIPE)net.connect(process.env.ACYCLIC_REPORT_PIPE).end(data,closed);
    else if(process.env.ACYCLIC_REPORT_FD){const fd=Number(process.env.ACYCLIC_REPORT_FD);fs.writeSync(fd,data);fs.closeSync(fd);closed();}`;
@@ -44,7 +45,7 @@ test('workspace startup joins serving readiness, cancellation and the original p
    }
    const running=withOwnedCase({processes:scope,signal:cancellation.signal,run:async()=>{
     const started=startWorkspaceOwner({scope:owner,binary:process.execPath,workspace:root,
-     state:root,root,env:process.env,capture:()=>{
+     state:root,root,env:{...process.env},capture:()=>{
       if(mode==='ready-async-capture')return Promise.reject(captureFailure);
       if(mode.endsWith('capture'))throw captureFailure;
      }});

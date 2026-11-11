@@ -34,7 +34,8 @@ pub(crate) fn valid_path(arguments: &serde_json::Value) -> bool {
     arguments
         .get("path")
         .and_then(serde_json::Value::as_str)
-        .and_then(|path| path.strip_prefix(".volumes/private/ui/"))
+        .and_then(|path| path.strip_prefix(crate::layers::PRIVATE_PATH))
+        .and_then(|path| path.strip_prefix("ui/"))
         .is_some_and(|path| {
             !path.is_empty()
                 && path
@@ -46,7 +47,7 @@ pub(crate) fn valid_path(arguments: &serde_json::Value) -> bool {
 pub(crate) static SPEC: ToolSpec = ToolSpec {
     name: "ask_question",
     revision: "1",
-    description: "Ask the human directly by publishing a private UI file. Set path to .volumes/private/ui/<name>.md and content to CommonMark containing input fences. End your turn to wait; replies preserve the file generation and asking agent identity.",
+    description: "Ask the human directly by publishing a private UI file. Set path to volume:///private/ui/<name>.md and content to CommonMark containing input fences. End your turn to wait; replies preserve the file generation and asking agent identity.",
     hook_names: &["Write", "write"],
     binding: ToolBinding::Volume,
     input: schema::input::<WriteFileInput>,

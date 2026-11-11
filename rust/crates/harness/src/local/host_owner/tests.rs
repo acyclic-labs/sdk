@@ -288,9 +288,9 @@ async fn native_event_log_keeps_late_usage_and_resume_after_recovery() -> Result
         damaged.extend_from_slice(claude);
         native_events::check_native_event_resume(&damaged);
         let prefix = std::fs::read(
-            checkout
+            state
                 .path()
-                .join(".acyclic-sdk/host-processes")
+                .join("owner/host-processes")
                 .join(child.id().as_str())
                 .join(format!("events-{}.jsonl", claim.operation)),
         )
@@ -488,9 +488,9 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     // The turn's custodied event log names its resume id; settlement derives
     // it, so the running turn spends no exchange on it.
     let custody = fixture
-        .checkout
+        ._state
         .path()
-        .join(".acyclic-sdk/host-processes")
+        .join("owner/host-processes")
         .join(child.id().as_str());
     std::fs::create_dir_all(&custody).map_err(storage)?;
     let (events, native_id) = if host == "claude-code" {
@@ -889,9 +889,12 @@ async fn native_child_binding_root_refuses_a_symlink_escape() -> Result<()> {
     std::os::unix::fs::symlink(
         outside.path(),
         fixture
-            .checkout
-            .path()
-            .join(host_workspace::HOST_VIEW_ROOT)
+            .owner
+            .local
+            .workspace()
+            .unwrap()
+            .mount_directory
+            .clone()
             .join(".bindings"),
     )
     .map_err(storage)?;
@@ -1253,6 +1256,12 @@ async fn native_handoff_carries_next_work_under_the_settlement_fence() -> Result
     let workspace = fixture.checkout.path().to_path_buf();
     assert!(matches!(
         super::super::host_process::HostProcessLease::acquire(
+            &fixture
+                .owner
+                .local
+                .workspace()
+                .ok_or_else(|| Error::Invalid("native process has no workspace".into()))?
+                .host_state,
             &workspace,
             &child,
             &workspace.with_extension("outside").join("view"),
@@ -1262,6 +1271,12 @@ async fn native_handoff_carries_next_work_under_the_settlement_fence() -> Result
     // The reply may spell a Windows drive/UNC prefix in its verbatim form;
     // the checkout's equivalent ordinary spelling must name the same fence.
     let held = super::super::host_process::HostProcessLease::acquire(
+        &fixture
+            .owner
+            .local
+            .workspace()
+            .ok_or_else(|| Error::Invalid("native process has no workspace".into()))?
+            .host_state,
         &workspace,
         &child,
         &cwd(&accepted)?,

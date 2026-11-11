@@ -46,8 +46,89 @@ mod tests;
 #[doc(hidden)]
 pub mod validation;
 
-/// Reserved inside the host's existing writable workspace; never a state path.
-pub const DIRECTORY: &str = ".acyclic-sdk/host-files";
+/// Native coordination files below the external owner state directory.
+pub const DIRECTORY: &str = "host-files";
+/// Explicit endpoint selected by the trusted host launcher.
+pub const DIRECTORY_ENV: &str = "ACYCLIC_HOST_FILES_DIRECTORY";
+
+/// The external carrier announced by this owner, without opening any files.
+pub fn directory(local: &LocalHarness) -> Result<PathBuf> {
+    Ok(local
+        .workspace()
+        .ok_or_else(|| Error::Invalid("native hosts require a checkout".into()))?
+        .host_state
+        .join(DIRECTORY))
+}
+
+/// The explicit carrier supplied by the trusted owner launcher.
+pub fn selected_directory(cwd: &Path) -> Result<PathBuf> {
+    let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
+    if let Some(directory) = local_directory(&cwd) {
+        return Ok(directory);
+    }
+    let directory = crate::native_environment::variable(DIRECTORY_ENV)
+        .map(PathBuf::from)
+        .ok_or_else(|| Error::Invalid(format!("native endpoint absent; recovery: set {DIRECTORY_ENV} to the directory in workspace-owner-ready")))?;
+    if !directory.is_absolute()
+        || directory
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(Error::Invalid(
+            "native endpoint directory must be absolute without parent traversal".into(),
+        ));
+    }
+    Ok(directory)
+}
+
+// Embedded clients share their serving owner's explicit binding. External
+// clients receive that same directory through workspace-owner-ready. Lookup
+// walks path components, never the set of owners, and registration drops with
+// the serving lifetime.
+static LOCAL_ENDPOINTS: LazyLock<Mutex<std::collections::BTreeMap<PathBuf, Weak<LocalEndpoint>>>> =
+    LazyLock::new(Mutex::default);
+
+struct LocalEndpoint {
+    roots: [PathBuf; 2],
+    directory: PathBuf,
+}
+
+impl LocalEndpoint {
+    fn register(workspace: PathBuf, views: PathBuf, directory: PathBuf) -> Arc<Self> {
+        let endpoint = Arc::new(Self {
+            roots: [workspace, views],
+            directory,
+        });
+        let mut endpoints = lock(&LOCAL_ENDPOINTS);
+        for root in &endpoint.roots {
+            endpoints.insert(root.clone(), Arc::downgrade(&endpoint));
+        }
+        endpoint
+    }
+}
+
+impl Drop for LocalEndpoint {
+    fn drop(&mut self) {
+        let mut endpoints = lock(&LOCAL_ENDPOINTS);
+        for root in &self.roots {
+            if endpoints
+                .get(root)
+                .is_some_and(|held| std::ptr::eq(held.as_ptr(), self))
+            {
+                endpoints.remove(root);
+            }
+        }
+    }
+}
+
+fn local_directory(cwd: &Path) -> Option<PathBuf> {
+    let endpoint = {
+        let endpoints = lock(&LOCAL_ENDPOINTS);
+        cwd.ancestors()
+            .find_map(|root| endpoints.get(root)?.upgrade())
+    };
+    endpoint.map(|endpoint| endpoint.directory.clone())
+}
 
 // Allocation protection for writable input projections, far above the native
 // prompt/event bounds. Published results have no independent envelope cap.
@@ -171,11 +252,35 @@ struct Request {
 /// The existing owner's admitted workspace. This only reads its descriptor;
 /// nested clients keep disposable custody files outside authored child views.
 pub fn workspace_root(cwd: &Path) -> Result<PathBuf> {
+    workspace_root_at(&selected_directory(cwd)?, cwd)
+}
+
+/// Workspace identity from an explicitly admitted external carrier.
+pub fn workspace_root_at(directory: &Path, cwd: &Path) -> Result<PathBuf> {
     let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
-    if let Some(bridge) = Registry::live(&REGISTRY, &cwd) {
+    if let Some(bridge) = Registry::live(&REGISTRY, directory, &cwd) {
         return Ok(bridge.workspace.clone());
     }
-    discover(&cwd).map(|(_, endpoint)| endpoint.workspace)
+    discover(directory, &cwd).map(|(_, endpoint)| endpoint.workspace)
+}
+
+pub(super) fn state_root(cwd: &Path) -> Result<PathBuf> {
+    let (directory, _) = discover(&selected_directory(cwd)?, cwd)?;
+    directory
+        .path()
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| Error::Invalid("native endpoint has no owner state".into()))
+}
+
+/// The narrowly scoped writable directories required by a native host. Owner
+/// records and signing custody remain outside every returned root.
+pub fn native_roots(cwd: &Path) -> Result<Vec<PathBuf>> {
+    let state = state_root(cwd)?;
+    Ok([DIRECTORY, "host-processes", workspace::HOST_VIEW_ROOT]
+        .into_iter()
+        .map(|relative| state.join(relative))
+        .collect())
 }
 
 const NO_OWNER: &str = "no running Acyclic workspace owner; start acyclic run --host-workspace outside the host sandbox";
@@ -539,20 +644,22 @@ impl Retirement {
 static REGISTRY: LazyLock<Arc<Mutex<Registry>>> = LazyLock::new(Arc::default);
 
 impl Registry {
-    fn live(registry: &Mutex<Self>, cwd: &Path) -> Option<Arc<Bridge>> {
+    fn live(registry: &Mutex<Self>, directory: &Path, cwd: &Path) -> Option<Arc<Bridge>> {
         let bridge = lock(registry).located.get(cwd)?.upgrade()?;
-        bridge.live().then_some(bridge)
+        (bridge.live() && bridge.shared.requests.path().parent() == Some(directory))
+            .then_some(bridge)
     }
 
     fn bridge(
         registry: &Arc<Mutex<Self>>,
+        directory: &Path,
         cwd: &Path,
         open: impl FnOnce(acyclic_fs::HeldRoot, Endpoint) -> Result<Bridge>,
     ) -> Result<Arc<Bridge>> {
-        if let Some(bridge) = Self::live(registry, cwd) {
+        if let Some(bridge) = Self::live(registry, directory, cwd) {
             return Ok(bridge);
         }
-        let (root, endpoint) = discover(cwd)?;
+        let (root, endpoint) = discover(directory, cwd)?;
         let directory = root.path().to_path_buf();
         let connection = Arc::clone(lock(registry).bridges.entry(directory.clone()).or_default());
         // Only callers connecting to this owner wait behind its native opens.
@@ -621,6 +728,12 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
     request_with(&REGISTRY, cwd, action)
 }
 
+/// Contacts one explicitly admitted carrier. The caller supplies the endpoint
+/// announced by its owner; discovery never probes the authored workspace.
+pub fn request_at(directory: &Path, cwd: &Path, action: HostAction) -> Result<Value> {
+    request_operation_at(&REGISTRY, directory, cwd, OperationId::new(), action)
+}
+
 fn request_with(registry: &Arc<Mutex<Registry>>, cwd: &Path, action: HostAction) -> Result<Value> {
     request_operation(registry, cwd, OperationId::new(), action)
 }
@@ -631,9 +744,19 @@ fn request_operation(
     operation: OperationId,
     action: HostAction,
 ) -> Result<Value> {
+    request_operation_at(registry, &selected_directory(cwd)?, cwd, operation, action)
+}
+
+fn request_operation_at(
+    registry: &Arc<Mutex<Registry>>,
+    directory: &Path,
+    cwd: &Path,
+    operation: OperationId,
+    action: HostAction,
+) -> Result<Value> {
     let result = (|| {
         let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
-        let bridge = Registry::bridge(registry, &cwd, Bridge::open)?;
+        let bridge = Registry::bridge(registry, directory, &cwd, Bridge::open)?;
         let request = Request {
             session: bridge.session,
             operation,
@@ -720,36 +843,27 @@ fn notified_operations(
     Some(replies)
 }
 
-fn discover(cwd: &Path) -> Result<(acyclic_fs::HeldRoot, Endpoint)> {
-    // The owner publishes its canonical workspace; compare ancestors in that
-    // one spelling, whatever form the caller's directory takes.
+fn discover(directory: &Path, cwd: &Path) -> Result<(acyclic_fs::HeldRoot, Endpoint)> {
     let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
-    for ancestor in cwd.ancestors() {
-        let candidate = (|| {
-            let workspace = acyclic_fs::hold_root(ancestor).map_err(native_file_error)?;
-            let directory = workspace
-                .open_directory(Path::new(DIRECTORY))
-                .map_err(native_file_error)?;
-            let bytes = held_bytes(&directory, Path::new("owner.json"), MAXIMUM_REQUEST_BYTES)?;
-            Ok((directory, bytes))
-        })();
-        match candidate {
-            Ok((directory, bytes)) => {
-                let endpoint = Endpoint::decode(&bytes)?;
-                if endpoint.workspace != ancestor
-                    || std::fs::canonicalize(directory.path()).map_err(storage)? != directory.path()
-                {
-                    return Err(Error::Unauthorized(
-                        "native host endpoint is outside its admitted workspace".into(),
-                    ));
-                }
-                return Ok((directory, endpoint));
-            }
-            Err(Error::NotFound(_)) => {}
-            Err(error) => return Err(error),
-        }
+    let directory = acyclic_fs::hold_root(directory).map_err(native_file_error)?;
+    let bytes = held_bytes(&directory, Path::new("owner.json"), MAXIMUM_REQUEST_BYTES)?;
+    let endpoint = Endpoint::decode(&bytes)?;
+    let state = directory
+        .path()
+        .parent()
+        .ok_or_else(|| Error::Invalid("native endpoint has no owner state".into()))?;
+    if directory.path().starts_with(&endpoint.workspace)
+        || !endpoint.workspace.is_absolute()
+        || std::fs::canonicalize(&endpoint.workspace).map_err(storage)? != endpoint.workspace
+        || std::fs::canonicalize(directory.path()).map_err(storage)? != directory.path()
+        || !(cwd.starts_with(&endpoint.workspace)
+            || cwd.starts_with(state.join(workspace::HOST_VIEW_ROOT)))
+    {
+        return Err(Error::Unauthorized(
+            "native endpoint is outside its admitted owner binding".into(),
+        ));
     }
-    Err(Error::NotFound(NO_OWNER.into()))
+    Ok((directory, endpoint))
 }
 
 /// Runs only in the trusted `GraphCoder` process, outside host sandboxes.
@@ -773,7 +887,12 @@ pub async fn serve_until(
         .workspace_path()
         .ok_or_else(|| Error::Invalid("native hosts require a checkout".into()))?
         .to_path_buf();
-    let held = acyclic_fs::hold_root(&workspace).map_err(storage)?;
+    let held = acyclic_fs::hold_root(&local.workspace().unwrap().host_state).map_err(storage)?;
+    held.create_directories(
+        Path::new("host-processes"),
+        acyclic_fs::NativeDurability::Durable,
+    )
+    .map_err(storage)?;
     let directory = held
         .create_directories(Path::new(DIRECTORY), acyclic_fs::NativeDurability::Durable)
         .map_err(storage)?;
@@ -815,6 +934,11 @@ pub async fn serve_until(
             acyclic_fs::NativeDurability::Durable,
         )
         .map_err(native_file_error)?;
+    let _endpoint = LocalEndpoint::register(
+        endpoint.workspace.clone(),
+        local.workspace().unwrap().mount_directory.clone(),
+        directory.path().to_path_buf(),
+    );
     let owner =
         HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(Arc::clone(&request_root));
     let notices = Arc::new(Notices::new(PathBuf::new()));

@@ -1,6 +1,26 @@
 use super::*;
 use proptest::prelude::*;
 
+/// State selection observes the held root only. Ordinary edits preserve its
+/// incarnation, and replacement at the same path cannot attach the old owner.
+#[test]
+fn checkout_state_is_external_and_follows_native_incarnation() -> Result<()> {
+    let fixture = tempfile::tempdir().map_err(storage)?;
+    let path = fixture.path().join("workspace");
+    fs::create_dir(&path).map_err(storage)?;
+    let first = Checkout::capture(&path)?;
+    assert_eq!(fs::read_dir(&path).map_err(storage)?.count(), 0);
+    fs::write(path.join("edit"), b"user edit").map_err(storage)?;
+    let same = Checkout::capture(&path)?;
+    assert_eq!(first.incarnation, same.incarnation);
+    fs::rename(&path, fixture.path().join("old")).map_err(storage)?;
+    fs::create_dir(&path).map_err(storage)?;
+    let replacement = Checkout::capture(&path)?;
+    assert_ne!(first.incarnation, replacement.incarnation);
+    assert_eq!(fs::read_dir(&path).map_err(storage)?.count(), 0);
+    Ok(())
+}
+
 /// Checkout incarnation versioning preserves every configured volume's
 /// original state key, including its owner credentials and journals.
 #[test]

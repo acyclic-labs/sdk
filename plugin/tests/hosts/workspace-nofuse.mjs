@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {chmodSync,copyFileSync,existsSync,mkdirSync,readFileSync,renameSync,rmSync} from 'node:fs';
-import {delimiter,isAbsolute,join} from 'node:path';
+import {dirname,delimiter,isAbsolute,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import test from 'node:test';
 import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
@@ -20,7 +20,7 @@ async function probeOwner(binary,workspace,state,root,env){
  const owner=start(binary,[workspace,state,probe],{cwd:workspace,env});owner.collect();
  const events=new Spool(owner.child.stdout,owner.closed,
   {key:event=>event?.type==='workspace-owner-ready'?['ready']:[],unique:true});
- try{await events.keyed('ready');}
+ try{const ready=await events.keyed('ready');assert.ok(isAbsolute(ready.directory??''));env.ACYCLIC_HOST_FILES_DIRECTORY=ready.directory;}
  catch(error){owner.child.stdin.end();const result=await owner.closed;throw Object.assign(new Error(result.stderr,{cause:error}),{result});}
  return {async close(){owner.child.stdin.end();return await owner.closed;}};
 }
@@ -63,7 +63,7 @@ async function roots(binary,headless){
    assert.doesNotMatch(status,/\.acyclic-sdk\/|\.volumes\//,'coordination metadata stays outside native Git inventory');
   }
   // The passive root still retains the exact admitted directory identity.
-  const mounts=join(workspace,'.volumes/agents'),held=join(root,'held-agents');
+  const mounts=join(dirname(env.ACYCLIC_HOST_FILES_DIRECTORY),'.volumes/agents'),held=join(root,'held-agents');
   renameSync(mounts,held);mkdirSync(mounts);
   try{
    const refused=await run(executable,['__workspace'],{cwd:workspace,env},JSON.stringify({kind:'open',host:'opencode',session:'replaced admission'}));

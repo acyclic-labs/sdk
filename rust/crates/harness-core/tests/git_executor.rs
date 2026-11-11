@@ -95,17 +95,6 @@ async fn run(
     repository_id: acyclic_fs::WorkspaceId,
     args: &[&str],
 ) -> Result<(GitCommandOutput, Option<Lazy>)> {
-    run_reserving(fs, store, lazy, repository_id, &[], args).await
-}
-
-async fn run_reserving(
-    fs: &LocalFs,
-    store: &LocalCoreStateStore,
-    lazy: &Lazy,
-    repository_id: acyclic_fs::WorkspaceId,
-    reserved: &[String],
-    args: &[&str],
-) -> Result<(GitCommandOutput, Option<Lazy>)> {
     let argv: Vec<_> = args.iter().map(|arg| (*arg).to_owned()).collect();
     let output = git::run(
         git::Workspace {
@@ -117,7 +106,6 @@ async fn run_reserving(
             repository: repository_id,
             lease: None,
             checkout: None,
-            reserved,
             author: "test",
             authored_at_seconds: 1,
             request: None,
@@ -269,7 +257,6 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
                 repository: repo,
                 lease: None,
                 checkout: None,
-                reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
                 request: None,
@@ -452,7 +439,8 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             .contains(&"/ignored/child.txt".to_owned())
     );
     assert!(
-        plan.child_wins_bindings
+        !plan
+            .child_wins_bindings
             .contains(&"/.acyclic-sdk/state".to_owned())
     );
     assert!(!plan.child_wins_bindings.contains(&"/result.txt".to_owned()));
@@ -719,176 +707,6 @@ async fn fixture_native(
 /// A child projection authors its volume alias beside its own work. Merging
 /// the child must publish and track the work, never the alias, and record
 /// each parent once.
-async fn merge_child_with_alias(reserved: &[String]) -> Result<AliasMerge> {
-    let (_temp, _root, fs, store, main) = fixture().await?;
-    let stop = CancellationToken::new();
-    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
-    main.write(
-        "/base.txt",
-        bytes::Bytes::from_static(b"base\n").into(),
-        IdempotencyKey::new(),
-        PublicationPermit::Unrestricted,
-        &mut work,
-    )
-    .await?;
-    acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(
-            main.workspace(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map_err(|failure| failure.error)?;
-    let repo = main.workspace().id();
-    let GitCommandOutput::Committed(base) = run_reserving(
-        &fs,
-        &store,
-        &main,
-        repo,
-        reserved,
-        &["commit", "-m", "base"],
-    )
-    .await?
-    .0
-    else {
-        return Err("expected the base commit".into());
-    };
-    let (_, child) = run_reserving(
-        &fs,
-        &store,
-        &main,
-        repo,
-        reserved,
-        &["checkout", "-b", "agents/kid"],
-    )
-    .await?;
-    let child = child.ok_or("missing child view")?;
-    for path in ["/newkid.txt", "/.volumes/user.txt"] {
-        child
-            .write(
-                path,
-                bytes::Bytes::from_static(b"kid\n").into(),
-                IdempotencyKey::new(),
-                PublicationPermit::Unrestricted,
-                &mut work,
-            )
-            .await?;
-    }
-    author_volume_alias(&child).await?;
-    run_reserving(&fs, &store, &child, repo, reserved, &["checkout", "main"]).await?;
-    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) =
-        run_reserving(&fs, &store, &main, repo, reserved, &["diff", "agents/kid"])
-            .await?
-            .0
-    else {
-        return Err("expected an agent diff".into());
-    };
-    run_reserving(&fs, &store, &main, repo, reserved, &["merge", "agents/kid"]).await?;
-    let GitCommandOutput::Commits(log) =
-        run_reserving(&fs, &store, &main, repo, reserved, &["log"])
-            .await?
-            .0
-    else {
-        return Err("expected the merged log".into());
-    };
-    let merge = log.first().ok_or("empty log")?.clone();
-    let alias_merged = main
-        .workspace()
-        .head(WorkBudget::UNBOUNDED, &stop)
-        .await?
-        .value
-        .stat("/.volumes/scratch", WorkBudget::UNBOUNDED, &stop)
-        .await
-        .is_ok();
-    Ok(AliasMerge {
-        base: base.id,
-        file_changes: value
-            .get("fileChanges")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or("missing file count")?,
-        merge,
-        alias_merged,
-    })
-}
-
-/// Authors a volume alias in `child` the way a mounted child projection
-/// does: a symbolic link to the host volume, beneath a `.volumes` the host
-/// creates when absent, published by the child itself.
-async fn author_volume_alias(child: &Lazy) -> Result<()> {
-    let stop = CancellationToken::new();
-    let mut alias = child
-        .workspace()
-        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
-        .await?
-        .value;
-    alias
-        .create_dir_all("/.volumes", WorkBudget::UNBOUNDED, &stop)
-        .await?;
-    alias
-        .create_symbolic_link(
-            "/.volumes/scratch",
-            acyclic_stream::OwnedBytes::from_static(b"/host/volumes/scratch"),
-            WorkBudget::UNBOUNDED,
-            &stop,
-        )
-        .await?;
-    let committed = alias
-        .commit(
-            None,
-            PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &stop,
-            |_| {
-                std::future::ready(Ok::<
-                    _,
-                    acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>,
-                >(acyclic_fs::OperationReceipt {
-                    value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
-                }))
-            },
-        )
-        .await?
-        .value;
-    assert!(matches!(
-        committed,
-        acyclic_fs::TransactionCommit::Committed(_)
-    ));
-    Ok(())
-}
-
-struct AliasMerge {
-    base: acyclic_fs::GitCommitId,
-    file_changes: u64,
-    merge: acyclic_fs::GitCommit,
-    alias_merged: bool,
-}
-
-#[tokio::test]
-async fn agent_merge_reserves_host_aliases_and_tracks_authored_files() -> Result<()> {
-    let merged = merge_child_with_alias(&[".volumes/scratch".to_owned()]).await?;
-    assert_eq!(merged.file_changes, 2);
-    assert!(!merged.alias_merged);
-    assert_eq!(
-        merged.merge.tracked_paths,
-        std::collections::BTreeSet::from([
-            ".volumes/user.txt".to_owned(),
-            "base.txt".to_owned(),
-            "newkid.txt".to_owned(),
-        ])
-    );
-    // The child branch was forked at HEAD, so HEAD is its only parent.
-    assert_eq!(merged.merge.parents, vec![merged.base]);
-
-    // Negative control: an unreserved view diffs, merges, and tracks the
-    // alias as if the child had authored it.
-    let leaked = merge_child_with_alias(&[]).await?;
-    assert_eq!(leaked.file_changes, 3);
-    assert!(leaked.alias_merged);
-    assert!(leaked.merge.tracked_paths.contains(".volumes/scratch"));
-    Ok(())
-}
-
 #[tokio::test]
 async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()> {
     let (_temp, root, fs, store, main) = fixture_native(true).await?;
@@ -944,7 +762,6 @@ async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()
             repository,
             lease: Some(lease.clone()),
             checkout: None,
-            reserved: &[],
             author: "test",
             authored_at_seconds: 1,
             request: None,
@@ -1027,7 +844,6 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 repository: repo,
                 lease: Some(lease.clone()),
                 checkout,
-                reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
                 request: None,
@@ -1051,7 +867,6 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 repository: repo,
                 lease: Some(lease.clone()),
                 checkout,
-                reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
                 request: None,
@@ -1248,7 +1063,7 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
 }
 
 #[tokio::test]
-async fn user_owned_volumes_directory_is_committed_and_cleaned() -> Result<()> {
+async fn every_workspace_name_is_committed_restored_and_cleaned() -> Result<()> {
     use acyclic_fs::GitFilesystemResult;
 
     let (_temp, _root, fs, store, main) = fixture().await?;
@@ -1263,14 +1078,17 @@ async fn user_owned_volumes_directory_is_committed_and_cleaned() -> Result<()> {
         .map_err(|failure| failure.error)?;
     let stop = CancellationToken::new();
     let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
-    main.write(
-        "/.volumes/project.txt",
-        bytes::Bytes::from_static(b"user-owned directory\n").into(),
-        IdempotencyKey::new(),
-        PublicationPermit::Unrestricted,
-        &mut work,
-    )
-    .await?;
+    let names = [
+        ".volumes/project.txt",
+        ".system/user.txt",
+        ".acyclic-sdk/state",
+        ".home-seed-v1",
+        ".git/info/exclude",
+        ".GIT/HEAD",
+    ];
+    for path in names {
+        write_text(&main, &format!("/{path}"), b"user-owned directory\n").await?;
+    }
     let GitCommandOutput::Filesystem(GitFilesystemResult::Data { kind, value }) = run(
         &fs,
         &store,
@@ -1290,7 +1108,24 @@ async fn user_owned_volumes_directory_is_committed_and_cleaned() -> Result<()> {
     else {
         return Err("expected tracked paths".into());
     };
-    assert!(paths.iter().any(|path| path == ".volumes/project.txt"));
+    for path in names {
+        assert!(
+            paths.iter().any(|tracked| tracked == path),
+            "missing {path}: {paths:?}"
+        );
+        write_text(&main, &format!("/{path}"), b"edited\n").await?;
+    }
+    run(&fs, &store, &main, repo, &["restore", "."]).await?;
+    for path in names {
+        assert_eq!(
+            main.read(&format!("/{path}"), 64, &mut work)
+                .await?
+                .bytes
+                .as_ref(),
+            b"user-owned directory\n",
+            "{path}"
+        );
+    }
 
     main.write(
         "/.volumes/untracked.txt",
@@ -1554,7 +1389,6 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
                 repository: repo,
                 lease: None,
                 checkout: None,
-                reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
                 request: None,
@@ -1588,7 +1422,6 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
                     repository: repo,
                     lease: None,
                     checkout: None,
-                    reserved: &[],
                     author: "test",
                     authored_at_seconds: 1,
                     request: None,
@@ -1877,7 +1710,6 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
                 repository: repo,
                 lease: None,
                 checkout: None,
-                reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
                 request: None,
@@ -1910,7 +1742,6 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
                     repository: repo,
                     lease: None,
                     checkout: None,
-                    reserved: &[],
                     author: "test",
                     authored_at_seconds: 1,
                     request: None,
@@ -1947,179 +1778,6 @@ async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result
 }
 
 /// The host path every tree-applying entry point below must leave in place.
-const SCRATCH: &str = ".volumes/scratch";
-
-/// Commits a user file `/.volumes` (tagged `a`), then its removal, and
-/// returns the view. With `hosted`, the host then publishes its reserved
-/// `.volumes/scratch` alias, so `.volumes` is now a directory no saved tree
-/// holds as one. With `dirty`, `/base.txt` differs from both commits.
-async fn volumes_replaced(
-    hosted: bool,
-    dirty: bool,
-) -> Result<(tempfile::TempDir, LocalFs, LocalCoreStateStore, Lazy)> {
-    let (temp, _root, fs, store, main) = fixture().await?;
-    let repo = main.workspace().id();
-    let reserved = [SCRATCH.to_owned()];
-    write_text(&main, "/base.txt", b"base\n").await?;
-    write_text(&main, "/.volumes", b"user\n").await?;
-    for command in [&["add", "-A"][..], &["commit", "-m", "a"], &["tag", "a"]] {
-        run_reserving(&fs, &store, &main, repo, &reserved, command).await?;
-    }
-    main.workspace().remove("/.volumes").await?;
-    for command in [&["add", "-A"][..], &["commit", "-m", "b"]] {
-        run_reserving(&fs, &store, &main, repo, &reserved, command).await?;
-    }
-    if hosted {
-        author_volume_alias(&main).await?;
-    }
-    if dirty {
-        write_text(&main, "/base.txt", b"dirty\n").await?;
-    }
-    Ok((temp, fs, store, main))
-}
-
-/// Whether the head still holds the host's `.volumes/scratch` alias.
-async fn scratch_kept(view: &Lazy) -> Result<bool> {
-    let stop = CancellationToken::new();
-    let head = view
-        .workspace()
-        .head(WorkBudget::UNBOUNDED, &stop)
-        .await?
-        .value;
-    Ok(head
-        .stat("/.volumes/scratch", WorkBudget::UNBOUNDED, &stop)
-        .await
-        .is_ok_and(|stat| stat.value.kind == acyclic_fs::kernel::FileKind::SymbolicLink))
-}
-
-/// Every command that writes a saved tree over the live workspace keeps a
-/// reserved host path and the directory holding it, where restoring the
-/// saved `/.volumes` file would have removed that directory.
-#[tokio::test]
-async fn tree_applying_commands_keep_the_directories_of_reserved_paths() -> Result<()> {
-    let reserved = [SCRATCH.to_owned()];
-    for (command, dirty) in [
-        (&["reset", "--hard", "a"][..], true),
-        (&["restore", "--source", "a", ".volumes", "base.txt"], true),
-        (&["checkout", "a", "--", ".volumes", "base.txt"], true),
-        (&["restore", "--source", "a", ".volumes"], false),
-        (&["revert", "HEAD"], false),
-        (&["cherry-pick", "a"], false),
-    ] {
-        let (_temp, fs, store, main) = volumes_replaced(true, dirty).await?;
-        let repo = main.workspace().id();
-        run_reserving(&fs, &store, &main, repo, &reserved, command)
-            .await
-            .map_err(|error| format!("{command:?}: {error}"))?;
-        assert!(scratch_kept(&main).await?, "{command:?}");
-        assert_eq!(
-            read_text(&main, "/base.txt").await?.as_deref(),
-            Some(&b"base\n"[..]),
-            "{command:?}"
-        );
-    }
-    // Control: with nothing reserved beneath it, the saved file restores.
-    let (_temp, fs, store, main) = volumes_replaced(false, true).await?;
-    let repo = main.workspace().id();
-    run_reserving(
-        &fs,
-        &store,
-        &main,
-        repo,
-        &reserved,
-        &["reset", "--hard", "a"],
-    )
-    .await?;
-    assert_eq!(
-        read_text(&main, "/.volumes").await?.as_deref(),
-        Some(&b"user\n"[..])
-    );
-    // A user file where the reserved path's parent would be holds no
-    // reserved path: looking one up through it is absence, so it restores.
-    write_text(&main, "/.volumes", b"changed\n").await?;
-    run_reserving(
-        &fs,
-        &store,
-        &main,
-        repo,
-        &reserved,
-        &["restore", "--source", "a", ".volumes"],
-    )
-    .await?;
-    assert_eq!(
-        read_text(&main, "/.volumes").await?.as_deref(),
-        Some(&b"user\n"[..])
-    );
-    Ok(())
-}
-
-/// A whole-tree restore (stash, abort) rewrites the unreserved children of a
-/// directory the saved tree lacks, and keeps the directory and its reserved
-/// child.
-#[tokio::test]
-async fn a_whole_tree_restore_keeps_the_directory_of_a_reserved_path() -> Result<()> {
-    let reserved = [SCRATCH.to_owned()];
-    let (_temp, fs, store, main) = volumes_replaced(true, false).await?;
-    let repo = main.workspace().id();
-    write_text(&main, "/.volumes/other.txt", b"user\n").await?;
-    run_reserving(&fs, &store, &main, repo, &reserved, &["stash"]).await?;
-    assert!(scratch_kept(&main).await?);
-    assert_eq!(read_text(&main, "/.volumes/other.txt").await?, None);
-    Ok(())
-}
-
-/// `show REV:PATH` prints a committed link's stored target without following
-/// it, and history captured before a path was reserved lists that path in
-/// no listing once it is: `ls-files`, `log`, `show` and `show REV:PATH` all
-/// read through the repository policy, before any new capture.
-#[tokio::test]
-async fn committed_links_show_and_reserved_history_stays_hidden() -> Result<()> {
-    let (_temp, _root, fs, store, main) = fixture().await?;
-    let repo = main.workspace().id();
-    write_text(&main, "/base.txt", b"base\n").await?;
-    author_volume_alias(&main).await?;
-    for command in [&["add", "-A"][..], &["commit", "-m", "legacy"]] {
-        run(&fs, &store, &main, repo, command).await?;
-    }
-    let show = ["show", "HEAD:.volumes/scratch"];
-    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { kind, value }) =
-        run(&fs, &store, &main, repo, &show).await?.0
-    else {
-        return Err("expected the committed link".into());
-    };
-    assert_eq!(kind, "file");
-    assert_eq!(
-        value.get("text").and_then(serde_json::Value::as_str),
-        Some("/host/volumes/scratch")
-    );
-
-    let reserved = [SCRATCH.to_owned()];
-    for command in [&["ls-files"][..], &["log"], &["show"]] {
-        let paths: Vec<String> = match run_reserving(&fs, &store, &main, repo, &reserved, command)
-            .await?
-            .0
-        {
-            GitCommandOutput::Paths(paths) => paths,
-            GitCommandOutput::Commits(commits) => commits
-                .into_iter()
-                .flat_map(|commit| commit.tracked_paths)
-                .collect(),
-            _ => return Err(format!("{command:?} is not a listing").into()),
-        };
-        assert!(paths.iter().any(|path| path == "base.txt"), "{command:?}");
-        assert!(
-            !paths.iter().any(|path| path.starts_with(".volumes")),
-            "{command:?} lists {paths:?}"
-        );
-    }
-    assert!(
-        run_reserving(&fs, &store, &main, repo, &reserved, &show)
-            .await
-            .is_err()
-    );
-    Ok(())
-}
-
 #[tokio::test]
 async fn raw_git_requires_the_grant_and_rejects_an_unrelated_registered_workspace() -> Result<()> {
     use acyclic_harness_core::{
@@ -2167,7 +1825,6 @@ async fn raw_git_requires_the_grant_and_rejects_an_unrelated_registered_workspac
             repository: main.workspace().id(),
             lease: None,
             checkout: None,
-            reserved: &[],
             author: "test",
             authored_at_seconds: 1,
             request: None,
@@ -2248,7 +1905,6 @@ async fn recovery_authenticates_pending_sources_outside_the_branch_catalog() -> 
             repository: root,
             lease: None,
             checkout: None,
-            reserved: &[],
             author: "test",
             authored_at_seconds: 1,
             request: None,

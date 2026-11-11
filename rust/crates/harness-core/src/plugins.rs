@@ -28,7 +28,7 @@ use crate::{
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// The one manifest: `.volumes/home/plugins.ts`.
+/// The one manifest: `volume:///home/plugins.ts`.
 pub const MANIFEST: &str = "plugins.ts";
 
 pub use crate::config::{

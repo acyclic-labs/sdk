@@ -10,7 +10,7 @@ use ts_rs::TS;
 pub struct Plugins(pub BTreeMap<String, PluginEntry>);
 
 /// One `plugins.ts` entry. To change a plugin's code, copy its folder into
-/// `.volumes/home/plugins/` under a new name.
+/// `volume:///home/plugins/` under a new name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginEntry {

@@ -11,7 +11,7 @@ const OWNER_TEST: &str = "local::workspace::volumes::recovery_tests::scratch_mou
 fn recover(root: &Path) -> Result<()> {
     recover_after_crash(
         &acyclic_fs::hold_root(root).map_err(storage)?,
-        Path::new(".volumes/home"),
+        Path::new(HOME_PATH),
     )
 }
 
@@ -147,7 +147,6 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
     std::fs::create_dir_all(&destination)?;
     std::fs::write(destination.join("authored"), b"keep me")?;
     let alias = tempfile::tempdir()?;
-    std::fs::create_dir(alias.path().join(".volumes"))?;
     std::os::unix::fs::symlink(&destination, alias.path().join(HOME_PATH))?;
     let reject_alias = || {
         let error = recover(alias.path()).expect_err("scratch alias was accepted");

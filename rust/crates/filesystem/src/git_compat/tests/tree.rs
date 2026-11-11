@@ -30,7 +30,7 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
     )
     .expect("binary file");
     let generation = publish_fixture(transaction).await;
-    let entries = walk_git_tree(&generation, &GitIgnorePolicy::default(), Some("src"), 10)
+    let entries = walk_git_tree(&generation, Some("src"), 10)
         .await
         .expect("walk");
     assert_eq!(
@@ -40,33 +40,17 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
             .collect::<Vec<_>>(),
         vec!["src/a.txt", "src/b.txt", "src/binary.bin", "src/large.txt"]
     );
-    let result = grep_git_generation(
-        &generation,
-        &GitIgnorePolicy::default(),
-        "needle",
-        Some("src"),
-        10,
-        16,
-        10,
-    )
-    .await
-    .expect("grep");
+    let result = grep_git_generation(&generation, "needle", Some("src"), 10, 16, 10)
+        .await
+        .expect("grep");
     assert!(result.truncated);
     assert_eq!(result.matches.len(), 2);
     assert_eq!(result.matches[0].line, 2);
     assert_eq!(result.matches[1].line, 1);
 
-    let single = grep_git_generation(
-        &generation,
-        &GitIgnorePolicy::default(),
-        "needle",
-        Some("src/a.txt"),
-        1,
-        16,
-        10,
-    )
-    .await
-    .expect("grep one file");
+    let single = grep_git_generation(&generation, "needle", Some("src/a.txt"), 1, 16, 10)
+        .await
+        .expect("grep one file");
     assert!(!single.truncated);
     assert_eq!(single.matches.len(), 1);
     assert_eq!(single.matches[0].path, "src/a.txt");
@@ -87,17 +71,9 @@ async fn unbounded_grep_matches_utf8_lines_across_physical_read_chunks() {
     binary.push(0xff);
     unbounded!(transaction, write("/binary", bytes::Bytes::from(binary))).expect("binary");
     let generation = publish_fixture(transaction).await;
-    let found = grep_git_generation(
-        &generation,
-        &GitIgnorePolicy::default(),
-        "needle",
-        None,
-        None,
-        None,
-        None,
-    )
-    .await
-    .expect("unbounded grep");
+    let found = grep_git_generation(&generation, "needle", None, None, None, None)
+        .await
+        .expect("unbounded grep");
     let expected: Vec<_> = text
         .lines()
         .enumerate()
@@ -110,17 +86,9 @@ async fn unbounded_grep_matches_utf8_lines_across_physical_read_chunks() {
         .collect();
     assert_eq!(found.matches, expected);
     assert!(!found.truncated);
-    let bounded = grep_git_generation(
-        &generation,
-        &GitIgnorePolicy::default(),
-        "needle",
-        None,
-        None,
-        None,
-        1,
-    )
-    .await
-    .expect("explicit result bound");
+    let bounded = grep_git_generation(&generation, "needle", None, None, None, 1)
+        .await
+        .expect("explicit result bound");
     assert_eq!(bounded.matches, expected[..1]);
     assert!(bounded.truncated);
     assert_eq!(

@@ -3,6 +3,87 @@ use super::*;
 use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 
+pub(super) struct PublicationSource<'a> {
+    inner: &'a mut dyn crate::conversation::ContentSource,
+    maximum: u64,
+    pub(super) bytes: u64,
+    pub(super) eof: bool,
+    pub(super) hash: sha2::Sha256,
+}
+
+impl<'a> PublicationSource<'a> {
+    pub(super) fn new(inner: &'a mut dyn crate::conversation::ContentSource, maximum: u64) -> Self {
+        use sha2::Digest as _;
+        Self {
+            inner,
+            maximum,
+            bytes: 0,
+            eof: false,
+            hash: sha2::Sha256::new(),
+        }
+    }
+}
+
+impl futures::io::AsyncRead for PublicationSource<'_> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut [u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        use sha2::Digest as _;
+        let length = buffer.len().min(
+            usize::try_from(self.maximum - self.bytes)
+                .unwrap_or(usize::MAX)
+                .saturating_add(1),
+        );
+        let read = std::task::ready!(
+            std::pin::Pin::new(&mut *self.inner).poll_read(cx, &mut buffer[..length])
+        )?;
+        if read as u64 > self.maximum - self.bytes {
+            return std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "stream exceeds task content limits",
+            )));
+        }
+        self.bytes += read as u64;
+        self.eof |= read == 0 && !buffer.is_empty();
+        self.hash.update(&buffer[..read]);
+        std::task::Poll::Ready(Ok(read))
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use futures::io::AsyncReadExt as _;
+    use proptest::prelude::*;
+    use sha2::Digest as _;
+
+    proptest! {
+        #[test]
+        fn publication_stream_enforces_the_scope_and_hashes_exact_bytes(
+            bytes in proptest::collection::vec(any::<u8>(), 0..1024),
+            maximum in 0u64..1024,
+        ) {
+            let mut input = futures::io::Cursor::new(bytes.as_slice());
+            let mut source = PublicationSource::new(&mut input, maximum);
+            let mut output = Vec::new();
+            let result = futures::executor::block_on(source.read_to_end(&mut output));
+            if bytes.len() as u64 <= maximum {
+                prop_assert!(result.is_ok());
+                prop_assert!(source.eof);
+                prop_assert_eq!(&output, &bytes);
+                prop_assert_eq!(source.bytes, bytes.len() as u64);
+                prop_assert_eq!(source.hash.finalize(), sha2::Sha256::digest(&bytes));
+            } else {
+                prop_assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+                prop_assert!(!source.eof);
+                prop_assert!(source.bytes <= maximum);
+            }
+        }
+    }
+}
+
 /// A validated agent-owned private writer, constructed only by
 /// [`TaskContext::summary_destination`]. Derived immutable files use this
 /// destination. Summary admission checks the same task authority, while the
@@ -57,7 +138,7 @@ impl TaskContext {
             return Err(content_error(
                 io,
                 ErrorCode::Unauthorized,
-                "file publication path is read-only; recovery: write under .volumes/home/",
+                "file publication path is read-only; recovery: write under volume:///home/",
             )
             .tool_input());
         }

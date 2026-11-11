@@ -215,6 +215,13 @@ impl HeldRoot {
             .incarnation(&mut crate::native_host::ordinary_work())
     }
 
+    /// Immutable creation time of this held directory, where the host reports
+    /// one. Unlike modification time, authoring files cannot change it.
+    pub fn creation_time(&self) -> Result<Option<std::time::SystemTime>, DemandError> {
+        self.root
+            .creation_time(&mut crate::native_host::ordinary_work())
+    }
+
     /// A second handle on the same held root, never reopened by path.
     pub fn try_clone(&self) -> Result<Self, DemandError> {
         Ok(Self {

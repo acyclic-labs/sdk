@@ -565,6 +565,68 @@ impl ToolContext {
         .await
     }
 
+    /// Publishes a finite stream on the private volume under the effective
+    /// tool scope. The source is bounded and hashed as it is consumed, without
+    /// retaining the complete file in memory.
+    pub async fn stage_file_stream_once(
+        &self,
+        operation: OperationId,
+        path: &str,
+        source: &mut dyn crate::conversation::ContentSource,
+        metadata: (&str, &str),
+    ) -> Result<FileRef> {
+        use sha2::Digest as _;
+        let task = self.task();
+        let scope = self.effective_scope();
+        if scope
+            .limits()
+            .path_bytes
+            .is_some_and(|maximum| path.len() > maximum.get())
+        {
+            return Err(Error::Invalid(
+                "stream path exceeds task content limits".into(),
+            ));
+        }
+        let content = task
+            .content_binding(None)
+            .ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
+        let (writer, volume, relative) =
+            super::content_write::publication_destination(Some(content), scope, None, path, None)?;
+        let mut source =
+            super::content_write::PublicationSource::new(source, scope.limits().file_bytes);
+        let (file, _) = writer
+            .stage_stream_once(
+                operation,
+                path,
+                &mut source,
+                metadata.0,
+                metadata.1,
+                crate::conversation::ContentAccess {
+                    ceiling: Some(scope.grants()),
+                    io: None,
+                },
+            )?
+            .await?;
+        scope.limits().validate_file(&file, &mut None)?;
+        if !source.eof
+            || file.volume() != volume
+            || file.path() != relative.as_ref()
+            || file.display_name() != metadata.1
+            || file.descriptor().media_type() != metadata.0
+            || file.descriptor().byte_length() != source.bytes
+            || file.descriptor().sha256().as_slice() != source.hash.finalize().as_slice()
+        {
+            return Err(Error::Storage(
+                "stream publisher returned another file identity".into(),
+            ));
+        }
+        content
+            .reader
+            .verify_publication(&file, file.descriptor().byte_length(), None)?
+            .await?;
+        Ok(file)
+    }
+
     /// Publishes one conditional batch on the original selected writer. Every
     /// source is checked against this invocation's grants before publication.
     pub(crate) async fn stage_tool_changes(
@@ -922,7 +984,8 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         crate::executor::with_history_io(io, |history| {
-            kind.validate(path, history).map_err(Error::tool_input)?;
+            kind.validate_address(path, history)
+                .map_err(Error::tool_input)?;
             if self
                 .effective_scope()
                 .limits()

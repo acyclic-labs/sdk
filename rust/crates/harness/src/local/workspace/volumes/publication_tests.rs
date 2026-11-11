@@ -228,9 +228,8 @@ async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> 
     let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
     // Negative control: bypass command serialization exactly as the former
     // shared projection did. One verified exit also publishes the other writer.
-    let root = projection_root(&scratch.destination, HOME_PATH)?;
-    let first = scratch.enter(root, HOME_PATH, false).await?;
-    let unverified = scratch.enter(root, HOME_PATH, false).await?;
+    let first = scratch.enter(false).await?;
+    let unverified = scratch.enter(false).await?;
     write_projected(&scratch.destination.join("data"), b"unverified")?;
     scratch.leave(first).await?;
     assert_eq!(published(scratch, "/data").await?, b"unverified");
@@ -238,13 +237,14 @@ async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> 
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", windows))]
 #[tokio::test]
-async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers() -> Result<()> {
+async fn task_mounts_share_external_bindings_without_authoring_aliases() -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
-    let task = tempfile::tempdir_in(root.path()).map_err(storage)?;
-    let blocked = tempfile::tempdir().map_err(storage)?;
+    let task = tempfile::tempdir().map_err(storage)?;
+    std::fs::create_dir(task.path().join(".volumes")).map_err(storage)?;
+    let authored = task.path().join(".volumes/home");
+    std::fs::write(&authored, b"user content").map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let workspace = harness.workspace().unwrap();
     let original = workspace
@@ -255,136 +255,16 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         .source
         .as_ref()
         .unwrap();
-    for _ in 0..2 {
-        let aliases = workspace.mounts_at(task.path()).await?;
-        let alias = aliases.named(Some("home"))?.1;
-        assert!(Arc::ptr_eq(alias.view.source.as_ref().unwrap(), original));
-        assert_eq!(
-            alias.native_root.override_path().map(PathBuf::as_path),
-            Some(original.destination.as_path())
-        );
-        assert_eq!(
-            canonical_destination(
-                &std::fs::read_link(task.path().join(HOME_PATH)).map_err(storage)?,
-            )?,
-            canonical_destination(&original.destination)?
-        );
-    }
-    let alias = task.path().join(HOME_PATH);
-    std::fs::rename(&alias, task.path().join("absolute-alias")).map_err(storage)?;
-    let relative = Path::new("../..").join(HOME_PATH);
-    link_directory(&relative, &alias).map_err(storage)?;
-    let aliases = workspace.mounts_at(task.path()).await?;
-    let retained = aliases.named(Some("home"))?.1;
-    assert!(Arc::ptr_eq(
-        retained.view.source.as_ref().unwrap(),
-        original
-    ));
+    let mounts = workspace.mounts_at(task.path()).await?;
+    let bound = mounts.named(Some("home"))?.1;
+    assert!(Arc::ptr_eq(bound.view.source.as_ref().unwrap(), original));
     assert_eq!(
-        retained.native_root.override_path().map(PathBuf::as_path),
+        bound.native_root.override_path().map(PathBuf::as_path),
         Some(original.destination.as_path())
     );
-    assert_eq!(std::fs::read_link(&alias).map_err(storage)?, relative);
-    // The former Windows entry point rebound the volume beneath the task
-    // projection. This loses both the shared execution lock and the physical
-    // root that ProjFS can actually mount.
-    let mut rebound = super::super::mounts::owner(
-        task.path(),
-        &workspace.mounts.named(None)?.1.view.volume,
-        None,
-        [(
-            "home".into(),
-            workspace.mounts.named(Some("home"))?.1.view.volume.clone(),
-            Some(Arc::clone(original)),
-        )],
-    )?;
-    attach(
-        &workspace.filesystem,
-        &workspace.store,
-        &acyclic_fs::hold_root(task.path()).map_err(storage)?,
-        &mut rebound,
-        workspace.mount_authority.as_ref(),
-        &workspace.task_view_admission,
-        true,
-    )
-    .await?;
-    let rebound = rebound.named(Some("home"))?.1;
-    assert!(!Arc::ptr_eq(
-        rebound.view.source.as_ref().unwrap(),
-        original
-    ));
-    assert_ne!(
-        rebound.native_root.override_path().map(PathBuf::as_path),
-        Some(original.destination.as_path())
-    );
-    let alias = task.path().join(HOME_PATH);
-    std::fs::rename(&alias, task.path().join("original-alias")).map_err(storage)?;
-    link_directory(blocked.path(), &alias).map_err(storage)?;
-    assert!(workspace.mounts_at(task.path()).await.is_err());
-    assert_eq!(
-        canonical_destination(&std::fs::read_link(&alias).map_err(storage)?)?,
-        canonical_destination(blocked.path())?
-    );
-    std::fs::create_dir(blocked.path().join(".volumes")).map_err(storage)?;
-    let authored = blocked.path().join(HOME_PATH);
-    std::fs::write(&authored, b"authored blocker").map_err(storage)?;
-    assert!(workspace.mounts_at(blocked.path()).await.is_err());
-    assert_eq!(
-        std::fs::read(authored).map_err(storage)?,
-        b"authored blocker"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn invalid_alias_is_rejected_before_projection_entry() -> Result<()> {
-    let root = tempfile::tempdir().map_err(storage)?;
-    let state = tempfile::tempdir().map_err(storage)?;
-    let harness = open(root.path(), state.path()).await?;
-    let mounts = &harness.workspace().unwrap().mounts;
-    let (_, mount) = mounts.named(Some("home"))?;
-    let scratch = mount.view.source.as_ref().unwrap();
-    // An invalid alias must fail even when its source also has a valid name.
-    // Validation precedes identity-based deduplication and lock acquisition.
-    let table = super::super::mounts::owner(
-        &mounts.root,
-        &mounts.named(None)?.1.view.volume,
-        None,
-        ["home", "zzz"].map(|name| {
-            (
-                name.to_owned(),
-                mount.view.volume.clone(),
-                Some(Arc::clone(scratch)),
-            )
-        }),
-    )?;
-    let ran = std::sync::atomic::AtomicBool::new(false);
-    let failure = native_scope(&table, async |claims| {
-        ran.store(true, std::sync::atomic::Ordering::Relaxed);
-        Ok(((), claims))
-    })
-    .await
-    .expect_err("an unowned binding entered");
-    assert!(
-        failure.to_string().contains("outside its binding"),
-        "{failure:?}"
-    );
-    assert!(!ran.into_inner());
-    assert!(
-        scratch.native().await.is_none(),
-        "failed entry stranded a projection"
-    );
-    assert!(!scratch.destination.exists());
-    // Negative control: the former exit dropped entered claims without leaving.
-    // The same oracle sees that projection remain mounted.
-    let root_path = projection_root(&scratch.destination, HOME_PATH)?;
-    drop(scratch.enter(root_path, HOME_PATH, false).await?);
-    assert!(
-        scratch.native().await.is_some(),
-        "oracle missed a stranded projection"
-    );
-    retire(mounts).await?;
-    assert!(scratch.native().await.is_none());
+    assert!(original.destination.starts_with(state.path()));
+    assert!(!root.path().join(".volumes").exists());
+    assert_eq!(std::fs::read(authored).map_err(storage)?, b"user content");
     Ok(())
 }
 
@@ -400,7 +280,8 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     let scratch = mount.view.source.as_ref().expect("bound scratch source");
     let blocked = Arc::new(MountedVolume {
         workspace: crate::tools::git::OwnedView::Volume(scratch.workspace.workspace().clone()),
-        destination: mounts.root.join(".volumes/zzz"),
+        binding_root: Arc::clone(&scratch.binding_root),
+        destination: scratch.binding_root.path().join("zzz"),
         options: scratch.options.clone(),
         task_view_admission: Arc::clone(&scratch.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
@@ -420,7 +301,7 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
             .into_iter()
             .map(|(relative, _)| relative)
             .collect::<Vec<_>>(),
-        [".volumes/home", ".volumes/zzz"]
+        ["volume:///home", "volume:///zzz"]
     );
     let ran = std::sync::atomic::AtomicBool::new(false);
     let error = native_scope(&table, async |claims| {
@@ -462,7 +343,8 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
     // `.volumes/aaa` precedes scratch and still has one worker claim.
     let busy = Arc::new(MountedVolume {
         workspace: crate::tools::git::OwnedView::Volume(scratch.workspace.workspace().clone()),
-        destination: mounts.root.join(".volumes/aaa"),
+        binding_root: Arc::clone(&scratch.binding_root),
+        destination: scratch.binding_root.path().join("aaa"),
         options: scratch.options.clone(),
         task_view_admission: Arc::clone(&scratch.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
@@ -476,15 +358,8 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         [("aaa", Arc::clone(&busy)), ("home", Arc::clone(scratch))]
             .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
     )?;
-    let busy_claim = busy
-        .enter(
-            projection_root(&busy.destination, ".volumes/aaa")?,
-            ".volumes/aaa",
-            false,
-        )
-        .await?;
-    let root_path = projection_root(&scratch.destination, HOME_PATH)?;
-    drop(scratch.enter(root_path, HOME_PATH, false).await?);
+    let busy_claim = busy.enter(false).await?;
+    drop(scratch.enter(false).await?);
     let mut retirement = Box::pin(retire(&table));
     assert!(
         futures::poll!(&mut retirement).is_pending(),
@@ -519,7 +394,8 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
     let first = mount.view.source.as_ref().unwrap();
     let second = Arc::new(MountedVolume {
         workspace: crate::tools::git::OwnedView::Volume(first.workspace.workspace().clone()),
-        destination: other.path().join(HOME_PATH),
+        binding_root: Arc::new(acyclic_fs::hold_root(other.path()).map_err(storage)?),
+        destination: other.path().join("home"),
         options: first.options.clone(),
         task_view_admission: Arc::clone(&first.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),

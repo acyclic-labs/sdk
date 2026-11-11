@@ -4,12 +4,6 @@ use super::*;
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitIgnorePolicy {
     rules: Vec<GitIgnoreRule>,
-    /// Exact repository-relative paths owned by the host, never Git content.
-    reserved: BTreeSet<String>,
-    /// Root names the host owns; they are outside the repository entirely,
-    /// like reserved paths, but joins bind them by their ignore rules.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    host_namespaces: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -37,14 +31,6 @@ impl GitIgnorePolicy {
         O: AsyncObjectStore + 'static,
         W: crate::facade::FsWork,
     {
-        // Joins bind host namespaces by their ignore rules alone, exactly as
-        // before they were kept out of the repository view: the
-        // `.acyclic-sdk/` and `.git/` rules make the child win there.
-        let rules = Self {
-            rules: self.rules.clone(),
-            reserved: self.reserved.clone(),
-            host_namespaces: BTreeSet::new(),
-        };
         let mut paths = BTreeSet::new();
         let mut nested_policies = BTreeMap::new();
         let mut changes = from
@@ -66,7 +52,7 @@ impl GitIgnorePolicy {
             if !git_path_eligible_with_root_at(
                 to,
                 &mut nested_policies,
-                &rules,
+                self,
                 &path,
                 is_directory,
                 already_tracked,
@@ -112,103 +98,20 @@ impl GitIgnorePolicy {
                 })
             })
             .collect();
-        Self {
-            rules,
-            reserved: BTreeSet::new(),
-            host_namespaces: BTreeSet::new(),
-        }
+        Self { rules }
     }
 
-    /// Reserves exact repository-relative paths, and everything beneath
-    /// them, for the host. A reserved path is never Git content: no ignore
-    /// negation, nested `.gitignore`, or earlier tracking re-admits it, and
-    /// its name is matched byte for byte rather than as a pattern.
-    #[must_use]
-    pub fn reserving<I, S>(mut self, paths: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        self.reserved.extend(
-            paths
-                .into_iter()
-                .map(|path| path.as_ref().trim_matches('/').to_owned())
-                .filter(|path| !path.is_empty()),
-        );
-        self
-    }
-
-    /// Returns this policy followed by a later, higher-precedence one, as
-    /// Git layers a root `.gitignore` over `info/exclude`. Reservations of
-    /// both are kept.
+    /// Layers a later optional ignore policy over this policy.
     #[must_use]
     pub fn followed_by(&self, later: &Self) -> Self {
         Self {
             rules: self.rules.iter().chain(&later.rules).cloned().collect(),
-            reserved: self.reserved.union(&later.reserved).cloned().collect(),
-            host_namespaces: self
-                .host_namespaces
-                .union(&later.host_namespaces)
-                .cloned()
-                .collect(),
         }
-    }
-
-    /// The exact reserved host paths, without leading or trailing slashes.
-    pub fn reserved_paths(&self) -> impl Iterator<Item = &str> {
-        self.reserved.iter().map(String::as_str)
-    }
-
-    /// Places root namespaces the host owns outside the repository.
-    ///
-    /// Like a reserved path, no negation, nested policy, or tracked path can
-    /// bring a host-owned path into the repository view.
-    #[must_use]
-    pub fn with_host_namespaces<I, S>(mut self, names: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.host_namespaces
-            .extend(names.into_iter().map(Into::into));
-        self
-    }
-
-    /// Returns whether a tracked set still names a reserved or host-owned
-    /// path.
-    pub(super) fn tracks_reserved(&self, tracked: &BTreeSet<String>) -> bool {
-        self.reserved
-            .iter()
-            .chain(&self.host_namespaces)
-            .any(|name| {
-                let prefix = format!("{name}/");
-                tracked.contains(name)
-                    || tracked
-                        .range(prefix.clone()..)
-                        .next()
-                        .is_some_and(|path| path.starts_with(&prefix))
-            })
-    }
-
-    /// Returns whether a path is, or lies beneath, a reserved host path or a
-    /// host-owned root namespace.
-    #[must_use]
-    pub fn reserves(&self, path: &str) -> bool {
-        let path = path.trim_start_matches('/');
-        let root = path.split_once('/').map_or(path, |(root, _)| root);
-        self.host_namespaces.contains(root)
-            || self.reserved.iter().any(|reserved| {
-                path.strip_prefix(reserved.as_str())
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-            })
     }
 
     /// Returns whether a path participates in compatibility commit/join state.
     #[must_use]
     pub fn eligible(&self, path: &str, is_directory: bool, already_tracked: bool) -> bool {
-        if self.reserves(path) {
-            return false;
-        }
         if already_tracked {
             return true;
         }
@@ -262,9 +165,6 @@ pub(super) fn git_path_eligible(
     is_directory: bool,
     already_tracked: bool,
 ) -> bool {
-    if root.reserves(path) {
-        return false;
-    }
     if already_tracked {
         return true;
     }

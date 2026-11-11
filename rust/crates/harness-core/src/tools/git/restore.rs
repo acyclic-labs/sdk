@@ -54,20 +54,8 @@ where
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
             .map_err(Error::from)?;
-        // Every tree written over the live workspace leaves its reserved
-        // paths, and the directories holding them, in place.
-        let paths = git_paths_preserving_reserved(
-            &current,
-            Some(&source),
-            &self.ignore,
-            paths.iter().cloned(),
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map_err(Error::from)?;
         if paths.is_empty() {
-            // Only reserved paths, or the directories holding them, were
-            // named: the workspace already matches everywhere else.
+            // The caller selected no paths.
             return Ok(GitFilesystemResult::Applied {
                 tree: Some(GitTreeRef::exact(self.current.id(), current.id())),
                 tracked_paths: None,
@@ -77,7 +65,7 @@ where
             .current
             .restore_paths_from(
                 &source,
-                &paths,
+                paths,
                 current.id(),
                 IdempotencyKey::from_bytes(operation_id.into_bytes()),
                 self.permit,

@@ -109,7 +109,7 @@ impl TaskContext {
         .map_err(Error::tool_input)?;
         if relative != "ui" && !relative.starts_with("ui/") {
             return Err(content_error(io, ErrorCode::Unauthorized,
-                "managed private files are read-only; recovery: author .volumes/private/ui/ instead")
+                "managed private files are read-only; recovery: author volume:///private/ui/ instead")
                 .tool_input());
         }
         Ok(Some((&self.output_content, relative)))

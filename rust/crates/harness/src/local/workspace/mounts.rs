@@ -106,7 +106,7 @@ mod tests {
             }
             for (path, volume, mode, source) in before {
                 let (mounted, relative) = mounts.resolve(Path::new(&path)).unwrap();
-                let qualifier = if path.is_empty() { "project" } else { path.strip_prefix(".volumes/").unwrap() };
+                let qualifier = if path.is_empty() { "project" } else { path.strip_prefix("volume:///").unwrap() };
                 let (selected_path, selected) = mounts.named(Some(qualifier)).unwrap();
                 prop_assert_eq!(selected_path, path.as_str());
                 prop_assert_eq!(&selected.view.volume, &volume);
@@ -126,7 +126,14 @@ mod tests {
                 prop_assert_eq!(&routed_again.view.volume, &mount.view.volume);
                 prop_assert_eq!(same_path.as_ref(), relative.as_ref());
             }
-            prop_assert!(mounts.file(Some(&volume("project")), ".volumes/data/entry").is_err());
+            for path in [".volumes/data/entry", ".system/state", ".git/info/exclude", ".home-seed-v1", ".acyclic-sdk/state"] {
+                for explicit in [None, Some(volume("project"))] {
+                    let (selected, relative) = mounts.file(explicit.as_ref(), path).unwrap();
+                    prop_assert_eq!(&selected.view.volume, &volume("project"));
+                    prop_assert_eq!(relative.as_ref(), path);
+                }
+            }
+            prop_assert!(mounts.file(None, "volume:///missing/entry").is_err());
             prop_assert!(mounts.file(None, "../entry").is_err());
             prop_assert!(mounts.named(Some("journal")).is_err());
             prop_assert!(mounts.named(Some("../data")).is_err());

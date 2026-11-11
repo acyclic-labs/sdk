@@ -282,17 +282,7 @@ impl ToolExecutor for MachinesWorkspace {
             let _ = work;
             None
         };
-        crate::executor::with_history_io(io, |history| {
-            kind.validate(path, history)?;
-            if path == ".volumes" || path.starts_with(".volumes/") {
-                return Err(crate::store::guarded_boundary(
-                    history,
-                    crate::wire::ErrorCode::Unsupported,
-                    "machine target has no admitted auxiliary mount; recovery: bind the target's original selected volume",
-                ));
-            }
-            Ok(())
-        })?;
+        crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
         Ok((&self.volume, std::borrow::Cow::Borrowed(path)))
     }
 

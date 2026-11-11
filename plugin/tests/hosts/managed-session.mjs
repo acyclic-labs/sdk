@@ -4,7 +4,7 @@ import {once} from 'node:events';
 import {chmod,mkdir,readFile,writeFile,unlink,rm} from 'node:fs/promises';
 import {existsSync,readFileSync,readSync,writeSync} from 'node:fs';
 import {createConnection,createServer} from 'node:net';
-import {delimiter,isAbsolute,join,relative,resolve,sep} from 'node:path';
+import {dirname,delimiter,isAbsolute,join,relative,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {McpClient} from '../../shared/mcp-client.mjs';
 import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
@@ -51,7 +51,8 @@ async function effects(prompt){
  const agents=await scope.run(process.env.FIXTURE_ACYCLIC,['agents'],options());
  assert.equal(agents.code,0,JSON.stringify({step:'sandbox workspace discovery',
   code:agents.code,signal:agents.signal,stdout:agents.stdout,stderr:agents.stderr}));
- await writeFile('.volumes/home/native-private.txt',prompt);
+ assert.ok(isAbsolute(process.env.ACYCLIC_VOLUME_HOME),'admitted home discovery is absent');
+ await writeFile(join(process.env.ACYCLIC_VOLUME_HOME,'native-private.txt'),prompt);
  await assert.rejects(writeFile(process.env.FIXTURE_OUTSIDE,'denied'),
   error=>['EACCES','EPERM','EROFS'].includes(error.code));
  assert.ok(!existsSync(process.env.FIXTURE_OUTSIDE),'sandbox allowed an outside write');
@@ -61,7 +62,9 @@ async function effects(prompt){
 async function host(){
  const args=process.argv.slice(3),workspace=process.env.FIXTURE_WORKSPACE;
  if(process.cwd()===workspace){
-  const policy=['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',workspace];
+  const state=dirname(process.env.ACYCLIC_HOST_FILES_DIRECTORY);
+  const policy=['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',workspace,
+   ...['host-files','host-processes','.volumes/agents'].flatMap(path=>['--add-dir',join(state,path)])];
   assert.deepEqual(args,[...policy,'--config','features.multi_agent_v2=false','--config','agents.enabled=false']);
   assert.equal(process.cwd(),process.env.ACYCLIC_WORKSPACE);
   assert.equal(process.cwd(),workspace);
@@ -69,11 +72,11 @@ async function host(){
   await writeFile('root-launch.json',JSON.stringify({task:process.env.ACYCLIC_TASK,args:policy}));
   return;
  }
- assert.deepEqual(args.slice(6,12),['--config','features.multi_agent_v2=false','--config','agents.enabled=false','exec','--json']);
+ assert.deepEqual(args.slice(args.indexOf('--config'),args.indexOf('--config')+6),['--config','features.multi_agent_v2=false','--config','agents.enabled=false','exec','--json']);
  assert.equal(args[args.indexOf('--sandbox')+1],'workspace-write');
  assert.equal(args[args.indexOf('--ask-for-approval')+1],'never');
  assert.equal(args[args.indexOf('--cd')+1],process.cwd());
- const child=relative(join(workspace,'.volumes/agents'),process.cwd());
+ const child=relative(join(dirname(process.env.ACYCLIC_HOST_FILES_DIRECTORY),'.volumes/agents'),process.cwd());
  assert.ok(child&&child!=='..'&&!child.startsWith('..'+sep)&&!isAbsolute(child));
  assert.equal(await readFile('AGENTS.md','utf8'),'native instruction discovery fixture');
  // Read one byte directly. A blocked-input child must not drain the remainder
@@ -87,8 +90,8 @@ async function host(){
  const events=(await readFile(process.env.FIXTURE_EVENTS,'utf8')).match(/.*\n/g);
  process.stdout.write(events[0]);
  const base=[...JSON.parse(process.env.FIXTURE_CODEX_ARGS),...codexSandboxConfig,'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"',
-  '-c','sandbox_workspace_write.writable_roots='+JSON.stringify([args[args.indexOf('--add-dir')+1]]),'--'];
- if(prompt==='resumed')assert.equal(await readFile('.volumes/home/native-private.txt','utf8'),'first');
+  '-c','sandbox_workspace_write.writable_roots='+JSON.stringify(args.flatMap((value,index)=>value==='--add-dir'?[args[index+1]]:[])),'--'];
+ if(prompt==='resumed')assert.equal(await readFile(join(process.env.ACYCLIC_VOLUME_HOME,'native-private.txt'),'utf8'),'first');
  const checked=await scope.run(process.env.FIXTURE_CODEX,[...base,process.execPath,driver,'effects',prompt],options());
  assert.equal(checked.code,0,JSON.stringify({step:'native sandbox effects',
   program:process.env.FIXTURE_CODEX,args:[...base,process.execPath,driver,'effects',prompt],

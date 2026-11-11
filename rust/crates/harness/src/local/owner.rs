@@ -2,8 +2,6 @@ pub(super) use super::owner_record::{Owner, RootWitness};
 use super::*;
 use acyclic_native_runtime::signing_key::SigningCustody;
 use std::fs;
-#[cfg(any(test, not(target_arch = "wasm32")))]
-pub(in crate::local) mod exclusion;
 
 /// Root of every project's default harness state: the per-user local data directory. This is the only place the
 /// harness consults that directory. Unit tests cannot reach it: a test that does not inject
@@ -44,8 +42,6 @@ thread_local! {
     /// reissues ids or renumbers them across remounts.
     pub(super) static INJECTED: std::cell::Cell<Option<([u8; 16], acyclic_fs::NativeRootGeneration)>> =
         const { std::cell::Cell::new(None) };
-    /// Negative control: an incarnation without the root's token.
-    pub(super) static UNTOKENED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Negative control: a root without stable ids is keyed on its id.
     pub(super) static UNSTABLE_KEYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Negative control: discard the volume component of a strong witness.
@@ -132,7 +128,7 @@ pub(super) fn directory(path: &Path) -> Result<PathBuf> {
 #[derive(Debug)]
 pub(super) struct Checkout {
     pub(super) path: PathBuf,
-    /// Evidence validated separately from the token-based state selection.
+    /// Evidence validated separately from native incarnation state selection.
     pub(super) identity: RootWitness,
     pub(super) incarnation: [u8; 16],
     #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -154,7 +150,6 @@ impl Checkout {
             let path = fs::canonicalize(path).map_err(storage)?;
             let root = acyclic_fs::hold_root(&path).map_err(storage)?;
             let incarnation = root.incarnation().map_err(storage)?;
-            let token = incarnation_token(&root)?;
             // The witness scopes the object id by the durable volume, never by
             // a device number a remount may reassign.
             let mut object = incarnation.identity.to_bytes();
@@ -165,7 +160,7 @@ impl Checkout {
             Ok(Self {
                 path,
                 identity: RootWitness::capture(object, generation),
-                incarnation: incarnation_of(token),
+                incarnation: incarnation_of(&root, object, generation)?,
                 root,
             })
         }
@@ -179,73 +174,38 @@ impl Checkout {
     }
 }
 
-/// Ignores every entry of the incarnation directory, itself included.
+/// Select host state using immutable native root evidence, without publishing
+/// any marker in the workspace. Birth time distinguishes recycled object ids;
+/// an exportable kernel handle already carries its inode generation.
 #[cfg(any(test, not(target_arch = "wasm32")))]
-const INCARNATION_IGNORE: &[u8; 2] = b"*\n";
-
-/// The checkout's incarnation token: 128 random bits published once in the
-/// held root, exclusively and atomically. A checkout cloned again, even at a
-/// recycled object id, has no token and publishes a new one.
-#[cfg(any(test, not(target_arch = "wasm32")))]
-fn incarnation_token(root: &acyclic_fs::HeldRoot) -> Result<[u8; 16]> {
-    // Capture Git metadata before publishing the SDK-owned token. Publication
-    // retains those directory handles even if the checkout's name is replaced.
-    let exclusion = exclusion::Exclusion::capture(root)?;
-    if let Some(exclusion) = exclusion {
-        exclusion.publish()?;
-    }
-    let incarnation = super::workspace::volumes::held_directories(
-        root,
-        Path::new(super::workspace::volumes::INCARNATION_PATH),
-    )?;
-    // Reopening observes two immutable records in the same held directory.
-    // Settle their names together; no record escapes before that barrier.
-    // First publication still persists the ignore rule before exposing a token.
-    if let Some((ignored, token)) = incarnation
-        .read_published_pair::<2, 16>(Path::new(".gitignore"), Path::new("token"))
-        .map_err(storage)?
-    {
-        if &ignored != INCARNATION_IGNORE {
-            return Err(Error::Invalid(
-                "checkout incarnation .gitignore no longer ignores its token".into(),
-            ));
+fn incarnation_of(
+    root: &acyclic_fs::HeldRoot,
+    object: [u8; 16],
+    generation: acyclic_fs::NativeRootGeneration,
+) -> Result<[u8; 16]> {
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.workspace-incarnation/v6");
+    hash.update(&object);
+    match generation {
+        acyclic_fs::NativeRootGeneration::FileHandle(handle) => {
+            hash.update(&handle);
         }
-        return Ok(token);
+        _ => {
+            let created = root.creation_time().map_err(storage)?.ok_or_else(|| {
+                Error::Unsupported(
+                    "workspace state requires a native root generation or creation time".into(),
+                )
+            })?;
+            let created = created
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(storage)?;
+            hash.update(&created.as_secs().to_le_bytes());
+            hash.update(&created.subsec_nanos().to_le_bytes());
+        }
     }
-    // Git applies a directory's own .gitignore over every outer rule for the
-    // entries in it, so no negation in the checkout's .gitignore files, which
-    // outrank info/exclude, can bring the token back. Published before the
-    // token, so a token is never visible to Git without it.
-    let ignored = incarnation
-        .read_or_publish(Path::new(".gitignore"), || Ok(*INCARNATION_IGNORE))
-        .map_err(storage)?;
-    if &ignored != INCARNATION_IGNORE {
-        return Err(Error::Invalid(
-            "checkout incarnation .gitignore no longer ignores its token".into(),
-        ));
-    }
-    incarnation
-        .read_or_publish(Path::new("token"), || {
-            let mut candidate = [0; 16];
-            crate::identity::fill_random(&mut candidate)
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-            Ok(candidate)
-        })
-        .map_err(storage)
-}
 
-/// The token locates state across capability changes. Physical root evidence is
-/// retained in the owner record and checked before that state is attached.
-#[cfg(any(test, not(target_arch = "wasm32")))]
-pub(super) fn incarnation_of(token: [u8; 16]) -> [u8; 16] {
-    #[cfg(test)]
-    let token = if UNTOKENED.get() { [0; 16] } else { token };
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.local.workspace-incarnation/v5\0");
-    hash.update(&token);
     let mut identity = [0; 16];
     identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    identity
+    Ok(identity)
 }
 
 impl RootWitness {
@@ -275,9 +235,8 @@ impl RootWitness {
 
     pub(super) fn verify(self, observed: Self) -> Result<()> {
         match (self, observed) {
-            // A root first opened without durable native identity has only its
-            // token continuity contract. A copied token cannot be distinguished
-            // from that root after arbitrary id renumbering across a restart.
+            // The immutable native incarnation already selected this owner.
+            // Unstable object ids never authorize another incarnation's state.
             (Self::Unstable, _) => Ok(()),
             (Self::StableObjectId(expected), Self::StableObjectId(actual))
             | (Self::StableObjectId(expected), Self::FileHandle { object: actual, .. })
@@ -293,8 +252,7 @@ impl RootWitness {
     }
 }
 
-// Keep the full physical witness, including its durable volume component. A
-// token locates state but cannot authenticate the filesystem that contains it.
+// Keep the full physical witness, including its durable volume component.
 // The volume is the platform's durable filesystem id where one exists (Linux
 // f_fsid, Windows volume serial); on macOS it is st_dev, so a remount that
 // renumbers the device refuses attachment rather than trusting a copied token.

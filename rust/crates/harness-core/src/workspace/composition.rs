@@ -97,6 +97,9 @@ impl<T> Mount<T> {
 pub struct MountTable<T> {
     /// Absolute native process root.
     pub root: PathBuf,
+    /// Host-owned scratch outside authored project files, when locally bound.
+    #[doc(hidden)]
+    pub scratch_root: Option<PathBuf>,
     entries: BTreeMap<Arc<str>, Option<usize>>,
     // Immutable indices into canonical path order. Paths share their allocation
     // with the namespace; neither identity lookup nor iteration copies a path.
@@ -196,6 +199,7 @@ impl<T> MountTable<T> {
             let io: Option<&crate::filesystem::PreparationIo> = None;
             #[cfg(not(target_arch = "wasm32"))]
             let io = io.as_ref();
+            let (mount, path) = self.select(path, work)?;
             crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
             if Path::new(path)
                 .components()
@@ -207,9 +211,7 @@ impl<T> MountTable<T> {
                     work,
                 ));
             }
-            return self
-                .select(path, work)
-                .map(|(mount, path)| (mount, Cow::Borrowed(path)));
+            return Ok((mount, Cow::Borrowed(path)));
         }
         #[cfg(not(target_arch = "wasm32"))]
         let io = work
@@ -231,13 +233,6 @@ impl<T> MountTable<T> {
                 work,
             ));
         }
-        if path.starts_with(".volumes/") {
-            return Err(path_error(
-                crate::wire::ErrorCode::Unauthorized,
-                "explicit-volume path crosses the mounted namespace",
-                work,
-            ));
-        }
         Ok((mount, Cow::Borrowed(path)))
     }
     /// Resolves a qualifier through the visible namespace, never by opening a
@@ -250,7 +245,8 @@ impl<T> MountTable<T> {
                 None => path.is_empty(),
                 Some(name) => {
                     (path.is_empty() && mount.view.name == name)
-                        || path.strip_prefix(".volumes/") == Some(name)
+                        || path.strip_prefix("volume:///") == Some(name)
+                        || path.strip_prefix("volume://") == Some(name)
                 }
             })
             .ok_or_else(|| Error::NotFound("volume is not mounted in this task view".into()))
@@ -273,58 +269,75 @@ impl<T> MountTable<T> {
 
     /// Resolves a relative path without permitting traversal outside the view.
     pub fn resolve(&self, path: &Path) -> Result<(&Mount<T>, String)> {
-        let mut relative = String::new();
-        for component in path.components() {
-            match component {
-                Component::CurDir => {}
-                Component::Normal(name) => {
-                    let name = name
-                        .to_str()
-                        .ok_or_else(|| Error::Invalid("workspace path is not UTF-8".into()))?;
-                    if !relative.is_empty() {
-                        relative.push('/');
-                    }
-                    relative.push_str(name);
-                }
-                _ => return Err(Error::Invalid("path escapes the task view".into())),
-            }
+        if let Some(address) = path.to_str().filter(|path| path.starts_with("volume://")) {
+            let (mount, path) = self.select(address, None)?;
+            let path = normalize_path(Path::new(path))?;
+            return Ok((mount, path));
         }
+        let relative = normalize_path(path)?;
         self.select(&relative, None)
             .map(|(mount, path)| (mount, path.to_owned()))
     }
 
     fn select<'a>(
         &self,
-        relative: &'a str,
+        address: &'a str,
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&Mount<T>, &'a str)> {
-        let mut prefix = relative;
-        loop {
-            if let Some(entry) = self.entries.get(prefix) {
-                let index = entry.ok_or_else(|| {
-                    path_error(
-                        crate::wire::ErrorCode::NotFound,
-                        "volume is not mounted in this task view",
-                        work,
-                    )
-                })?;
-                let mount = &self.mounted[index].1;
-                let selected = relative
-                    .get(prefix.len()..)
-                    .unwrap_or_default()
-                    .trim_start_matches('/');
-                return Ok((mount, selected));
-            }
-            if prefix.is_empty() {
-                return Err(path_error(
-                    crate::wire::ErrorCode::Unauthorized,
-                    "task has no primary view",
+        let (key, path) = split_address(address)
+            .map_err(|reason| path_error(crate::wire::ErrorCode::Invalid, reason, work))?;
+        let index = self
+            .entries
+            .get(key)
+            .and_then(|entry| *entry)
+            .ok_or_else(|| {
+                path_error(
+                    crate::wire::ErrorCode::NotFound,
+                    "volume is not mounted in this task view",
                     work,
-                ));
+                )
+            })?;
+        Ok((&self.mounted[index].1, path))
+    }
+}
+
+/// Separates explicit volume selection from the volume's ordinary file path.
+pub(crate) fn split_address(address: &str) -> std::result::Result<(&str, &str), &'static str> {
+    let Some(qualified) = address.strip_prefix("volume://") else {
+        return Ok(("", address));
+    };
+    let (_, after_owner) = qualified
+        .split_once('/')
+        .ok_or("volume address needs an owner and name")?;
+    let name_length = after_owner.find('/').unwrap_or(after_owner.len());
+    if name_length == 0 {
+        return Err("volume address needs a name");
+    }
+    let length = address.len() - after_owner.len() + name_length;
+    Ok((
+        &address[..length],
+        address[length..].strip_prefix('/').unwrap_or(""),
+    ))
+}
+
+fn normalize_path(path: &Path) -> Result<String> {
+    let mut relative = String::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(name) => {
+                let name = name
+                    .to_str()
+                    .ok_or_else(|| Error::Invalid("workspace path is not UTF-8".into()))?;
+                if !relative.is_empty() {
+                    relative.push('/');
+                }
+                relative.push_str(name);
             }
-            prefix = prefix.rsplit_once('/').map_or("", |(parent, _)| parent);
+            _ => return Err(Error::Invalid("path escapes the task view".into())),
         }
     }
+    Ok(relative)
 }
 
 fn path_error(
@@ -361,7 +374,8 @@ pub fn compose<T>(
             "task view root must be absolute without parent traversal".into(),
         ));
     }
-    let primary_name = primary.name.clone();
+    component(&primary.name)?;
+    let primary_address = format!("volume:///{}", primary.name);
     let mut mounts = BTreeMap::new();
     for (index, view) in std::iter::once(primary).chain(volumes).enumerate() {
         let access = PathTrie::compile(
@@ -385,14 +399,10 @@ pub fn compose<T>(
         } else {
             component(&view.name)?;
             if view.agent == principal.id {
-                format!(".volumes/{}", view.name)
+                format!("volume:///{}", view.name)
             } else {
                 component(&view.agent)?;
-                if view.name == primary_name {
-                    format!(".volumes/agents/{}", view.agent)
-                } else {
-                    format!(".volumes/agents/{}/.volumes/{}", view.agent, view.name)
-                }
+                format!("volume://{}/{}", view.agent, view.name)
             }
         };
         let entry = match mounts.entry(path) {
@@ -421,7 +431,11 @@ pub fn compose<T>(
             view,
             mode,
             access,
-            native_root: NativeRoot::Composed,
+            native_root: if index == 0 {
+                NativeRoot::Composed
+            } else {
+                NativeRoot::Logical
+            },
         }));
     }
     let mut mounted = Vec::new();
@@ -446,8 +460,10 @@ pub fn compose<T>(
         };
         entries.insert(path, index);
     }
+    entries.insert(primary_address.into(), entries.get("").copied().flatten());
     Ok(MountTable {
         root,
+        scratch_root: None,
         entries,
         mounted,
         volumes: volumes_by_identity,
@@ -456,13 +472,11 @@ pub fn compose<T>(
 
 fn component(name: &str) -> Result<()> {
     if name.is_empty()
-        || matches!(name, "." | ".." | "agents")
+        || matches!(name, "." | "..")
         || name.contains(['/', '\\', '\0', ':'])
         || name.chars().any(char::is_control)
     {
-        return Err(Error::Invalid(
-            "invalid or reserved volume mount name".into(),
-        ));
+        return Err(Error::Invalid("invalid volume mount name".into()));
     }
     Ok(())
 }

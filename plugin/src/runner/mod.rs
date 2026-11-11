@@ -544,6 +544,7 @@ async fn host_workspace(
         })
         .await?,
     );
+    let host_files_directory = acyclic_harness::local::host_files::directory(&local)?;
     phase(|| {
         acyclic_harness::local::host_files::serve_until(
             local,
@@ -551,7 +552,15 @@ async fn host_workspace(
                 use std::io::Write as _;
                 std::io::stdout()
                     .lock()
-                    .write_all(b"{\"type\":\"workspace-owner-ready\"}\n")
+                    .write_all(
+                        format!(
+                            "{}\n",
+                            serde_json::json!({
+                                "type": "workspace-owner-ready", "directory": host_files_directory
+                            })
+                        )
+                        .as_bytes(),
+                    )
                     .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
             },
             async {

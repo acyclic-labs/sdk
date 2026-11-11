@@ -2339,7 +2339,7 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
     let provider = super::scripted([
         call(
             "write",
-            serde_json::json!({"path":".volumes/shared/board.txt", "content":"shared-board-sentinel-73dae"}),
+            serde_json::json!({"path":"volume:///shared/board.txt", "content":"shared-board-sentinel-73dae"}),
         ),
         ScriptedTurn::Text("writer settled".into()),
         call(
@@ -2348,7 +2348,7 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
         ),
         call(
             "read",
-            serde_json::json!({"path":".volumes/shared/board.txt"}),
+            serde_json::json!({"path":"volume:///shared/board.txt"}),
         ),
         ScriptedTurn::Text("reader settled".into()),
     ]);

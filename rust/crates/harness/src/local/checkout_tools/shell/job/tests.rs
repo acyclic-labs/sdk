@@ -260,7 +260,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
     let spill_path = finished["spill"]
         .as_str()
         .unwrap()
-        .strip_prefix(".volumes/home/")
+        .strip_prefix("volume:///output/")
         .unwrap();
     let (_, spill) = harness
         .files

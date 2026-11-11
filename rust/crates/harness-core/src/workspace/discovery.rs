@@ -13,8 +13,11 @@ impl<T> MountTable<T> {
                 mount.view.name.as_str()
             } else {
                 relative
+                    .strip_prefix("volume:///")
+                    .or_else(|| relative.strip_prefix("volume://"))
+                    .ok_or_else(|| Error::Invalid("invalid volume address".into()))?
             };
-            for component in name.split('/').filter(|part| *part != ".volumes") {
+            for component in name.split('/') {
                 if !key.ends_with('_') {
                     key.push('_');
                 }
@@ -27,6 +30,7 @@ impl<T> MountTable<T> {
                     }
                 }
             }
+
             let path = path
                 .to_str()
                 .ok_or_else(|| Error::Invalid("task mount path is not UTF-8".into()))?;
@@ -49,7 +53,14 @@ impl<T> MountTable<T> {
                 line.push_str(", ");
             }
             line.push_str(if path.is_empty() { "." } else { path });
+            if let Some(root) = mount.native_root.override_path() {
+                line.push_str(" at ");
+                line.push_str(&root.to_string_lossy());
+            }
             line.push_str(" (");
+            if matches!(mount.native_root, super::NativeRoot::Logical) {
+                line.push_str("logical, ");
+            }
             line.push_str(mode_name(mount.mode));
             line.push(')');
         }

@@ -216,13 +216,6 @@ pub enum Error {
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
-    /// A checkout's Git metadata needs the SDK's exclusion rule appended, but
-    /// the file that must hold it is read-only.
-    #[error("read-only Git metadata: {} needs the checkout incarnation exclusion rule", path.display())]
-    ReadOnlyGitMetadata {
-        /// The Git exclude file that must hold the rule.
-        path: std::path::PathBuf,
-    },
     /// A raw filesystem adapter cannot enforce this effective access view.
     #[error("filesystem access configuration unsupported on {0}")]
     FilesystemAccessConfiguration(&'static str),
@@ -730,7 +723,7 @@ impl Error {
             | Self::MountUnavailable { .. } => ErrorCode::Unsupported,
             Self::Invalid(_) | Self::ModelContextOverflow => ErrorCode::Invalid,
             Self::ToolRejected { code, .. } | Self::Boundary { code, .. } => *code,
-            Self::Unauthorized(_) | Self::ReadOnlyGitMetadata { .. } => ErrorCode::Unauthorized,
+            Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
             Self::ModelUnavailable { .. } => ErrorCode::Invalid,
             Self::Cancelled => ErrorCode::Cancelled,
@@ -996,7 +989,6 @@ impl Error {
             | Self::ToolRejected { .. }
             | Self::Boundary { .. }
             | Self::Unauthorized(_)
-            | Self::ReadOnlyGitMetadata { .. }
             | Self::Cancelled
             | Self::InteractionRejected(_)
             | Self::Storage(_)

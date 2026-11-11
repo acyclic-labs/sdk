@@ -104,7 +104,7 @@ where
             ));
         };
         // A continued join tracks the paths the join itself published, as an
-        // unconflicted join does: never a reserved path, and never a file the
+        // unconflicted join does: never a file the
         // resolution added or edited. The joined generation is the immutable
         // one this operation published, so later source writes cannot change
         // what the merge tracks. A transition that never published admits no

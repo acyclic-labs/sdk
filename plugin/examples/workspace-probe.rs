@@ -23,13 +23,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?,
     );
+    let directory = host_files::directory(&harness)?;
     host_files::serve_until(
         harness,
         || {
             use std::io::Write as _;
             std::io::stdout()
                 .lock()
-                .write_all(b"{\"type\":\"workspace-owner-ready\"}\n")
+                .write_all(
+                    format!(
+                        "{}\n",
+                        serde_json::json!({"type": "workspace-owner-ready", "directory": directory})
+                    )
+                    .as_bytes(),
+                )
                 .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
         },
         async {

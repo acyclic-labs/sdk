@@ -10,6 +10,18 @@ pub enum ReadPathKind {
 }
 
 impl ReadPathKind {
+    /// Checks a tool address after separating its explicit volume qualifier.
+    pub(crate) fn validate_address(
+        self,
+        address: &str,
+        history: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let (_, path) = crate::workspace::split_address(address).map_err(|reason| {
+            crate::store::guarded_boundary(history, crate::wire::ErrorCode::Invalid, reason)
+        })?;
+        self.validate(path, history)
+    }
+
     /// Checks the normalized relative path without treating a directory as a file.
     pub fn validate(
         self,

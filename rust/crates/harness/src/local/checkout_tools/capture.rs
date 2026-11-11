@@ -4,7 +4,6 @@ use acyclic_fs::{
     CancellationToken, CaptureOptions, CapturePolicy, LivePublicationObservation,
     NativeWatchOptions, WatchBatch, WorkBudget, WorkCounters, capture_baseline,
     capture_watch_batch,
-    kernel::NamespacePath,
     model::{CheckoutMode, GenerationSelector},
 };
 
@@ -12,14 +11,6 @@ mod converge;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod tests;
-
-// Exclude owned projections individually below, never their authored siblings.
-const EXCLUDED: &[&str] = &[
-    ".git",
-    ".acyclic-sdk",
-    ".system",
-    crate::local::workspace::HOST_VIEW_ROOT,
-];
 
 pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
@@ -78,7 +69,7 @@ impl Cursor {
     pub(super) fn initial(workspace: &LocalWorkspace, policy: &CapturePolicy) -> Result<Self> {
         let mut cursor = Self::open(workspace, policy)?;
         let rescan = cursor.watcher.begin_rescan().map_err(storage)?;
-        cursor.watcher.watch_tree(EXCLUDED).map_err(storage)?;
+        cursor.watcher.watch_tree(&[]).map_err(storage)?;
         cursor.initial = Some(cursor.watcher.finish_rescan(rescan).map_err(storage)?);
         Ok(cursor)
     }
@@ -452,7 +443,6 @@ pub(super) fn capture_operation(operation: OperationId, phase: u8) -> acyclic_fs
 pub(in crate::local) fn configuration(
     workspace: &LocalWorkspace,
 ) -> Result<(CaptureOptions, CapturePolicy)> {
-    let config = workspace.view().workspace().volume_config();
     let options = CaptureOptions {
         source_namespace: Some(workspace.view().source_reference().identity),
         source_root: workspace.path.clone(),
@@ -460,29 +450,6 @@ pub(in crate::local) fn configuration(
         maximum_paths: None,
         maximum_extent_spans: None,
     };
-    let mut excluded = EXCLUDED
-        .iter()
-        .map(|name| {
-            let path = acyclic_fs::path::PortablePath::parse(&format!("/{name}"), config.limits)
-                .map_err(storage)?;
-            NamespacePath::from_portable_in_profile(&path, config.profile, config.limits)
-                .map_err(storage)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    excluded.push(workspace::volumes::namespace(
-        &workspace.path,
-        config,
-        &workspace.path.join(workspace::volumes::INCARNATION_PATH),
-    )?);
-    for (relative, mount) in workspace.mounts.mounts() {
-        if !relative.is_empty() && mount.view.source.is_some() {
-            excluded.extend(workspace::volumes::excluded(
-                &workspace.path,
-                config,
-                relative,
-            )?);
-        }
-    }
-    let policy = CapturePolicy::excluding(excluded).map_err(storage)?;
+    let policy = CapturePolicy::default();
     Ok((options, policy))
 }

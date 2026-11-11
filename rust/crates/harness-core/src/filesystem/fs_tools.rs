@@ -265,7 +265,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                 lease: None,
                 #[cfg(not(target_arch = "wasm32"))]
                 checkout: None,
-                reserved: &[],
                 author: "agent",
                 authored_at_seconds: i64::try_from(
                     acyclic_stream::UnixMillisClock::now_unix_millis(
