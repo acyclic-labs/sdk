@@ -57,13 +57,19 @@ async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Resul
     use futures::TryStreamExt as _;
     let provider = Arc::new(MemoryStream::default());
     let within = ActorReference::new(b"account", b"agents", b"owner")?;
+    let answers = [
+        b"answer".to_vec(),
+        vec![b'x'; MAX_RECORD_BYTES + 1],
+        vec![b'y'; acyclic_stream::MAX_RECORD_BYTES],
+    ];
     let host = AgentHost::new(
         provider.clone(),
         super::script(
-            (0..3)
-                .map(|_| TurnStep {
+            answers
+                .iter()
+                .map(|answer| TurnStep {
                     checkpoint: None,
-                    outs: vec![Out::Conversation(b"answer".to_vec())],
+                    outs: vec![Out::Conversation(answer.clone())],
                     wait: Wait::Input,
                     drops: None,
                 })
@@ -103,6 +109,10 @@ async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Resul
         );
     }
     assert_eq!(host.state(&root).await?.conversation_tail, 3);
+    assert_eq!(
+        values(provider.as_ref(), root.conversation()?).await?,
+        answers
+    );
     Ok(())
 }
 

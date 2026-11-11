@@ -1108,7 +1108,7 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
 async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_it() -> Result {
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
-    let oversized = vec![b'x'; MAX_RECORD_BYTES + 1];
+    let oversized = vec![b'x'; acyclic_stream::MAX_RECORD_BYTES + 1];
     let driver = script(vec![TurnStep {
         checkpoint: None,
         outs: vec![

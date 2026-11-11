@@ -1205,7 +1205,7 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
 fn admissible(out: &Out) -> bool {
     match out {
         Out::Steered(_) | Out::PendingSpawns(_) => true,
-        Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
+        Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(
                 record,
