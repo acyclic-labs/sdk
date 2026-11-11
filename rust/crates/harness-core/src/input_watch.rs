@@ -4,8 +4,14 @@ use acyclic_auth::credential::{CredentialCacheError, CredentialValidity, Credent
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
+
+#[derive(Clone, Default)]
+struct InputRevision {
+    number: u64,
+    failure: Option<Arc<notify::Error>>,
+}
 
 /// A source set's revision. Registrations share native roots across consumers;
 /// readers subscribe before observing and reread only after an event.
@@ -14,7 +20,7 @@ use std::{
 /// ancestor is refused while the watch is held: no replacement goes unseen.
 pub struct InputWatch {
     paths: Vec<PathBuf>,
-    changed: tokio::sync::watch::Sender<u64>,
+    changed: tokio::sync::watch::Sender<InputRevision>,
     held: Mutex<Vec<acyclic_fs::HeldRootWatch>>,
 }
 
@@ -30,7 +36,7 @@ impl InputWatch {
             .map_err(|_| Error::Storage("cannot resolve input watch path".into()))?;
         let watch = Self {
             paths,
-            changed: tokio::sync::watch::channel(0).0,
+            changed: tokio::sync::watch::channel(InputRevision::default()).0,
             held: Mutex::new(Vec::new()),
         };
         watch.arm()?;
@@ -148,52 +154,77 @@ impl InputWatch {
     ) -> std::result::Result<acyclic_fs::HeldRootWatch, acyclic_fs::demand::DemandError> {
         let changed = self.changed.clone();
         acyclic_fs::hold_root(&root)?.watch_changes(move |event| {
-            let relevant = match event {
-                Ok(event) if event.kind.is_access() => false,
-                Ok(event) => {
+            let (relevant, failure) = match event {
+                Ok(event) if event.kind.is_access() => (false, None),
+                Ok(event) => (
                     event.paths.is_empty()
                         || event.paths.iter().any(|event| {
                             let event = event.strip_prefix(&root).unwrap_or(event);
                             paths
                                 .iter()
                                 .any(|path| path == event || path.starts_with(event))
-                        })
-                }
-                Err(_) => true,
+                        }),
+                    None,
+                ),
+                Err(error) => (true, Some(Arc::new(error))),
             };
             if relevant {
-                changed.send_modify(|revision| *revision = revision.wrapping_add(1));
+                changed.send_modify(|revision| {
+                    revision.number = revision.number.wrapping_add(1);
+                    if revision.failure.is_none() {
+                        revision.failure = failure;
+                    }
+                });
             }
         })
     }
 
     /// Current event revision, without reading any input.
     pub fn revision(&self) -> u64 {
-        *self.changed.borrow()
+        self.changed.borrow().number
     }
 
     /// Explicit lifecycle mutations use the same event as native file writes.
     pub fn invalidate(&self) {
         self.changed
-            .send_modify(|revision| *revision = revision.wrapping_add(1));
+            .send_modify(|revision| revision.number = revision.number.wrapping_add(1));
+    }
+
+    fn subscribe(&self) -> (u64, impl Future<Output = Result<()>> + Send + use<>) {
+        let mut changed = self.changed.subscribe();
+        let initial = changed.borrow_and_update().clone();
+        (initial.number, async move {
+            if let Some(error) = initial.failure {
+                return Err(Error::Storage(format!("input observation failed: {error}")));
+            }
+            changed
+                .changed()
+                .await
+                .map_err(|_| Error::Storage("input observation closed".into()))?;
+            if let Some(error) = &changed.borrow_and_update().failure {
+                return Err(Error::Storage(format!("input observation failed: {error}")));
+            }
+            Ok(())
+        })
+    }
+
+    /// Registers before the caller reads its inputs. Native producer failure
+    /// remains terminal; ordinary changes wake once without a readiness probe.
+    pub fn changed(&self) -> impl Future<Output = Result<()>> + Send + use<> {
+        self.subscribe().1
     }
 
     /// One-shot Auth watch, registered before the caller reads credentials.
     pub fn credential_watch(&self) -> CredentialWatch {
-        let mut changed = self.changed.subscribe();
+        let (number, changed) = self.subscribe();
         let mut revision = [0; 32];
-        revision[..8].copy_from_slice(&changed.borrow_and_update().to_be_bytes());
+        revision[..8].copy_from_slice(&number.to_be_bytes());
         CredentialWatch::from_custodian(
             CredentialValidity {
                 now_unix_seconds: 0,
                 revision: Some(revision.into()),
             },
-            async move {
-                changed
-                    .changed()
-                    .await
-                    .map_err(|_| CredentialCacheError::Unavailable)
-            },
+            async move { changed.await.map_err(|_| CredentialCacheError::Unavailable) },
         )
     }
 }
