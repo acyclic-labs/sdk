@@ -795,7 +795,7 @@ fn unresolved_fulltext_is_never_silently_omitted() -> Result<()> {
 
 fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<String> {
     let (mut provider, _) = provider(Adapter::Chat, 200);
-    provider.files.maximum_bytes = 4096;
+    provider.files.maximum_bytes = Some(4096);
     let file = file(body.as_bytes(), "text/plain")?;
     let policy = FileProjectionPolicy::ProjectInstructions(Box::new(
         acyclic_harness::model::InstructionIdentity::new(file.volume().clone(), path.into())?,
