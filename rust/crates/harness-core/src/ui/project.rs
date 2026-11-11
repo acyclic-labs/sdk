@@ -336,9 +336,9 @@ fn page_number<T: std::str::FromStr>(path: &str, prefix: &str) -> Result<T> {
 fn status(cut: &impl Cut, sink: &mut impl Write) -> Result<()> {
     let status = cut.status()?;
     match &status.phase {
-        Phase::WaitingApproval { id, .. } => write!(
+        Phase::WaitingApproval { id, .. } => writeln!(
             sink,
-            "Waiting for approval\n\n```input choose id=approval approval={}\n- allow once\n- allow rule\n- deny\n```\n",
+            "Waiting for approval\n\n```input choose id=approval approval={}\n- allow once\n- allow rule\n- deny\n```",
             id.as_str()
         ),
         Phase::WaitingUser { path } => writeln!(sink, "Waiting for your reply: [{path}]({path})"),
