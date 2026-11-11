@@ -569,10 +569,9 @@ async fn response_status_keeps_its_original_interruption_before_and_after_output
 
 #[tokio::test]
 async fn tls_failure_is_typed_for_shared_recovery() -> Result<()> {
-    let (port, accepted) = serve(vec![Reply::Garbage, Reply::Garbage]).await?;
+    let (port, accepted) = serve(vec![Reply::Garbage]).await?;
     let (provider, transport) = model(&format!("https://127.0.0.1:{port}/v1"))?;
     let error = transport
-        .inner
         .send(HttpRequest {
             method: ::http::Method::POST,
             url: provider.config.base_url.clone(),

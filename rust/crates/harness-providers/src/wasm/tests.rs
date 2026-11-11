@@ -65,21 +65,23 @@ export async function collectModel(iterator) {
   return events;
 }
 export function modelRefusalFixture(data, status, code) {
-  const state = { calls: 0, aborted: 0 };
+  const state = { calls: 0, aborted: 0, refusalReads: 0 };
   state.bind = () => ({credentialScope:new Uint8Array(32).fill(7),
     fetch(url, init) {
       state.calls++;
       if (new Headers(init.headers).has('authorization')) throw new Error('guest credential');
       init.signal.addEventListener('abort', () => state.aborted++, {once:true});
+      const transient = state.calls % 2 !== 0;
       let prefix = true;
       return Promise.resolve(new Response(new ReadableStream({pull(controller) {
+        if (transient) state.refusalReads++;
         if (prefix) {
           prefix = false;
           controller.enqueue(new TextEncoder().encode(data));
-        } else if (code) {
+        } else if (transient && code) {
           controller.error(Object.assign(new Error('private diagnostic'), {code}));
         } else controller.close();
-      }}, {highWaterMark:0}), {status: !code && state.calls % 2 === 0 ? 401 : status}));
+      }}, {highWaterMark:0}), {status: transient ? status : 401}));
     }});
   return state;
 }
@@ -182,7 +184,7 @@ fn dispatch() -> Result<JsValue, JsValue> {
 }
 
 #[wasm_bindgen_test]
-async fn refusal_body_failures_keep_their_class_without_generation_or_count_retries()
+async fn transient_refusal_headers_recover_without_reading_bodies_until_a_permanent_error()
 -> Result<(), JsValue> {
     use acyclic_harness_core::wire::ErrorCode;
     let body = include_str!("../../../conformance/fixtures/inference/llamacpp/rate.body");
@@ -215,19 +217,20 @@ async fn refusal_body_failures_keep_their_class_without_generation_or_count_retr
             let failure = JsFuture::from(collect_model(prepared.generate(dispatch()?)?))
                 .await
                 .unwrap_err();
-            let expected = code.unwrap_or(ErrorCode::Unauthorized) as i32;
+            let expected = ErrorCode::Unauthorized as i32;
             assert_eq!(field(&failure, "code")?.as_f64(), Some(f64::from(expected)));
             assert!(
                 !js_sys::Error::from(failure)
                     .message()
                     .includes("private diagnostic", 0)
             );
-            let attempts = if code.is_some() { 1.0 } else { 2.0 };
-            assert_eq!(field(&fixture, "calls")?.as_f64(), Some(attempts));
+            assert_eq!(field(&fixture, "calls")?.as_f64(), Some(2.0));
+            assert_eq!(field(&fixture, "refusalReads")?.as_f64(), Some(0.0));
             let failure = prepared.count_tokens().await.unwrap_err();
             assert_eq!(field(&failure, "code")?.as_f64(), Some(f64::from(expected)));
-            assert_eq!(field(&fixture, "calls")?.as_f64(), Some(2.0 * attempts));
-            assert_eq!(field(&fixture, "aborted")?.as_f64(), Some(2.0 * attempts));
+            assert_eq!(field(&fixture, "calls")?.as_f64(), Some(4.0));
+            assert_eq!(field(&fixture, "aborted")?.as_f64(), Some(4.0));
+            assert_eq!(field(&fixture, "refusalReads")?.as_f64(), Some(0.0));
         }
     }
     Ok(())
