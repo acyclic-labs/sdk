@@ -42,6 +42,34 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         "head: {head:?}; page: {page:?}"
     );
     assert!(page.map_err(exchange)?.children.is_empty());
+    let conversation = super::super::agent_conversation::Conversation::open(connection.clone());
+    let mut fork = conversation.prepare_fork(
+        "reader-child",
+        0,
+        "worker".into(),
+        "exercise the enrolled child listing".into(),
+    )?;
+    let child = match fork.execute().await.map_err(exchange)? {
+        AgentReply::Spawned { agent, .. } => agent.clone(),
+        _ => return Err(Error::Conflict("fork returned no child".into())),
+    };
+    conversation
+        .select(child.clone())
+        .await?
+        .wait_current_input()
+        .await?;
+    let populated = reader
+        .children_page(acyclic_stream::ChildrenPageRequest {
+            parent: Some(connection.root.children().map_err(exchange)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 16,
+            tail_stream: Some(StreamPath::new("conversation").map_err(exchange)?),
+        })
+        .await
+        .map_err(exchange)?;
+    assert_eq!(populated.children.len(), 1, "{populated:?}");
+    assert_eq!(populated.children[0].path.as_str(), child.as_str());
     let outside = AgentPath::root(&crate::agent::AgentId::from_bytes([0; 16]));
     assert_eq!(
         reader.head(outside.status().map_err(exchange)?).await,

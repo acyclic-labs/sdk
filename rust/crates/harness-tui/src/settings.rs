@@ -17,6 +17,10 @@ pub enum NotificationPolicy {
 #[cfg_attr(feature = "tui", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "tui", serde(deny_unknown_fields))]
 pub struct UiSettings {
+    /// Show the running model's reasoning projection.
+    pub reasoning: bool,
+    /// Expand the original results beneath settled tool cards.
+    pub tool_details: bool,
     /// scrollback lines.
     pub scrollback_lines: usize,
     /// Render activity labels without animation.
