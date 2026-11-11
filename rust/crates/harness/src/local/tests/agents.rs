@@ -2255,15 +2255,26 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
         else {
             return Err(Error::Invalid("shared-board spawn refused".into()));
         };
-        let entries = settled(&harness, &child).await?;
+        // Creation's initial idle status is not the brief's completion.
+        // Wait for the child's actual turn record through its served follow.
+        let conversation = Conversation::open(harness.attach(Some(child.clone()), true).await?);
+        let mut events = conversation.observe(Some(0)).await?;
+        let entry = loop {
+            match events.next().await? {
+                crate::local::Event::Turn(entry) => break entry,
+                crate::local::Event::Status(status)
+                    if matches!(status.phase, crate::agent::Phase::Done { .. }) =>
+                {
+                    return Err(Error::Conflict(format!(
+                        "shared-board child ended before its turn: {status:?}; model_requests={}",
+                        provider.request_count()
+                    )));
+                }
+                _ => {}
+            }
+        };
         assert!(matches!(
-            ConversationEntry::decode(
-                entries
-                    .last()
-                    .ok_or_else(|| Error::NotFound("shared-board settlement".into()))?
-            )
-            .map_err(agent)?
-            .outcome,
+            entry.outcome,
             crate::agent::TurnOutcome::Completed
         ));
     }
