@@ -559,3 +559,13 @@ native all-target Stream local/http compilation. Its tests were still waiting
 for the shared target lock when this empty-body fix superseded that source;
 the exact queued Cargo process was stopped before any test or mutation ran.
 The revised source requires its own focused check and all four controls.
+
+Native macOS all-target Stream local/http compilation passed at exact source
+`21f5143212d4eb9ce55ca285579404ebef74a6e5`, including the empty-reference fix.
+It reused the installed 1.98.1 toolchain, incremental disabled and the one
+shared target. Log: `Q:/scratch/stream-unbounded/ivar-21f5-tests.log`;
+script: `Q:/scratch/stream-unbounded/ivar-21f5-tests.sh`.
+The same live script proceeds to 13 positive cases and four exact mutations.
+At this checkpoint its test command is waiting for the shared target lock;
+no positive or mutation result at this source has yet been observed. Continue
+observing that existing process rather than launching a duplicate validation.
