@@ -371,11 +371,7 @@ impl Attach<'_> {
         self.native_mounts
             .then_some((crate::filesystem::HOME_VOLUME, self.scratch))
             .into_iter()
-            .chain(
-                self.shared
-                    .filter(|_| self.native_mounts)
-                    .map(|volume| (super::SHARED_VOLUME, volume)),
-            )
+            .chain(self.shared.map(|volume| (super::SHARED_VOLUME, volume)))
     }
 }
 

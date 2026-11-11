@@ -1233,6 +1233,58 @@ async fn reply_waits_require_original_committed_requests() -> Result {
 }
 
 #[tokio::test]
+async fn a_consumed_spawn_at_maximum_depth_returns_its_refusal() -> Result {
+    let host = AgentHost::new(
+        Arc::new(MemoryStream::default()),
+        Spawner(AtomicUsize::new(1)),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let mut parent = host.create(&intent("create"), adopted(id(1))).await?;
+    host.drain(&parent).await?;
+    let Wake::Inbox { record, .. } = super::spawn_request(0) else {
+        unreachable!()
+    };
+    for _ in 0..MAX_DEPTH {
+        let Delivered::Committed { inbox } = host.send(&parent, &user(), &record).await? else {
+            return Err("spawn was not committed".into());
+        };
+        let (intent, child) = requested_child(&parent, inbox)?;
+        host.drain(&parent).await?;
+        assert_eq!(
+            host.spawned(&parent, inbox, &intent).await?,
+            SpawnOutcome::Spawned {
+                child: child.clone()
+            }
+        );
+        parent = child;
+        host.drain(&parent).await?;
+    }
+    let Delivered::Committed { inbox } = host.send(&parent, &user(), &record).await? else {
+        return Err("depth-limited spawn was not committed".into());
+    };
+    // The sequence-derived intent does not require constructing an impossible child.
+    let (requested, _) = requested_child(&AgentPath::root(&id(1)), inbox)?;
+    let outcome = host.spawned(&parent, inbox, &requested);
+    tokio::pin!(outcome);
+    assert!(futures::poll!(&mut outcome).is_pending());
+    host.drain(&parent).await?;
+    assert_eq!(
+        outcome.await?,
+        SpawnOutcome::Refused {
+            reason: SpawnRefusal::Depth
+        }
+    );
+    assert!(host.state(&parent).await?.open_children.is_empty());
+    assert!(matches!(
+        host.spawned(&parent, inbox + 1, &requested).await,
+        Err(Error::Conflict(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(

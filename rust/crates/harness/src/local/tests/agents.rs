@@ -3330,3 +3330,82 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn physical_siblings_read_each_others_shared_file_through_tools() -> Result<()> {
+    use crate::model::{ModelContent, ModelEvent, ToolCall};
+    use crate::test_support::{ScriptedEvent, ScriptedTurn};
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+    let call = |name: &str, arguments| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                name.into(),
+                name.into(),
+                arguments,
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ])
+    };
+    let provider = super::scripted([
+        call(
+            "write",
+            serde_json::json!({"path":".volumes/shared/board.txt", "content":"sibling shared proof"}),
+        ),
+        ScriptedTurn::Text("written".into()),
+        call(
+            "read",
+            serde_json::json!({"path":".volumes/shared/board.txt"}),
+        ),
+        ScriptedTurn::Text("read".into()),
+    ]);
+    let directory = tempfile::tempdir().map_err(agent)?;
+    std::fs::create_dir(directory.path().join(".git")).map_err(agent)?;
+    let harness = Arc::new(
+        LocalHarness::open(
+            super::checkout_config(directory.path(), (super::model()?, provider.clone()))?
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let mut children = Vec::new();
+    for name in ["writer", "reader"] {
+        let AgentReply::Spawned { agent: child, .. } = connection
+            .execute(&AgentCommand::Spawn {
+                parent: connection.root().clone(),
+                id: crate::agent::IntentId::try_from(name).map_err(agent)?,
+                brief: ModelContent::Text(name.into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("spawn did not return child".into()));
+        };
+        settled(&harness, &child).await?;
+        children.push(child);
+    }
+    assert_eq!(provider.request_count(), 4);
+    let request = provider.request(3).expect("reader receives tool output");
+    let projection = serde_json::to_value(&request).map_err(agent)?;
+    assert!(
+        projection.to_string().contains("sibling shared proof"),
+        "{projection}"
+    );
+    let (agents, _) = harness.agents().await?;
+    let left = agents.state(&children[0]).await.map_err(agent)?;
+    let right = agents.state(&children[1]).await.map_err(agent)?;
+    let project = |state: &crate::agent::AgentState| {
+        state
+            .volumes
+            .iter()
+            .find(|binding| binding.name == "project")
+            .unwrap()
+            .volume
+            .clone()
+    };
+    assert_ne!(project(&left), project(&right));
+    Ok(())
+}
