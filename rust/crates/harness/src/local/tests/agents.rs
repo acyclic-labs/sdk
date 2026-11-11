@@ -398,7 +398,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             .expect("project binding");
         let forked = fs
             .open_workspace(
-                binding.volume.storage_name(&mut None)?,
+                binding.volume()?.storage_name(&mut None)?,
                 WorkBudget::UNBOUNDED,
                 &cancel,
             )
@@ -1614,7 +1614,7 @@ async fn observation(
         .agent_observation(
             authority,
             path,
-            &authority.private.volume,
+            authority.private.volume()?,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             None,
         )
@@ -2035,7 +2035,7 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
             .expect("child project");
         let id = workspace
             .filesystem
-            .workspace_id(&project.volume.storage_name(&mut None)?)
+            .workspace_id(project.volume()?.storage_name(&mut None)?)
             .map_err(agent)?;
         let path = workspace
             .held_task_mount_root()?
@@ -3733,11 +3733,15 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let project = child_state
         .volumes
         .iter()
-        .find(|binding| binding.volume.class() == crate::conversation::VolumeClass::Project)
+        .find(|binding| {
+            binding
+                .as_volume()
+                .is_some_and(|volume| volume.class() == crate::conversation::VolumeClass::Project)
+        })
         .ok_or_else(|| Error::Invalid("historical child has no project volume".into()))?;
     let child_workspace = fs
         .open_workspace(
-            project.volume.storage_name(&mut None)?,
+            project.volume()?.storage_name(&mut None)?,
             WorkBudget::UNBOUNDED,
             &cancel,
         )
@@ -3802,7 +3806,7 @@ async fn tool_free_checkout_sessions_read_their_own_logical_context_without_moun
         .workspace
         .as_ref()
         .unwrap()
-        .spawned_project_view(&project.volume)
+        .spawned_project_view(project.volume()?)
         .await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     view.write(
@@ -3943,8 +3947,8 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         .find(|binding| binding.name == "project")
         .ok_or_else(|| Error::Invalid("missing branch project".into()))?;
     let branched_workspace = workspace_ref(
-        project.volume.provider().clone(),
-        &project.volume.storage_name(&mut None)?,
+        project.volume()?.provider().clone(),
+        project.volume()?.storage_name(&mut None)?,
     )?;
     assert_eq!(
         harness

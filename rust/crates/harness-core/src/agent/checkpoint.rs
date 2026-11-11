@@ -17,9 +17,9 @@ pub(crate) fn codec() -> CodecIdentity {
 fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
-            name: "acyclic.harness.agent".into(),
-            // V7 retains paused spawn reservations and original refusal facts.
-            version: "7".into(),
+            name: "acyclic.harness.agent.workspaces".into(),
+            // Version-one workspace-aware actor state; old state is refused.
+            version: "1".into(),
         });
     &IDENTITY
 }
@@ -100,6 +100,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<AgentState, Error> {
     if state.turn.is_some() || state.parent.is_some() {
         return Err(malformed());
     }
+    super::records::check_volumes(state.volumes.iter())?;
     state.parent = state.path.parent();
     state.turn = match (encoded.turn, encoded.turn_inbox) {
         (Some(checkpoint), Some(inbox)) => Some(super::Progress { inbox, checkpoint }),
@@ -158,11 +159,12 @@ mod tests {
     // A deep fixture, not an admission bound.
     const FIXTURE_DEPTH: usize = 64;
     const FIXTURE_CHILDREN: usize = 256;
+    const FIXTURE_VOLUMES: usize = 8;
     use crate::agent::{
         AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
         ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
-        MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, NoticePayload, Phase, Sender,
-        SpawnRequest, StatusRecord, TurnInput, VolumeBinding,
+        MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, Message, NoticePayload, Phase, Sender, SpawnRequest,
+        StatusRecord, TurnInput, WorkspaceEntry,
     };
     use crate::conversation::{
         FileDescriptor, FileRef, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES,
@@ -303,10 +305,17 @@ mod tests {
             forked_at: u64::MAX,
             conversation_tail: u64::MAX,
             checkpoint: Some(u64::MAX),
-            volumes: (0..MAX_VOLUMES)
-                .map(|_| VolumeBinding {
-                    name: widest(MAX_INTENT_BYTES),
-                    volume: volume(),
+            volumes: (0..FIXTURE_VOLUMES)
+                .map(|index| {
+                    WorkspaceEntry::initial_volume(
+                        crate::agent::WorkspaceRole::User,
+                        format!(
+                            "{}{}",
+                            "w".repeat(super::super::MAX_TARGET_NAME_BYTES - 1),
+                            index
+                        ),
+                        volume(),
+                    )
                 })
                 .collect(),
             brief: Some(file()),
@@ -379,12 +388,17 @@ mod tests {
                 crate::agent::ContextAction::Restore {
                     at: u64::MAX,
                     mode: crate::agent::RestoreMode::Both,
-                    expected: (0..MAX_VOLUMES)
+                    expected: (0..FIXTURE_VOLUMES)
                         .map(|index| crate::agent::HistoryVolume {
-                            binding: VolumeBinding {
-                                name: format!("{}{}", widest(MAX_INTENT_BYTES - 1), index),
-                                volume: volume(),
-                            },
+                            binding: WorkspaceEntry::initial_volume(
+                                crate::agent::WorkspaceRole::User,
+                                format!(
+                                    "{}{}",
+                                    "w".repeat(super::super::MAX_TARGET_NAME_BYTES - 1),
+                                    index
+                                ),
+                                volume(),
+                            ),
                             generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
                                 kind: acyclic_fs::ObjectKind::GenerationRoot,
                                 digest: acyclic_fs::Digest::from_bytes([255; 32]),

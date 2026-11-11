@@ -3,7 +3,7 @@
 //! This facade opens no model provider, executor, service or process. Its
 //! agents come from the native host's agent runtime.
 use super::*;
-use crate::agent::{AgentPath, VolumeBinding};
+use crate::agent::{AgentPath, WorkspaceEntry};
 use acyclic_fs::HeldRoot;
 use workspace::owner::{AgentOwner, ViewOwner};
 
@@ -226,7 +226,7 @@ impl HostWorkspace {
     pub(super) async fn open_child(
         &self,
         child: &AgentPath,
-        volumes: &[VolumeBinding],
+        volumes: &[WorkspaceEntry],
         signed: Scope,
         reference: &str,
     ) -> Result<Self> {
@@ -240,7 +240,8 @@ impl HostWorkspace {
             volumes
                 .iter()
                 .find(|binding| binding.name == name)
-                .map(|binding| binding.volume.clone())
+                .and_then(|binding| binding.as_volume())
+                .cloned()
                 .ok_or_else(|| Error::Invalid(format!("host child has no {name} volume")))
         };
         let project = bound("project")?;

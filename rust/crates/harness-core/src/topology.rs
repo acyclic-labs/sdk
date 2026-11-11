@@ -1,7 +1,7 @@
 //! Versioned run-start delegation policy shared by all agent hosts.
 use crate::{
     Error, Result,
-    agent::{AgentPath, CreationConfig, SpawnTemplates, VolumeBinding},
+    agent::{AgentPath, CreationConfig, SpawnTemplates, WorkspaceEntry},
 };
 use acyclic_stream::BoxProviderFuture;
 use serde::{Deserialize, Serialize};
@@ -113,7 +113,7 @@ impl SpawnTemplates for Templates {
         &'a self,
         parent: &'a CreationConfig,
         path: &'a AgentPath,
-        volumes: &'a [VolumeBinding],
+        volumes: &'a [WorkspaceEntry],
         template: &'a str,
         ceiling: Option<&'a crate::Capabilities>,
     ) -> BoxProviderFuture<'a, Result<CreationConfig>> {

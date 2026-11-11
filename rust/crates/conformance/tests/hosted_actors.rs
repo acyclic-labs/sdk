@@ -5,7 +5,7 @@ use acyclic_conformance::client::endpoint::{self, Scenario};
 use acyclic_fs::{EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore};
 use acyclic_harness::{
     Capabilities, Error,
-    agent::{AgentId, IntentId, VolumeBinding},
+    agent::{AgentId, IntentId, WorkspaceEntry},
     context::CompactionPolicy,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityRoot},
@@ -197,10 +197,11 @@ fn composition_at(
             IntentId::try_from("root")?,
             RootRequest {
                 agent: root,
-                fresh: vec![VolumeBinding {
-                    name: PRIVATE_VOLUME.into(),
+                fresh: vec![WorkspaceEntry::initial_volume(
+                    acyclic_harness_core::agent::WorkspaceRole::Private,
+                    PRIVATE_VOLUME.into(),
                     volume,
-                }],
+                )],
                 retained: Vec::new(),
                 brief: None,
                 policy: None,

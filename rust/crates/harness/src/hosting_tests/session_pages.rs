@@ -16,16 +16,17 @@ async fn ten_thousand_sessions_keep_discovery_at_two_bounded_head_views() -> Res
             &IntentId::try_from("directory-scale")?,
             RootRequest {
                 agent: AgentId::from_bytes([1; 16]),
-                fresh: vec![VolumeBinding {
-                    name: PRIVATE_VOLUME.into(),
-                    volume: VolumeRef::new(
+                fresh: vec![WorkspaceEntry::initial_volume(
+                    crate::agent::WorkspaceRole::Private,
+                    PRIVATE_VOLUME.into(),
+                    VolumeRef::new(
                         provider()?,
                         "directory-owner".into(),
                         VolumeClass::AgentPrivate,
                         VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
                         &mut None,
                     )?,
-                }],
+                )],
                 retained: Vec::new(),
                 brief: None,
                 policy: None,

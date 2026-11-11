@@ -10,7 +10,7 @@ use super::FilesystemHost;
 use crate::{
     agent::{
         AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, IntentId, Out, SpawnVolumes,
-        VolumeBinding,
+        WorkspaceEntry,
     },
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
 };
@@ -73,7 +73,7 @@ pub trait VolumeResources: acyclic_stream::ProviderPlatform + 'static {
     fn release<'a>(
         &'a self,
         agent: &'a AgentPath,
-        bindings: &'a [VolumeBinding],
+        bindings: &'a [WorkspaceEntry],
     ) -> BoxProviderFuture<'a, Result<(), crate::Error>>;
 }
 
@@ -127,9 +127,9 @@ fn invalid(error: crate::Error) -> Error {
 /// that keeps state beside a forked volume prepares it through [`VolumeResources`].
 fn spawned_volume(
     child: &AgentPath,
-    binding: &VolumeBinding,
+    binding: &WorkspaceEntry,
 ) -> Result<(VolumeRef, acyclic_fs::OperationId), Error> {
-    let source = &binding.volume;
+    let source = binding.volume()?;
     let owner = match source.owner() {
         VolumeOwner::Agent(_) => VolumeOwner::Agent(crate::AgentId::from_bytes(child.id_bytes())),
         VolumeOwner::Session(_) if source.class() == VolumeClass::SessionShared => {
@@ -154,9 +154,9 @@ fn spawned_volume(
 ///
 /// # Errors
 /// When the derived volume reference is invalid.
-pub fn spawned_binding(child: &AgentPath, binding: &VolumeBinding) -> Result<VolumeRef, Error> {
-    if retains_shared(child, &binding.volume) {
-        return Ok(binding.volume.clone());
+pub fn spawned_binding(child: &AgentPath, binding: &WorkspaceEntry) -> Result<VolumeRef, Error> {
+    if retains_shared(child, binding.volume()?) {
+        return Ok(binding.volume()?.clone());
     }
     Ok(spawned_volume(child, binding)?.0)
 }
@@ -168,9 +168,9 @@ fn retains_shared(child: &AgentPath, source: &VolumeRef) -> bool {
 /// The child's binding of `parent`'s volume `binding`, and how it comes to exist.
 fn plan(
     child: &AgentPath,
-    binding: &VolumeBinding,
-) -> Result<(VolumeBinding, Option<Planned>), Error> {
-    let source = &binding.volume;
+    binding: &WorkspaceEntry,
+) -> Result<(WorkspaceEntry, Option<Planned>), Error> {
+    let source = binding.volume()?;
     if retains_shared(child, source) {
         return Ok((binding.clone(), None));
     }
@@ -178,9 +178,9 @@ fn plan(
     let fork =
         binding.name != super::PRIVATE_VOLUME && source.class() != VolumeClass::SessionShared;
     Ok((
-        VolumeBinding {
-            name: binding.name.clone(),
-            volume: destination.clone(),
+        WorkspaceEntry {
+            source: crate::agent::WorkspaceSource::Volume(destination.clone()),
+            ..binding.clone()
         },
         Some(Planned {
             source: fork.then(|| source.clone()),
@@ -216,17 +216,17 @@ struct VolumeRequest {
 /// destination's path never changes the filesystem fork mechanism.
 pub(super) fn fork_bindings(
     child: &AgentPath,
-    source: &[VolumeBinding],
+    source: &[WorkspaceEntry],
     history: Option<&crate::agent::HistorySelection>,
-) -> Result<Vec<VolumeBinding>, Error> {
+) -> Result<Vec<WorkspaceEntry>, Error> {
     Ok(planned_bindings(child, source, history)?.0)
 }
 
 fn planned_bindings(
     child: &AgentPath,
-    source: &[VolumeBinding],
+    source: &[WorkspaceEntry],
     history: Option<&crate::agent::HistorySelection>,
-) -> Result<(Vec<VolumeBinding>, Vec<Planned>), Error> {
+) -> Result<(Vec<WorkspaceEntry>, Vec<Planned>), Error> {
     let mut bindings = Vec::with_capacity(source.len());
     let mut planned = Vec::new();
     for binding in source {
@@ -245,7 +245,7 @@ fn planned_bindings(
 fn children(
     parent: &AgentState,
     requested: &[Requested],
-) -> Result<(Vec<Vec<VolumeBinding>>, Vec<Planned>), Error> {
+) -> Result<(Vec<Vec<WorkspaceEntry>>, Vec<Planned>), Error> {
     let mut bindings = Vec::with_capacity(requested.len());
     let mut planned = Vec::new();
     for Requested { intent, history } in requested {
@@ -280,7 +280,7 @@ where
     fn release<'a>(
         &'a self,
         agent: &'a AgentPath,
-        bindings: &'a [VolumeBinding],
+        bindings: &'a [WorkspaceEntry],
     ) -> BoxProviderFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             if let Some(resources) = &self.cuts {

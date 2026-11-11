@@ -19,10 +19,11 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
             None,
         )?;
     host.create_volume(&volume).await?;
-    let volumes = vec![VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
-        volume: volume.clone(),
-    }];
+    let volumes = vec![WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        volume.clone(),
+    )];
     let issuer: RuntimeAuthority = AuthorityRoot::new(
         "waits",
         [202; 32],
@@ -196,10 +197,11 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
             forked_at: 0,
             conversation_tail: 0,
             checkpoint: None,
-            volumes: vec![VolumeBinding {
-                name: PRIVATE_VOLUME.into(),
+            volumes: vec![WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::Private,
+                PRIVATE_VOLUME.into(),
                 volume,
-            }],
+            )],
             brief: None,
             policy: None,
         },
@@ -373,10 +375,11 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
         VolumeOwner::Agent(owner),
         &mut None,
     )?;
-    let volumes = [VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
+    let volumes = [WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
         volume,
-    }];
+    )];
     let ceiling =
         acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
             .to_scope_label()
@@ -420,16 +423,17 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
     result?;
     let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
     assert!(!signatures.is_empty());
-    let foreign = [VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
-        volume: VolumeRef::new(
-            volumes[0].volume.provider().clone(),
+    let foreign = [WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        VolumeRef::new(
+            volumes[0].volume()?.provider().clone(),
             "private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(crate::AgentId::from_bytes([193; 16])),
             &mut None,
         )?,
-    }];
+    )];
     assert!(AdmittedAgent::verify(&issuer, &admission, &path, &foreign).is_err());
 
     // A valid private binding cannot authorize another agent's fresh volume.
@@ -438,9 +442,9 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
     let (result, signatures) = acyclic_test_support::differential::observe(
         || (),
         |()| -> Result<()> {
-            local.authorize_volume(&volumes[0].volume)?;
+            local.authorize_volume(volumes[0].volume()?)?;
             let error = local
-                .authorize_volume(&foreign[0].volume)
+                .authorize_volume(foreign[0].volume()?)
                 .expect_err("local root accepted a foreign fresh volume");
             assert!(
                 error
@@ -459,7 +463,7 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
     let read_only = root.bootstrap_scope(
         "read-only",
         &Capabilities::new([volumes[0]
-            .volume
+            .volume()?
             .capability(VolumeOperation::Read, &mut None)?]),
         Some(owner),
         &mut None,

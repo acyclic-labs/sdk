@@ -361,7 +361,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         context: Option<&'a ToolContext>,
     ) -> Result<(
         &'a crate::agent::AgentPath,
-        &'a [crate::agent::VolumeBinding],
+        &'a [crate::agent::WorkspaceEntry],
     )> {
         let (agent, volumes) = context.and_then(|context| context.agent()).ok_or_else(|| {
             Error::Unauthorized("device call has no original agent binding".into())

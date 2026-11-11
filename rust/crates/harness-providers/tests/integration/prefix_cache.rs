@@ -525,16 +525,17 @@ async fn run(
             &intent("root"),
             RootRequest {
                 agent: id.clone(),
-                fresh: vec![acyclic_harness::agent::VolumeBinding {
-                    name: PRIVATE_VOLUME.into(),
-                    volume: VolumeRef::new(
+                fresh: vec![acyclic_harness::agent::WorkspaceEntry::initial_volume(
+                    acyclic_harness_core::agent::WorkspaceRole::Private,
+                    PRIVATE_VOLUME.into(),
+                    VolumeRef::new(
                         provider.clone(),
                         "agent-private".into(),
                         VolumeClass::AgentPrivate,
                         VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes(id.to_bytes())),
                         &mut None,
                     )?,
-                }],
+                )],
                 retained: Vec::new(),
                 brief: None,
                 policy: None,
@@ -573,7 +574,7 @@ async fn run(
                 acyclic_harness::filesystem::FilesystemHost::new(filesystem, provider, None)?;
             let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
                 host,
-                &authority.private.volume,
+                authority.private.volume()?,
                 &authority.verifier,
                 &authority.scope,
                 acyclic_harness::conversation::MAX_EXACT_JS_INTEGER,

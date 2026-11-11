@@ -2,6 +2,19 @@ use super::*;
 use crate::agent::AgentId;
 use proptest::prelude::*;
 
+struct NoTurn;
+impl crate::agent::TurnDriver for NoTurn {
+    fn step<'a>(
+        &'a self,
+        _: &'a crate::agent::AgentState,
+        _: u64,
+        _: Option<crate::agent::Queued>,
+        _: acyclic_actors::guest::CancellationToken,
+    ) -> crate::agent::TurnFuture<'a> {
+        Box::pin(async { Err(Error::Record("workspace changes must not run the model")) })
+    }
+}
+
 fn entry(id: u8, name: String, root: String) -> WorkspaceEntry {
     WorkspaceEntry {
         id: EntryId::from_bytes([id; 16]),
@@ -41,7 +54,10 @@ proptest! {
     ) {
         let mut table = WorkspaceTable::new(Vec::new()).unwrap();
         let mut reference = Vec::<WorkspaceEntry>::new();
-        for (op, id, label) in operations {
+        let path = AgentPath::root(&AgentId::from_bytes([17; 16]));
+        let adopted = crate::agent::ForkAdopted { agent: path.id(), parent: None, profile: None, forked_at: 0, conversation_tail: 0, checkpoint: None, volumes: Vec::new(), brief: None, policy: None };
+        let mut state = crate::agent::AgentState::adopted(path.clone(), &adopted).unwrap();
+        for (sequence, (op, id, label)) in operations.into_iter().enumerate() {
             let source = entry(id, format!("w{label}"), String::new());
             let position = reference.iter().position(|prior| prior.id == source.id);
             let mut next = reference.clone();
@@ -59,7 +75,7 @@ proptest! {
                     (WorkspaceOp::Rename, next[index].clone(), true)
                 }
                 (3, Some(index)) => {
-                                        next[index].source = entry(id.wrapping_add(1), String::new(), String::new()).source;
+                    next[index].source = entry(id.wrapping_add(1), String::new(), String::new()).source;
                     next[index].root = [".git", ".system", ".volumes", ".acyclic-state"][usize::from(label % 4)].into();
                     (WorkspaceOp::Reroot, next[index].clone(), true)
                 }
@@ -73,7 +89,17 @@ proptest! {
             let bytes = serde_json::to_vec(&change).unwrap();
             let restored: WorkspaceChanged = serde_json::from_slice(&bytes).unwrap();
             prop_assert_eq!(table.apply(&restored).is_ok(), accepts);
-            if accepts { reference = next; }
+            if accepts {
+                reference = next;
+                let step = futures::executor::block_on(crate::agent::step(
+                    &NoTurn, &path, Some(state), (sequence as u64 + 2, 0),
+                    crate::agent::Wake::Inbox { sequence: sequence as u64 + 1, record: crate::agent::InboxRecord::WorkspaceChanged(Box::new(restored)) },
+                    acyclic_actors::guest::CancellationToken::new(),
+                )).unwrap();
+                let checkpoint = crate::agent::checkpoint::encode(&step.state).unwrap();
+                state = crate::agent::checkpoint::decode(&checkpoint).unwrap();
+                prop_assert_eq!(&state.volumes, &reference);
+            }
             prop_assert_eq!(table.entries(), reference.as_slice());
             let bytes = serde_json::to_vec(&table).unwrap();
             table = serde_json::from_slice(&bytes).unwrap();
@@ -108,6 +134,16 @@ fn role_entries_are_stable_and_primary_is_the_first_user() {
     tree.mode = WorkspaceMode::ReadOnly;
     tree.inherit = WorkspaceInherit::Own;
     let mut table = WorkspaceTable::new(vec![tree.clone(), first.clone(), second.clone()]).unwrap();
+    let mut home = entry(4, "other-label".into(), String::new());
+    home.role = WorkspaceRole::Home;
+    home.inherit = WorkspaceInherit::Own;
+    table
+        .apply(&WorkspaceChanged {
+            version: 1,
+            op: WorkspaceOp::Add,
+            entry: home.clone(),
+        })
+        .unwrap();
     assert_eq!(table.primary(), Some(&first));
     for op in [
         WorkspaceOp::Remove,
@@ -134,6 +170,37 @@ fn role_entries_are_stable_and_primary_is_the_first_user() {
         })
         .unwrap();
     assert_eq!(table.primary(), Some(&second));
+    table
+        .apply(&WorkspaceChanged {
+            version: 1,
+            op: WorkspaceOp::Remove,
+            entry: second,
+        })
+        .unwrap();
+    assert_eq!(table.primary(), Some(&home));
+    let mut rebound = tree.clone();
+    rebound.id = EntryId::from_bytes([5; 16]);
+    rebound.source = WorkspaceSource::Subtree(AgentPath::root(&AgentId::from_bytes([11; 16])));
+    table
+        .apply(&WorkspaceChanged {
+            version: 1,
+            op: WorkspaceOp::Rebind { previous: tree.id },
+            entry: rebound.clone(),
+        })
+        .unwrap();
+    let before = table.clone();
+    assert!(
+        table
+            .apply(&WorkspaceChanged {
+                version: 1,
+                op: WorkspaceOp::Rebind {
+                    previous: rebound.id
+                },
+                entry: rebound
+            })
+            .is_err()
+    );
+    assert_eq!(table, before);
     tree.mode = WorkspaceMode::ReadWrite;
     assert!(tree.check().is_err());
 }

@@ -45,7 +45,7 @@ impl<A, O> FilesystemTurnGoal<A, O> {
         else {
             return Ok(None);
         };
-        let volume = &binding.volume;
+        let volume = binding.volume()?;
         Ok(Some(Self {
             host: Arc::clone(host),
             read: ContentGrant::verify_directory_read(verifier, scope, volume, "", &mut None)?,

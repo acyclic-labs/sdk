@@ -18,7 +18,7 @@ use crate::{
     OperationId,
     agent::{
         AgentHandler, AgentHost, AgentId, AgentPath, Delivered, Error, ExecutorDriver, ForkAdopted,
-        IntentId, Sender, Spawn, VolumeBinding,
+        IntentId, Sender, Spawn, WorkspaceEntry,
     },
     approvals::ApprovalResponder,
     conversation::{ContentAccess, ContentPublisher, FileRef},
@@ -78,9 +78,9 @@ pub struct RootRequest {
     pub agent: AgentId,
     /// Volumes created, empty, in the root's own commit; the agent's private
     /// volume is one of them.
-    pub fresh: Vec<VolumeBinding>,
+    pub fresh: Vec<WorkspaceEntry>,
     /// Existing volumes the root binds as they are.
-    pub retained: Vec<VolumeBinding>,
+    pub retained: Vec<WorkspaceEntry>,
     /// Task brief, already staged, if any.
     pub brief: Option<FileRef>,
     /// Approval policy file, if any.
@@ -540,7 +540,7 @@ where
             .client_observation(
                 &authority,
                 &state.path,
-                &authority.private.volume,
+                authority.private.volume()?,
                 clock,
                 Some(calls),
                 directory,
@@ -563,7 +563,7 @@ where
             .find(|binding| binding.name == super::PRIVATE_VOLUME)
             .ok_or(Error::Record("agent has no private volume"))?;
         self.volumes
-            .tool_resource(&private.volume)
+            .tool_resource(private.volume()?)
             .await
             .map_err(turn)
     }
@@ -759,7 +759,7 @@ where
         )
         .await
         .map_err(turn)?;
-        if at.is_some_and(|file| file.volume() != &authority.private.volume)
+        if at.is_some_and(|file| Some(file.volume()) != authority.private.as_volume())
             || (path.starts_with(super::InternalContentClass::ToolResult.prefix()) && at.is_none())
         {
             return Err(Error::Record(
@@ -773,7 +773,7 @@ where
         let grant = super::ContentGrant::verify_directory_read(
             &authority.verifier,
             &authority.scope,
-            &authority.private.volume,
+            authority.private.volume()?,
             super::TOOL_OUTPUT,
             &mut None,
         )
@@ -781,7 +781,7 @@ where
         let (bytes, _selection, length) = self
             .volumes
             .read_private_range(
-                &authority.private.volume,
+                authority.private.volume()?,
                 &grant,
                 path,
                 generation.as_ref(),
@@ -859,7 +859,7 @@ where
         let grant = super::ContentGrant::verify(
             &authority.verifier,
             &authority.scope,
-            &authority.private.volume,
+            authority.private.volume()?,
             crate::conversation::VolumeOperation::Read,
             u64::MAX,
             &mut None,
@@ -873,7 +873,7 @@ where
         let (file, bytes) = self
             .volumes
             .read_internal_range(
-                &authority.private.volume,
+                authority.private.volume()?,
                 &grant,
                 &path,
                 super::InternalContentClass::Interaction,
@@ -1133,7 +1133,7 @@ where
         let path = || format!("inputs/{operation}-{}.{extension}", blake3::hash(source));
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&self.volumes),
-            &authority.private.volume,
+            authority.private.volume()?,
             &authority.verifier,
             &authority.scope,
             self.maximum_bytes,
@@ -1181,7 +1181,7 @@ where
 
     /// Revalidates an existing agent's admission against its committed volume
     /// bindings, before restoring a platform-owned route. Performs no IO.
-    pub fn admit_agent(&self, agent: &AgentPath, volumes: &[VolumeBinding]) -> Result<(), Error> {
+    pub fn admit_agent(&self, agent: &AgentPath, volumes: &[WorkspaceEntry]) -> Result<(), Error> {
         super::agent_turns::AdmittedAgent::verify(&self.issuer, &self.admission, agent, volumes)
             .map_err(turn)?;
         Ok(())
@@ -1206,7 +1206,9 @@ where
         )
         .map_err(turn)?;
         for binding in &request.fresh {
-            authority.authorize_volume(&binding.volume).map_err(turn)?;
+            authority
+                .authorize_volume(binding.volume()?)
+                .map_err(turn)?;
         }
         Ok(())
     }
@@ -1262,7 +1264,7 @@ where
             brief,
             policy,
         } = request;
-        let volumes: Vec<VolumeBinding> = fresh.iter().chain(&retained).cloned().collect();
+        let volumes: Vec<WorkspaceEntry> = fresh.iter().chain(&retained).cloned().collect();
         let Spawn { child, mut request } = self.agents.prepare_root(
             intent,
             ForkAdopted {
@@ -1286,7 +1288,7 @@ where
         for binding in &fresh {
             let (name, operation) = self
                 .volumes
-                .volume_creation(&binding.volume)
+                .volume_creation(binding.volume()?)
                 .map_err(turn)?;
             creations.push(CreateSpec {
                 name: WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &cancellation)

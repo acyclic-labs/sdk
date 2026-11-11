@@ -1,6 +1,6 @@
 //! Spawned volumes: each child's volumes, created in the parent step's one commit.
 
-use super::{AgentPath, AgentState, Error, Out, VolumeBinding};
+use super::{AgentPath, AgentState, Error, Out, WorkspaceEntry};
 use acyclic_actors::guest::{Composer, Participant};
 
 /// Binds the volumes of every child a step spawns and joins their creation to
@@ -20,6 +20,6 @@ pub trait SpawnVolumes: Composer {
     fn release<'a>(
         &'a self,
         agent: &'a AgentPath,
-        bindings: &'a [VolumeBinding],
+        bindings: &'a [WorkspaceEntry],
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<(), Error>>;
 }

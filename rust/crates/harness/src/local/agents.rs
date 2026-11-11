@@ -6,7 +6,7 @@
 use super::{LocalHarness, LocalStream, storage};
 use crate::{
     Error, OperationId, Result,
-    agent::{AgentHost, AgentPath, AgentState, IntentId, VolumeBinding},
+    agent::{AgentHost, AgentPath, AgentState, IntentId, WorkspaceEntry},
     conversation::{ContentAccess, ContentPublisher},
     executor::{Executor, StockExecutor},
     filesystem::{
@@ -165,14 +165,14 @@ impl crate::hosting::Platform for LocalUser {
             let operation = crate::filesystem::spawned_operation(agent, &project.name);
             let base = local
                 .files
-                .creation_generation(&project.volume, operation)
+                .creation_generation(project.volume()?, operation)
                 .await?
                 .ok_or_else(|| {
                     Error::Unsupported("selected project has no fork creation receipt".into())
                 })?;
             let reference = crate::filesystem::workspace_ref(
-                project.volume.provider().clone(),
-                &project.volume.storage_name(&mut None)?,
+                project.volume()?.provider().clone(),
+                project.volume()?.storage_name(&mut None)?,
             )?;
             let current = local.files.resolve(&reference, None).await?.generation;
             let reader = local
@@ -185,7 +185,7 @@ impl crate::hosting::Platform for LocalUser {
                 .await
                 .map_err(storage)?;
             self.diffs
-                .page(&*reader, &project.volume, (&base, &current), page)
+                .page(&*reader, project.volume()?, (&base, &current), page)
                 .await
         })
     }
@@ -321,7 +321,8 @@ impl LocalHarness {
                 .volumes
                 .iter()
                 .find(|binding| binding.name == "project")
-                .map(|binding| binding.volume.clone())
+                .and_then(|binding| binding.as_volume())
+                .cloned()
                 .ok_or_else(|| Error::Invalid("agent has no project volume".into()))
         };
         let child_project = project(agent)?;
@@ -477,14 +478,14 @@ impl LocalHarness {
         workspace: &Arc<super::workspace::LocalWorkspace>,
         agent: &AgentPath,
         project: &crate::conversation::VolumeRef,
-        bindings: &[VolumeBinding],
+        bindings: &[WorkspaceEntry],
         scope: &crate::core::Scope,
         verifier: &crate::core::AuthorityVerifier,
     ) -> Result<Arc<super::workspace::LocalWorkspace>> {
         if project == &self.project
             && self.session_bindings().iter().all(|expected| {
                 bindings.iter().any(|binding| {
-                    binding.name == expected.name && binding.volume == expected.volume
+                    binding.name == expected.name && binding.source == expected.source
                 })
             })
         {
@@ -504,15 +505,22 @@ impl LocalHarness {
 
     /// Retained session volumes are the same for model and native-host roots;
     /// each root binds its own private journal separately.
-    pub(super) fn session_bindings(&self) -> [VolumeBinding; 3] {
+    pub(super) fn session_bindings(&self) -> [WorkspaceEntry; 3] {
         [
-            ("project", &self.project),
-            (HOME_VOLUME, &self.scratch),
-            (super::SHARED_VOLUME, &self.shared),
+            (crate::agent::WorkspaceRole::User, "project", &self.project),
+            (
+                crate::agent::WorkspaceRole::Home,
+                HOME_VOLUME,
+                &self.scratch,
+            ),
+            (
+                crate::agent::WorkspaceRole::Shared,
+                super::SHARED_VOLUME,
+                &self.shared,
+            ),
         ]
-        .map(|(name, volume)| VolumeBinding {
-            name: name.to_owned(),
-            volume: volume.clone(),
+        .map(|(role, name, volume)| {
+            WorkspaceEntry::initial_volume(role, name.to_owned(), volume.clone())
         })
     }
 
@@ -529,13 +537,13 @@ impl LocalHarness {
                 .volumes
                 .iter()
                 .find(|binding| binding.name == "project")
-                .map(|binding| &binding.volume)
+                .and_then(|binding| binding.as_volume())
                 .ok_or_else(|| Error::Invalid("agent has no project volume".into()))?;
             let scratch = agent
                 .volumes
                 .iter()
                 .find(|binding| binding.name == HOME_VOLUME)
-                .map(|binding| &binding.volume)
+                .and_then(|binding| binding.as_volume())
                 .ok_or_else(|| Error::Invalid("agent has no home volume".into()))?;
             let verifier = authority.issuer.verifier(&mut None)?;
             #[cfg(any(test, feature = "native-execution"))]
@@ -543,7 +551,7 @@ impl LocalHarness {
                 .volumes
                 .iter()
                 .find(|binding| binding.name == PRIVATE_VOLUME)
-                .map(|binding| &binding.volume)
+                .and_then(|binding| binding.as_volume())
                 .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
             let context = super::context::Binding {
                 project,
@@ -561,7 +569,8 @@ impl LocalHarness {
             if project == &self.project
                 && scratch == &self.scratch
                 && agent.volumes.iter().any(|binding| {
-                    binding.name == super::SHARED_VOLUME && binding.volume == self.shared
+                    binding.name == super::SHARED_VOLUME
+                        && binding.as_volume() == Some(&self.shared)
                 })
             {
                 return Ok(TurnBindings {
@@ -770,11 +779,9 @@ impl LocalHarness {
     }
 
     pub(super) fn require_shared_binding(&self, state: &AgentState) -> Result<()> {
-        if state
-            .volumes
-            .iter()
-            .any(|binding| binding.name == super::SHARED_VOLUME && binding.volume == self.shared)
-        {
+        if state.volumes.iter().any(|binding| {
+            binding.name == super::SHARED_VOLUME && binding.as_volume() == Some(&self.shared)
+        }) {
             return Ok(());
         }
         Err(Error::Unsupported(
@@ -922,10 +929,11 @@ impl LocalHarness {
                 let request = RootRequest {
                     agent: id,
                     fresh: Vec::new(),
-                    retained: std::iter::once(VolumeBinding {
-                        name: PRIVATE_VOLUME.to_owned(),
-                        volume: self.journal.clone(),
-                    })
+                    retained: std::iter::once(WorkspaceEntry::initial_volume(
+                        crate::agent::WorkspaceRole::Private,
+                        PRIVATE_VOLUME.to_owned(),
+                        self.journal.clone(),
+                    ))
                     .chain(self.session_bindings())
                     .collect(),
                     brief: None,

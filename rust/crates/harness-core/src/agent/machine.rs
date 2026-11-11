@@ -12,7 +12,7 @@ pub use super::input::{Progress, Queued, TurnInput};
 use super::input::{awaits, input};
 use super::{
     AgentOutcome, AgentPath, ChildDone, ChildSettled, ChildSettlement, ChildWakes, Error,
-    ForkAdopted, InboxRecord, IntentId, Phase, StatusRecord, VolumeBinding,
+    ForkAdopted, InboxRecord, IntentId, Phase, StatusRecord, WorkspaceEntry,
     kernel::{self, Admit, Control, Mode, Pick},
 };
 use crate::conversation::FileRef;
@@ -87,7 +87,7 @@ pub struct AgentState {
     /// Role profile pinned at adoption.
     pub profile: Option<super::CreationConfig>,
     /// Owned volumes.
-    pub volumes: Vec<VolumeBinding>,
+    pub volumes: Vec<WorkspaceEntry>,
     /// Approval policy file.
     pub policy: Option<FileRef>,
     /// Identity digest of the brief its adoption named: on a spawned agent,
@@ -239,6 +239,7 @@ impl AgentState {
     /// # Errors
     /// When the adoption's brief has no identity digest.
     pub fn adopted(path: AgentPath, adopted: &ForkAdopted) -> Result<Self, Error> {
+        super::records::check_volumes(adopted.volumes.iter())?;
         let brief = adopted
             .brief
             .as_ref()
@@ -463,7 +464,7 @@ pub enum Out {
         /// for a host-requested spawn.
         profile: Option<super::CreationConfig>,
         /// Volumes bound to the child (filled by the filesystem contribution).
-        volumes: Vec<VolumeBinding>,
+        volumes: Vec<WorkspaceEntry>,
         /// Optional retained conversation cut selected by the caller.
         history: Option<super::HistorySelection>,
     },
@@ -712,13 +713,21 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     let alarm_wake = matches!(wake, Wake::Alarm);
     // Consuming a non-waking stream event never advances the model driver,
     // including when another turn is currently paused or executing.
-    let quiet_notice = matches!(
+    let workspace_change = matches!(
         &wake,
         Wake::Inbox {
-            record: InboxRecord::Notice { notice, .. },
+            record: InboxRecord::WorkspaceChanged(_),
             ..
-        } if !notice.wakes()
+        }
     );
+    let quiet_notice = workspace_change
+        || matches!(
+            &wake,
+            Wake::Inbox {
+                record: InboxRecord::Notice { notice, .. },
+                ..
+            } if !notice.wakes()
+        );
     // A requested spawn's step carries only that spawn: its child is created
     // by this step's commit, so no turn may reach it until the commit lands.
     // Pending turn work continues at once on the next step (the kernel's
@@ -1130,6 +1139,9 @@ async fn admit(
         }
     }
     match &record {
+        InboxRecord::WorkspaceChanged(change) if !state.closed => {
+            super::workspaces::WorkspaceTable::apply_entries(&mut state.volumes, change)?;
+        }
         InboxRecord::Awaited => state.awaited = true,
         InboxRecord::ChildDone(ChildDone { child, .. })
         | InboxRecord::ChildSettled(ChildSettled { child }) => {
@@ -1197,7 +1209,9 @@ fn admissible(out: &Out) -> bool {
         Out::Send { record, .. } => {
             !matches!(
                 record,
-                InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
+                InboxRecord::ForkAdopted(_)
+                    | InboxRecord::Archive(_)
+                    | InboxRecord::WorkspaceChanged(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
         Out::Archive { .. }

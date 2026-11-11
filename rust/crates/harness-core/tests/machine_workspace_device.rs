@@ -502,10 +502,11 @@ async fn committed_handover(refused_close: bool) -> Result {
                 )?
                 .for_agent(
                     agent.clone(),
-                    vec![acyclic_harness_core::agent::VolumeBinding {
-                        name: "project".into(),
-                        volume: workspace.selected_volume().clone(),
-                    }],
+                    vec![acyclic_harness_core::agent::WorkspaceEntry::initial_volume(
+                        crate::agent::WorkspaceRole::User,
+                        "project".into(),
+                        workspace.selected_volume().clone(),
+                    )],
                 ),
         );
         let oversized = acyclic_harness_core::tool::ToolInvocation {

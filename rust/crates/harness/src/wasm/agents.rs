@@ -8,7 +8,7 @@ use crate::{
     Error, OperationId, Result,
     agent::{
         AGENTS, AgentHandler, AgentHost, AgentId, AgentPath, Control, Delivered, ExecutorDriver,
-        ForkAdopted, InboxRecord, IntentId, Message, Sender, VolumeBinding,
+        ForkAdopted, InboxRecord, IntentId, Message, Sender, WorkspaceEntry,
     },
     context::CompactionPolicy,
     conversation::{
@@ -656,10 +656,11 @@ impl WasmAgents {
                     forked_at: 0,
                     conversation_tail: 0,
                     checkpoint: None,
-                    volumes: vec![VolumeBinding {
-                        name: PRIVATE_VOLUME.to_owned(),
+                    volumes: vec![WorkspaceEntry::initial_volume(
+                        crate::agent::WorkspaceRole::Private,
+                        PRIVATE_VOLUME.to_owned(),
                         volume,
-                    }],
+                    )],
                     brief,
                     policy: None,
                 },
@@ -909,7 +910,7 @@ impl WasmAgents {
             .volumes
             .into_iter()
             .find(|binding| binding.name == PRIVATE_VOLUME)
-            .map(|binding| binding.volume)
+            .and_then(|binding| binding.as_volume().cloned())
             .ok_or_else(|| js_error(Error::Invalid("agent has no private volume".into())))
     }
 
@@ -917,7 +918,7 @@ impl WasmAgents {
     async fn authority(
         &self,
         agent: &AgentPath,
-        volumes: &[VolumeBinding],
+        volumes: &[WorkspaceEntry],
     ) -> std::result::Result<(RuntimeAuthority, crate::core::Scope), JsValue> {
         let authority = agent_authority(&self.issuer, &self.admission, agent, volumes, &[])
             .await
@@ -943,10 +944,11 @@ impl WasmAgents {
                 intent.as_bytes(),
             ],
         ));
-        let binding = VolumeBinding {
-            name: PRIVATE_VOLUME.into(),
-            volume: volume.clone(),
-        };
+        let binding = WorkspaceEntry::initial_volume(
+            crate::agent::WorkspaceRole::Private,
+            PRIVATE_VOLUME.into(),
+            volume.clone(),
+        );
         let (issuer, scope) = self
             .authority(agent, std::slice::from_ref(&binding))
             .await?;

@@ -60,7 +60,7 @@ fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) {
             );
         }
     }
-    for version in (0..=records::RECORD_VERSION + 1).chain(std::iter::once(u32::MAX)) {
+    for version in (0..=records::RECORD_VERSION + 1).chain([24, u32::MAX]) {
         let mut changed = encoded.clone();
         changed[..4].copy_from_slice(&version.to_be_bytes());
         if version != records::RECORD_VERSION {
@@ -284,11 +284,14 @@ fn history(bytes: &[u8]) {
             .checkpoint
             .is_none_or(|cut| cut < value.context.tail)
     );
-    assert!(value.volumes.len() <= records::MAX_VOLUMES);
     let mut names = std::collections::BTreeSet::new();
     for saved in &value.volumes {
         assert_eq!(
-            saved.binding.volume.class(),
+            saved
+                .binding
+                .as_volume()
+                .expect("saved volume source")
+                .class(),
             crate::conversation::VolumeClass::Project
         );
         assert!(names.insert(&saved.binding.name));
@@ -338,7 +341,7 @@ fn history(bytes: &[u8]) {
             assert!(HistoryCheckpoint::decode(&encode(&invalid)).is_err());
         }
         let mut wrong_class = serde_json::to_value(&value).unwrap();
-        wrong_class["volumes"][0]["binding"]["volume"]["class"] = "session_shared".into();
+        wrong_class["volumes"][0]["binding"]["source"]["volume"]["class"] = "session_shared".into();
         assert!(HistoryCheckpoint::decode(&serde_json::to_vec(&wrong_class).unwrap()).is_err());
     }
     let mut unknown = serde_json::to_value(&value).unwrap();
@@ -496,10 +499,11 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 mode,
                 expected: if mode.files() {
                     vec![super::HistoryVolume {
-                        binding: super::VolumeBinding {
-                            name: "project".into(),
-                            volume: volume.clone(),
-                        },
+                        binding: super::WorkspaceEntry::initial_volume(
+                            crate::agent::WorkspaceRole::User,
+                            "project".into(),
+                            volume.clone(),
+                        ),
                         generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
                             kind: acyclic_fs::ObjectKind::GenerationRoot,
                             digest: acyclic_fs::Digest::from_bytes([23; 32]),
@@ -682,11 +686,12 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         ] {
             seeds.push((
                 name,
-                serde_json::to_vec(&super::WorkspaceChanged {
+                InboxRecord::WorkspaceChanged(Box::new(super::WorkspaceChanged {
                     version: 1,
                     op,
                     entry: entry.clone(),
-                })?,
+                }))
+                .encode()?,
             ));
         }
         // Captured from the real canonical payload writer, before inbox frame
@@ -736,7 +741,7 @@ fn roster_seeds() -> Result<[(&'static str, Vec<u8>); 2], Box<dyn std::error::Er
 /// History uses the same typed JSON writer as filesystem::history. These seeds
 /// qualify descriptor syntax, not the existence or authority of retained roots.
 pub fn history_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
-    use super::{ContextCut, SavedVolume, VolumeBinding};
+    use super::{ContextCut, SavedVolume, WorkspaceEntry};
     use crate::conversation::{VolumeClass, VolumeOwner, VolumeRef};
     let mut checkpoint = HistoryCheckpoint {
         version: 2,
@@ -755,11 +760,12 @@ pub fn history_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::erro
     checkpoint.checkpoint = Some(u64::MAX - 1);
     checkpoint.context.tail = u64::MAX;
     checkpoint.context.checkpoint = Some(u64::MAX - 1);
-    for index in 0..records::MAX_VOLUMES {
+    for index in 0..8 {
         checkpoint.volumes.push(SavedVolume {
-            binding: VolumeBinding {
-                name: format!("project-{index}"),
-                volume: VolumeRef::new(
+            binding: WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::User,
+                format!("project-{index}"),
+                VolumeRef::new(
                     crate::resources::ProviderRef::new(
                         "agents".into(),
                         "filesystem".into(),
@@ -771,7 +777,7 @@ pub fn history_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::erro
                     VolumeOwner::Project("owner".into()),
                     &mut None,
                 )?,
-            },
+            ),
             generation: acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([1; 32])),
             retained_workspace: format!("retained-{index}"),
             retained_generation: acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(

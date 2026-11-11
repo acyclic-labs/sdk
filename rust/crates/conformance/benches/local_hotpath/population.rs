@@ -6,7 +6,7 @@ use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Sys
 use acyclic_fs::{EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore};
 use acyclic_harness_core::{
     OperationId,
-    agent::{AgentId, AgentPath, AgentState, IntentId, VolumeBinding},
+    agent::{AgentId, AgentPath, AgentState, IntentId, WorkspaceEntry},
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityRoot},
     executor::Executor,
@@ -88,17 +88,18 @@ impl Fixture {
         })
     }
 
-    pub(super) fn volume(&self, agent: &AgentId) -> Result<VolumeBinding> {
-        Ok(VolumeBinding {
-            name: PRIVATE_VOLUME.into(),
-            volume: VolumeRef::new(
+    pub(super) fn volume(&self, agent: &AgentId) -> Result<WorkspaceEntry> {
+        Ok(WorkspaceEntry::initial_volume(
+            acyclic_harness_core::agent::WorkspaceRole::Private,
+            PRIVATE_VOLUME.into(),
+            VolumeRef::new(
                 self.provider.clone(),
                 format!("private-{agent}"),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(agent.to_bytes())),
                 &mut None,
             )?,
-        })
+        ))
     }
 
     pub(super) async fn open(

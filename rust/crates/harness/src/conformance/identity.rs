@@ -224,11 +224,11 @@ async fn check(
     let grants = Capabilities::new([
         fixture
             .binding
-            .volume
+            .volume()?
             .capability(VolumeOperation::Read, &mut None)?,
         fixture
             .binding
-            .volume
+            .volume()?
             .capability(VolumeOperation::Write, &mut None)?,
     ]);
     let parent = root.bootstrap_scope(

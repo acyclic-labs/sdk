@@ -51,7 +51,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         let mut volumes = BTreeMap::new();
         for binding in &agent.volumes {
             if volumes
-                .insert(binding.name.clone(), binding.volume.clone())
+                .insert(binding.name.clone(), binding.volume()?.clone())
                 .is_some()
             {
                 return Err(Error::Invalid("duplicate filesystem volume binding".into()));

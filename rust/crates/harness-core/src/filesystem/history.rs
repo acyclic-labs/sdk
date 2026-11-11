@@ -115,12 +115,12 @@ where
     };
     let mut volumes = Vec::new();
     for binding in &parent.volumes {
-        if binding.volume.class() != VolumeClass::Project {
+        if binding.volume()?.class() != VolumeClass::Project {
             continue;
         }
         let workspace = fs
             .open_workspace(
-                binding.volume.storage_name(&mut None).map_err(guest)?,
+                binding.volume()?.storage_name(&mut None).map_err(guest)?,
                 WorkBudget::UNBOUNDED,
                 &cancel,
             )
@@ -339,7 +339,7 @@ where
             let retained_workspace = destination.as_str().to_owned();
             if let Some(cuts) = cuts {
                 cuts.cut(
-                    &binding.volume.storage_name(&mut None).map_err(guest)?,
+                    binding.volume()?.storage_name(&mut None).map_err(guest)?,
                     &retained_workspace,
                     acyclic_fs::OperationId::from_bytes(key),
                     Some(head.id()),

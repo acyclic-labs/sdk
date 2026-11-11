@@ -151,10 +151,11 @@ pub async fn open<B: Backend + ?Sized>(
         Placement {
             filesystem: Fs::new(StreamAuthorityStore::new(stream), objects, capabilities),
             provider: crate::conformance::roots::volume(
+                acyclic_harness_core::agent::WorkspaceRole::Private,
                 PRIVATE_VOLUME,
                 crate::conformance::fixtures::adopted().agent,
             )?
-            .volume
+            .volume()?
             .provider()
             .clone(),
             within: ActorReference::new(b"account", b"agents", b"host")?,
@@ -179,6 +180,7 @@ pub async fn open<B: Backend + ?Sized>(
         RootRequest {
             agent: crate::conformance::fixtures::adopted().agent,
             fresh: vec![crate::conformance::roots::volume(
+                acyclic_harness_core::agent::WorkspaceRole::Private,
                 PRIVATE_VOLUME,
                 crate::conformance::fixtures::adopted().agent,
             )?],
