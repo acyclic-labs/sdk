@@ -30,3 +30,6 @@ mod subtree;
 
 #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
 mod durable;
+
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+mod publication_failure;

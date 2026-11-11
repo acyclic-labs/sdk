@@ -1,0 +1,148 @@
+diff --git a/rust/crates/stream/src/memory/append.rs b/rust/crates/stream/src/memory/append.rs
+index 217d930ce29..54e6b44bf65 100644
+--- a/rust/crates/stream/src/memory/append.rs
++++ b/rust/crates/stream/src/memory/append.rs
+@@ -104,7 +104,7 @@ impl MemoryStream {
+                 let _holds = (_histories, _paths);
+                 let time = bind_acceptance(&mut namespace, &mut envelope, state, at_millis)?;
+                 let retained = self.install_retained(state, retained)?;
+-                install_namespace(state, namespace, &envelope)?;
++                let previous = install_namespace(state, namespace, &envelope);
+                 state.decision = decision;
+                 state.last_committed_at_micros = time;
+                 retain(
+@@ -116,6 +116,7 @@ impl MemoryStream {
+                     IdempotencyOutcome::Append(outcome.clone()),
+                     (allocation, retained),
+                 );
++                notify_committed(state, &previous, commit_id)?;
+                 Ok((outcome, Default::default()))
+             },
+         })
+diff --git a/rust/crates/stream/src/memory/commit.rs b/rust/crates/stream/src/memory/commit.rs
+index 7419b24f0d8..84f328c54f8 100644
+--- a/rust/crates/stream/src/memory/commit.rs
++++ b/rust/crates/stream/src/memory/commit.rs
+@@ -76,7 +76,8 @@ impl CommitPublication {
+         time: u64,
+         retained: RetainedFactRef,
+     ) -> Result<(CommitOutcome, Allocation), StreamError> {
+-        install_namespace(state, self.namespace, &self.envelope)?;
++        let commit_id = self.envelope.commit_id;
++        let previous = install_namespace(state, self.namespace, &self.envelope);
+         state.decision += 1;
+         state.last_committed_at_micros = time;
+         retain(
+@@ -88,6 +89,7 @@ impl CommitPublication {
+             IdempotencyOutcome::Commit(self.envelope),
+             (self.resident, retained),
+         );
++        notify_committed(state, &previous, commit_id)?;
+         Ok((self.result, self.output_claim))
+     }
+ }
+@@ -875,16 +877,40 @@ fn stage_namespace(
+     Ok(next)
+ }
+ 
++// Namespace and counters install without a fallible notification lookup. The
++// caller retains the terminal retry result under the same state guard before
++// delivering any notification, so notification failure cannot spend the write
++// without retaining its identity.
+ fn install_namespace(
+     state: &mut State,
+     next: Namespace,
+     envelope: &CommittedEnvelope,
+-) -> Result<(), StreamError> {
++) -> Namespace {
+     if next.len() != state.paths.len() {
+         state.hierarchy_version = envelope.commit_id;
+     }
+     state.path_bytes = next.bytes();
+-    let previous = std::mem::replace(&mut state.paths, next);
++    for fact in &envelope.mutations {
++        state.record_count += fact_records(fact).len();
++        state.payload_bytes += fact_records(fact)
++            .iter()
++            .map(|record| record.payload_bytes())
++            .sum::<usize>();
++    }
++    std::mem::replace(&mut state.paths, next)
++}
++
++fn notify_committed(
++    state: &State,
++    previous: &Namespace,
++    commit_id: CommitId,
++) -> Result<(), StreamError> {
++    let envelope = state
++        .retained
++        .last()
++        .and_then(|entry| entry.envelope())
++        .filter(|envelope| envelope.commit_id == commit_id)
++        .ok_or(StreamError::InvalidResponse)?;
+     // Only missing subscriptions beneath a published destination can be
+     // created. Range over subscribers, never over the inherited subtree.
+     for fact in &envelope.mutations {
+@@ -936,11 +962,6 @@ fn install_namespace(
+             signals.changed.send_replace(tail);
+             crate::follow_index::FollowIndex::publish(&signals.follows, fact_records(fact), tail);
+         }
+-        state.record_count += fact_records(fact).len();
+-        state.payload_bytes += fact_records(fact)
+-            .iter()
+-            .map(|record| record.payload_bytes())
+-            .sum::<usize>();
+     }
+     Ok(())
+ }
+diff --git a/rust/crates/stream/src/memory/decision.rs b/rust/crates/stream/src/memory/decision.rs
+index d02c19055eb..bde51c79462 100644
+--- a/rust/crates/stream/src/memory/decision.rs
++++ b/rust/crates/stream/src/memory/decision.rs
+@@ -25,9 +25,9 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
+         match self {
+             Self::Returned(result) => Ok(result),
+             Self::Accepted { bytes, install } => {
+-                let result = core.publish(bytes, || install(state, durable, at_millis))?;
++                let result = core.publish(bytes, || install(state, durable, at_millis));
+                 core.applied(state);
+-                Ok(result)
++                result
+             }
+         }
+     }
+diff --git a/rust/crates/stream/src/memory/fork.rs b/rust/crates/stream/src/memory/fork.rs
+index fa4c216db2f..b33ac315965 100644
+--- a/rust/crates/stream/src/memory/fork.rs
++++ b/rust/crates/stream/src/memory/fork.rs
+@@ -67,7 +67,7 @@ impl MemoryStream {
+                 let _holds = (_histories, _paths);
+                 let time = bind_acceptance(&mut namespace, &mut envelope, state, at_millis)?;
+                 let retained = self.install_retained(state, retained)?;
+-                install_namespace(state, namespace, &envelope)?;
++                let previous = install_namespace(state, namespace, &envelope);
+                 state.decision = decision;
+                 state.last_committed_at_micros = time;
+                 retain(
+@@ -79,6 +79,7 @@ impl MemoryStream {
+                     IdempotencyOutcome::Fork(receipt.clone()),
+                     (Default::default(), retained),
+                 );
++                notify_committed(state, &previous, commit_id)?;
+                 Ok(receipt)
+             },
+         })
+diff --git a/rust/crates/stream/src/memory/snapshot/mod.rs b/rust/crates/stream/src/memory/snapshot/mod.rs
+index a4fc2f0f926..87e4813797a 100644
+--- a/rust/crates/stream/src/memory/snapshot/mod.rs
++++ b/rust/crates/stream/src/memory/snapshot/mod.rs
+@@ -358,7 +358,7 @@ fn reconstruct(
+             &mut super::NamespaceBuilder::new(&|_| Ok(None)),
+         )
+         .ok()?;
+-        install_namespace(&mut state, namespace, envelope).ok()?;
++        install_namespace(&mut state, namespace, envelope);
+         state.decision = state.decision.checked_add(1)?;
+         state.last_committed_at_micros = envelope.committed_at_micros;
+     }

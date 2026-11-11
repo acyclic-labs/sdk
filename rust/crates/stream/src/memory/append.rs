@@ -104,7 +104,7 @@ impl MemoryStream {
                 let _holds = (_histories, _paths);
                 let time = bind_acceptance(&mut namespace, &mut envelope, state, at_millis)?;
                 let retained = self.install_retained(state, retained)?;
-                install_namespace(state, namespace, &envelope)?;
+                let previous = install_namespace(state, namespace, &envelope);
                 state.decision = decision;
                 state.last_committed_at_micros = time;
                 retain(
@@ -116,6 +116,7 @@ impl MemoryStream {
                     IdempotencyOutcome::Append(outcome.clone()),
                     (allocation, retained),
                 );
+                notify_committed(state, &previous, commit_id)?;
                 Ok((outcome, Default::default()))
             },
         })

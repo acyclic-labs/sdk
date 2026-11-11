@@ -358,7 +358,7 @@ fn reconstruct(
             &mut super::NamespaceBuilder::new(&|_| Ok(None)),
         )
         .ok()?;
-        install_namespace(&mut state, namespace, envelope).ok()?;
+        install_namespace(&mut state, namespace, envelope);
         state.decision = state.decision.checked_add(1)?;
         state.last_committed_at_micros = envelope.committed_at_micros;
     }

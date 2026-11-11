@@ -76,7 +76,8 @@ impl CommitPublication {
         time: u64,
         retained: RetainedFactRef,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        install_namespace(state, self.namespace, &self.envelope)?;
+        let commit_id = self.envelope.commit_id;
+        let previous = install_namespace(state, self.namespace, &self.envelope);
         state.decision += 1;
         state.last_committed_at_micros = time;
         retain(
@@ -88,6 +89,7 @@ impl CommitPublication {
             IdempotencyOutcome::Commit(self.envelope),
             (self.resident, retained),
         );
+        notify_committed(state, &previous, commit_id)?;
         Ok((self.result, self.output_claim))
     }
 }
@@ -875,16 +877,40 @@ fn stage_namespace(
     Ok(next)
 }
 
+// Namespace and counters install without a fallible notification lookup. The
+// caller retains the terminal retry result under the same state guard before
+// delivering any notification, so notification failure cannot spend the write
+// without retaining its identity.
 fn install_namespace(
     state: &mut State,
     next: Namespace,
     envelope: &CommittedEnvelope,
-) -> Result<(), StreamError> {
+) -> Namespace {
     if next.len() != state.paths.len() {
         state.hierarchy_version = envelope.commit_id;
     }
     state.path_bytes = next.bytes();
-    let previous = std::mem::replace(&mut state.paths, next);
+    for fact in &envelope.mutations {
+        state.record_count += fact_records(fact).len();
+        state.payload_bytes += fact_records(fact)
+            .iter()
+            .map(|record| record.payload_bytes())
+            .sum::<usize>();
+    }
+    std::mem::replace(&mut state.paths, next)
+}
+
+fn notify_committed(
+    state: &State,
+    previous: &Namespace,
+    commit_id: CommitId,
+) -> Result<(), StreamError> {
+    let envelope = state
+        .retained
+        .last()
+        .and_then(|entry| entry.envelope())
+        .filter(|envelope| envelope.commit_id == commit_id)
+        .ok_or(StreamError::InvalidResponse)?;
     // Only missing subscriptions beneath a published destination can be
     // created. Range over subscribers, never over the inherited subtree.
     for fact in &envelope.mutations {
@@ -936,11 +962,6 @@ fn install_namespace(
             signals.changed.send_replace(tail);
             crate::follow_index::FollowIndex::publish(&signals.follows, fact_records(fact), tail);
         }
-        state.record_count += fact_records(fact).len();
-        state.payload_bytes += fact_records(fact)
-            .iter()
-            .map(|record| record.payload_bytes())
-            .sum::<usize>();
     }
     Ok(())
 }

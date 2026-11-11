@@ -25,9 +25,9 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
         match self {
             Self::Returned(result) => Ok(result),
             Self::Accepted { bytes, install } => {
-                let result = core.publish(bytes, || install(state, durable, at_millis))?;
+                let result = core.publish(bytes, || install(state, durable, at_millis));
                 core.applied(state);
-                Ok(result)
+                result
             }
         }
     }

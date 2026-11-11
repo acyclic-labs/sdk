@@ -325,3 +325,23 @@ Subsequent commits change only this design. No Windows-specific or macOS-specifi
 code changed. The final-apply, crash simulation, negative-control and loom
 obligations above remain unimplemented and unproved; none is inferred from
 these content-only passes.
+
+## Publication failure prerequisite
+
+The namespace installer is now an infallible function returning the predecessor
+root. Append, fork, commit and accepted commit install the whole namespace and
+retain their terminal retry result under the same state write guard before
+calling the fallible notification function. Notification reads the just-retained
+envelope from the retained tail in O(1), without adding a quorum or history read.
+An accepted decision always publishes its actual applied index, including when
+notification subsequently fails. A transport error after this boundary remains
+an unknown outcome whose original key resolves the one retained receipt.
+
+The focused real-provider regression poisons the actual notification registry
+through its original create callback, then checks whole coordinated visibility,
+retained observation, exact family-specific retry and one revision assignment
+for all four write projections. Its negative control reverses the production
+fix while keeping the same test, requiring the lost-observation assertion.
+This fixes the named root/receipt failure window; it does not certify recovery
+of failed follower delivery or fulfill the staged crash/loom proofs above.
+Validation is pending for this change.
