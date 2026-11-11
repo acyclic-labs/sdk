@@ -4,6 +4,7 @@ use proptest::prelude::*;
 use serde_json::json;
 
 mod failures;
+mod output_credit;
 
 #[tokio::test]
 async fn early_stdin_closure_preserves_a_deny_with_a_large_tool_payload() -> Result<()> {
@@ -255,7 +256,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
         Arc::new(hook),
         (root.clone(), root, vec![]),
         Arc::new(|| Ok(())),
-        65_536,
+        Some(65_536),
         None,
         None,
     ));
@@ -1232,7 +1233,10 @@ fn aggregate_failure_preserves_an_already_decoded_denial() -> Result<()> {
                         }
                         _ => vec![0; 100],
                     };
-                    assert!(stdout.len() <= quota, "fixture exceeds capture quota");
+                    assert!(
+                        quota.is_some_and(|quota| stdout.len() <= quota),
+                        "fixture exceeds capture quota"
+                    );
                     std::future::ready(Ok((Some(0), stdout, vec![])))
                 },
             )
@@ -1280,7 +1284,7 @@ fn runner_folds_deny_after_encoded_overflow_in_config_order() -> Result<()> {
                 let stdout = if matches!(&hook.run, HookRun::Executable { executable, .. } if executable == "expand") {
                     vec![0;1000]
                 } else { br#"{"continue":false,"stopReason":"deny"}"#.to_vec() };
-                assert!(stdout.len() <= quota);
+                assert!(quota.is_some_and(|quota| stdout.len() <= quota));
                 std::future::ready(Ok((Some(0),stdout,vec![])))
             }).await?;
         assert_eq!(calls, 2);
