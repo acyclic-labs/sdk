@@ -275,9 +275,9 @@ impl Undecided {
     /// is a decided failure and is returned.
     async fn retry(&mut self, executor: &dyn Executor, error: Error) -> Result<(), Error> {
         if !matches!(
-            error,
-            Error::Stream(
-                StreamError::Unavailable | StreamError::Refused(_) | StreamError::InvalidResponse
+            &error,
+            Error::Stream(source) if matches!(
+                source.category(), StreamError::Unavailable | StreamError::InvalidResponse
             )
         ) {
             return Err(error);
@@ -416,7 +416,7 @@ async fn fold<P: StreamProvider + ?Sized>(
             .await
         {
             Ok(page) => page.try_collect::<Vec<_>>().await?,
-            Err(StreamError::NotFound) => Vec::new(),
+            Err(error) if error.category() == StreamError::NotFound => Vec::new(),
             Err(error) => return Err(error.into()),
         };
         let count = page.len();
@@ -681,7 +681,7 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
         let epochs = layout.epochs.clone();
         let (tail, last) = match store.provider().head(epochs.clone()).await {
             Ok(head) => (head.tail, head.last),
-            Err(StreamError::NotFound) => (0, None),
+            Err(error) if error.category() == StreamError::NotFound => (0, None),
             Err(error) => return Err(error.into()),
         };
         let (segment, from, incarnation) = match (tail, last) {

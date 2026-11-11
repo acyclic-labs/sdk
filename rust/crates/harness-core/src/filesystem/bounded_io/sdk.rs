@@ -269,15 +269,38 @@ pub(in crate::filesystem) fn operation_key(
     }
     Ok(key)
 }
+/// A workspace identity and the original allocation owner of its fields.
+pub(in crate::filesystem) struct ContentWorkspace {
+    reference: WorkspaceRef,
+    _custody: Option<PreparationCustody>,
+}
+
+impl std::ops::Deref for ContentWorkspace {
+    type Target = WorkspaceRef;
+
+    fn deref(&self) -> &Self::Target {
+        &self.reference
+    }
+}
+
 pub(in crate::filesystem) fn content_workspace(
     provider: &ProviderRef,
     volume: &VolumeRef,
     io: Option<&PreparationIo>,
-) -> Result<WorkspaceRef> {
-    let name = crate::executor::with_history_io(io, |work| volume.storage_name(work))?;
-    let provider = match io {
-        Some(io) => provider.clone_with_io(io)?,
-        None => provider.clone(),
-    };
-    WorkspaceRef::new(provider, name.into_bytes(), None)
+) -> Result<ContentWorkspace> {
+    crate::executor::with_history_io(io, |work| {
+        let name = volume.storage_name(work)?;
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, name.capacity() as u64);
+        let provider = if io.is_some() {
+            crate::core::copy_provider(provider, &mut quota)?
+        } else {
+            provider.clone()
+        };
+        let reference = WorkspaceRef::new(provider, name.into_bytes(), None)?;
+        let custody = quota.take_owned_custody()?;
+        Ok(ContentWorkspace {
+            reference,
+            _custody: custody,
+        })
+    })
 }

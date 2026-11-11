@@ -1,5 +1,5 @@
 //! Live output uses the public observer, alongside actual agent records.
-use super::{Failure, Fixture, Report, failure};
+use super::{Failure, Fixture, Report, failure, observation_failure};
 use acyclic_harness_client::{AgentClient, AgentClientError, AgentEvent, WireSessionError};
 use acyclic_stream::{StreamProvider, session::Client, wire, wire_codec};
 use prost::Message as _;
@@ -55,7 +55,7 @@ pub async fn verify<P: StreamProvider + ?Sized>(
         observed.status_from,
         credential,
     )
-    .map_err(|cause| failure("tool_open", cause))?;
+    .map_err(|cause| observation_failure("tool_open", cause))?;
     let revision = client.session().revision();
     let mut foreign = subscription.clone();
     foreign.credential ^= 1;
@@ -74,13 +74,13 @@ pub async fn verify<P: StreamProvider + ?Sized>(
     }
     client
         .open_resource(subscription)
-        .map_err(|cause| failure("tool_open", cause))?;
+        .map_err(|cause| observation_failure("tool_open", cause))?;
     let (mut conversation, mut status, mut output) = (false, false, false);
     while !(conversation && status && output) {
         match client
             .next()
             .await
-            .map_err(|cause| failure("tool_observe", cause))?
+            .map_err(|cause| observation_failure("tool_observe", cause))?
         {
             AgentEvent::Conversation {
                 agent,
@@ -133,7 +133,7 @@ pub async fn verify<P: StreamProvider + ?Sized>(
     }
     if !client
         .release_resource(&fixture.resource)
-        .map_err(|cause| failure("tool_release", cause))?
+        .map_err(|cause| observation_failure("tool_release", cause))?
         || !matches!(
             client.resource_view(&fixture.resource),
             Err(AgentClientError::Session(WireSessionError::NotRequested))

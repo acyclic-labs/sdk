@@ -21,14 +21,14 @@ impl CheckoutTools {
     ) -> Result<crate::tools::FsCommand> {
         let parsed = self.commands().fs_arguments(command, scope)?;
         if !child_lifecycle(&parsed.arguments) {
-            return Err(Error::Invalid("fs supports status and a child fork's lifecycle: diff, merge or discard agents/<name>, add <path> and merge --continue or --abort while resolving its conflicts; recovery: use shell for other git commands".into()));
+            return Err(Error::Invalid("fs supports status and a child fork's lifecycle: diff, merge or discard agents/<name> or a direct child's AgentPath, add <path> and merge --continue or --abort while resolving its conflicts; recovery: use shell for other git commands".into()));
         }
         Ok(parsed)
     }
 
     pub(super) async fn fs(
         &self,
-        parsed: crate::tools::FsCommand,
+        mut parsed: crate::tools::FsCommand,
         context: &ToolContext,
         state: &mut State,
         workspace: &Arc<LocalWorkspace>,
@@ -39,7 +39,7 @@ impl CheckoutTools {
             && let Some(resolver) = context.task().agent_children()
         {
             self.workspace
-                .register_named_children(agent, resolver, volumes, &parsed.arguments)
+                .register_named_children(agent, resolver, volumes, &mut parsed.arguments)
                 .await?;
         }
         match self
@@ -66,7 +66,7 @@ impl CheckoutTools {
 }
 
 /// The model-visible fs grammar: working-tree status and one child fork's lifecycle. A parent
-/// inspects, merges or discards `agents/<name>`, and a conflicted merge is
+/// inspects, merges or discards `agents/<name>` or its canonical AgentPath, and a conflicted merge is
 /// completed the way the join's own refusal instructs, by marking resolved
 /// paths and continuing or aborting. Every other git command belongs to shell.
 fn child_lifecycle(arguments: &[String]) -> bool {
@@ -77,6 +77,7 @@ fn child_lifecycle(arguments: &[String]) -> bool {
                 || argument
                     .strip_prefix("agents/")
                     .is_some_and(|name| !name.is_empty())
+                || argument.starts_with("harness/agents/")
         }
         [operation, paths @ ..] if operation == "add" => {
             !paths.is_empty() && paths.iter().all(|path| !path.starts_with('-'))

@@ -3,6 +3,7 @@ use crate::{AppendRequest, MemoryStream, OwnedBytes, wire_codec};
 use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wire::stream_service_server::{StreamService, StreamServiceServer};
+use wire_codec::status::category;
 
 pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -790,8 +791,8 @@ fn every_member_refusal_round_trips_its_original_status() {
 }
 
 proptest::proptest! {
-    /// Every category's canonical status decodes to itself, and any
-    /// unavailable-class status encodes back to its original after decoding.
+    /// Every category's canonical status decodes to itself. Every original
+    /// status survives decoding, independently of recovery classification.
     #[test]
     fn status_decode_then_encode_is_the_identity(
         code in 0i32..17,
@@ -804,6 +805,7 @@ proptest::proptest! {
                 proptest::prop_assert_eq!(status(&encoded), error.clone());
             }
         }
+        proptest::prop_assert!(crate::codec_fuzz::grpc_status(&details));
         let mut relayed = Status::with_details(Code::from_i32(code), message, details.into());
         if let Some(reason) = reason {
             let value = tonic::metadata::MetadataValue::try_from(reason.as_str())
@@ -811,10 +813,10 @@ proptest::proptest! {
             relayed.metadata_mut().insert("acyclic-unserved-reason", value);
         }
         let decoded = status(&relayed);
+        proptest::prop_assert_eq!(decoded.category(), category(&relayed));
+        proptest::prop_assert_eq!(decoded.uncertain(), category(&relayed).uncertain());
         for encoded in [Status::from(&decoded), Status::from(decoded.clone())] {
-            if decoded.code() == "unavailable" {
-                proptest::prop_assert_eq!(original(&encoded), original(&relayed));
-            }
+            proptest::prop_assert_eq!(original(&encoded), original(&relayed));
             proptest::prop_assert_eq!(status(&encoded), decoded.clone());
         }
     }

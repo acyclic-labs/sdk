@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const nativeHarness = ["--features", "test-support"];
+const bindingFeatures = ["--features", "test-support"];
+const bindingNextest = ["--profile", "ci", "--retries", "0", "--no-tests=fail", "--no-fail-fast", "--failure-output", "final"];
 const cleanupTests = [
   "local::workspace::volumes::publication_tests::cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head",
   "local::tests::agents::a_shell_call_stages_its_output_on_the_private_volume",
@@ -297,6 +299,68 @@ const claims = {
     "rust/crates/harness-core/src/filesystem/execution_journal/summary/turn_cost.rs", "acyclic-harness-core",
     "filesystem::execution_journal::summary::tests::turn_cost::append_work_is_bounded_per_invocation_across_history",
     "append inherited prior invocation work", ["--features", "test-support"],
+  ],
+  "effective-read-selection": [
+    "rust/crates/harness-core/src/tool/files/read.rs", "acyclic-harness-core",
+    "filesystem::memory::tests::layered_reads::every_effective_projection_keeps_the_original_probe_generation",
+    "projection reselected head after its original home probe", ["--features", "test-support"],
+    {
+      oracle: "rust/crates/harness-core/src/filesystem/memory/tests/layered_reads.rs",
+      mutations: [
+        { source: "rust/crates/harness-core/src/tool/files/executor.rs", patch: "rust/proofs/effective-read-selection/preflight.patch", label: "physical-preflight-before-layer-selection", diagnostic: "projection reselected head after its original home probe" },
+        { patch: "rust/proofs/effective-read-selection/selection.patch", label: "discarded-original-layer-selection", diagnostic: "projection reselected head after its original home probe" },
+        { source: "rust/crates/harness-core/src/tool/files/read.rs", patch: "rust/proofs/effective-read-selection/token.patch", label: "bypassed-original-content-token-grant", diagnostic: "virtual path lost the original content token grant",
+          command: ["test", "--locked", "-p", "acyclic-harness-core", "--features", "test-support", "--lib", "filesystem::memory::tests::layered_reads::effective_reads_preserve_the_selected_layers_authority", "--", "--exact", "--nocapture"] },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-harness-core", "--features", "test-support", "--lib", "--", "--exact", "--nocapture",
+        "filesystem::memory::tests::layered_reads::every_effective_projection_keeps_the_original_probe_generation",
+        "filesystem::memory::tests::layered_reads::explicit_versions_keep_their_selection_without_a_new_home_probe",
+        "filesystem::memory::tests::layered_reads::seed_fallback_and_off_markers_keep_the_original_layer_decision",
+        "filesystem::memory::tests::layered_reads::effective_reads_preserve_the_selected_layers_authority",
+        "filesystem::memory::tests::projections::cached_line_reads_keep_original_receipts_outside_the_source_volume"],
+      positiveCount: 5,
+      completed: ["5 passed; 0 failed"],
+    },
+  ],
+  "task-binding-selection": [
+    "rust/crates/harness/src/local/workspace/bindings.rs", "acyclic-harness",
+    "local::workspace::bindings::tests::original_preparation_has_finite_generation_and_credit",
+    "lost original producer did not finish its observer", bindingFeatures,
+    { nextest: bindingNextest, mutations: [
+      { patch: "fuzz/mutations/task_binding_lost_producer.patch", label: "producer-loss", diagnostic: "lost original producer did not finish its observer" },
+      { patch: "fuzz/mutations/task_binding_late_retirement.patch", label: "late-retirement", diagnostic: "late retirement removed the replacement owner" },
+      { patch: "fuzz/mutations/task_binding_retained_credit.patch", label: "retained-credit", diagnostic: "retired binding generations retained original allocation credit" },
+      { patch: "fuzz/mutations/task_binding_lookup_cost.patch", label: "lookup-cost", diagnostic: "binding lookup grew beyond the fixed-width path" },
+    ] },
+  ],
+  "task-binding-observer": [
+    "rust/crates/harness/src/local/workspace/bindings.rs", "acyclic-harness",
+    "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
+    "registered binding observer lost its successful preparation", bindingFeatures,
+    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+      { patch: "fuzz/mutations/task_binding_observer_result.patch", label: "result-loss", diagnostic: "registered binding observer lost its successful preparation" },
+    ] },
+  ],
+  "task-binding-checkout": [
+    "rust/crates/harness/src/local/workspace/task_views.rs", "acyclic-harness",
+    "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
+    "binding preparation retains the unrelated checkout owner", bindingFeatures,
+    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+      { patch: "fuzz/mutations/task_binding_checkout_owner.patch", label: "checkout-owner", diagnostic: "binding preparation retains the unrelated checkout owner" },
+    ] },
+  ],
+  "task-binding-physical": [
+    "rust/crates/harness/src/local/workspace/projection.rs", "acyclic-harness",
+    "local::workspace::task_views::tests::native_guard_retains_the_original_binding_until_physical_retirement",
+    "physical native guard lost the original binding owner", bindingFeatures,
+    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+      { patch: "fuzz/mutations/task_binding_physical_owner.patch", label: "physical-owner", diagnostic: "physical native guard lost the original binding owner" },
+    ] },
+  ],
+  "inbox-settlement": [
+    "rust/crates/harness-core/src/agent/records.rs", "acyclic-harness-core",
+    "agent::checkpoint::tests::bounded_record_fields_and_settled_checkpoints_fit_their_frames",
+    "a conversation entry fits", ["--features", "test-support"],
   ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "acyclic-plugin",
@@ -1070,6 +1134,27 @@ const claims = {
     "approval wake uncertainty lost its original request", [],
     { target: ["--test", "main"] },
   ],
+  "filesystem-stream-category": [
+    "rust/crates/filesystem/src/wire_service/errors.rs", "acyclic-fs",
+    "wire_service::errors::tests::every_stream_category_survives_the_authority_wrapper",
+    "filesystem retained Stream refusal changed category", ["--no-default-features", "--features", "memory"],
+    { oracle: "rust/crates/filesystem/src/wire_service/errors/tests.rs",
+      nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"] },
+  ],
+  "session-local-refusal": [
+    "rust/crates/stream/src/session/frame.rs", "acyclic-stream",
+    "session::tests::refusals::local_socket_refusals_retain_the_original_error_after_prior_data",
+    "local socket lost its original refusal", ["--features", "serde,test-support"],
+    { oracle: "rust/crates/stream/src/session/tests/refusals.rs",
+      nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"],
+      positive: [
+        "session::tests::refusals::local_socket_refusals_retain_the_original_error_after_prior_data",
+        "session::tests::sockets::receive_refusal_releases_owner_before_uncredited_frames_drain",
+        "session::tests::sockets::host_shutdown_closes_all_channels_without_data_credit",
+        "session::tests::sockets::a_socket_the_host_ends_after_its_final_frame_ends_cleanly_for_the_peer",
+        "session::tests::queue_scaling::credited_tail_selection_visits_one_head_independent_of_stalled_follows",
+      ] },
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],
@@ -1188,6 +1273,34 @@ const claims = {
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
     "settlement bypassed the original runtime terminal event",
     nativeHarness,
+  ],
+  "native-eof-refusal": [
+    "rust/crates/harness/src/local/host_process/children.rs", "acyclic-harness",
+    "local::host_process::children::tools::tests::eof_retires_native_children_before_draining_a_held_reply",
+    "original process must retire before reply drain",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_eof_refusal_retirement.patch" },
+  ],
+  "native-child-branch-scope": [
+    "rust/crates/harness/src/local/host_workspace.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "parent-scoped child reference",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_branch_scope.patch" },
+  ],
+  "native-child-merge-custody": [
+    "rust/crates/harness/src/local/host_owner.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "canonical child merge bypassed running-session custody",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_merge_custody.patch" },
+  ],
+  "native-added-metadata": [
+    "rust/crates/filesystem/src/kernel/merge/fields.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "step=codex merge right child",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/filesystem/fuzz/mutations/added_metadata_observation.patch" },
   ],
   "admission-rebind": [
     "rust/crates/stream/src/session/client/admissions.rs", "acyclic-stream",
@@ -1717,9 +1830,10 @@ if (claim === "--help" && extra.length === 0) {
   const environment = { ...process.env, ...options.env };
   const tests = [test, ...(options.additionalTests ?? [])];
   const sourcePath = new URL(source, new URL("../../", import.meta.url));
-  const patch = claim === "work-mixed"
+  const patchRelative = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : options.patchPath ?? `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
+  const patch = fileURLToPath(new URL(patchRelative, new URL("../../", import.meta.url)));
   const target = options.target ?? ["--lib"];
   let fuzzTarget;
   if (options.fuzz) {
@@ -1743,7 +1857,7 @@ if (claim === "--help" && extra.length === 0) {
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", fileURLToPath(new URL("target/projection-fuzz/corpus", new URL("../../", import.meta.url))), "corpus/stream_persistence", "--", "-runs=1000", "-seed=1697"]
     : options.positiveCommand ?? (options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
-      options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
+      options.positive.map(name => `test(=${name})`).join(" | "), ...(options.nextest ?? ["--no-tests=fail"])]
     : command);
   const sources = [...new Set([source, ...(options.mutations ?? []).map(mutation => mutation.source ?? source)])];
   const recovery = `git diff -- ${sources.join(" ")}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}${instrumented ? " --instrumented" : from === undefined ? "" : ` --from ${from}`}`;

@@ -282,12 +282,7 @@ impl HostWorkspace {
             selected.workspace().id(),
             self.workspace.store.clone(),
         )
-        .register_branch_workspace(
-            format!("agents/{reference}"),
-            view.workspace().id(),
-            None,
-            false,
-        )
+        .register_branch_workspace(child.as_str(), view.workspace().id(), None, false)
         .await
         .map_err(storage)?;
         drop(state);

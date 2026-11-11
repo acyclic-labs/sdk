@@ -231,11 +231,11 @@ impl ToolProvider for Identities {
         }
     }
 
-    fn closed(&mut self) {
+    fn closed(&mut self) -> Result<(), Self::Error> {
         // No answer is read any more: stop login polls and abort operations
         // that need not finish.
         let Some(active) = self.active.as_mut() else {
-            return;
+            return Ok(());
         };
         if let Some(cancel) = active.login_cancel.take() {
             let _ = cancel.send(());
@@ -245,6 +245,7 @@ impl ToolProvider for Identities {
         {
             active.task.abort();
         }
+        Ok(())
     }
 
     fn progress(
