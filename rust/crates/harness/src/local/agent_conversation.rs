@@ -106,6 +106,22 @@ pub struct Conversation {
     connection: Connection,
 }
 
+/// An owned diff query retains its original connection, including an embedded
+/// host's lifetime, until the client closes the query.
+pub struct WorkspaceDiff {
+    query: crate::client::DiffQuery,
+    _connection: Connection,
+}
+
+impl WorkspaceDiff {
+    /// Receive the next original credited event, or the original failure.
+    pub async fn next(
+        &mut self,
+    ) -> std::result::Result<Option<crate::client::DiffQueryEvent>, AgentExchangeError> {
+        self.query.next().await
+    }
+}
+
 impl Conversation {
     /// Open a demand-driven diff on the original authenticated client socket.
     /// Dropping it releases the server's immutable traversal and comparison.
@@ -116,31 +132,16 @@ impl Conversation {
         &self,
         page: AgentPageRequest,
         projection: crate::client::DiffProjection,
-    ) -> std::result::Result<crate::client::DiffQuery, AgentExchangeError> {
-        self.connection
+    ) -> std::result::Result<WorkspaceDiff, AgentExchangeError> {
+        let query = self
+            .connection
             .controls
             .diff_query(self.agent().clone(), page, projection)
-            .await
-    }
-
-    /// Requests one visible diff page through this connection's authenticated
-    /// session. The cursor is returned unchanged to the same query owner; no
-    /// local filesystem or frontend-specific access bypasses the server.
-    ///
-    /// # Errors
-    /// The session failure, source refusal or invalid continuation.
-    pub async fn diff(&self, page: AgentPageRequest) -> Result<Vec<crate::context::DiffFilePage>> {
-        match self
-            .connection
-            .execute(&AgentCommand::Diff {
-                agent: self.connection.root().clone(),
-                page,
-            })
-            .await?
-        {
-            AgentReply::Diff { items } => Ok(items),
-            _ => Err(unexpected()),
-        }
+            .await?;
+        Ok(WorkspaceDiff {
+            query,
+            _connection: self.connection.clone(),
+        })
     }
 
     /// The conversation of `connection`'s root.

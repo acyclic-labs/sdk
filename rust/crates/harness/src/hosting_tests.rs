@@ -104,12 +104,11 @@ impl Platform for Owner {
         })
     }
 
-    fn diff<'a>(
+    fn diff_source<'a>(
         &'a self,
         authorization: &'a CallAuthorization,
-        _: &'a AgentPath,
-        _: &'a AgentPageRequest,
-    ) -> BoxProviderFuture<'a, crate::Result<Vec<crate::context::DiffFilePage>>> {
+        agent: &'a AgentPath,
+    ) -> BoxProviderFuture<'a, crate::Result<DiffSource>> {
         Box::pin(async move {
             authorization
                 .principal()
@@ -129,7 +128,54 @@ impl Platform for Owner {
                     .await
                     .map_err(|_| crate::Error::Conflict("diff source owner closed".into()))?;
             }
-            Ok(Vec::new())
+            let provider = provider().map_err(|error| crate::Error::Storage(error.to_string()))?;
+            let host =
+                crate::filesystem::FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+            let owner = AgentId::from_bytes([41; 16]);
+            let volume = VolumeRef::new(
+                provider.clone(),
+                "diff-control".into(),
+                VolumeClass::Project,
+                VolumeOwner::Agent(owner),
+                &mut None,
+            )?;
+            host.create_volume(&volume).await?;
+            let issuer = AuthorityRoot::new(
+                "diff-control",
+                [41; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "diff-control".into(),
+                },
+            );
+            let scope = issuer.bootstrap_scope(
+                "reader",
+                &crate::Capabilities::new([
+                    volume.directory_read_capability("", &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                ]),
+                Some(owner),
+                &mut None,
+            )?;
+            let reader = crate::filesystem::FilesystemContentVerifier::new(
+                host.clone(),
+                &issuer.verifier(&mut None)?,
+                &scope,
+                64 * 1024,
+                None,
+            )?;
+            let reference =
+                crate::filesystem::workspace_ref(provider, &volume.storage_name(&mut None)?)?;
+            let generation = host.resolve(&reference, None).await?.generation;
+            Ok(DiffSource::new(
+                reader,
+                acyclic_harness_client::DiffSnapshot {
+                    agent: agent.clone(),
+                    volume,
+                    base: generation.clone(),
+                    current: generation,
+                },
+            ))
         })
     }
 }
@@ -201,6 +247,27 @@ async fn call(
         .await?;
     let response = wire::InvokeActorResponse::decode(reply)?;
     Ok(decode_agent_reply(&response.body, command)?)
+}
+
+async fn diff_call(
+    client: &Client,
+    namespace: &str,
+    command: &AgentCommand,
+) -> Result<std::result::Result<AgentReply, AgentControlFailure>> {
+    let mut query = client
+        .actor_socket(
+            acyclic_harness_client::DiffProjection::Patch.open(&invocation(namespace, command)?)?,
+            0,
+        )
+        .await?;
+    while let Some(frame) = query.next().await? {
+        match frame.first() {
+            Some(1) | Some(4) => {}
+            Some(2) | Some(5) => return Ok(decode_agent_reply(&frame[1..], command)?),
+            _ => return Err("unexpected diff source frame".into()),
+        }
+    }
+    Ok(Ok(AgentReply::Diff { items: Vec::new() }))
 }
 
 #[test]
@@ -744,7 +811,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         page: Default::default(),
     };
     assert!(matches!(
-        call(&client, "agents", &diff).await?,
+        diff_call(&client, "agents", &diff).await?,
         Ok(AgentReply::Diff { items }) if items.is_empty()
     ));
     // The real session admits this query before its source suspends. Revoking
@@ -755,7 +822,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         entered,
         release: resume,
     });
-    let query = call(&client, "agents", &diff);
+    let query = diff_call(&client, "agents", &diff);
     tokio::pin!(query);
     tokio::select! {
         _ = &mut query => return Err("query ended before its source suspended".into()),
@@ -782,7 +849,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         release: resume,
     });
     drop(release);
-    let refused = call(&client, "agents", &diff).await?;
+    let refused = diff_call(&client, "agents", &diff).await?;
     assert!(
         matches!(
             &refused,
@@ -800,7 +867,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         entered,
         release: resume,
     });
-    let query = call(&client, "agents", &diff);
+    let query = diff_call(&client, "agents", &diff);
     tokio::pin!(query);
     tokio::select! {
         _ = &mut query => return Err("query ended before its source suspended".into()),

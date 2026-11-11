@@ -31,7 +31,7 @@ mod runtime;
 pub use runtime::Runtime;
 mod diff;
 mod queries;
-pub use diff::{DIFF_FILE_BYTES, DiffPages, DiffSource};
+pub use diff::{DIFF_FILE_BYTES, DiffSource};
 
 use crate::{
     agent::{
@@ -146,26 +146,6 @@ pub trait Platform: ProviderPlatform + 'static {
     ) -> BoxProviderFuture<'a, crate::Result<Option<crate::conversation::FileRef>>> {
         let _ = (key, text);
         Box::pin(async { Ok(None) })
-    }
-
-    /// A page of the selected workspace's pinned, authorized diff query.
-    /// The server has checked the session credential, current policy and agent
-    /// tree before delegation. The source must also check file read/list authority
-    /// before disclosing any path or content, including on continuation pages.
-    /// `authorization` is the original session admission, including its current
-    /// credential; a request field or cached principal cannot replace it.
-    fn diff<'a>(
-        &'a self,
-        authorization: &'a CallAuthorization,
-        agent: &'a AgentPath,
-        page: &'a AgentPageRequest,
-    ) -> BoxProviderFuture<'a, crate::Result<Vec<crate::context::DiffFilePage>>> {
-        let _ = (authorization, agent, page);
-        Box::pin(async {
-            Err(crate::Error::Unsupported(
-                "workspace diff query is unavailable".into(),
-            ))
-        })
     }
 
     /// Select one immutable workspace diff under the original admission.
@@ -774,16 +754,9 @@ where
                     phase: settlement.phase,
                 })
             }
-            AgentCommand::Diff { agent, page } => {
-                let agent = self.within_tree(agent)?;
-                Ok(AgentReply::Diff {
-                    items: self
-                        .platform
-                        .diff(authorization, agent, page)
-                        .await
-                        .map_err(|error| Error::Turn(Box::new(error)))?,
-                })
-            }
+            AgentCommand::Diff { .. } => Err(Error::Turn(Box::new(crate::Error::Unsupported(
+                "workspace diff queries require an original actor socket".into(),
+            )))),
             AgentCommand::Usage {
                 agent,
                 input,

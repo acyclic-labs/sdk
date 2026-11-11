@@ -203,19 +203,48 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
         if !broken {
             // The real selected branch has no import receipt. Its diff must
             // retain the original checkout's before-image, not its fork head.
-            let pages = harness
-                .project_diff(
-                    &crate::hosting::DiffPages::default(),
-                    &acyclic_harness_client::AgentPageRequest::new(32, 64 * 1024, None)
-                        .map_err(storage)?,
-                )
-                .await?;
-            let changed = pages
-                .iter()
-                .find(|page| page.path == "branch.txt")
-                .expect("selected branch diff");
-            assert!(changed.patch.contains("-before\n"), "{changed:?}");
-            assert!(changed.patch.contains("+selected"), "{changed:?}");
+            use futures::TryStreamExt as _;
+            let (reader, snapshot) = harness.project_diff_selection().await?;
+            let agent = snapshot.agent.clone();
+            let page = acyclic_harness_client::AgentPageRequest::new(32, 64 * 1024, None)
+                .map_err(storage)?;
+            let mut frames = crate::hosting::DiffSource::new(reader, snapshot)
+                .frames(page.clone(), crate::client::DiffProjection::Patch);
+            let mut cursor = None;
+            let mut patch = String::new();
+            while let Some(frame) = frames.try_next().await? {
+                if frame.first() != Some(&2) {
+                    continue;
+                }
+                let command = crate::client::AgentCommand::Diff {
+                    agent: agent.clone(),
+                    page: acyclic_harness_client::AgentPageRequest::new(
+                        page.items(),
+                        page.bytes(),
+                        cursor
+                            .as_ref()
+                            .map(serde_json::to_string)
+                            .transpose()
+                            .map_err(storage)?,
+                    )
+                    .map_err(storage)?,
+                };
+                let crate::client::AgentReply::Diff { items } =
+                    acyclic_harness_client::decode_agent_reply(&frame[1..], &command)
+                        .map_err(storage)?
+                        .map_err(storage)?
+                else {
+                    return Err(Error::Invalid("unexpected diff reply".into()));
+                };
+                cursor = items.last().and_then(|item| item.next.clone());
+                for item in items {
+                    if item.path == "branch.txt" {
+                        patch.push_str(&item.patch);
+                    }
+                }
+            }
+            assert!(patch.contains("-before\n"), "{patch}");
+            assert!(patch.contains("+selected"), "{patch}");
         }
     }
     Ok(())

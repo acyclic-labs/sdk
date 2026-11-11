@@ -546,8 +546,16 @@ mod tests {
 
         // Negative control: another theme-only cut must not reset a retained
         // page when its authoritative layout file is unchanged.
+        let retained = std::sync::Arc::new(tokio::sync::Mutex::new(
+            conversation
+                .diff_query(
+                    acyclic_harness::client::AgentPageRequest::default(),
+                    acyclic_harness::client::DiffProjection::Patch,
+                )
+                .await?,
+        ));
         queries.select(
-            query::Source::Diff(Some("retained-page".into())),
+            query::Source::Diff(Some(std::sync::Arc::clone(&retained))),
             pending.as_mut(),
         );
         let resolution = theme_commands
@@ -566,7 +574,7 @@ mod tests {
             .is_none()
         );
         assert!(
-            matches!(queries.source(), Some(query::Source::Diff(Some(page))) if page == "retained-page")
+            matches!(queries.source(), Some(query::Source::Diff(Some(page))) if std::sync::Arc::ptr_eq(page, &retained))
         );
         // Commands and Escape can arrive in one terminal batch. Each committed
         // selection must already be visible when Escape chooses its target.

@@ -1,8 +1,11 @@
 //! One query owns one native changed-path frontier and one file comparison.
 use super::*;
+use crate::{client::DiffLimits, filesystem::FilesystemContentVerifier};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_harness_client::{DiffProjection, DiffSnapshot, DiffSummary};
 use acyclic_stream::BoxProviderStream;
 use futures::TryStreamExt as _;
+use std::sync::Arc;
 
 /// Pinned workspace selection and its original authorized reader. Platforms
 /// select endpoints; this shared owner performs every traversal and comparison.
@@ -31,7 +34,12 @@ impl DiffSource {
         Self(Box::new(FilesystemSource { reader, snapshot }))
     }
 
-    pub(in crate::hosting) fn frames(
+    /// Consume this source as bounded v1 query frames. Filesystem authority is
+    /// checked at each disclosure; an actor host additionally admits and fences
+    /// its original invocation through the shared SocketProvider.
+    /// `page` is the canonical reply credit from the admitted open: the opener
+    /// has already reserved the frame's one-byte discriminator.
+    pub fn frames(
         self,
         page: AgentPageRequest,
         projection: DiffProjection,

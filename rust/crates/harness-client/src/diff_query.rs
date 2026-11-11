@@ -84,6 +84,7 @@ pub struct DiffSummary {
 }
 
 /// One credited step. Empty filtered work is distinct from query completion.
+#[derive(Debug)]
 pub enum DiffQueryEvent {
     /// Initial immutable selection.
     Snapshot(DiffSnapshot),

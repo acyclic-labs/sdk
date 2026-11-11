@@ -695,14 +695,10 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
     .await?;
     let harness = Arc::new(harness);
     let connection = harness.connect().await?;
-    let query = acyclic_harness_client::AgentCommand::Diff {
-        agent: connection.root().clone(),
-        page: acyclic_harness_client::AgentPageRequest::new(32, 64 * 1024, None)
-            .map_err(storage)?,
-    };
     let marker = directory.path().join("marker");
     let permissions = std::fs::Permissions::from_mode(0o644);
     let outcome = async {
+        let conversation = crate::local::agent_conversation::Conversation::open(connection.clone());
         assert_eq!(
             std::fs::read(&marker).unwrap_err().kind(),
             std::io::ErrorKind::PermissionDenied,
@@ -733,7 +729,14 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
         );
         // Optional display before-images cannot certify an exact empty diff.
         // Exercise the served client query with its real session credential.
-        let uncertified = connection.exchange(&query).await.map_err(storage)?;
+        let mut query = conversation
+            .diff_query(
+                acyclic_harness_client::AgentPageRequest::default(),
+                crate::client::DiffProjection::Patch,
+            )
+            .await
+            .map_err(storage)?;
+        let uncertified = query.next().await;
         assert!(
             matches!(
                 &uncertified,
@@ -806,10 +809,23 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
                 .as_ref(),
             b"before"
         );
-        assert!(matches!(
-            connection.execute(&query).await?,
-            acyclic_harness_client::AgentReply::Diff { items } if items.is_empty()
-        ));
+        let mut confirmed = conversation
+            .diff_query(
+                acyclic_harness_client::AgentPageRequest::default(),
+                crate::client::DiffProjection::Patch,
+            )
+            .await
+            .map_err(storage)?;
+        while let Some(event) = confirmed.next().await.map_err(storage)? {
+            assert!(
+                matches!(
+                    event,
+                    crate::client::DiffQueryEvent::Snapshot(_)
+                        | crate::client::DiffQueryEvent::Progress
+                ),
+                "recovered unchanged source produced a diff"
+            );
+        }
         Ok(())
     }
     .await;

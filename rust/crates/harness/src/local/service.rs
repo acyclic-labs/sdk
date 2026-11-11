@@ -558,20 +558,23 @@ mod tests {
                     "sessions sharing one repo cannot overwrite each other"
                 );
             }
-            let AgentReply::Diff { items } = connection
-                .execute(&AgentCommand::Diff {
-                    agent: roots.first().unwrap().clone(),
-                    page: AgentPageRequest::default(),
-                })
-                .await?
-            else {
-                return Err(Error::Invalid("missing session diff".into()));
-            };
-            assert!(
-                items
-                    .iter()
-                    .any(|item| item.path == "/shared.txt" || item.path == "shared.txt")
+            let selected = crate::local::agent_conversation::Conversation::open(
+                connection.select(roots.first().unwrap().clone()).await?,
             );
+            let mut diff = selected
+                .diff_query(
+                    AgentPageRequest::default(),
+                    crate::client::DiffProjection::Patch,
+                )
+                .await
+                .map_err(storage)?;
+            let mut found = false;
+            while let Some(event) = diff.next().await.map_err(storage)? {
+                if let crate::client::DiffQueryEvent::Page(items) = event {
+                    found |= items.iter().any(|item| item.path == "shared.txt");
+                }
+            }
+            assert!(found, "missing session diff");
             let agent = roots
                 .iter()
                 .find(|agent| *agent != connection.root())

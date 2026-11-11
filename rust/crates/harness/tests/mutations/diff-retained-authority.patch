@@ -1,36 +1,12 @@
-diff --git a/rust/crates/harness/src/hosting/diff.rs b/rust/crates/harness/src/hosting/diff.rs
-index 505fef40dfc..85af9701f24 100644
---- a/rust/crates/harness/src/hosting/diff.rs
-+++ b/rust/crates/harness/src/hosting/diff.rs
-@@ -93,30 +93,7 @@ impl DiffPages {
-             });
-         if let Some(projection) = retained {
-             let items = projection.view.agent_page(cursor.as_ref(), page)?;
--            // Only the final cursor can disclose a file not already in this
--            // page. Its kind selects the endpoints that actually hold it.
--            let following = match items
--                .last()
--                .and_then(|item| item.next.as_ref().filter(|next| next.path != item.path))
--            {
--                Some(next) => {
--                    let file = projection.view.files().get(&next.path).ok_or_else(|| {
--                        crate::Error::Invalid("invalid diff page position".into())
--                    })?;
--                    Some((next.path.as_str(), file.kind))
--                }
--                None => None,
--            };
--            let paths = items
--                .iter()
--                .map(|item| (item.path.as_str(), item.kind))
--                .chain(following);
--            if reader
--                .diff_disclosure(volume, (base, current), paths)
--                .await?
--            {
--                return Ok(items);
--            }
-+            return Ok(items);
-         }
-         let publication = reader.diff_publication(volume, base, current).await?;
-         let mut view = DiffView::new(volume.clone(), base.clone())?;
+diff --git a/rust/crates/harness/src/hosting/diff/source.rs b/rust/crates/harness/src/hosting/diff/source.rs
+index 7bd882a51a0..7e8892714f8 100644
+--- a/rust/crates/harness/src/hosting/diff/source.rs
++++ b/rust/crates/harness/src/hosting/diff/source.rs
+@@ -114,7 +114,6 @@ where
+                     };
+                     let body = acyclic_harness_client::encode_agent_reply(&Ok(AgentReply::Diff { items }), &command)
+                         .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+-                    disclose().await?;
+                     yield frame(2, body, &page)?;
+                     if cursor.is_none() { break; }
+                 }

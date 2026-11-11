@@ -1,10 +1,13 @@
 //! The terminal renders one authorized query page and retains its continuation.
 use super::{Conversation, Failure, Line, query::Source};
 use acyclic_harness::{
-    client::{AgentPageRequest, DiffFilePage, DiffKind},
+    client::{AgentPageRequest, DiffFilePage, DiffKind, DiffProjection, DiffQueryEvent},
     tui::display_text,
 };
 use std::sync::Arc;
+
+pub(super) type Continuation =
+    Arc<tokio::sync::Mutex<acyclic_harness::local::agent_conversation::WorkspaceDiff>>;
 
 type DiffPanel = acyclic_harness::tui::QueryPage<Source>;
 
@@ -13,32 +16,60 @@ type DiffPanel = acyclic_harness::tui::QueryPage<Source>;
 pub(super) async fn query(
     conversation: Arc<Conversation>,
     rows: u32,
-    cursor: Option<String>,
+    cursor: Option<Continuation>,
     agent: Option<acyclic_harness::agent::AgentPath>,
 ) -> Result<DiffPanel, Failure> {
     let continued = cursor.is_some();
-    let page = AgentPageRequest::new(rows, 64 * 1024, cursor)?;
-    let fragments = conversation.diff(page).await?;
-    let next = fragments
-        .last()
-        .and_then(|fragment| fragment.next.as_ref())
-        .map(serde_json::to_string)
-        .transpose()?;
+    let cursor = match cursor {
+        Some(cursor) => cursor,
+        None => Arc::new(tokio::sync::Mutex::new(
+            conversation
+                .diff_query(
+                    AgentPageRequest::new(rows, 64 * 1024, None)?,
+                    DiffProjection::Patch,
+                )
+                .await?,
+        )),
+    };
+    let mut reader = cursor.lock().await;
     let mut lines = Vec::new();
-    if fragments.is_empty() {
-        lines.push(Line::raw("No changes"));
-    }
-    for fragment in &fragments {
-        render(fragment, &mut lines);
-    }
-    if next.is_some() {
-        lines.push(Line::raw("PgDn: more · PgUp: back · Esc: close"));
+    let more = loop {
+        match reader.next().await? {
+            Some(DiffQueryEvent::Snapshot(_)) => {}
+            Some(DiffQueryEvent::Progress) => {
+                // This consumes real source progress. Yield to the key handler
+                // even when the session already credited a run of filtered rows.
+                tokio::task::yield_now().await;
+            }
+            Some(DiffQueryEvent::Page(fragments)) => {
+                for fragment in &fragments {
+                    render(fragment, &mut lines);
+                }
+                break true;
+            }
+            Some(DiffQueryEvent::Summary(_)) => {
+                return Err("patch query returned summary data".into());
+            }
+            None => {
+                lines.push(Line::raw(if continued {
+                    "End of changes"
+                } else {
+                    "No changes"
+                }));
+                break false;
+            }
+        }
+    };
+    drop(reader);
+    if more {
+        lines.push(Line::raw("PgDn: more · PgUp: newest · Esc: close"));
     } else {
         lines.push(Line::raw("PgDn/PgUp: scroll · Esc: close"));
     }
+
     Ok(DiffPanel::new(
         lines,
-        next.map(|cursor| match agent {
+        more.then(|| match agent {
             Some(agent) => Source::AgentDiff(agent, Some(cursor)),
             None => Source::Diff(Some(cursor)),
         }),

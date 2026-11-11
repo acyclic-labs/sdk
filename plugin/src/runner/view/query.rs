@@ -13,9 +13,9 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(super) enum Source {
     Cost,
-    Diff(Option<String>),
+    Diff(Option<diff::Continuation>),
     History(Option<String>),
-    AgentDiff(AgentPath, Option<String>),
+    AgentDiff(AgentPath, Option<diff::Continuation>),
     Wait(AgentPath),
     Merge(AgentPath, String),
     Discard(AgentPath, String),
@@ -142,7 +142,11 @@ pub(super) async fn load(
             .await?
             .with_context(Context::default())),
         Source::AgentDiff(agent, cursor) => {
-            let selected = root.select(agent.clone()).await?;
+            let selected = if cursor.is_none() {
+                root.select(agent.clone()).await?
+            } else {
+                conversation
+            };
             Ok(diff::query(selected, rows, cursor, Some(agent))
                 .await?
                 .with_context(Context::default()))

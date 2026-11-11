@@ -207,28 +207,7 @@ impl LocalHarness {
         )
     }
 
-    /// One page of the selected checkout's changes since its first complete
-    /// import, the fork base every agent edit is measured from. Without that
-    /// complete baseline the query refuses to certify a diff. Projection, disclosure
-    /// authority and paging are the shared [`crate::hosting::DiffPages`],
-    /// which retains this checkout's projection in `diffs`.
-    #[cfg(any(test, feature = "native-execution"))]
-    pub(super) async fn project_diff(
-        &self,
-        diffs: &crate::hosting::DiffPages,
-        page: &acyclic_harness_client::AgentPageRequest,
-    ) -> Result<Vec<crate::context::DiffFilePage>> {
-        let (reader, selection) = self.project_diff_selection().await?;
-        diffs
-            .page(
-                reader.as_ref(),
-                &selection.volume,
-                (&selection.base, &selection.current),
-                page,
-            )
-            .await
-    }
-
+    /// Pin the selected checkout against its original complete import receipt.
     #[cfg(any(test, feature = "native-execution"))]
     pub(super) async fn project_diff_selection(
         &self,
@@ -283,12 +262,9 @@ impl LocalHarness {
         Ok((
             self.signed_reader()?,
             acyclic_harness_client::DiffSnapshot {
-                agent: self
-                    .agents
-                    .get()
-                    .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
-                    .root()
-                    .clone(),
+                agent: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes(
+                    self.root.into_bytes(),
+                )),
                 volume: self.project.clone(),
                 base: self.files.generation_ref_id(base, None)?,
                 current: self.files.generation_ref_id(current, None)?,

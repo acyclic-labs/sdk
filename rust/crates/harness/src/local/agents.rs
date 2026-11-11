@@ -58,10 +58,6 @@ impl Hosted {
 struct LocalUser {
     sessions: bool,
     harness: Weak<LocalHarness>,
-    /// The root's retained diff projection, which its continuation pages
-    /// read without projecting again.
-    #[cfg(any(test, feature = "native-execution"))]
-    diffs: crate::hosting::DiffPages,
 }
 
 impl LocalUser {
@@ -131,31 +127,6 @@ impl crate::hosting::Platform for LocalUser {
         text: Option<&'a str>,
     ) -> BoxProviderFuture<'a, Result<Option<crate::conversation::FileRef>>> {
         Box::pin(async move { self.harness()?.prompt_attachments(key, text).await })
-    }
-
-    /// The root's checkout diff, read under the tree owner's own signed
-    /// authority, the one every client of this tree is minted under: the
-    /// server rechecked this session's credential and policy for this page,
-    /// and the shared producer checks the owner's file authority before
-    /// disclosing any path or content, retained continuation pages included.
-    #[cfg(any(test, feature = "native-execution"))]
-    fn diff<'a>(
-        &'a self,
-        _: &'a acyclic_stream::session::CallAuthorization,
-        agent: &'a AgentPath,
-        page: &'a acyclic_harness_client::AgentPageRequest,
-    ) -> BoxProviderFuture<'a, Result<Vec<crate::context::DiffFilePage>>> {
-        Box::pin(async move {
-            let (reader, selection) = self.diff_selection(agent).await?;
-            self.diffs
-                .page(
-                    reader.as_ref(),
-                    &selection.volume,
-                    (&selection.base, &selection.current),
-                    page,
-                )
-                .await
-        })
     }
 
     #[cfg(any(test, feature = "native-execution"))]
@@ -927,8 +898,6 @@ impl LocalHarness {
         let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser {
             sessions: bound.admit_sessions().is_ok(),
             harness: Arc::downgrade(self),
-            #[cfg(any(test, feature = "native-execution"))]
-            diffs: crate::hosting::DiffPages::default(),
         });
         // A reopened root keeps the policy it was created with: the agent
         // model has no policy-update record, and replaying a creation with
