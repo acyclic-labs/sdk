@@ -103,6 +103,9 @@ impl Binding {
                 if !self.target_account.is_empty()
                     || self.resource.starts_with("actors:/")
                     || self.resource.starts_with("workers:/")
+                    || self.resource.starts_with("execution:/")
+                    || self.resource.starts_with("billing:/")
+                    || self.resource.starts_with("identity:/")
                 {
                     return Err(DomainError::InvalidBinding);
                 }

@@ -381,15 +381,7 @@ fn all_binding_products_and_fetch_are_scoped_to_selected_entry()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut manifest = fixture()?;
     let env = manifest.environments.first_mut().ok_or_else(missing)?;
-    for product in [
-        "fs",
-        "objects",
-        "actors",
-        "workers",
-        "machines",
-        "execution",
-        "infer",
-    ] {
+    for product in ["fs", "objects", "actors", "workers", "machines", "infer"] {
         let name = product.to_ascii_uppercase();
         let resource = format!("{product}:/sandbox");
         let binding = match product {
@@ -446,11 +438,42 @@ fn all_binding_products_and_fetch_are_scoped_to_selected_entry()
     let actor = environment_typescript(&manifest, "production", "agent")?;
     let worker = environment_typescript(&manifest, "production", "web")?;
     assert!(
-        actor.contains("INFER: Infer")
-            && actor.contains("EXECUTION: Execution")
-            && actor.contains("HTTP: Fetch")
+        actor.contains("INFER: Infer") && actor.contains("FS: Fs") && actor.contains("HTTP: Fetch")
     );
     assert!(!worker.contains("HTTP:") && !worker.contains("MODEL_KEY:"));
+    Ok(())
+}
+
+#[test]
+fn core_authority_grants_do_not_create_resource_bindings() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut manifest = fixture()?;
+    let environment = manifest.environments.first_mut().ok_or_else(missing)?;
+    for product in ["execution", "billing", "identity"] {
+        environment.grants.push(BindingGrant {
+            name: product.into(),
+            grant: ResourceGrant {
+                resource: ResourcePattern {
+                    name: format!("{product}:/work"),
+                    prefix: false,
+                },
+                actions: vec![format!("{product}/read")],
+            }
+            .into(),
+            limits: None,
+        });
+    }
+    validate(&manifest)?;
+    for product in ["execution", "billing", "identity"] {
+        let mut declaration = serde_json::to_value(&manifest)?;
+        declaration["environments"][0]["bindings"]
+            .as_array_mut()
+            .ok_or_else(missing)?
+            .push(
+                json!({"name":"DEAD", "capability":product, "resource":format!("{product}:/work")}),
+            );
+        assert!(parse(&serde_json::to_vec(&declaration)?).is_err());
+    }
     Ok(())
 }
 

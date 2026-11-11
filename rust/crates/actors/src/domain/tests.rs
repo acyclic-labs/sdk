@@ -576,6 +576,20 @@ fn typed_bindings_reject_opaque_or_inconsistent_targets_at_every_admission()
     }
     assert!(Binding::new("OBJECTS".into(), "grant".into(), "actors:/ClassOne".into()).is_err());
     assert!(Binding::new("SERVICE".into(), "grant".into(), "workers:/worker".into()).is_err());
+    for product in ["execution", "billing", "identity"] {
+        for resource in [format!("{product}:/"), format!("{product}:/work")] {
+            assert!(Binding::new("RESOURCE".into(), "grant".into(), resource.clone()).is_err());
+            assert!(
+                Binding::try_from(wire::Binding {
+                    name: "RESOURCE".into(),
+                    capability: "grant".into(),
+                    resource,
+                    ..Default::default()
+                })
+                .is_err()
+            );
+        }
+    }
     assert!(
         Binding::worker_service("SERVICE".into(), "grant".into(), b"account", "Upper").is_err()
     );
