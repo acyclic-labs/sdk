@@ -1113,3 +1113,27 @@ manifest/envelope persisted encodings do not change. A mutation restores the old
 parts-only refusal. Memory, local, gRPC, HTTP and binary conformance callers all
 run this same case; targeted remote execution is still pending. This does not
 supply stage ownership or bounded collector work yet.
+
+### Paged rewrite summaries (before implementation)
+
+A batched rewrite cannot return a Vec containing every child page created from
+one old leaf. Add a private child-summary sequence in content/index, stored through
+the existing content-tree writer. Each row retains a normalized first-key field
+and the complete child-page root; its enclosing versioned descriptor binds row
+count, data-node height and immutable body root. The writer retains only the
+last key and bounded content-tree carry pages. The cursor retains one bounded
+byte page and counters, refuses malformed counts/fields/trailing data, and retires
+after cancelled/failed next. All puts remain on the enclosing stage owner.
+
+Move the existing staged byte cursor into content/tree and reuse it unchanged
+for staged tokens, effect metadata and summary decoding. This is one bounded
+byte-reading mechanism, not another parser/storage traversal. Share key decoding
+validation with the existing node codec. Summary rows and descriptor declare
+all key/content/child references through the same tree Writer.reference path.
+No namespace or authority root publishes by writing a summary sequence.
+
+Controls must cover many physical summary pages, descriptor reopen, independent
+ordered rows and complete dependency retention, duplicate/decreasing key refusal,
+and interrupted writer/cursor behavior through the existing real-file gate.
+An ownership-edge mutation must fail the retained-graph control. This supplies
+bounded plan output, not yet the range planner, stage registry or final apply.

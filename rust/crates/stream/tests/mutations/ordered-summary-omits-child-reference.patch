@@ -1,0 +1,9 @@
+diff --git a/rust/crates/stream/src/content/index/summary.rs b/rust/crates/stream/src/content/index/summary.rs
+--- a/rust/crates/stream/src/content/index/summary.rs
++++ b/rust/crates/stream/src/content/index/summary.rs
+@@ -74,5 +74,4 @@
+             bytes.extend_from_slice(&first.prefix);
+             codec::field_bytes(&mut self.output, &mut bytes, &first.field).await?;
+-            self.output.reference(page).await?;
+             codec::root_bytes(&mut bytes, page);
+             self.output.write(&bytes).await?;

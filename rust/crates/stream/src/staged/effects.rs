@@ -144,7 +144,7 @@ pub struct Effects<'a, S> {
     storage: &'a S,
     staged: StagedWrite,
     root: Root,
-    cursor: super::decode::Cursor<'a, S>,
+    cursor: crate::content::tree::Cursor<'a, S>,
     remaining: u64,
     next: u64,
     deadline: Option<u64>,
@@ -168,7 +168,7 @@ impl<'a, S: Storage> Effects<'a, S> {
         if length / BYTES as u64 != staged.effects {
             return Err(StreamError::InvalidResponse);
         }
-        let mut cursor = super::decode::Cursor::new(storage, root)?;
+        let mut cursor = crate::content::tree::Cursor::new(storage, root)?;
         let header = cursor.exact::<{ MAGIC.len() }>().await?;
         crate::persistence::header(&header, b"acyclic-stream-effects-v", b"1\0")?;
         let bytes = cursor.exact::<9>().await?;

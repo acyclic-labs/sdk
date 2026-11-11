@@ -17,7 +17,7 @@ pub(super) fn root_bytes(bytes: &mut Vec<u8>, root: Root) {
     bytes.extend_from_slice(&root.part.length.to_le_bytes());
     bytes.push(root.height);
 }
-async fn field_bytes<S: Storage>(
+pub(super) async fn field_bytes<S: Storage>(
     writer: &mut tree::Writer<'_, S>,
     bytes: &mut Vec<u8>,
     field: &Field,
@@ -157,15 +157,7 @@ impl Decode<'_> {
     fn key(&mut self) -> Result<Key, StreamError> {
         let prefix = self.array()?;
         let field = self.field(key::INLINE_KEY)?;
-        if let Field::Inline(bytes) = &field {
-            let mut expected = [0; 32];
-            let count = bytes.len().min(32);
-            expected[..count].copy_from_slice(&bytes.as_slice()[..count]);
-            if prefix != expected {
-                return Err(StreamError::InvalidResponse);
-            }
-        }
-        Ok(Key { field, prefix })
+        Key::decoded(prefix, field)
     }
 }
 

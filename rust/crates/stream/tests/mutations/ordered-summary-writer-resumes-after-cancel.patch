@@ -1,0 +1,9 @@
+diff --git a/rust/crates/stream/src/content/index/summary.rs b/rust/crates/stream/src/content/index/summary.rs
+--- a/rust/crates/stream/src/content/index/summary.rs
++++ b/rust/crates/stream/src/content/index/summary.rs
+@@ -51,5 +51,4 @@
+             return Err(StreamError::Unavailable);
+         }
+-        self.interrupted = true;
+         let result = async {
+             let first = Key::stored(self.storage, first).await?;

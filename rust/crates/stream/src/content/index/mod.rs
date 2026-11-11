@@ -13,6 +13,7 @@ mod codec;
 mod cursor;
 mod key;
 mod sort;
+pub mod summary;
 mod update;
 pub use build::Builder;
 pub use cursor::Cursor;

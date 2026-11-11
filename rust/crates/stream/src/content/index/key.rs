@@ -79,6 +79,26 @@ pub(super) struct Key {
 }
 
 impl Key {
+    pub(super) fn decoded(prefix: [u8; PREFIX], field: Field) -> Result<Self, StreamError> {
+        match &field {
+            Field::Inline(bytes) => {
+                if bytes.len() > INLINE_KEY {
+                    return Err(StreamError::InvalidResponse);
+                }
+                let mut expected = [0; PREFIX];
+                let count = bytes.len().min(PREFIX);
+                expected[..count].copy_from_slice(&bytes.as_slice()[..count]);
+                if prefix != expected {
+                    return Err(StreamError::InvalidResponse);
+                }
+            }
+            Field::Content(root) if root.height > MAX_HEIGHT => {
+                return Err(StreamError::InvalidResponse);
+            }
+            _ => {}
+        }
+        Ok(Self { field, prefix })
+    }
     pub(super) async fn stored(storage: &impl Storage, field: Field) -> Result<Self, StreamError> {
         let mut key = Self::new(storage, field).await?;
         key.field = store(storage, key.field, INLINE_KEY).await?;

@@ -4,6 +4,9 @@ use crate::{OwnedBytes, ProviderPlatform, StreamError, content_digest};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 
+mod cursor;
+pub(crate) use cursor::Cursor;
+
 /// Physical page size, independent of logical record or commit size.
 pub const PAGE_BYTES: usize = 64 * 1024;
 const BLOB_MAGIC: &[u8] = b"acyclic-content-leaf-v1\0";
