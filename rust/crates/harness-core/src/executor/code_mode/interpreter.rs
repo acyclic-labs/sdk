@@ -653,7 +653,7 @@ mod tests {
                 acyclic_stream::OwnedBytes::from_static(b"[]"),
                 send,
                 tokio_util::sync::CancellationToken::new(),
-                4096,
+                Some(4096),
                 super::super::allocator::EngineAllocator::new(None),
                 super::INTERRUPT_BUDGET,
             ))
@@ -677,7 +677,7 @@ mod tests {
                 acyclic_stream::OwnedBytes::from_static(b"[]"),
                 send,
                 tokio_util::sync::CancellationToken::new(),
-                4096,
+                Some(4096),
                 super::super::allocator::EngineAllocator::new(None),
                 super::INTERRUPT_BUDGET,
             )
@@ -716,7 +716,7 @@ mod tests {
                         definitions.clone(),
                         send,
                         tokio_util::sync::CancellationToken::new(),
-                        4096,
+                        Some(4096),
                         super::super::allocator::EngineAllocator::new(None),
                         super::INTERRUPT_BUDGET,
                     )),
@@ -747,7 +747,7 @@ mod tests {
             acyclic_stream::OwnedBytes::from_static(b"[]"),
             send,
             tokio_util::sync::CancellationToken::new(),
-            4096,
+            Some(4096),
             super::super::allocator::EngineAllocator::new(None),
             16,
         ))
