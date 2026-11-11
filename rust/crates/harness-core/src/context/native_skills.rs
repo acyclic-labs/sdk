@@ -98,10 +98,10 @@ impl UserWatch {
             .ok()?;
             // Arm the root before listing: a newly created child must either
             // be listed below or invalidate this scan through the root watch.
-            match self.watch(root) {
+            match self.watch(root, true) {
                 Some(watch) => watches.push(watch),
                 None => {
-                    watches.push(self.watch(root.parent()?)?);
+                    watches.push(self.watch(root.parent()?, true)?);
                     // Creation before the parent was armed cannot be cached.
                     if root.exists() {
                         return None;
@@ -127,7 +127,7 @@ impl UserWatch {
                         ..Default::default()
                     })
                     .ok()?;
-                    watches.push(self.watch(&entry.path())?);
+                    watches.push(self.watch(&entry.path(), false)?);
                 }
             }
         }
@@ -135,13 +135,32 @@ impl UserWatch {
         Some(generation)
     }
 
-    fn watch(&self, directory: &Path) -> Option<acyclic_fs::HeldRootWatch> {
+    /// A root (or an absent root's parent) is listed for its directory names
+    /// only, and each listed skill directory has its own watch. So the root
+    /// watch ignores content and metadata changes of its direct entries: such
+    /// a change never alters the catalog, and Windows reports one for a skill
+    /// directory merely because the scan first enumerated it.
+    fn watch(&self, directory: &Path, names_only: bool) -> Option<acyclic_fs::HeldRootWatch> {
+        use notify::{EventKind, event::ModifyKind};
         let changed = Arc::clone(&self.generation);
         acyclic_fs::hold_root(directory)
             .ok()?
             .watch_changes(move |event| {
-                // Reading a skill is no change to it.
-                if !event.is_ok_and(|event| event.kind.is_access()) {
+                let unchanged = event.is_ok_and(|event| match event.kind {
+                    // Reading a skill is no change to it.
+                    EventKind::Access(_) => true,
+                    EventKind::Modify(kind)
+                        if names_only && !matches!(kind, ModifyKind::Name(_)) =>
+                    {
+                        !event.paths.is_empty()
+                            && event
+                                .paths
+                                .iter()
+                                .all(|path| path.components().count() == 1)
+                    }
+                    _ => false,
+                });
+                if !unchanged {
                     changed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 }
             })

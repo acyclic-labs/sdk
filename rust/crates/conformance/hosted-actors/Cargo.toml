@@ -1,0 +1,24 @@
+[package]
+name = "acyclic-hosted-actors-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Shared Actors conformance over an admitted provider and remote owner controls"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+acyclic-actors = { path = "../../actors", features = ["conformance"] }
+acyclic-stream = { path = "../../stream", default-features = false, features = ["wasm", "conformance"] }
+serde_json.workspace = true
+serde-wasm-bindgen.workspace = true
+futures.workspace = true
+js-sys.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+
+[lints]
+workspace = true

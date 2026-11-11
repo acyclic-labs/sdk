@@ -887,9 +887,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 state.checkpoint(),
                 cancellation.clone(),
             );
-            let result = self
+            let result = match self
                 .handled(&mut inner, cancellation.clone(), handled)
-                .await;
+                .await
+            {
+                Ok(mut transition) => self
+                    .store
+                    .resolve_starts(&mut transition)
+                    .await
+                    .map(|()| transition),
+                failure => failure,
+            };
             // Release any pending provider I/O before checkpoint publication.
             inner.follows.clear();
             // Preparation failures and submission failures finish the same attempt.
@@ -962,9 +970,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     let handled =
                         self.handler
                             .on_failure(delivery, state.checkpoint(), error.to_string());
-                    let failure = self
+                    let failure = match self
                         .handled(&mut inner, cancellation.clone(), handled)
-                        .await;
+                        .await
+                    {
+                        Ok(Some(mut transition)) => self
+                            .store
+                            .resolve_starts(&mut transition)
+                            .await
+                            .map(|()| Some(transition)),
+                        failure => failure,
+                    };
                     inner.follows.clear();
                     let publication = failure.and_then(|transition| {
                         transition

@@ -1,1 +1,850 @@
-[]
+[
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "c2b65b2cc03b477fb1c8cb1a321f2d859b4b74059b8d6e679690c63114582828",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: for (const [name, route] of this.rows()) {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "f29ad07131ad8465b7adf8796e20d6433c82a1af53dd9d3bdff8ec0e23f01744",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: do {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "2cf9d25ea35263acfd4bbcc375910586ce41ab379b08875f67dd2375f9e07064",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: for (const address of page.actors) {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "174225c6296baa058c3da393ff94cfc3febebb4dc35e01c54146318154802d2c",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: } while (full);",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "b71d48f7c9964cf537d68ce30f063d702f2416c1a74eb14f41a2301cb64e95c9",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: for (const [, row] of this.rows()) {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "041b13a8b048dce8f81418633bd720b8f992168588dbf18b078a9192b0558c73",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: for (let changes = 0; changes < 64; changes++) {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "4ad5327e85b888e67896dce9c1899593bcefb6b1cac0aea1f2ec472674368599",
+    "classification": "finite-work",
+    "producer": "This exact guest site consumes native metadata entries, one original activation page, retained owner addresses or the complete selected binding-name vector: for (const [name, value] of transaction.entries()) if (name.startsWith('owner:')) routes.set(name, value);",
+    "terminal": "The vector/page is exhausted and the discovery cursor advances; each admitted owner RPC/flush settles or rejects without replay. Missing selected bindings throw ActorBindingUnserved.",
+    "negativeControl": "The unchanged shared Actors creation/fork/restart cases require all original actors; the artifact load control refuses the first absent binding, and the consumer compares the full SDK-derived census with the selected manifest."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "cd766cbffd4b2783d1d877ab2c993a7c16f4a6ed393969407d9d87d8bc7ecf5c",
+    "classification": "finite-work",
+    "producer": "This exact guest site consumes native metadata entries, one original activation page, retained owner addresses or the complete selected binding-name vector: do {",
+    "terminal": "The vector/page is exhausted and the discovery cursor advances; each admitted owner RPC/flush settles or rejects without replay. Missing selected bindings throw ActorBindingUnserved.",
+    "negativeControl": "The unchanged shared Actors creation/fork/restart cases require all original actors; the artifact load control refuses the first absent binding, and the consumer compares the full SDK-derived census with the selected manifest."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "db362a18a622a7f384d6548c174742a1fd6ce38639bda79c72e9aab01dbd3418",
+    "classification": "finite-work",
+    "producer": "This exact guest site consumes native metadata entries, one original activation page, retained owner addresses or the complete selected binding-name vector: for (const address of page.actors) {",
+    "terminal": "The vector/page is exhausted and the discovery cursor advances; each admitted owner RPC/flush settles or rejects without replay. Missing selected bindings throw ActorBindingUnserved.",
+    "negativeControl": "The unchanged shared Actors creation/fork/restart cases require all original actors; the artifact load control refuses the first absent binding, and the consumer compares the full SDK-derived census with the selected manifest."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "4ea9db80316ea99f1d20c14faf995a5c1d8f689ed59230806d5189942856b945",
+    "classification": "finite-work",
+    "producer": "This exact guest site consumes native metadata entries, one original activation page, retained owner addresses or the complete selected binding-name vector: } while (full);",
+    "terminal": "The vector/page is exhausted and the discovery cursor advances; each admitted owner RPC/flush settles or rejects without replay. Missing selected bindings throw ActorBindingUnserved.",
+    "negativeControl": "The unchanged shared Actors creation/fork/restart cases require all original actors; the artifact load control refuses the first absent binding, and the consumer compares the full SDK-derived census with the selected manifest."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "1c4aa2f209c79166daaadfd75cd723085dd6e36d35002b384f0574c07dec5c3d",
+    "classification": "finite-work",
+    "producer": "This exact guest site consumes native metadata entries, one original activation page, retained owner addresses or the complete selected binding-name vector: for (const address of routes.values()) {",
+    "terminal": "The vector/page is exhausted and the discovery cursor advances; each admitted owner RPC/flush settles or rejects without replay. Missing selected bindings throw ActorBindingUnserved.",
+    "negativeControl": "The unchanged shared Actors creation/fork/restart cases require all original actors; the artifact load control refuses the first absent binding, and the consumer compares the full SDK-derived census with the selected manifest."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "b6a5e76c42ba28d2296f4a6e064ee073286ae3f9dee9356a9cff0bb96f542837",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "f67461134b06b7386be5c95f4f3c81c873913045c6871a6e6d4aeac6a294dbaf",
+    "classification": "finite-work",
+    "producer": "This exact guest site consumes native metadata entries, one original activation page, retained owner addresses or the complete selected binding-name vector: for (const name of HOSTED_ACTOR_BINDINGS.names) required(context.env[name], name);",
+    "terminal": "The vector/page is exhausted and the discovery cursor advances; each admitted owner RPC/flush settles or rejects without replay. Missing selected bindings throw ActorBindingUnserved.",
+    "negativeControl": "The unchanged shared Actors creation/fork/restart cases require all original actors; the artifact load control refuses the first absent binding, and the consumer compares the full SDK-derived census with the selected manifest."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/src/wasm.rs",
+    "fingerprint": "9534a233a00080cc7da101ce7ca443fa637bba148af265f2a04f0b2e3c7a1fad",
+    "classification": "finite-work",
+    "producer": "ActorsDomain.created receives one finite original Store activation page, at most the requested page size, then decodes its records.",
+    "terminal": "The page vector is exhausted and next is the last original record sequence plus one; a failed source read or record cursor propagates its error.",
+    "negativeControl": "The shared acyclic_actors::conformance::verify creation/fork/restart cases observe committed activations; changing the page producer or cursor tokens invalidates this disposition."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/src/wasm.rs",
+    "fingerprint": "855842af048ecd194c87e880fa3dd73f7a0f6666b0a5c7479df3bdc317e87e48",
+    "classification": "finite-work",
+    "producer": "Rust trait implementation declaration at impl Backend for ActorsDomain {",
+    "terminal": "This for token declares a trait implementation; it is not executable iteration. Method bodies retain their separate wait-site classifications.",
+    "negativeControl": "scripts/no-polling.test.mjs, event and finite-work loops have no file or helper exemption: changing any token reopens this exact disposition."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/src/wasm.rs",
+    "fingerprint": "c9c2a432b4de839034a0914bbdc25d66a0b17ebebb283ac1552f6ac13e18d407",
+    "classification": "finite-work",
+    "producer": "Rust trait implementation declaration at impl Drop for Listening {",
+    "terminal": "This for token declares a trait implementation; it is not executable iteration. Method bodies retain their separate wait-site classifications.",
+    "negativeControl": "scripts/no-polling.test.mjs, event and finite-work loops have no file or helper exemption: changing any token reopens this exact disposition."
+  },
+  {
+    "file": "rust/crates/stream/src/lib.rs",
+    "fingerprint": "15cc50ae350f2ebf16b993b95f19d86cfdf2a42186ff79f0365141ae791105b2",
+    "classification": "finite-work",
+    "producer": "Rust trait implementation declaration at impl Eq for SessionData {}",
+    "terminal": "This for token declares a trait implementation; it is not executable iteration. Method bodies retain their separate wait-site classifications.",
+    "negativeControl": "scripts/no-polling.test.mjs, event and finite-work loops have no file or helper exemption: changing any token reopens this exact disposition."
+  },
+  {
+    "file": "rust/crates/stream/src/wasm/provider_rpc.rs",
+    "fingerprint": "d3595fbb8dca61c8fd3da0b62e1862a322fa9312c38eb542b7fa894588776cc4",
+    "classification": "finite-work",
+    "producer": "Rust trait implementation declaration at impl Drop for OwnedCursor {",
+    "terminal": "This for token declares a trait implementation; it is not executable iteration. Method bodies retain their separate wait-site classifications.",
+    "negativeControl": "scripts/no-polling.test.mjs, event and finite-work loops have no file or helper exemption: changing any token reopens this exact disposition."
+  },
+  {
+    "file": "rust/crates/stream/src/wasm/provider_rpc.rs",
+    "fingerprint": "ee207064be2a74b5bda5fb41072a0368229a8301b03aee91bd44504f4583b803",
+    "classification": "event-wait",
+    "producer": "The original StreamProviderCursor.next promise supplies SessionFrame transport bytes; each iteration consumes retained bytes or awaits that producer.",
+    "terminal": "A decoded frame returns; producer EOF finishes the shared decoder; producer loss or a malformed/truncated frame returns StreamError. OwnedCursor drop closes the original cursor.",
+    "negativeControl": "The exported ActorsDomain.created truncated-cursor control passes one incomplete SessionFrame prefix then EOF and requires an invalid stream response plus exactly one original cursor close; canonical wire_codec/session/tests.rs also rejects malformed protobuf and verifies ordered finite fragments. Changing the original event producer invalidates this exact disposition."
+  },
+  {
+    "file": "rust/crates/stream/src/wasm/provider_rpc.rs",
+    "fingerprint": "49a0c9ea06fe2a864d3ccd13fe0877756c22bf92dc0282aa681680a93e9f0ed7",
+    "classification": "finite-work",
+    "producer": "Rust trait implementation declaration at impl StreamProvider for InjectedStream {",
+    "terminal": "This for token declares a trait implementation; it is not executable iteration. Method bodies retain their separate wait-site classifications.",
+    "negativeControl": "scripts/no-polling.test.mjs, event and finite-work loops have no file or helper exemption: changing any token reopens this exact disposition."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "0635291294082c65e7bd8cc3ae81b8acc73f1a439b5fe0095a5e1738a3ea11f9",
+    "classification": "event-wait",
+    "producer": "The original Durable Object alarm/RPC owns WasmActorHost work; its canonical package and provider are the exported shared Actors fixture, not a local Runtime.",
+    "terminal": "Host.wake returns its next native deadline after committed-input recheck, or rejects on the original owner/provider failure; cancellation closes the original provider cursor.",
+    "negativeControl": "rust/crates/actors/src/local/runtime/tests.rs negative_control_conformance_rejects_a_host_that_loses_alarm_changes, plus the same shared restarted/paused/interrupted cases used by this hosted target."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "7c3b231807cdf26163d46879a4c947397c6fc27d0278d04d73e016a8877d39a7",
+    "classification": "event-wait",
+    "producer": "The original Durable Object alarm/RPC owns WasmActorHost work; its canonical package and provider are the exported shared Actors fixture, not a local Runtime.",
+    "terminal": "Host.wake returns its next native deadline after committed-input recheck, or rejects on the original owner/provider failure; cancellation closes the original provider cursor.",
+    "negativeControl": "rust/crates/actors/src/local/runtime/tests.rs negative_control_conformance_rejects_a_host_that_loses_alarm_changes, plus the same shared restarted/paused/interrupted cases used by this hosted target."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "5e5004a9ddf3f49f7faea8a839e4d8b4d1db67ff27bd73532e8cb4fa5ddf7eae",
+    "classification": "event-wait",
+    "producer": "The original Durable Object alarm/RPC owns WasmActorHost work; its canonical package and provider are the exported shared Actors fixture, not a local Runtime.",
+    "terminal": "Host.wake returns its next native deadline after committed-input recheck, or rejects on the original owner/provider failure; cancellation closes the original provider cursor.",
+    "negativeControl": "rust/crates/actors/src/local/runtime/tests.rs negative_control_conformance_rejects_a_host_that_loses_alarm_changes, plus the same shared restarted/paused/interrupted cases used by this hosted target."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "6de467a3595599b5b65c24ddd4e2a46a8ac8a187064286791777c154b7f08c6a",
+    "classification": "event-wait",
+    "producer": "The original Durable Object alarm/RPC owns WasmActorHost work; its canonical package and provider are the exported shared Actors fixture, not a local Runtime.",
+    "terminal": "Host.wake returns its next native deadline after committed-input recheck, or rejects on the original owner/provider failure; cancellation closes the original provider cursor.",
+    "negativeControl": "rust/crates/actors/src/local/runtime/tests.rs negative_control_conformance_rejects_a_host_that_loses_alarm_changes, plus the same shared restarted/paused/interrupted cases used by this hosted target."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "65cbd94ecf27bac19f722006f62be914e08c301f7f3237f3ce286a15e960c8be",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: for (const [, row] of this.rows()) {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "b3b196e2c75f8dd1a94fb07001cff2ad7935c34c1bd506c2d0f26cc5715634af",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: await this.discover();",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "66a99602a42f708eed57e437913b353332e49c4639e6265ae6fdc408600d3741",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (this.metadata.get(\"pending\") !== \"1\" && !this.rows().some(([, route]) => route.pending)) await this.ctx.storage.deleteAlarm();",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "0f52e06bd1bc4e0aa3b92b3cfd7ab49444db0bea3f7db207518d28ec081293ff",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (this.metadata.get(\"pending\") !== \"1\" && !this.rows().some(([, route]) => route.pending)) await this.ctx.storage.deleteAlarm();",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "1296b9d5d94c69348d3e27946d86704b0218146fc537bedbd543dc74d766bca2",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (current.generation === row.generation) this.routes.put(name, JSON.stringify({ ...current, pending: false }));",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "69d6dde4c8697eada0a90f3270f615bb655c1989b2c58a251366deb164b2f750",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (current.generation === row.generation) this.routes.put(name, JSON.stringify({ ...current, pending: false }));",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "307f702862cff2f6a40feb36d335b19fd304f750ef5998a31748429b337e7180",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (current.generation === row.generation) this.routes.put(name, JSON.stringify({ ...current, pending: false }));",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "67c11e874e65dfdbd38041a3f3b87d987d27677c43e2a67452c25b8f7cc9be28",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: const current = route(this.routes.get(name) ?? refuse(\"lost-routing-metadata\"));",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "28428ce9e8ec002ebf25393ad03303d3695336486ab8617d234c7cc0b506bb6f",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: await Promise.all(this.rows().filter(([, route]) => route.pending).map(async ([name, row]) => {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "5732afec8d7c929a5d1a5539b4815ee0c3f284c28787f5cc6ce72abbbac68e7a",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: await this.discover();",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "c1075aeb24a2efd01c98984335677375451fb78878235b5fe4f43dbe5aa1b392",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: this.routes.put(name, JSON.stringify({ ...row, paths }));",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "45de404664fbd39524499fad4418eaa8ca70ccc3ca4e903172e8ef9e6858a6f2",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: this.routes.put(name, JSON.stringify({ ...row, paths }));",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "aff74bd781341d21ee8a2c40ae81eee5ad18ee7109b793f7ed328289e38777ec",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: const row = route(raw);",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "fd0466edaa1840b3c0f1722ea2e457088b73a83a4b52fcde49bfdcc7aa2f3efb",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (raw === undefined || paths.length === 0 || paths.length > 1000 || new Set(paths).size !== paths.length",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "f0d8330fa35ac3ac23dd50a825665b2593f1a7031e5481c96ff30da20ec7c1b8",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: const name = key(address), raw = this.routes.get(name);",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "c7d5fb224b6b5b5174121258cbfa60e483b1241f894c5f0b24c48a0d5abfc584",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (generation === this.metadata.get(\"generation\")) this.metadata.put(\"pending\", \"0\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "9db446d9637334b1253a6e5d11746f93df3dcf5249710966c1028113414b2e18",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (generation === this.metadata.get(\"generation\")) this.metadata.put(\"pending\", \"0\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "d812b23e902ae82160f13d4892f082eeb7a605463566846233304d83739865a4",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (generation === this.metadata.get(\"generation\")) this.metadata.put(\"pending\", \"0\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "5e74cf8a14dd7d5ba52f7c30f768ca7670298b313695bd996135842fdd8e1ed2",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: full = page.full;",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "007c2f8849a229ce174bf6f11a6b2593f988f7e166f12fbb58a861e0ec6fa4a4",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: this.metadata.put(\"cursor\", String(page.next));",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "69c30a49a053f11a962f17d34c5d91ca7e296c8bb974abda87a17b592950024a",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: this.metadata.put(\"cursor\", String(page.next));",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "3a0c4de418e9af943e9bdd9916a44d41a6626e4dc4ea3989dbf641625c483aa8",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: this.routes.put(name, JSON.stringify({ address: [...address], paths: [], generation: 0, pending: true }));",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "ce40d940df8ec53db7ff4cf5dfcd533ae3508e77e71e7cc6436c8fab66dacbd1",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (this.rows().length >= 1000) refuse(\"capacity\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "100054b7a1f3252cc6a1f47a1c85b0c5cb021339d4517d57ade5025fcdfba6ad",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (this.routes.get(name) === undefined) {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "1ec9a6dad63d5ebb3446dddfe6a16ffc4ec50ec5d0533d1ad65f506f8ad4cb2e",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: for (const address of page.actors) {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "d34c2814c1692134b84794bdb30ccc4fec35adcf2bbdb110095c297458943d28",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: const page = await (await this.domain).created(BigInt(this.metadata.get(\"cursor\") ?? \"0\")) as { actors: Uint8Array[]; next: bigint; full: boolean };",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "7f5af1a8341bc9ff5c84ad161ed04c55573634452455b16964a8d921b71c458b",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: const generation = this.metadata.get(\"generation\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "325140957af425e1f33aafebe3068082930235ada43e8b7a7f2daf1f1300398a",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (this.metadata.get(\"pending\") !== \"1\") return;",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "692f4942d6907330d6f2f13f80acce19db4b8f99b18b418ee47524506942d1df",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: private rows(): [string, Route][] { return this.routes.entries().map(([name, value]) => [name, route(value)]); }",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "e33aab34481694bd2adcd5a408a3493b6efe2137bb54d6206356f6567982d2f6",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: this.routes.put(name, JSON.stringify({ ...route, generation: route.generation + 1, pending: true }));",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "c5173e6bf099dfc690d3dcc6fb73fe4ba7c8b8b983f69642f41d8c05e6562019",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: for (const [name, route] of this.rows()) {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "c631c4c589587a83ae727dae0f3e4435be411814ead920c3c030cc2333460233",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: this.metadata.put(\"generation\", String(generation)); this.metadata.put(\"pending\", \"1\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "8a43c5f9d69b220273026be9ec3590a989632e9875fc46b43cf289f673ba86e6",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: this.metadata.put(\"generation\", String(generation)); this.metadata.put(\"pending\", \"1\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "3e749bf28f34bc38431369b2923a952b234caa7b9c9db9907acb27b2b66432d6",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: this.metadata.put(\"generation\", String(generation)); this.metadata.put(\"pending\", \"1\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "fc4719c0105e7876d9b3a1aab194bbee405069fe51bf08c6b38f186ef45ceba7",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (!Number.isSafeInteger(generation)) refuse(\"discovery-generation\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "cc651f7c3794752276f1d6dd1d29a9d2e2b114a548285a021a9431799049b733",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: const generation = Number(this.metadata.get(\"generation\") ?? \"0\") + 1;",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "02352e403ba9a358956632887ef33ed1202bbced255b01568ab378127b730d76",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: private readonly journal = new SqliteJournal(this.ctx.storage, \"actors\", changes => {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "283a677a22ba239ead51d376f5a9545d0d4051defc82880d3e515d26e4bd0b11",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (this.routes.get(key(address)) === undefined) refuse(\"completion-owner\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "e80791f2f301c59ee09154e59ba9325691a98624c04b40a8addf67632d20554a",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: await this.discover();",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "0e9681c07634c2b283ecce6d809335857a491ac809653f31a24e1aa3d86c1f01",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: }, () => this.restart(), async (address: Uint8Array) => {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "0504b9f6404e91408784baa08950ae9e31f4a06d63b27319da03961e9023276b",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: if (this.routes.get(key(address)) === undefined) refuse(\"pause-owner\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "9453d2fc97a45941118f2a57a1f8e29c4c94096283dcaa81ed47c2adb17e2689",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: await this.discover();",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "30338ae3a3015bacbfa49859b9e81bfc9c5fda09cc5feced2906ff8f9675c10b",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: return ActorsDomain.open(streamProviderPort(provider), async (address: Uint8Array, paused: boolean) => {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "8298247602133f01e85a683549b209a2888d10917c7f8005ca173581fb4581d0",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: return ActorsDomain.open(streamProviderPort(provider), async (address: Uint8Array, paused: boolean) => {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "1a0774057642807ab19c69a07da35b299c21ac8c11736ba8fb9a4f92f57e2ffc",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: return ActorsDomain.open(streamProviderPort(provider), async (address: Uint8Array, paused: boolean) => {",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "3c0794a8db2de80c714b26790ec8cff12dd518be4d784e92fa2ef48041a3b1c9",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: return head;",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "dbb21f50efdcddc0567235eea8d3da6e0f5b59e14660b7fa54a0d663e8b9a78a",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: const head = await this.journal.append(index, admit, changes);",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "26997498d6747707ab5653c55ade0718819b8703cfd4f0fda4897e74fab69196",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: read: (index: number, page: number) => this.journal.read(index, page),",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "b7312fb4bb622cbb25ee584928d1c4db4d5fba040df6e8e7e8cb2eb63006a84d",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: configure: (configuration: Uint8Array, maximum: number, authority: Uint8Array) => this.journal.configure(configuration, maximum, authority),",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "6a07d1c8a32cd2440da04762903ab92eec7444cda9da31ca4a05ecc76cd8790a",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: const provider = await WasmStream.openJournal({",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "efc01c606ad4734c9d6537b0b72d998e0c91bda8bed044201e4ffed81c06f20f",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: private readonly metadata = new SqliteEventStorage(this.ctx.storage, \"actors-discovery\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "e9c9edb93e091cbd05593bc4630df9924019e09b383d38ec6194ca9e0eef433b",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: private readonly routes = new SqliteEventStorage(this.ctx.storage, \"actors-routing\");",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "8e3eb4f8fd53a2a947df3489078f377f8d950947de67ae5dd37e6801b686eef0",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: import { WasmActorHost, WasmStream } from \"../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js\";",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/cloudflare/actors.ts",
+    "fingerprint": "7b514257c6616b59fc67ebaa0cb2230a4dfd0d76ef39a3d4da067d7029211ae1",
+    "classification": "finite-work",
+    "producer": "This exact Cloudflare Actors adapter site processes committed journal changes, retained route rows, one activation page or a finite platform owner call: import { ActorsDomain, ActorsPackage } from \"./generated/acyclic_cloudflare_conformance.js\";",
+    "terminal": "The original input/page/route set is consumed, its cursor is persisted, or its storage/RPC error rejects. Wake-path rechecks repeat only after an actual committed subscription-set change.",
+    "negativeControl": "The unchanged shared Actors ordered/fork/shared-invocation/restarted cases require every activation/publication exactly once; scripts/no-polling.test.mjs reopens exact dispositions if producer, condition or dependency tokens change."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "318613f114ad6f099a605df92c1a8d0bb2f91f56a6b25f2a243950c650f1e7a0",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "ac470ff17c2732fcbf921a980df8b42556f7938300c11dc13f73198b0cfe0576",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "b7c59136b98ac868c5933d1d2f10f1b31863bb174dc319747e869f55de69fda3",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "8351acf8c7a6a8b3832ab1387cbb6b85c99e63a4534e8ea5fab1aea2e1019809",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "84303015855d542534ed04f980eb68f88811af15375520a6ba1db7c7ae803a17",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "f4a9a4fdba59988afa122173faef499e58c2f64c4879f35c2f3359198bfe542c",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "721c7541795f2c759c3a14699aaaafaab0d91c6388967ab1c208c6a8752e4f5c",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "454748a53a9929884dc1149a18e376719cccd7fe9fdd991b6fd81e24294aba47",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "79c2b2b26c7c3a2c830aac397fc588ef6176075e0e41ceaf54180f857b9befc5",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "af2c9af0f32cbe704e6ca908f5e2d5c7c63d91917d7f667ba730a7eaffdfca0a",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "f0f7aec2b02323b361a0bfa58694f4ef13e0f1df62a038bb7da168427c37dbe0",
+    "classification": "finite-work",
+    "producer": "This exact guest site consumes native metadata entries, one original activation page, retained owner addresses or the complete selected binding-name vector: await discover();",
+    "terminal": "The vector/page is exhausted and the discovery cursor advances; each admitted owner RPC/flush settles or rejects without replay. Missing selected bindings throw ActorBindingUnserved.",
+    "negativeControl": "The unchanged shared Actors creation/fork/restart cases require all original actors; the artifact load control refuses the first absent binding, and the consumer compares the full SDK-derived census with the selected manifest."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "9f82472d5af07c35b523a4df36a8724d0ebe30d5d8199abcbae1f654d1de7b32",
+    "classification": "finite-work",
+    "producer": "This exact guest site consumes native metadata entries, one original activation page, retained owner addresses or the complete selected binding-name vector: await discover();",
+    "terminal": "The vector/page is exhausted and the discovery cursor advances; each admitted owner RPC/flush settles or rejects without replay. Missing selected bindings throw ActorBindingUnserved.",
+    "negativeControl": "The unchanged shared Actors creation/fork/restart cases require all original actors; the artifact load control refuses the first absent binding, and the consumer compares the full SDK-derived census with the selected manifest."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "9c770ce55e9859b87d49e03cb2c1c936068556ceb3ef203b329cccac417bf8b2",
+    "classification": "finite-work",
+    "producer": "This exact guest site consumes native metadata entries, one original activation page, retained owner addresses or the complete selected binding-name vector: await discover();",
+    "terminal": "The vector/page is exhausted and the discovery cursor advances; each admitted owner RPC/flush settles or rejects without replay. Missing selected bindings throw ActorBindingUnserved.",
+    "negativeControl": "The unchanged shared Actors creation/fork/restart cases require all original actors; the artifact load control refuses the first absent binding, and the consumer compares the full SDK-derived census with the selected manifest."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "3241ab6bfba0fab4b3939b80906f9e2cdc739e52449ced966858105692502f97",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "ccb1aa46b126b33d5823053a563ca87fee5edceccf5a585a8ab8bc8d7e2aa031",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "rust/crates/conformance/hosted-actors/guest.mjs",
+    "fingerprint": "795d4689ae9eaae1a156c66b95ff6ad6ec7ce5d096084d5aed4d2f38665c969b",
+    "classification": "event-wait",
+    "producer": "The platform-admitted native Streams port and Actor alarm/RPC deliver the original SDK Host wake; live cursors use streamLedgerPort directly. WebAssembly exports are from the pinned sealed fixture/hosting artifacts.",
+    "terminal": "A stable committed subscription set stores the returned native alarm and flushes; refused placement, producer failure or physical owner loss rejects. No timer or readiness probe is introduced.",
+    "negativeControl": "typescript/packages/harness/test/event-wakes.test.ts returns conflict/capacity for refused registrations, and this guest requires admitted:true before wake. The canonical Actor suite requires shared-invocation, cancellation and restart semantics; an empty environment must fail the artifact producer load control."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "729a4065d13e91910d5f44c577dceab2d54774934f6d206e0cebfa84335857ec",
+    "classification": "event-wait",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: const {default:initialize, validate, verifyArtifact} = await import(pathToFileURL(join(validator, 'acyclic_manifest.js')).href);",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "0b13a651cf3cc20d5ce011836d4418f807ab34dad1487e9fd3c402a2ded83dd5",
+    "classification": "finite-work",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: for (const [name, bytes] of closure.files) writeFileSync(join(out, name), bytes, {flag:'wx'});",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "c64f8ef875989040d029313ef82c665b6d552ac916f342b034d863dcbb573c49",
+    "classification": "event-wait",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: const {actor} = await import(pathToFileURL(join(out, 'harness-actor.mjs')).href);",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "3452eb9d920e54a7d32a291f2c0d11978cb65ecdaab6e22cd17a8897b2852816",
+    "classification": "event-wait",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: await bundleHostedActors(input, output);",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "d8f5fd56be249638ec296a416a989c501df91d51b1199ca93df2961eca9fe867",
+    "classification": "event-wait",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: await bundleHostedActors(input, output);",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "60d642851bac4f3efbcbf8d2a92c9526fd91437d5e0add84fd5cf5aa8cb1459a",
+    "classification": "event-wait",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: const input = await admitHostedActorsManifest(manifestFile, environmentName, entryName);",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "b93dde50601ddb7144caec1c7e2cef65c7d69296939a4217d97ca4d7eb256cba",
+    "classification": "event-wait",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: throw new Error('HostedActorsArtifactLoadOrBindingRefusalFailed', {cause:refused});",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "8e1c97ba2d5b75387e632fc2567b56f70d87d122e8bd09d18fa6747b7407e7d1",
+    "classification": "event-wait",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: if (refused?.message !== `ActorBindingUnserved: ${bindings.names[0]}`)",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "e73e45d86a29aea3f0c40d6126fbebf52e2a585f09eeb84532a8493a479cb1c4",
+    "classification": "event-wait",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: const refused = await actor.restore(null, {env:{}, actor:{id:'conformance-controller'}})",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "2b1780c65ee6322a8c8c0c53f5a3b196532217f9e186fed4d956501ba302fa36",
+    "classification": "event-wait",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: return {manifest, entry, bindings, environmentName, entryName, verifyArtifact};",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "af55b777866bbf7c1b4607eada68cb2e8deac8e7b3d5e56555afedbda4e9f506",
+    "classification": "event-wait",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: validate(text);",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  },
+  {
+    "file": "scripts/build-hosted-actors-conformance.mjs",
+    "fingerprint": "c0ea6814aee71cbc110b843fb421630a11e3d2fc949e0fcbf970babd89022d5f",
+    "classification": "event-wait",
+    "producer": "The original sealed manifest/wasm artifact loader and its finite declared asset map: await initialize({module_or_path:readFileSync(join(validator, 'acyclic_manifest_bg.wasm'))});",
+    "terminal": "Each asset is written once, module instantiation settles or rejects, and the original empty-environment restore must reject with the first selected binding before the producer reports success.",
+    "negativeControl": "HostedActorsArtifactLoadOrBindingRefusalFailed rejects successful unbound restore or a different loader failure. The generated sealed artifact has been loaded through this control; canonical manifest verification rejects changed, missing or undeclared assets."
+  }
+]

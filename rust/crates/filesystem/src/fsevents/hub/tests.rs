@@ -269,7 +269,7 @@ fn a_burst_across_many_roots_loses_nothing() -> TestResult {
 fn rearming_loses_and_repeats_nothing() -> TestResult {
     const FILES: usize = 256;
     const ROUNDS: usize = 32;
-    const GROWTH: usize = 4 * SHARDS;
+    const GROWTH: usize = 64;
     let hub = hub()?;
     let (_parent, roots) = roots(1 + GROWTH)?;
     let watched = roots[0].clone();
@@ -526,10 +526,11 @@ fn replay_filters_old_moves_before_synthesizing_root_changes() -> TestResult {
 
 #[test]
 fn shared_coverage_preserves_root_and_ancestor_moves() -> TestResult {
+    const ROOTS: usize = 32;
     let outer = tempfile::tempdir()?;
     let parent = outer.path().canonicalize()?.join("parent");
     std::fs::create_dir(&parent)?;
-    let roots = (0..2 * SHARDS)
+    let roots = (0..ROOTS)
         .map(|index| {
             let root = parent.join(format!("root-{index}"));
             std::fs::create_dir(&root).map(|()| root)
@@ -628,7 +629,7 @@ fn a_stream_per_watch_hits_the_process_cap() -> TestResult {
         .strip_prefix("failed at ")
         .ok_or("a stream per watch never failed")?
         .parse::<usize>()?;
-    assert!((SHARDS..=1000).contains(&cap), "failed at {cap}");
+    assert!((16..=1000).contains(&cap), "failed at {cap}");
     Ok(())
 }
 

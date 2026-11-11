@@ -143,13 +143,20 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
     let binding = crate::runtime::ContentBindings {
         volume: volume.clone(),
         reader: reader.clone(),
-        writer: None,
+        writer: Some(FilesystemContentPublisher::new(
+            host.clone(),
+            &volume,
+            &verifier,
+            &scope,
+            4096,
+            None,
+        )?),
     };
     let task = crate::runtime::Bindings {
         content: Some(binding.clone()),
         seed: Some(crate::layers::PinnedLayer {
             volume: seed.clone(),
-            generation,
+            generation: generation.clone(),
         }),
         scope: crate::runtime::RuntimeScope::new(
             Capabilities::new([
@@ -178,6 +185,51 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
         invocation.operation_id,
         &invocation.call_id,
     )?;
+    host.put_content(
+        &seed,
+        &seed_grant,
+        "later",
+        b"new head",
+        "text/plain",
+        "later",
+        4096,
+        &IdempotencyKey::new("later")?,
+        None,
+        access,
+    )
+    .await?;
+    let request = crate::conversation::DirectoryRead {
+        volume: &seed,
+        granted_prefix: "",
+        path: "",
+        generation: None,
+        after: None,
+        maximum_entries: 1,
+    };
+    let (page, _hold) = context.list_tool_directory(request, None).await?;
+    assert_eq!(page.generation, generation);
+    assert_eq!(
+        page.entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["wanted"]
+    );
+    let (head, _hold) = reader
+        .select_private_generation(&seed, "", "later", None, access)?
+        .await?;
+    assert_ne!(head, generation);
+    let foreign = context
+        .list_tool_directory(
+            crate::conversation::DirectoryRead {
+                generation: Some(&head),
+                after: Some("later"),
+                ..request
+            },
+            None,
+        )
+        .await;
+    assert!(matches!(foreign, Err(ref error) if error.code() == crate::wire::ErrorCode::Conflict));
     let tool = crate::tool::files::read()?;
     let mut pending = tool.executor.execute(invocation, Some(context));
     assert!(pending.as_mut().now_or_never().is_none());

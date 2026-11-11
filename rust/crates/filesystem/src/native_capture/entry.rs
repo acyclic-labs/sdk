@@ -83,7 +83,7 @@ impl HeldRoot {
                     from,
                     &destination.root.directory(),
                     to,
-                    crate::RenameMode::NoReplace,
+                    acyclic_native_runtime::RenameMode::NoReplace,
                     None,
                     work,
                 )
@@ -456,9 +456,19 @@ fn descendant_path(base: &Path, relative: &Path) -> PathBuf {
         let mut path = base.to_path_buf();
         for component in relative.components() {
             match component {
-                Component::ParentDir => {
-                    path.pop();
-                }
+                // Ascent cancels only a named step. A relative base keeps it
+                // (`.` then `..` is `..`, `C:` then `..` is `C:..`); only a
+                // root is its own parent.
+                Component::ParentDir => match path.components().next_back() {
+                    Some(Component::Normal(_)) => {
+                        path.pop();
+                    }
+                    Some(Component::RootDir) => {}
+                    None
+                    | Some(Component::Prefix(_) | Component::CurDir | Component::ParentDir) => {
+                        path.push("..");
+                    }
+                },
                 Component::CurDir => {}
                 component => path.push(component),
             }
@@ -468,6 +478,25 @@ fn descendant_path(base: &Path, relative: &Path) -> PathBuf {
     #[cfg(not(windows))]
     {
         base.join(relative)
+    }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn ascent_cancels_only_named_steps() {
+    for (base, relative, expected) in [
+        (".", r"..\target", r".\..\target"),
+        ("", r"..\target", r"..\target"),
+        ("..", r"..\target", r"..\..\target"),
+        (r"C:\a\b", r"..\c", r"C:\a\c"),
+        ("C:", r"..\target", r"C:..\target"),
+        (r"\\?\C:\", r"..\x", r"\\?\C:\x"),
+    ] {
+        assert_eq!(
+            descendant_path(Path::new(base), Path::new(relative)).as_os_str(),
+            expected,
+            "{base} + {relative}"
+        );
     }
 }
 

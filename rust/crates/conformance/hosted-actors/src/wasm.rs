@@ -6,8 +6,8 @@ use acyclic_actors::{
     local::{Clock, Error, Store, SystemClock},
 };
 use acyclic_stream::{
-    BoxProviderFuture, JournalStream, JournalStreamLimits, ReadRequest, StreamError, StreamPath,
-    StreamProvider, WasmStream,
+    BoxProviderFuture, InjectedStream, ReadRequest, StreamError, StreamPath, StreamProvider,
+    WasmStream,
     testing::{Counted, RequestClass, RequestLedger},
 };
 use futures::TryStreamExt;
@@ -17,15 +17,13 @@ use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 
 fn failed(error: impl std::fmt::Display) -> JsValue {
-    JsValue::from_str(&format!(
-        "STEP hosted-actors failed: {error}; recovery: bash scripts/qualify-cloudflare.sh"
-    ))
+    JsValue::from_str(&format!("hosted Actors conformance failed: {error}"))
 }
 
-/// The suite and every remote owner dispatch through this ONE counted journal.
+/// The suite and every remote owner dispatch through this ONE admitted provider.
 #[wasm_bindgen]
 pub struct ActorsDomain {
-    store: Store<Counted<JournalStream>>,
+    store: Store<Counted<InjectedStream>>,
     clock: SystemClock,
     pause: Function,
     restart: Function,
@@ -35,14 +33,12 @@ pub struct ActorsDomain {
 #[wasm_bindgen]
 impl ActorsDomain {
     pub async fn open(
-        journal: JsValue,
+        port: JsValue,
         pause: Function,
         restart: Function,
         complete: Function,
     ) -> Result<Self, JsValue> {
-        let provider = JournalStream::open(journal, JournalStreamLimits::default())
-            .await
-            .map_err(failed)?;
+        let provider = InjectedStream::new(port).map_err(failed)?;
         Ok(Self {
             store: Store::new(
                 Arc::new(Counted::new(provider)),
@@ -55,7 +51,7 @@ impl ActorsDomain {
         })
     }
 
-    /// Only canonical byte RPC crosses a DO/module boundary, never this object.
+    /// Only canonical byte RPC crosses an owner/module boundary, never this object.
     pub fn provider(&self) -> WasmStream {
         WasmStream::from_provider(self.store.provider().clone())
     }
@@ -137,7 +133,7 @@ async fn control(result: Result<JsValue, JsValue>) -> Result<(), Error> {
 }
 
 impl Backend for ActorsDomain {
-    type Provider = Counted<JournalStream>;
+    type Provider = Counted<InjectedStream>;
     fn requests(&self) -> RequestLedger {
         self.store.provider().ledger()
     }

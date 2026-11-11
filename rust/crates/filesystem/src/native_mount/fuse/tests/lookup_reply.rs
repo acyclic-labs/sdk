@@ -135,7 +135,6 @@ fn lookup_replies_when_policy_refresh_notifies_or_fails() -> Result<(), Box<dyn 
             File::from(descriptor),
             &work,
         )?);
-        let reader = io.reader()?;
         let session = HostSession::new(PacketRouter::Single(FuseProjection { core }), io, &work)?;
         let capture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../fixtures/fuse/linux-kernel-packets.json"
@@ -167,7 +166,7 @@ fn lookup_replies_when_policy_refresh_notifies_or_fails() -> Result<(), Box<dyn 
         let mut buffers = PacketBuffers::new(session_capacity(), &work)?;
         client.send(&lookup)?;
         // The callback runtime translates a handler unwind to a typed failure.
-        assert!(session.serve(&mut buffers, &reader)?);
+        assert!(session.serve(&mut buffers)?);
         assert_eq!(client.recv(&mut reply)?, 16);
         assert_eq!(
             i32::from_ne_bytes(reply[4..8].try_into()?),
@@ -181,7 +180,7 @@ fn lookup_replies_when_policy_refresh_notifies_or_fails() -> Result<(), Box<dyn 
             buffers.output = PacketBuffers::new(16, &work)?.output;
             lookup[8..16].copy_from_slice(&(unique + 1).to_ne_bytes());
             client.send(&lookup)?;
-            assert!(session.serve(&mut buffers, &reader).is_err());
+            assert!(session.serve(&mut buffers).is_err());
             assert_eq!(client.recv(&mut reply)?, 16);
             assert_eq!(i32::from_ne_bytes(reply[4..8].try_into()?), -libc::EIO);
             assert_eq!(u64::from_ne_bytes(reply[8..16].try_into()?), unique + 1);

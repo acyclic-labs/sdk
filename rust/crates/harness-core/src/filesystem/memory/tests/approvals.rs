@@ -165,7 +165,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
         ),
     );
     let reads = Arc::new(Reads {
-        files: storage.approval_files.clone(),
+        files: storage.internal_files.clone(),
         requests: AtomicUsize::new(0),
         release: Mutex::new(None),
     });
@@ -225,7 +225,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
     // Reopen the same real volume through a second owner, as after a restart.
     let reopened = agent_approvals(
         &storage.volume,
-        &storage.approval_files,
+        storage.internal_files.clone(),
         crate::preset::Preset::graphcoder().approval_policy,
         65_536,
     )?;
@@ -470,7 +470,7 @@ async fn an_exact_human_rule_replays_and_keeps_agent_policy_and_action_scope() -
                 ..Limits::default()
             },
         )?;
-        let approvals = AgentApprovals::new(storage.approval_files.clone(), Arc::new(policy));
+        let approvals = AgentApprovals::new(storage.internal_files.clone(), Arc::new(policy));
         let retained = approvals.outcome(id, journal.as_ref(), None).await;
         if scope_conflict {
             assert!(
@@ -537,7 +537,7 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
     let agent = AgentId::new();
     let storage = MemoryHarnessStorage::new(agent.clone(), 65_536).await?;
     let files = Arc::new(FailGrantOnce {
-        files: storage.approval_files.clone(),
+        files: storage.internal_files.clone(),
         fail: AtomicBool::new(true),
     });
     let policy = AgentApprovalPolicy::new(
@@ -572,7 +572,7 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
         crate::interaction::ApprovalDecisionFile::principal_file("human")
     );
     let bytes = storage
-        .approval_files
+        .internal_files
         .read(&path, 65_536)
         .await?
         .ok_or_else(|| Error::NotFound("original rule decision".into()))?;

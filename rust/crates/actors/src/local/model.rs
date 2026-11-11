@@ -143,6 +143,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
                     deadline_unix_ms: 10,
                 },
                 effects: vec![output(0, b"e0")?],
+                subscriptions: Vec::new(),
             },
         )),
         1 => Some((
@@ -156,6 +157,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
                 checkpoint: checkpoint(2),
                 alarm: AlarmChange::Keep,
                 effects: vec![output(1, b"a1")?],
+                subscriptions: Vec::new(),
             },
         )),
         2 => Some((
@@ -189,6 +191,7 @@ fn script(state: &State) -> Result<Option<(Trigger, Transition)>, Failure> {
                         }],
                     ),
                 ],
+                subscriptions: Vec::new(),
             },
         )),
         _ => None,

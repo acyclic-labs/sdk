@@ -10,7 +10,8 @@
 
 use super::{
     AlarmChange, CancellationToken, Checkpoint, CodecIdentity, Delivery, GuestError, GuestFuture,
-    Handler, Interrupt, Manifest, Participant, Subscription, SubscriptionCuts, Transition, Trigger,
+    Handler, Interrupt, Manifest, Participant, Subscription, SubscriptionChange, SubscriptionCuts,
+    Transition, Trigger,
 };
 use crate::{addressing::ActorReference, domain};
 use acyclic_stream::{CommitId, CommitRequest, IdempotencyKey, StreamPath, wire, wire_codec};
@@ -129,6 +130,63 @@ struct TransitionWire {
     participant: Option<ParticipantWire>,
     #[prost(bytes = "bytes", optional, tag = "9")]
     response: Option<Bytes>,
+    #[prost(message, repeated, tag = "10")]
+    subscriptions: Vec<SubscriptionChangeWire>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct SubscriptionChangeWire {
+    #[prost(string, tag = "1")]
+    id: String,
+    #[prost(oneof = "ChangeWire", tags = "2, 3")]
+    change: Option<ChangeWire>,
+}
+
+#[derive(Clone, PartialEq, prost::Oneof)]
+enum ChangeWire {
+    #[prost(message, tag = "2")]
+    Add(AddWire),
+    #[prost(bool, tag = "3")]
+    Remove(bool),
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct AddWire {
+    #[prost(string, tag = "1")]
+    path: String,
+    #[prost(uint64, optional, tag = "2")]
+    from: Option<u64>,
+}
+
+fn subscription_change_wire(change: &SubscriptionChange) -> SubscriptionChangeWire {
+    match change {
+        SubscriptionChange::Add { id, path, from } => SubscriptionChangeWire {
+            id: id.clone(),
+            change: Some(ChangeWire::Add(AddWire {
+                path: path.as_str().to_owned(),
+                from: *from,
+            })),
+        },
+        SubscriptionChange::Remove { id } => SubscriptionChangeWire {
+            id: id.clone(),
+            change: Some(ChangeWire::Remove(true)),
+        },
+    }
+}
+
+fn subscription_change(wire: SubscriptionChangeWire) -> Result<SubscriptionChange, GuestError> {
+    if wire.id.is_empty() {
+        return Err(invalid("subscription change"));
+    }
+    match wire.change {
+        Some(ChangeWire::Add(add)) => Ok(SubscriptionChange::Add {
+            id: wire.id,
+            path: StreamPath::new(add.path).map_err(|_| invalid("subscription change"))?,
+            from: add.from,
+        }),
+        Some(ChangeWire::Remove(true)) => Ok(SubscriptionChange::Remove { id: wire.id }),
+        Some(ChangeWire::Remove(false)) | None => Err(invalid("subscription change")),
+    }
 }
 
 #[derive(Clone, PartialEq, prost::Oneof)]
@@ -388,6 +446,11 @@ pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError>
                     kind: participant.kind.clone(),
                     plan: participant.plan.clone(),
                 }),
+            subscriptions: transition
+                .subscriptions
+                .iter()
+                .map(subscription_change_wire)
+                .collect(),
         },
         TRANSITION_DOMAIN,
     ))
@@ -426,6 +489,11 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
             kind: participant.kind,
             plan: participant.plan,
         }),
+        subscriptions: wire
+            .subscriptions
+            .into_iter()
+            .map(subscription_change)
+            .collect::<Result<_, _>>()?,
     })
 }
 
@@ -503,6 +571,19 @@ mod tests {
                 kind: "spawn".into(),
                 plan: Bytes::from_static(b"plan"),
             }),
+            subscriptions: vec![
+                SubscriptionChange::Add {
+                    id: "watch".into(),
+                    path: StreamPath::new("agents/b/outbox")?,
+                    from: None,
+                },
+                SubscriptionChange::Add {
+                    id: "replay".into(),
+                    path: StreamPath::new("agents/c/outbox")?,
+                    from: Some(4),
+                },
+                SubscriptionChange::Remove { id: "old".into() },
+            ],
         })
     }
 
@@ -549,8 +630,33 @@ mod tests {
         assert_eq!(decode_transition(&encode_transition(&empty)?)?, empty);
         // An unknown field the host would otherwise ignore.
         let mut unknown = bytes.clone();
-        unknown.extend_from_slice(&[0x50, 0x01]);
+        unknown.extend_from_slice(&[0x78, 0x01]);
         assert!(decode_transition(&unknown).is_err());
+        // A subscription change names its id and exactly one canonical change.
+        for change in [
+            SubscriptionChangeWire {
+                id: String::new(),
+                change: Some(ChangeWire::Remove(true)),
+            },
+            SubscriptionChangeWire {
+                id: "watch".into(),
+                change: None,
+            },
+            SubscriptionChangeWire {
+                id: "watch".into(),
+                change: Some(ChangeWire::Add(AddWire {
+                    path: "/not/a/path".into(),
+                    from: None,
+                })),
+            },
+        ] {
+            let mut forged: TransitionWire = canonical(&bytes, "transition", TRANSITION_DOMAIN)?;
+            forged.subscriptions = vec![change];
+            assert!(matches!(
+                decode_transition(&encode(&forged, TRANSITION_DOMAIN)),
+                Err(GuestError::Decode(_))
+            ));
+        }
         // A repeated message field decodes (merged), but is not canonical.
         let mut duplicated = bytes;
         duplicated.extend_from_slice(&[0x0a, 0x03, 0x0a, 0x01, b'x']);

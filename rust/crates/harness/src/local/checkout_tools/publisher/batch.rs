@@ -19,11 +19,7 @@ impl CheckoutPublisher {
                 if let Some(changes) = changes {
                     for change in changes {
                         mount.check_with_work(
-                            match change {
-                                ContentChange::CreateAbsent { .. } => Action::Create,
-                                ContentChange::UpdateExpected { .. } => Action::Write,
-                                ContentChange::DeleteExpected { .. } => Action::Delete,
-                            },
+                            change.action(),
                             change.path(),
                             self.tools.clock.now_unix_millis() / 1000,
                             access

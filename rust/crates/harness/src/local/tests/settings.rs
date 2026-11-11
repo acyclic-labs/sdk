@@ -343,8 +343,13 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
         panic!("authored home")
     };
     let version = format!(
-        "authored-file-v1:{}",
-        serde_json::to_string(&home_selected).map_err(|error| Error::Invalid(error.to_string()))?
+        "authored-path-v2:{}",
+        serde_json::to_string(&crate::conversation::PathSelection {
+            volume: home_selected.volume,
+            path: home_selected.path,
+            generation: home_selected.generation,
+        })
+        .map_err(|error| Error::Invalid(error.to_string()))?
     );
     write(&harness, "notes.txt", "off: true").await?;
     let reread = run(
@@ -782,14 +787,17 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
 }
 
 #[tokio::test]
-async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens() -> Result<()> {
+async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts() -> Result<()> {
     use crate::model::{
         Model, ModelDispatch, ModelProfileBinding, ModelProvider, PreparedModelRequest,
     };
     use crate::profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve};
     use std::sync::Arc;
 
-    struct Bound(ModelProfileBinding);
+    struct Bound(
+        ModelProfileBinding,
+        Arc<crate::test_support::ScriptedModelProvider>,
+    );
     impl ModelProvider for Bound {
         fn model_profile(&self, _: &Model) -> Result<Option<ModelProfileBinding>> {
             Ok(Some(self.0))
@@ -799,10 +807,10 @@ async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens()
         }
         fn generate<'a>(
             &'a self,
-            _: &'a PreparedModelRequest,
-            _: ModelDispatch,
+            request: &'a PreparedModelRequest,
+            dispatch: ModelDispatch,
         ) -> crate::model::ModelStream<'a> {
-            panic!("settings admission must not dispatch a model")
+            self.1.generate(request, dispatch)
         }
     }
 
@@ -821,28 +829,27 @@ async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens()
     let agent = AgentOverride::parse("---\nversion: 1\n---\n", &approvals)?;
     let binding =
         resolve(&model, &role, &project, &agent)?.bind_model(&super::model()?, capacity)?;
-    let provider = Arc::new(Bound(binding));
+    let provider = Arc::new(Bound(binding, super::text()));
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let volume = volume(directory.path()).await?;
     let config = || {
         volume_config(directory.path(), volume.clone(), provider.clone())
             .map(|config| config.compaction(crate::context::CompactionPolicy::Disabled))
     };
-    let mut harness = LocalHarness::open(config()?).await?;
-    for (temperature, expected) in [
-        (0.25, AdmissionStatus::Applied),
-        (0.75, AdmissionStatus::Rejected),
+    let mut harness = Arc::new(LocalHarness::open(config()?).await?);
+    for (sampling, expected) in [
+        ("{maxOutputTokens: 256}", AdmissionStatus::Applied),
+        ("{temperature: 0.25}", AdmissionStatus::Applied),
+        ("{temperature: 0.75}", AdmissionStatus::Rejected),
     ] {
         let version = write(
             &harness,
             "agent.ts",
-            &format!(
-                "export default (base) => ({{...base, sampling: {{temperature: {temperature}}}}});"
-            ),
+            &format!("export default (base) => ({{...base, sampling: {sampling}}});"),
         )
         .await?;
         drop(harness);
-        harness = match LocalHarness::open(config()?).await {
+        harness = Arc::new(match LocalHarness::open(config()?).await {
             Ok(harness) if expected == AdmissionStatus::Applied => harness,
             Ok(_) => panic!("conflicting sampling cannot open a profile-bound session"),
             Err(error) if expected == AdmissionStatus::Rejected => {
@@ -850,9 +857,37 @@ async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens()
                 return Ok(());
             }
             Err(error) => return Err(error),
-        };
+        });
         let record = admission(&harness, "agent.ts", &version).await?;
         assert_eq!(record.status, expected);
+        if sampling == "{maxOutputTokens: 256}" {
+            let sampling = harness.sampling.expect("applied output cap");
+            assert_eq!(sampling.max_output_tokens, Some(256));
+            assert_eq!(
+                crate::model::ModelSampling::admit(
+                    sampling.model_sampling(),
+                    Some(binding.sampling()),
+                )?,
+                binding.sampling(),
+            );
+            let mut observed = super::ObservedConversation::open(&harness).await?;
+            observed.send("profile-output", "reply").await?;
+            let requests = provider.1.requests();
+            let request = requests
+                .last()
+                .expect("the accepted settings reach the model");
+            assert_eq!(request.sampling, binding.sampling());
+            assert_eq!(request.max_output_tokens, Some(256));
+        }
+        if expected == AdmissionStatus::Rejected {
+            assert_eq!(harness.sampling, None);
+            assert!(
+                record
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("pinned profile"))
+            );
+        }
     }
     Ok(())
 }

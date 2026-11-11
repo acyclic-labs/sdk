@@ -237,7 +237,7 @@ proptest! {
     ) {
         let code = filter(&ExecutionNetwork::On).unwrap();
         if !ALLOWED_SYSCALLS.iter().any(|call| *call == i64::from(syscall))
-            && ![libc::SYS_read, libc::SYS_write, libc::SYS_fcntl,
+            && ![libc::SYS_read, libc::SYS_write, libc::SYS_fcntl, libc::SYS_ioctl,
                 libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid,
                 libc::SYS_clone3].contains(&(i64::from(syscall))) {
             prop_assert_eq!(evaluate(code, ARCH, syscall, arguments)?, DENY);
@@ -269,6 +269,21 @@ proptest! {
             control[1] = u64::try_from(command).map_err(|_| TestCaseError::fail("negative fcntl command"))?;
             prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_fcntl).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, control)?, ALLOW);
         }
+        // Inherited pipes need the same descriptor-local nonblocking control
+        // as ordinary fcntl. Requests with device, terminal or signal effects,
+        // and arbitrary future requests, must still fail in the actual filter.
+        let requests = [libc::FIONBIO, libc::FIONREAD, libc::TIOCSTI, libc::FIOASYNC]
+            .map(|request| {
+                let [a, b, c, d, ..] = request.to_le_bytes();
+                u64::from(u32::from_le_bytes([a, b, c, d]))
+            });
+        let [nonblocking, _, _, asynchronous] = requests;
+        for request in std::iter::once(arguments[1]).chain(requests) {
+            let mut control = arguments;
+            control[1] = request;
+            prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_ioctl).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, control)?,
+                if request & u64::from(u32::MAX) == nonblocking { ALLOW } else { DENY });
+        }
         // Restore a permissive default in the actual generated program.
         // The same host IPC operation is then admitted without any path or FD.
         let mut permissive = code.to_vec();
@@ -278,6 +293,9 @@ proptest! {
             }
         }
         prop_assert_eq!(evaluate(&permissive, ARCH, u32::try_from(libc::SYS_shmat).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, ALLOW);
+        let mut signal_control = arguments;
+        signal_control[1] = asynchronous;
+        prop_assert_eq!(evaluate(&permissive, ARCH, u32::try_from(libc::SYS_ioctl).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, signal_control)?, ALLOW);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { conversation, waitFor } from "./conversation.mjs";
@@ -20,7 +20,7 @@ export async function shellJobs(processes, input, fixture, capture) {
       }
     });
   });
-  let jobs, inspected;
+  let jobs, inspected, gateCompletion, gateFailure;
   try {
     server.listen(0, "127.0.0.1");
     await once(server, "listening", { signal: fixture.signal });
@@ -29,21 +29,34 @@ export async function shellJobs(processes, input, fixture, capture) {
       if (turn.id !== "inspect") return;
       const one = await waitFor(pending.get("one"), signal);
       const two = await waitFor(pending.get("two"), signal);
-      const closed = new Promise(resolve => one.once("close", resolve));
-      await writeFile(join(fixture.workspace, jobs.one.cancel), "cancel\n");
-      await waitFor(closed, signal);
-      assert.equal(two.destroyed, false, "cancelling one job stopped its sibling");
-      let text = "", receive;
-      const completed = new Promise(resolve => {
-        receive = bytes => { text += bytes; if (text.includes("\n")) resolve(text); };
-        two.on("data", receive);
-      });
-      try {
-        two.write("G");
-        assert.equal(await waitFor(completed, signal), "OUTPUT_COMPLETE\n");
-      } finally { two.off("data", receive); }
+      assert.equal(one.destroyed, false, "job stopped before its cancellation turn");
+      // The worker writes its returned cancellation path after this prompt.
+      // Keep the sibling gated until the original child's close event proves
+      // cancellation; this work runs alongside the model's waiting read.
+      gateCompletion = (async () => {
+        await once(one, "close", { signal });
+        assert.equal(two.destroyed, false, "cancelling one job stopped its sibling");
+        let text = "", receive, closed, failed;
+        const completed = new Promise((resolve, reject) => {
+          receive = bytes => { text += bytes; if (text.includes("\n")) resolve(text); };
+          closed = () => reject(new Error("sibling closed before output completion"));
+          failed = reject;
+          two.on("data", receive); two.once("close", closed); two.once("error", failed);
+        });
+        try {
+          two.write("G");
+          assert.equal(await waitFor(completed, signal), "OUTPUT_COMPLETE\n");
+        } finally {
+          two.off("data", receive); two.off("close", closed); two.off("error", failed);
+        }
+      })();
+      gateCompletion.catch(error => { gateFailure = error; active.killExecutable(); });
     }, async (turn, reply, signal) => {
-      if (turn.id === "inspect") { inspected = JSON.parse(reply.text); return; }
+      if (turn.id === "inspect") {
+        await gateCompletion;
+        inspected = JSON.parse(reply.text);
+        return;
+      }
       if (turn.id === "foreground") {
         const later = JSON.parse(reply.text);
         assert.deepEqual(later.one, jobs.one);
@@ -63,7 +76,7 @@ export async function shellJobs(processes, input, fixture, capture) {
     });
     // The final model turn waits on private-file publication and verifies the
     // original terminal before closing the conversation's owner.
-    assert.equal(inspected.one.stop.kind, "control_stopped");
+    assert.equal(inspected.one.stop?.kind, "control_stopped", JSON.stringify(inspected.one));
     assert.equal(inspected.one.stop.cleanup_completed, true);
     const succeeded = value => {
       assert.equal(value.success, true, "background job did not finish successfully");
@@ -74,9 +87,12 @@ export async function shellJobs(processes, input, fixture, capture) {
       /background job did not finish successfully/);
     assert.ok(inspected.two.omitted_bytes > 0);
     assert.ok(inspected.verified.includes("COMPLETE_SPILL_AND_NEGATIVE_CONTROL"));
-    await assert.rejects(readFile(join(fixture.workspace, "one.completed")), { code: "ENOENT" });
-    assert.equal(await readFile(join(fixture.workspace, "two.completed"), "utf8"), "committed\n");
+    assert.equal(inspected.cancelled_completion_absent, true);
+    assert.equal(inspected.completed, "committed\n");
     capture({ shell_jobs: inspected });
+  } catch (error) {
+    if (gateFailure) throw new AggregateError([gateFailure, error], "shell gate failed");
+    throw error;
   } finally {
     for (const socket of sockets) socket.destroy();
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

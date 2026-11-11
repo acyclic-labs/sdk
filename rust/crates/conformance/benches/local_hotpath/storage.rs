@@ -481,6 +481,7 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) 
             alarm: AlarmChange::Keep,
             effects: Vec::new(),
             participant: None,
+            subscriptions: Vec::new(),
         };
         if index == 0 {
             if require_actor_write(&cut, sequence, &payload).is_ok() {
@@ -707,10 +708,11 @@ async fn actor_delivery(
                     wakes: 1,
                     ..Terms::default()
                 },
-                entered
-                    .at
-                    .checked_duration_since(started)
-                    .ok_or("handler entry preceded delivery")?,
+                acyclic_observability::OperationInterval {
+                    started,
+                    finished: entered.at,
+                }
+                .elapsed()?,
                 observed,
                 serde_json::json!({"actor": format!("{actor:?}"), "epoch": epoch, "subscription": INBOX, "sequence": inbox}),
             )?;

@@ -130,20 +130,14 @@ where
             let (projection, cut) = context.filter(|_| started).ok_or_else(|| {
                 Error::Storage("admitted response has no original prepared context".into())
             })?;
-            let bytes = self.load_content(projection, None).await?;
-            let (projection, _): (crate::executor::ResponseProjection, _) =
-                decode_json(&bytes, None)?;
-            if projection
-                .steering
-                .as_ref()
-                .map(|snapshot| snapshot.through)
-                != cut.map(|cut| cut.through)
-            {
+            let snapshot =
+                crate::executor::ResponseProjection::steering_snapshot(self, projection).await?;
+            if snapshot.as_ref().map(|snapshot| snapshot.through) != cut.map(|cut| cut.through) {
                 return Err(Error::Storage(
                     "admitted steering differs from its frozen range".into(),
                 ));
             }
-            Ok(projection.steering)
+            Ok(snapshot)
         })
     }
 
@@ -521,6 +515,9 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Option<Result<crate::conversation::BoundedContentFuture<'a, bool>>> {
         let approvals = self.agent_approvals.as_ref()?;
+        if !approvals.has_effect_barrier() {
+            return None;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if io.is_some_and(|io| io.original_native_work().is_some()) {
             return Some(Err(canonical_boundary(

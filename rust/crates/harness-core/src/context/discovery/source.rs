@@ -587,7 +587,7 @@ impl DiscoverySource for VolumeDiscovery<'_> {
     ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<GenerationRef, String>>>> {
         Box::pin(async move {
             self.root.validate(&mut None)?;
-            let page = self
+            let selected = self
                 .reader
                 .list_private_directory(
                     &self.root.volume,
@@ -600,7 +600,7 @@ impl DiscoverySource for VolumeDiscovery<'_> {
                     None,
                 )?
                 .await?;
-            let Some(page) = page else {
+            let Some((page, _hold)) = selected else {
                 return Ok(None);
             };
             page.validate()?;

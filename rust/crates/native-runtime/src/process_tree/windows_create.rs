@@ -153,7 +153,23 @@ pub(in crate::process_tree) struct Plan {
 
 /// Plans `command` exactly as `std::process::Command::spawn` would.
 pub(in crate::process_tree) fn plan(command: &ProcessCommand) -> io::Result<Plan> {
-    let environment = command.env.capture_if_changed();
+    let mut environment = command.env.capture_if_changed();
+    if command.boundary.is_some() {
+        // PSEC derives the guest's LOCALAPPDATA, TEMP and TMP beneath the
+        // block's LOCALAPPDATA, and refuses creation without one
+        // (ERROR_ENVVAR_NOT_FOUND). Every confined block carries a base: the
+        // command's own, else this user's known folder.
+        let block = environment.get_or_insert_with(|| {
+            std::env::vars_os()
+                .map(|(key, value)| (super::command::EnvKey::new(&key), value))
+                .collect()
+        });
+        if let std::collections::btree_map::Entry::Vacant(base) =
+            block.entry(super::command::EnvKey::new(OsStr::new("LOCALAPPDATA")))
+        {
+            base.insert(crate::private_file::user_data_directory()?.into_os_string());
+        }
+    }
     let child_paths = if command.env.changed_path() {
         environment.as_ref().and_then(|environment| {
             environment

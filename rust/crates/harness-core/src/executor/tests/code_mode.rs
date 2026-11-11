@@ -154,7 +154,7 @@ fn tool_notice_table(request: &ModelRequest) -> Value {
 
 #[tokio::test]
 async fn custom_code_executor_preserves_other_native_declarations() -> Result<()> {
-    let (mut executor, model, echo) = executor("42", allowed()?, true)?;
+    let (mut executor, model, echo) = executor("export default 42", allowed()?, true)?;
     let object = json!({"type":"object"});
     let mut tools = echo_tools(
         echo.clone(),
@@ -174,21 +174,25 @@ async fn custom_code_executor_preserves_other_native_declarations() -> Result<()
     executor.execute(input(), &Journal::default()).await?;
     let requests = model.requests();
     assert!(!requests[0].compose_tools);
-    assert_eq!(requests[0].model_tools().count(), 2);
-    assert!(
-        !requests[0]
-            .messages
-            .iter()
-            .any(|message| message.content.notice_parts().is_some())
+    // These fixed registrations are exposed directly to the model.
+    assert_eq!(
+        requests[0]
+            .model_tools()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["code", "example.echo"],
     );
-    assert_eq!(result(&model)["code"], "42");
+    assert_eq!(result(&model)["code"], "export default 42");
     assert_eq!(echo.0.load(Ordering::SeqCst), 1);
     let mut forged = requests[0].clone();
     forged.compose_tools = true;
     let forged = crate::model::PreparedModelRequest::prepare(forged, executor.limits, None)?;
     assert!(
         StockExecution::ordinary(&executor)
-            .validate_response_request(&forged)
+            .validate_response_request(
+                &forged,
+                &StockExecution::ordinary(&executor).request_tools()?
+            )
             .is_err()
     );
     Ok(())
@@ -196,13 +200,13 @@ async fn custom_code_executor_preserves_other_native_declarations() -> Result<()
 
 #[tokio::test]
 async fn large_tool_tables_split_without_losing_schemas_or_changing_the_prefix() -> Result<()> {
-    let (mut executor, _, _) = executor("42", allowed()?, true)?;
+    let (mut executor, _, _) = executor("export default 42", allowed()?, true)?;
     let model = Arc::new(
         ScriptedModelProvider::new([
             tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
                 "program".into(),
                 "code".into(),
-                json!({"code":"await tools.late({value:42})"}),
+                json!({"code":"export default await tools.late({value:42})"}),
             ))]),
             done_turn(),
         ])
@@ -283,11 +287,11 @@ async fn large_tool_tables_split_without_losing_schemas_or_changing_the_prefix()
 #[tokio::test]
 async fn dynamic_tools_update_notices_and_program_bindings_without_changing_declarations()
 -> Result<()> {
-    let (first, first_model, _) = executor("typeof tools.late", allowed()?, false)?;
+    let (first, first_model, _) = executor("export default typeof tools.late", allowed()?, false)?;
     first.execute(input(), &Journal::default()).await?;
     assert_eq!(result(&first_model), "undefined");
     let (mut second, second_model, echo) = executor(
-        "(await Promise.all([tools.late({value:42}), tools['example.echo']({value:43})])).reduce((sum, item) => sum + item.value, 0)",
+        "export default (await Promise.all([tools.late({value:42}), tools['example.echo']({value:43})])).reduce((sum, item) => sum + item.value, 0)",
         allowed()?,
         true,
     )?;
@@ -423,8 +427,11 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
     assert_eq!(logs(&journal)[0]["input_bytes"], 12);
     assert_eq!(logs(&journal)[0]["output_bytes"], 12);
     // Removing the capability updates the same notice and the next VM table.
-    let (mut revoked, revoked_model, _) =
-        executor("typeof tools['example.echo']", allowed()?, true)?;
+    let (mut revoked, revoked_model, _) = executor(
+        "export default typeof tools['example.echo']",
+        allowed()?,
+        true,
+    )?;
     revoked.tools.remove_from_model("example.echo")?;
     revoked.execute(input(), &Journal::default()).await?;
     assert_eq!(result(&revoked_model), "undefined");
@@ -462,7 +469,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
 #[tokio::test]
 async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_log() -> Result<()> {
     for approved in [false, true] {
-        let code = "await console.log('before approval'); await tools['example.echo']({value: 42})";
+        let code = "await console.log('before approval'); export default await tools['example.echo']({value: 42})";
         let (executor, model, echo) = executor(code, Arc::new(InnerApproval), true)?;
         let input = input();
         let journal = Journal::default();
@@ -541,6 +548,99 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
 }
 
 #[tokio::test]
+async fn pinned_module_calls_keep_canonical_approval_rules_and_replay() -> Result<()> {
+    use crate::approvals::{ApprovalRule, RuleVerdict};
+    use crate::interaction::{ApprovalSubject, Interaction};
+    use crate::model::NativeToolProfile;
+
+    for profile in [
+        None,
+        Some(NativeToolProfile::Anthropic),
+        Some(NativeToolProfile::Openai),
+        Some(NativeToolProfile::Google),
+    ] {
+        for verdict in [RuleVerdict::Deny, RuleVerdict::Allow] {
+            let code = "import {write, DeniedError} from 'acyclic'; export default (async () => { try { await write('file.txt', 'body', 'any'); return 'allowed'; } catch (error) { return error instanceof DeniedError ? 'denied' : String(error); } })()";
+            let (mut executor, model, writes) = executor(code, Arc::new(InnerApproval), false)?;
+            let mut write = executor
+                .tools
+                .get("example.echo", None, None)?
+                .unwrap()
+                .clone();
+            write.definition.name = "write".into();
+            write.definition.revision = "pin-test".into();
+            executor.tools.register((write, None), &mut None, None)?;
+            if let Some(profile) = profile {
+                crate::tools::native::NativeTools::new(profile)?.bind(&mut executor.tools)?;
+            }
+            executor = executor.with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new([
+                        "tool:call:code",
+                        "tool:call:write",
+                        capability::INTERACTION_ROUTE,
+                    ]),
+                    Limits::default(),
+                )?,
+                Arc::new(InnerApproval),
+            )?;
+            let rule = ApprovalRule {
+                tool: Some("write".into()),
+                arguments: None,
+                selectors: Vec::new(),
+                target: None,
+                verdict,
+            };
+            // The exact pinned spelling is the negative control: it misses
+            // the rule and would take this permissive fallback.
+            assert_eq!(
+                ApprovalRule::evaluate(
+                    std::slice::from_ref(&rule),
+                    RuleVerdict::Allow,
+                    "write@pin-test",
+                    &Value::Null
+                ),
+                RuleVerdict::Allow
+            );
+            let input = input();
+            let journal = Journal::default();
+            assert!(matches!(
+                executor.execute_progress(input.clone(), &journal).await?,
+                ExecutionProgress::Pending(_)
+            ));
+            assert_eq!(writes.0.load(Ordering::SeqCst), 0);
+            {
+                let mut approvals = journal.2.lock().unwrap();
+                assert_eq!(approvals.len(), 1);
+                let (request, outcome) = approvals.values_mut().next().unwrap();
+                let Interaction::Approval { subject, .. } = request else {
+                    panic!("not an approval")
+                };
+                assert!(matches!(subject, ApprovalSubject::Tool { tool, .. } if tool == "write"));
+                let decision = ApprovalRule::evaluate_subject(
+                    std::slice::from_ref(&rule),
+                    RuleVerdict::Allow,
+                    subject,
+                );
+                assert_eq!(decision, verdict);
+                *outcome = Some(if decision == RuleVerdict::Allow {
+                    InteractionOutcome::Approved {}
+                } else {
+                    InteractionOutcome::Denied {}
+                });
+            }
+            executor.execute(input.clone(), &journal).await?;
+            let allowed = verdict == RuleVerdict::Allow;
+            assert_eq!(result(&model), if allowed { "allowed" } else { "denied" });
+            assert_eq!(writes.0.load(Ordering::SeqCst), usize::from(allowed));
+            executor.execute(input, &journal).await?;
+            assert_eq!(writes.0.load(Ordering::SeqCst), usize::from(allowed));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()> {
     struct Observe(Arc<Journal>);
     impl ToolExecutor for Observe {
@@ -572,7 +672,7 @@ async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()>
         }
     }
     let (mut executor, model, _) = executor(
-        "await console.log('before', {value:42}); await tools['example.echo']({value:42}); await tools.observe({}); console.log('after'); 7",
+        "await console.log('before', {value:42}); await tools['example.echo']({value:42}); await tools.observe({}); console.log('after'); export default 7",
         allowed()?,
         true,
     )?;
@@ -610,10 +710,337 @@ async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()>
     Ok(())
 }
 
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> Result<()> {
+    use crate::conversation::VolumeOperation;
+    use crate::runtime::Bindings;
+
+    for (read_tool, read_volume) in [(true, true), (false, true), (true, false)] {
+        let code = r#"
+            import {read, write, ConflictError, DeniedError} from 'acyclic';
+            await write('file.txt', 'original', 'absent');
+            let current, path, readDenied = false, deniedReason = null;
+            try { await write('file.txt', 'replacement', 'absent'); throw new Error('write succeeded'); }
+            catch (error) {
+                if (!(error instanceof ConflictError)) throw error;
+                path = error.path;
+                current = error.current === null ? null : error.current.text();
+            }
+            try { await read('file.txt'); }
+            catch (error) {
+                if (!(error instanceof DeniedError)) throw error;
+                readDenied = true;
+                deniedReason = error.reason;
+            }
+            export default {path, current, readDenied, deniedReason};
+        "#;
+        let approval_policy = crate::approvals::ApprovalPolicy::accept_all("owner");
+        let policy: Arc<dyn ToolPolicy> = Arc::new(approval_policy.bind()?);
+        let (mut executor, model, unused_tool) = executor(code, policy.clone(), false)?;
+        for tool in [crate::tool::files::read()?, crate::tool::files::write()?] {
+            executor.tools.register((tool, None), &mut None, None)?;
+        }
+        let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536)
+            .await?
+            .with_approval_policy(approval_policy)?;
+        let content = storage.content_bindings();
+        let mut grants = vec![
+            "tool:call:code".into(),
+            "tool:call:write".into(),
+            capability::INTERACTION_ROUTE.into(),
+            content
+                .volume
+                .capability(VolumeOperation::Write, &mut None)?,
+        ];
+        if read_tool {
+            grants.push("tool:call:read".into());
+        }
+        if read_volume {
+            grants.push(
+                content
+                    .volume
+                    .capability(VolumeOperation::Read, &mut None)?,
+            );
+        }
+        let scope = RuntimeScope::new(Capabilities::new(grants), Limits::default())?;
+        let task = Bindings {
+            scope: scope.clone(),
+            content: Some(content.clone()),
+            ..Bindings::local()
+        }
+        .build()?
+        .agent_context(&Capabilities::default(), content)?;
+        let operation = OperationId::new();
+        executor = executor
+            .with_tool_authority(scope, policy)?
+            .with_task_context(&task, operation)?;
+        // Exercise dispatch, failure settlement, receipt decoding and the
+        // guest reply on the same original native ledger.
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let invocation = ToolInvocation::for_model_call(
+            operation,
+            0,
+            "program".into(),
+            "code".into(),
+            json!({"code": code}),
+            Some(&work),
+        )?;
+        let journal = storage.journal();
+        let execution = StockExecution {
+            io: Some(&io),
+            ..StockExecution::ordinary(&executor)
+        };
+        execution
+            .ensure_started(
+                journal.as_ref(),
+                &TurnInput {
+                    operation_id: operation,
+                    ..input()
+                },
+            )
+            .await?;
+        let ExecutionProgress::Ready(result) = execution
+            .code(
+                journal.as_ref(),
+                (operation, 0),
+                &invocation,
+                &mut Vec::new(),
+            )
+            .await?
+        else {
+            panic!("conflicting write did not settle");
+        };
+        let records = journal.replay(operation, 0, 32, Some(&io))?.await?;
+        assert!(records.len() < 32, "the original operation fits one page");
+        let failures = records
+            .iter()
+            .filter(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
+            .collect::<Vec<_>>();
+        assert!(failures.iter().any(|record| matches!(
+            &record.event,
+            ExecutionEvent::ToolFailed { cause, .. }
+                if cause.class == ToolErrorClass::Conflict
+        )));
+        let denied_reason = if read_tool && read_volume {
+            Value::Null
+        } else {
+            let ExecutionEvent::ToolFailed { reason, cause, .. } =
+                &failures.last().expect("original denied read receipt").event
+            else {
+                unreachable!()
+            };
+            Value::String(
+                crate::executor::tool_failure::ToolFailureText(*reason, cause).to_string(),
+            )
+        };
+        assert_eq!(
+            crate::tools::code_mode::output(&result.value)?,
+            &json!({"path": "file.txt", "current": if read_tool && read_volume { Some("original") } else { None }, "readDenied": !(read_tool && read_volume), "deniedReason":denied_reason})
+        );
+        let (_, bytes, _) = storage
+            .content_reader()
+            .read_private_path(
+                storage.volume(),
+                "",
+                "file.txt",
+                None,
+                65536,
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?
+            .expect("the original authored file remains available");
+        assert_eq!(&*bytes, b"original");
+        assert!(model.requests().is_empty());
+        assert_eq!(unused_tool.0.load(Ordering::SeqCst), 0);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn console_values_are_readable_from_the_original_tool_output_directory() -> Result<()> {
+    use crate::{conversation::VolumeOperation, runtime::Bindings};
+
+    let code = "await console.log({agent:'worker'}); for (let i = 0; i < 17; i++) console.log(i); console.log('drained'); export default null";
+    let approval_policy = crate::approvals::ApprovalPolicy::accept_all("owner");
+    let policy: Arc<dyn ToolPolicy> = Arc::new(approval_policy.bind()?);
+    let (mut executor, model, unused_tool) = executor(code, policy.clone(), false)?;
+    executor
+        .tools
+        .register((crate::tool::files::read()?, None), &mut None, None)?;
+    let filesystem = acyclic_fs::Fs::memory();
+    let storage = crate::filesystem::MemoryHarnessStorage::from_providers(
+        crate::AgentId::new(),
+        65536,
+        filesystem.clone(),
+        Arc::new(acyclic_stream::MemoryStream::default()),
+    )
+    .await?
+    .with_approval_policy(approval_policy)?;
+    let journal = storage.journal();
+    let operation = OperationId::new();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let mut content = storage.content_bindings();
+    let host =
+        crate::filesystem::FilesystemHost::new(filesystem, content.volume.provider(), Some(&io))?;
+    let reader = crate::filesystem::FilesystemContentVerifier::new(
+        host,
+        &storage.verifier(),
+        storage.owner_scope(),
+        65536,
+        Some(&io),
+    )?;
+    reader.supports_native_directory_list(&content.volume, &work)?;
+    let unrelated = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    assert_eq!(
+        reader
+            .supports_native_directory_list(&content.volume, &unrelated)
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Unauthorized,
+    );
+    content.reader = reader;
+    let scope = RuntimeScope::new(
+        Capabilities::new([
+            "tool:call:code".into(),
+            "tool:call:read".into(),
+            capability::INTERACTION_ROUTE.into(),
+            content
+                .volume
+                .capability(VolumeOperation::Read, &mut None)?,
+        ]),
+        Limits::default(),
+    )?;
+    let task = Bindings {
+        scope: scope.clone(),
+        content: Some(content.clone()),
+        ..Bindings::local()
+    }
+    .build()?
+    .agent_context(&Capabilities::default(), content)?;
+    executor = executor
+        .with_tool_authority(scope, policy)?
+        .with_task_context(&task, operation)?;
+    let execution = StockExecution {
+        io: Some(&io),
+        ..StockExecution::ordinary(&executor)
+    };
+    execution
+        .ensure_started(
+            journal.as_ref(),
+            &TurnInput {
+                operation_id: operation,
+                ..input()
+            },
+        )
+        .await?;
+    let internal = stage_json(
+        journal.as_ref(),
+        operation,
+        "checkpoint:private",
+        &json!({"version": 1, "private": true}),
+        Some(&io),
+    )
+    .await?;
+    assert!(internal.path().starts_with(".system/execution/"));
+    let invocation = ToolInvocation::for_model_call(
+        operation,
+        0,
+        "program".into(),
+        "code".into(),
+        json!({"code":code}),
+        Some(&work),
+    )?;
+    let ExecutionProgress::Ready(result) = execution
+        .code(
+            journal.as_ref(),
+            (operation, 0),
+            &invocation,
+            &mut Vec::new(),
+        )
+        .await?
+    else {
+        panic!("console publication did not finish");
+    };
+    assert_eq!(
+        crate::tools::code_mode::output(&result.value)?,
+        &Value::Null
+    );
+    // Select the original console files through the model's ordinary module
+    // entrance, including tool authority and the file reader. Inner call logs
+    // created during selection cannot alter the iterator's pinned generation.
+    let directory = storage
+        .turn_outputs()
+        .tool_results(operation)
+        .expect("host tool-output locator");
+    let select = format!(
+        r#"import {{list, read}} from 'acyclic';
+        const values = [];
+        for await (const entry of list({})) values.push((await read(entry.path)).json());
+        values.sort((a, b) => a.ordinal - b.ordinal);
+        export default values;"#,
+        serde_json::to_string(&directory).map_err(|error| Error::Invalid(error.to_string()))?,
+    );
+    let selection = ToolInvocation::for_model_call(
+        operation,
+        1,
+        "select-logs".into(),
+        "code".into(),
+        json!({"code":select}),
+        Some(&work),
+    )?;
+    let ExecutionProgress::Ready(selected) = execution
+        .code(
+            journal.as_ref(),
+            (operation, 1),
+            &selection,
+            &mut Vec::new(),
+        )
+        .await?
+    else {
+        panic!("console selection did not finish");
+    };
+    let values = crate::tools::code_mode::output(&selected.value)?
+        .as_array()
+        .expect("selected logs");
+    // The original publication spans the directory iterator's page boundary.
+    // Selection adds its own call logs, which must not enter that pinned cut.
+    assert_eq!(values.len(), 19);
+    for value in values {
+        assert_eq!(value["kind"], "code.log");
+        assert_eq!(value["call_id"], "program");
+    }
+    assert_eq!(values[0]["values"], json!([{ "agent": "worker" }]));
+    for (index, value) in values[1..18].iter().enumerate() {
+        assert_eq!(value["values"], json!([index]));
+    }
+    assert_eq!(values[18]["values"], json!(["drained"]));
+    assert!(model.requests().is_empty());
+    assert_eq!(unused_tool.0.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
 #[tokio::test]
 async fn retained_inner_context_survives_both_replay_entry_points_without_running_js() -> Result<()>
 {
-    let code = "await tools['example.echo']({value:42})";
+    let code = "export default await tools['example.echo']({value:42})";
     let (executor, model, echo) = executor(code, allowed()?, true)?;
     let input = input();
     let journal = Journal::default();
@@ -728,7 +1155,7 @@ async fn retained_inner_context_survives_both_replay_entry_points_without_runnin
 #[tokio::test]
 async fn value_encoding_and_exception_formatting_cannot_abandon_inner_calls() -> Result<()> {
     for code in [
-        "({toJSON() { console.log('encoding'); tools['example.echo']({value:42}); return 1; }})",
+        "export default ({toJSON() { console.log('encoding'); tools['example.echo']({value:42}); return 1; }})",
         "throw {toString() { console.log('diagnostic'); tools['example.echo']({value:42}); return 'failed'; }}",
     ] {
         let (executor, model, echo) = executor(code, allowed()?, true)?;
@@ -743,7 +1170,7 @@ async fn value_encoding_and_exception_formatting_cannot_abandon_inner_calls() ->
             1
         );
         assert_eq!(journal.0.lock().unwrap().iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), 1);
-        if code.starts_with('(') {
+        if code.starts_with("export default") {
             assert_eq!(value, json!({"value": 1, "logs": ["encoding"]}));
         } else {
             assert_eq!(value, json!({"error": "failed", "logs": ["diagnostic"]}));
@@ -763,12 +1190,12 @@ async fn producerless_promises_fail_after_tool_retirement_and_live_producers_com
             true,
         ),
         (
-            "await new Promise(resolve => Promise.resolve().then(() => resolve(42)))",
+            "export default await new Promise(resolve => Promise.resolve().then(() => resolve(42)))",
             0,
             false,
         ),
         (
-            "await new Promise(resolve => tools['example.echo']({value:42}).then(value => resolve(value.value)))",
+            "export default await new Promise(resolve => tools['example.echo']({value:42}).then(value => resolve(value.value)))",
             1,
             false,
         ),
@@ -805,7 +1232,7 @@ async fn mutating_builtins_cannot_abandon_queued_calls() -> Result<()> {
         Object.defineProperty(Promise.prototype, 'constructor', {get() { throw 'mutated constructor'; }});
         Object.defineProperty(Promise, Symbol.species, {get() { throw 'mutated species'; }});
         Object.defineProperty = null;
-        42
+        export default 42
     "#;
     let (executor, model, echo) = executor(code, allowed()?, true)?;
     let journal = Journal::default();
@@ -827,7 +1254,7 @@ async fn mutating_builtins_cannot_abandon_queued_calls() -> Result<()> {
 
 #[tokio::test]
 async fn sandbox_exposes_only_granted_tools_and_their_original_schema() -> Result<()> {
-    let code = r#"let refused = false; try { Function('return process.env')(); } catch (e) { refused = e instanceof ReferenceError; } ({refused, sum: [1,2,3].reduce((a,b) => a+b), host: [typeof fetch, typeof require, typeof process, typeof std, typeof os, typeof readFile, typeof Deno, typeof Bun, typeof WebSocket, typeof Date], hidden: typeof tools['example.echo'], bound: typeof tools.code, schema: tools.code.input_schema.required})"#;
+    let code = r#"let refused = false; try { Function('return process.env')(); } catch (e) { refused = e instanceof ReferenceError; } const imports = []; for (const name of ['node:fs', 'std', 'os', './host.js']) { try { await import(name); imports.push(false); } catch { imports.push(true); } } export default ({refused, imports, sum: [1,2,3].reduce((a,b) => a+b), host: [typeof fetch, typeof require, typeof process, typeof std, typeof os, typeof readFile, typeof Deno, typeof Bun, typeof WebSocket, typeof Date], hidden: typeof tools['example.echo'], bound: typeof tools.code, schema: tools.code.input_schema.required})"#;
     let (executor, model, echo) = executor(code, allowed()?, false)?;
     let journal = Journal::default();
     executor.execute(input(), &journal).await?;
@@ -838,6 +1265,7 @@ async fn sandbox_exposes_only_granted_tools_and_their_original_schema() -> Resul
     assert_eq!(value["schema"], json!(["code"]));
     assert_eq!(echo.0.load(Ordering::SeqCst), 0);
     assert_eq!(value["refused"], true);
+    assert_eq!(value["imports"], json!([true, true, true, true]));
     // Negative control: ordinary JavaScript still runs in this same sandbox.
     assert_eq!(value["sum"], 6);
     Ok(())
@@ -847,7 +1275,7 @@ async fn sandbox_exposes_only_granted_tools_and_their_original_schema() -> Resul
 async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budget() -> Result<()> {
     let render_bytes = 65_536;
     let string_bytes = render_bytes - crate::tool::schema::json_envelope_bytes()? - 2;
-    let code = format!("console.log('boundary'); 'x'.repeat({string_bytes})");
+    let code = format!("console.log('boundary'); export default 'x'.repeat({string_bytes})");
     let (mut boundary_executor, model, _) = executor(&code, allowed()?, true)?;
     boundary_executor.limits.render_bytes = render_bytes as u64;
     let boundary_journal = Journal::default();
@@ -864,11 +1292,17 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
     // Each result retains its complete admitted per-part allowance even though
     // context framing and the other messages exceed that same byte count.
     assert_eq!(result(&model).as_str().unwrap().len(), string_bytes);
+    let (mut fitting, model, _) = executor("export default 'x'.repeat(40000)", allowed()?, true)?;
+    fitting.limits.render_bytes = render_bytes as u64;
+    let mut turn = input();
+    turn.input = ModelContent::Text("context".repeat(1000));
+    fitting.execute(turn, &Journal::default()).await?;
+    assert_eq!(result(&model).as_str().unwrap().len(), 40000);
     for code in [
-        "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } total",
-        "await tools['example.echo']({value:42}); 'x'.repeat(1000000)",
+        "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } export default total",
+        "await tools['example.echo']({value:42}); export default 'x'.repeat(1000000)",
         "throw new Error('x'.repeat(1000000))",
-        "for (let i = 0; i < 100; i++) await console.log('y'.repeat(10000)); 1",
+        "for (let i = 0; i < 100; i++) await console.log('y'.repeat(10000)); export default 1",
     ] {
         let (mut executor, model, echo) = executor(code, allowed()?, true)?;
         executor.limits.render_bytes = 65_536;
@@ -902,9 +1336,9 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
 #[tokio::test]
 async fn large_call_names_stream_without_losing_results_or_receipts() -> Result<()> {
     let length = 65_536 + 1;
-    let name = "x".repeat(length);
+    let name = format!("acyclic.{}", "x".repeat(length));
     let code = format!(
-        "await tools['x'.repeat({length})]({{value:41}}); (await tools['example.echo']({{value:42}})).value"
+        "await tools['acyclic.' + 'x'.repeat({length})]({{value:41}}); export default (await tools['example.echo']({{value:42}})).value"
     );
     let (mut executor, model, echo) = executor(&code, allowed()?, true)?;
     let mut tool = executor
@@ -1061,7 +1495,7 @@ async fn cancelling_the_parent_interrupts_cpu_code_and_records_retirement() -> R
 
 #[tokio::test]
 async fn retained_dynamic_exchange_keeps_its_validation_schema() -> Result<()> {
-    let (executor, _, _) = executor("42", allowed()?, true)?;
+    let (executor, _, _) = executor("export default 42", allowed()?, true)?;
     let execution = StockExecution::ordinary(&executor);
     let prior = vec![
         ModelMessage {
@@ -1109,15 +1543,61 @@ async fn retained_dynamic_exchange_keeps_its_validation_schema() -> Result<()> {
 }
 
 #[tokio::test]
+async fn prepared_direct_request_retains_tools_before_model_start() -> Result<()> {
+    let (mut executor, _, echo) = executor("42", allowed()?, true)?;
+    let schema = json!({"type":"object"});
+    executor.tools = echo_tools(
+        echo,
+        schema.clone(),
+        schema.clone(),
+        crate::tool::json_projection_schema(schema),
+    )?;
+    let journal = Journal::default();
+    let original_input = input();
+    StockExecution::ordinary(&executor)
+        .ensure_started(&journal, &original_input)
+        .await?;
+    let original = StockExecution::ordinary(&executor)
+        .prepared_response(&journal, &original_input, 0, &[], None)
+        .await?;
+    assert!(!original.request().compose_tools);
+    assert!(!original.request().tools.is_empty());
+    executor.tools = ToolRegistry::default();
+    let resumed = StockExecution::ordinary(&executor)
+        .prepared_response(&journal, &original_input, 0, &[], None)
+        .await?;
+    assert_eq!(resumed.bytes(), original.bytes());
+    assert_eq!(
+        journal
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|record| matches!(record.event, ExecutionEvent::ContextPrepared { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        journal
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|record| !matches!(record.event, ExecutionEvent::ModelStarted { .. }))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn multiple_results_reach_continuation_with_per_part_render_bounds() -> Result<()> {
-    let (mut executor, _, _) = executor("42", allowed()?, true)?;
+    let (mut executor, _, _) = executor("export default 42", allowed()?, true)?;
     let model = Arc::new(
         ScriptedModelProvider::new([
             tool_turn(["first", "second"].map(|id| {
                 ModelEvent::ToolCall(crate::model::ToolCall::new(
                     id.into(),
                     "code".into(),
-                    json!({"code":"'x'.repeat(40000)"}),
+                    json!({"code":"export default 'x'.repeat(40000)"}),
                 ))
             })),
             done_turn(),

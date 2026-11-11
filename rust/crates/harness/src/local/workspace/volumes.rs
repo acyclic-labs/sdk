@@ -229,6 +229,41 @@ struct Claim {
 pub(in crate::local) struct Claims {
     entries: Vec<Claim>,
     tasks: acyclic_native_runtime::TaskSpawner,
+    unverified: Unverified,
+}
+
+/// Marks every claimed volume unverified once, at the first of: the caller
+/// losing the scope, or the claims dropping unreturned. Entrants wait on that
+/// mark until abandonment retires the projection, so no later command joins
+/// or publishes a cancelled worker's effects.
+/// The first mark counts every volume while holding the lock, so a racing
+/// mark returns, and its claims' abandonment settles, only after the counts.
+#[derive(Clone, Default)]
+struct Unverified(Arc<std::sync::Mutex<bool>>);
+
+impl Unverified {
+    fn mark<'a>(&self, volumes: impl IntoIterator<Item = &'a Arc<MountedVolume>>) {
+        let mut marked = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !std::mem::replace(&mut *marked, true) {
+            for volume in volumes {
+                volume.users.unverified();
+            }
+        }
+    }
+}
+
+struct CallerScope {
+    volumes: Vec<Arc<MountedVolume>>,
+    unverified: Unverified,
+}
+
+impl Drop for CallerScope {
+    fn drop(&mut self) {
+        self.unverified.mark(&self.volumes);
+    }
 }
 
 impl Drop for Claims {
@@ -237,14 +272,18 @@ impl Drop for Claims {
         if entries.is_empty() {
             return;
         }
+        self.unverified
+            .mark(entries.iter().map(|claim| &claim.source));
         // The worker drops custody only after process-tree cleanup. Its owned
         // task now retains the execution guards through unpublished retirement;
         // dropping the awaiting caller cannot cancel this cleanup task.
         self.tasks.spawn(async move {
             for claim in entries.into_iter().rev() {
-                if let Err(error) = claim.source.abandon(claim.entered).await {
+                let source = Arc::clone(&claim.source);
+                if let Err(error) = source.abandon(claim.entered).await {
                     tracing::error!(?error, "cancelled native scope retirement failed");
                 }
+                source.users.settle();
             }
         });
     }
@@ -257,6 +296,7 @@ pub(in crate::local) async fn native_scope<T>(
     let mut claims = Claims {
         entries: Vec::new(),
         tasks: acyclic_native_runtime::TaskSpawner::current(),
+        unverified: Unverified::default(),
     };
     let mut projected = Ok(());
     for (relative, mount) in ordered_mounts(mounts)? {
@@ -303,7 +343,17 @@ pub(in crate::local) async fn native_scope<T>(
     // every caller's layout. The body returns claims only after physical
     // cleanup and verification. Cancellation leaves them in the worker,
     // rather than this caller future.
+    let mut caller = CallerScope {
+        volumes: claims
+            .entries
+            .iter()
+            .map(|claim| Arc::clone(&claim.source))
+            .collect(),
+        unverified: claims.unverified.clone(),
+    };
     let (value, mut claims) = Box::pin(body(claims)).await?;
+    // Returned claims are verified; their exit publishes them.
+    caller.volumes.clear();
     let entered = std::mem::take(&mut claims.entries);
     leave_all(entered).await?;
     Ok(value)

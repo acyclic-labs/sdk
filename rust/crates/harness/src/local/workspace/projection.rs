@@ -48,6 +48,27 @@ pub(super) async fn initialize<T>(
 pub(in crate::local) struct Users {
     count: SyncMutex<usize>,
     idle: tokio::sync::Notify,
+    // Claims whose caller will never verify them, from that loss until their
+    // abandonment finishes. No command or preflight joins such a projection.
+    unverified: std::sync::atomic::AtomicUsize,
+    settled: tokio::sync::Notify,
+}
+
+impl Users {
+    pub(super) fn unverified(&self) {
+        self.unverified
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    pub(super) fn settle(&self) {
+        if self
+            .unverified
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            == 1
+        {
+            self.settled.notify_waiters();
+        }
+    }
 }
 
 impl std::ops::Deref for Users {
@@ -201,7 +222,22 @@ impl MountedVolume {
     }
 
     async fn prepared_native(&self) -> Result<OwnedMutexGuard<Option<Native>>> {
-        let mut slot = self.native().await;
+        let mut slot = loop {
+            let settled = self.users.settled.notified();
+            tokio::pin!(settled);
+            settled.as_mut().enable();
+            let slot = self.native().await;
+            if self
+                .users
+                .unverified
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            {
+                break slot;
+            }
+            drop(slot);
+            settled.await;
+        };
         if let Some(native) = slot.as_ref() {
             if native.discard {
                 native.abandon_command().await?;

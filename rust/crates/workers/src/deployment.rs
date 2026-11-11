@@ -37,7 +37,7 @@ impl Client<acyclic_objects::http::HttpObjects> {
         let objects = acyclic_objects::http::HttpObjects::with_credential_provider(
             objects_endpoint,
             credential,
-            maximum_response_bytes,
+            Some(maximum_response_bytes),
             None,
         )?;
         Ok(Self::new(actors, objects))

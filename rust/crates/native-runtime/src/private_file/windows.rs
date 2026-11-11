@@ -15,8 +15,7 @@ use windows::{
 };
 
 /// The OS user's profile, independent of process environment overrides.
-#[cfg(not(any(test, feature = "test-support")))]
-pub(super) fn user_data_directory() -> io::Result<std::path::PathBuf> {
+pub(crate) fn user_data_directory() -> io::Result<std::path::PathBuf> {
     use std::os::windows::ffi::OsStringExt as _;
     use windows::Win32::{
         System::Com::CoTaskMemFree,
