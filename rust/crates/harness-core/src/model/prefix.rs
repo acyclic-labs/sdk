@@ -136,7 +136,7 @@ impl PreparedModelRequest {
                     ));
                 }
                 verifier
-                    .verify(file, file.descriptor().byte_length(), io)?
+                    .verify(file, Some(file.descriptor().byte_length()), io)?
                     .await?;
             }
         }

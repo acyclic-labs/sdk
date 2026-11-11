@@ -87,8 +87,9 @@ async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> 
         .unwrap();
     let verifier = issuer.verifier(&mut None).unwrap();
     let input =
-        FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 4096, None).unwrap();
-    let publisher = FilesystemContentPublisher::new(host, &volume, &verifier, &scope, 4096, None);
+        FilesystemContentVerifier::new(host.clone(), &verifier, &scope, Some(4096), None).unwrap();
+    let publisher =
+        FilesystemContentPublisher::new(host, &volume, &verifier, &scope, Some(4096), None);
     (publisher, input, issuer)
 }
 
@@ -118,8 +119,14 @@ async fn exercise(
         )?
         .await?;
     // Retain both holds until the authenticated historical reads complete.
-    let a = verifier.read(&first.0, 4096, None, None)?.await?.to_vec();
-    let b = verifier.read(&second.0, 4096, None, None)?.await?.to_vec();
+    let a = verifier
+        .read(&first.0, Some(4096), None, None)?
+        .await?
+        .to_vec();
+    let b = verifier
+        .read(&second.0, Some(4096), None, None)?
+        .await?
+        .to_vec();
     Ok((vec![first.0, second.0], vec![a, b]))
 }
 

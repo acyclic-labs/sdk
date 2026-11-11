@@ -154,7 +154,7 @@ impl Fixture {
             Turns {
                 executors: Arc::new(CreationOnly(model_calls.clone())),
                 limits: TurnLimits {
-                    maximum_bytes: 1 << 20,
+                    maximum_bytes: Some(1 << 20),
                     history_turns: 1,
                 },
                 actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,

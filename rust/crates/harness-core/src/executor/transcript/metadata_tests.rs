@@ -240,7 +240,7 @@ fn check_decode_with_field<T: PreparationRecord + Serialize>(
 async fn ref_only_metadata_admission_covers_physical_storage_without_workflow_slots() -> Result<()>
 {
     let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536)).await?;
     let reference = storage
         .stage(
             OperationId::new(),
@@ -251,7 +251,7 @@ async fn ref_only_metadata_admission_covers_physical_storage_without_workflow_sl
         )
         .await?;
     let manifest = RequestManifest {
-        version: 3,
+        version: 4,
         header: reference.clone(),
         header_digest: [255; 32],
         messages: MessagePrefix {
@@ -302,7 +302,7 @@ async fn ref_only_metadata_admission_covers_physical_storage_without_workflow_sl
 #[tokio::test]
 async fn contexts_retain_values_and_sparse_nodes_without_decoder_scratch() -> Result<()> {
     let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536)).await?;
     let reference = storage
         .stage(
             OperationId::new(),
@@ -362,7 +362,7 @@ async fn contexts_retain_values_and_sparse_nodes_without_decoder_scratch() -> Re
 async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_reads() -> Result<()>
 {
     let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536)).await?;
     let reference = storage
         .stage(
             OperationId::new(),

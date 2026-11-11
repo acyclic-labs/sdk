@@ -398,7 +398,7 @@ async fn verify_prompt(
     };
     let staged = harness
         .client_reader()?
-        .read(&body, 1 << 20, None, None)?
+        .read(&body, Some(1 << 20), None, None)?
         .await?;
     let dispatched = first
         .messages

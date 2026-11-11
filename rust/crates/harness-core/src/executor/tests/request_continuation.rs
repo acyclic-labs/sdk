@@ -83,7 +83,7 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
         .map_err(|error| Error::Storage(error.to_string()))?;
     let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
         crate::AgentId::new(),
-        65_536,
+        Some(65_536),
     ))?;
     let journal = storage.journal();
     let journal = journal.as_ref();
@@ -227,7 +227,7 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
         ToolRegistry::default(),
     );
     let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let journal = journal.as_ref();
     let input = TurnInput {

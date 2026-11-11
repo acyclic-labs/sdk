@@ -123,13 +123,19 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     let verifier = issuer.verifier(&mut None)?;
     let content = ContentBindings {
         volume: first.clone(),
-        reader: FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 1_000_000, None)?,
+        reader: FilesystemContentVerifier::new(
+            host.clone(),
+            &verifier,
+            &scope,
+            Some(1_000_000),
+            None,
+        )?,
         writer: Some(FilesystemContentPublisher::new(
             host.clone(),
             &first,
             &verifier,
             &scope,
-            1_000_000,
+            Some(1_000_000),
             None,
         )?),
     };

@@ -139,8 +139,13 @@ async fn journal<P: acyclic_harness::store::JournalProvider + 'static>(
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    let input =
-        FilesystemContentVerifier::new(host.clone(), &verifier, &scope, MAXIMUM_FILE_BYTES, None)?;
+    let input = FilesystemContentVerifier::new(
+        host.clone(),
+        &verifier,
+        &scope,
+        Some(MAXIMUM_FILE_BYTES),
+        None,
+    )?;
     let journal = FilesystemExecutionJournal::new(
         stream,
         host,

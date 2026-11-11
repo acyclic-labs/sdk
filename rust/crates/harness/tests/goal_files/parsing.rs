@@ -327,7 +327,7 @@ proptest! {
 #[tokio::test]
 async fn boundary_cap_output_is_accepted_by_the_ordinary_writer() -> Result<()> {
     let storage =
-        acyclic_harness::filesystem::MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+        acyclic_harness::filesystem::MemoryHarnessStorage::new(AgentId::new(), Some(4096)).await?;
     let body = "x".repeat(4096 - GOAL_METADATA_HEADROOM);
     let reference = storage
         .stage(

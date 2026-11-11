@@ -61,7 +61,7 @@ impl ContentResidencyVerifier for TaskContext {
     fn read<'a>(
         &'a self,
         reference: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {

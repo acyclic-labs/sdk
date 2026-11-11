@@ -45,7 +45,7 @@ pub(super) async fn run(
     definitions: acyclic_stream::OwnedBytes,
     send: mpsc::Sender<Request>,
     cancellation: CancellationToken,
-    maximum: usize,
+    maximum: Option<u64>,
     allocator: super::allocator::EngineAllocator,
     interrupt_budget: u64,
 ) -> Result<super::allocator::EngineResult, String> {
@@ -169,7 +169,7 @@ pub(super) async fn run(
                 return result_allocator.decode_result(b"null").map(Ok);
             };
             let json = json.to_cstring()?;
-            if json.len() > maximum {
+            if maximum.is_some_and(|maximum| json.len() as u64 > maximum) {
                 return Ok(Err("JavaScript result exceeds admitted output".into()));
             }
             result_allocator
@@ -291,11 +291,17 @@ mod tests {
         );
         let scope = issuer.bootstrap_scope("owner", &grants, Some(agent), &mut None)?;
         let verifier = issuer.verifier(&mut None)?;
-        let publisher =
-            FilesystemContentPublisher::new(host.clone(), &volume, &verifier, &scope, 65536, None)?;
+        let publisher = FilesystemContentPublisher::new(
+            host.clone(),
+            &volume,
+            &verifier,
+            &scope,
+            Some(65536),
+            None,
+        )?;
         let content = ContentBindings {
             volume,
-            reader: FilesystemContentVerifier::new(host, &verifier, &scope, 65536, None)?,
+            reader: FilesystemContentVerifier::new(host, &verifier, &scope, Some(65536), None)?,
             writer: Some(publisher.clone()),
         };
         let task = Arc::new(
@@ -303,8 +309,8 @@ mod tests {
                 scope: RuntimeScope::new(
                     grants,
                     Limits {
-                        file_bytes: 65536,
-                        render_bytes: 4096,
+                        file_bytes: Some(65536),
+                        render_bytes: Some(4096),
                         ..Limits::default()
                     },
                 )?,
@@ -475,7 +481,7 @@ mod tests {
                         Arc::new(task.scoped(
                             task.scope().grants().clone(),
                             Limits {
-                                file_bytes: 1536,
+                                file_bytes: Some(1536),
                                 ..task.scope().limits()
                             },
                         )?)

@@ -98,7 +98,7 @@ mod tests {
             &home,
             &authority.verifier,
             &authority.scope,
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             None,
         )?;
         let put = |path: &'static str, bytes: &'static [u8]| {
@@ -135,7 +135,7 @@ mod tests {
             Arc::clone(&host),
             &authority.verifier,
             &authority.scope,
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             None,
         )?;
         let directive = crate::templates::directive(&selected, reader.as_ref()).await?;
@@ -405,7 +405,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
                 Arc::clone(&self.host),
                 &authority.verifier,
                 &authority.scope,
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                Some(crate::conversation::MAX_EXACT_JS_INTEGER),
                 None,
             )?;
             crate::templates::admit_child(creation, reader.as_ref(), name, ceiling).await?;

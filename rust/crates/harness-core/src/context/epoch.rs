@@ -170,7 +170,7 @@ impl ContextEpoch {
             let (volume, path) = (source.volume(), source.path());
             let length = instruction.descriptor().byte_length();
             let body = if length <= INLINE_TEXT_BYTES {
-                let bytes = reader.read(instruction, length, None, None)?.await?;
+                let bytes = reader.read(instruction, Some(length), None, None)?.await?;
                 let text = std::str::from_utf8(&bytes)
                     .map_err(|_| Error::Invalid("project instructions are not UTF-8".into()))?;
                 serde_json::json!({"version": 1, "volume": volume, "instructions": path, "text": text})

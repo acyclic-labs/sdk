@@ -46,8 +46,8 @@ async fn read(task: &TaskContext, arguments: Value) -> Result<Value> {
 
 #[tokio::test]
 async fn recon_read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 2_000_000).await?;
-    let private = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(2_000_000)).await?;
+    let private = MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
     // GC-4's recorded source length, with fewer than GC-2's 20,000 lines.
     let mut source = vec![b'x'; 1_103_745];
     for byte in source.chunks_mut(128) {
@@ -64,8 +64,8 @@ async fn recon_read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
         )
         .await?;
     let limits = Limits {
-        file_bytes: 65_536,
-        render_bytes: 32_768,
+        file_bytes: Some(65_536),
+        render_bytes: Some(32_768),
         ..Limits::default()
     };
     let task = Bindings {

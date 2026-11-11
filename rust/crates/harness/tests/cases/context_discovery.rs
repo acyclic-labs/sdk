@@ -74,7 +74,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
     fn read<'a>(
         &'a self,
         reference: &'a acyclic_harness::conversation::FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
@@ -88,7 +88,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         granted_prefix: &'a str,
         path: &'a str,
         expected_generation: Option<&'a acyclic_harness::resources::GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
@@ -359,7 +359,7 @@ impl Fixture {
             host.clone(),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
-            32_768,
+            Some(32_768),
             None,
         )?;
         Ok(Self {
@@ -630,7 +630,7 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
         fixture.host.clone(),
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
-        32_768,
+        Some(32_768),
         None,
     )?;
     assert!(matches!(
@@ -1003,7 +1003,7 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
         FilesystemHost::new(Fs::memory(), fixture.volume.provider(), None)?,
         &fixture.issuer.verifier(&mut None)?,
         &fixture.scope,
-        32_768,
+        Some(32_768),
         None,
     )?;
     let mut unavailable_instructions = acyclic_harness::context::VolumeDiscovery {

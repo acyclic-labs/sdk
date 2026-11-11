@@ -29,7 +29,7 @@ impl RequestContinuation {
         &mut self,
         limits: Limits,
         io: Option<&PreparationIo>,
-    ) -> Result<Option<u64>> {
+    ) -> Result<Option<Option<u64>>> {
         if self.prepared.request.summary && !self.suffix.is_empty() {
             return Err(Error::Invalid(
                 "a summary instruction cannot become conversation history".into(),
@@ -74,7 +74,7 @@ impl RequestContinuation {
         mut self,
         limits: Limits,
         io: Option<&PreparationIo>,
-    ) -> Result<(ModelRequest, u64)> {
+    ) -> Result<(ModelRequest, Option<u64>)> {
         let remaining = self.validate_suffix(limits, io)?;
         let count = self.prepared.request.messages.len() + self.suffix.len();
         if count > self.prepared.request.messages.capacity() {

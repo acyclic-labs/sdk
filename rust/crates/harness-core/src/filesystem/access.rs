@@ -238,17 +238,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         scope: &Scope,
         reference: &FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         inherited_reference: bool,
         ceiling: Option<&crate::Capabilities>,
         io: &PreparationIo,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        if reference.descriptor().byte_length() > maximum_bytes {
+        if maximum_bytes.is_some_and(|maximum| reference.descriptor().byte_length() > maximum) {
             return Err(io.invalid("complete content exceeds its byte credit"));
         }
         self.read_selection_with_access(scope, reference, inherited_reference, ceiling, io)
             .await?
-            .read_file(maximum_bytes)
+            .read_file(reference.descriptor().byte_length())
             .await
     }
 }

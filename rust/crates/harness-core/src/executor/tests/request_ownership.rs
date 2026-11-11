@@ -124,7 +124,7 @@ async fn funded_request_and_projection_share_one_owned_history() -> Result<()> {
         }
     }
     let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let metadata = journal
         .stage(

@@ -645,7 +645,12 @@ impl ToolContext {
                 | ContentChange::DeleteAt { .. }
                 | ContentChange::Delete { .. } => 0,
             };
-            if bytes > self.effective_scope().limits().file_bytes {
+            if self
+                .effective_scope()
+                .limits()
+                .file_bytes
+                .is_some_and(|maximum| bytes > maximum)
+            {
                 return Err(Error::tool_rejected(
                     "conditional file exceeds original task capacity",
                 ));

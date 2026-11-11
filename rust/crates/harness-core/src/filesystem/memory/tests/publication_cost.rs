@@ -9,7 +9,7 @@ fn successful_runtime_publication_does_not_reread_its_just_written_body() -> Res
         .map_err(|error| Error::Storage(error.to_string()))?;
     let mut total_reads = 0;
     for once in [false, true] {
-        let opening = MemoryHarnessStorage::new(AgentId::new(), 1024 * 1024);
+        let opening = MemoryHarnessStorage::new(AgentId::new(), Some(1024 * 1024));
         // Three phases retain identity/limit, with their state tags, the
         // provider handles and one erased body. Keep convenience constructors
         // lazy: their original provider creation must run under the caller's

@@ -194,7 +194,7 @@ where
                 Arc::clone(&self.host),
                 &authority.verifier,
                 &authority.scope,
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                Some(crate::conversation::MAX_EXACT_JS_INTEGER),
                 None,
             )?;
             let mut content = crate::agent::expand_attachments(content, &*reader).await?;
@@ -229,7 +229,7 @@ where
                     Arc::clone(&self.host),
                     &authority.verifier,
                     &authority.scope,
-                    crate::conversation::MAX_EXACT_JS_INTEGER,
+                    Some(crate::conversation::MAX_EXACT_JS_INTEGER),
                     None,
                 )?;
             }
@@ -243,7 +243,7 @@ where
             for part in parts {
                 if let ModelContentPart::File { file, .. } = part {
                     let bytes = reader
-                        .read(file, file.descriptor().byte_length(), None, None)?
+                        .read(file, Some(file.descriptor().byte_length()), None, None)?
                         .await?;
                     let operation = self.operation;
                     let id = identity(operation, step, item);

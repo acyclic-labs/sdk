@@ -28,7 +28,7 @@ proptest! {
             ToolRegistry::default(),
         ).with_compaction_policy(crate::context::CompactionPolicy::Disabled)
             .with_max_output_tokens(128).unwrap();
-        stock.limits.file_bytes = expected.len() as u64;
+        stock.limits.file_bytes = Some(expected.len() as u64);
         let check = |execution: &StockExecution<'_>| {
             let (bytes, digest, messages) = execution.summary_source_identity(&source).unwrap();
             assert_eq!(bytes.as_ref(), expected);
@@ -38,7 +38,7 @@ proptest! {
         check(&StockExecution::ordinary(&stock));
         for native in [false, true] {
             let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
-                crate::AgentId::new(), 65_536,
+                crate::AgentId::new(), Some(65_536),
             )).unwrap();
             let journal = storage.journal();
             let observed = crate::test_support::accounted::accounted(native, 262_144, false, |io| {
@@ -178,7 +178,7 @@ fn completed_summary_moves_original_text_and_retires_consumed_backing() -> Resul
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    stock.limits.render_bytes = 8;
+    stock.limits.render_bytes = Some(8);
     for native in [false, true] {
         let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
             let execution = StockExecution {

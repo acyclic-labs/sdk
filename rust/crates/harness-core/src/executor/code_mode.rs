@@ -48,28 +48,41 @@ struct CallLog<'a> {
 #[derive(Default)]
 struct ProgramLogs {
     lines: Vec<Value>,
-    bytes: usize,
+    bytes: u64,
     omitted: u64,
 }
 
 impl ProgramLogs {
     /// Both field names, array framing and the largest u64 omission count.
-    const FIELDS: usize = 48;
+    const FIELDS: u64 = 48;
 
     fn observe(
         &mut self,
         values: &serde_json::value::RawValue,
-        maximum: usize,
+        maximum: Option<u64>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         if self.omitted > 0 {
-            self.omitted += 1;
+            self.omitted = self.omitted.checked_add(1).ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "JavaScript log count overflows",
+                )
+            })?;
             return Ok(());
         }
         // The rendered line cannot exceed the original JSON array's bytes.
         // Refuse its copy and argument index before decoding either of them.
-        let available = maximum.saturating_sub(self.bytes.saturating_add(Self::FIELDS));
-        if values.get().len() > available {
+        let frame = self.bytes.checked_add(Self::FIELDS).ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "JavaScript log size overflows",
+            )
+        })?;
+        let available = maximum.map(|maximum| maximum.saturating_sub(frame));
+        if available.is_some_and(|available| values.get().len() as u64 > available) {
             self.omitted = 1;
             return Ok(());
         }
@@ -80,7 +93,7 @@ impl ProgramLogs {
                 stock_string_push(
                     &mut line,
                     " ",
-                    available as u64,
+                    available,
                     "JavaScript log exceeds render capacity",
                     io,
                 )?;
@@ -93,7 +106,7 @@ impl ProgramLogs {
                 stock_string_push(
                     &mut line,
                     &text.0.0,
-                    available as u64,
+                    available,
                     "JavaScript log exceeds render capacity",
                     io,
                 )?;
@@ -101,7 +114,7 @@ impl ProgramLogs {
                 stock_string_push(
                     &mut line,
                     value.get(),
-                    available as u64,
+                    available,
                     "JavaScript log exceeds render capacity",
                     io,
                 )?;
@@ -109,13 +122,37 @@ impl ProgramLogs {
         }
         let cost = with_history_io(io, |work| {
             crate::executor::json::json_byte_length(line.as_str(), None, work)
-        })? as usize
-            + 1;
-        if self.bytes + cost + Self::FIELDS > maximum {
+        })?
+        .checked_add(1)
+        .ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "JavaScript log size overflows",
+            )
+        })?;
+        let total = self
+            .bytes
+            .checked_add(cost)
+            .and_then(|bytes| bytes.checked_add(Self::FIELDS))
+            .ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "JavaScript log size overflows",
+                )
+            })?;
+        if maximum.is_some_and(|maximum| total > maximum) {
             self.omitted = 1;
             return Ok(());
         }
-        self.bytes += cost;
+        self.bytes = self.bytes.checked_add(cost).ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "JavaScript log size overflows",
+            )
+        })?;
         stock_vec_push(&mut self.lines, Value::String(line), io)
     }
 
@@ -155,7 +192,12 @@ impl ProgramLogs {
 
     /// The program's result has priority. Attach the batch only when its
     /// complete framing fits; the journal retains every original log.
-    fn attach(self, output: &mut Value, maximum: usize, io: Option<&PreparationIo>) -> Result<()> {
+    fn attach(
+        self,
+        output: &mut Value,
+        maximum: Option<u64>,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         let Self {
             mut lines,
             bytes,
@@ -166,12 +208,29 @@ impl ProgramLogs {
         }
         let result = with_history_io(io, |work| {
             crate::executor::json::json_byte_length(&*output, None, work)
-        })? as usize;
-        let Some(available) = maximum.checked_sub(result.saturating_add(Self::FIELDS)) else {
-            return Ok(());
+        })?;
+        let framed = result.checked_add(Self::FIELDS).ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "JavaScript log framing overflows",
+            )
+        })?;
+        let available = match maximum {
+            Some(maximum) => match maximum.checked_sub(framed) {
+                Some(available) => Some(available),
+                None => return Ok(()),
+            },
+            None => None,
         };
-        if bytes > available {
-            omitted += lines.len() as u64;
+        if available.is_some_and(|available| bytes > available) {
+            omitted = omitted.checked_add(lines.len() as u64).ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "JavaScript log count overflows",
+                )
+            })?;
             lines.clear();
         }
         let Some(fields) = output.as_object_mut() else {
@@ -292,9 +351,12 @@ impl StockExecution<'_> {
                         )
                     })?,
             };
-            let maximum = usize::try_from(self.stock.limits.render_bytes)
-                .unwrap_or(usize::MAX)
-                .saturating_sub(crate::tool::schema::json_envelope_bytes()?);
+            let envelope = crate::tool::schema::json_envelope_bytes()? as u64;
+            let maximum = self
+                .stock
+                .limits
+                .render_bytes
+                .map(|maximum| maximum.saturating_sub(envelope));
             let token = CancellationToken::new();
             let stop = Stop(token.clone());
             // Bounded credit: one call is handed to the sole stock dispatcher at a
@@ -460,22 +522,20 @@ impl StockExecution<'_> {
                     let mut value = serde_json::json!({"error": ""});
                     // Reserve the exact wrapper before fitting escaped text.
                     let overhead = with_history_io(self.io, |work| {
-                        crate::executor::json::json_byte_length(&value, Some(maximum as u64), work)
+                        crate::executor::json::json_byte_length(&value, maximum, work)
                     })?;
-                    let budget =
-                        maximum.saturating_sub(usize::try_from(overhead).unwrap_or(usize::MAX));
-                    error.truncate(crate::tools::json_string_prefix(&error, budget).len());
+                    if let Some(budget) = maximum
+                        .and_then(|maximum| usize::try_from(maximum.saturating_sub(overhead)).ok())
+                    {
+                        error.truncate(crate::tools::json_string_prefix(&error, budget).len());
+                    }
                     value["error"] = Value::String(error);
                     value
                 }
             };
             // Only the projected result consumes render capacity. The private
             // receipt wrapper is never part of the model's output.
-            stock_json_bound(
-                value.get("value").unwrap_or(&value),
-                Some(maximum as u64),
-                self.io,
-            )?;
+            stock_json_bound(value.get("value").unwrap_or(&value), maximum, self.io)?;
             logs.attach(&mut value, maximum, self.io)?;
             let mut context = Vec::new();
             for message in stock_into_iter(inner_context, self.io)? {

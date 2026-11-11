@@ -6,7 +6,9 @@ impl ModelEventAdmission {
     #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn from_state(mut state: Self, limits: Limits) -> Result<Self> {
-        if state.text_bytes > limits.file_bytes
+        if limits
+            .file_bytes
+            .is_some_and(|maximum| state.text_bytes > maximum)
             || limits
                 .model_events_per_step
                 .is_some_and(|maximum| state.count > maximum.get())
@@ -62,14 +64,21 @@ impl ModelEventAdmission {
                 block.validate_limits(limits, work)?;
                 crate::executor::json::json_byte_length(
                     event,
-                    Some(limits.render_bytes.min(limits.file_bytes)),
+                    limits
+                        .render_bytes
+                        .into_iter()
+                        .chain(limits.file_bytes)
+                        .min(),
                     work,
                 )
                 .map(|_| ())
             })?;
         }
         if let ModelEvent::TextPart { text, native } = event {
-            if text.len() as u64 > limits.file_bytes {
+            if limits
+                .file_bytes
+                .is_some_and(|maximum| text.len() as u64 > maximum)
+            {
                 return Err(stock_boundary(
                     io,
                     Invalid,
@@ -80,7 +89,11 @@ impl ModelEventAdmission {
                 with_history_io(io, |work| native.validate_limits(limits, work))?;
             }
         }
-        if self.next_text_bytes(event)? > limits.file_bytes {
+        let text_bytes = self.next_text_bytes(event)?;
+        if limits
+            .file_bytes
+            .is_some_and(|maximum| text_bytes > maximum)
+        {
             return Err(stock_boundary(
                 io,
                 Invalid,

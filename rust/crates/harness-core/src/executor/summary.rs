@@ -23,7 +23,7 @@ impl StockExecution<'_> {
         crate::executor::with_history_io(self.io, |work| {
             instruction.validate_limits(self.stock.limits, work)
         })?;
-        stock_json_bound(&instruction, Some(self.stock.limits.file_bytes), self.io)?;
+        stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
         let (source_bytes, source_digest, source_messages) =
             self.summary_source_identity(&source)?;
         let summary_output = self.output_budget()?;
@@ -129,9 +129,9 @@ impl StockExecution<'_> {
         }
         let source_bytes: acyclic_stream::OwnedBytes = match self.io {
             #[cfg(feature = "filesystem")]
-            Some(io) => io.encode(&source, Some(self.stock.limits.file_bytes), true)?,
+            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
             _ => {
-                stock_json_bound(source, Some(self.stock.limits.file_bytes), self.io)?;
+                stock_json_bound(source, self.stock.limits.file_bytes, self.io)?;
                 crate::contract::canonical_json_bytes(&source)?.into()
             }
         };
@@ -173,7 +173,12 @@ impl StockExecution<'_> {
                     stock_retire_text(delta, io)?;
                 }
                 ModelEvent::MessageCompleted { text: completed } => {
-                    if completed.len() as u64 > self.stock.limits.render_bytes {
+                    if self
+                        .stock
+                        .limits
+                        .render_bytes
+                        .is_some_and(|maximum| completed.len() as u64 > maximum)
+                    {
                         return Err(stock_boundary(
                             io,
                             crate::wire::ErrorCode::Invalid,

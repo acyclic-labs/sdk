@@ -24,7 +24,7 @@ impl ContentResidencyVerifier for Resolver {
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
-        _: u64,
+        _: Option<u64>,
         _ceiling: Option<&'a acyclic_harness::contract::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> acyclic_harness::Result<
@@ -251,8 +251,8 @@ pub fn check(data: &[u8]) {
         assert_replay(
             record,
             Limits {
-                file_bytes: 4096,
-                render_bytes: 4096,
+                file_bytes: Some(4096),
+                render_bytes: Some(4096),
                 ..Limits::default()
             },
         );

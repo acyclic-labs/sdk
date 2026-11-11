@@ -266,7 +266,7 @@ fn binding_with(
         Turns {
             executors,
             limits: TurnLimits {
-                maximum_bytes: 64 * 1024,
+                maximum_bytes: Some(64 * 1024),
                 history_turns: 8,
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
@@ -331,7 +331,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         &authority.private.volume,
         &authority.verifier,
         &authority.scope,
-        64 * 1024,
+        Some(64 * 1024),
         None,
     )?;
     let body: Vec<u8> = (0..MAX_READ_BYTES + 17).map(|index| index as u8).collect();
@@ -1161,7 +1161,7 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
         Turns {
             executors: Arc::new(Never),
             limits: TurnLimits {
-                maximum_bytes: 64 * 1024,
+                maximum_bytes: Some(64 * 1024),
                 history_turns: 8,
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,

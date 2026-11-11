@@ -5,9 +5,11 @@ use crate::IdempotencyKey;
 async fn streamed_publication_replays_one_contract_and_refuses_changed_content() -> Result<()> {
     // Hosted agents admit the portable file ceiling, which exceeds the
     // volume's staging capacity even when the actual artifact is small.
-    let storage =
-        MemoryHarnessStorage::new(AgentId::new(), crate::conversation::MAX_EXACT_JS_INTEGER)
-            .await?;
+    let storage = MemoryHarnessStorage::new(
+        AgentId::new(),
+        Some(crate::conversation::MAX_EXACT_JS_INTEGER),
+    )
+    .await?;
     let operation = OperationId::new();
     let bytes: Vec<u8> = (0..65537).map(|index| (index % 251) as u8).collect();
     let mut source = futures::io::Cursor::new(bytes.as_slice());
@@ -74,7 +76,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
         &storage.volume,
         &storage.verifier(),
         &storage.scope,
-        4,
+        Some(4),
         None,
     )?;
     let refused = OperationId::new();
@@ -111,7 +113,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
 async fn streaming_producer_retirement_and_cancellation_leave_no_publication() -> Result<()> {
     use futures::{FutureExt, TryStreamExt};
     for cancel in [false, true] {
-        let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+        let storage = MemoryHarnessStorage::new(AgentId::new(), Some(4096)).await?;
         let operation = OperationId::new();
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = crate::filesystem::PreparationIo::for_unmeasured(&cancellation)?;
@@ -183,7 +185,7 @@ proptest::proptest! {
         body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..1024),
     ) {
         let result = futures::executor::block_on(async {
-            let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+            let storage = MemoryHarnessStorage::new(AgentId::new(), Some(1024)).await?;
             let write = ContentGrant::verify(
                 &storage.verifier(), &storage.scope, &storage.volume,
                 VolumeOperation::Write, 1024, &mut None,
@@ -213,7 +215,7 @@ proptest::proptest! {
 #[tokio::test]
 async fn stock_publisher_finite_once_observes_original_metadata_after_head_changes()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+    let mut storage = MemoryHarnessStorage::new(AgentId::new(), Some(1024)).await?;
     let operation = OperationId::new();
     let cancellation = acyclic_fs::CancellationToken::new();
     let filesystem = storage.host.filesystem.clone();
@@ -287,14 +289,14 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         &storage.volume,
         &storage.verifier(),
         &storage.scope,
-        1024,
+        Some(1024),
         None,
     )?;
     storage.content_verifier = FilesystemContentVerifier::new(
         storage.host.clone(),
         &storage.verifier(),
         &storage.scope,
-        1024,
+        Some(1024),
         None,
     )?;
     let committed_io =
@@ -422,7 +424,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         &storage.volume,
         &storage.verifier(),
         &storage.scope,
-        1024,
+        Some(1024),
         None,
     )?;
     let observed_io =
@@ -567,7 +569,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(1024)).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -654,7 +656,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
     let before_read = work.live_allocation_bytes();
     let bytes = storage
         .content_verifier
-        .read(&file, 1024, None, Some(&io))?
+        .read(&file, Some(1024), None, Some(&io))?
         .await?;
     assert_eq!(bytes.as_ref(), b"original");
     assert!(bytes.matches_meter(&work.runtime_meter()));
@@ -728,7 +730,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_host_original_key_recovers_immutable_upload_after_head_edit() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(1024)).await?;
     let write = ContentGrant::verify(
         &storage.verifier(),
         &storage.scope,
@@ -859,7 +861,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
     assert_eq!(recovered, staged);
     let content = storage
         .content_verifier
-        .read(&recovered, 1024, None, Some(&io))?
+        .read(&recovered, Some(1024), None, Some(&io))?
         .await?;
     assert_eq!(content.as_ref(), b"original");
     drop(content);

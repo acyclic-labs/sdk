@@ -1399,7 +1399,7 @@ async fn concurrent_spawns_with_shared_bindings(
         &local.shared,
         &verifier,
         &local.signed,
-        4096,
+        Some(4096),
         None,
     )?;
     let (shared_file, _) = writer
@@ -1424,10 +1424,10 @@ async fn concurrent_spawns_with_shared_bindings(
             Arc::clone(&owner.local.files),
             verifier,
             &scope,
-            4096,
+            Some(4096),
             None,
         )?;
-        Ok(reader.read(file, 4096, None, None)?.await?.to_vec())
+        Ok(reader.read(file, Some(4096), None, None)?.await?.to_vec())
     }
     assert_eq!(
         shared_text(&fixture.owner, &fixture.parent, &verifier, &shared_file).await?,

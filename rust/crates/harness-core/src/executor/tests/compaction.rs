@@ -82,7 +82,8 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
         .with_max_output_tokens(1024)?;
         #[cfg(feature = "filesystem")]
         let storage =
-            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536))
+                .await?;
         #[cfg(feature = "filesystem")]
         let journal = storage.journal();
         #[cfg(feature = "filesystem")]
@@ -145,7 +146,7 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
         #[cfg(feature = "filesystem")]
         let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
             crate::AgentId::new(),
-            65_536,
+            Some(65_536),
         ))?;
         #[cfg(feature = "filesystem")]
         let journal = storage.journal();
@@ -283,7 +284,7 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
         #[cfg(feature = "filesystem")]
         let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
             AgentId::new(),
-            65_536,
+            Some(65_536),
         ))?;
         #[cfg(feature = "filesystem")]
         let journal = storage.journal();
@@ -614,14 +615,15 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
     ] {
         let limits = Limits {
             context_messages: std::num::NonZeroUsize::new(1),
-            render_bytes: 4_096,
-            file_bytes,
+            render_bytes: Some(4_096),
+            file_bytes: Some(file_bytes),
             ..Limits::default()
         };
         let executor = base.clone().with_limits(limits);
         #[cfg(feature = "filesystem")]
         let storage =
-            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536))
+                .await?;
         #[cfg(feature = "filesystem")]
         let (generation, _) = storage.list_private_directory("", None, None, 1).await?;
         #[cfg(feature = "filesystem")]
@@ -716,7 +718,7 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
     #[cfg(feature = "filesystem")]
     let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
         crate::AgentId::new(),
-        65_536,
+        Some(65_536),
     ))?;
     #[cfg(feature = "filesystem")]
     let journal = storage.journal();
@@ -790,7 +792,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
     .with_max_output_tokens(1024)?;
     #[cfg(feature = "filesystem")]
     let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536)).await?;
     #[cfg(feature = "filesystem")]
     let journal = storage.journal();
     #[cfg(feature = "filesystem")]

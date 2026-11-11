@@ -46,8 +46,8 @@ where
 
 #[tokio::test]
 async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
-    let owner = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
-    let other = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
+    let owner = MemoryHarnessStorage::new(AgentId::new(), Some(4_096)).await?;
+    let other = MemoryHarnessStorage::new(AgentId::new(), Some(4_096)).await?;
     let file = owner
         .stage(
             OperationId::new(),
@@ -63,8 +63,8 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
         .map_err(|error| Error::Invalid(error.to_string()))?
         .len() as u64;
     let limits = Limits {
-        file_bytes: 4_096,
-        render_bytes,
+        file_bytes: Some(4_096),
+        render_bytes: Some(render_bytes),
         ..Limits::default()
     };
     let tool = crate::tools::defaults()?
@@ -104,7 +104,7 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
             assert!(matches!(
                 content.validate_limits(
                     Limits {
-                        render_bytes: render_bytes - 1,
+                        render_bytes: Some(render_bytes - 1),
                         ..limits
                     },
                     &mut None
@@ -120,7 +120,7 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
             let narrowed = task.scoped(
                 task.scope().grants().clone(),
                 Limits {
-                    render_bytes: 4,
+                    render_bytes: Some(4),
                     ..limits
                 },
             )?;
@@ -159,10 +159,10 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
 
 #[tokio::test]
 async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(4_096)).await?;
     let limits = Limits {
-        file_bytes: 4_096,
-        render_bytes: 4_096,
+        file_bytes: Some(4_096),
+        render_bytes: Some(4_096),
         ..Limits::default()
     };
     let tool = crate::tools::defaults()?
@@ -243,7 +243,7 @@ async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -
 
 #[tokio::test]
 async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(4_096)).await?;
     storage
         .stage(
             OperationId::new(),
@@ -294,8 +294,8 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
             == Some("one.txt")
     }));
     let limits = Limits {
-        file_bytes: 4_096,
-        render_bytes: 1_024,
+        file_bytes: Some(4_096),
+        render_bytes: Some(1_024),
         ..Limits::default()
     };
     let tool = storage.list_files_tool(limits)?;
@@ -343,8 +343,8 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
 #[tokio::test]
 async fn local_private_volume_identity_is_unique_per_conversation() -> Result<()> {
     let agent = AgentId::new();
-    let first = MemoryHarnessStorage::new(agent, 4_096).await?;
-    let second = MemoryHarnessStorage::new(agent, 4_096).await?;
+    let first = MemoryHarnessStorage::new(agent, Some(4_096)).await?;
+    let second = MemoryHarnessStorage::new(agent, Some(4_096)).await?;
     assert_ne!(first.volume(), second.volume());
     let file = first
         .stage(
@@ -364,10 +364,10 @@ async fn local_private_volume_identity_is_unique_per_conversation() -> Result<()
 
 #[tokio::test]
 async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(4_096)).await?;
     let limits = Limits {
-        file_bytes: 4_096,
-        render_bytes: 4_096,
+        file_bytes: Some(4_096),
+        render_bytes: Some(4_096),
         ..Limits::default()
     };
     let mut tools = crate::tools::defaults()?;
@@ -462,7 +462,7 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
             .await?;
         Ok((invocation, result))
     }
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(4_096)).await?;
     let workspace =
         super::super::bounded_io::content_workspace(&storage.host.provider, &storage.volume, None)?;
     storage
@@ -493,14 +493,14 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         )
         .await?;
     let limits = Limits {
-        file_bytes: 4_096,
-        render_bytes: 4_096,
+        file_bytes: Some(4_096),
+        render_bytes: Some(4_096),
         ..Limits::default()
     };
     let read_capability = storage.read_capability.clone();
     let mut readonly_project = storage.content_bindings();
     readonly_project.writer = None;
-    let other_private = MemoryHarnessStorage::new(AgentId::new(), 4_096)
+    let other_private = MemoryHarnessStorage::new(AgentId::new(), Some(4_096))
         .await?
         .content_bindings();
     #[cfg(not(target_arch = "wasm32"))]
@@ -751,7 +751,7 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
 
 #[tokio::test]
 async fn context_files_stage_and_resolve_only_with_owner_bound_grants() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::from_bytes([91; 16]), 4_096).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::from_bytes([91; 16]), Some(4_096)).await?;
     run_admitted_file_case(&storage, Limits::default(), |context| async move {
         let file = context
             .stage_file(
@@ -790,7 +790,7 @@ async fn context_files_stage_and_resolve_only_with_owner_bound_grants() -> Resul
 
 #[tokio::test]
 async fn codex_apply_patch_publishes_through_the_canonical_variant() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(4_096)).await?;
     let mut tools = crate::tools::defaults()?;
     crate::tools::native::bind(&mut tools, crate::model::NativeToolProfile::Openai)?;
     let tool = tools

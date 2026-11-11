@@ -69,7 +69,7 @@ impl Fixture {
             Turns {
                 executors: Arc::new(executors),
                 limits: TurnLimits {
-                    maximum_bytes: 64 * 1024,
+                    maximum_bytes: Some(64 * 1024),
                     history_turns: 8,
                 },
                 actors: vectors::limits()?,
@@ -156,7 +156,7 @@ impl Fixture {
             admission,
             executors.clone(),
             TurnLimits {
-                maximum_bytes: 64 * 1024,
+                maximum_bytes: Some(64 * 1024),
                 history_turns: 8,
             },
             Default::default(),

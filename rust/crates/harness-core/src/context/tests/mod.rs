@@ -91,8 +91,8 @@ struct TestPayloadStore {
 
 fn payload_limits() -> Limits {
     Limits {
-        file_bytes: 1_048_576,
-        render_bytes: 1_048_576,
+        file_bytes: Some(1_048_576),
+        render_bytes: Some(1_048_576),
         context_messages: std::num::NonZeroUsize::new(4_096),
         attachments: std::num::NonZeroUsize::new(1_024),
         path_bytes: std::num::NonZeroUsize::new(4_096),
@@ -166,7 +166,7 @@ impl ContentResidencyVerifier for TestPayloadStore {
     fn verify<'a>(
         &'a self,
         file: &'a FileRef,
-        _maximum_bytes: u64,
+        _maximum_bytes: Option<u64>,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(
@@ -178,7 +178,7 @@ impl ContentResidencyVerifier for TestPayloadStore {
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
-        _maximum_bytes: u64,
+        _maximum_bytes: Option<u64>,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
@@ -202,7 +202,7 @@ impl ContentResidencyVerifier for RefVerifier {
     fn verify<'a>(
         &'a self,
         reference: &'a FileRef,
-        _maximum_bytes: u64,
+        _maximum_bytes: Option<u64>,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {

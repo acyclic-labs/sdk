@@ -33,7 +33,7 @@ impl crate::conversation::ContentResidencyVerifier for WasmPrefixReader {
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
-        _maximum_bytes: u64,
+        _maximum_bytes: Option<u64>,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
@@ -140,7 +140,7 @@ pub async fn select_model_context_wasm(
                 std::num::NonZeroUsize::new(maximum_attachments as usize)
                     .ok_or_else(|| JsValue::from_str("maximum attachments must be positive"))?,
             ),
-            render_bytes: maximum_render_bytes,
+            render_bytes: Some(maximum_render_bytes),
             ..Default::default()
         },
         maximum_projected_attachments as usize,
@@ -414,7 +414,7 @@ impl ContentResidencyVerifier for WasmProjectionResolver {
     fn verify<'a>(
         &'a self,
         _file: &'a FileRef,
-        _maximum_bytes: u64,
+        _maximum_bytes: Option<u64>,
         _io: Option<&'a ContentIo>,
     ) -> crate::Result<BoundedContentFuture<'a, ()>> {
         Err(crate::Error::Unsupported("projection-only reader".into()))
@@ -423,7 +423,7 @@ impl ContentResidencyVerifier for WasmProjectionResolver {
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
-        _maximum_bytes: u64,
+        _maximum_bytes: Option<u64>,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {

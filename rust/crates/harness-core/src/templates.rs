@@ -103,7 +103,7 @@ pub(crate) async fn admit_child(
     let source = match &parent.template {
         Some(file) => {
             bytes = reader
-                .read(file, file.descriptor().byte_length(), ceiling, None)?
+                .read(file, Some(file.descriptor().byte_length()), ceiling, None)?
                 .await?;
             bytes.as_ref()
         }
@@ -203,7 +203,7 @@ pub(crate) async fn directive(
     let source = match &creation.template {
         Some(file) => {
             bytes = reader
-                .read(file, file.descriptor().byte_length(), None, None)?
+                .read(file, Some(file.descriptor().byte_length()), None, None)?
                 .await?;
             bytes.as_ref()
         }

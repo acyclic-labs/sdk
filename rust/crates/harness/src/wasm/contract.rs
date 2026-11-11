@@ -48,7 +48,11 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
                 ("file_bytes", value.file_bytes),
                 ("render_bytes", value.render_bytes),
             ] {
-                set_js_field(&js, key, &exact_js_number(bound)?)?;
+                let bound = bound
+                    .map(exact_js_number)
+                    .transpose()?
+                    .unwrap_or(JsValue::NULL);
+                set_js_field(&js, key, &bound)?;
             }
             for (key, bound) in [
                 ("path_bytes", value.path_bytes),

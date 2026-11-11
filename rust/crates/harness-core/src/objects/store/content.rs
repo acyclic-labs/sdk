@@ -151,7 +151,7 @@ impl ContentResidencyVerifier for ObjectContentStore {
     fn read<'a>(
         &'a self,
         reference: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {

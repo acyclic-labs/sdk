@@ -13,7 +13,7 @@ pub(in crate::filesystem) struct PublicationLookup<'a> {
     pub volume: &'a VolumeRef,
     pub key: &'a IdempotencyKey,
     pub expected_path: Option<&'a str>,
-    pub maximum_bytes: u64,
+    pub maximum_bytes: Option<u64>,
     pub internal_class: Option<InternalContentClass>,
     pub purpose: PublicationPurpose,
     pub scope: &'a Scope,

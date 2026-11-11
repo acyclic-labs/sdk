@@ -35,10 +35,16 @@ async fn storage(
             &private,
             &verifier,
             &scope,
-            32_768,
+            Some(32_768),
             None,
         )?,
-        FilesystemContentVerifier::new(fixture.host.clone(), &verifier, &scope, 32_768, None)?,
+        FilesystemContentVerifier::new(
+            fixture.host.clone(),
+            &verifier,
+            &scope,
+            Some(32_768),
+            None,
+        )?,
         private,
         scope,
     ))
@@ -140,7 +146,10 @@ async fn assert_request(
             vec![&**pinned]
         );
         assert_eq!(
-            reader.read(pinned, 32_768, None, None)?.await?.as_ref(),
+            reader
+                .read(pinned, Some(32_768), None, None)?
+                .await?
+                .as_ref(),
             expected.as_bytes()
         );
     }
@@ -243,8 +252,8 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
     let fixture = Fixture::new().await?;
     let manifest = seed(&fixture).await?;
     let limits = Limits {
-        render_bytes: 32_768,
-        file_bytes: 32_768,
+        render_bytes: Some(32_768),
+        file_bytes: Some(32_768),
         context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
     };
@@ -257,7 +266,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
             limits,
         )
         .await?;
-    let stored = reader.read(&reference, 32_768, None, None)?.await?;
+    let stored = reader.read(&reference, Some(32_768), None, None)?.await?;
     assert_eq!(ContextManifest::decode(&stored, limits)?, manifest);
     assert!(!String::from_utf8_lossy(&stored).contains("SELECTED BODY"));
     let replacement = ContextManifest::default()
@@ -368,8 +377,8 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
     manifest.selected_skills = vec!["hidden".into(), "inspect".into()];
     manifest.tools.clear();
     let limits = Limits {
-        render_bytes: 32_768,
-        file_bytes: 32_768,
+        render_bytes: Some(32_768),
+        file_bytes: Some(32_768),
         context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
     };
@@ -469,8 +478,8 @@ async fn skill_path_bounds_reject_before_any_body_read_at_a_short_manifest_path(
         &ToolRegistry::default(),
     )?;
     let limits = Limits {
-        render_bytes: 32_768,
-        file_bytes: 32_768,
+        render_bytes: Some(32_768),
+        file_bytes: Some(32_768),
         ..Default::default()
     };
     let (publisher, reader, _, _) = storage(&fixture).await?;
@@ -524,8 +533,8 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
         &tools()?,
     )?;
     let limits = Limits {
-        render_bytes: 32_768,
-        file_bytes: 32_768,
+        render_bytes: Some(32_768),
+        file_bytes: Some(32_768),
         context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
     };
@@ -538,7 +547,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
             OperationId::new(),
             "context/unbounded-file.json",
             Limits {
-                file_bytes: 1,
+                file_bytes: Some(1),
                 ..limits
             },
         )
@@ -547,7 +556,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
     );
     for bound in [
         Limits {
-            render_bytes: 1,
+            render_bytes: Some(1),
             ..limits
         },
         Limits {
@@ -617,7 +626,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
             reader.as_ref(),
             tools()?,
             Limits {
-                render_bytes: 1,
+                render_bytes: Some(1),
                 ..limits
             }
         )

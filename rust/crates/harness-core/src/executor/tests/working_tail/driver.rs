@@ -3,7 +3,8 @@ use super::*;
 #[tokio::test]
 async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_reentry() -> Result<()>
 {
-    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let journal = journal.as_ref();
     let (provider, accounting_calls) = counted_model(

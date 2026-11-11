@@ -35,9 +35,15 @@ async fn image_conversion_authorizes_the_pinned_source_before_reading() -> Resul
     let grants = Capabilities::new([read, write.clone()]);
     let scope = issuer.bootstrap_scope("owner", &grants, Some(agent), &mut None)?;
     let verifier = issuer.verifier(&mut None)?;
-    let writer =
-        FilesystemContentPublisher::new(host.clone(), &volume, &verifier, &scope, 4096, None)?;
-    let reader = FilesystemContentVerifier::new(host, &verifier, &scope, 4096, None)?;
+    let writer = FilesystemContentPublisher::new(
+        host.clone(),
+        &volume,
+        &verifier,
+        &scope,
+        Some(4096),
+        None,
+    )?;
+    let reader = FilesystemContentVerifier::new(host, &verifier, &scope, Some(4096), None)?;
     let mut bytes = b"IMG1".to_vec();
     bytes.extend_from_slice(&2u32.to_le_bytes());
     bytes.extend_from_slice(&[0x80, 0xff]);
@@ -154,14 +160,14 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         &volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
-        4096,
+        Some(4096),
         None,
     )?;
     let reader = FilesystemContentVerifier::new(
         host,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
-        4096,
+        Some(4096),
         None,
     )?;
     let source = writer

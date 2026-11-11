@@ -80,7 +80,7 @@ impl ContentResidencyVerifier for StoredContent {
     fn verify<'a>(
         &'a self,
         file: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
         acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
@@ -95,7 +95,7 @@ impl ContentResidencyVerifier for StoredContent {
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
@@ -141,7 +141,7 @@ struct Fixture {
 }
 
 async fn fixture() -> Result<Fixture> {
-    let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 65_536).await?);
+    let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?);
     let source = Context {
         messages: vec![
             message(&storage, ModelRole::User, "old").await?,

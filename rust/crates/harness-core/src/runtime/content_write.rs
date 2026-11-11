@@ -268,7 +268,10 @@ impl TaskContext {
         scope: &RuntimeScope,
         io: Option<&ContentIo>,
     ) -> Result<(FileRef, u64)> {
-        if bytes.len() as u64 > scope.limits.file_bytes
+        if scope
+            .limits
+            .file_bytes
+            .is_some_and(|maximum| bytes.len() as u64 > maximum)
             || scope
                 .limits
                 .path_bytes
@@ -315,7 +318,7 @@ impl TaskContext {
                 }
                 content
                     .reader
-                    .verify(source, source.descriptor().byte_length(), io)?
+                    .verify(source, Some(source.descriptor().byte_length()), io)?
                     .await?;
                 writer
                     .stage_at(operation_id, source, bytes, Some(scope.grants()), io)?

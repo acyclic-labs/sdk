@@ -214,7 +214,7 @@ fn composition_at(
             ),
             limits: Limits::default(),
             turns: TurnLimits {
-                maximum_bytes: 1 << 20,
+                maximum_bytes: Some(1 << 20),
                 history_turns: 8,
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,

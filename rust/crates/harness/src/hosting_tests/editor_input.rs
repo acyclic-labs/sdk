@@ -54,7 +54,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
         &authority.private.volume,
         &authority.verifier,
         &authority.scope,
-        64 * 1024,
+        Some(64 * 1024),
         None,
     )?;
     let (file, _) = publisher
@@ -85,7 +85,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
         bound.volumes().clone(),
         &authority.verifier,
         &authority.scope,
-        64 * 1024,
+        Some(64 * 1024),
         None,
     )?;
     let client = Client::in_process_with_products(
@@ -197,7 +197,10 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
         );
     }
     assert_eq!(
-        reader.read(&file, 64 * 1024, None, None)?.await?.as_ref(),
+        reader
+            .read(&file, Some(64 * 1024), None, None)?
+            .await?
+            .as_ref(),
         b"original revision"
     );
     // Drive the original actors to completion without a model, timer or
@@ -309,11 +312,14 @@ impl TurnExecutors for InheritedEditorInput {
                     .ok_or_else(|| crate::Error::Invalid("editor files absent".into()))?;
                 let reader = &authority.content.reader;
                 assert_eq!(
-                    reader.read(&file, 64 * 1024, None, None)?.await?.as_ref(),
+                    reader
+                        .read(&file, Some(64 * 1024), None, None)?
+                        .await?
+                        .as_ref(),
                     b"original revision"
                 );
                 assert!(
-                    async { reader.read(&sibling, 64 * 1024, None, None)?.await }
+                    async { reader.read(&sibling, Some(64 * 1024), None, None)?.await }
                         .await
                         .is_err(),
                     "an exact inherited file grant exposed a sibling"

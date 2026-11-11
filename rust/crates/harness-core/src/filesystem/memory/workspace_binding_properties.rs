@@ -38,10 +38,10 @@ async fn read_workspace(storage: &MemoryHarnessStorage, path: &str) -> Option<Ve
 }
 
 async fn check(text: &[String; 3], fault: Fault) -> TestCaseResult {
-    let left = MemoryHarnessStorage::new(AgentId::new(), 65536)
+    let left = MemoryHarnessStorage::new(AgentId::new(), Some(65536))
         .await
         .unwrap();
-    let right = MemoryHarnessStorage::new(AgentId::new(), 65536)
+    let right = MemoryHarnessStorage::new(AgentId::new(), Some(65536))
         .await
         .unwrap();
     let path = format!("batch/item-{}.txt", text[0]);
@@ -81,7 +81,7 @@ async fn check(text: &[String; 3], fault: Fault) -> TestCaseResult {
         &left.volume,
         &left.verifier(),
         &left.scope,
-        65536,
+        Some(65536),
         None,
     )
     .unwrap();
@@ -105,7 +105,7 @@ async fn check(text: &[String; 3], fault: Fault) -> TestCaseResult {
     let right_bytes = read_workspace(&right, &path).await;
     let initial_bytes = left
         .content_verifier
-        .read(&initial, 65536, None, None)
+        .read(&initial, Some(65536), None, None)
         .unwrap()
         .await
         .ok()

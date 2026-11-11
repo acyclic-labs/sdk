@@ -39,7 +39,7 @@ impl TaskContext {
                 .reader
                 .read(
                     &binding.configuration.content,
-                    binding.configuration.content.descriptor().byte_length(),
+                    Some(binding.configuration.content.descriptor().byte_length()),
                     None,
                     None,
                 )?
@@ -60,7 +60,7 @@ impl TaskContext {
                 self.content_binding(Some(file.volume()))
                     .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?
                     .reader
-                    .verify(file, file.descriptor().byte_length(), None)?
+                    .verify(file, Some(file.descriptor().byte_length()), None)?
                     .await?;
             }
         }

@@ -8,10 +8,10 @@ use serde_json::json;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let defaults = Limits::default();
     let maximum = Limits {
-        file_bytes: MAX_EXACT_JS_INTEGER,
+        file_bytes: Some(MAX_EXACT_JS_INTEGER),
         path_bytes: std::num::NonZeroUsize::new(MAX_PATH_BYTES),
         attachments: std::num::NonZeroUsize::new(MAX_PORTABLE_COUNT),
-        render_bytes: MAX_EXACT_JS_INTEGER,
+        render_bytes: Some(MAX_EXACT_JS_INTEGER),
         model_events_per_step: std::num::NonZeroUsize::new(MAX_PORTABLE_COUNT),
         tool_calls_per_step: std::num::NonZeroUsize::new(MAX_PORTABLE_COUNT),
         context_messages: std::num::NonZeroUsize::new(MAX_PORTABLE_COUNT),

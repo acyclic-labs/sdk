@@ -34,7 +34,7 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
     };
     let storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
         acyclic_harness_core::AgentId::from_bytes([41; 16]),
-        4096,
+        Some(4096),
     )
     .await?;
     let (owner, scope, workspace) =
@@ -42,7 +42,7 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
     let home: Arc<dyn acyclic_harness_core::tool::ToolExecutor> = Arc::new(workspace);
     let other_storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
         acyclic_harness_core::AgentId::from_bytes([42; 16]),
-        4096,
+        Some(4096),
     )
     .await?;
     let (_, _, other_workspace) =
@@ -142,8 +142,8 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
         bindings.scope = RuntimeScope::new(
             Capabilities::default(),
             acyclic_harness_core::conversation::Limits {
-                file_bytes: 4096,
-                render_bytes: 4096,
+                file_bytes: Some(4096),
+                render_bytes: Some(4096),
                 ..Default::default()
             },
         )?;
@@ -479,7 +479,7 @@ async fn committed_handover(refused_close: bool) -> Result {
         let remote = directory.resolve(Some("desktop"))?;
         let storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::with_stream(
             acyclic_harness_core::AgentId::from_bytes(agent.id().to_bytes()),
-            4096,
+            Some(4096),
             provider.clone(),
         )
         .await?;
@@ -488,8 +488,8 @@ async fn committed_handover(refused_close: bool) -> Result {
         bindings.scope = acyclic_harness_core::runtime::RuntimeScope::new(
             scope.capabilities().clone(),
             acyclic_harness_core::conversation::Limits {
-                file_bytes: 2,
-                render_bytes: 4,
+                file_bytes: Some(2),
+                render_bytes: Some(4),
                 ..Default::default()
             },
         )?;

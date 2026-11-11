@@ -883,7 +883,7 @@ impl WasmAgents {
         // Rust-owned verified bytes, copied out of the reader's buffer.
         Ok(Vec::from(
             reader
-                .read(&file, self.maximum_bytes, None, None)
+                .read(&file, Some(self.maximum_bytes), None, None)
                 .map_err(js_error)?
                 .await
                 .map_err(js_error)?

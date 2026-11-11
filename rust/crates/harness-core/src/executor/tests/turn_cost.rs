@@ -357,7 +357,8 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -> Result<()> {
-    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     // This exercises the fallback driver cache. The Filesystem journal's
     // persisted index can now answer without retaining a full driver index.
