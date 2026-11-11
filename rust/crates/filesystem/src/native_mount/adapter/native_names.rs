@@ -1,7 +1,6 @@
 fn native_name_layout(
     bytes: &[u8],
     profile: FilesystemProfile,
-    limits: VolumeLimits,
     inputs: &mut InputBuffers<'_, '_>,
 ) -> Result<(NameEncoding, usize), MountSourceError> {
     inputs.charge(crate::WorkCounters {
@@ -20,14 +19,10 @@ fn native_name_layout(
                     "portable volume cannot represent a non-UTF-8 native name".into(),
                 )
             })?;
-            let length = LogicalName::validate_unicode(
-                NameEncoding::Utf8,
-                value,
-                limits.maximum_component_bytes,
-            )
-            .map_err(|error| {
-                MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Name(error))
-            })?;
+            let length =
+                LogicalName::validate_unicode(NameEncoding::Utf8, value).map_err(|error| {
+                    MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Name(error))
+                })?;
             Ok((NameEncoding::Utf8, length))
         }
         (FilesystemProfile::Portable | FilesystemProfile::Browser, "windows") => {
@@ -57,10 +52,9 @@ fn native_name_layout(
 fn native_name(
     bytes: &[u8],
     profile: FilesystemProfile,
-    limits: VolumeLimits,
     inputs: &mut InputBuffers<'_, '_>,
 ) -> Result<LogicalName, MountSourceError> {
-    let (encoding, length) = native_name_layout(bytes, profile, limits, inputs)?;
+    let (encoding, length) = native_name_layout(bytes, profile, inputs)?;
     let owned = if !cfg!(windows) || encoding != NameEncoding::Utf8 {
         inputs.copy_bytes(bytes)?
     } else {
@@ -84,7 +78,7 @@ fn native_name(
         }
         owned
     };
-    LogicalName::new(encoding, owned, limits.maximum_component_bytes).map_err(|error| {
+    LogicalName::new(encoding, owned).map_err(|error| {
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Name(error))
     })
 }
@@ -107,8 +101,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     return None;
                 }
                 let component = components.next()?;
-                match native_name_layout(component, self.config.profile, self.config.limits, inputs)
-                {
+                match native_name_layout(component, self.config.profile, inputs) {
                     Ok((_, length)) => Some(length),
                     Err(failure) => {
                         error = Some(failure);
@@ -132,12 +125,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             names.push(LogicalName::from_validated_bytes(name.encoding(), owned));
         }
         for component in path.components() {
-            names.push(native_name(
-                component,
-                self.config.profile,
-                self.config.limits,
-                inputs,
-            )?);
+            names.push(native_name(component, self.config.profile, inputs)?);
         }
         inputs.items(names.len())?;
         NamespacePath::new(names, self.config.limits).map_err(MountSourceError::NamespacePath)
@@ -148,17 +136,9 @@ impl<A, O> CheckoutMountSource<A, O> {
         source_root: &Path,
         paths: &[MountPath],
         expected_root_identity: NativeRootIdentity,
-        scope: HostCaptureScope,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Vec<NamespacePath>, CaptureOptions, crate::NativeAllocation), MountSourceError>
     {
-        if matches!(scope, HostCaptureScope::ExactPaths)
-            && paths.len() > MAX_NATIVE_EXACT_CAPTURE_PATHS
-        {
-            return Err(MountSourceError::Invalid(
-                "capture path set exceeds the native per-operation limit".into(),
-            ));
-        }
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
         let mut rooted = inputs.vec(paths.len())?;
@@ -166,16 +146,11 @@ impl<A, O> CheckoutMountSource<A, O> {
             rooted.push(self.namespace_inputs(path, &mut inputs)?);
         }
         let source_root = inputs.clone_path(source_root)?;
-        let maximum_paths = match scope {
-            HostCaptureScope::ExactPaths => u32::try_from(rooted.len())
-                .map_err(|_| MountSourceError::Work(crate::WorkError::Overflow))?,
-            HostCaptureScope::Subtree => MAX_NATIVE_SUBTREE_CAPTURE_PATHS,
-        };
         let options = CaptureOptions {
             source_root,
             expected_root_identity,
-            maximum_paths,
-            maximum_extent_spans: 65_536,
+            maximum_paths: None,
+            maximum_extent_spans: None,
         };
         Ok((
             rooted,

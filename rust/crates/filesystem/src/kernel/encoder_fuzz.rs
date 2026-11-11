@@ -275,7 +275,6 @@ fn decode_limits() -> DecodeLimits {
         maximum_object_bytes: 4096,
         maximum_page_bytes: 4096,
         maximum_page_items: 32,
-        maximum_name_bytes: 256,
         ..DecodeLimits::default()
     }
 }

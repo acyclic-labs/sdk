@@ -23,7 +23,7 @@ pub async fn git_merge_resolution<
     let aliases = current
         .paths_for_file_ids(
             conflicts.values().filter_map(|id| *id),
-            u32::MAX,
+            Some(u32::MAX),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -157,12 +157,6 @@ mod tests {
                     .await
                     .unwrap()
                     .is_none()
-            );
-            // Negative control: the former all-changed-files full read fails.
-            assert!(
-                head.read("/large", 64 * 1024 * 1024, WorkBudget::UNBOUNDED, &stop)
-                    .await
-                    .is_err()
             );
             workspace.write_text("/note", "resolved\n").await.unwrap();
             let head = workspace

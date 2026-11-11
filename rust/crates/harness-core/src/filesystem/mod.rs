@@ -397,10 +397,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 } else {
                     let transaction = active_io.sdk(opened.begin_transaction(
                         operation, active_io, active_io.cancellation()).await)?;
-                    // Staging credit cannot exceed this volume's capacity;
-                    // the publisher's independent byte credit still applies.
-                    let staging_bytes = maximum_bytes.max(1)
-                        .min(opened.volume_config().limits.maximum_generation_bytes);
+                    // The publisher's independent byte credit funds staging.
+                    let staging_bytes = maximum_bytes.max(1);
                     let content = active_io.sdk(transaction.stage_content(
                         &mut source, staging_bytes, active_io, active_io.cancellation()).await)
                         .map_err(|error| if active_io.cancellation().is_cancelled() { Error::Cancelled } else { error })?;

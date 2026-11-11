@@ -102,10 +102,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             {
                 return Err(FsError::VolumeMismatch);
             }
-            let maximum = u32::try_from(accounting.remaining()?.items_examined).unwrap_or(u32::MAX);
-            if maximum == 0 {
-                return Ok(None);
-            }
             let changes = crate::kernel::generation_frontier(
                 &self.volume.fs.inner.authority,
                 &self.volume.fs.inner.objects,
@@ -123,7 +119,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 &self.volume.fs.inner.objects,
                 self.base_root.file_table,
                 self.root.file_table,
-                maximum,
+                None,
                 DecodeLimits::for_volume(self.volume.config),
                 accounting,
                 cancellation,

@@ -164,7 +164,7 @@ fn native_key(
                     part.encode_utf16().flat_map(u16::to_le_bytes).collect(),
                 ),
             };
-            LogicalName::new(encoding, bytes, 255).map(|name| name.case_fold_key())
+            LogicalName::new(encoding, bytes).map(|name| name.case_fold_key())
         })
         .collect()
 }
@@ -226,7 +226,7 @@ fn published_policy_refreshes_new_opens_and_preserves_pinned_handles()
     let res = resource(&caller.lineage, "", 10);
     let mut policy = super::policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**")]);
     let view = AccessView::new(PathTrie::compile(&policy, &caller, res, context, &cap)?);
-    let name = LogicalName::new(NameEncoding::Utf8, b"public".to_vec(), 255)?;
+    let name = LogicalName::new(NameEncoding::Utf8, b"public".to_vec())?;
     let path = acyclic_fs::kernel::NamespacePath::new(vec![name], res.config.limits)?;
     let opened = view.current()?.pin(&path)?;
     assert!(opened.decide(Action::Read, 100).allowed);
@@ -336,7 +336,6 @@ fn native_exact_grant(
             } else {
                 text.as_bytes().to_vec()
             },
-            res.config.limits.maximum_component_bytes,
         )
         .map_err(|_| InvalidPolicy("invalid fixture name"))
     };
@@ -409,52 +408,16 @@ fn native_name_views_reject_unsupported_encodings_and_names() -> Result<(), Inva
         res.config.unicode = UnicodePolicy::RequireNfc;
         let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
         let root = trie.prepare("")?;
-        let utf8 = LogicalName::new(NameEncoding::Utf8, b"public".to_vec(), 255)
+        let utf8 = LogicalName::new(NameEncoding::Utf8, b"public".to_vec())
             .map_err(|_| InvalidPolicy("invalid fixture name"))?;
         assert!(root.child_name(&utf8).is_err());
-        let non_unicode = LogicalName::new(encoding, invalid, 255)
+        let non_unicode = LogicalName::new(encoding, invalid)
             .map_err(|_| InvalidPolicy("invalid fixture name"))?;
         assert!(root.child_name(&non_unicode).is_err());
         // NFC admission applies only to UTF-8 logical names in the filesystem.
         res.path = "e\u{301}";
         assert!(decide(&policy, &caller, Action::Read, res, context, &cap).allowed);
         assert!(trie.decide(Action::Read, res.path, 100).allowed);
-    }
-    Ok(())
-}
-
-#[test]
-fn windows_access_paths_obey_encoded_name_and_path_limits() -> Result<(), InvalidPolicy> {
-    let caller = principal();
-    let policy = super::policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**")]);
-    let cap = capability();
-    let context = Context {
-        now: 100,
-        approvals: 0,
-    };
-    let mut res = resource(&caller.lineage, "", 10);
-    res.config.profile = FilesystemProfile::Windows;
-    res.config.limits.maximum_component_bytes = 4;
-    res.config.limits.maximum_path_bytes = 8;
-    let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
-    for (path, allowed) in [
-        ("ab", true),
-        ("abc", false),
-        ("ab/c", true),
-        ("ab/cd", false),
-        ("😀", true),
-    ] {
-        res.path = path;
-        assert_eq!(
-            decide(&policy, &caller, Action::Read, res, context, &cap).allowed,
-            allowed,
-            "{path}"
-        );
-        assert_eq!(
-            trie.decide(Action::Read, path, 100).allowed,
-            allowed,
-            "{path}"
-        );
     }
     Ok(())
 }
@@ -540,7 +503,7 @@ fn unicode_admission_matches_the_volume() -> Result<(), InvalidPolicy> {
 }
 
 #[test]
-fn review_exponential_globs_are_bounded_in_policy_and_delegation() {
+fn exponential_policy_and_delegation_preserve_explicit_compilation_credit() {
     let caller = principal();
     let context = Context {
         now: 100,
@@ -556,16 +519,20 @@ fn review_exponential_globs_are_bounded_in_policy_and_delegation() {
         &adversarial,
     )]);
     let cap = capability();
-    assert!(
-        PathTrie::compile(
+    let mut work = 4_194_304;
+    assert!(matches!(
+        PathTrie::compile_with_work(
             &restricted,
             &caller,
             resource(&caller.lineage, "", 10),
             context,
-            &cap
-        )
-        .is_err()
-    );
+            &cap,
+            &mut work,
+            |_| Ok(()),
+        ),
+        Err(InvalidPolicy("glob compilation exceeds work limit"))
+    ));
+    assert!(work < 4_194_304, "failed work must remain charged");
     let delegated = cap.attenuate(
         vec![Grant {
             actions: Action::ALL.into_iter().collect(),
@@ -573,16 +540,20 @@ fn review_exponential_globs_are_bounded_in_policy_and_delegation() {
         }],
         None,
     );
-    assert!(
-        PathTrie::compile(
+    let mut work = 4_194_304;
+    assert!(matches!(
+        PathTrie::compile_with_work(
             &policy,
             &caller,
             resource(&caller.lineage, "", 10),
             context,
-            &delegated
-        )
-        .is_err()
-    );
+            &delegated,
+            &mut work,
+            |_| Ok(()),
+        ),
+        Err(InvalidPolicy("glob compilation exceeds work limit"))
+    ));
+    assert!(work < 4_194_304, "failed work must remain charged");
 }
 
 #[test]
@@ -666,7 +637,7 @@ fn full_case_fold_question_preserves_native_scalar_aliases()
     ];
     runner.run(&scalar, |ch| {
         let path = format!("file{ch}.txt");
-        let name = LogicalName::new(NameEncoding::Utf8, path.as_bytes().to_vec(), 255)
+        let name = LogicalName::new(NameEncoding::Utf8, path.as_bytes().to_vec())
             .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
         let alias = String::from_utf8(name.case_fold_key())
             .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;

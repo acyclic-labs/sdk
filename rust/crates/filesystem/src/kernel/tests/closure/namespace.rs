@@ -69,7 +69,7 @@ async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identiti
 
     let absent_child_store = MemoryObjectStore::default();
     let metadata_id = put_file_metadata(&absent_child_store, metadata()).await?;
-    let child_name = LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?;
+    let child_name = LogicalName::new(NameEncoding::Utf8, b"child".to_vec())?;
     let dangling_tree = put_tree_page(
         &absent_child_store,
         &TreePage::Leaf(vec![TreeEntry {
@@ -172,7 +172,7 @@ async fn closure_rejects_kinds_outside_the_declared_volume_profile()
     let tree = put_tree_page(
         &store,
         &TreePage::Leaf(vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"fifo".to_vec(), 255)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"fifo".to_vec())?,
             file_id: fifo_file_id,
             kind: FileKind::Fifo,
         }]),
@@ -241,7 +241,7 @@ async fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cy
     let root_tree = put_tree_page(
         &mismatch_store,
         &TreePage::Leaf(vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"child".to_vec())?,
             file_id: child_id,
             kind: FileKind::Regular,
         }]),
@@ -285,12 +285,12 @@ async fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cy
         &hard_link_store,
         &TreePage::Leaf(vec![
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec())?,
                 file_id: child_id,
                 kind: FileKind::Directory,
             },
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec())?,
                 file_id: child_id,
                 kind: FileKind::Directory,
             },
@@ -329,7 +329,7 @@ async fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cy
     let first_tree = put_tree_page(
         &disconnected_store,
         &TreePage::Leaf(vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec())?,
             file_id: second_id,
             kind: FileKind::Directory,
         }]),
@@ -339,7 +339,7 @@ async fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cy
     let second_tree = put_tree_page(
         &disconnected_store,
         &TreePage::Leaf(vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec())?,
             file_id: first_id,
             kind: FileKind::Directory,
         }]),

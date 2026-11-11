@@ -28,6 +28,7 @@ export function copyFileRecord(record: FileRecordSnapshot): FileRecordSnapshot {
 export function copyBatchLookupEntries(entries: readonly BatchLookupEntry[]): BatchLookupEntry[] {
   return entries.map((entry) => ({
     ...entry,
+    resolvedComponents: BigInt(entry.resolvedComponents),
     fileId: entry.fileId === undefined ? undefined : new Uint8Array(entry.fileId),
   }));
 }

@@ -46,9 +46,6 @@ pub enum WorkspaceForkOutcome {
     CreationRejected,
 }
 
-/// Largest first record a fork compares when resolving a retry.
-const MAXIMUM_FIRST_RECORD_BYTES: u64 = 4 * 1024;
-
 pub(crate) async fn seal<G: AuthorityGuard>(
     guard: Option<&mut G>,
     work: &mut AuthorityWork<'_>,
@@ -162,7 +159,7 @@ pub(crate) async fn first_record<S: AsyncAuthorityStore + ?Sized, G: AuthorityGu
                     Sequence::GENESIS,
                     ReplayLimit {
                         records: 1,
-                        payload_bytes: MAXIMUM_FIRST_RECORD_BYTES,
+                        payload_bytes: work.remaining()?.source_bytes_read,
                     },
                     work,
                 )

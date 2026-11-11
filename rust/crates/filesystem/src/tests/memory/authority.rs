@@ -1,6 +1,54 @@
 use super::*;
 
 #[tokio::test]
+async fn authority_retains_complete_large_payloads_without_an_implicit_policy()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryAuthorityStore::default();
+    let authority = AuthorityId::from_bytes([81; 16]);
+    let CreateAuthorityOutcome::Created(head) = provider_receipt!(
+        store,
+        create_authority(authority, Epoch::GENESIS),
+        WorkBudget::UNBOUNDED
+    )?
+    .value
+    else {
+        return Err("authority unexpectedly existed".into());
+    };
+    let payload = bytes::Bytes::from(vec![0xa5; 16 * 1024 * 1024 + 1]);
+    let commit = ProposedCommit {
+        publication: None,
+        operation_id: OperationId::from_bytes([82; 16]),
+        fingerprint: Digest::from_bytes([83; 32]),
+        payload: payload.clone(),
+    };
+    let AppendOutcome::Committed(durable) = provider_receipt!(
+        store,
+        compare_and_append(authority, Epoch::GENESIS, head, commit),
+        WorkBudget::UNBOUNDED
+    )?
+    .value
+    else {
+        return Err("new operation was not committed".into());
+    };
+    let page = provider_receipt!(
+        store,
+        replay(
+            authority,
+            Sequence::GENESIS,
+            ReplayLimit {
+                records: 1,
+                payload_bytes: payload.len() as u64,
+            }
+        ),
+        WorkBudget::UNBOUNDED
+    )?;
+    assert_eq!(page.value.len(), 1);
+    assert_eq!(page.value[0], durable);
+    assert_eq!(page.value[0].payload, payload);
+    Ok(())
+}
+
+#[tokio::test]
 async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([1; 16]);

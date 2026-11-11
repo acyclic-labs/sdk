@@ -39,13 +39,7 @@ fn path(parts: &[String]) -> Result<NamespacePath> {
     Ok(NamespacePath::new(
         parts
             .iter()
-            .map(|part| {
-                LogicalName::new(
-                    NameEncoding::Utf8,
-                    part.as_bytes().to_vec(),
-                    config.limits.maximum_component_bytes,
-                )
-            })
+            .map(|part| LogicalName::new(NameEncoding::Utf8, part.as_bytes().to_vec()))
             .collect::<std::result::Result<Vec<_>, _>>()?,
         config.limits,
     )?)
@@ -212,7 +206,7 @@ async fn measure(
                     }
                     LivePublicationObservation::Conflict { .. } => {
                         let rebased = checkout
-                            .rebase_head(u32::try_from(writers)?, B, cancel)
+                            .rebase_head(Some(u32::try_from(writers)?), B, cancel)
                             .await?;
                         measured.rebase_calls += 1;
                         measured.rebase_items += rebased.work.items_examined;

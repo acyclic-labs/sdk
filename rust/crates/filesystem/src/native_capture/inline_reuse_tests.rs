@@ -56,8 +56,8 @@ async fn check(
     let options = CaptureOptions {
         source_root: source.to_owned(),
         expected_root_identity: capture_root_identity(source)?,
-        maximum_paths: 8,
-        maximum_extent_spans: 8,
+        maximum_paths: Some(8),
+        maximum_extent_spans: Some(8),
     };
     capture(&mut checkout, &options, &path, &work, None).await?;
     let baseline = NativeViewBaseline::new(options.expected_root_identity, true);

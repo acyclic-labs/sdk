@@ -15,7 +15,10 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
     child.write_text("/local", "child").await?;
     parent.write_text("/omitted", "user edit").await?;
     assert!(matches!(
-        unbounded!(child, live_rebase(IdempotencyKey::new(), 64, 64, 16))?,
+        unbounded!(
+            child,
+            live_rebase(IdempotencyKey::new(), Some(64), Some(64), Some(16))
+        )?,
         WorkspaceRebase::Rebased(_)
     ));
     assert_eq!(
@@ -142,9 +145,9 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     let refused = agent
         .live_rebase(
             IdempotencyKey::new(),
-            128,
-            128,
-            32,
+            Some(128),
+            Some(128),
+            Some(32),
             WorkBudget {
                 backend_read_operations: 0,
                 ..WorkBudget::UNBOUNDED
@@ -171,9 +174,9 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     let failure = agent
         .live_rebase(
             IdempotencyKey::new(),
-            128,
-            128,
-            32,
+            Some(128),
+            Some(128),
+            Some(32),
             WorkBudget::UNBOUNDED,
             &cancelled,
         )
@@ -192,7 +195,14 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
             held: std::sync::Mutex::new(None),
         };
         let (result, spent, live, baseline) = agent
-            .live_rebase(IdempotencyKey::new(), 128, 128, 32, &source, &cancellation)
+            .live_rebase(
+                IdempotencyKey::new(),
+                Some(128),
+                Some(128),
+                Some(32),
+                &source,
+                &cancellation,
+            )
             .await;
         assert!(matches!(
             result,
@@ -215,7 +225,14 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
         held: std::sync::Mutex::new(None),
     };
     let (result, spent, live, baseline) = agent
-        .live_rebase(first_key, 128, 128, 32, &source, &cancellation)
+        .live_rebase(
+            first_key,
+            Some(128),
+            Some(128),
+            Some(32),
+            &source,
+            &cancellation,
+        )
         .await;
     let WorkspaceRebase::Rebased(first) = result? else {
         return Err("first live rebase did not publish".into());
@@ -233,14 +250,20 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
         OwnedBytes::from_static(b"first")
     );
     assert!(matches!(
-        unbounded!(agent, live_rebase(first_key, 128, 128, 32))?,
+        unbounded!(
+            agent,
+            live_rebase(first_key, Some(128), Some(128), Some(32))
+        )?,
         WorkspaceRebase::Current(_)
     ));
 
     main.write_text("/later", "second").await?;
     #[cfg(target_arch = "wasm32")]
     assert!(matches!(
-        unbounded!(agent, live_rebase(IdempotencyKey::new(), 128, 128, 32))?,
+        unbounded!(
+            agent,
+            live_rebase(IdempotencyKey::new(), Some(128), Some(128), Some(32))
+        )?,
         WorkspaceRebase::Rebased(_)
     ));
     #[cfg(not(target_arch = "wasm32"))]
@@ -257,9 +280,9 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
             agent
                 .live_rebase(
                     IdempotencyKey::new(),
-                    128,
-                    128,
-                    32,
+                    Some(128),
+                    Some(128),
+                    Some(32),
                     &original,
                     &cancellation,
                 )
@@ -308,7 +331,10 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
     main.write_text("/shared", "upstream").await?;
     #[cfg(target_arch = "wasm32")]
     assert!(matches!(
-        unbounded!(agent, live_rebase(IdempotencyKey::new(), 128, 128, 32))?,
+        unbounded!(
+            agent,
+            live_rebase(IdempotencyKey::new(), Some(128), Some(128), Some(32))
+        )?,
         WorkspaceRebase::Conflicted {
             truncated: false,
             ..
@@ -327,9 +353,9 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
         } = agent
             .live_rebase(
                 IdempotencyKey::new(),
-                128,
-                128,
-                32,
+                Some(128),
+                Some(128),
+                Some(32),
                 &original,
                 &cancellation,
             )
@@ -355,7 +381,10 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
         OwnedBytes::from_static(b"local")
     );
     assert!(matches!(
-        unbounded!(main, live_rebase(IdempotencyKey::new(), 128, 128, 32)),
+        unbounded!(
+            main,
+            live_rebase(IdempotencyKey::new(), Some(128), Some(128), Some(32))
+        ),
         Err(WorkspaceError::NotFork)
     ));
     #[cfg(not(target_arch = "wasm32"))]
@@ -398,7 +427,10 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
         TransactionCommit::Committed(_)
     ));
     assert!(matches!(
-        unbounded!(agent, live_rebase(IdempotencyKey::new(), 128, 128, 32))?,
+        unbounded!(
+            agent,
+            live_rebase(IdempotencyKey::new(), Some(128), Some(128), Some(32))
+        )?,
         WorkspaceRebase::Rebased(_)
     ));
     let merged = unbounded!(agent, read("/shared", 128))?;
@@ -474,7 +506,10 @@ three
             .await?;
         let before = unbounded!(agent, head())?.id();
 
-        let rebased = unbounded!(agent, live_rebase(IdempotencyKey::new(), 128, 128, 32))?;
+        let rebased = unbounded!(
+            agent,
+            live_rebase(IdempotencyKey::new(), Some(128), Some(128), Some(32))
+        )?;
         if replaced_text == base {
             assert!(matches!(rebased, WorkspaceRebase::Rebased(_)), "{case}");
             assert_eq!(

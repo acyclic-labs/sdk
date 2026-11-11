@@ -176,6 +176,22 @@ async fn page_projection_skips_a_child_whose_named_tail_cannot_exist() -> Result
         "x".repeat(crate::MAX_PATH_BYTES - "agents/".len())
     );
     append(long.clone(), b"long").await?;
+    // A valid destination must still refuse inherited names beyond the path
+    // bound, without publishing even its otherwise valid root.
+    let destination = StreamPath::new("agents-copy")?;
+    assert_eq!(
+        provider
+            .fork(ForkRequest {
+                source: StreamPath::new("agents")?,
+                destination: destination.clone(),
+                at_tail: None,
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await,
+        Err(StreamError::InvalidPath)
+    );
+    assert_eq!(provider.tail(destination).await, Err(StreamError::NotFound));
     let page = provider
         .children_page(ChildrenPageRequest {
             parent: Some(StreamPath::new("agents")?),

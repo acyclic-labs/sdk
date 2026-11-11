@@ -288,8 +288,7 @@ pub(crate) async fn apply_regular_clone_with_accounting<S: AsyncObjectStore>(
             destination_root,
             destination_logical_bytes,
             destination_offset,
-            maximum_spans: config.limits.maximum_mutations_per_batch,
-            maximum_mutations: config.limits.maximum_mutations_per_batch,
+            maximum_spans: None,
         },
         DecodeLimits::for_volume(config),
         accounting,
@@ -375,7 +374,6 @@ pub(crate) async fn clone_extent_range_with_accounting<S: AsyncObjectStore>(
         store,
         (request.destination_root, request.destination_logical_bytes),
         &mutations.value,
-        request.maximum_mutations,
         limits,
         accounting,
         cancellation,
@@ -801,7 +799,6 @@ async fn apply_sparse<S: AsyncObjectStore>(
         store,
         (extents, logical_bytes),
         &[extent_mutation],
-        1,
         DecodeLimits::for_volume(config),
         accounting,
         cancellation,
@@ -872,7 +869,7 @@ async fn apply_sparse_preallocation<S: AsyncObjectStore>(
                     offset,
                     length: existing_length,
                 },
-                maximum_spans: config.limits.maximum_mutations_per_batch,
+                maximum_spans: None,
                 limits: DecodeLimits::for_volume(config),
                 budget: WorkBudget::UNBOUNDED,
             },
@@ -902,11 +899,6 @@ async fn apply_sparse_preallocation<S: AsyncObjectStore>(
         .checked_add(usize::from(grows))
         .and_then(|count| count.checked_sub(usize::from(merge)))
         .ok_or(WorkError::Overflow)?;
-    if u32::try_from(count).unwrap_or(u32::MAX) > config.limits.maximum_mutations_per_batch {
-        return Err(regular_error(RegularMutationError::Extent(
-            ExtentMutationError::TooManyMutations,
-        )));
-    }
     let mut mutations = Owned::<Vec<ExtentMutation>>::allocate(count, accounting)?;
     for span in spans
         .value
@@ -944,7 +936,6 @@ async fn apply_sparse_preallocation<S: AsyncObjectStore>(
             store,
             (extents, logical_bytes),
             &mutations.value,
-            config.limits.maximum_mutations_per_batch,
             DecodeLimits::for_volume(config),
             accounting,
             cancellation,
@@ -983,7 +974,7 @@ async fn try_demote_sparse_async<S: AsyncObjectStore>(
                 offset: 0,
                 length: target_size,
             },
-            maximum_spans: config.limits.maximum_mutations_per_batch,
+            maximum_spans: None,
             limits: DecodeLimits::for_volume(config),
             budget: WorkBudget::UNBOUNDED,
         },

@@ -36,12 +36,10 @@ async fn apply(
     mutations: Vec<TreeMutation>,
     limits: DecodeLimits,
 ) -> Result<OperationReceipt<ObjectId>, Box<dyn std::error::Error>> {
-    let count = u32::try_from(mutations.len())?;
     Ok(apply_tree_mutations(
         store,
         root,
         mutations,
-        count,
         limits,
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),

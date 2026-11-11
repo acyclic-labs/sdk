@@ -179,10 +179,7 @@ impl PathState {
             accounting.check()?;
             cancellation.check()?;
             if let Some(edge) = self.next.take() {
-                if let Err(error) = self
-                    .names
-                    .ensure_for_push(usize::from(config.limits.maximum_path_depth), accounting)
-                {
+                if let Err(error) = self.names.ensure_for_push(usize::MAX, accounting) {
                     edge.retire(accounting)?;
                     return Err(error);
                 }

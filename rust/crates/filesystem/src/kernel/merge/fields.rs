@@ -15,15 +15,7 @@ async fn matching_payloads<S: AsyncObjectStore>(
     if ours.payload == theirs.payload {
         return Ok(true);
     }
-    super::records_match_content(
-        store,
-        ours,
-        theirs,
-        (limits, limits.maximum_object_bytes),
-        accounting,
-        cancellation,
-    )
-    .await
+    super::records_match_content(store, ours, theirs, limits, accounting, cancellation).await
 }
 
 fn resolve_optional(

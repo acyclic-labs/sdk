@@ -101,8 +101,8 @@ pub(in crate::local::workspace) async fn adopt_home(
         &CaptureOptions {
             source_root: source.path().to_path_buf(),
             expected_root_identity: source.identity(),
-            maximum_paths: u32::MAX,
-            maximum_extent_spans: u32::MAX,
+            maximum_paths: None,
+            maximum_extent_spans: None,
         },
         &CapturePolicy::default(),
         work,

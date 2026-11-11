@@ -396,7 +396,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         allow::<FsError>,
     ))
     .await?;
-    let conflict = (conflicted.rebase_head(8, B, &cancellation)).await?;
+    let conflict = (conflicted.rebase_head(Some(8), B, &cancellation)).await?;
     assert!(matches!(
         conflict.value,
         RebaseDecision::Conflicted {
@@ -415,7 +415,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         .ok_or("pinned refresh unexpectedly succeeded")?;
     assert!(matches!(pinned_failure.error, FsError::RefreshNotAllowed));
 
-    let pinned_rebase = (pinned_checkout.rebase_head(8, B, &cancellation))
+    let pinned_rebase = (pinned_checkout.rebase_head(Some(8), B, &cancellation))
         .await
         .err()
         .ok_or("pinned rebase unexpectedly succeeded")?;
@@ -438,7 +438,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
             .record
             .is_some()
     );
-    let rebased = (dirty.rebase_head(8, B, &cancellation)).await?;
+    let rebased = (dirty.rebase_head(Some(8), B, &cancellation)).await?;
     assert!(matches!(rebased.value, RebaseDecision::Safe { .. }));
     assert!(dirty.has_pending_mutations());
     assert!(
@@ -534,7 +534,7 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
     ))
     .await?;
     assert!(matches!(
-        (local.rebase_head(8, B, &cancellation)).await?.value,
+        (local.rebase_head(Some(8), B, &cancellation)).await?.value,
         RebaseDecision::Safe { .. }
     ));
     assert!(matches!(

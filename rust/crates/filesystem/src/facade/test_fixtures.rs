@@ -67,7 +67,6 @@ pub(crate) async fn legacy_folded_checkout(
             vec![LogicalName::new(
                 NameEncoding::Utf8,
                 name.as_bytes().to_vec(),
-                checkout.volume_config().limits.maximum_component_bytes,
             )?],
             checkout.volume_config().limits,
         )?;

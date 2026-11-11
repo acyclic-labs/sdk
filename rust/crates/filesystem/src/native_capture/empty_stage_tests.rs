@@ -67,7 +67,7 @@ fn empty_staging_preserves_bytes_and_retires_custody() -> Result<(), Box<dyn std
                 &root,
                 &test_host_path(Path::new("file")),
                 &snapshot,
-                8,
+                Some(8),
                 &original,
                 &mut staged,
             ));
@@ -159,8 +159,11 @@ pub(super) fn sparse_file(path: &Path, length: u64) {
         windows::Win32::System::Ioctl::FSCTL_SET_SPARSE,
         &[],
         &mut [],
+        acyclic_native_runtime::NativeOperationKind::Write,
         None,
     )
+    .unwrap()
+    .into_complete()
     .unwrap();
     #[cfg(windows)]
     {
@@ -174,8 +177,11 @@ pub(super) fn sparse_file(path: &Path, length: u64) {
             windows::Win32::System::Ioctl::FSCTL_SET_ZERO_DATA,
             &zero,
             &mut [],
+            acyclic_native_runtime::NativeOperationKind::Write,
             None,
         )
+        .unwrap()
+        .into_complete()
         .unwrap();
     }
     file.set_len(length).unwrap();
@@ -343,8 +349,8 @@ fn empty_finalization(length: u64) -> Result<(), Box<dyn std::error::Error>> {
                     source_root: source.path().to_owned(),
                     expected_root_identity: capture_root_identity(source.path())
                         .map_err(|error| TestCaseError::fail(format!("{error:?}")))?,
-                    maximum_paths: 8,
-                    maximum_extent_spans: 8,
+                    maximum_paths: Some(8),
+                    maximum_extent_spans: Some(8),
                 };
                 let (mut baseline, seeded, _, _) = run_capture(
                     &initial,

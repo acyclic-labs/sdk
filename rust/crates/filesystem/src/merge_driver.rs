@@ -610,7 +610,7 @@ impl MergeDriver for DefaultTextMergeDriver {
             crate::text_merge::text_from_bytes(
                 text.as_bytes(),
                 crate::text_merge::ByteMergeLimits {
-                    max_bytes: u64::MAX,
+                    max_bytes: Some(u64::MAX),
                 },
             )
             .map_err(|_| DriverError::Unsupported)?;

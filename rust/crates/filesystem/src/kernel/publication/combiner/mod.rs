@@ -545,12 +545,11 @@ async fn prepare_delta<O: crate::AsyncObjectStore>(
         {
             return Err(crate::FsError::VolumeMismatch);
         }
-        let maximum = u32::try_from(accounting.remaining()?.items_examined).unwrap_or(u32::MAX);
         let (delta, allocation) = crate::kernel::diff_generation_file_tables(
             objects,
             base.file_table,
             root.value.file_table,
-            maximum,
+            None,
             limits,
             accounting,
             cancellation,
