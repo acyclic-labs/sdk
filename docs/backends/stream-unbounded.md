@@ -298,3 +298,30 @@ instrumentation for staged applies and batch cursors, with negative controls;
 a disconnected generic Stage model would not prove this provider's behavior.
 Existing models are evidence for their current bounded paths only and do not
 certify the new staged protocol until it is wired through those same paths.
+The publication audit also identified an existing fallible tail:
+`memory/commit.rs::install_namespace` replaces `state.paths` before fallible
+`state.signals.get` / `keys_in` calls, and `CommitPublication::publish` retains
+the retry observation only after that function returns. The staged replacement
+must remove this failure window structurally: prepare fallible notification
+lookups before publication or derive notifications from a retained committed
+batch after the infallible root+receipt transition. Do not preserve a fallible
+partial installation inside the final-apply callback. Add this cut to the
+failure simulation; it is not fixed by the content-tree foundation.
+
+## Foundation validation (source 8222ad7d505)
+
+Linux `cargo check --locked --all-targets` passed for Stream and Objects with
+local/http plus Objects binary/test-support. Three shared content-tree controls
+passed in 0.446 s, including the real 64 MiB reopened-file round trip. Objects'
+three existing controls (persisted version refusal, retained codec fuzz oracle,
+and memory shared conformance) passed in 0.236 s. Remote job
+1794355868856-784080-6f5af786 completed rc=0; retained log:
+Q:/scratch/stream-unbounded/content-8222ad.log.
+
+The submission client's optional result-file export failed after that successful
+job because custom commands are not scoped exports. This did not rerun a check
+or change its result; use the actual job terminal and retained log as evidence.
+Subsequent commits change only this design. No Windows-specific or macOS-specific
+code changed. The final-apply, crash simulation, negative-control and loom
+obligations above remain unimplemented and unproved; none is inferred from
+these content-only passes.
