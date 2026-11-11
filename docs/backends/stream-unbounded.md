@@ -4,6 +4,117 @@ Status: design recorded before implementation; no runtime change yet.
 Baseline: 506843a3822. Lane: stream-unbounded. Objective includes SDK main landing
 through Foreman and a separate Cloud adoption PR; neither is complete.
 
+## Required public atomicity contract (user requirement, 2026-11-11)
+
+This section is authoritative over earlier planning. A large commit is ONE
+atomic unit under failure, concurrency and recovery. Pages are physical work
+units only; they are never independently applied Stream commits.
+
+1. **Invisibility.** No read, follow, fork, children_page, heads query or
+   conditional write can observe a strict subset of the staged effects as
+   committed. Before publication all effects are absent; after publication all
+   effects belong to one immutable published root. This holds across a crash or
+   restart at every byte of staging and apply. An individual read page remains
+   a selection from that complete root, never a partially installed namespace.
+2. **One linearisation point.** Conditions are checked and the successful
+   commit's sequence, revision and head are assigned exactly once by final
+   apply. Staging assigns no sequence, revision, head, fork cut, condition
+   outcome or Stream position, and creates no Stream conflict. The one durable
+   publication decision is the linearisation point for all these outcomes.
+3. **Idempotency and stage ownership.** A stage is permanently bound to one
+   commit id and retry identity before accepting its first page. No operation
+   can rebind it or use it for a second commit. Concurrent or recovered final
+   applies of that identity yield the same retained receipt; they cannot apply
+   twice. A conflicting logical digest is refused without touching visibility.
+   Immutable content pages may be shared; authority to consume a stage may not.
+4. **Forks and exclusions.** A staged commit preserves existing fork source-cut,
+   pre-commit-state, exclusion segment-prefix, inheritance and retry semantics.
+   Upload boundaries change none of these. Forks never capture a staged subset.
+5. **Ordering.** Records preserve caller order, including across leaf, effect,
+   manifest and transport-page boundaries. Canonical path ordering cannot sort
+   the records within an append. Retry and recovery preserve that same order.
+6. **Followers.** A follower observes one atomic batch event per commit. The
+   event may be delivered in pages, but a concurrent commit cannot interleave
+   between its pages. Every page binds the same commit id and published root;
+   the batch cursor finishes that event before advancing to the next commit.
+   Disconnect/reconnect resumes the retained batch and page cursor, never treats
+   a received prefix as a separate commit. Filtered batches retain exactly the
+   matching selection from the one complete publication.
+
+Receiving a page is not a separate visibility decision. A consumer receives a
+handle to a complete immutable published batch and pages its contents; an
+incomplete transfer cannot certify a truncated batch as committed. The shared
+core supplies this boundary even when the underlying backend only supports
+atomic replacement of one small value.
+
+### Final-apply protocol required by that contract
+
+Staging is only immutable byte/content preparation. Begin permanently binds
+stage id, commit id, account and retry key; Seal binds the canonical logical
+request digest without observing mutable Stream state. There are no staged
+conditions, destination reservations, sequence allocations or fork positions.
+
+FinalApply obtains an event-driven exclusive authority decision capability,
+shared with EVERY write family, pins the current published root, and settles
+conditions/fork cuts exactly once for this logical decision. Its incremental
+bounded work builds an unpublished successor and receipt pages. Other writers
+wait on capability transfer; readers retain the old root without waiting.
+The capability is a logical writer ownership token, never an OS lock held
+through all page IO. Admission uses backpressure, without a queue-depth cap.
+
+The final small durable publication atomically installs the successor root,
+sequence/revision/head assignments, complete retry receipt and consumed-stage
+binding. No other root can publish between condition settlement and this one
+publication decision. Abort/failure before that decision leaves the old root
+whole. Recovery either resumes the same unpublished decision at its pinned cut
+or installs the one durable successor; it cannot create another logical
+condition evaluation or assignment. Replaying pure calculations against that
+same immutable cut is recovery of the same decision, not a second condition
+outcome or a second linearisation point. Intermediate durable planning pages
+have no authority to publish themselves.
+
+A backend without a multi-key atomic transaction stores immutable pages first,
+then durably replaces only the small root/decision reference. Its recovery
+codec rejects truncated or unchecked root bytes and retains the previous whole
+root. The shared core publishes the namespace and retry observation together;
+a backend-local visibility path cannot bypass it. Durability acknowledgment
+covers referenced pages before it covers the new root. Follow batch descriptors
+are derived only from that root decision, never from individual page uploads.
+
+### Required proofs and evidence (all outstanding)
+
+* Deterministic simulation executes the SAME shared staged state transitions
+  and recovery codec as production. Crash and reopen at EVERY chunk boundary
+  of staging, final-apply preparation and publication; inject torn writes at
+  every byte offset in durable page/root frames. For every cut, probe reads,
+  follows, heads, forks, children_page and conditions for either the complete
+  predecessor or complete successor. Check identity, order and one receipt.
+* The simulation has a mutation negative control that exposes a staged page or
+  publishes an intermediate root. It MUST fail the corresponding invisibility
+  invariant. A positive-only run does not prove the harness detects this bug.
+* A loom model drives concurrent final applies through the shared core's actual
+  decision state machine, including identical keys, two keys against one
+  condition, consumed-stage reuse, followers and authority-owner cancellation.
+  Exhaust schedules of stage seal, final-apply ownership, publication, receipt
+  retention and event delivery. Assert one root transition/receipt per key,
+  indivisible publication, stable ordering and non-interleaved batch cursors.
+  A model of a separate toy implementation does not satisfy this obligation.
+* State-machine invariants: (I1) only a published root is reachable by queries;
+  (I2) one stage has one permanent commit binding; (I3) root and terminal retry
+  observation advance together; (I4) one decision capability owns final apply;
+  (I5) a pinned batch cursor references one root until complete; (I6) content
+  and effect iterators preserve logical ordinal across every page boundary.
+  Each production transition must preserve these, including recovery and GC.
+* The shared conformance suite proves the six contract clauses on memory,
+  local/native persistence, PostgreSQL, gRPC, HTTP, wasm/browser and Cloud.
+  Include 100k effects, 64 MiB records, forks/exclusions across pages, conflicting
+  final applies, retry after acknowledgment loss, page-order followers and
+  event-driven abandoned-stage collection with pinned readers still alive.
+
+Current evidence: the content-page foundation exists, with validation running;
+none of these publication proofs or backend conformance obligations is complete.
+The goal cannot be marked READY or complete based on the foundation tests.
+
 ## Contract
 
 A legitimate write has no configured count, record-byte or command-byte ceiling.
@@ -47,17 +158,10 @@ adapters assemble only at the caller boundary and streaming reads yield chunks.
 Use the existing Objects content primitives where dependency direction permits;
 otherwise extract their shared content core rather than implement another CAS.
 
-Preparation pins one immutable authority root. It evaluates all hard conditions
-against that root, then soft effects, captures forks, and constructs persistent
-paged indexes, facts, receipt/conflict pages and a new root outside publication.
-Root publication atomically compares the pinned root and installs the new root
-plus terminal retry observation. The lock/transaction covers only this small
-root change. A lost comparison returns its actual root; the shared planner may
-replan against that root, without a readiness probe or sleep. User precondition
-conflicts remain terminal outcomes. Once accepted, deadlines cannot erase the
-decision. Concurrent identical retry keys return the one retained decision;
-different logical digests return the existing idempotency conflict.
-
+Final-apply preparation and publication follow the exclusive authority decision
+protocol above. Staging performs no condition settlement or source-cut capture.
+The authority root and terminal retry observation publish together at the one
+linearisation point; no root-CAS replan may create another logical decision.
 Receipts, conflict lists, skipped effects, read_commit and inspection become
 paged streams rooted in the retained terminal decision. Owned convenience APIs
 collect these pages outside transport and publication locks. This is necessary:
