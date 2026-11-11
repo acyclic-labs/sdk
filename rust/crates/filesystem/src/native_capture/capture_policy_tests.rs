@@ -20,6 +20,54 @@ pub(super) async fn native_checkout(
 }
 
 #[tokio::test]
+async fn unchanged_branching_capture_uses_each_original_path_allowance_once()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    for name in ["a/f", "b/g"] {
+        let file = source.path().join(name);
+        std::fs::create_dir_all(file.parent().unwrap())?;
+        std::fs::write(file, b"original")?;
+    }
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .map_err(|(cause, _)| cause)?;
+    let mut checkout = native_checkout(&work).await?;
+    let options = options(source.path(), 4)?;
+    let policy = CapturePolicy::default();
+    // The second baseline must merge an unchanged, branching checkout with
+    // its original host observations under the exact four-path allowance.
+    for _ in 0..2 {
+        capture_baseline(
+            &mut checkout,
+            &options,
+            &policy,
+            WorkBudget::UNBOUNDED,
+            work.cancellation(),
+        )
+        .await?;
+    }
+    capture_subtrees_with_native_work(
+        &mut checkout,
+        &[path("/")?],
+        &options,
+        &policy,
+        work.cancellation(),
+        None,
+        &work,
+    )
+    .await?;
+    assert_records(
+        &mut checkout,
+        &[
+            ("/a", Some(FileKind::Directory)),
+            ("/a/f", Some(FileKind::Regular)),
+            ("/b", Some(FileKind::Directory)),
+            ("/b/g", Some(FileKind::Regular)),
+        ],
+    )
+    .await
+}
+
+#[tokio::test]
 async fn cancelled_capture_leaves_retirement_with_the_accepted_native_producer()
 -> Result<(), Box<dyn std::error::Error>> {
     let setup = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
