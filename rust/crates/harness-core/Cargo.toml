@@ -113,7 +113,6 @@ blake3.workspace = true
 prost-build.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["native-watch"] }
 notify.workspace = true
 acyclic-mcp = { version = "=0.2.0", path = "../mcp", features = ["stdio"] }
 rmcp = { workspace = true, features = ["auth", "reqwest-tls-no-provider"] }
