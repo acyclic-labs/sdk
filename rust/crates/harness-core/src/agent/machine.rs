@@ -1187,11 +1187,11 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
     match out {
         Out::Steered(_) | Out::PendingSpawns(_) => true,
         Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
-        Out::Send { record, .. } => {
+        Out::Send { to, record } => {
             !matches!(
                 record,
                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
-            ) && super::AgentRecord::encode(record).is_ok()
+            ) && record.encode_for(to).is_ok()
         }
         Out::Archive { id, .. } => {
             let by = super::Sender::Agent { path: path.clone() };
@@ -1283,7 +1283,7 @@ async fn run<T: TurnDriver + ?Sized>(
         || matches!(&turn.wait, Wait::User(path) if super::records::check_ui_path(path).is_err())
         || matches!(&turn.wait, Wait::Approval { id, binding } if super::AgentRecord::encode(&StatusRecord {
             child_settlement: Some(super::ChildSettlement {
-                child: crate::AgentId::from_bytes([u8::MAX; 16]),
+                child: super::AgentId::from_bytes([u8::MAX; 16]),
                 settled_at_micros: u64::MAX,
             }),
             child_wakes: child_wakes.clone(),

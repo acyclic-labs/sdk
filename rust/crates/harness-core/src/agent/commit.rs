@@ -81,7 +81,7 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
             ],
             vec![CommitMutation::Append {
                 path: to.inbox()?,
-                records: vec![record.encode()?.into()],
+                records: vec![record.encode_for(to)?.into()],
             }],
         )],
         idempotency_key: intent_key(kind, &[to.as_str(), &sender_text(sender), &intent])?,

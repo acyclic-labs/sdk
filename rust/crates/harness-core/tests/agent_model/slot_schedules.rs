@@ -171,6 +171,75 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
 }
 
 #[tokio::test]
+async fn inbox_settlement_reserves_the_selected_agents_ancestry() -> Result {
+    let (root, mut state) = populated_parent(0).await?;
+    let sender = Sender::Host {
+        host: "native".into(),
+    };
+    let approval = |length| {
+        InboxRecord::Approval(Approval {
+            id: intent(&"a".repeat(length)),
+        })
+    };
+    let (mut fits, mut refuses) = (1, MAX_RECORD_BYTES);
+    while fits + 1 < refuses {
+        let length = fits + (refuses - fits) / 2;
+        if send(&root, &sender, &approval(length)).is_ok() {
+            fits = length;
+        } else {
+            refuses = length;
+        }
+    }
+    let record = approval(fits);
+    send(&root, &sender, &record)?;
+    let mut destination = root.clone();
+    for _ in 0..128 {
+        destination = destination.child(&id(8))?;
+    }
+    send(&destination, &sender, &approval(1))?;
+    assert!(
+        send(&destination, &sender, &record).is_err(),
+        "deep destination omitted its settlement ancestry"
+    );
+    state.turn = Some(Progress {
+        inbox: 0,
+        checkpoint: Vec::new(),
+    });
+    state.phase = Phase::Running;
+    let driver = script(vec![TurnStep {
+        checkpoint: None,
+        outs: vec![Out::Send {
+            to: destination,
+            record,
+        }],
+        wait: Wait::Input,
+        drops: None,
+    }]);
+    let result = step(
+        &driver,
+        &root,
+        Some(state),
+        (1, 0),
+        Wake::Alarm,
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert!(matches!(
+        result.state.phase,
+        Phase::Done {
+            outcome: AgentOutcome::Failed { .. }
+        }
+    ));
+    assert!(
+        !result
+            .outs
+            .iter()
+            .any(|out| matches!(out, Out::Send { .. }))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn admission_schedules_preserve_every_spawn_and_replay() -> Result {
     for population in [0, 2] {
         for recorded in 1..=3 {

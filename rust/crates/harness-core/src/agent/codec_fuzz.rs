@@ -213,10 +213,13 @@ pub fn check(bytes: &[u8]) {
     if let Ok(record) = InboxRecord::decode(bytes)
         && let Some(queued) = super::input::input(0, record)
     {
-        records::settlement_frame(queued.input)
-            .expect("bounded settlement metadata")
-            .encode()
-            .expect("admitted input leaves room for settlement");
+        records::settlement_frame(
+            queued.input,
+            AgentPath::root(&AgentId::from_bytes([255; 16])),
+        )
+        .expect("bounded settlement metadata")
+        .encode()
+        .expect("admitted input leaves room for settlement");
     }
     // Read the selection independently of SpawnRequest's field deserializer:
     // dropping it there otherwise leaves a stable decode/encode fixed point.

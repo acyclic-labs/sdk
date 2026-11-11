@@ -1,10 +1,19 @@
 diff --git a/rust/crates/harness-core/src/agent/machine.rs b/rust/crates/harness-core/src/agent/machine.rs
-index e00729a60d4..f7e3c29a61e 100644
+index 7133b83462c..bb81d6640cc 100644
 --- a/rust/crates/harness-core/src/agent/machine.rs
 +++ b/rust/crates/harness-core/src/agent/machine.rs
-@@ -983,15 +983,7 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
+@@ -1155,7 +1155,7 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
+ }
+ 
+ /// Whether a driver's effect fits the record that carries it.
+-fn admissible(out: &Out, path: &AgentPath) -> bool {
++fn admissible(out: &Out, _path: &AgentPath) -> bool {
+     match out {
+         Out::Steered(_) => true,
+         Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
+@@ -1165,15 +1165,7 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
                  InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
-             ) && super::AgentRecord::encode(record).is_ok()
+             ) && record.encode_for(to).is_ok()
          }
 -        Out::Archive { id, .. } => {
 -            let by = super::Sender::Agent { path: path.clone() };

@@ -873,8 +873,16 @@ pub(super) fn check_text(text: &str) -> Result<(), Error> {
     Ok(())
 }
 
-impl AgentRecord for InboxRecord {
-    fn check_encoded_size(&self, bytes: usize) -> Result<(), Error> {
+impl InboxRecord {
+    /// Admission includes the actual destination's notice ancestry, which has
+    /// no independent depth bound. Both host sends and actor effects use this.
+    pub(super) fn encode_for(&self, destination: &AgentPath) -> Result<Vec<u8>, Error> {
+        let bytes = self.encode()?;
+        self.check_settlement_size(bytes.len(), Some(destination))?;
+        Ok(bytes)
+    }
+
+    fn check_settlement_size(&self, bytes: usize, source: Option<&AgentPath>) -> Result<(), Error> {
         if bytes > MAX_RECORD_BYTES {
             return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
         }
@@ -900,10 +908,16 @@ impl AgentRecord for InboxRecord {
         ) {
             return Ok(());
         }
-        if bytes > input_frame_limit()? {
+        if bytes > input_frame_limit(source)? {
             return Err(Error::Record("inbox record leaves no room for settlement"));
         }
         Ok(())
+    }
+}
+
+impl AgentRecord for InboxRecord {
+    fn check_encoded_size(&self, bytes: usize) -> Result<(), Error> {
+        self.check_settlement_size(bytes, None)
     }
 
     fn check(&self) -> Result<(), Error> {
@@ -988,24 +1002,40 @@ fn check_model(profile: Option<&CreationConfig>) -> Result<(), Error> {
 
 // The real settlement writer determines the reserve once. No intent-specific
 // cap or hand-maintained estimate of serialized field widths is needed.
-fn input_frame_limit() -> Result<usize, Error> {
-    static LIMIT: std::sync::LazyLock<Result<usize, &'static str>> =
+fn input_frame_limit(source: Option<&AgentPath>) -> Result<usize, Error> {
+    static LIMIT: std::sync::LazyLock<Result<(usize, usize), &'static str>> =
         std::sync::LazyLock::new(|| {
-            let reserve = settlement_frame(super::TurnInput::Approval {
-                id: IntentId("i".into()),
-            })
+            let root = AgentPath::root(&AgentId::from_bytes([255; 16]));
+            let root_size =
+                encoded_size(&root).map_err(|_| "settlement source is not encodable")?;
+            let reserve = settlement_frame(
+                super::TurnInput::Approval {
+                    id: IntentId("i".into()),
+                },
+                root,
+            )
             .and_then(|entry| seal(&entry))
             .map_err(|_| "settlement frame reserve is not encodable")?;
-            MAX_RECORD_BYTES
+            let limit = MAX_RECORD_BYTES
                 .checked_sub(reserve.len())
-                .ok_or("settlement envelope exceeds MAX_RECORD_BYTES")
+                .ok_or("settlement envelope exceeds MAX_RECORD_BYTES")?;
+            Ok((limit, root_size))
         });
-    (*LIMIT).map_err(Error::Record)
+    let (limit, root_size) = (*LIMIT).map_err(Error::Record)?;
+    let source_size = source.map(encoded_size).transpose()?.unwrap_or(root_size);
+    limit
+        .checked_sub(source_size.saturating_sub(root_size))
+        .ok_or(Error::Record(
+            "settlement envelope exceeds MAX_RECORD_BYTES",
+        ))
 }
 
 /// The complete, widest settlement envelope around an original input. Shared
 /// with the retained codec oracle so admission is checked against real bytes.
-pub(super) fn settlement_frame(input: super::TurnInput) -> crate::Result<super::ConversationEntry> {
+pub(super) fn settlement_frame(
+    input: super::TurnInput,
+    source: AgentPath,
+) -> crate::Result<super::ConversationEntry> {
     use crate::conversation::{
         FileDescriptor, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES, VolumeClass,
         VolumeOwner,
@@ -1030,12 +1060,6 @@ pub(super) fn settlement_frame(input: super::TurnInput) -> crate::Result<super::
         label(),
         &mut None,
     )?;
-    let mut source = AgentPath::root(&AgentId::from_bytes([255; 16]));
-    for _ in 0..super::MAX_DEPTH {
-        source = source
-            .child(&AgentId::from_bytes([255; 16]))
-            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-    }
     Ok(super::ConversationEntry {
         observed_through: u64::MAX,
         inbox: u64::MAX,
