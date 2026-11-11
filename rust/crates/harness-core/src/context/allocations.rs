@@ -13,7 +13,7 @@ pub(super) fn context_contract<T: Serialize>(
         use crate::store::history::HistoryIo as _;
         let remaining = work.remaining()?;
         let bounds = crate::executor::json::JsonBounds {
-            maximum_bytes: remaining.bytes_encoded,
+            maximum_bytes: Some(remaining.bytes_encoded),
             maximum_items: remaining.items_examined,
             maximum_depth: 256,
         };

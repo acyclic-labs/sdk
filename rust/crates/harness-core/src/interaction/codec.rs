@@ -51,7 +51,7 @@ fn decode_interaction_json_inner<'loan, 'io, T: serde::de::DeserializeOwned + cr
         .as_deref()
         .is_some_and(original_native_decode_mode);
     let bounds = crate::executor::json::JsonBounds {
-        maximum_bytes: bytes.len() as u64,
+        maximum_bytes: Some(bytes.len() as u64),
         maximum_items: bytes.len() as u64,
         maximum_depth: 256,
     };

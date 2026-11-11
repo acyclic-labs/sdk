@@ -460,7 +460,7 @@ mod digest_properties {
 }
 
 const BOUNDS: JsonBounds = JsonBounds {
-    maximum_bytes: 65_536,
+    maximum_bytes: Some(65_536),
     maximum_items: 4_096,
     maximum_depth: 32,
 };
@@ -472,7 +472,7 @@ fn resident_copy_preserves_literal_raw_keys_and_enforces_bounds() -> Result<()> 
     assert_eq!(copied, value);
     for bounds in [
         JsonBounds {
-            maximum_bytes: 1,
+            maximum_bytes: Some(1),
             ..BOUNDS
         },
         JsonBounds {
@@ -680,7 +680,7 @@ fn exact_byte_item_depth_and_escape_admission() -> Result<()> {
     let value = serde_json::json!({"z": ["\u{0}\"\\\n", u64::MAX], "a": i64::MIN});
     let expected = crate::contract::canonical_json_bytes(&value)?;
     let bounds = JsonBounds {
-        maximum_bytes: expected.len() as u64,
+        maximum_bytes: Some(expected.len() as u64),
         maximum_items: 7,
         maximum_depth: 2,
     };
@@ -692,7 +692,7 @@ fn exact_byte_item_depth_and_escape_admission() -> Result<()> {
         canonical_json_bytes_bounded(
             &value,
             JsonBounds {
-                maximum_bytes: bounds.maximum_bytes - 1,
+                maximum_bytes: bounds.maximum_bytes.map(|maximum| maximum - 1),
                 ..bounds
             },
             None,

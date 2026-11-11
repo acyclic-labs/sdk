@@ -61,7 +61,7 @@ impl EngineAllocator {
             std::marker::PhantomData::<serde_json::Value>,
             bytes,
             crate::executor::json::JsonBounds {
-                maximum_bytes: bytes.len() as u64,
+                maximum_bytes: Some(bytes.len() as u64),
                 maximum_items: u64::MAX,
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },

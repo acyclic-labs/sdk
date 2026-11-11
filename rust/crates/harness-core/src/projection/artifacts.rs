@@ -242,7 +242,7 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     let (shape, layout) = crate::executor::json::admit_value_layout(
         &input,
         crate::executor::json::JsonBounds {
-            maximum_bytes,
+            maximum_bytes: Some(maximum_bytes),
             maximum_items: io.remaining()?.items_examined,
             maximum_depth,
         },

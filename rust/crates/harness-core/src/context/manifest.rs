@@ -179,7 +179,7 @@ impl ContextManifest {
             std::marker::PhantomData,
             bytes,
             JsonBounds {
-                maximum_bytes: limits.render_bytes,
+                maximum_bytes: Some(limits.render_bytes),
                 maximum_items: limits.render_bytes,
                 maximum_depth: 256,
             },

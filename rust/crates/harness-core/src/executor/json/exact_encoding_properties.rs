@@ -51,7 +51,7 @@ const LEDGER: [[(u64, u64, u64, u64, u64); 2]; 3] = [
 fn check_encoder(index: usize, canonical: bool, repeat: bool) -> TestCaseResult {
     let input = values().into_iter().nth(index).unwrap();
     let bounds = JsonBounds {
-        maximum_bytes: 65536,
+        maximum_bytes: Some(65536),
         maximum_items: 65536,
         maximum_depth: 128,
     };
@@ -96,7 +96,7 @@ fn encode_with_ledger(
     canonical: bool,
 ) -> Result<acyclic_stream::OwnedBytes> {
     let bounds = JsonBounds {
-        maximum_bytes: 65536,
+        maximum_bytes: Some(65536),
         maximum_items: 65536,
         maximum_depth: 128,
     };

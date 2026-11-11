@@ -70,7 +70,7 @@ impl Header {
         self.cursor.feed(
             &bytes[(offset - origin) as usize..],
             JsonBounds {
-                maximum_bytes: length,
+                maximum_bytes: Some(length),
                 maximum_items: length,
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },

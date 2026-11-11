@@ -392,7 +392,7 @@ pub(super) async fn read(
             .await?;
     }
     let bounds = JsonBounds {
-        maximum_bytes: window.source.byte_length(),
+        maximum_bytes: Some(window.source.byte_length()),
         maximum_items: u64::MAX,
         maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
     };

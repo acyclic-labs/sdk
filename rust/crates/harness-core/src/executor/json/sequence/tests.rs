@@ -3,7 +3,7 @@ use proptest::prelude::*;
 
 fn bounds() -> JsonBounds {
     JsonBounds {
-        maximum_bytes: u64::MAX,
+        maximum_bytes: None,
         maximum_items: u64::MAX,
         maximum_depth: 256,
     }

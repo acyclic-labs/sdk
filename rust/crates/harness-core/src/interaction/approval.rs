@@ -39,7 +39,7 @@ impl Interaction {
         JsonSpans::default().feed(
             bytes,
             JsonBounds {
-                maximum_bytes: bytes.len() as u64,
+                maximum_bytes: Some(bytes.len() as u64),
                 maximum_items: bytes.len() as u64,
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },

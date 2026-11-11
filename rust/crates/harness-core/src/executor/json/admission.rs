@@ -473,7 +473,10 @@ fn laid_out(
     charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
 ) -> Result<JsonValueShape> {
     bounds.maximum_depth = bounds.maximum_depth.min(RECORD_MAXIMUM_DEPTH);
-    if bytes.len() as u64 > bounds.maximum_bytes {
+    if bounds
+        .maximum_bytes
+        .is_some_and(|maximum| bytes.len() as u64 > maximum)
+    {
         return Err(boundary("JSON input exceeds declared byte bound", code));
     }
     let charge = RefCell::new(charge);
@@ -613,7 +616,7 @@ pub(super) fn admit_typed(
 #[cfg(test)]
 pub(crate) fn layout_reservation<T: super::layout::HeapLayout>(bytes: &[u8]) -> Option<u64> {
     let bounds = JsonBounds {
-        maximum_bytes: u64::MAX,
+        maximum_bytes: Some(u64::MAX),
         maximum_items: u64::MAX,
         maximum_depth: 256,
     };

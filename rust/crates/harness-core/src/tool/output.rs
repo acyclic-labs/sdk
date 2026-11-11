@@ -134,7 +134,7 @@ pub(super) fn check_preview(
         seed,
         text.as_bytes(),
         crate::executor::json::JsonBounds {
-            maximum_bytes: text.len() as u64,
+            maximum_bytes: Some(text.len() as u64),
             maximum_items: u64::MAX,
             maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
         },

@@ -9,7 +9,7 @@ pub fn check(input: &[u8]) {
         return;
     }
     let bounds = JsonBounds {
-        maximum_bytes: 131_072,
+        maximum_bytes: Some(131_072),
         maximum_items: 1_048_576,
         maximum_depth: 256,
     };
