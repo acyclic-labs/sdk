@@ -254,16 +254,11 @@ impl Fixture {
             .prepare(&self.from, &self.to, &self.state, &options, &self.work)
             .await?;
         assert_eq!(prepared.phase, acyclic_fs::MaterializationPhase::Prepared);
-        // The persisted v1 journal resumes from this same nested namespace.
-        let staging = self.root.parent().unwrap().join(".acyclic-m");
-        assert_eq!(
-            publication.directory().parent().unwrap().parent(),
-            Some(staging.as_path()),
-            "prepared journal changed its original staging namespace"
-        );
+        // Each operation owns one direct child; ordinary workspace names
+        // remain authored data, and an unwritable parent is irrelevant.
+        assert_eq!(publication.directory().parent(), Some(self.root.as_path()));
         let shared_parent = publication.directory().parent().unwrap();
         let parent_identity = self.work.root_identity(shared_parent)?;
-        let staging_identity = self.work.root_identity(&staging)?;
         assert!(options.destination.exists());
         let pending = self.publication(OperationId::new())?;
         let pending_options = MaterializeOptions::native(pending.directory().join("target"));
@@ -342,11 +337,6 @@ impl Fixture {
             parent_identity,
             "cleanup invalidated a shared preparation parent"
         );
-        assert_eq!(
-            self.work.root_identity(&staging)?,
-            staging_identity,
-            "cleanup invalidated the shared staging root"
-        );
         std::fs::write(self.root.join("note"), "edit after acknowledgement")?;
         self.publish(adapter, operation, &self.to).await?;
         assert_eq!(
@@ -384,6 +374,41 @@ async fn git_adapter_resumes_original_checkout_and_preserves_acknowledged_edits(
         .await?
         .assert_resume_and_acknowledgement(Adapter::Git)
         .await
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn publication_needs_no_write_authority_in_the_checkout_parent() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
+        let fixture = Fixture::with_paths(&USER_PATHS).await?;
+        let parent = fixture.root.parent().unwrap();
+        std::fs::create_dir_all(parent.join("core"))?;
+        let original = std::fs::metadata(parent)?.permissions();
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o500))?;
+        let forbidden = std::fs::create_dir(parent.join("forbidden-sibling"));
+        let published = fixture
+            .publish(adapter, OperationId::new(), &fixture.from)
+            .await;
+        // Restore before checking either result so a failure retains cleanup authority.
+        std::fs::set_permissions(parent, original)?;
+        assert_eq!(
+            forbidden.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        published?;
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join("note"))?,
+            "candidate"
+        );
+        for path in USER_PATHS {
+            assert_eq!(
+                std::fs::read_to_string(fixture.root.join(path))?,
+                "candidate"
+            );
+        }
+    }
+    Ok(())
 }
 
 // Internal authority model for the publication boundary. Real authenticated

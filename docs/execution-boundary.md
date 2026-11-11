@@ -96,6 +96,14 @@ Landlock ruleset; retained policies verify every root before launch. Cwd may
 select any granted root and is opened beneath that root's verified object.
 There are no per-agent processes, threads, mounts, scans, timers or new limits.
 
+Checkout publication stages recovery in one temporary direct child named
+`.acyclic-m-<root-digest>-<operation>`. This keeps staging on the checkout
+filesystem and requires no write access to its parent. No fixed workspace
+name is reserved. The materialization primitive reopens the operation through
+the held checkout and refuses edits to that operation's own directory.
+Exclusive creation, original allocation, journal and cleanup identity checks
+protect the recovery bytes without reclassifying ordinary user paths.
+
 `ToolPolicy::execution_grant` selects an optional, already authorized physical
 grant after the exact invocation's policy and approval allow it, before its
 first dispatch. It borrows the registry-selected tool, original task context,

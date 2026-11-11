@@ -762,7 +762,7 @@ async fn native_dangling_links_round_trip() -> Result<(), Box<dyn std::error::Er
 async fn nested_operation_is_rejected_without_effects() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("checkout");
-    let operation = root.join("operation");
+    let operation = root.join("authored/operation");
     std::fs::create_dir_all(operation.join("target")).unwrap();
     let sentinel = operation.join("target/sentinel");
     std::fs::write(&sentinel, b"keep").unwrap();
@@ -770,5 +770,68 @@ async fn nested_operation_is_rejected_without_effects() {
         native_backend(&root, &operation).await,
         Err(NativeTreeMaterializationError::InvalidLayout)
     ));
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn operation_recovery_is_admitted_and_cannot_be_edited() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("checkout");
+    let operation = root.join("operation");
+    std::fs::create_dir_all(operation.join("target")).unwrap();
+    let sentinel = operation.join("target/sentinel");
+    std::fs::write(&sentinel, b"keep").unwrap();
+    let backend = native_backend(&root, &operation).await.unwrap();
+    for path in [
+        "operation",
+        "operation/target",
+        "OPERATION/other",
+        "other/../operation",
+        "",
+    ] {
+        for edit in [
+            MaterializationEdit::Remove { path: path.into() },
+            MaterializationEdit::Install {
+                path: path.into(),
+                image: vec![1],
+            },
+            MaterializationEdit::SetMetadata {
+                path: path.into(),
+                image: vec![1],
+            },
+            MaterializationEdit::Rename {
+                from: path.into(),
+                to: "ordinary".into(),
+            },
+            MaterializationEdit::Rename {
+                from: "ordinary".into(),
+                to: path.into(),
+            },
+        ] {
+            assert!(matches!(
+                backend.capture(&edit).await,
+                Err(NativeTreeMaterializationError::InvalidLayout)
+            ));
+        }
+    }
+    // Names formerly reserved by the harness are ordinary data. Only this
+    // operation's held recovery directory is protected.
+    for path in [
+        ".git",
+        ".system",
+        ".volumes",
+        ".acyclic-sdk",
+        "operation-other",
+    ] {
+        std::fs::write(root.join(path), b"authored").unwrap();
+        assert!(
+            backend
+                .capture(&MaterializationEdit::Remove { path: path.into() })
+                .await
+                .is_ok()
+        );
+        assert_eq!(std::fs::read(root.join(path)).unwrap(), b"authored");
+    }
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
 }

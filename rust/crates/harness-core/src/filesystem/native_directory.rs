@@ -15,10 +15,6 @@ impl NativeDirectory<'_> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> crate::Result<(PathBuf, acyclic_fs::NativeAllocation)> {
         let root = self.0;
-        let parent = root.parent().ok_or(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "root checkout has no same-filesystem staging parent",
-        })?;
         let borrowed = root.as_os_str().to_str();
         // A tuple drops formatted bytes before their original allocation custody,
         // including every early hash or path-construction refusal.
@@ -59,11 +55,11 @@ impl NativeDirectory<'_> {
             }
         })?;
         work.spent(encoding)?;
-        let leaf = std::str::from_utf8(&leaf).map_err(|_| crate::Error::NativeBoundary {
+        let relative = std::str::from_utf8(&leaf).map_err(|_| crate::Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage,
             reason: "root staging identifier encoding is not UTF-8",
         })?;
-        Ok(work.path(parent, Some(Path::new(leaf)))?)
+        Ok(work.path(root, Some(Path::new(relative)))?)
     }
 }
 
@@ -71,8 +67,8 @@ fn root_materialization_leaf(
     digest: &blake3::Hash,
     operation_id: OperationId,
 ) -> Result<[u8; 56], base64::EncodeSliceError> {
-    // Retained journals resume staged bytes at this original v1 location.
-    let mut leaf = [std::path::MAIN_SEPARATOR as u8; 56];
+    // A direct child unique to this checkout and operation; no static data namespace.
+    let mut leaf = [b'-'; 56];
     leaf[..10].copy_from_slice(b".acyclic-m");
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode_slice(&digest.as_bytes()[..16], &mut leaf[11..33])?;
