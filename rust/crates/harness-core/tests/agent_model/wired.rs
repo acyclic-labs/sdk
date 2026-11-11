@@ -874,6 +874,7 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
                 from: super::user(),
                 id: intent("peer-input"),
                 body: Box::new(envelope.clone()),
+                re: None,
                 attachments: None,
             }),
         )?,

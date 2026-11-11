@@ -535,6 +535,10 @@ where
         self.approvals(io)?.defer(until)
     }
 
+    fn commit_tool_effects(&self, io: Option<&PreparationIo>) -> Result<()> {
+        self.approvals(io)?.commit_effects()
+    }
+
     fn interaction_outcome<'a>(
         &'a self,
         id: InteractionId,

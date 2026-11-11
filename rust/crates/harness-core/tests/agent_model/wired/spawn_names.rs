@@ -38,6 +38,20 @@ async fn fixture(
     AgentPath,
     Arc<ScriptedModelProvider>,
 )> {
+    let (agents, stream, root, model, _) = fixture_with_files(turns, setup_failures).await?;
+    Ok((agents, stream, root, model))
+}
+
+async fn fixture_with_files(
+    turns: Vec<ScriptedTurn>,
+    setup_failures: usize,
+) -> Result<(
+    AgentHost<MemoryStream>,
+    Arc<MemoryStream>,
+    AgentPath,
+    Arc<ScriptedModelProvider>,
+    Host,
+)> {
     let root = AgentPath::root(&id(81));
     let stream = Arc::new(MemoryStream::default());
     let model = Arc::new(ScriptedModelProvider::new(turns));
@@ -103,7 +117,152 @@ async fn fixture(
     let mut adoption = adopted(root.id());
     adoption.volumes = vec![binding];
     agents.create(&intent("root"), adoption).await?;
-    Ok((agents, stream, root, model))
+    Ok((agents, stream, root, model, files))
+}
+
+#[tokio::test]
+async fn automatic_self_send_is_refused_without_stopping_the_actor() -> Result {
+    let own_path = AgentPath::root(&id(81));
+    let (agents, stream, root, model) = fixture(
+        vec![
+            call(
+                "send",
+                json!({"agent": own_path.as_str(), "message": "self input"}),
+            ),
+            ScriptedTurn::Text("continued after refusal".into()),
+        ],
+        0,
+    )
+    .await?;
+    deliver(&agents, &root, requested("start", &root)).await?;
+    assert_eq!(
+        inbox_tail(&*stream, &root).await?,
+        2,
+        "no automatic self input appended"
+    );
+    assert_eq!(agents.state(&root).await?.conversation_tail, 1);
+    let request = model.request(1).ok_or("no continuation after refusal")?;
+    assert!(request.messages.iter().flat_map(|message| message.content.parts()).any(|part|
+        matches!(part, ModelContentPart::ToolResult { name, content: ToolResultContent::Json { value }, .. }
+            if name == "send" && value.get("error").is_some())));
+    submit(
+        &*stream,
+        set_peer_membership(&root, &super::super::user(), &intent("off"), false)?,
+    )
+    .await?;
+    model.extend([ScriptedTurn::Text("still hosted".into())]);
+    deliver(&agents, &root, requested("after-off", &root)).await?;
+    let state = agents.state(&root).await?;
+    assert_eq!(state.conversation_tail, 2);
+    assert!(!state.closed);
+    assert_eq!(model.request_count(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn same_node_peers_return_committed_receipts_and_preserve_reply_attribution() -> Result {
+    let peer = AgentPath::root(&id(82));
+    let (agents, stream, root, model, files) = fixture_with_files(
+        vec![
+            call(
+                "send",
+                json!({"agent": peer.as_str(), "message": "Hello peer"}),
+            ),
+            ScriptedTurn::Text("sent".into()),
+        ],
+        0,
+    )
+    .await?;
+    let source = agents
+        .state(&root)
+        .await?
+        .volumes
+        .into_iter()
+        .find(|binding| binding.name == PRIVATE_VOLUME)
+        .ok_or("root private volume missing")?;
+    let volume = VolumeRef::new(
+        source.volume()?.provider().clone(),
+        "agent-private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+            peer.id().to_bytes(),
+        )),
+        &mut None,
+    )?;
+    files.create_volume(&volume).await?;
+    let mut adoption = adopted(peer.id());
+    adoption.volumes = vec![WorkspaceEntry::initial_volume(
+        WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        volume,
+    )];
+    agents.create(&intent("peer"), adoption).await?;
+    deliver(&agents, &root, requested("start", &root)).await?;
+    let records = super::super::values(&*stream, peer.inbox()?).await?;
+    assert_eq!(records.len(), 2);
+    let InboxRecord::Message(message) = InboxRecord::decode(&records[1])? else {
+        return Err("peer input missing".into());
+    };
+    assert_eq!(message.from, Sender::Agent { path: root.clone() });
+    let receipt = sent(&*stream, &root, &message.id)
+        .await?
+        .ok_or("send receipt missing")?;
+    assert_eq!(receipt.delivery, Delivered::Committed { inbox: 1 });
+    let requests = model.requests();
+    let results: Vec<_> = requests
+        .iter()
+        .flat_map(|request| &request.messages)
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            ModelContentPart::ToolResult {
+                name,
+                content: ToolResultContent::Json { value },
+                ..
+            } if name == "send" => Some(value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["kind"], "delivered");
+    assert_eq!(results[0]["inbox"], 1);
+    assert_eq!(results[0]["id"], message.id.as_str());
+    assert!(
+        results[0].get("status").is_none(),
+        "provisional result reached the model"
+    );
+
+    model.extend([
+        call(
+            "send",
+            json!({"agent": root.as_str(), "message": "Hello back", "re": message.id.as_str()}),
+        ),
+        ScriptedTurn::Text("answered".into()),
+    ]);
+    agents.drain(&peer).await?;
+    let records = super::super::values(&*stream, root.inbox()?).await?;
+    let InboxRecord::Message(reply) =
+        InboxRecord::decode(records.last().ok_or("peer reply missing")?)?
+    else {
+        return Err("peer reply is not a message".into());
+    };
+    assert_eq!(reply.from, Sender::Agent { path: peer.clone() });
+    assert_eq!(reply.re, Some(message.id.clone()));
+    assert!(matches!(
+        agents.reply(&peer, &message.id, 1).await?,
+        Reply::Answered { .. }
+    ));
+    model.extend([ScriptedTurn::Text("conversation complete".into())]);
+    agents.drain(&root).await?;
+    let requests = model.requests();
+    for (request, sender) in [(&requests[2], &root), (&requests[4], &peer)] {
+        assert!(request.messages.iter().flat_map(|message| message.content.parts()).any(|part|
+            matches!(part, ModelContentPart::Notices { notices } if notices.iter().any(|notice|
+                notice.kind == "peer.message" && notice.source == sender.as_str()))));
+    }
+    deliver(&agents, &root, requested("start", &root)).await?;
+    assert_eq!(model.requests().len(), 5);
+    assert_eq!(inbox_tail(&*stream, &peer).await?, 2);
+    Ok(())
 }
 
 async fn named(

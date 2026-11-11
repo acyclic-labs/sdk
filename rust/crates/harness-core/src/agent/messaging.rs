@@ -3,6 +3,142 @@
 
 use super::AgentPath;
 
+/// Root-only append-message authority. Membership remains host-owned state.
+pub const SEND_PEER: &str = "agent.send-peer";
+
+/// The latest user decision for a root's peer participation, committed with
+/// creation, an explicit user action, or archive. It confers no other authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerMembership {
+    /// Whether this root may see, send to, and receive from peer sessions.
+    pub enabled: bool,
+}
+
+impl super::AgentRecord for PeerMembership {}
+
+/// The two enabled membership versions admitted for an automatic peer send.
+/// Publication must still match both versions, so a later opt-out fences it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerAdmission {
+    /// Sender's exact enabled head.
+    pub sender: PeerMembershipHead,
+    /// Recipient's exact enabled head.
+    pub recipient: PeerMembershipHead,
+}
+
+/// An immutable membership record's publication identity.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerMembershipHead {
+    /// Exclusive sequence following this membership record.
+    pub tail: u64,
+    /// Original Streams commit identity.
+    pub commit: [u8; 32],
+}
+
+impl PeerAdmission {
+    pub(super) fn conditions(
+        &self,
+        sender: &AgentPath,
+        recipient: &AgentPath,
+    ) -> Result<Vec<acyclic_stream::CommitCondition>, super::Error> {
+        if sender == recipient {
+            return Err(super::Error::Record(
+                "automatic peers require distinct roots",
+            ));
+        }
+        let mut conditions = std::collections::BTreeMap::new();
+        for (path, head) in [
+            (sender.peer_membership()?, &self.sender),
+            (recipient.peer_membership()?, &self.recipient),
+        ] {
+            conditions.insert(
+                path.clone(),
+                acyclic_stream::CommitCondition::Head {
+                    path,
+                    expected: head.tail,
+                    commit_id: acyclic_stream::CommitId::from_bytes(head.commit),
+                },
+            );
+        }
+        Ok(conditions.into_values().collect())
+    }
+}
+
+/// Check both membership heads at one authority cut, without directory reads.
+/// A child, absent record, or opted-out root cannot acquire automatic peer reach.
+pub async fn session_peer_allowed<P: crate::store::JournalProvider + ?Sized>(
+    provider: &P,
+    grants: &crate::Capabilities,
+    sender: &AgentPath,
+    recipient: &AgentPath,
+) -> Result<bool, super::Error> {
+    Ok(session_peer_admission(provider, grants, sender, recipient)
+        .await?
+        .is_some())
+}
+
+/// Selects enabled membership and the exact publication guards in one view.
+pub async fn session_peer_admission<P: crate::store::JournalProvider + ?Sized>(
+    provider: &P,
+    grants: &crate::Capabilities,
+    sender: &AgentPath,
+    recipient: &AgentPath,
+) -> Result<Option<PeerAdmission>, super::Error> {
+    use super::AgentRecord as _;
+    use acyclic_stream::{HeadProjection, HeadsRequest};
+
+    if !grants.contains(SEND_PEER)
+        || sender.depth() != 0
+        || recipient.depth() != 0
+        || sender == recipient
+    {
+        return Ok(None);
+    }
+    let request = HeadsRequest {
+        retained: Default::default(),
+        durable_through: None,
+        projection: HeadProjection::History,
+        paths: [sender.peer_membership()?, recipient.peer_membership()?]
+            .into_iter()
+            .collect(),
+        children: None,
+        limit: 2,
+        at_least: Default::default(),
+    };
+    let view = provider
+        .heads(request.clone())
+        .await
+        .map_err(super::Error::Stream)?;
+    view.validate_for(&request).map_err(super::Error::Stream)?;
+    let mut admitted = Vec::with_capacity(2);
+    for head in view.heads {
+        let Some(record) = head.and_then(|head| head.last) else {
+            return Ok(None);
+        };
+        if !PeerMembership::decode(&record.value)?.enabled {
+            return Ok(None);
+        }
+        admitted.push(PeerMembershipHead {
+            tail: record
+                .sequence
+                .checked_add(1)
+                .ok_or(super::Error::Record("membership tail overflow"))?,
+            commit: *record.commit_id.as_bytes(),
+        });
+    }
+    let mut admitted = admitted.into_iter();
+    let sender = admitted
+        .next()
+        .ok_or(super::Error::Record("sender membership missing"))?;
+    let recipient = admitted
+        .next()
+        .ok_or(super::Error::Record("recipient membership missing"))?;
+    Ok(Some(PeerAdmission { sender, recipient }))
+}
+
 /// A sibling capability follows its name across released setup failures. The
 /// caller supplies the sender's parent; a child cannot confer a foreign name.
 pub async fn sibling_send_allowed(

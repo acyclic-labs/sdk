@@ -75,6 +75,17 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn sent<'a>(
+        &'a self,
+        id: &'a crate::agent::IntentId,
+    ) -> BoxProviderFuture<'a, Result<Option<crate::agent::SentMessage>>> {
+        Box::pin(async move {
+            crate::agent::sent(&*self.stream, &self.agent, id)
+                .await
+                .map_err(Error::from)
+        })
+    }
+
     fn recorded_call<'a>(
         &'a self,
         call: &'a str,

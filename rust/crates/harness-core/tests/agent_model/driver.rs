@@ -127,6 +127,17 @@ struct Script {
 }
 
 impl TurnEffects for Script {
+    fn sent<'a>(
+        &'a self,
+        _: &'a IntentId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<Option<SentMessage>>> {
+        Box::pin(async {
+            Err(acyclic_harness_core::Error::Unsupported(
+                "scripted driver has no message receipt provider".into(),
+            ))
+        })
+    }
+
     fn recorded_call<'a>(
         &'a self,
         _: &'a str,
@@ -301,6 +312,7 @@ async fn a_roster_enters_the_conversation_only_when_its_digest_changes() -> Resu
             from: super::user(),
             id: intent(&format!("m{sequence}")),
             body: Box::new(file("prompt.md")?),
+            re: None,
             attachments: None,
         });
         let settled = step(
@@ -540,9 +552,11 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
             .lock()
             .map_err(|error| error.to_string())?
             .push(TurnEffect::Send {
+                peer: None,
                 delivery: MessageDelivery::Steer,
                 to: to.clone(),
                 id: intent("sent"),
+                re: None,
                 body: body.clone(),
             });
         let state = AgentState::adopted(path, &adopted(id(1))).expect("adopts");
@@ -826,6 +840,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
         from: super::user(),
         id: intent("m1"),
         body: Box::new(file("prompt.md")?),
+        re: None,
         attachments: None,
     });
     let mut next = Some(user.clone());
@@ -1037,6 +1052,7 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
             from: Sender::Agent { path: path.clone() },
             id: intent(&format!("{GOAL_INTENT}{run}:{count}")),
             body: Box::new(file("GOAL.md")?),
+            re: None,
             attachments: None,
         };
         for sequence in 1..=turns {

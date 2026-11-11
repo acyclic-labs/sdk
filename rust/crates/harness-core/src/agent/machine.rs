@@ -446,6 +446,13 @@ pub enum Out {
     /// The conversation entry just before this is the agent's latest context
     /// checkpoint, indexed in its state with the append.
     Checkpoint,
+    /// Fence the automatic root-peer grant at publication.
+    PeerGuard {
+        /// Message recipient.
+        to: AgentPath,
+        /// Original enabled member versions.
+        admission: super::PeerAdmission,
+    },
     /// Send an inbox record to another agent.
     Send {
         /// Recipient.
@@ -1071,6 +1078,7 @@ fn finalize_step(
             Out::Roster(digest) => state.roster = Some(*digest),
             Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Send { .. }
+            | Out::PeerGuard { .. }
             | Out::PendingSpawns(_)
             | Out::Steered(_)
             | Out::Archive { .. }
@@ -1278,7 +1286,7 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
 /// Whether a driver's effect fits the record that carries it.
 fn admissible(out: &Out) -> bool {
     match out {
-        Out::Steered(_) | Out::PendingSpawns(_) => true,
+        Out::Steered(_) | Out::PendingSpawns(_) | Out::PeerGuard { .. } => true,
         Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(

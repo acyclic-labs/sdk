@@ -179,6 +179,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             from: message.from,
             id: message.id,
             body: message.body,
+            re: message.re,
             attachments: message.attachments,
         })?;
         assert_eq!(expand_attachments(input, reader.as_ref()).await?, expected);

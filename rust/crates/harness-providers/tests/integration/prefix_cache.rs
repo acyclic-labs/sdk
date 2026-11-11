@@ -608,6 +608,7 @@ async fn run(
             from: user(),
             id: intent(name),
             body: Box::new(body),
+            re: None,
             attachments: None,
         }))
     };

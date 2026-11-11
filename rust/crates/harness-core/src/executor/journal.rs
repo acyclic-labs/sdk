@@ -428,6 +428,16 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// Yield an already authorized invocation until its recorded effects are
+    /// committed. Its provisional result must never enter model history.
+    fn commit_tool_effects(&self, io: Option<&PreparationIo>) -> Result<()> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "tool effects have no actor publication owner",
+        ))
+    }
+
     /// Opens one typed durable interaction exactly once on its optional original IO.
     fn open_interaction<'a>(
         &'a self,

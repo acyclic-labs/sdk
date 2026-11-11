@@ -276,6 +276,7 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
                 from: user(),
                 id: intent(name),
                 body: Box::new(super::driver::file(name)?),
+                re: None,
                 attachments: None,
             }))
         };
@@ -1108,6 +1109,7 @@ async fn pending_request_host<P: acyclic_harness_core::store::JournalProvider + 
         from: user(),
         id: intent("message"),
         body: Box::new(super::driver::file("message")?),
+        re: None,
         attachments: None,
     });
     let Delivered::Committed { inbox: message_at } = host.send(&root, &user(), &message).await?

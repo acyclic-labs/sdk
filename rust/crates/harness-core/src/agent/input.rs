@@ -35,6 +35,10 @@ pub enum TurnInput {
         /// Message identity.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
+        /// Optional identity of the message being answered.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "wasm", tsify(type = "string", optional))]
+        re: Option<IntentId>,
         /// Body.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
         body: Box<FileRef>,
@@ -143,6 +147,7 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
                 from: message.from,
                 id: message.id,
                 body: message.body,
+                re: message.re,
                 attachments: message.attachments,
             })
         }

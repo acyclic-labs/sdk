@@ -58,6 +58,14 @@ pub type ToolPreparationFuture<'a> =
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// A provisional result whose recorded actor effects must commit before
+    /// this invocation can return its original receipt. The stock caller
+    /// publishes nothing, yields through the journal, and reconciles the same
+    /// invocation after the actor's publication barrier.
+    fn requires_effect_commit(&self, _result: &ToolResult) -> bool {
+        false
+    }
+
     /// Commits an admitted copied workspace before its owning turn settles.
     fn settle_workspace(
         &self,

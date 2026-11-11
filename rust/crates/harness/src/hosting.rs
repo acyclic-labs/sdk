@@ -526,6 +526,11 @@ where
             AgentCommand::Root {} => Ok(AgentReply::Root {
                 agent: self.root.clone(),
             }),
+            AgentCommand::SetPeerMembership { agent, id, enabled } => {
+                let agent = self.within_tree(agent)?;
+                agents.set_peer_membership(agent, by, id, *enabled).await?;
+                Ok(AgentReply::PeerMembership { enabled: *enabled })
+            }
             AgentCommand::AgentFilePreviews {
                 agent,
                 paths,
@@ -1027,6 +1032,7 @@ where
                     from: by.clone(),
                     id: id.clone(),
                     body: Box::new(body),
+                    re: None,
                     attachments: attachments.map(Box::new),
                 });
                 Ok(AgentReply::Delivered {
@@ -1808,6 +1814,7 @@ where
                 | AgentCommand::Pause { .. }
                 | AgentCommand::MergeSession { .. }
                 | AgentCommand::Prompt { .. }
+                | AgentCommand::SetPeerMembership { .. }
                 | AgentCommand::Cancel { .. }
                 | AgentCommand::Compact { .. }
                 | AgentCommand::Rewind { .. }

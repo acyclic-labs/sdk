@@ -127,6 +127,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                 from: super::super::user(),
                 id: intent(name),
                 body: Box::new(body.clone()),
+                re: None,
                 attachments: None,
             })
         };
@@ -149,6 +150,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                     from: super::super::user(),
                     id: intent("reserved-follow-up"),
                     body: Box::new(body.clone()),
+                    re: None,
                     attachments: None,
                 }),
             )

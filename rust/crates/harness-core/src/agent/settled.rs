@@ -119,6 +119,15 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
     /// The agent whose turn observes its children.
     fn agent(&self) -> &AgentPath;
 
+    /// Enabled membership versions retained through the eventual inbox commit.
+    fn peer_admission<'a>(
+        &'a self,
+        _grants: &'a crate::Capabilities,
+        _recipient: &'a AgentPath,
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<super::PeerAdmission>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Waits for this agent's committed close. Accepted background work uses
     /// this lifetime, independently of the turn which admitted it. Hosts with
     /// no agent lifecycle retain their enclosing runtime's lifetime.

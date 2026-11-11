@@ -27,22 +27,30 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
         let sender = create(&stream, id(10)).await?;
         let recipient = create(&stream, id(11)).await?;
         let state = AgentState::adopted(sender.clone(), &adopted(sender.id())).expect("adopts");
-        let message = Message {
-            from: Sender::Agent { path: sender },
+        let expected = Message {
+            from: Sender::Agent {
+                path: sender.clone(),
+            },
             id: intent("message"),
+            re: Some(intent("original-message")),
             body: Box::new(super::driver::file("message.md")?),
             attachments: None,
         };
-        let record = match delivery {
-            MessageDelivery::Steer => InboxRecord::Message(message),
-            MessageDelivery::FollowUp => InboxRecord::FollowUp(message),
-        };
+        assert!(sent(&stream, &sender, &expected.id).await?.is_none());
+        let outs = effect_outs(
+            &state,
+            vec![TurnEffect::Send {
+                peer: None,
+                to: recipient.clone(),
+                delivery,
+                id: expected.id.clone(),
+                re: expected.re.clone(),
+                body: expected.body.clone(),
+            }],
+        );
         let mut step = Step {
             state,
-            outs: vec![Out::Send {
-                to: recipient.clone(),
-                record,
-            }],
+            outs,
             // Soft delivery accompanies the sender's own durable publication.
             status: Some(StatusRecord {
                 child_settlement: None,
@@ -56,12 +64,48 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
         step.state.status_tail += 1;
         let open = lower(&step, 1, intent_key("open", &[])?)?;
         assert!(matches!(
+            stream.commit(open.clone()).await?,
+            CommitOutcome::Committed(_)
+        ));
+        // A lost acknowledgement replays this same root-to-root publication.
+        assert!(matches!(
             stream.commit(open).await?,
             CommitOutcome::Committed(_)
         ));
         assert_eq!(inbox_tail(&stream, &recipient).await?, 2);
+        assert_eq!(
+            sent(&stream, &sender, &expected.id).await?,
+            Some(SentMessage {
+                to: recipient.clone(),
+                id: expected.id.clone(),
+                delivery: Delivered::Committed { inbox: 1 },
+            })
+        );
+        let records = values(&stream, recipient.inbox()?).await?;
+        let record = InboxRecord::decode(&records[1])?;
+        match (&record, delivery) {
+            (InboxRecord::Message(message), MessageDelivery::Steer)
+            | (InboxRecord::FollowUp(message), MessageDelivery::FollowUp) => {
+                assert_eq!(message, &expected);
+            }
+            _ => return Err("peer delivery changed its turn semantics".into()),
+        }
+        let boundary = select_boundary(&stream, &recipient, 1, BoundaryEnd::Open).await?;
+        assert_eq!(
+            boundary.inputs.len(),
+            usize::from(delivery == MessageDelivery::Steer)
+        );
 
         // Close after preparation, before submission: the same effect must skip.
+        for out in &mut step.outs {
+            if let Out::Send {
+                record: InboxRecord::Message(message) | InboxRecord::FollowUp(message),
+                ..
+            } = out
+            {
+                message.id = intent("late");
+            }
+        }
         step.state.status_tail += 1;
         let late = lower(&step, 1, intent_key("late", &[])?)?;
         submit(&stream, archive(&recipient, &user(), &intent("close"))?).await?;
@@ -71,8 +115,25 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
             CommitOutcome::Committed(_)
         ));
         assert_eq!(inbox_tail(&stream, &recipient).await?, closed_tail);
+        assert_eq!(
+            sent(&stream, &sender, &intent("late")).await?,
+            Some(SentMessage {
+                to: recipient.clone(),
+                id: intent("late"),
+                delivery: Delivered::Closed,
+            })
+        );
 
         // The actual same append lands if its original close condition is removed.
+        for out in &mut step.outs {
+            if let Out::Send {
+                record: InboxRecord::Message(message) | InboxRecord::FollowUp(message),
+                ..
+            } = out
+            {
+                message.id = intent("unguarded");
+            }
+        }
         step.state.status_tail += 1;
         let mut unguarded = lower(&step, 1, intent_key("unguarded", &[])?)?;
         for effect in unguarded.effects.iter_mut().filter(|effect| effect.soft) {
@@ -98,6 +159,7 @@ async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
         from: user(),
         id: intent("followup"),
         body: Box::new(super::driver::file("message.md")?),
+        re: None,
         attachments: None,
     };
     for record in [

@@ -111,6 +111,7 @@ impl Fixture {
                 &InboxRecord::Message(Message {
                     from: sender.clone(),
                     id,
+                    re: None,
                     body: Box::new(body),
                     attachments: None,
                 }),

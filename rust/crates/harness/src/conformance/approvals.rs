@@ -261,6 +261,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
             &InboxRecord::Message(Message {
                 from: human.clone(),
                 id,
+                re: None,
                 body: Box::new(body),
                 attachments: None,
             }),
