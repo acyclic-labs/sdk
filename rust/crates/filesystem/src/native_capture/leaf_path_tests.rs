@@ -58,14 +58,12 @@ fn repeated_capture_counts_nested_checkout_union_once() -> Result<(), Box<dyn st
     // Once populated, checkout traversal is a,z,a/x while the host is a,a/x,z.
     // Exercise both public capture entry points with the exact union allowance.
     for _ in 0..2 {
-        runtime.block_on(capture_subtrees_with_native_work(
+        runtime.block_on(capture_subtree(
             &mut checkout,
-            &[path("/")],
+            path("/"),
             &subtree_options,
-            &policy,
+            WorkBudget::UNBOUNDED,
             setup.cancellation(),
-            None,
-            &setup,
         ))?;
         runtime.block_on(crate::seal_checkout(
             &mut checkout,
