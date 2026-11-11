@@ -308,6 +308,7 @@ mod tests {
         );
         assert!(
             tree.execute(&AgentCommand::NewSession {
+                questions: None,
                 id: crate::agent::IntentId::try_from("denied").map_err(storage)?
             })
             .await
@@ -385,6 +386,7 @@ mod tests {
             let mut roots = std::collections::BTreeSet::new();
             for index in 0..4 {
                 let create = AgentCommand::NewSession {
+                    questions: None,
                     id: crate::agent::IntentId::try_from(format!("session-{index}"))
                         .map_err(storage)?,
                 };
@@ -996,8 +998,8 @@ mod tests {
             .await?,
         );
         let directory = local.connect_sessions().await?;
-        let first = sessions::create(&directory, "merge-first").await?;
-        let second = sessions::create(&directory, "merge-second").await?;
+        let first = sessions::create(&directory, "merge-first", None).await?;
+        let second = sessions::create(&directory, "merge-second", None).await?;
         for (connection, name, text) in [
             (&first, "first.txt", b"first\n".as_slice()),
             (&second, "second.txt", b"second\n".as_slice()),

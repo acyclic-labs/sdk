@@ -193,7 +193,8 @@ impl Providers {
             .model
             .clone()
             .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
-        let selected = crate::tools::default_names();
+        let mut selected = crate::tools::default_names();
+        selected.push("ask_question".into());
         let mut tools = crate::tools::registry(
             &selected,
             |name| {
@@ -236,7 +237,8 @@ impl Providers {
         };
         let executors =
             StockExecutors::new((model, provider), tools, (limits, compaction), context)
-                .with_agent_tools(&selected);
+                .with_agent_tools(&selected)
+                .with_question_plugin(options.questions.unwrap_or(options.user_surface));
         let executors = match &registry.models {
             Some(models) => executors.with_models(models.clone()),
             None => executors,

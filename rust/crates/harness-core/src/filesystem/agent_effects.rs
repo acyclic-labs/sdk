@@ -239,6 +239,7 @@ mod tests {
                     &mut None,
                 )?),
                 profile: crate::agent::CreationConfig {
+                    question_plugin: false,
                     topology: None,
                     model: None,
                     continuation: None,

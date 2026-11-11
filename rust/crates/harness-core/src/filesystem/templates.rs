@@ -76,18 +76,15 @@ mod tests {
             TurnAdmission::LocalRoot,
         ));
         let parent = crate::templates::root()?;
-        // The shipped attention role is admitted through the same volume and
-        // template reader as worker forks, but starts with a fresh context.
-        let triager = templates
-            .child(&parent, &path, &volumes, "triager", None)
+        let orchestrator = templates
+            .child(&parent, &path, &volumes, "orchestrator", None)
             .await?;
-        assert_eq!(triager.context, SpawnContext::Fresh);
-        assert_eq!(triager.template.as_ref().unwrap().volume(), &seed);
-        let explanation = templates
-            .child(&parent, &path, &volumes, "explanation", None)
+        assert_eq!(orchestrator.context, SpawnContext::Fresh);
+        assert_eq!(orchestrator.model.as_deref(), Some("recon/morph-kimik31"));
+        assert_eq!(orchestrator.template.as_ref().unwrap().volume(), &seed);
+        templates
+            .child(&orchestrator, &path, &volumes, "orchestrator", None)
             .await?;
-        assert_eq!(explanation.context, SpawnContext::Fork);
-        assert_eq!(explanation.template.as_ref().unwrap().volume(), &seed);
         let original = templates
             .child(&parent, &path, &volumes, "worker", None)
             .await?;
@@ -328,12 +325,9 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(
-            templates
-                .child(&parent, &path, &volumes, "orchestrator", None)
-                .await
-                .is_err()
-        );
+        templates
+            .child(&parent, &path, &volumes, "orchestrator", None)
+            .await?;
         assert!(
             templates
                 .child(&selected, &path, &volumes, "reviewer", None)
@@ -420,6 +414,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
                 crate::conversation::ContentAccess { ceiling, io: None },
             )
             .await?;
+            selected.question_plugin = creation.question_plugin;
             selected.model = selected.model.or_else(|| creation.model.clone());
             Ok(selected)
         })

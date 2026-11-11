@@ -208,6 +208,9 @@ pub enum SpawnContext {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreationConfig {
+    /// Question plugin selection fixed when the root session was created.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub question_plugin: bool,
     /// Forced run policy pinned at creation and inherited by every child.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topology: Option<crate::topology::Topology>,
@@ -245,6 +248,20 @@ pub trait SpawnTemplates: acyclic_stream::ProviderPlatform {
         template: &'a str,
         ceiling: Option<&'a crate::Capabilities>,
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<CreationConfig>>;
+}
+
+impl CreationConfig {
+    /// Role identity from the immutable template selection; roots use orchestrator.
+    #[must_use]
+    pub fn role(&self) -> Option<&str> {
+        match &self.template {
+            None => Some("orchestrator"),
+            Some(file) => file
+                .path()
+                .strip_prefix("templates/")?
+                .strip_suffix("/AGENT.md"),
+        }
+    }
 }
 
 /// First record of every agent, written by the spawn fork or by root creation.

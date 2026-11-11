@@ -1,1 +1,1 @@
-export default { model: "openai/gpt-6-luna" };
+export default { model: "recon/morph-dsv41flash" };

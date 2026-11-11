@@ -1,0 +1,35 @@
+{
+  "id": "question-headless",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "I selected blue; no human decision is required."
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "Choose blue or green",
+      "answer": "I selected blue; no human decision is required."
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "model_tools": [
+      {
+        "step": 0,
+        "absent": [
+          "ask_question"
+        ]
+      }
+    ]
+  }
+}

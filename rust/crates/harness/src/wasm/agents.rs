@@ -124,6 +124,14 @@ struct WasmBrowserStreamLimits {
 #[serde(deny_unknown_fields)]
 #[tsify(large_number_types_as_bigints)]
 struct WasmBrowserAgentOptions {
+    /// A user surface attached at session start. Later attachment cannot change tools.
+    #[serde(default)]
+    #[tsify(optional)]
+    user_surface: bool,
+    /// Explicit question plugin override for this new session.
+    #[serde(default)]
+    #[tsify(optional)]
+    questions: Option<bool>,
     filesystem_database: String,
     stream_database: String,
     maximum_object_bytes: u64,

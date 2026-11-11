@@ -815,6 +815,7 @@ pub async fn run(
     mut resume: bool,
     mut terminal: Option<Tty>,
     price_file: Option<String>,
+    questions: bool,
 ) -> Result<(), Failure> {
     loop {
         match run_current(
@@ -831,14 +832,20 @@ pub async fn run(
                 let connection = acyclic_harness::local::sessions::create(
                     conversation.connection(),
                     &acyclic_harness::OperationId::new().to_string(),
+                    Some(questions),
                 )
                 .await?;
                 conversation = Conversation::open(connection);
                 resume = false;
             }
             Next::Picker => {
-                let (connection, owned) =
-                    super::sessions::picker(conversation.connection().clone(), None, None).await?;
+                let (connection, owned) = super::sessions::picker(
+                    conversation.connection().clone(),
+                    None,
+                    None,
+                    questions,
+                )
+                .await?;
                 conversation = Conversation::open(connection);
                 terminal = owned;
                 resume = true;
@@ -1048,6 +1055,19 @@ async fn run_current(
             }
         } else {
             approval_failed = None;
+        }
+        if let Some(Phase::WaitingUser { path }) = &view.phase
+            && queries.source().is_none()
+            && overlay.is_none()
+            && view.prompt.is_none()
+        {
+            queries.select(query::Source::Question(path.clone()), query_future.as_mut());
+            overlay_top = 0;
+        }
+        if matches!(queries.source(), Some(query::Source::Question(_)))
+            && !matches!(view.phase, Some(Phase::WaitingUser { .. }))
+        {
+            queries.close(query_future.as_mut());
         }
         let feedback = matches!(view.prompt, Some(Prompt::Feedback));
         if let Some(panel) = queries.page.as_mut() {
@@ -1597,7 +1617,21 @@ async fn run_current(
                                         continue;
                                     }
                                 }
-                                // A refused prompt, such as an unknown `/name`, stays
+                                if let Some((path, generation, blocks)) = queries.page.as_ref().and_then(|page| page.context.question.as_ref()) {
+                                    let reply = acyclic_harness::client::ui::Reply {
+                                        path: acyclic_harness::client::ui::UiPath::new(path.clone())?,
+                                        generation: generation.clone(),
+                                        answers: Default::default(),
+                                        text: text.clone(),
+                                    };
+                                    let command = reply.command(conversation.agent().clone(), acyclic_harness::agent::IntentId::try_from(acyclic_harness::OperationId::new().to_string())?, blocks)?;
+                                    match conversation.connection().execute(&command).await {
+                                        Ok(_) => { queries.close(query_future.as_mut()); }
+                                        Err(error) => { view.notice = refusal(error); input.editor = Editor::new(&text); }
+                                    }
+                                    continue;
+                                }
+                                // A refused prompt, such as an unknown /name, stays
                                 // in the editor with its reason. Sending the same text
                                 // again reuses its message id, so a send whose commit
                                 // was uncertain replays exactly and never commits twice.
@@ -1605,7 +1639,9 @@ async fn run_current(
                                     Some((id, sent)) if sent == text => id,
                                     _ => acyclic_harness::OperationId::new().to_string(),
                                 };
-                                let inbox = match conversation.send(&id, &text).await {
+                                let target = acyclic_harness::client::ui::input_target(sidebar.source.view.reader_ref(), conversation.agent());
+                                let recipient = if &target == conversation.agent() { Arc::clone(&conversation) } else { root.select(target).await? };
+                                let inbox = match recipient.send(&id, &text).await {
                                     Ok(inbox) => inbox,
                                     Err(error) => {
                                         view.notice = refusal(error);
@@ -1614,6 +1650,10 @@ async fn run_current(
                                         continue;
                                     }
                                 };
+                                if recipient.agent() != conversation.agent() {
+                                    view.notice = Some(format!("Sent to orchestrator {}", recipient.agent().id()));
+                                    continue;
+                                }
                                 view.pending.push((inbox, text));
                                 view.back = 0;
                                 view.pending_dirty = true;

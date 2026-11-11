@@ -3843,7 +3843,7 @@ async fn tool_free_checkout_sessions_read_their_own_logical_context_without_moun
         .await?,
     );
     let directory = harness.connect_sessions().await?;
-    let session = crate::local::sessions::create(&directory, "tool-free-session").await?;
+    let session = crate::local::sessions::create(&directory, "tool-free-session", None).await?;
     let (agents, _) = harness.agents().await?;
     let root = agents.state(session.root()).await.map_err(agent)?;
     let project = root

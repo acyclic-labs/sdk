@@ -166,6 +166,10 @@ pub enum AgentCommand {
     },
     /// Create an independent root under the host's session admission.
     NewSession {
+        /// Question plugin selection fixed for this new session.
+        #[serde(default)]
+        #[cfg_attr(feature = "wasm", tsify(optional))]
+        questions: Option<bool>,
         /// Stable creation identity; reuse exactly after an uncertain result.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,

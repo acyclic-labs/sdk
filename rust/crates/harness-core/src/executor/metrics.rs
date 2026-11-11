@@ -907,6 +907,7 @@ mod tests {
                 agent: agent.clone(),
                 parent: None,
                 profile: Some(agent::CreationConfig {
+                    question_plugin: false,
                     topology: None,
                     model: None,
                     continuation: None,

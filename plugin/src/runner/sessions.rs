@@ -48,7 +48,7 @@ async fn select_inner(
         if let Some(name) = resume {
             return Ok((sessions::select(&connection, name).await?, terminal));
         }
-        return choose(connection, terminal, None).await;
+        return choose(connection, terminal, None, super::questions_enabled(args)).await;
     }
     if args.continue_session
         || matches!(
@@ -72,7 +72,12 @@ async fn select_inner(
             .operation
             .clone()
             .unwrap_or_else(|| OperationId::new().to_string());
-        let selected = sessions::create(&connection, &operation).await?;
+        let selected = sessions::create(
+            &connection,
+            &operation,
+            Some(super::questions_enabled(args)),
+        )
+        .await?;
         if let Some(Command::NewSession { title: Some(title) }) = &args.command {
             sessions::rename(&selected, OperationId::new(), title.clone()).await?;
         }
@@ -87,8 +92,9 @@ pub async fn picker(
     connection: Connection,
     terminal: Option<Tty>,
     filter: Option<&str>,
+    questions: bool,
 ) -> Result<(Connection, Option<Tty>), Failure> {
-    let (selected, terminal) = choose(connection, terminal, filter).await?;
+    let (selected, terminal) = choose(connection, terminal, filter, questions).await?;
     sessions::selected(&selected, &OperationId::new().to_string()).await?;
     Ok((selected, terminal))
 }
@@ -97,6 +103,7 @@ async fn choose(
     connection: Connection,
     terminal: Option<Tty>,
     filter: Option<&str>,
+    questions: bool,
 ) -> Result<(Connection, Option<Tty>), Failure> {
     let mut terminal = match terminal {
         Some(terminal) => terminal,
@@ -210,7 +217,12 @@ async fn choose(
             continue;
         }
         let selected = if choice == new_index {
-            sessions::create(&connection, &OperationId::new().to_string()).await?
+            sessions::create(
+                &connection,
+                &OperationId::new().to_string(),
+                Some(questions),
+            )
+            .await?
         } else {
             connection
                 .select(

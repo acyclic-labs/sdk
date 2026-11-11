@@ -515,9 +515,13 @@ impl Opening {
         let settings_tree = agent_settings::Tree::new(&volumes).await?;
         // `plugins.ts` selects the plugin hooks as the session starts.
         #[cfg(any(test, not(target_arch = "wasm32")))]
-        let plugin_hooks =
-            agent_settings::plugins(&settings_tree, owner.agent, self.config.clock.as_ref())
-                .await?;
+        let plugin_hooks = agent_settings::plugins(
+            self.config.question,
+            &settings_tree,
+            owner.agent,
+            self.config.clock.as_ref(),
+        )
+        .await?;
         // `agent.ts` selects the model and its sampling as the session starts.
         let (agent, sampling) = match self.config.model.clone() {
             Some(started) => {
@@ -566,6 +570,7 @@ impl Opening {
             verifier,
             signed,
             preset: self.preset,
+            question_plugin: self.config.question,
             agent_tools: self
                 .config
                 .default_tools
@@ -740,11 +745,11 @@ impl SessionVolumes {
 }
 
 fn configure_tools(config: &mut LocalHarnessConfig) -> Result<ToolRegistry> {
-    let tools = crate::tools::registry(
-        &config.default_tools,
-        |_| true,
-        std::mem::take(&mut config.tools),
-    )?;
+    let mut names = config.default_tools.clone();
+    if config.model.is_some() && !names.iter().any(|name| name == "ask_question") {
+        names.push("ask_question".into());
+    }
+    let tools = crate::tools::registry(&names, |_| true, std::mem::take(&mut config.tools))?;
     #[cfg(not(target_arch = "wasm32"))]
     if config.model.is_none() && config.web_tools {
         return Err(Error::Invalid(

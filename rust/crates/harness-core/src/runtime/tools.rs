@@ -634,6 +634,17 @@ impl ToolContext {
                     Ok(())
                 })?;
             }
+            if let ContentChange::CreateAbsent { bytes, .. }
+            | ContentChange::UpdateExpected { bytes, .. } = change
+            {
+                crate::plugins::question::authorize_publication(
+                    volume,
+                    change.path(),
+                    bytes,
+                    self.effective_scope(),
+                    io,
+                )?;
+            }
             let bytes = match change {
                 ContentChange::CreateAbsent { bytes, .. }
                 | ContentChange::UpdateExpected { bytes, .. } => bytes.len() as u64,

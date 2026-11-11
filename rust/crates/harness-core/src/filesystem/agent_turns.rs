@@ -376,6 +376,11 @@ pub async fn agent_authority<'v>(
 /// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
 /// context manifest) through the authority's private writer.
 pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
+    /// Default question plugin choice for a newly created root session.
+    fn question_plugin(&self) -> bool {
+        false
+    }
+
     /// Root model selected by this composition, pinned at root creation.
     fn model_selection(&self) -> Option<String> {
         None
@@ -555,6 +560,11 @@ where
             topology,
         });
         self
+    }
+
+    /// Start-time default for new roots; each root retains its own selection.
+    pub fn question_plugin(&self) -> bool {
+        self.executors.question_plugin()
     }
 
     /// The same reader both model and host child creation use.

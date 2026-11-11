@@ -212,12 +212,20 @@ async fn record(
 /// manifests refuse the session rather than remove its guards.
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub(super) async fn plugins(
+    question: bool,
     tree: &Tree<'_>,
     agent: AgentId,
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<crate::hooks::Hooks> {
     use crate::plugins::{MANIFEST, load_result};
     let enabler = agent.to_string();
+    let selection =
+        format!("export default base => ({{ ...base, question: {{ enabled: {question} }} }});");
+    let session = Layer {
+        name: "session",
+        generation: "",
+        bytes: Some(selection.as_bytes()),
+    };
     let seed = Layer {
         name: "seed",
         generation: "",
@@ -230,7 +238,7 @@ pub(super) async fn plugins(
         error => error,
     };
     let Some((version, bytes)) = tree.home(MANIFEST).await? else {
-        return Ok(load_result(tree, &[seed], &enabler)
+        return Ok(load_result(tree, &[seed, session], &enabler)
             .await?
             .map_err(seeded)?
             .rules);
@@ -242,6 +250,7 @@ pub(super) async fn plugins(
             generation: &version,
             bytes: Some(&bytes),
         },
+        session,
     ];
     admitted(
         tree.volumes,
@@ -548,7 +557,7 @@ mod tests {
         }
         let disabled = crate::context::CompactionPolicy::Disabled;
         let clock = harness.clock.as_ref();
-        let enabled = plugins(&original, harness.root, clock).await?;
+        let enabled = plugins(false, &original, harness.root, clock).await?;
         assert!(
             !enabled.is_empty(),
             "plugin admission refreshed its pinned home generation"
@@ -568,7 +577,11 @@ mod tests {
             "settings admission refreshed its pinned home generation"
         );
         let current = Tree::new(&volumes).await?;
-        assert!(plugins(&current, harness.root, clock).await?.is_empty());
+        assert!(
+            plugins(false, &current, harness.root, clock)
+                .await?
+                .is_empty()
+        );
         let settings = admit(
             &current,
             harness.root,

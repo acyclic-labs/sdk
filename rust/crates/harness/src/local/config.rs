@@ -83,6 +83,7 @@ pub struct LocalHarnessConfig {
     pub(super) tools: Vec<Tool>,
     /// Standard tools enabled, by name.
     pub(super) default_tools: Vec<String>,
+    pub(super) question: bool,
     /// Hosts the agents for [`crate::server::serve`].
     pub(super) served: Option<Arc<dyn super::Verifier>>,
     pub(super) approval_policy: crate::approvals::ApprovalPolicy,
@@ -177,7 +178,8 @@ impl LocalHarnessConfig {
                 .map(crate::native_settings::SettingsConfig::configured_model)
                 .transpose()?
                 .flatten()
-                .unwrap_or_else(|| models.default_model().to_owned()),
+                .map(Ok)
+                .unwrap_or_else(crate::templates::root_model)?,
         };
         self.model = Some(models.resolve(&selection)?);
         for model in self.approval_policy.models() {
@@ -234,6 +236,7 @@ impl LocalHarnessConfig {
             models: None,
             tools: Vec::new(),
             default_tools: crate::tools::default_names(),
+            question: false,
             served: None,
             approval_policy: Default::default(),
             approval_issuer: None,
@@ -434,6 +437,18 @@ impl LocalHarnessConfig {
             approval_policy: self.approval_policy.clone(),
         }
     }
+    /// Fix the question plugin selection before this session starts. Later UI
+    /// attachments do not change its tool catalog. Web and IDE hosts opt in here.
+    #[must_use]
+    pub fn question_plugin(mut self, enabled: bool) -> Self {
+        self.question = enabled;
+        self.default_tools.retain(|name| name != "ask_question");
+        if enabled {
+            self.default_tools.push("ask_question".into());
+        }
+        self
+    }
+
     /// Disables the default set, retaining every custom tool.
     #[must_use]
     pub fn without_default_tools(mut self) -> Self {

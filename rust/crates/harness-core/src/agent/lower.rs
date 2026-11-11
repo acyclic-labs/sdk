@@ -121,6 +121,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 let child = adopted
                     .profile
                     .get_or_insert_with(|| super::CreationConfig {
+                        question_plugin: false,
                         topology: None,
                         model: None,
                         continuation: None,

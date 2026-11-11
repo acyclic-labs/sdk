@@ -89,7 +89,29 @@ pub fn local_harness_config(
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
     // Store opening supplies temporary state only when no explicit root was selected.
     let policy = crate::approvals::ApprovalPolicy::accept_all("graphcoder-default");
-    let config = crate::LocalHarnessConfig::new(workspace, model)
+    let selected = format!("{}/{}", model.0.provider, model.0.name);
+    let initial = selected.clone();
+    let models = std::sync::Arc::new(crate::model::ModelResolver::new(
+        selected.clone(),
+        move |selection| {
+            if selection == initial {
+                return Ok(model.clone());
+            }
+            // The fixture catalog binds the shipped role models to the same scripted
+            // backend; the production role selection and tool authority still run.
+            if !["recon/morph-kimik31", "recon/morph-dsv41flash"].contains(&selection) {
+                return Err(crate::Error::NotFound(format!("fixture model {selection}")));
+            }
+            let (provider, name) = selection
+                .split_once('/')
+                .ok_or_else(|| crate::Error::Invalid("fixture model key".into()))?;
+            let mut selected = model.0.clone();
+            selected.provider = provider.into();
+            selected.name = name.into();
+            Ok((selected, model.1.clone()))
+        },
+    ));
+    let config = crate::LocalHarnessConfig::resolving(workspace, models, Some(selected))
         .hermetic()
         .approval_policy(policy);
     #[cfg(any(test, not(target_arch = "wasm32")))]

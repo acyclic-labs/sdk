@@ -9,6 +9,8 @@ use std::ops::Range;
 pub trait Cut {
     /// Agent whose stream and volume facts this cut selects.
     fn agent(&self) -> &AgentPath;
+    /// Immutable role selected by this cut.
+    fn role(&self) -> Result<String>;
     /// Latest status at this cut.
     fn status(&self) -> Result<StatusRecord>;
     /// Exclusive conversation tail, or unavailable until demanded.
@@ -51,6 +53,9 @@ impl AgentRow {
     pub const PATHS: [&str; 5] = ["title", "model", "cost", "age", "glyph"];
 }
 impl Cut for ReaderCut<'_> {
+    fn role(&self) -> Result<String> {
+        super::agent_role(self.reader, self.agent).ok_or(Error::Pending)
+    }
     fn agent(&self) -> &AgentPath {
         self.agent
     }
@@ -306,6 +311,7 @@ impl View {
     /// Pure markdown generation; authored-over-default resolution wraps this.
     pub fn project(&self, cut: &impl Cut, path: &UiPath) -> Result<String> {
         match path.as_str() {
+            "role" => cut.role(),
             "title" => Ok(cut.agent().id().to_string()),
             "model" | "cost" | "age" => Ok("—".into()),
             "glyph" => Ok(match cut.status()?.phase {

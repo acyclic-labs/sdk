@@ -156,6 +156,21 @@ impl StockExecutor {
         self
     }
 
+    /// Optional plugin authority is granted only by the pinned role file.
+    pub(crate) fn without_question_authority(mut self) -> Result<Self> {
+        self.tool_scope
+            .grants
+            .0
+            .retain(|grant| grant != "tool:call:ask_question");
+        if let Some((context, operation)) = &self.task_context {
+            self.task_context = Some((
+                Arc::new(context.scoped(self.tool_scope.grants().clone(), self.limits)?),
+                *operation,
+            ));
+        }
+        Ok(self)
+    }
+
     /// Intersect an immutable role ceiling with both model and executable
     /// authority. A missing grant is never supplied by a template's prose.
     pub(crate) fn with_tool_ceiling(mut self, allowed: &[String]) -> Result<Self> {

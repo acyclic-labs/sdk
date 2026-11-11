@@ -1,1 +1,1 @@
-export default { model: "alloy/advisor" };
+export default { model: "recon/morph-dsv41flash" };

@@ -205,7 +205,8 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         Err(StreamError::AccessDenied)
     );
     let directory_connection = harness.connect_sessions().await?;
-    let session = super::super::sessions::create(&directory_connection, "reader-session").await?;
+    let session =
+        super::super::sessions::create(&directory_connection, "reader-session", None).await?;
     let page = session
         .session
         .read_provider()

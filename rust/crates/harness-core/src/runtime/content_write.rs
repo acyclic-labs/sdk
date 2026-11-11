@@ -292,6 +292,7 @@ impl TaskContext {
         };
         let (writer, volume, relative) =
             publication_destination(Some(content), scope, source, path, io)?;
+        crate::plugins::question::authorize_publication(volume, &relative, bytes, scope, io)?;
         if !content.reader.supports_read(volume, io)? {
             return Err(content_error(
                 io,

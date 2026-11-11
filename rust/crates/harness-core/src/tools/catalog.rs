@@ -37,11 +37,11 @@ pub struct ToolSpec {
     pub hook_names: &'static [&'static str],
     /// Required task resource.
     pub binding: ToolBinding,
-    input: fn() -> Result<Value>,
-    output: fn() -> Result<Value>,
-    projection_schema: fn(ProjectionMode) -> Result<Value>,
-    executor: fn(&'static str) -> Arc<dyn ToolExecutor>,
-    projection: fn(ProjectionMode) -> Arc<dyn ToolProjection>,
+    pub(crate) input: fn() -> Result<Value>,
+    pub(crate) output: fn() -> Result<Value>,
+    pub(crate) projection_schema: fn(ProjectionMode) -> Result<Value>,
+    pub(crate) executor: fn(&'static str) -> Arc<dyn ToolExecutor>,
+    pub(crate) projection: fn(ProjectionMode) -> Arc<dyn ToolProjection>,
 }
 
 impl ToolSpec {
@@ -86,9 +86,26 @@ impl ToolSpec {
 /// The stock coding catalog, in model registration order. No mutable global state.
 pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
     #[cfg(not(target_arch = "wasm32"))]
-    let specs = [&SHELL, &FS, &READ, &WRITE, &REMOVE, &EDIT, &CODE];
+    let specs = [
+        &SHELL,
+        &FS,
+        &READ,
+        &WRITE,
+        &REMOVE,
+        &EDIT,
+        &crate::plugins::question::SPEC,
+        &CODE,
+    ];
     #[cfg(target_arch = "wasm32")]
-    let specs = [&SHELL, &FS, &READ, &WRITE, &REMOVE, &EDIT];
+    let specs = [
+        &SHELL,
+        &FS,
+        &READ,
+        &WRITE,
+        &REMOVE,
+        &EDIT,
+        &crate::plugins::question::SPEC,
+    ];
     specs.into_iter()
 }
 

@@ -587,6 +587,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         &self,
         intent: &IntentId,
         mut adopted: ForkAdopted,
+        question_plugin: bool,
     ) -> Result<Spawn, Error> {
         if adopted.profile.is_some() {
             return Err(Error::Record(
@@ -601,6 +602,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             )
             .map_err(|error| Error::Turn(Box::new(error)))?;
             profile.model.clone_from(&self.model);
+            profile.question_plugin = question_plugin;
             adopted.profile = Some(profile);
         }
         self.agents.prepare_root(&self.within, intent, adopted)
@@ -653,7 +655,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         intent: &IntentId,
         adopted: ForkAdopted,
     ) -> Result<AgentPath, Error> {
-        let created = self.prepare_root(intent, adopted)?;
+        let created = self.prepare_root(intent, adopted, false)?;
         match submit(&*self.provider, created.request).await? {
             Submitted::Committed(_) => {}
             Submitted::Conflict(_) | Submitted::NoSuchAgent(_) | Submitted::RecipientClosed(_) => {

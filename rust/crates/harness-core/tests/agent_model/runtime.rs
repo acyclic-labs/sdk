@@ -1159,6 +1159,7 @@ async fn reply_waits_require_original_committed_requests() -> Result {
     }
     let request = InboxRecord::Spawn(SpawnRequest {
         profile: acyclic_harness_core::agent::CreationConfig {
+            question_plugin: false,
             topology: None,
             model: None,
             continuation: None,
@@ -1292,6 +1293,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                question_plugin: false,
                 topology: None,
                 model: None,
                 continuation: None,

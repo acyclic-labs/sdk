@@ -653,6 +653,7 @@ impl LocalHarness {
                     Arc::new(LocalContext(Arc::downgrade(self))),
                 )
                 .with_agent_tools(&self.agent_tools)
+                .with_question_plugin(self.question_plugin)
                 .with_templates();
                 let executors = match &self.models {
                     Some(models) => executors.with_models(models.clone()),

@@ -48,6 +48,11 @@ pub enum Template {
     about = "Coding agent on the local harness's agents or an endpoint's"
 )]
 pub struct Args {
+    /// Enable or disable the question plugin at session start. Defaults to on
+    /// only for an attached interactive user surface; never changes on attach.
+    #[arg(global = true, long, num_args = 0..=1, default_missing_value = "true", action = clap::ArgAction::Set)]
+    pub questions: Option<bool>,
+
     /// Force delegation: single, team:N (N total workers, depth 1), or unbounded swarm.
     #[arg(global = true, long, conflicts_with_all = ["host_workspace", "endpoint"])]
     pub topology: Option<String>,

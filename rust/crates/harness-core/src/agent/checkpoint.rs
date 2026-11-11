@@ -291,6 +291,7 @@ mod tests {
     fn adoption() -> ForkAdopted {
         ForkAdopted {
             profile: Some(crate::agent::CreationConfig {
+                question_plugin: false,
                 topology: None,
                 model: None,
                 continuation: None,
@@ -362,6 +363,7 @@ mod tests {
             }));
             records.push(InboxRecord::Spawn(SpawnRequest {
                 profile: crate::agent::CreationConfig {
+                    question_plugin: false,
                     topology: None,
                     model: None,
                     continuation: None,

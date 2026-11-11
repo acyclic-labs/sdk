@@ -1,0 +1,94 @@
+{
+  "id": "pty-question",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "QUESTION_E2E"
+        },
+        "tools": [
+          {
+            "id": "ask-color",
+            "name": "ask_question",
+            "arguments": {
+              "path": ".volumes/private/ui/color.md",
+              "content": "QUESTION_COLOR\n```input choose id=color\n- blue\n- green\n```\n"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "QUESTION_E2E",
+          "tool_result": "version"
+        },
+        "text": [
+          "QUESTION_PUBLISHED"
+        ]
+      },
+      {
+        "when": {
+          "contains": "color.md"
+        },
+        "text": [
+          "QUESTION_BLUE_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "QUESTION_E2E"
+        },
+        {
+          "when": {
+            "contains": [
+              "QUESTION_COLOR",
+              "Orchestrator"
+            ],
+            "cursor": true
+          },
+          "prompt": "blue"
+        },
+        {
+          "when": {
+            "contains": [
+              "QUESTION_BLUE_DONE",
+              "○"
+            ],
+            "cursor": true
+          },
+          "send": "\u0004\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 3,
+    "model_tools": [
+      {
+        "step": 0,
+        "present": [
+          "ask_question"
+        ]
+      }
+    ],
+    "last_model_contains": [
+      "color.md",
+      "blue"
+    ]
+  }
+}

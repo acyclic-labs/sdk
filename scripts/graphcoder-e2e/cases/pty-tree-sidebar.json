@@ -17,7 +17,7 @@
             "arguments": {
               "name": "oak",
               "task": "TREE_CHILD",
-              "role": "worker"
+              "role": "orchestrator"
             }
           }
         ]

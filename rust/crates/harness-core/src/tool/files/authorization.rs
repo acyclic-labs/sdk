@@ -8,6 +8,14 @@ impl FileTool {
         invocation: &ToolInvocation,
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(Option<FileRef>, acyclic_fs::NativeCustody)> {
+        if invocation.name == "ask_question"
+            && !crate::plugins::question::valid_path(&invocation.arguments)
+        {
+            return Err(super::executor::rejection(
+                work,
+                "ask_question requires a private ui/ file",
+            ));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let owned_io = work
             .map(crate::executor::PreparationIo::from_native_work)

@@ -232,6 +232,7 @@ fn configure(
         Template::Graphcoder => registry.graphcoder(&args.workspace, args.model.clone())?,
     }
     .working_directory(&std::env::current_dir()?)?;
+    config = config.question_plugin(questions_enabled(args));
     config = config.topology(acyclic_harness::topology::Topology::select(
         args.topology.as_deref().unwrap_or("swarm"),
     )?)?;
@@ -448,11 +449,25 @@ async fn run_inner(
     connected(&args, connection, output, event_output, terminal).await
 }
 
+fn questions_enabled(args: &Args) -> bool {
+    args.questions.unwrap_or_else(|| {
+        args.command.is_none()
+            && args.prompt.is_none()
+            && args.input_format == InputFormat::Text
+            && args.output_format == OutputFormat::Text
+            && std::io::stdin().is_terminal()
+            && std::io::stdout().is_terminal()
+            && !acyclic_harness::tui::term::Environment::capture().is_dumb()
+    })
+}
+
 // Only owner configuration crosses the process boundary. Prompt identities,
 // view selections and output destinations belong to the attaching client.
 fn service_arguments(args: &Args) -> Vec<std::ffi::OsString> {
     let mut arguments = vec![
         "--local-service".into(),
+        "--questions".into(),
+        questions_enabled(args).to_string().into(),
         "--workspace".into(),
         args.workspace.clone().into_os_string(),
     ];
@@ -765,6 +780,7 @@ async fn drive(
                     || args.endpoint.is_some(),
                 terminal,
                 price_file,
+                questions_enabled(args),
             )
         })
         .await;

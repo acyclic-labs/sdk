@@ -1233,7 +1233,8 @@ where
         intent: &IntentId,
         request: RootRequest,
     ) -> Result<Prepared, Error> {
-        self.prepare_root_request(intent, request, false).await
+        self.prepare_root_request(intent, request, false, None)
+            .await
     }
 
     /// Prepare an independent root and its directory membership in one commit.
@@ -1242,9 +1243,11 @@ where
         &self,
         intent: &IntentId,
         request: RootRequest,
+        questions: Option<bool>,
     ) -> Result<Prepared, Error> {
         self.admit_sessions()?;
-        self.prepare_root_request(intent, request, true).await
+        self.prepare_root_request(intent, request, true, questions)
+            .await
     }
 
     async fn prepare_root_request(
@@ -1252,6 +1255,7 @@ where
         intent: &IntentId,
         request: RootRequest,
         indexed: bool,
+        questions: Option<bool>,
     ) -> Result<Prepared, Error> {
         self.admit_root(&request)?;
         if self.turns.templates().is_some() {
@@ -1278,6 +1282,7 @@ where
                 brief,
                 policy,
             },
+            questions.unwrap_or(self.turns.question_plugin()),
         )?;
         if indexed {
             self.index_session(&child, &mut request)?;

@@ -529,7 +529,7 @@ async fn ui_lazy_cost() -> TestResult {
 }
 
 #[test]
-fn ui_attention_uses_followed_status_and_authored_queue() {
+fn ui_attention_uses_followed_status() {
     let (a, b, c) = (agent(1), agent(2), agent(3));
     let (ask, idle, done) = (
         status(Phase::WaitingUser {
@@ -541,16 +541,175 @@ fn ui_attention_uses_followed_status_and_authored_queue() {
         }),
     );
     let visible = [(&a, &ask), (&b, &idle), (&c, &done)];
-    assert_eq!(attention(visible, None), vec![&a, &c]);
-    assert_eq!(
-        attention(
-            visible,
-            Some(&format!(
-                "- [first]({})\n- [duplicate]({})",
-                c.as_str(),
-                c.as_str()
-            ))
-        ),
-        vec![&c, &a]
-    );
+    assert_eq!(attention(visible), vec![&a, &c]);
+}
+#[tokio::test]
+async fn ui_role_and_input_target_use_each_agents_own_fork_adoption() -> TestResult {
+    use acyclic_harness_core::agent::SpawnContext;
+    let memory = Arc::new(MemoryStream::default());
+    let root = agent(100);
+    let lead = root.child(&agent(101).id())?;
+    let worker = lead.child(&agent(102).id())?;
+    let adoption =
+        |path: &AgentPath, parent: Option<AgentPath>, at, role: &str| -> TestResultBytes {
+            let mut profile = acyclic_harness_core::templates::root()?;
+            if parent.is_some() {
+                profile.context = SpawnContext::Fresh;
+                profile.template = Some(file(
+                    path,
+                    &format!("templates/{role}/AGENT.md"),
+                    b"role",
+                    "text/markdown",
+                )?);
+            }
+            Ok(InboxRecord::ForkAdopted(Box::new(ForkAdopted {
+                agent: path.id(),
+                parent,
+                profile: Some(profile),
+                forked_at: at,
+                conversation_tail: 0,
+                checkpoint: None,
+                volumes: Vec::new(),
+                brief: None,
+                policy: None,
+            }))
+            .encode()?)
+        };
+    append(
+        &memory,
+        root.inbox()?,
+        adoption(&root, None, 0, "orchestrator")?,
+    )
+    .await?;
+    for (parent, child, at, role) in [
+        (&root, &lead, 1, "orchestrator"),
+        (&lead, &worker, 2, "worker"),
+    ] {
+        memory
+            .fork(acyclic_stream::ForkRequest {
+                source: parent.inbox()?,
+                destination: child.inbox()?,
+                at_tail: Some(at),
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        append(
+            &memory,
+            child.inbox()?,
+            adoption(child, Some(parent.clone()), at, role)?,
+        )
+        .await?;
+    }
+    let mut reader = Reader::new(ReaderPolicy::default())?;
+    let mut driver = Driver::new(memory);
+    driver.attach(&mut reader, 0);
+    let agents = [&root, &lead, &worker];
+    let wants = agents
+        .iter()
+        .map(|path| {
+            Ok(Want::Last {
+                stream: path.inbox()?,
+                count: 1,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    wait(&mut reader, &mut driver, wants, |reader| {
+        agents
+            .iter()
+            .all(|agent| agent_role(reader, agent).is_some())
+    })
+    .await;
+    assert_eq!(agent_role(&reader, &worker).as_deref(), Some("worker"));
+    assert_eq!(agent_role(&reader, &lead).as_deref(), Some("orchestrator"));
+    assert_eq!(input_target(&reader, &worker), lead);
+    assert_eq!(input_target(&reader, &root), root);
+    Ok(())
+}
+
+type TestResultBytes = std::result::Result<Vec<u8>, Box<dyn std::error::Error>>;
+
+#[tokio::test]
+async fn role_filtered_empty_window_can_page_to_an_orchestrator_and_expand_contributors()
+-> TestResult {
+    use crate::explorer::{Explorer, Row};
+    let memory = Arc::new(MemoryStream::default());
+    let root = agent(200);
+    idle(&memory, &root).await?;
+    let children = (201..204)
+        .map(|n| root.child(&agent(n).id()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (index, child) in children.iter().enumerate() {
+        let mut profile = acyclic_harness_core::templates::root()?;
+        let role = if index == 2 { "orchestrator" } else { "worker" };
+        profile.template = Some(file(
+            child,
+            &format!("templates/{role}/AGENT.md"),
+            b"role",
+            "text/markdown",
+        )?);
+        let adoption = InboxRecord::ForkAdopted(Box::new(ForkAdopted {
+            agent: child.id(),
+            parent: Some(root.clone()),
+            profile: Some(profile),
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: Vec::new(),
+            brief: None,
+            policy: None,
+        }));
+        append(&memory, child.inbox()?, adoption.encode()?).await?;
+        append(&memory, child.status()?, status(Phase::Idle).encode()?).await?;
+    }
+    let mut explorer = Explorer::children(ReaderPolicy::default(), &root)?;
+    explorer.orchestrator_view(true);
+    explorer.set_viewport(2, 0, 16);
+    let mut driver = Driver::new(memory);
+    driver.attach(explorer.reader(), 0);
+    poll_fn(|cx| {
+        let before = explorer.reader_ref().generation();
+        explorer.frame(0);
+        driver.step(explorer.reader(), 0, cx);
+        if children
+            .iter()
+            .take(2)
+            .all(|path| agent_role(explorer.reader_ref(), path).is_some())
+        {
+            explorer.frame(0);
+            Poll::Ready(())
+        } else {
+            if explorer.reader_ref().generation() != before {
+                cx.waker().wake_by_ref();
+            }
+            Poll::Pending
+        }
+    })
+    .await;
+    assert!(explorer.rows().is_empty());
+    assert!(matches!(explorer.next_page(), Poll::Ready(true)));
+    poll_fn(|cx| {
+        let before = explorer.reader_ref().generation();
+        explorer.frame(0);
+        driver.step(explorer.reader(), 0, cx);
+        if agent_role(explorer.reader_ref(), &children[2]).as_deref() == Some("orchestrator") {
+            explorer.frame(0);
+            Poll::Ready(())
+        } else {
+            if explorer.reader_ref().generation() != before {
+                cx.waker().wake_by_ref();
+            }
+            Poll::Pending
+        }
+    })
+    .await;
+    assert!(matches!(&explorer.rows()[0].1, Row::Agent { path, .. } if path == &children[2]));
+    explorer.page(false);
+    explorer.frame(0);
+    assert!(explorer.rows().is_empty());
+    explorer.expand(&root);
+    explorer.home();
+    explorer.frame(0);
+    assert_eq!(explorer.rows().len(), 2);
+    Ok(())
 }
