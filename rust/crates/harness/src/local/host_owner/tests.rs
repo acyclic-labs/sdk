@@ -11,12 +11,20 @@ struct Fixture {
 
 impl Fixture {
     async fn for_host(host: &str) -> Result<Self> {
+        Self::for_host_mounting(host, crate::local::WorkspaceMounting::Native).await
+    }
+
+    async fn for_host_mounting(
+        host: &str,
+        mounting: crate::local::WorkspaceMounting,
+    ) -> Result<Self> {
         let checkout = tempfile::tempdir().map_err(storage)?;
         let state = tempfile::tempdir().map_err(storage)?;
         std::fs::write(checkout.path().join("source.txt"), b"source").map_err(storage)?;
         let local = Arc::new(
             LocalHarness::open(
                 LocalHarnessConfig::native_host(checkout.path())
+                    .workspace_mounting(mounting)
                     .state_directory(state.path().join("owner")),
             )
             .await?,
@@ -1326,8 +1334,21 @@ async fn permission_prompts_gate_spawn_and_preserve_host_tool_decisions() -> Res
 /// thread can finish.
 #[tokio::test]
 async fn concurrent_spawns_from_a_child_both_start() -> Result<()> {
+    concurrent_spawns_with_shared_bindings(crate::local::WorkspaceMounting::Native).await
+}
+
+/// Native host coordination also supports ordinary directory views. Its
+/// logical shared binding has no native projection, including during capture.
+#[tokio::test]
+async fn physical_native_host_children_keep_logical_shared_bindings() -> Result<()> {
+    concurrent_spawns_with_shared_bindings(crate::local::WorkspaceMounting::Physical).await
+}
+
+async fn concurrent_spawns_with_shared_bindings(
+    mounting: crate::local::WorkspaceMounting,
+) -> Result<()> {
     use crate::conversation::{ContentPublisher as _, ContentResidencyVerifier as _};
-    let mut fixture = Fixture::for_host("claude-code").await?;
+    let mut fixture = Fixture::for_host_mounting("claude-code", mounting).await?;
     let local = Arc::clone(&fixture.owner.local);
     let verifier = local
         .root_authority
