@@ -6,6 +6,50 @@ import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { copyGeneratedFiles, equalEntries, generationOutput, inventory, qualificationOutput, stageDescriptorSets, verifyInstalledPayload, verifyPackageOutputs } from "../authority.mjs";
+import { generatorFixture } from "./generation.mjs";
+import { generate as generateJava } from "../../backends/java/src/generate.mjs";
+
+test("production generation retains both large diagnostic streams and the original exit status", t => {
+  const f = generatorFixture(t, "Java", "grpc_java");
+  const size = 5 * 1024 * 1024; // Exceeds the shared generator's former 4 MiB cap.
+  const stdout = "o".repeat(size), stderr = "e".repeat(size);
+  for (const status of [0, 7]) {
+    let compilations = 0;
+    const command = (_executable, argv, options) => {
+      const version = argv[0] === "--version";
+      const output = version ? null : argv.find(arg => arg.startsWith("--java_out=")).slice("--java_out=".length);
+      const child = `const fs = require("node:fs");
+        if (${version}) { fs.writeFileSync(1, "libprotoc 28.3\\n"); }
+        else {
+          fs.writeFileSync(${JSON.stringify(output === null ? "" : join(output, `${argv.at(-1)}.java`))}, "generated");
+          fs.writeFileSync(1, Buffer.alloc(${size}, 0x6f));
+          fs.writeFileSync(2, Buffer.alloc(${size}, 0x65));
+          process.exitCode = ${status};
+        }`;
+      // Pass the actual production options unchanged to the real process.
+      const result = spawnSync(process.execPath, ["-e", child], options);
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, version ? 0 : status);
+      if (!version) {
+        compilations++;
+        assert.equal(result.stdout, stdout);
+        assert.equal(result.stderr, stderr);
+      }
+      return result;
+    };
+    const args = { "source-root": f.source, authority: f.authority, protoc: f.protoc,
+      "grpc-java": f.plugin, output: join(f.root, `output-${status}`) };
+    const generate = () => generateJava(args, { command, toolchain: f.toolchain });
+    if (status === 0) {
+      assert.equal(generate().target, "java");
+      assert.equal(compilations, f.manifest.families.length);
+    } else {
+      assert.throws(generate, error => error.message === `Java generation failed: ${stderr}`);
+      assert.equal(compilations, 1);
+      assert.equal(existsSync(join(args.output, "generation-receipt.json")), false);
+    }
+  }
+});
 
 test("CLI executes only as the main module and preserves required string arguments", t => {
   const root = mkdtempSync(join(tmpdir(), "sdk generator cli "));
@@ -14,7 +58,7 @@ test("CLI executes only as the main module and preserves required string argumen
   const authority = new URL("../authority.mjs", import.meta.url).href;
   writeFileSync(file, `import { runCli } from ${JSON.stringify(authority)};\n` +
     'runCli(import.meta.url, values => values, ["input", "output"]);\n');
-  const run = argv => spawnSync(process.execPath, argv, { encoding: "utf8", timeout: 60_000 });
+  const run = argv => spawnSync(process.execPath, argv, { maxBuffer: Infinity, encoding: "utf8", timeout: 60_000 });
   const direct = run([file, "--input", "source with spaces", "--output", "destination"]);
   assert.equal(direct.status, 0, direct.stderr);
   assert.deepEqual(JSON.parse(direct.stdout), { input: "source with spaces", output: "destination" });

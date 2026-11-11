@@ -57,7 +57,7 @@ export function generate(args, { command = spawnSync, toolchain = pins,
     const env = { HOME: home, PATH: [join(runtime, pin.roots[0], "bin"), "/usr/bin", "/bin"].join(":"),
       ERL_FLAGS: "+S 1:1 +fnu", LC_ALL: "C.UTF-8", REBAR_COLOR: "none" };
     const run = (executable, argv, cwd) => {
-      const result = command(executable, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+      const result = command(executable, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: Infinity });
       if (result.error || result.status !== 0) throw new Error("Erlang generation command failed: " + (result.stderr ?? ""));
       return result.stdout ?? "";
     };

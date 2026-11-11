@@ -51,7 +51,7 @@ export function qualifyJvm(args, { command = spawnSync, toolchains } = {}) {
   for (const key of Object.keys(env)) {
     if (/^(JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS|CLASSPATH)$/i.test(key)) delete env[key];
   }
-  const options = { env, encoding: "utf8", timeout: 180_000, maxBuffer: 8 * 1024 * 1024 };
+  const options = { env, encoding: "utf8", timeout: 180_000, maxBuffer: Infinity };
   const execute = (exe, argv, cwd) => command(exe, argv, { ...options, cwd });
   const versionText = result => (result.stdout ?? "") + (result.stderr ?? "");
   const javaVersion = execute(java, ["-version"], directory);

@@ -36,7 +36,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
     INCLUDE: present(host.environment.include).join(";"), LIB: present(host.environment.lib).join(";"), LIBPATH: present(host.environment.lib).join(";"),
     PATH: [...new Set([...Object.values(tools).map(dirname), join(toolchain.system_root, "System32"), toolchain.system_root])].join(delimiter),
     USERPROFILE: join(output, "home"), APPDATA: join(output, "home/AppData/Roaming"), LOCALAPPDATA: join(output, "home/AppData/Local"), TEMP: join(output, "tmp"), TMP: join(output, "tmp") });
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000, maxBuffer: Infinity, windowsHide: true });
   mkdirSync(output);
   const put = (name, bytes) => { const target = join(output, name); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, bytes, { flag: "wx" }); return target; };
   for (const name of ["home", "home/AppData/Roaming", "home/AppData/Local", "tmp"]) mkdirSync(join(output, name), { recursive: true });
