@@ -170,6 +170,14 @@ pub struct StagedWrite {
 }
 
 impl StagedWrite {
+    fn same_input(&self, other: &Self) -> bool {
+        self.body == other.body
+            && self.commit_id == other.commit_id
+            && self.key == other.key
+            && self.family == other.family
+            && self.effects == other.effects
+            && self.deadline == other.deadline
+    }
     /// Permanently bound commit identity. It carries no assigned position.
     pub const fn commit_id(&self) -> CommitId {
         self.commit_id

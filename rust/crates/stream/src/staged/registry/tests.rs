@@ -1,13 +1,19 @@
 use super::*;
 use crate::content::tree::tests::{Disk, reachable};
-use crate::{AppendRequest, StreamPath};
+use crate::{CommitEffect, CommitRequest, StreamPath};
 
 fn request(key: &str, value: &'static [u8]) -> Result<WriteRequest, StreamError> {
-    Ok(WriteRequest::Append(AppendRequest {
-        path: StreamPath::new("bound/path")?,
-        if_tail: Some(0),
+    Ok(WriteRequest::Commit(CommitRequest {
+        deadline_unix_millis: None,
         idempotency_key: IdempotencyKey::new(key.to_owned())?,
-        records: vec![OwnedBytes::from_static(value).into()],
+        effects: vec![CommitEffect {
+            soft: false,
+            conditions: vec![],
+            mutations: vec![CommitMutation::Append {
+                path: StreamPath::new("bound/path")?,
+                records: vec![OwnedBytes::from_static(value).into()],
+            }],
+        }],
     }))
 }
 
@@ -43,6 +49,22 @@ async fn persisted_stage_seal_is_bound_to_one_identity_and_retains_its_graph()
     let sealed = open
         .seal(&storage, &binding, &staged, prepared.root())
         .await?;
+    let WriteRequest::Commit(projected_request) = request("retry", b"payload")? else {
+        return Err("expected coordinated request".into());
+    };
+    let projected = stage(
+        &storage,
+        commit,
+        &WriteRequest::CommitAccepted(projected_request),
+    )
+    .await?;
+    let projected_seal = sealed
+        .seal(&storage, &binding, &projected, prepared.root())
+        .await;
+    assert!(
+        matches!(&projected_seal, Ok(registry) if registry == &sealed),
+        "stage projection changed retry identity: {projected_seal:?}"
+    );
     assert_eq!(
         sealed
             .seal(&storage, &binding, &staged, prepared.root())

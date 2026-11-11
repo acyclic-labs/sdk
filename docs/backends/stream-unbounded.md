@@ -1225,3 +1225,20 @@ bb2 availability is restored; the earlier host-unreachable blocker is stale.
 Registry refinement: its one directory dependency transitively retains the
 exact token-body root validated by Directory::open. Avoid a redundant direct
 body edge. The binding control verifies both roots in the retained graph.
+
+### Stage binding projection and first validation
+
+Source faa2766fb5b passed Linux scoped all-targets check (22.10s) and all14
+staged/registry controls (0.86s). The identity-check mutation failed its real
+file control with the required marker, was reversed, and git diff was clean;
+REGISTRY_CONTROLS_PASS_IDENTITY_MUTANT_REJECTED_SOURCE_RESTORED named the exact
+sha. Session83127 log: Q:/scratch/stream-unbounded/registry-faa2-linux.log.
+
+Refinement before final integration: accepted/full output is presentation,
+not input identity. Share the existing bookmark input-binding comparison with
+registry seal; identical staged bytes/directory may change accepted projection
+without replacing or rebinding a stage. Keep the persisted original projection
+and return the same registry. Extend the real-file case using public Commit and
+CommitAccepted ingestion, plus a mutation comparing the projection as identity.
+The registry still does not consume stages, publish namespace or prove final
+apply idempotency; those remain work for the shared authority core.

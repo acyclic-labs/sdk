@@ -217,7 +217,7 @@ impl Registry {
             directory,
         };
         if let Some(previous) = &current.sealed {
-            return if previous == &sealed {
+            return if previous.directory == sealed.directory && previous.staged.same_input(staged) {
                 Ok(self.clone())
             } else {
                 Err(StreamError::InvalidArgument)

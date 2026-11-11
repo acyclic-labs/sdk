@@ -332,13 +332,7 @@ impl<'a, S: Storage> Reader<'a, S> {
         bookmark: &Bookmark,
     ) -> Result<Self, StreamError> {
         let original = &bookmark.binding;
-        if original.body != staged.body
-            || original.commit_id != staged.commit_id
-            || original.key != staged.key
-            || original.family != staged.family
-            || original.effects != staged.effects
-            || original.deadline != staged.deadline
-        {
+        if !original.same_input(staged) {
             return Err(StreamError::InvalidArgument);
         }
         Ok(Self {

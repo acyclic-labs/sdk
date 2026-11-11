@@ -1,0 +1,10 @@
+diff --git a/rust/crates/stream/src/staged/registry.rs b/rust/crates/stream/src/staged/registry.rs
+--- a/rust/crates/stream/src/staged/registry.rs
++++ b/rust/crates/stream/src/staged/registry.rs
+@@ -218,5 +218,5 @@
+         };
+         if let Some(previous) = &current.sealed {
+-            return if previous.directory == sealed.directory && previous.staged.same_input(staged) {
++            return if previous.directory == sealed.directory && previous.staged == *staged {
+                 Ok(self.clone())
+             } else {
