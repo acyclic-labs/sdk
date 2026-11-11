@@ -341,15 +341,20 @@ impl ReadKeySeek {
     }
 
     pub(crate) fn validate(&self) -> Result<(), StreamError> {
-        if self.key.len() > crate::MAX_RECORD_KEY_BYTES
-            || self
-                .end
-                .as_ref()
-                .is_some_and(|end| end.len() > crate::MAX_RECORD_KEY_BYTES)
+        Self::validate_parts(&self.key, self.end.as_deref(), self.order)
+    }
+
+    pub(crate) fn validate_parts(
+        key: &[u8],
+        end: Option<&[u8]>,
+        order: ReadOrder,
+    ) -> Result<(), StreamError> {
+        if key.len() > crate::MAX_RECORD_KEY_BYTES
+            || end.is_some_and(|end| end.len() > crate::MAX_RECORD_KEY_BYTES)
         {
             return Err(StreamError::LimitExceeded);
         }
-        if self.end.is_some() && self.order == ReadOrder::LatestFirst {
+        if end.is_some() && order == ReadOrder::LatestFirst {
             return Err(StreamError::InvalidArgument);
         }
         Ok(())
