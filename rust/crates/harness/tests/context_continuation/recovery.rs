@@ -28,29 +28,25 @@ pub(super) async fn local_journal_compaction_preserves_context_settlement_and_re
             Limits::default(),
             None,
         )?;
-        let request_ref = journal
-            .stage(
-                operation,
-                "summary-request",
-                request.bytes(),
-                "application/json",
-                None,
-            )?
-            .await?;
-        let projection_bytes = serde_json::to_vec(&serde_json::json!({
-        "canonical": null, "checkpoint": null, "accounting": null,
-        "context": {"current_input_index": 0, "metadata": {}, "messages": request.request().messages},
-    }))
-    .map_err(|error| Error::Invalid(error.to_string()))?;
-        let context = journal
-            .stage(
-                operation,
-                "temporal-context",
-                &projection_bytes,
-                "application/json",
-                None,
-            )?
-            .await?;
+        let request_ref = acyclic_harness::test_support::stage_model_request(
+            journal.as_ref(),
+            operation,
+            "summary-request",
+            &request,
+        )
+        .await?;
+        let context = acyclic_harness::test_support::stage_context_projection(
+            journal.as_ref(),
+            operation,
+            "temporal-context",
+            Context {
+                messages: request.request().messages.clone(),
+                metadata: Default::default(),
+                current_input_index: Some(0),
+            },
+            &request,
+        )
+        .await?;
         let compacted = ExecutionEvent::ContextCompacted {
             step: 0,
             projection: context.clone(),
