@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/content/index/checkpoint.rs b/rust/crates/stream/src/content/index/checkpoint.rs
+--- a/rust/crates/stream/src/content/index/checkpoint.rs
++++ b/rust/crates/stream/src/content/index/checkpoint.rs
+@@ -52,8 +52,5 @@ impl Index {
+             _ => return Err(StreamError::InvalidResponse),
+         };
+-        if !decode.bytes.is_empty() {
+-            return Err(StreamError::InvalidResponse);
+-        }
+         if let Some(root) = index.root {
+             let valid = match codec::read(storage, root, index.height).await? {
+                 Page::Leaf(entries) => index.count == entries.len() as u64,

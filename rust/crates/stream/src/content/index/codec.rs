@@ -12,7 +12,7 @@ pub(super) fn entry_length(entry: &Entry) -> usize {
 pub(super) fn child_length(child: &Child<Key, Root>) -> usize {
     32 + field_length(&child.first.field) + 41
 }
-fn root_bytes(bytes: &mut Vec<u8>, root: Root) {
+pub(super) fn root_bytes(bytes: &mut Vec<u8>, root: Root) {
     bytes.extend_from_slice(&root.part.digest);
     bytes.extend_from_slice(&root.part.length.to_le_bytes());
     bytes.push(root.height);
@@ -94,8 +94,8 @@ pub(super) async fn write(
     Ok(Child { first, page })
 }
 
-struct Decode<'a> {
-    bytes: &'a [u8],
+pub(super) struct Decode<'a> {
+    pub(super) bytes: &'a [u8],
 }
 impl Decode<'_> {
     fn take(&mut self, count: usize) -> Result<&[u8], StreamError> {
@@ -106,12 +106,12 @@ impl Decode<'_> {
         self.bytes = tail;
         Ok(head)
     }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], StreamError> {
+    pub(super) fn array<const N: usize>(&mut self) -> Result<[u8; N], StreamError> {
         self.take(N)?
             .try_into()
             .map_err(|_| StreamError::InvalidResponse)
     }
-    fn root(&mut self) -> Result<Root, StreamError> {
+    pub(super) fn root(&mut self) -> Result<Root, StreamError> {
         let digest = self.array()?;
         let length = u64::from_le_bytes(self.array()?);
         let height = self.array::<1>()?[0];
@@ -154,15 +154,13 @@ impl Decode<'_> {
     }
 }
 
-pub(super) async fn read(
+pub(super) async fn body(
     storage: &impl Storage,
     root: Root,
-    height: u8,
-) -> Result<Page<Format>, StreamError> {
-    if root.part.length < HEADER as u64
-        || root.part.length > tree::LEAF_BYTES as u64
-        || height > MAX_HEIGHT
-    {
+    minimum: usize,
+    maximum: usize,
+) -> Result<Vec<u8>, StreamError> {
+    if root.part.length < minimum as u64 || root.part.length > maximum as u64 {
         return Err(StreamError::InvalidResponse);
     }
     let mut bytes = Vec::new();
@@ -171,8 +169,23 @@ pub(super) async fn read(
         .map_err(|_| StreamError::Capacity)?;
     let mut reader = tree::Reader::new(storage, root)?;
     while let Some(page) = reader.next().await? {
+        if page.len() > maximum - bytes.len() {
+            return Err(StreamError::InvalidResponse);
+        }
         bytes.extend_from_slice(page.as_slice());
     }
+    Ok(bytes)
+}
+
+pub(super) async fn read(
+    storage: &impl Storage,
+    root: Root,
+    height: u8,
+) -> Result<Page<Format>, StreamError> {
+    if height > MAX_HEIGHT {
+        return Err(StreamError::InvalidResponse);
+    }
+    let bytes = body(storage, root, HEADER, tree::LEAF_BYTES).await?;
     let mut decode = Decode {
         bytes: crate::persistence::header(&bytes, b"acyclic-ordered-index-v", b"1\0")?,
     };

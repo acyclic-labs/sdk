@@ -700,3 +700,56 @@ target or another checkout. Then check Stream/collections at the new source
 before targeted controls. Record the source SHA and any freshness evidence;
 if the same source/metadata mismatch remains, do not repeat it unchanged.
 All original publication, crash, loom, GC and backend obligations remain due.
+
+### Index checkpoint reference (before implementation)
+
+checkpoint(storage) returns a content root for a versioned, fixed-size descriptor
+of one immutable Index. The v1 descriptor binds its optional node root, logical
+index height and entry count. It declares the node as a retained content edge;
+retaining the checkpoint therefore retains its complete transitive page graph.
+The empty descriptor has no node. This creates no authority publication, Stream
+position or condition outcome.
+
+open(storage, checkpoint) verifies and parses the bounded descriptor, checks its
+shape and the top node, and reconstructs the handle without scanning the whole
+index. Its checkpoint must come from an authenticated published/staged owner;
+opening bytes is not authorization or a certificate of an arbitrary supplied
+graph. The enclosing published root is responsible for authenticating the
+producer's entry count, and durability covers all referenced pages before that
+root can publish. Unknown versions refuse; there is no migration decoder.
+
+Reuse the existing node reference codec and verified content reader. Extend the
+multilevel control to discard the old handle and open its checkpoint on reopened
+storage. Check reachable node ownership, empty round-trip, every descriptor
+truncation, trailing bytes, unsupported version and invalid leaf count. A mutation
+that accepts trailing descriptor bytes must fail the malformed-frame control.
+These checks are recovery building blocks, not the required full shared-core
+crash-at-every-byte publication simulation or its negative control.
+
+Checkpoint persistence is now implemented using the existing reference codec
+and bounded content reader. The multilevel case stores a checkpoint, proves its
+node is reachable, drops the original handle and reopens it on reopened storage.
+A new real-file malformed-descriptor case covers empty checkpoints, every byte
+truncation, trailing bytes, unsupported versions, wrong leaf count and height;
+its trailing-byte mutation is the tenth negative control. These changes await
+remote validation and are not a full crash/restart authority proof.
+
+At exact source `c2b09139f8581e25f93c64591bc6345dbc408d71`, the focused native
+filesystem all-target check passed (21m24s including queue), followed by the
+Stream/collections all-target check (7m06s including queue). No SDK writer
+adaptation was needed after refreshing its dependency metadata. Test compilation
+then failed before executing tests: imported collections metadata lacked Search
+and required Ord, while both checked-out files define Search and omit that bound.
+The remote checkout remained clean at c2b. This repeats the shared artifact
+identity/freshness problem in test-build mode; adding Ord or a duplicate Search
+would change correct source to accommodate a foreign artifact and is not a fix.
+
+The next task-local validation uses a pass-through RUSTC_WORKSPACE_WRAPPER at
+one stable path owned by this task. Cargo documents that this separates workspace
+artifact filename hashes, while registry dependencies remain shared. It keeps
+CARGO_TARGET_DIR at /Users/var/foreman/target/lanes, incremental disabled and the
+installed toolchain; no other target, shared artifact deletion, new toolchain or
+shared machinery edit is involved. The wrapper forwards the compiler arguments
+unchanged. Check its exact bytes and source SHA in the log before compile and
+focused controls. Source: [Cargo environment variables](https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-reads).
+The native volume had 16 GiB available before this change.

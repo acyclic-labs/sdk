@@ -103,7 +103,17 @@ async fn ordered_index_builds_multiple_levels_and_reopens_pinned_roots()
             .await?
             .is_none()
     );
+    let checkpoint = index.checkpoint(&storage).await?;
+    assert!(
+        reachable(&storage, checkpoint)
+            .await?
+            .contains(&root.part.digest),
+        "index checkpoint lost its node ownership"
+    );
+    drop(index);
     let reopened = Disk::open(directory.path());
+    let index = Index::open(&reopened, checkpoint).await?;
+    assert_eq!(index.len(), 8192);
     for position in (0..8192).step_by(31).chain([0, 1, 7, 8, 511, 4095, 8191]) {
         assert_eq!(
             index
@@ -133,6 +143,67 @@ async fn ordered_index_builds_multiple_levels_and_reopens_pinned_roots()
         assert_eq!(cursor.next().await?, expected);
     }
     assert!(storage.largest.load(Ordering::Relaxed) <= tree::PAGE_BYTES);
+    Ok(())
+}
+
+#[tokio::test]
+async fn ordered_index_checkpoint_refuses_torn_or_malformed_descriptors()
+-> Result<(), Box<dyn std::error::Error>> {
+    async fn raw(storage: &impl Storage, bytes: &[u8]) -> Result<Root, StreamError> {
+        let mut writer = tree::Writer::new(storage)?;
+        writer.write(bytes).await?;
+        writer.finish().await
+    }
+    let directory = tempfile::tempdir()?;
+    let storage = Disk::open(directory.path());
+    let empty = Index::default().checkpoint(&storage).await?;
+    assert_eq!(Index::open(&storage, empty).await?, Index::default());
+    let mut trailing = codec::body(&storage, empty, 0, tree::LEAF_BYTES).await?;
+    trailing.push(1);
+    assert!(
+        Index::open(&storage, raw(&storage, &trailing).await?)
+            .await
+            .is_err(),
+        "index checkpoint accepted trailing bytes"
+    );
+    let mut builder = Builder::new(&storage);
+    builder.push(bytes("a"), bytes("first")).await?;
+    builder.push(bytes("b"), bytes("second")).await?;
+    let index = builder.finish().await?;
+    let checkpoint = index.checkpoint(&storage).await?;
+    let body = codec::body(&storage, checkpoint, 0, tree::LEAF_BYTES).await?;
+    assert_eq!(Index::open(&storage, checkpoint).await?, index);
+    for cut in 0..body.len() {
+        assert!(
+            Index::open(&storage, raw(&storage, &body[..cut]).await?)
+                .await
+                .is_err(),
+            "index checkpoint accepted truncation at {cut}"
+        );
+    }
+    let mut version = body.clone();
+    version[checkpoint::MAGIC.len() - 2] = b'2';
+    assert_eq!(
+        Index::open(&storage, raw(&storage, &version).await?).await,
+        Err(StreamError::Unsupported)
+    );
+    let mut count = body.clone();
+    let count_at = count.len() - 8;
+    count[count_at..].copy_from_slice(&3_u64.to_le_bytes());
+    assert!(
+        Index::open(&storage, raw(&storage, &count).await?)
+            .await
+            .is_err(),
+        "index checkpoint accepted invalid leaf count"
+    );
+    let mut height = body;
+    height[checkpoint::MAGIC.len() + 1 + 41] = 1;
+    assert!(
+        Index::open(&storage, raw(&storage, &height).await?)
+            .await
+            .is_err(),
+        "index checkpoint accepted wrong node height"
+    );
     Ok(())
 }
 
