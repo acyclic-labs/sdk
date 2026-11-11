@@ -8,7 +8,6 @@ use std::{future::Future, sync::Arc};
 pub(crate) mod imports;
 pub(crate) use imports::Document;
 mod budget;
-#[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub mod effects;
 #[cfg(test)]
@@ -28,11 +27,10 @@ pub mod codec_fuzz;
 mod input;
 mod request;
 pub use input::HookInput;
-#[cfg(all(feature = "test-support", feature = "filesystem"))]
+#[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use request::check_native_patch_paths;
 
-#[cfg(feature = "filesystem")]
 pub(crate) struct BoundHooks {
     pub(crate) rules: Hooks,
     pub(crate) manifest: [u8; 32],
@@ -291,17 +289,18 @@ impl Hooks {
         event: HookEvent,
         input: impl Into<HookInput<'a>>,
         registry: &ToolRegistry,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         mut execute: F,
     ) -> Result<HookOutput>
     where
-        F: FnMut(&Arc<HookSpec>, usize, Option<&Value>) -> Fut,
+        F: FnMut(&Arc<HookSpec>, Option<usize>, Option<&Value>) -> Fut,
         Fut: Future<Output = Result<(Option<i32>, Vec<u8>, Vec<u8>)>>,
     {
         let input = input.into();
+        let maximum_bytes = maximum_bytes.into();
         if event.site() == HookSite::BeforeTool {
             let hooks: Vec<_> = self.candidates(event, input, registry)?.collect();
-            let quota = capture_quota(maximum_bytes, hooks.len());
+            let quota = maximum_bytes.map(|maximum| capture_quota(maximum, hooks.len()));
             let original = input.tool_input().unwrap_or(&Value::Null);
             let reason = match chain::judge(
                 &hooks,
@@ -337,7 +336,7 @@ impl Hooks {
             });
         }
         let commands = self.commands(event, input, registry)?;
-        let quota = capture_quota(maximum_bytes, commands.clone().count());
+        let quota = maximum_bytes.map(|maximum| capture_quota(maximum, commands.clone().count()));
         let mut budget = budget::Budget::new(maximum_bytes)?;
         let results = futures::future::join_all(commands.map(|hook| {
             let execution = execute(hook, quota, None);
@@ -356,9 +355,7 @@ impl Hooks {
 // A static partition keeps total live capture storage bounded without a lock,
 // scheduling-dependent output truncation, or delaying concurrent hook dispatch.
 fn capture_quota(maximum: u64, count: usize) -> usize {
-    usize::try_from(maximum / (count.max(1) as u64))
-        .unwrap_or(usize::MAX)
-        .min(65_536)
+    usize::try_from(maximum / (count.max(1) as u64)).unwrap_or(usize::MAX)
 }
 
 pub(crate) fn report(event: HookEvent, output: &HookOutput) {

@@ -83,7 +83,7 @@ test("objects materializes only the admitted account port, keeping its receiver 
 
 for (const [resource, producer] of [["machines:/", "machinesWorkspace"], ["machines:/harness", "machinesWorkspace"],
   ["streams:/", "streams"], ["streams:/harness", "streams"],
-  ...["billing", "execution", "fs", "identity", "infer"].flatMap(product =>
+  ...["fs", "infer"].flatMap(product =>
     [[`${product}:/`, product], [`${product}:/harness`, product]] as const)] as const) {
   test(`${resource} requires its owner producer and preserves its terminal refusal`, async () => {
     const declaration = { ...base, capability: "grant", resource };
@@ -96,7 +96,7 @@ for (const [resource, producer] of [["machines:/", "machinesWorkspace"], ["machi
 }
 
 test("resource owners keep the admitted selection, receiver and original live handle", async () => {
-  const products = ["billing", "execution", "fs", "identity", "infer"] as const;
+  const products = ["fs", "infer"] as const;
   const selections = products.map(product => ({ ...base, name: product, capability: "grant", resource: `${product}:/harness` }));
   const revoked = new Error("original resource revoked");
   const original = { alive: true, use() { if (!this.alive) throw revoked; return this; } };
@@ -122,6 +122,7 @@ test("unsupported and malformed resource selections refuse before any host produ
   };
   const valid = { ...base, capability: "grant", resource: "objects:/" };
   const invalid: semantic.Binding[] = [
+    ...["billing", "execution", "identity"].map(product => ({ ...valid, resource: `${product}:/harness` })),
     { ...valid, resource: "unknown:/" }, { ...valid, resource: "objects-other:/child" }, { ...valid, resource: "streams-other:/child" },
     { ...valid, resource: "constructor:/harness" }, { ...valid, resource: "objects/harness" },
     { ...valid, stateTransaction: true }, { ...valid, guestAdmission: "hostAccess" },
@@ -136,7 +137,7 @@ test("unsupported and malformed resource selections refuse before any host produ
     ["objects", valid],
     ["machinesWorkspace", { ...valid, resource: "machines:/harness" }],
     ["streams", { ...valid, resource: "streams:/harness" }],
-    ...["billing", "execution", "fs", "identity", "infer"].map(product =>
+    ...["fs", "infer"].map(product =>
       [product, { ...valid, resource: `${product}:/harness` }] as [string, semantic.Binding]),
   ];
   for (const [producer, binding] of factories) {

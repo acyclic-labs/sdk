@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     OperationId,
-    agent::{AgentId, AgentState, Delivered, VolumeBinding},
+    agent::{AgentId, AgentState, Delivered, WorkspaceEntry},
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityRoot},
     executor::Executor,
@@ -48,6 +48,7 @@ struct Owner {
     childless: AtomicBool,
     sessions: AtomicBool,
     diff: std::sync::Mutex<Option<QueryPause>>,
+    diff_issuer: std::sync::OnceLock<AuthorityRoot>,
     admission: std::sync::Mutex<Option<QueryPause>>,
 }
 
@@ -140,14 +141,16 @@ impl Platform for Owner {
                 &mut None,
             )?;
             host.create_volume(&volume).await?;
-            let issuer = AuthorityRoot::new(
-                "diff-control",
-                [41; 32],
-                Authority {
-                    kind: AggregateKind::Conversation,
-                    id: "diff-control".into(),
-                },
-            );
+            let issuer = self.diff_issuer.get_or_init(|| {
+                AuthorityRoot::new(
+                    "diff-control",
+                    [41; 32],
+                    Authority {
+                        kind: AggregateKind::Conversation,
+                        id: "diff-control".into(),
+                    },
+                )
+            });
             let scope = issuer.bootstrap_scope(
                 "reader",
                 &crate::Capabilities::new([
@@ -343,11 +346,7 @@ fn binding_with(
     )?)
 }
 
-#[cfg(all(
-    feature = "machines",
-    feature = "native-execution",
-    feature = "test-support"
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[path = "hosting_tests/machine_results.rs"]
 mod machine_results;
 
@@ -375,10 +374,11 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         &IntentId::try_from("output-root")?,
         RootRequest {
             agent,
-            fresh: vec![VolumeBinding {
-                name: PRIVATE_VOLUME.into(),
-                volume: private,
-            }],
+            fresh: vec![WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::Private,
+                PRIVATE_VOLUME.into(),
+                private,
+            )],
             retained: Vec::new(),
             brief: None,
             policy: None,
@@ -395,7 +395,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         agent_authority(bound.issuer(), bound.admission(), root, &state.volumes, &[]).await?;
     let publisher = FilesystemContentPublisher::new(
         bound.volumes().clone(),
-        &authority.private.volume,
+        authority.private.volume()?,
         &authority.verifier,
         &authority.scope,
         64 * 1024,
@@ -649,16 +649,17 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     let bound = binding()?;
     let stream = bound.agents().provider().clone();
     let agent = AgentId::from_bytes([1; 16]);
-    let private = VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
-        volume: VolumeRef::new(
+    let private = WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        VolumeRef::new(
             provider()?,
             "agent-private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
             &mut None,
         )?,
-    };
+    );
     let owner = Arc::new(Owner::default());
     let server = serve(
         bound,
@@ -1240,16 +1241,17 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
         },
     )?;
     let agent = AgentId::from_bytes([1; 16]);
-    let private = VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
-        volume: VolumeRef::new(
+    let private = WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        VolumeRef::new(
             provider()?,
             "agent-private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
             &mut None,
         )?,
-    };
+    );
     let owner = Arc::new(Owner::default());
     let server = serve(
         bound,

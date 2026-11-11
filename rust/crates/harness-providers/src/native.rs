@@ -2,7 +2,7 @@
 use crate::{Adapter, ResolvedModel, dispatch, sse, stream};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_harness_core::{
-    Error, NativeFutureBundle, Result,
+    Error, Result,
     model::{ModelDispatch, ModelEvent, ModelProvider, NativeModelStream, PreparedModelRequest},
     wire::ErrorCode,
 };
@@ -171,7 +171,8 @@ pub(crate) fn generate<'a>(
     request: &'a PreparedModelRequest,
     dispatch_id: ModelDispatch,
     work: &'a NativeMaterializationWork,
-) -> Result<NativeFutureBundle<'a, NativeModelStream<'a>>> {
+) -> Result<acyclic_fs::NativeFutureBundle<'a, NativeModelStream<'a>, acyclic_harness_core::Error>>
+{
     work.remaining()?;
     provider.context_capacity_with_native_work(&request.request().model, work)?;
     if request.request_digest() != dispatch_id.request_digest {
@@ -180,7 +181,7 @@ pub(crate) fn generate<'a>(
         ));
     }
     let cancelled = work.cancellation_wait()?;
-    NativeFutureBundle::new(work, || async move {
+    acyclic_fs::NativeFutureBundle::new(work, || async move {
         let exchange = async move {
             let current = provider.current_credentials()?;
             let provider = &current;
@@ -223,8 +224,11 @@ pub(crate) fn generate<'a>(
                     let provider = &current;
                     let _name_custody = name_custody;
                     let mut attempt = dispatch::GenerationAttempt::new(provider.config.retry, dispatch_id);
-                    let response = attempt.exchange(provider, &body, dispatch_id, &mut auth,
+                    let mut response = response;
+                    loop {
+                    let response_body = attempt.exchange(provider, &body, dispatch_id, &mut auth,
                         response, Some(&mut auth_custody), Some(work)).await?;
+                    let retry_after = response_body.retry_after;
                     let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
                     let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
                     let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
@@ -232,10 +236,24 @@ pub(crate) fn generate<'a>(
                         credential_scope: origin.credential_scope,
                         ..cache
                     });
-                    let events = parse_response(provider, request, &names, dispatch_id, work, response,
+                    let events = parse_response(provider, request, &names, dispatch_id, work, response_body,
                         (input_bytes, cache), origin, origin_custody);
-                    let mut events = core::pin::pin!(events);
-                    while let Some(event) = events.next().await { yield event?; }
+                    let mut failure = None;
+                    {
+                        let mut events = core::pin::pin!(events);
+                        while let Some(event) = events.next().await {
+                            match event { Ok(event) => yield event, Err(error) => {failure = Some(error); break;} }
+                        }
+                    }
+                    let Some(error) = failure else {break;};
+                    if error.code() == acyclic_harness_core::wire::ErrorCode::Unavailable {
+                        let event = ModelEvent::Restarted;
+                        let custody = work.claim(event.logical_owned_bytes()?, 1, WorkCounters::UNCHARGED)?;
+                        yield (event, custody);
+                    }
+                    attempt.recover(provider, &mut auth, error, retry_after, Some(&mut auth_custody), Some(work)).await?;
+                    response = dispatch::send(provider, body.clone(), dispatch_id, auth.0.as_deref(), auth.1.as_deref(), Some(work)).await;
+                    }
                 }
             }).map(|stream| stream.with_delivery(acyclic_harness_core::model::ModelDelivery::Live))
         };

@@ -1,11 +1,11 @@
 //! Blocking stdio admission over the same codec as native MCP clients.
-use crate::{Arc, AtomicU32, BoundedCodec};
+use crate::{Arc, BoundedCodec, FrameBytePolicy};
 use bytes::BytesMut;
 use serde_json::Value;
 use std::io::{self, Read};
 use tokio_util::codec::Decoder as _;
 
-/// Bounded JSON lines from a blocking native pipe, without waiting for EOF.
+/// JSON lines from a blocking native pipe under an optional byte policy.
 ///
 /// Framing, CRLF handling and JSON decoding belong to the shared MCP codec.
 /// A framing, decoding or I/O failure ends the connection.
@@ -13,18 +13,20 @@ pub struct JsonLineReader<R> {
     input: R,
     codec: BoundedCodec<Value>,
     buffer: BytesMut,
-    maximum: usize,
+    maximum: Option<usize>,
     ended: bool,
 }
 
 impl<R: Read> JsonLineReader<R> {
-    /// Admit at most `maximum` bytes before a newline, plus one detection byte.
-    pub fn new(input: R, maximum: u32) -> Self {
+    /// With a finite policy, admit at most that many bytes plus one detection byte.
+    /// An absent policy leaves reads chunked without limiting total frame bytes.
+    pub fn new(input: R, maximum: impl Into<Option<u32>>) -> Self {
+        let maximum = maximum.into();
         Self {
             input,
-            codec: BoundedCodec::new(Arc::new(AtomicU32::new(maximum))),
+            codec: BoundedCodec::new(Arc::new(FrameBytePolicy::new(maximum))),
             buffer: BytesMut::new(),
-            maximum: maximum as usize,
+            maximum: maximum.map(|maximum| maximum as usize),
             ended: false,
         }
     }
@@ -35,10 +37,9 @@ impl<R: Read> JsonLineReader<R> {
                 return Ok(Some(value));
             }
             let mut chunk = [0; 8192];
-            let admitted = self
-                .maximum
-                .saturating_sub(self.buffer.len())
-                .saturating_add(1);
+            let admitted = self.maximum.map_or(chunk.len(), |maximum| {
+                maximum.saturating_sub(self.buffer.len()).saturating_add(1)
+            });
             let length = admitted.min(chunk.len());
             let chunk = chunk.get_mut(..length).ok_or(io::ErrorKind::InvalidInput)?;
             match self.input.read(chunk) {
@@ -111,7 +112,7 @@ mod tests {
 
         // Negative control: the same still-open peer with the bound removed
         // asks for more input instead of rejecting the oversized frame.
-        let mut unbounded = JsonLineReader::new(OpenPeer { remaining: 65_537 }, u32::MAX);
+        let mut unbounded = JsonLineReader::new(OpenPeer { remaining: 65_537 }, None);
         let error = unbounded
             .next()
             .expect("frame result")
@@ -122,8 +123,11 @@ mod tests {
     #[test]
     fn shared_codec_handles_crlf_multiple_frames_and_trailing_eof() -> io::Result<()> {
         let bytes = b"{\"id\":1}\r\n{\"id\":2}\n{\"id\":3}";
-        let values = JsonLineReader::new(bytes.as_slice(), 64).collect::<io::Result<Vec<_>>>()?;
-        assert_eq!(values, [json!({"id":1}), json!({"id":2}), json!({"id":3})]);
+        for maximum in [None, Some(64)] {
+            let values =
+                JsonLineReader::new(bytes.as_slice(), maximum).collect::<io::Result<Vec<_>>>()?;
+            assert_eq!(values, [json!({"id":1}), json!({"id":2}), json!({"id":3})]);
+        }
         Ok(())
     }
 

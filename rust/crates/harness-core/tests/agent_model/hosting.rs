@@ -54,7 +54,7 @@ fn provider() -> Result<ProviderRef> {
     )?)
 }
 
-#[cfg(all(target_os = "linux", feature = "native-execution"))]
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before_io() -> Result {
     use super::wired::Refusing;
@@ -185,20 +185,21 @@ fn turns() -> Result<Turns> {
     })
 }
 
-fn volume(name: &str, agent: AgentId) -> Result<VolumeBinding> {
-    Ok(VolumeBinding {
-        name: name.into(),
-        volume: VolumeRef::new(
+fn volume(name: &str, agent: AgentId) -> Result<WorkspaceEntry> {
+    Ok(WorkspaceEntry::initial_volume(
+        WorkspaceRole::Private,
+        name.into(),
+        VolumeRef::new(
             provider()?,
             format!("agent-{name}"),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(agent.to_bytes())),
             &mut None,
         )?,
-    })
+    ))
 }
 
-fn root(agent: AgentId, fresh: Vec<VolumeBinding>) -> RootRequest {
+fn root(agent: AgentId, fresh: Vec<WorkspaceEntry>) -> RootRequest {
     RootRequest {
         agent,
         fresh,

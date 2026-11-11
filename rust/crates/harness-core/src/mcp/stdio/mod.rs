@@ -6,7 +6,7 @@ use super::{
     charge, error,
     rpc::{Envelope, initialization, notification, rpc_result},
 };
-use crate::{Error, NativeCustody, NativeWork, OperationId, Result, wire::ErrorCode};
+use crate::{Error, OperationId, Result, wire::ErrorCode};
 use bytes::{Buf as _, BytesMut};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,9 +26,9 @@ use codec::*;
 mod tests;
 use super::services;
 
-#[cfg(all(feature = "mcp-stdio", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
-#[cfg(all(feature = "mcp-stdio", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use native::{
     JsonLineReader, ServeError, Settled, StdioMcpTransport, ToolCall, ToolProvider, ToolServer,
     Wake,

@@ -160,7 +160,7 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
             _: &'a RuntimeScope,
             _io: Option<&'a crate::executor::PreparationIo>,
         ) -> Result<
-            crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>,
+            crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
         > {
             Ok(crate::store::HistoryContentFuture::Ordinary {
                 future: Box::pin(async {
@@ -262,7 +262,7 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
             .get_mut(&id)
             .ok_or_else(|| Error::NotFound("approval".into()))?
             .1 = Some(outcome.clone());
-        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             // A hook's human approval shares the policy's ordinary failure
             // settlement, including on replay and after dispatch.
@@ -1270,7 +1270,7 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
     .await?;
     assert_eq!(rejected?, replay?);
     assert_eq!((calls, reconciles), (1, 0));
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         // Negative control: the former native classification stops the same stock path.
         let (broken, _, calls, _) = outcome(|| Error::NativeBoundary {

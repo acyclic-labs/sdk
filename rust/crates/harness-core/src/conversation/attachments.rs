@@ -46,7 +46,6 @@ pub fn encode_attachment_manifest(items: &[Attachment]) -> Result<Vec<u8>> {
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 
-#[cfg(feature = "filesystem")]
 pub(crate) fn manifest_owned_bytes(items: &[Attachment], capacity: usize) -> Result<u64> {
     let mut bytes = capacity
         .checked_mul(std::mem::size_of::<Attachment>())
@@ -67,7 +66,6 @@ pub(crate) fn manifest_owned_bytes(items: &[Attachment], capacity: usize) -> Res
     Ok(bytes)
 }
 
-#[cfg(feature = "filesystem")]
 fn guard<T, E: serde::de::Error>(
     result: Result<T>,
     failure: &mut Option<Error>,
@@ -77,11 +75,9 @@ fn guard<T, E: serde::de::Error>(
         E::custom("manifest admission interrupted")
     })
 }
-#[cfg(feature = "filesystem")]
 struct ManifestSeed<'a> {
     items: ManifestItemsSeed<'a>,
 }
-#[cfg(feature = "filesystem")]
 impl<'de> serde::de::DeserializeSeed<'de> for ManifestSeed<'_> {
     type Value = Vec<Attachment>;
     fn deserialize<D: Deserializer<'de>>(
@@ -91,7 +87,6 @@ impl<'de> serde::de::DeserializeSeed<'de> for ManifestSeed<'_> {
         decoder.deserialize_tuple(2, self)
     }
 }
-#[cfg(feature = "filesystem")]
 impl<'de> serde::de::Visitor<'de> for ManifestSeed<'_> {
     type Value = Vec<Attachment>;
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -113,13 +108,11 @@ impl<'de> serde::de::Visitor<'de> for ManifestSeed<'_> {
         Ok(items)
     }
 }
-#[cfg(feature = "filesystem")]
 struct ManifestItemsSeed<'a> {
     maximum: usize,
     io: &'a crate::filesystem::PreparationIo,
     failure: &'a mut Option<Error>,
 }
-#[cfg(feature = "filesystem")]
 impl<'de> serde::de::DeserializeSeed<'de> for ManifestItemsSeed<'_> {
     type Value = Vec<Attachment>;
     fn deserialize<D: Deserializer<'de>>(
@@ -129,7 +122,6 @@ impl<'de> serde::de::DeserializeSeed<'de> for ManifestItemsSeed<'_> {
         decoder.deserialize_seq(self)
     }
 }
-#[cfg(feature = "filesystem")]
 impl<'de> serde::de::Visitor<'de> for ManifestItemsSeed<'_> {
     type Value = Vec<Attachment>;
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -203,7 +195,6 @@ pub fn decode_attachment_manifest(
         )
     };
     acyclic_auth::format::header(bytes, b"[", b"\"1\",", &unsupported, &unsupported)?;
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut failure = None;
         let result = io.decode(
@@ -258,15 +249,17 @@ pub fn decode_attachment_manifest(
     Ok(items)
 }
 
-/// Reads and verifies exact bytes with their retained ownership.
+/// Reads and verifies exact bytes with optional policy credit and retained ownership.
+/// The immutable source extent bounds the operation even without a policy ceiling.
 pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
     verifier: &'a V,
     reference: &'a FileRef,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     ceiling: Option<&'a crate::Capabilities>,
     io: Option<&'a ContentIo>,
 ) -> Result<(acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)> {
-    if reference.descriptor().byte_length() > maximum_bytes {
+    let source_bytes = reference.descriptor().byte_length();
+    if maximum_bytes.is_some_and(|maximum| source_bytes > maximum) {
         return Err(content_error(
             io,
             crate::wire::ErrorCode::Invalid,
@@ -274,10 +267,7 @@ pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
         ));
     }
     let hold;
-    let bytes = verifier
-        .read(reference, maximum_bytes, ceiling, io)?
-        .await?;
-    #[cfg(feature = "filesystem")]
+    let bytes = verifier.read(reference, source_bytes, ceiling, io)?.await?;
     {
         hold = match io {
             Some(io) => {
@@ -288,10 +278,6 @@ pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
             }
             None => None,
         };
-    }
-    #[cfg(not(feature = "filesystem"))]
-    {
-        hold = None;
     }
     crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
     Ok((bytes, hold))
@@ -315,7 +301,6 @@ pub async fn load_manifest<'a, V: ContentResidencyVerifier + ?Sized>(
     let bytes = verifier
         .read(reference, reference.descriptor().byte_length(), None, io)?
         .await?;
-    #[cfg(feature = "filesystem")]
     {
         _bytes_hold = match io {
             Some(io) => {
@@ -327,11 +312,6 @@ pub async fn load_manifest<'a, V: ContentResidencyVerifier + ?Sized>(
             None => None,
         };
     }
-    #[cfg(not(feature = "filesystem"))]
-    {
-        _bytes_hold = ();
-    }
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let items = decode_attachment_manifest(reference, &bytes, Some(item_count), Some(io))?;
         let retained = std::mem::size_of::<Vec<Attachment>>() as u64
@@ -375,7 +355,7 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
             }
             limits.validate_file(&item.file, work)
         })?;
-        verified_content_bytes(verifier, &item.file, limits.file_bytes, None, io).await?;
+        verified_content_bytes(verifier, &item.file, Some(limits.file_bytes), None, io).await?;
     }
     Ok(output)
 }

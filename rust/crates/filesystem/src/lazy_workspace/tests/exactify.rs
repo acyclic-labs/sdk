@@ -43,7 +43,7 @@ async fn historical_exactification_keeps_observations_and_refreshes_unresolved_p
     }
 }
 
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn source_refresh_and_subtree_exactification_preserve_lazy_siblings() {
     use crate::model::FilesystemProfile;
@@ -133,7 +133,7 @@ async fn source_refresh_and_subtree_exactification_preserve_lazy_siblings() {
         .await,
         Err(LazyWorkspaceError::NotDirectory)
     ));
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let staged = tempfile::tempdir().unwrap();
         exact
@@ -153,7 +153,7 @@ async fn source_refresh_and_subtree_exactification_preserve_lazy_siblings() {
     }
 }
 
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn directory_inspection_keeps_cursors_valid_and_promotion_keeps_children_lazy() {
     use crate::model::FilesystemProfile;
@@ -216,7 +216,7 @@ async fn directory_inspection_keeps_cursors_valid_and_promotion_keeps_children_l
     );
 }
 
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn exactification_enforces_the_entry_bound_before_returning_a_complete_generation() {
     use crate::model::FilesystemProfile;
@@ -264,7 +264,7 @@ async fn exactification_enforces_the_entry_bound_before_returning_a_complete_gen
     );
 }
 
-#[cfg(all(windows, feature = "native-watch"))]
+#[cfg(all(windows, not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn windows_names_are_transcoded_to_the_authored_profile() {
     use crate::model::FilesystemProfile;
@@ -297,7 +297,7 @@ async fn windows_names_are_transcoded_to_the_authored_profile() {
     );
 }
 
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn hard_links_survive_exactification_across_batch_boundaries() {
     use crate::model::FilesystemProfile;

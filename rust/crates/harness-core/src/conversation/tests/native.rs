@@ -1,8 +1,8 @@
 use super::*;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::NativeMaterializationWork;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 fn original_work(
     budget: acyclic_fs::WorkBudget,
     cancellation: &acyclic_fs::CancellationToken,
@@ -11,7 +11,7 @@ fn original_work(
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_file_validation_and_descriptor_hash_use_original_static_denials() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeTreeMaterializationError, WorkError};
@@ -69,7 +69,7 @@ fn native_file_validation_and_descriptor_hash_use_original_static_denials() -> R
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_file_clone_partial_failure_retires_only_its_actual_strings() -> Result<()> {
     use crate::store::history::HistoryIo as _;
@@ -112,7 +112,7 @@ fn native_file_clone_partial_failure_retires_only_its_actual_strings() -> Result
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeTreeMaterializationError, WorkError};
@@ -196,7 +196,6 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -> Result<()> {
     use acyclic_fs::{CancellationToken, WorkBudget};

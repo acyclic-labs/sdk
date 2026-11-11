@@ -6,15 +6,23 @@ impl FileTool {
         scope: &RuntimeScope,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Option<FileRef>, acyclic_fs::NativeCustody)> {
+        if invocation.name == "ask_question"
+            && !crate::plugins::question::valid_path(&invocation.arguments)
+        {
+            return Err(super::executor::rejection(
+                work,
+                "ask_question requires a private ui/ file",
+            ));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         let owned_io = work
             .map(crate::executor::PreparationIo::from_native_work)
             .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = owned_io.as_ref();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let io: Option<&crate::executor::PreparationIo> = None;
         crate::executor::with_history_io(io, |history| {
             ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), history)
@@ -28,20 +36,20 @@ impl FileTool {
         {
             return Err(Error::tool_rejected("file path is read-only"));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             io.check_json_byte_bound(&invocation.arguments, scope.limits().file_bytes)?;
         } else {
             crate::executor::json::json_byte_length(
                 &invocation.arguments,
-                scope.limits().file_bytes,
+                Some(scope.limits().file_bytes),
                 &mut None,
             )?;
         }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         crate::executor::json::json_byte_length(
             &invocation.arguments,
-            scope.limits().file_bytes,
+            Some(scope.limits().file_bytes),
             &mut None,
         )?;
         let (file, custody) = self.decode_source(scope, context, invocation, work, io)?;
@@ -90,11 +98,11 @@ impl FileTool {
         scope: &RuntimeScope,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
+    ) -> Result<(Option<FileRef>, acyclic_fs::NativeCustody)> {
         let error = |code, reason| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if work.is_some() {
                 return Error::ToolRejected { code, reason };
             }
@@ -169,7 +177,11 @@ impl FileTool {
                     );
                 }
                 self.public_path(&input.0.path, io)?;
-                if input.0.path.len() > scope.limits().path_bytes {
+                if scope
+                    .limits()
+                    .path_bytes
+                    .is_some_and(|maximum| input.0.path.len() > maximum.get())
+                {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file path exceeds original task bound",
@@ -195,7 +207,11 @@ impl FileTool {
                     );
                 }
                 self.public_path(&input.0.path, io)?;
-                if input.0.path.len() > scope.limits().path_bytes {
+                if scope
+                    .limits()
+                    .path_bytes
+                    .is_some_and(|maximum| input.0.path.len() > maximum.get())
+                {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file path exceeds original task bound",
@@ -243,11 +259,15 @@ impl FileTool {
         context: Option<&ToolContext>,
         path: &str,
         version: Option<&str>,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
+    ) -> Result<(Option<FileRef>, acyclic_fs::NativeCustody)> {
         self.public_path(path, io)?;
-        if path.len() > scope.limits().path_bytes {
+        if scope
+            .limits()
+            .path_bytes
+            .is_some_and(|maximum| path.len() > maximum.get())
+        {
             return Err(super::executor::rejection(
                 work,
                 "file path exceeds original task bound",

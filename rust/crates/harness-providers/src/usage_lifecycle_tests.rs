@@ -1,9 +1,9 @@
-//! A catalog proxy's delayed 502, exhausted recovery and JSON/SSE completions
+//! A catalog proxy's delayed 502, permanent refusal and JSON/SSE completions
 //! cross the real local host, durable journal, events and usage queries.
 use super::*;
+use acyclic_fs::NativeFutureBundle;
 use acyclic_harness::{LocalHarness, local::agent_conversation::Conversation};
 use acyclic_harness_core::{
-    NativeFutureBundle,
     agent::{IntentId, Phase, Sender},
     context::CompactionPolicy,
     executor::{ModelPriceRecord, ModelUsageProjection, TokenPrice},
@@ -13,7 +13,7 @@ use std::time::Duration;
 
 struct Proxy {
     calls: AtomicUsize,
-    outage: AtomicBool,
+    denied: AtomicBool,
     entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     waits: Mutex<Vec<Duration>>,
@@ -40,7 +40,9 @@ impl Proxy {
             entered.send(()).unwrap();
             release.await.map_err(|_| invalid("proxy release lost"))?;
         }
-        let (status, body) = if call == 1 || self.outage.load(Ordering::SeqCst) {
+        let (status, body) = if self.denied.load(Ordering::SeqCst) {
+            (401, "authentication denied".to_owned())
+        } else if call == 1 {
             (502, "upstream openai unreachable: TimeoutError".to_owned())
         } else {
             let (input, output) = match call {
@@ -84,7 +86,7 @@ impl HttpTransport for Proxy {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
+    ) -> Result<NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
         NativeFutureBundle::new(work, || async move {
             let response = self.exchange(request).await?;
             HttpResponse::with_native_body(response.status, response.body, work)
@@ -101,7 +103,7 @@ impl HttpTransport for Proxy {
         &self,
         wait: Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'static, ()>> {
+    ) -> Result<NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
         let timer = self.delay(wait);
         NativeFutureBundle::new(work, || timer)
     }
@@ -113,7 +115,7 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
     let (release, resume) = tokio::sync::oneshot::channel();
     let proxy = Arc::new(Proxy {
         calls: AtomicUsize::new(0),
-        outage: AtomicBool::new(false),
+        denied: AtomicBool::new(false),
         entered: Mutex::new(Some(entered)),
         release: Mutex::new(Some(resume)),
         waits: Mutex::new(Vec::new()),
@@ -167,11 +169,11 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
         second.await?,
         acyclic_harness::test_support::PromptOutcome::Settled(_, _)
     ));
-    proxy.outage.store(true, Ordering::SeqCst);
-    let failed = prompt("outage").await?;
+    proxy.denied.store(true, Ordering::SeqCst);
+    let failed = prompt("denied").await?;
     assert!(
         matches!(failed, acyclic_harness::test_support::PromptOutcome::Failed(ref message)
-        if message.contains("502") && !message.contains("storage failure")),
+        if message.contains("401") && !message.contains("storage failure")),
         "{failed:?}"
     );
     let (agents, root) = harness.agents().await?;
@@ -183,9 +185,9 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
             .closed
     );
     assert!(matches!(conversation.phase().await?, Phase::Idle));
-    proxy.outage.store(false, Ordering::SeqCst);
+    proxy.denied.store(false, Ordering::SeqCst);
     assert!(matches!(
-        prompt("after-outage").await?,
+        prompt("after-denied").await?,
         acyclic_harness::test_support::PromptOutcome::Settled(_, _)
     ));
     let mut exported = Vec::new();
@@ -244,10 +246,7 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
         1,
         "unreported failed-call usage stays unknown"
     );
-    assert_eq!(
-        proxy.waits.lock().unwrap().len(),
-        1 + usize::from(crate::RetrySpec::DEFAULT.attempts)
-    );
+    assert_eq!(proxy.waits.lock().unwrap().len(), 1);
     let mut position = acyclic_harness::client::ExecutionPosition::default();
     loop {
         let page = conversation

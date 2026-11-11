@@ -487,7 +487,7 @@ async fn skill_path_bounds_reject_before_any_body_read_at_a_short_manifest_path(
             reference.clone(),
             &counted,
             ToolRegistry::default(),
-            Limits { path_bytes: 16, ..limits },
+            Limits { path_bytes: std::num::NonZeroUsize::new(16), ..limits },
         ).await,
         Err(Error::Invalid(message)) if message == "manifest skill path exceeds path bound"
     ));
@@ -497,7 +497,7 @@ async fn skill_path_bounds_reject_before_any_body_read_at_a_short_manifest_path(
         &counted,
         ToolRegistry::default(),
         Limits {
-            path_bytes: "skills/long-name/SKILL.md".len(),
+            path_bytes: std::num::NonZeroUsize::new("skills/long-name/SKILL.md".len()),
             ..limits
         },
     )
@@ -551,7 +551,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
             ..limits
         },
         Limits {
-            path_bytes: 1,
+            path_bytes: std::num::NonZeroUsize::new(1),
             ..limits
         },
     ] {

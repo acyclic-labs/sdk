@@ -1,7 +1,6 @@
 use super::*;
 use crate::{executor::stock_boundary, wire::ErrorCode};
 
-#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ContextManifest {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ContextManifest
@@ -27,15 +26,11 @@ impl ContextManifest {
                 "manifest exceeds JSON/render bounds",
             ));
         }
-        #[cfg(feature = "filesystem")]
         let content_io = io;
-        #[cfg(not(feature = "filesystem"))]
-        let content_io = None;
         let bytes = reader
             .read(&reference, limits.render_bytes, None, content_io)?
             .await?;
         crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
-        #[cfg(feature = "filesystem")]
         let manifest: Self = match io {
             Some(io) => crate::filesystem::retain_decoded(io.decode(
                 std::marker::PhantomData,
@@ -44,8 +39,6 @@ impl ContextManifest {
             )?)?,
             None => Self::decode(&bytes, limits)?,
         };
-        #[cfg(not(feature = "filesystem"))]
-        let manifest = Self::decode(&bytes, limits)?;
         if io.is_some() {
             manifest.validate_observed(limits, io)?;
         }
@@ -77,7 +70,7 @@ impl ContextManifest {
         let mut remaining = limits
             .render_bytes
             .checked_sub(crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&messages, limits.render_bytes, work)
+                crate::executor::json::json_byte_length(&messages, Some(limits.render_bytes), work)
             })?)
             .ok_or_else(|| {
                 stock_boundary(
@@ -104,7 +97,7 @@ impl ContextManifest {
                 .invoke_observed(reader, limits.file_bytes.min(remaining), io)
                 .await?;
             let size = crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&message, remaining, work)
+                crate::executor::json::json_byte_length(&message, Some(remaining), work)
             })?;
             remaining = remaining.checked_sub(size).ok_or_else(|| {
                 stock_boundary(
@@ -116,7 +109,6 @@ impl ContextManifest {
             messages.push(message);
         }
         let key = crate::executor::stock_string_copy("context.manifest", io)?;
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             let bytes = std::mem::size_of::<(String, FileRef)>() as u64;
             io.retain_owned(bytes)?;

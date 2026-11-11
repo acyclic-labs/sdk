@@ -81,7 +81,6 @@ pub(super) fn retire_prefix(
             stock_vec_reserve(&mut steering.retired, capacity, io)?;
         }
     }
-    #[cfg(feature = "filesystem")]
     let retirement = {
         let mut ranges = steering
             .as_ref()
@@ -120,10 +119,9 @@ pub(super) fn retire_prefix(
         drop(messages.drain(..count));
     }
     *offset = through;
-    #[cfg(feature = "filesystem")]
     drop(retirement);
     Ok(())
 }
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
 mod tests;

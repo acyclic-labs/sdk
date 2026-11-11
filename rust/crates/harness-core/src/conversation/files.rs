@@ -20,7 +20,6 @@ pub struct FileDescriptor {
 
 impl FileDescriptor {
     /// Replaces only the streamed byte identity after metadata admission.
-    #[cfg(feature = "filesystem")]
     fn with_content_identity(mut self, sha256: [u8; 32], byte_length: u64) -> Result<Self> {
         if byte_length > MAX_EXACT_JS_INTEGER {
             return Err(Error::Invalid("streamed file length exceeds portable precision; recovery: publish content within MAX_EXACT_JS_INTEGER".into()));
@@ -29,7 +28,6 @@ impl FileDescriptor {
         self.byte_length = byte_length;
         Ok(self)
     }
-    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         self.media_type.capacity() as u64
     }
@@ -99,11 +97,7 @@ impl FileDescriptor {
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
-        #[cfg(all(
-            any(test, feature = "test-support"),
-            feature = "filesystem",
-            not(target_arch = "wasm32")
-        ))]
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(("verify", bytes.len() as u64));
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
@@ -183,14 +177,14 @@ impl FileDescriptor {
 pub(crate) struct PublicationWitness {
     pub(crate) _domain: Arc<PublicationDomain>,
     pub(crate) _identity: [u8; 32],
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) _custody: crate::NativeCustody,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) _custody: acyclic_fs::NativeCustody,
 }
 
 #[derive(Debug)]
 pub(crate) struct PublicationDomain {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) _custody: crate::NativeCustody,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) _custody: acyclic_fs::NativeCustody,
 }
 
 /// An immutable version of a file within a scoped volume.
@@ -227,12 +221,10 @@ impl PartialEq for FileRef {
 impl Eq for FileRef {}
 
 impl FileRef {
-    #[cfg(feature = "filesystem")]
     pub(crate) fn publication_witness(&self) -> Option<&PublicationWitness> {
         self.publication.as_deref()
     }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) fn with_publication_witness(
         mut self,
         witness: std::sync::Arc<PublicationWitness>,
@@ -248,7 +240,7 @@ impl FileRef {
     ) -> Result<[u8; 32]> {
         crate::executor::json::borrowed_json_digest(
             &canonical::Canonical(self),
-            maximum_bytes,
+            Some(maximum_bytes),
             work,
         )
     }
@@ -305,7 +297,6 @@ impl FileRef {
     }
 
     /// Binds original streamed bytes after reference metadata was admitted.
-    #[cfg(feature = "filesystem")]
     pub(crate) fn with_content_identity(
         mut self,
         sha256: [u8; 32],
@@ -317,7 +308,6 @@ impl FileRef {
     }
 
     /// Binds verified staged metadata to its authenticated storage generation.
-    #[cfg(feature = "filesystem")]
     pub(crate) fn pin_version(
         &mut self,
         version: String,
@@ -359,7 +349,6 @@ impl FileRef {
 }
 
 impl FileRef {
-    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         [
             self.path.capacity(),
@@ -372,14 +361,14 @@ impl FileRef {
             bytes.checked_add(capacity as u64)
         })
         .ok_or_else(|| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             {
                 Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "file capacity inventory overflows",
                 }
             }
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            #[cfg(target_arch = "wasm32")]
             {
                 Error::Invalid("file capacity inventory overflows".into())
             }

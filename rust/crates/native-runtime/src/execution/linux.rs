@@ -8,8 +8,7 @@
 )]
 
 use super::{
-    BoundPath, ExecutionAccess, ExecutionGrant, ExecutionNetwork, Grant, failure, refused,
-    unavailable,
+    BoundPath, ExecutionAccess, ExecutionGrant, ExecutionNetwork, Grant, refused, unavailable,
 };
 use crate::{
     NativeOperationKind::{Read, Write},
@@ -127,7 +126,7 @@ fn open_beneath_with_flags(
             return Err(if error.raw_os_error() == Some(libc::ENOSYS) {
                 unavailable("rooted execution path resolution requires openat2")
             } else {
-                failure(error)
+                error
             });
         }
         let descriptor =
@@ -170,7 +169,7 @@ fn computation_device(
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<File> {
     let root = native_control_attempt(meter, Read, || BoundPath::open_path(path))?;
-    let metadata = native_control_attempt(meter, Read, || root.metadata().map_err(failure))?;
+    let metadata = native_control_attempt(meter, Read, || root.metadata())?;
     if !entry::character_device(metadata.mode(), metadata.rdev(), device) {
         return Err(refused("execution computation device was replaced"));
     }
@@ -451,7 +450,7 @@ impl Prepared {
 fn syscall(call: impl FnOnce() -> libc::c_long) -> io::Result<libc::c_long> {
     let result = call();
     if result < 0 {
-        Err(failure(io::Error::last_os_error()))
+        Err(io::Error::last_os_error())
     } else {
         Ok(result)
     }
@@ -576,6 +575,22 @@ const fn compile_filter<const N: usize>(network: FilterNetwork) -> Filter<N> {
     // kernel syscall never acquires authority by being absent from a list.
     verdict(&mut code, libc::SYS_read, ALLOW);
     verdict(&mut code, libc::SYS_write, ALLOW);
+    // Landlock does not mediate extended attributes. Expose no xattr facility,
+    // including on readable objects. EOPNOTSUPP distinguishes this absence
+    // from a denied ordinary stat or directory read.
+    const ATTRIBUTES: &[libc::c_long] = &[
+        libc::SYS_getxattr,
+        libc::SYS_lgetxattr,
+        libc::SYS_fgetxattr,
+        libc::SYS_listxattr,
+        libc::SYS_llistxattr,
+        libc::SYS_flistxattr,
+    ];
+    let mut attributes = ATTRIBUTES;
+    while let Some((call, rest)) = attributes.split_first() {
+        verdict(&mut code, *call, 0x0005_0000 | libc::EOPNOTSUPP as u32);
+        attributes = rest;
+    }
     // clone3 has an indirect flag pointer, so force libc's ordinary clone
     // fallback. It is never continued after a racy userspace inspection.
     verdict(

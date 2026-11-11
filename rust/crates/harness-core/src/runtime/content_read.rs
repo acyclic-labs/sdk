@@ -1,5 +1,4 @@
 use super::*;
-#[cfg(feature = "filesystem")]
 use crate::conversation::BoundedContentFuture;
 use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
@@ -49,7 +48,6 @@ impl<'a> ReadGrants<'a> {
 // Journals fence the entire command and authenticate each referenced input against
 // its admission. Reuse the issued context for content reads, including its grants,
 // immutable descriptor verification and original native accounting.
-#[cfg(feature = "filesystem")]
 impl ContentResidencyVerifier for TaskContext {
     fn supports_read(&self, volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
         self.content_binding(Some(volume))
@@ -86,6 +84,37 @@ impl ContentResidencyVerifier for TaskContext {
 }
 
 impl TaskContext {
+    /// The authored subtree shares the agent's original private publisher.
+    /// Managed outputs retain their read-only route and cannot be overwritten
+    /// through another spelling of the same volume.
+    pub(super) fn private_content_path<'a>(
+        &'a self,
+        path: &'a str,
+        io: Option<&ContentIo>,
+    ) -> Result<Option<(&'a ContentBindings, &'a str)>> {
+        let Some(relative) = path.strip_prefix(crate::layers::PRIVATE_PATH) else {
+            return Ok(None);
+        };
+        if self.output_content.volume.class() != crate::conversation::VolumeClass::AgentPrivate {
+            return Err(content_error(
+                io,
+                ErrorCode::Unauthorized,
+                "agent-private file address has no private volume binding",
+            )
+            .tool_input());
+        }
+        crate::executor::with_history_io(io, |work| {
+            crate::conversation::validate_content_path(relative, work)
+        })
+        .map_err(Error::tool_input)?;
+        if relative != "ui" && !relative.starts_with("ui/") {
+            return Err(content_error(io, ErrorCode::Unauthorized,
+                "managed private files are read-only; recovery: author .volumes/private/ui/ instead")
+                .tool_input());
+        }
+        Ok(Some((&self.output_content, relative)))
+    }
+
     pub(crate) fn tool_read_content(&self) -> &ContentBindings {
         self.harness
             .content
@@ -400,17 +429,10 @@ impl TaskContext {
             }
             file.descriptor().verify(&bytes, history)
         })?;
-        #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
-        #[cfg(not(feature = "filesystem"))]
-        let retained = {
-            let _ = hold;
-            0
-        };
         Ok((file, bytes, retained))
     }
 
@@ -464,20 +486,11 @@ impl TaskContext {
             .ok_or_else(|| {
                 content_error(io, ErrorCode::Unsupported, "content reader is not bound")
             })?;
-        let (bytes, hold) = verified_content_bytes(
-            reader,
-            file,
-            file.descriptor().byte_length(),
-            Some(grants.grants),
-            io,
-        )
-        .await?;
-        #[cfg(feature = "filesystem")]
+        let (bytes, hold) =
+            verified_content_bytes(reader, file, None, Some(grants.grants), io).await?;
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
-        #[cfg(not(feature = "filesystem"))]
-        let _ = hold;
         Ok(bytes)
     }
 
@@ -518,13 +531,7 @@ impl TaskContext {
                 },
             )?
             .await?;
-        #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        #[cfg(not(feature = "filesystem"))]
-        let retained = 0;
-        #[cfg(not(feature = "filesystem"))]
-        let _ = hold;
-        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }

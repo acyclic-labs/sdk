@@ -81,16 +81,16 @@ impl EnvironmentFacts {
             return Ok(None);
         }
         let used = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(context, u64::MAX, work)
+            crate::executor::json::json_byte_length(context, None, work)
         })?;
         let mut bodies = u64::MAX;
         crate::model::reserve_instruction_bodies(&context.messages, &mut bodies, io)?;
         let wrapper = ModelMessage {
-            role: ModelRole::System,
+            role: ModelRole::User,
             content: ModelContent::Text(String::new()),
         };
         let wrapper = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&wrapper, u64::MAX, work)
+            crate::executor::json::json_byte_length(&wrapper, None, work)
         })?;
         // Empty string quotes are already in wrapper. One separator and at
         // most one extra input-index digit accompany the inserted message.
@@ -146,7 +146,7 @@ impl EnvironmentFacts {
         Ok(Some(ContextInsertion {
             local_index: 0,
             message: ModelMessage {
-                role: ModelRole::System,
+                role: ModelRole::User,
                 content: ModelContent::Text(text),
             },
         }))
@@ -163,7 +163,7 @@ fn json_string_bytes(text: &str) -> u64 {
         .sum()
 }
 
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl From<crate::native_environment::CheckoutFacts> for EnvironmentFacts {
     fn from(facts: crate::native_environment::CheckoutFacts) -> Self {
         Self {

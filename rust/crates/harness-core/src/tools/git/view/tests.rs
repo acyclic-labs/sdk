@@ -92,10 +92,122 @@ async fn execute_request(
 }
 
 #[tokio::test]
+async fn completed_source_cut_survives_pending_join_recovery() -> TestResult {
+    let (_directory, filesystem, store, main) = fixture().await?;
+    main.write_text("/base", "base\n").await?;
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        main.id(),
+        &["commit", "-m", "base"],
+    )
+    .await?;
+    let child = execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        main.id(),
+        &["checkout", "-b", "child"],
+    )
+    .await?
+    .switched
+    .ok_or("missing child")?;
+    child
+        .workspace()
+        .write_text("/completed", "completed\n")
+        .await?;
+    let cut = child
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    execute(
+        &filesystem,
+        &store,
+        child.view(),
+        main.id(),
+        &["checkout", "main"],
+    )
+    .await?;
+    let request = acyclic_fs::GitRequest {
+        operation: OperationId::new(),
+        unanswered: Arc::new(|_| true),
+        merge_source: Some(acyclic_fs::GitGenerationRef {
+            workspace_id: child.workspace().id(),
+            generation: cut.id(),
+        }),
+    };
+    let repository =
+        GitCompatRepository::new(main.id(), store.clone()).for_request(request.clone());
+    let target = main
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    repository
+        .execute_argv(
+            &["merge".into(), "child".into()],
+            GitTreeRef::exact(main.id(), target.id()),
+            "test",
+            1,
+        )
+        .await?;
+    // A later turn changes the same workspace after the request's immutable
+    // action was persisted. Recover through the real executor, without the
+    // original caller's in-memory source selection.
+    child
+        .workspace()
+        .write_text("/completed", "unfinished replacement\n")
+        .await?;
+    child
+        .workspace()
+        .write_text("/unfinished", "unfinished\n")
+        .await?;
+    execute_request(
+        &filesystem,
+        &store,
+        (&main).into(),
+        main.id(),
+        &["merge", "child"],
+        Some(acyclic_fs::GitRequest {
+            merge_source: None,
+            ..request.clone()
+        }),
+    )
+    .await?;
+    let merged = main
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    let completed = merged
+        .read_range(
+            "/completed",
+            0,
+            b"completed\n".len() as u64,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
+    assert_eq!(completed.bytes.as_ref(), b"completed\n");
+    let unfinished = merged
+        .stat(
+            "/unfinished",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert!(unfinished.is_err_and(|failure| failure.error.is_absent()));
+    assert!(repository.request_result().await?.is_some());
+    Ok(())
+}
+
+#[tokio::test]
 async fn saved_command_replay_authenticates_its_original_repository_sources() -> TestResult {
     use acyclic_fs::GitCompatStore;
     let (_directory, filesystem, store, main) = fixture().await?;
     let request = acyclic_fs::GitRequest {
+        merge_source: None,
         operation: OperationId::new(),
         unanswered: Arc::new(|_| true),
     };

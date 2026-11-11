@@ -96,10 +96,7 @@ pub fn exercise(bytes: &[u8]) {
     mcp::check(bytes);
     model::check(bytes);
     selection::inactive(bytes);
-    #[cfg(all(
-        feature = "filesystem-local",
-        any(feature = "mcp-stdio", feature = "mcp-http")
-    ))]
+    #[cfg(not(target_arch = "wasm32"))]
     selection::partial(bytes);
     let (&role, document) = bytes.split_first().unwrap_or((&0, &[]));
     let files = Files::new();

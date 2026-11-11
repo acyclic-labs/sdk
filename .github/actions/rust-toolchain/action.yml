@@ -28,6 +28,15 @@ runs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y clang mold
         fi
+    - name: Install Linux native policy tools
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v rg >/dev/null; then
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ripgrep
+        fi
     - name: Read the pinned Rust release
       id: pinned
       shell: bash

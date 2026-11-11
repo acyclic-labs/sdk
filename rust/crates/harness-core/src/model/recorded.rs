@@ -50,12 +50,12 @@ pub enum RecordedToolOutcome {
     },
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl RecordedToolOutcome {
     fn copy_with_custody(
         &self,
         io: &crate::filesystem::PreparationIo,
-    ) -> Result<(Self, crate::NativeCustody)> {
+    ) -> Result<(Self, acyclic_fs::NativeCustody)> {
         use crate::executor::json::{JsonBounds, RECORD_MAXIMUM_DEPTH, json_value_copy_bounded};
         let before = io.owned_bytes()?;
         let outcome = match self {
@@ -63,8 +63,8 @@ impl RecordedToolOutcome {
                 let value = json_value_copy_bounded(
                     &result.value,
                     JsonBounds {
-                        maximum_bytes: u64::MAX,
-                        maximum_items: io.remaining()?.items_examined,
+                        maximum_bytes: Some(u64::MAX),
+                        maximum_items: Some(io.remaining()?.items_examined),
                         maximum_depth: RECORD_MAXIMUM_DEPTH,
                     },
                     Some(crate::wire::ErrorCode::Storage),
@@ -144,7 +144,7 @@ impl Recording {
 /// key allocates at most two nodes; repeated keys update one existing integer.
 #[derive(Default)]
 struct Cursor {
-    next: FixedIndex<usize, crate::NativeCustody, 32>,
+    next: FixedIndex<usize, acyclic_fs::NativeCustody, 32>,
     used: usize,
 }
 
@@ -153,7 +153,7 @@ impl Cursor {
         &mut self,
         source: &'s Recording,
         key: [u8; 32],
-        work: &mut impl IndexWork<Error = Error, Allocation = crate::NativeCustody>,
+        work: &mut impl IndexWork<Error = Error, Allocation = acyclic_fs::NativeCustody>,
         admit: impl FnOnce(Option<(usize, &'s RecordedCall)>) -> Result<T>,
     ) -> Result<T> {
         let Some(calls) = source.calls.get(&key) else {
@@ -182,7 +182,7 @@ impl Cursor {
         &mut self,
         source: &'s Recording,
         key: [u8; 32],
-        work: &mut impl IndexWork<Error = Error, Allocation = crate::NativeCustody>,
+        work: &mut impl IndexWork<Error = Error, Allocation = acyclic_fs::NativeCustody>,
     ) -> Result<Option<(usize, &'s RecordedCall)>> {
         self.select(source, key, work, Ok)
     }
@@ -227,11 +227,11 @@ pub trait DivergenceSink: acyclic_stream::ProviderPlatform {
 #[derive(Default)]
 struct Replay {
     cursor: Cursor,
-    dispatches: FixedIndex<Option<ReplaySelection>, crate::NativeCustody, 52>,
+    dispatches: FixedIndex<Option<ReplaySelection>, acyclic_fs::NativeCustody, 52>,
     // Original source coordinates: copy the outcome only if it is requested.
-    tools: FixedIndex<ReplayTool, crate::NativeCustody, 48>,
+    tools: FixedIndex<ReplayTool, acyclic_fs::NativeCustody, 48>,
     /// Turns that went live; each stays live.
-    live: FixedIndex<LiveTurn, crate::NativeCustody, 16>,
+    live: FixedIndex<LiveTurn, acyclic_fs::NativeCustody, 16>,
     diverged: bool,
 }
 
@@ -283,7 +283,7 @@ fn tool_key(
     let digest = crate::executor::with_history_io(io, |work| {
         crate::executor::json::borrowed_json_digest(
             &("recorded-tool-v1", call_id),
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             work,
         )
     })?;
@@ -302,7 +302,7 @@ impl Recording {
         &self,
         coordinate: ToolCoordinate,
         call_id: &str,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         NativeIndexWork(work).charge_items(call_id.len() as u64)?;
@@ -454,7 +454,7 @@ impl RecordedModel {
         &'a self,
         request: &PreparedModelRequest,
         dispatch: ModelDispatch,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         build: impl FnOnce(&'a RecordedCall) -> Result<T>,
     ) -> Result<ReplayPreparation<'a, T>> {
         let mut replay = self.lock();
@@ -616,7 +616,7 @@ impl RecordedModel {
     fn selected_call(
         &self,
         dispatch: ModelDispatch,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Option<&RecordedCall>> {
         let replay = self.lock();
         match replay
@@ -770,7 +770,7 @@ mod tests {
         }
         impl IndexWork for Meter {
             type Error = Error;
-            type Allocation = crate::NativeCustody;
+            type Allocation = acyclic_fs::NativeCustody;
             fn check(&mut self) -> Result<()> {
                 Ok(())
             }
@@ -788,7 +788,7 @@ mod tests {
             key[..8].copy_from_slice(&index.to_be_bytes());
             key
         };
-        let bound = FixedIndex::<usize, crate::NativeCustody, 32>::insertion_bound(1).unwrap();
+        let bound = FixedIndex::<usize, acyclic_fs::NativeCustody, 32>::insertion_bound(1).unwrap();
         for size in [2u64, 2048] {
             let mut source = Recording::default();
             for index in 0..size {
@@ -861,7 +861,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn cursor_refusal_and_cancellation_preserve_the_original_answer() -> Result<()> {
         let mut source = Recording::default();
@@ -941,7 +941,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn live_turn_storage_is_funded_before_allocation_free_acceptance() -> Result<()> {
         let request = PreparedModelRequest::prepare(
@@ -964,10 +964,13 @@ mod tests {
         let event = ModelEvent::Completed {
             metadata: Value::Null,
         };
-        let bound = FixedIndex::<LiveTurn, crate::NativeCustody, 16>::insertion_bound(1).unwrap();
+        let bound =
+            FixedIndex::<LiveTurn, acyclic_fs::NativeCustody, 16>::insertion_bound(1).unwrap();
         let dispatch_bound =
-            FixedIndex::<Option<ReplaySelection>, crate::NativeCustody, 52>::insertion_bound(1)
-                .unwrap();
+            FixedIndex::<Option<ReplaySelection>, acyclic_fs::NativeCustody, 52>::insertion_bound(
+                1,
+            )
+            .unwrap();
         for population in [1u128, 1024] {
             let mut source = Recording::default();
             source.insert(
@@ -1089,7 +1092,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn refused_generation_funding_preserves_replay_and_tool_coordinates() -> Result<()> {
         use crate::executor::json::CodecOperation;
@@ -1563,7 +1566,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn tool_copy_uses_original_work_and_refusal_keeps_the_settlement() -> Result<()> {
         let live: Arc<dyn ModelProvider> =
@@ -1781,7 +1784,6 @@ impl ModelProvider for RecordedModel {
     fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
         self.live.model_profile(model)
     }
-    #[cfg(feature = "filesystem")]
     fn admit_profile(
         &self,
         model: &Model,
@@ -1793,7 +1795,6 @@ impl ModelProvider for RecordedModel {
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
         self.live.native_tool_profile(model)
     }
-    #[cfg(feature = "filesystem")]
     fn native_tools(
         &self,
         model: &Model,
@@ -1859,8 +1860,8 @@ impl ModelProvider for RecordedModel {
         &self,
         operation: OperationId,
         call_id: &str,
-        work: crate::NativeWork<'_>,
-    ) -> Result<Option<(RecordedToolOutcome, crate::NativeCustody)>> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<Option<(RecordedToolOutcome, acyclic_fs::NativeCustody)>> {
         let io = NativeIndexWork(work).preparation()?;
         let lookup = tool_key(operation, call_id, io.as_ref())?;
         let mut replay = self.lock();
@@ -1873,23 +1874,23 @@ impl ModelProvider for RecordedModel {
             return Ok(None);
         };
         let original = &self.recording.tool(coordinate).1;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let copied = match io.as_ref() {
             Some(io) => original.copy_with_custody(io)?,
             None => (original.clone(), None),
         };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let copied = (original.clone(), None);
         let removed = replay.tools.remove(lookup, &mut NativeIndexWork(work))?;
         drop(replay);
         drop(removed);
         Ok(Some(copied))
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_model(&self, work: &NativeMaterializationWork) -> Result<bool> {
         self.live.supports_native_model(work)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn context_capacity_with_native_work(
         &self,
         model: &Model,
@@ -1897,24 +1898,29 @@ impl ModelProvider for RecordedModel {
     ) -> Result<crate::context::ModelContextCapacity> {
         self.live.context_capacity_with_native_work(model, work)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn count_tokens_with_native_work<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
         ceiling: u64,
         work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::context::ModelTokenCount, NativeAllocation)>>
-    {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (crate::context::ModelTokenCount, NativeAllocation),
+            crate::Error,
+        >,
+    > {
         self.live
             .count_tokens_with_native_work(request, ceiling, work)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn generate_with_native_work<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
         work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, NativeModelStream<'a>>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, NativeModelStream<'a>, crate::Error>> {
         // Each recorded event is admitted on the original ledger exactly as
         // a provider's decoded bytes are. The complete returned stream and
         // future are funded before original source consumption is accepted.
@@ -1929,7 +1935,7 @@ impl ModelProvider for RecordedModel {
             .with_delivery(ModelDelivery::Recorded {
                 source: call.source,
             });
-            crate::NativeFutureBundle::new(work, || std::future::ready(Ok(stream)))
+            acyclic_fs::NativeFutureBundle::new(work, || std::future::ready(Ok(stream)))
         })? {
             ReplayPreparation::Recorded(future) => Ok(future),
             ReplayPreparation::Live(admission) => {
@@ -1941,19 +1947,25 @@ impl ModelProvider for RecordedModel {
             }
         }
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_work<'a>(
         &'a self,
         dispatch: ModelDispatch,
         observed: &'a [ModelEvent],
         work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (Option<Vec<ModelEvent>>, NativeAllocation),
+            crate::Error,
+        >,
+    > {
         let Some(call) = self.selected_call(dispatch, Some(work))? else {
             return self
                 .live
                 .reconcile_with_native_work(dispatch, observed, work);
         };
-        crate::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             let mut events = Vec::new();
             crate::executor::stock_vec_reserve(

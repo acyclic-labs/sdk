@@ -53,7 +53,12 @@
         "topology-single",
         "topology-team",
         "topology-owner-policy",
-        "pty-tree-sidebar"
+        "pty-tree-sidebar",
+        "nested-orchestrators",
+        "pty-question",
+        "question-headless",
+        "question-headless-approval-eof",
+        "question-write-hook-deny"
       ]
     },
     "A4": {

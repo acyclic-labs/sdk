@@ -52,18 +52,24 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
-async fn same_phase_settlement_advances_the_actor_without_appending_status() -> Result {
+async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Result {
     use acyclic_stream::StreamProvider as _;
     use futures::TryStreamExt as _;
     let provider = Arc::new(MemoryStream::default());
     let within = ActorReference::new(b"account", b"agents", b"owner")?;
+    let answers = [
+        b"answer".to_vec(),
+        vec![b'x'; MAX_RECORD_BYTES + 1],
+        vec![b'y'; acyclic_stream::MAX_RECORD_BYTES],
+    ];
     let host = AgentHost::new(
         provider.clone(),
         super::script(
-            (0..3)
-                .map(|_| TurnStep {
+            answers
+                .iter()
+                .map(|answer| TurnStep {
                     checkpoint: None,
-                    outs: vec![Out::Conversation(b"answer".to_vec())],
+                    outs: vec![Out::Conversation(answer.clone())],
                     wait: Wait::Input,
                     drops: None,
                 })
@@ -101,15 +107,12 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
                 answer: Some(n),
             }
         );
-        let statuses = values(provider.as_ref(), root.status()?).await?;
-        assert_eq!(statuses.len(), 1);
-        let stale = StatusRecord::decode(&statuses[0])?;
-        assert!(
-            stale.cursor <= inbox,
-            "the former status-only observer cannot settle this input"
-        );
     }
     assert_eq!(host.state(&root).await?.conversation_tail, 3);
+    assert_eq!(
+        values(provider.as_ref(), root.conversation()?).await?,
+        answers
+    );
     Ok(())
 }
 
@@ -290,32 +293,30 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
             "ordinary input interrupted the turn"
         );
 
-        let delivered = if archive {
-            host.archive(&root, &user(), &intent("stop")).await?
-        } else {
-            host.send(
-                &root,
-                &user(),
-                &InboxRecord::Cancel(Control {
-                    by: user(),
-                    id: intent("stop"),
-                }),
-            )
-            .await?
+        // Archive resumes the actor under its delivery fence. Keep driving
+        // the held delivery while that control waits for its completion.
+        let control = async {
+            if archive {
+                host.archive(&root, &user(), &intent("stop")).await
+            } else {
+                host.send(
+                    &root,
+                    &user(),
+                    &InboxRecord::Cancel(Control {
+                        by: user(),
+                        id: intent("stop"),
+                    }),
+                )
+                .await
+            }
         };
+        let (delivered, failures) = tokio::join!(control, &mut drain);
+        let delivered = delivered?;
         assert!(matches!(delivered, Delivered::Committed { .. }));
-        // MemoryStream has the committed control ready. One delivery poll must
-        // signal the original token; an obsolete or overbroad prefix fails
-        // directly, without waiting for the handler's deadline.
-        let completed = futures::poll!(&mut drain);
         assert!(
             cancellation.is_cancelled(),
             "committed control missed the held turn"
         );
-        let failures = match completed {
-            std::task::Poll::Ready(failures) => failures,
-            std::task::Poll::Pending => drain.await,
-        };
         assert!(failures.is_empty(), "{failures:?}");
         let state = host.state(&root).await?;
         assert_eq!(state.closed, archive);
@@ -560,7 +561,12 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
             let mut expected = child_state;
             expected.closed = true;
             expected.dropped_before = expected.dropped_before.max(inbox);
+            expected.status_tail += 1;
             assert_eq!(host.state(&child).await?, expected);
+            let statuses = values(provider.as_ref(), child.status()?).await?;
+            let status = StatusRecord::decode(statuses.last().expect("archive acknowledgement"))?;
+            assert_eq!(status.cursor, inbox + 1);
+            assert_eq!(status.phase, expected.phase);
             let archived = host.runtime().store().load(&host.actor(&child)?).await?;
             let archived = archived.state().expect("archived child actor");
             assert_eq!(archived.cursor(INBOX), Some(inbox + 1));
@@ -1055,16 +1061,17 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
     assert!(host.runtime().drain().await.is_empty());
     assert_eq!(host.create(&intent("create"), adopted(id(1))).await?, root);
     let mut changed = adopted(id(1));
-    changed.volumes.push(VolumeBinding {
-        name: "private".into(),
-        volume: VolumeRef::new(
+    changed.volumes.push(WorkspaceEntry::initial_volume(
+        acyclic_harness_core::agent::WorkspaceRole::Private,
+        "private".into(),
+        VolumeRef::new(
             ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?,
             "changed".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(id(1).to_bytes())),
             &mut None,
         )?,
-    });
+    ));
     assert!(matches!(
         host.create(&intent("create"), changed).await,
         Err(Error::Stream(StreamError::IdempotencyMismatch))
@@ -1126,7 +1133,7 @@ async fn pending_request_host<P: acyclic_harness_core::store::JournalProvider + 
 
 #[tokio::test]
 async fn reply_waits_require_original_committed_requests() -> Result {
-    #[cfg(feature = "filesystem-local")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let directory = Arc::new(tempfile::tempdir()?);
         let provider = acyclic_stream::LocalStream::open_with_ownership_anchor(
@@ -1152,6 +1159,7 @@ async fn reply_waits_require_original_committed_requests() -> Result {
     }
     let request = InboxRecord::Spawn(SpawnRequest {
         profile: acyclic_harness_core::agent::CreationConfig {
+            question_plugin: false,
             topology: None,
             model: None,
             continuation: None,
@@ -1227,6 +1235,47 @@ async fn reply_waits_require_original_committed_requests() -> Result {
         host.spawned(&root, inbox, &intent("s")).await,
         Err(Error::Conflict(_))
     ));
+    // Replay the original committed requests through a lineage beyond the
+    // former depth ceiling. Path construction alone cannot prove delivery.
+    let mut deepest = descendant;
+    while deepest.depth() < 128 {
+        let Delivered::Committed { inbox } = host.send(&deepest, &user(), &request).await? else {
+            return Err("deep spawn was not committed".into());
+        };
+        let (spawn, child) = requested_child(&deepest, inbox)?;
+        host.drain(&deepest).await?;
+        assert_eq!(
+            host.spawned(&deepest, inbox, &spawn).await?,
+            SpawnOutcome::Spawned {
+                child: child.clone()
+            }
+        );
+        let later = InboxRecord::Approval(Approval {
+            id: intent("after-spawn"),
+        });
+        let Delivered::Committed { inbox: later_inbox } =
+            host.send(&deepest, &user(), &later).await?
+        else {
+            return Err("later deep input was not committed".into());
+        };
+        host.drain(&deepest).await?;
+        assert_eq!(
+            host.spawned(&deepest, inbox, &spawn).await?,
+            SpawnOutcome::Spawned {
+                child: child.clone()
+            }
+        );
+        assert!(matches!(
+            host.spawned(
+                &deepest,
+                later_inbox,
+                &intent(&format!("request:{later_inbox}"))
+            )
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        deepest = child;
+    }
     Ok(())
 }
 
@@ -1244,6 +1293,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                question_plugin: false,
                 topology: None,
                 model: None,
                 continuation: None,
@@ -1295,7 +1345,7 @@ async fn topology_spawn_outcomes_remain_original_after_archival() -> Result {
             &'a self,
             _: &'a CreationConfig,
             _: &'a AgentPath,
-            _: &'a [VolumeBinding],
+            _: &'a [WorkspaceEntry],
             _: &'a str,
             _: Option<&'a acyclic_harness_core::Capabilities>,
         ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<CreationConfig>>

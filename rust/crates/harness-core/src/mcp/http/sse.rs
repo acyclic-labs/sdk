@@ -19,7 +19,7 @@ fn tools_changed(value: &Value, generation: &std::sync::atomic::AtomicU64) {
     }
 }
 
-#[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn notifications(
     body: BoxProviderStream<'static, Result<Bytes>>,
     operation: OperationId,

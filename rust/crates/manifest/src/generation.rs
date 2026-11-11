@@ -94,7 +94,7 @@ pub fn environment_typescript(
         .map(|g| (g.name.as_str(), g))
         .collect();
     let mut output = String::from(
-        "// Generated from the admitted deployment manifest. Do not edit.\nexport type Env<Streams, Fs, Objects, Actors, Workers, Machines, Execution, Infer, Billing, Identity, Fetch, Secret> = {\n",
+        "// Generated from the admitted deployment manifest. Do not edit.\nexport type Env<Streams, Fs, Objects, Actors, Workers, Machines, Infer, Fetch, Secret> = {\n",
     );
     for name in &entry.bindings {
         let binding = bindings
@@ -128,10 +128,7 @@ pub fn environment_typescript(
             Some("actors") => "Actors",
             Some("workers") => "Workers",
             Some("machines") => "Machines",
-            Some("execution") => "Execution",
             Some("infer") => "Infer",
-            Some("billing") => "Billing",
-            Some("identity") => "Identity",
             _ => return Err(ManifestError::invalid("resource", "unknown-product")),
         };
         let parameter = if binding.namespace_target().is_some() {

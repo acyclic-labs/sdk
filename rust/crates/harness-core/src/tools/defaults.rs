@@ -56,6 +56,7 @@ pub fn call_grants<'a>(
 #[must_use]
 pub fn names() -> Vec<String> {
     super::catalog()
+        .filter(|spec| spec.name != "ask_question")
         .map(|spec| spec.name)
         .chain(super::AGENT_TOOLS)
         .map(str::to_owned)

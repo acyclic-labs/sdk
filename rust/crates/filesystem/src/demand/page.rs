@@ -110,13 +110,13 @@ impl std::fmt::Debug for SourceDirectoryEntries {
     }
 }
 
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use super::native::SourceDirectoryPublication;
 /// No native producer exists in this configuration.
-#[cfg(not(all(feature = "native-watch", not(target_arch = "wasm32"))))]
+#[cfg(target_arch = "wasm32")]
 #[derive(Debug)]
 pub enum SourceDirectoryPublication {}
-#[cfg(not(all(feature = "native-watch", not(target_arch = "wasm32"))))]
+#[cfg(target_arch = "wasm32")]
 impl SourceDirectoryPublication {
     /// Commits the producer position.
     pub fn accept(

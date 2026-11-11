@@ -70,6 +70,7 @@ enum RowView<'a> {
     #[serde(rename_all = "camelCase")]
     Agent {
         path: &'a str,
+        role: Option<&'a str>,
         depth: usize,
         status: Option<&'a acyclic_harness_client::StatusRecord>,
         conversation: Option<u64>,
@@ -137,6 +138,7 @@ impl WasmExplorer {
         };
         let provider = stream.provider();
         let mut explorer = Explorer::new(policy).map_err(error)?;
+        explorer.orchestrator_view(true);
         let mut driver = Driver::new(provider);
         driver.attach(explorer.reader(), 0);
         let state = Rc::new(RefCell::new(State {
@@ -201,9 +203,11 @@ impl WasmExplorer {
                     conversation,
                     latest,
                     expanded,
+                    role,
                 } => (
                     RowView::Agent {
                         path: path.as_str(),
+                        role: role.as_deref(),
                         depth: depth(pos),
                         status: status.as_ref(),
                         conversation: *conversation,
@@ -304,9 +308,25 @@ impl WasmExplorer {
         );
     }
 
-    /// Scrolls the tree by `rows`; the sign is the direction.
+    /// Page the original demand window even if its contributor rows are hidden.
+    pub fn page(&self, forward: bool) {
+        self.state.borrow_mut().explorer.page(forward);
+    }
+
+    /// Scrolls the tree by rows; the sign is the direction.
     pub fn scroll(&self, rows: i32) {
         self.state.borrow_mut().explorer.scroll(i64::from(rows));
+    }
+
+    /// The closest orchestrator is the default input target while inspecting a contributor.
+    #[wasm_bindgen(js_name = inputTarget)]
+    pub fn input_target(&self, path: &str) -> Result<String, JsValue> {
+        let state = self.state.borrow();
+        Ok(
+            acyclic_harness_client::ui::input_target(state.explorer.reader_ref(), &agent(path)?)
+                .as_str()
+                .to_owned(),
+        )
     }
 
     /// Pointer intent over an agent row, or none.

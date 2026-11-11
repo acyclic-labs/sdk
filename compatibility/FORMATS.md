@@ -149,7 +149,7 @@ The new table appends its 84
 messages after the original 403, preserving the captured selectors.
 
 Harness v2 `RuntimeLimits.model_events_per_step` (field 6) and
-`tool_calls_per_step` (field 7), `context_messages` (field 8), and `attachments`
+`tool_calls_per_step` (field 7), `path_bytes` (field 2), `context_messages` (field 8), and `attachments`
 (field 3) have explicit
 protobuf presence. Absence
 means unbounded; a supplied limit must be positive. This is an intentional
@@ -157,18 +157,19 @@ contract change, bound by the generated negotiated descriptor identity and
 the Harness schema digest in `manifest.json`.
 
 The segmented model request manifest persists these limits as positive integers
-or JSON `null`. Version 2 also makes context-message and attachment allowances optional;
+or JSON `null`. Version 3 also makes the path byte allowance optional;
 `None` is unbounded while finite allowances remain positive. Its canonical JSON
-starts with `{"$version":2,`; the reserved
+starts with `{"$version":3,`; the reserved
 version key sorts before all payload keys in both canonical encoding paths.
 The original reader verifies the immutable file descriptor, then admits this header before
 ordinary or funded payload decoding. Headerless and foreign-version manifests
-refuse with `Unsupported`, without migration. Version 2 is also bound into the
-existing manifest attestation. The Harness descriptor was recaptured by the
-Rust-owned producer. Descriptor semantics change only for attachment/context-message
-presence and their synthetic oneofs; source spans reflect the added keywords.
-Existing protobuf writer captures and historical goldens are
-retained without regeneration.
+refuse with `Unsupported`, without migration. Version 3 is also bound into the
+existing manifest attestation. The Rust-owned producer recaptured the committed
+descriptor with optional path presence, retaining the earlier attachment and
+context-message presence. Independent semantic and raw comparisons, including
+unknown fields, prove that only path presence, its synthetic oneof and the
+corresponding source token spans changed from the preceding capture. Existing
+protobuf writer captures and historical goldens remain unchanged.
 
 Fixed-width codecs do constant work. Variable payload codecs necessarily take
 work proportional to the admitted payload; their cost must not depend on retained

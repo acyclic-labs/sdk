@@ -29,14 +29,12 @@ type MemoryHost =
     FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
 struct Fixture {
-    #[cfg(feature = "hosting")]
     filesystem: Fs<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
     _issuer: AuthorityRoot,
     host: Arc<MemoryHost>,
     root: ContextRoot,
     writer: ContentGrant,
     reader: Arc<dyn ContentResidencyVerifier>,
-    #[cfg(feature = "hosting")]
     files: Arc<
         FilesystemContentVerifier<
             acyclic_fs::MemoryAuthorityBackend,
@@ -276,10 +274,7 @@ impl Fixture {
         )?;
         let files = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 1 << 20, None)?;
         let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
-        #[cfg(not(feature = "hosting"))]
-        let _ = files;
         Ok(Self {
-            #[cfg(feature = "hosting")]
             filesystem,
             _issuer: issuer,
             host,
@@ -289,7 +284,6 @@ impl Fixture {
             },
             writer,
             reader,
-            #[cfg(feature = "hosting")]
             files,
         })
     }
@@ -324,7 +318,7 @@ impl Fixture {
     }
 }
 
-#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 struct DiffReader {
     frames: acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes>>,
     agent: acyclic_harness::agent::AgentPath,
@@ -332,7 +326,7 @@ struct DiffReader {
     cursor: Option<acyclic_harness::client::DiffCursor>,
 }
 
-#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl DiffReader {
     async fn next(&mut self) -> Result<Option<Vec<acyclic_harness::client::DiffFilePage>>> {
         use futures::TryStreamExt as _;
@@ -385,7 +379,7 @@ impl DiffReader {
     }
 }
 
-#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl Fixture {
     fn query(
         &self,
@@ -436,7 +430,7 @@ impl Fixture {
 /// The shared platform producer: one exact projection of the volume's changes
 /// since its fork base, paged without loss from its retained projection and
 /// disclosed only under the requesting reader's list authority.
-#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> {
     use acyclic_harness::client::{AgentPageRequest, AgentReply, DiffKind};
@@ -685,7 +679,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     Ok(())
 }
 
-#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl Fixture {
     async fn deny_listing(
         &self,
@@ -755,7 +749,7 @@ impl Fixture {
 
 /// Revocation fences both the native frontier and an already compared file.
 /// No continuation names the following file before that file is disclosed.
-#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn live_diff_queries_fence_frontiers_and_cached_patches_against_policy_changes()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -815,7 +809,7 @@ async fn live_diff_queries_fence_frontiers_and_cached_patches_against_policy_cha
 /// Range writes can restore identical bytes with a different chunk layout.
 /// Equality must spend the same input allowance as a changed file; otherwise
 /// a small page silently compares arbitrarily large restored files first.
-#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn workspace_diff_admits_range_restoration_before_reading_content() -> Result<()> {
     use acyclic_fs::{CancellationToken, PublicationPermit, WorkBudget, WorkspaceError};

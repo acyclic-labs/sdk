@@ -182,8 +182,8 @@ pub fn assert_replay(record: Record, limits: Limits) {
         PhantomData,
         &bytes,
         JsonBounds {
-            maximum_bytes: bytes.len() as u64,
-            maximum_items: u64::MAX,
+            maximum_bytes: Some(bytes.len() as u64),
+            maximum_items: None,
             maximum_depth: 256,
         },
         None,
@@ -201,8 +201,8 @@ pub fn assert_envelope(record: &Record) {
         PhantomData,
         &encoded,
         JsonBounds {
-            maximum_bytes: encoded.len() as u64,
-            maximum_items: 4096,
+            maximum_bytes: Some(encoded.len() as u64),
+            maximum_items: Some(4096),
             maximum_depth: 256,
         },
         None,
@@ -230,8 +230,8 @@ pub fn check(data: &[u8]) {
         PhantomData::<Record>,
         data,
         JsonBounds {
-            maximum_bytes: 4096,
-            maximum_items: 4096,
+            maximum_bytes: Some(4096),
+            maximum_items: Some(4096),
             maximum_depth: 256,
         },
         None,

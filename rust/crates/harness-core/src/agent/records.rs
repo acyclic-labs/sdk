@@ -5,8 +5,8 @@
 //! after a lost acknowledgement replays exactly and a definitive conflict leaves
 //! the key unspent.
 
-use super::{AgentId, AgentPath, Error};
-use crate::conversation::{FileRef, VolumeRef};
+use super::{AgentId, AgentPath, Error, WorkspaceChanged, WorkspaceEntry};
+use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
 
 /// Largest agent record. Every part of one is bounded (paths by
@@ -19,37 +19,9 @@ pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 pub const MAX_INTENT_BYTES: usize = 128;
 /// Largest failure message carried in a record.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
-/// Most volumes bound to one agent.
-pub const MAX_VOLUMES: usize = 8;
-/// Format version of every persisted agent record and saved turn effect,
-/// carried by their one shared header. Any change to a persisted shape bumps
-/// it, and readers refuse every other version whole: there is no migration
-/// code. The headerless format before it is version 1; version 2 carries a
-/// spawn brief by file reference. Version 3 binds goal runs to their committed
-/// terminal conversation entry. Version 4 lets a conversation entry name the
-/// execution-target roster its turn announced. Version 5 adds primitive Notices
-/// and the frozen original notice range retained by a settled turn.
-/// Version 6 retains waking Notice payloads by immutable file reference.
-/// Version 7 pins each stock agent's role profile at adoption.
-/// Version 8 adds explicit generation-linked file/context restoration requests.
-/// Version 9 retains the original action binding in a waiting approval's status
-/// and actor checkpoint.
-/// Version 10 unifies child and deadline waits as one monotone condition.
-/// Version 11 adds admitted boundary steering and next-turn messages.
-/// Version 12 retains template capabilities only in their immutable source.
-/// Version 13 uses named MessagePack values after a four-byte big-endian version.
-/// Version 14 adds the waiting-user phase to named MessagePack values after a
-/// four-byte big-endian version.
-/// Version 15 requires membership feeds created atomically with every agent.
-/// Version 16 retains committed agent actions and compact wait selections.
-/// Version 17 records forced continuation provenance in the creation profile.
-/// Version 18 settles a definitive turn failure as a failed conversation entry.
-/// Version 19 (retired) scoped status addresses by complete ancestry.
-/// Version 20 carries child settlement-to-wake measurements in status records.
-/// Version 21 retains child completion facts and pending wake ranges.
-/// Version 22 indexes admitted replies across queued independent turns.
-/// Version 23 combines those facts with input selection on actor waits.
-pub const RECORD_VERSION: u32 = 24;
+/// Version-one workspace-aware agent records. Other formats are refused whole;
+/// sessions must start fresh, with no migration or compatibility reader.
+pub const RECORD_VERSION: u32 = 1;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -64,7 +36,9 @@ pub struct Membership {
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("unsupported record version {found}; this build reads version {expected}")]
+#[error(
+    "state format predates v1 table; start a fresh session (record {found}, expected {expected})"
+)]
 pub struct UnsupportedRecordVersion {
     /// The version the record carries.
     pub found: u32,
@@ -217,16 +191,6 @@ pub enum Sender {
     },
 }
 
-/// A named volume bound to an agent at adoption.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VolumeBinding {
-    /// Agent-visible name (`private`, `project`, `result`).
-    pub name: String,
-    /// The volume: provider, name, class and owner.
-    pub volume: VolumeRef,
-}
-
 /// Conversation selected when an agent is created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -244,6 +208,9 @@ pub enum SpawnContext {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreationConfig {
+    /// Question plugin selection fixed when the root session was created.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub question_plugin: bool,
     /// Forced run policy pinned at creation and inherited by every child.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topology: Option<crate::topology::Topology>,
@@ -277,10 +244,24 @@ pub trait SpawnTemplates: acyclic_stream::ProviderPlatform {
         &'a self,
         parent: &'a CreationConfig,
         path: &'a super::AgentPath,
-        volumes: &'a [VolumeBinding],
+        volumes: &'a [WorkspaceEntry],
         template: &'a str,
         ceiling: Option<&'a crate::Capabilities>,
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<CreationConfig>>;
+}
+
+impl CreationConfig {
+    /// Role identity from the immutable template selection; roots use orchestrator.
+    #[must_use]
+    pub fn role(&self) -> Option<&str> {
+        match &self.template {
+            None => Some("orchestrator"),
+            Some(file) => file
+                .path()
+                .strip_prefix("templates/")?
+                .strip_suffix("/AGENT.md"),
+        }
+    }
 }
 
 /// First record of every agent, written by the spawn fork or by root creation.
@@ -301,7 +282,7 @@ pub struct ForkAdopted {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<u64>,
     /// Volumes the agent owns.
-    pub volumes: Vec<VolumeBinding>,
+    pub volumes: Vec<WorkspaceEntry>,
     /// Task brief, if any.
     pub brief: Option<FileRef>,
     /// Approval policy file interpreted by the approvals feature, if any.
@@ -496,6 +477,8 @@ impl NoticePayload {
 pub enum InboxRecord {
     /// First record of every agent.
     ForkAdopted(Box<ForkAdopted>),
+    /// An ordered workspace-table delta.
+    WorkspaceChanged(Box<WorkspaceChanged>),
     /// `send`.
     Message(Message),
     /// A message reserved for a new turn, never injected into the active one.
@@ -813,14 +796,11 @@ fn check_outcome(outcome: &AgentOutcome) -> Result<(), Error> {
     }
 }
 
-/// At most [`MAX_VOLUMES`] bindings, each with a valid name.
+/// Workspace metadata is admitted without a workspace-count ceiling.
 pub(super) fn check_volumes<'a>(
-    mut volumes: impl ExactSizeIterator<Item = &'a VolumeBinding>,
+    volumes: impl Iterator<Item = &'a WorkspaceEntry>,
 ) -> Result<(), Error> {
-    if volumes.len() > MAX_VOLUMES {
-        return Err(Error::Record("too many volumes"));
-    }
-    volumes.try_for_each(|binding| check_text(&binding.name))
+    super::workspaces::check_entries(volumes)
 }
 
 /// A path within the private UI root, using the shared content-path contract.
@@ -848,6 +828,7 @@ impl AgentRecord for InboxRecord {
                 check_volumes(adopted.volumes.iter())?;
                 Ok(())
             }
+            Self::WorkspaceChanged(change) => change.check(),
             Self::ChildDone(done) => check_outcome(&done.outcome),
             Self::Notice { notice, .. } => {
                 match notice {
@@ -877,11 +858,11 @@ impl AgentRecord for InboxRecord {
                     check_volumes(expected.iter().map(|volume| &volume.binding))?;
                     if (!mode.files() && !expected.is_empty())
                         || expected.iter().enumerate().any(|(index, volume)| {
-                            volume.binding.volume.class()
-                                != crate::conversation::VolumeClass::Project
-                                || expected[..index]
-                                    .iter()
-                                    .any(|prior| prior.binding.name == volume.binding.name)
+                            volume.binding.as_volume().is_none_or(|source| {
+                                source.class() != crate::conversation::VolumeClass::Project
+                            }) || expected[..index]
+                                .iter()
+                                .any(|prior| prior.binding.name == volume.binding.name)
                         })
                     {
                         return Err(Error::Record("restore project bindings are invalid"));

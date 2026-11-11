@@ -7,13 +7,86 @@ use crate::{
     agent::{AgentPath, AgentRecord, ConversationEntry, Reply, StatusRecord, TurnInput},
     local::agent_conversation::Conversation,
 };
-use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{
+    ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+};
 use futures::TryStreamExt;
 use std::{path::Path, sync::Arc};
 
 /// The root conversation `harness` serves to its own in-process session.
 async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> {
     Ok(Conversation::open(harness.connect().await?))
+}
+
+#[tokio::test]
+async fn renaming_the_primary_keeps_local_turns_on_the_same_source() -> Result<()> {
+    use crate::agent::{InboxRecord, WorkspaceChanged, WorkspaceOp, WorkspaceTable};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted([
+        super::ScriptedTurn::Text("before rename".into()),
+        super::ScriptedTurn::Text("after rename".into()),
+    ]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let mut observed = ObservedConversation::open(&harness).await?;
+    assert_eq!(
+        observed.send("before", "before").await?.outcome,
+        crate::agent::TurnOutcome::Completed
+    );
+    let (agents, root) = harness.agents().await?;
+    let state = agents.state(root).await.map_err(agent)?;
+    let mut entry = WorkspaceTable::primary_in(&state.volumes)
+        .ok_or_else(|| Error::NotFound("primary workspace".into()))?
+        .clone();
+    let id = entry.id;
+    entry.name = "renamed".into();
+    let record = InboxRecord::WorkspaceChanged(Box::new(WorkspaceChanged {
+        version: 1,
+        op: WorkspaceOp::Rename,
+        entry,
+    }));
+    let streams = harness
+        .agent_stream
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("agent stream".into()))?;
+    let result = streams
+        .commit(acyclic_stream::CommitRequest {
+            idempotency_key: acyclic_stream::IdempotencyKey::new(b"rename-primary".to_vec())
+                .map_err(agent)?,
+            deadline_unix_millis: None,
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![acyclic_stream::CommitCondition::Absent {
+                    path: root.closed().map_err(agent)?,
+                }],
+                vec![acyclic_stream::CommitMutation::Append {
+                    path: root.inbox().map_err(agent)?,
+                    records: vec![record.encode().map_err(agent)?.into()],
+                }],
+            )],
+        })
+        .await
+        .map_err(agent)?;
+    assert!(matches!(
+        result,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    agents.drain(root).await.map_err(agent)?;
+    let after = observed.send("after", "after").await?;
+    assert_eq!(after.outcome, crate::agent::TurnOutcome::Completed);
+    assert_eq!(provider.request_count(), 2);
+    let state = agents.state(root).await.map_err(agent)?;
+    let primary = WorkspaceTable::primary_in(&state.volumes)
+        .ok_or_else(|| Error::NotFound("renamed workspace".into()))?;
+    assert_eq!(primary.id, id);
+    assert_eq!(primary.volume()?, &project);
+    assert_eq!(primary.name, "renamed");
+    Ok(())
 }
 
 #[tokio::test]
@@ -398,7 +471,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             .expect("project binding");
         let forked = fs
             .open_workspace(
-                binding.volume.storage_name(&mut None)?,
+                binding.volume()?.storage_name(&mut None)?,
                 WorkBudget::UNBOUNDED,
                 &cancel,
             )
@@ -1564,12 +1637,12 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
     let state = agents.state(&root).await.map_err(agent)?;
     // Each turn's calls share one directory, named by the turn.
     let turn = crate::agent::turn_id(&state, &entry.input).map_err(agent)?;
-    let private = &state
+    let private = state
         .volumes
         .iter()
         .find(|binding| binding.name == crate::filesystem::PRIVATE_VOLUME)
         .ok_or_else(|| Error::NotFound("private volume".into()))?
-        .volume;
+        .volume()?;
     let output = harness
         .client_reader()?
         .read(&entry.output, 1 << 20, None, None)?
@@ -1614,7 +1687,7 @@ async fn observation(
         .agent_observation(
             authority,
             path,
-            &authority.private.volume,
+            authority.private.volume()?,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             None,
         )
@@ -1735,79 +1808,18 @@ async fn follow_tool_output(
     }
 }
 
-/// A local HTTP peer that answers each request with its own ordinal, so a
-/// hook that ran again would add different context.
-#[cfg(unix)]
-struct CountingServer {
-    port: u16,
-    calls: Arc<std::sync::atomic::AtomicUsize>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-#[cfg(unix)]
-impl Drop for CountingServer {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-#[cfg(unix)]
-async fn counting_server() -> Result<CountingServer> {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(agent)?;
-    let port = listener.local_addr().map_err(agent)?.port();
-    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let served = Arc::clone(&count);
-    let task = tokio::spawn(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            let ordinal = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            let mut request = [0; 8192];
-            let mut used: usize = 0;
-            loop {
-                let start = used.saturating_sub(3);
-                match stream.read(&mut request[used..]).await {
-                    Ok(0) | Err(_) => return,
-                    Ok(read) => used += read,
-                }
-                if request[start..used]
-                    .windows(4)
-                    .any(|window| window == b"\r\n\r\n")
-                {
-                    break;
-                }
-            }
-            let body = format!("HOOK-HTTP-{ordinal}");
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            if stream.write_all(response.as_bytes()).await.is_err() {
-                return;
-            }
-        }
-    });
-    Ok(CountingServer {
-        port,
-        calls: count,
-        task,
-    })
-}
-
-/// A turn whose `UserPromptSubmit` hook called an HTTP peer is interrupted
+/// A turn whose `UserPromptSubmit` hook updated its project counter is interrupted
 /// after the hook's outcome was recorded; the reopened agent replays the
-/// turn from `hooks/{turn}/{op}.json`, with no new hook run or HTTP call,
+/// turn from `hooks/{turn}/{op}.json`, without updating the counter again,
 /// and the model sees the identical recorded context.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let directory = tempfile::tempdir().map_err(agent)?;
-    let peer = counting_server().await?;
-    let (port, calls) = (peer.port, &peer.calls);
     let home = directory.path().join("home");
     std::fs::create_dir_all(home.join(".claude")).map_err(agent)?;
-    let hook = format!("cat >/dev/null; curl -sS http://127.0.0.1:{port}/");
+    // The original workspace-write sandbox intentionally isolates networking.
+    let hook = r#"cat >/dev/null; n=0; if test -f hook-count; then read -r n < hook-count; fi; n=$((n + 1)); printf '%s\n' "$n" > hook-count; printf 'HOOK-RUN-%s\n' "$n""#;
     std::fs::write(
         home.join(".claude/settings.json"),
         serde_json::to_vec(
@@ -1858,8 +1870,19 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         .request(0)
         .ok_or_else(|| Error::NotFound("hook model request".into()))?;
     let recorded = super::request_text(&harness, &request).await?;
-    assert!(recorded.contains("HOOK-HTTP-1"), "{recorded}");
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(recorded.contains("HOOK-RUN-1"), "{recorded}");
+    let project = crate::filesystem::workspace_ref(
+        harness.project.provider().clone(),
+        &harness.project.storage_name(&mut None)?,
+    )?;
+    assert_eq!(
+        harness
+            .files
+            .read(&project, None, "/hook-count", 16, None)
+            .await?
+            .as_ref(),
+        b"1\n",
+    );
     // Crash: the turn is still waiting on the model when the harness drops.
     drop(observed);
     drop(harness);
@@ -1884,13 +1907,20 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let (agents, root) = (Arc::clone(agents), root.clone());
     let entries = settled(&harness, &root).await?;
     assert_eq!(entries.len(), 1);
-    // The replay ran no hook and made no HTTP call.
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // The replay ran no hook: the retained project counter is unchanged.
+    assert_eq!(
+        harness
+            .files
+            .read(&project, None, "/hook-count", 16, None)
+            .await?
+            .as_ref(),
+        b"1\n",
+    );
     // A re-dispatched request carries the identical recorded context.
     if let Some(request) = resumed.request(0) {
         let replayed = super::request_text(&harness, &request).await?;
         assert!(
-            replayed.contains("HOOK-HTTP-1") && !replayed.contains("HOOK-HTTP-2"),
+            replayed.contains("HOOK-RUN-1") && !replayed.contains("HOOK-RUN-2"),
             "{replayed}"
         );
     }
@@ -1898,12 +1928,12 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let state = agents.state(&root).await.map_err(agent)?;
     let turn = crate::agent::turn_id(&state, &entry.input).map_err(agent)?;
-    let private = &state
+    let private = state
         .volumes
         .iter()
         .find(|binding| binding.name == crate::filesystem::PRIVATE_VOLUME)
         .ok_or_else(|| Error::NotFound("private volume".into()))?
-        .volume;
+        .volume()?;
     assert_eq!(names(&harness, private, "hooks").await?, [turn.to_string()]);
     let recorded = names(&harness, private, &format!("hooks/{turn}")).await?;
     let [outcome, marker] = recorded.as_slice() else {
@@ -2035,7 +2065,7 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
             .expect("child project");
         let id = workspace
             .filesystem
-            .workspace_id(&project.volume.storage_name(&mut None)?)
+            .workspace_id(project.volume()?.storage_name(&mut None)?)
             .map_err(agent)?;
         let path = workspace
             .held_task_mount_root()?
@@ -2313,6 +2343,10 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
         ),
         ScriptedTurn::Text("writer settled".into()),
         call(
+            "shell",
+            serde_json::json!({"command":"pwd", "cwd":"missing-cwd-gc65"}),
+        ),
+        call(
             "read",
             serde_json::json!({"path":".volumes/shared/board.txt"}),
         ),
@@ -2321,13 +2355,9 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
     let directory = tempfile::tempdir().map_err(agent)?;
     let harness = Arc::new(
         LocalHarness::open(
-            volume_config(
-                directory.path(),
-                volume(directory.path()).await?,
-                provider.clone(),
-            )?
-            .workspace_mounting(crate::local::WorkspaceMounting::Physical)
-            .compaction(crate::context::CompactionPolicy::Disabled),
+            super::checkout_config(directory.path(), (super::model()?, provider.clone()))?
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .compaction(crate::context::CompactionPolicy::Disabled),
         )
         .await?,
     );
@@ -2371,10 +2401,29 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
             crate::agent::TurnOutcome::Completed
         ));
     }
-    assert_eq!(provider.request_count(), 4);
+    assert_eq!(provider.request_count(), 5);
     let request = provider
-        .request(3)
+        .request(4)
         .ok_or_else(|| Error::NotFound("shared-board read request".into()))?;
+    let refused = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id, content, ..
+            } if call_id == "shell" => Some(content),
+            _ => None,
+        })
+        .ok_or_else(|| Error::NotFound("missing-cwd tool result".into()))?;
+    assert!(matches!(
+        refused,
+        crate::model::ToolResultContent::Error { .. }
+    ));
+    assert!(
+        matches!(refused, crate::model::ToolResultContent::Error { message }
+        if message == "tool execution failed: cwd missing-cwd-gc65 does not exist")
+    );
     let result = request
         .messages
         .iter()
@@ -2593,20 +2642,20 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     assert_eq!(provider.request_count(), 2);
     let child_file = publication(&connection, &child, 0).await?;
     let child_state = agents.state(&child).await.map_err(agent)?;
-    let child_project = &child_state
+    let child_project = child_state
         .volumes
         .iter()
         .find(|binding| binding.name == "project")
         .ok_or_else(|| Error::NotFound("child project volume".into()))?
-        .volume;
+        .volume()?;
     assert_ne!(child_project, &project);
     assert_eq!(child_file.volume(), child_project);
-    let child_scratch = &child_state
+    let child_scratch = child_state
         .volumes
         .iter()
         .find(|binding| binding.name == "home")
         .ok_or_else(|| Error::NotFound("child scratch volume".into()))?
-        .volume;
+        .volume()?;
     assert_ne!(child_scratch, &harness.scratch);
     let child_skills = catalog(0)?;
     let project_skill = child_skills
@@ -3733,11 +3782,15 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let project = child_state
         .volumes
         .iter()
-        .find(|binding| binding.volume.class() == crate::conversation::VolumeClass::Project)
+        .find(|binding| {
+            binding
+                .as_volume()
+                .is_some_and(|volume| volume.class() == crate::conversation::VolumeClass::Project)
+        })
         .ok_or_else(|| Error::Invalid("historical child has no project volume".into()))?;
     let child_workspace = fs
         .open_workspace(
-            project.volume.storage_name(&mut None)?,
+            project.volume()?.storage_name(&mut None)?,
             WorkBudget::UNBOUNDED,
             &cancel,
         )
@@ -3790,7 +3843,7 @@ async fn tool_free_checkout_sessions_read_their_own_logical_context_without_moun
         .await?,
     );
     let directory = harness.connect_sessions().await?;
-    let session = crate::local::sessions::create(&directory, "tool-free-session").await?;
+    let session = crate::local::sessions::create(&directory, "tool-free-session", None).await?;
     let (agents, _) = harness.agents().await?;
     let root = agents.state(session.root()).await.map_err(agent)?;
     let project = root
@@ -3802,7 +3855,7 @@ async fn tool_free_checkout_sessions_read_their_own_logical_context_without_moun
         .workspace
         .as_ref()
         .unwrap()
-        .spawned_project_view(&project.volume)
+        .spawned_project_view(project.volume()?)
         .await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     view.write(
@@ -4175,8 +4228,8 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         .find(|binding| binding.name == "project")
         .ok_or_else(|| Error::Invalid("missing branch project".into()))?;
     let branched_workspace = workspace_ref(
-        project.volume.provider().clone(),
-        &project.volume.storage_name(&mut None)?,
+        project.volume()?.provider().clone(),
+        &project.volume()?.storage_name(&mut None)?,
     )?;
     assert_eq!(
         harness
@@ -4346,7 +4399,8 @@ async fn session_diff_queries_pin_endpoints_and_keep_client_lifetimes_independen
         )
         .await?;
     let directory_connection = harness.connect_sessions().await?;
-    let selected = crate::local::sessions::create(&directory_connection, "diff-session").await?;
+    let selected =
+        crate::local::sessions::create(&directory_connection, "diff-session", None).await?;
     let conversation = Conversation::open(selected.clone());
     let (agents, _) = harness.agents().await?;
     let state = agents.state(selected.root()).await.map_err(agent)?;
@@ -4356,8 +4410,8 @@ async fn session_diff_queries_pin_endpoints_and_keep_client_lifetimes_independen
         .find(|binding| binding.name == "project")
         .ok_or_else(|| Error::Invalid("missing selected project".into()))?;
     let workspace = workspace_ref(
-        project.volume.provider().clone(),
-        &project.volume.storage_name(&mut None)?,
+        project.volume()?.provider().clone(),
+        &project.volume()?.storage_name(&mut None)?,
     )?;
     harness
         .files

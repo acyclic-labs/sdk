@@ -135,9 +135,15 @@ fn unexpected() -> Error {
 }
 
 /// Create a root through the host's one admitted volume/actor publication.
-pub async fn create(connection: &Connection, operation: &str) -> Result<Connection> {
+pub async fn create(
+    connection: &Connection,
+    operation: &str,
+    questions: Option<bool>,
+) -> Result<Connection> {
     let id = IntentId::try_from(operation).map_err(storage)?;
-    let AgentReply::Root { agent } = connection.execute(&AgentCommand::NewSession { id }).await?
+    let AgentReply::Root { agent } = connection
+        .execute(&AgentCommand::NewSession { id, questions })
+        .await?
     else {
         return Err(unexpected());
     };

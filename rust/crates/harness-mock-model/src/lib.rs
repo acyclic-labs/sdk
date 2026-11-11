@@ -152,6 +152,10 @@ pub struct Step {
     pub json: Option<Value>,
     /// Leave the stream open after the chunks, for cancellation/crash cases.
     pub hold: bool,
+    /// Pause after an SSE event containing each marker until the test
+    /// acknowledges it with POST <namespace>/ack {"chunk": marker}.
+    /// This makes inter-chunk paint assertions causal, without delays.
+    pub pause_after: Vec<String>,
 }
 
 /// Native Gemini content and token categories. Parts are ordinary script data;

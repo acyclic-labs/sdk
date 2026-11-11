@@ -14,11 +14,23 @@ fn sandbox_policy() {
     std::fs::create_dir(&workspace).unwrap();
     std::fs::create_dir(&volume).unwrap();
     std::fs::write(workspace.join("readable"), b"workspace data").unwrap();
+    std::fs::create_dir(workspace.join(".cargo")).unwrap();
+    std::fs::write(
+        workspace.join(".cargo/config.toml"),
+        b"# workspace metadata\n",
+    )
+    .unwrap();
     std::fs::write(volume.join("readable"), b"volume data").unwrap();
     std::fs::write(&outside, b"private").unwrap();
+    #[cfg(target_os = "linux")]
+    outside_attributes(&outside, false, true);
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let executable = std::env::current_exe().unwrap();
+    #[cfg(target_os = "linux")]
+    let rg = crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
+        .resolve_native("rg")
+        .unwrap();
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
     for (confined, access, primary_write, volume_write) in [
         (false, ExecutionAccess::WorkspaceWrite, true, true),
@@ -27,13 +39,12 @@ fn sandbox_policy() {
         (true, ExecutionAccess::ReadOnly, false, false),
     ] {
         for custodied in [false, true] {
-            let grant = ExecutionGrant::workspace_default(
-                &workspace,
-                access,
-                [volume.clone()],
-                [executable.clone()],
-            )
-            .unwrap();
+            let read = vec![executable.clone()];
+            #[cfg(target_os = "linux")]
+            let read = read.into_iter().chain([rg.clone()]).collect::<Vec<_>>();
+            let grant =
+                ExecutionGrant::workspace_default(&workspace, access, [volume.clone()], read)
+                    .unwrap();
             let grant = if volume_write {
                 grant
             } else {
@@ -70,6 +81,16 @@ fn sandbox_policy() {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            #[cfg(target_os = "linux")]
+            command.env(
+                "PATH",
+                std::env::join_paths([
+                    rg.parent().unwrap(),
+                    Path::new("/usr/bin"),
+                    Path::new("/bin"),
+                ])
+                .unwrap(),
+            );
             #[cfg(windows)]
             command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
             let mut tree = if confined {
@@ -136,6 +157,8 @@ fn sandbox_policy_probe() {
         }
     };
     allowed(std::fs::read(&outside).map(|_| ()), !confined);
+    #[cfg(target_os = "linux")]
+    outside_attributes(Path::new(&outside), confined, false);
     allowed(std::fs::write(&outside, b"escaped"), !confined);
     assert_eq!(std::fs::read("readable").unwrap(), b"workspace data");
     assert_eq!(
@@ -152,13 +175,45 @@ fn sandbox_policy_probe() {
     } else {
         "/bin/cat </dev/null && printf runtime"
     };
-    let output = std::process::Command::new(std::env::var_os("ACYCLIC_POLICY_SHELL").unwrap())
-        .args(acyclic_host_platform::shell::PLATFORM.arguments)
-        .arg(source)
-        .output()
-        .unwrap();
+    let shell = |source: &str| {
+        std::process::Command::new(std::env::var_os("ACYCLIC_POLICY_SHELL").unwrap())
+            .args(acyclic_host_platform::shell::PLATFORM.arguments)
+            .arg(source)
+            .output()
+            .unwrap()
+    };
+    let output = shell(source);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"runtime");
+    #[cfg(target_os = "linux")]
+    {
+        // GC-24, 20261111T073658725Z/api-sdk: replay the recorded argv.
+        // Parent enumeration and Git discovery can be denied independently;
+        // the next command isolates the workspace's required read contract.
+        let recorded = "pwd; ls -la; ls -la ..; git -C . log --oneline -1 2>/dev/null; git -C .. log --oneline -1 2>/dev/null";
+        let replay = shell(recorded);
+        eprintln!(
+            "GC24_REPLAY command={recorded:?} status={} stdout={} stderr={}",
+            replay.status,
+            String::from_utf8_lossy(&replay.stdout),
+            String::from_utf8_lossy(&replay.stderr)
+        );
+        std::fs::metadata("..").unwrap();
+        let listing = shell("ls -la && rg --files");
+        assert!(
+            listing.status.success(),
+            "workspace browsing failed: {listing:?}"
+        );
+        assert!(
+            listing.stderr.is_empty(),
+            "workspace metadata query failed: {listing:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&listing.stdout)
+                .lines()
+                .any(|line| line == "readable")
+        );
+    }
     allowed(std::fs::write("inside", b"inside"), primary_write);
     allowed(
         std::fs::write(
@@ -172,6 +227,68 @@ fn sandbox_policy_probe() {
             .map(|_| ()),
         !confined,
     );
+}
+
+#[cfg(target_os = "linux")]
+#[allow(
+    unsafe_code,
+    reason = "real host xattr fixture and native boundary probes"
+)]
+fn outside_attributes(path: &Path, confined: bool, seed: bool) {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let name = c"user.acyclic-private";
+    let secret = b"host attribute";
+    if seed {
+        // SAFETY: valid terminated names and a borrowed buffer of this length.
+        assert_eq!(
+            unsafe {
+                libc::setxattr(
+                    path.as_ptr(),
+                    name.as_ptr(),
+                    secret.as_ptr().cast(),
+                    secret.len(),
+                    0,
+                )
+            },
+            0
+        );
+        return;
+    }
+    for call in [libc::SYS_getxattr, libc::SYS_lgetxattr] {
+        // SAFETY: null destination with size zero requests only the value size.
+        let result = unsafe {
+            libc::syscall(
+                call,
+                path.as_ptr(),
+                name.as_ptr(),
+                std::ptr::null_mut::<u8>(),
+                0,
+            )
+        };
+        if confined {
+            assert_eq!(result, -1);
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::EOPNOTSUPP)
+            );
+        } else {
+            assert_eq!(result, secret.len() as libc::c_long);
+        }
+    }
+    for call in [libc::SYS_listxattr, libc::SYS_llistxattr] {
+        // SAFETY: null destination with size zero requests only the list size.
+        let result = unsafe { libc::syscall(call, path.as_ptr(), std::ptr::null_mut::<u8>(), 0) };
+        if confined {
+            assert_eq!(result, -1);
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::EOPNOTSUPP)
+            );
+        } else {
+            assert!(result > 0);
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1048,7 +1165,7 @@ async fn physical_grant_admission_yields_and_release_loss_refuses() -> io::Resul
             result?;
         } else {
             let error = result.unwrap_err();
-            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+            assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
         }
         assert_eq!(
             meter.read_attempts.load(Ordering::Acquire),
@@ -1075,14 +1192,8 @@ async fn physical_grant_admission_yields_and_release_loss_refuses() -> io::Resul
             if cancelled {
                 io::ErrorKind::Interrupted
             } else {
-                io::ErrorKind::PermissionDenied
+                io::ErrorKind::Other
             }
-        );
-        assert_eq!(
-            error
-                .get_ref()
-                .is_some_and(|cause| cause.is::<ExecutionRefusal>()),
-            !cancelled
         );
         assert_eq!(meter.read_attempts.load(Ordering::Acquire), 0);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
@@ -1183,7 +1294,7 @@ fn native_attenuation_resolution_cannot_follow_a_replaced_ancestor() {
     std::fs::rename(&nested, original.path().join("previous")).unwrap();
     std::os::unix::fs::symlink(external.path(), &nested).unwrap();
     let error = linux::open_beneath(&parent, Path::new("nested/secret"), None).unwrap_err();
-    assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+    assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
     // Negative control: ordinary path resolution follows the same link.
     assert_eq!(
         std::fs::read_to_string(nested.join("secret")).unwrap(),
@@ -1502,12 +1613,7 @@ fn refused_launches_bind_no_roots(
             &mut retained,
         )
         .expect_err("an unfunded invocation prepared an execution boundary");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
-        assert_eq!(
-            error.to_string().matches("tool execution failed: ").count(),
-            1
-        );
+        assert_eq!(error.kind(), io::ErrorKind::Other);
         assert!(retained.is_none());
         assert!(!workspace.join("new").exists());
     }
@@ -1553,7 +1659,7 @@ fn admitted_tree_preserves_custody(
         &mut retained,
     )
     .expect_err("an occupied recovery slot was replaced");
-    assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
     let mut tree = retained.expect("admitted tree retains its original recovery slot");
     let output = tree
         .wait_with_output(
@@ -1602,7 +1708,7 @@ fn prefix_operation_credits(
         let error = ceiling
             .check_attenuation_controlled(requested, Some(&denied))
             .unwrap_err();
-        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        assert_eq!(error.kind(), io::ErrorKind::Other);
         // The workspace proof completes; denied index examinations cannot
         // reach a selected read root's open or native subtree resolution.
         assert_eq!(denied.read_attempts.load(Ordering::Acquire), 2);
@@ -1619,8 +1725,7 @@ fn prefix_operation_credits(
             assert_eq!(meter.used_allocations.load(Ordering::Acquire), allocations,);
         } else {
             let error = result.unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+            assert_eq!(error.kind(), io::ErrorKind::Other);
         }
         assert_eq!(
             meter.used_operations.load(Ordering::Acquire),
@@ -1692,7 +1797,7 @@ fn prefix_refusal_credits(
         let error = ceiling
             .check_attenuation_controlled(requested, Some(&denied))
             .unwrap_err();
-        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        assert_eq!(error.kind(), io::ErrorKind::Other);
         let before_allocation = if path == nested { 2 } else { 4 };
         assert_eq!(
             denied.used_operations.load(Ordering::Acquire),

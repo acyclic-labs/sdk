@@ -3,7 +3,7 @@
 //! This facade opens no model provider, executor, service or process. Its
 //! agents come from the native host's agent runtime.
 use super::*;
-use crate::agent::{AgentPath, VolumeBinding};
+use crate::agent::{AgentPath, WorkspaceEntry};
 use acyclic_fs::HeldRoot;
 use workspace::owner::{AgentOwner, ViewOwner};
 
@@ -41,6 +41,7 @@ pub struct HostWorkspace {
     mount_root: Arc<HeldRoot>,
     project: VolumeRef,
     signed: Scope,
+    verifier: crate::core::AuthorityVerifier,
     scope: crate::runtime::RuntimeScope,
     _native_volumes: Vec<workspace::projection::Entered>,
 }
@@ -53,6 +54,7 @@ impl HostWorkspace {
         workspace: Arc<LocalWorkspace>,
         agent: AgentPath,
         signed: &Scope,
+        verifier: &crate::core::AuthorityVerifier,
         admitted_mount_root: HeldRoot,
     ) -> Result<Self> {
         if agent.depth() != 0 {
@@ -89,6 +91,7 @@ impl HostWorkspace {
                 Default::default(),
             )?,
             signed: signed.copy(&mut None)?,
+            verifier: verifier.clone(),
             mount_root: Arc::new(admitted_mount_root),
             project,
             _native_volumes: Vec::new(),
@@ -197,6 +200,7 @@ impl HostWorkspace {
         let commands = workspace::git::Commands {
             workspace: &self.workspace,
             signed: &self.signed,
+            verifier: &self.verifier,
             clock: &acyclic_stream::SystemUnixMillisClock,
             capture_options: &configuration.0,
             capture_policy: &configuration.1,
@@ -226,7 +230,7 @@ impl HostWorkspace {
     pub(super) async fn open_child(
         &self,
         child: &AgentPath,
-        volumes: &[VolumeBinding],
+        volumes: &[WorkspaceEntry],
         signed: Scope,
         reference: &str,
     ) -> Result<Self> {
@@ -240,7 +244,8 @@ impl HostWorkspace {
             volumes
                 .iter()
                 .find(|binding| binding.name == name)
-                .map(|binding| binding.volume.clone())
+                .and_then(|binding| binding.as_volume())
+                .cloned()
                 .ok_or_else(|| Error::Invalid(format!("host child has no {name} volume")))
         };
         let project = bound("project")?;
@@ -309,6 +314,7 @@ impl HostWorkspace {
                 Default::default(),
             )?,
             signed,
+            verifier: self.verifier.clone(),
             _native_volumes: Vec::new(),
         };
         result.verify().await?;

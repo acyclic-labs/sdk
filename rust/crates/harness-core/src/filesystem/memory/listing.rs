@@ -142,7 +142,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             crate::executor::with_history_io(Some(&io), |observer| {
                 crate::executor::json::canonical_json_digest(
                     invocation,
-                    io.remaining()?.bytes_encoded,
+                    Some(io.remaining()?.bytes_encoded),
                     observer,
                 )
             })?
@@ -237,7 +237,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             crate::executor::with_history_io(Some(&io), |observer| {
                 crate::executor::json::canonical_json_digest(
                     invocation,
-                    io.remaining()?.bytes_encoded,
+                    Some(io.remaining()?.bytes_encoded),
                     observer,
                 )
             })?
@@ -338,7 +338,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
                     .arguments
                     .get(key)
                     .and_then(Value::as_str)
-                    .is_some_and(|path| path.len() > context.effective_scope().limits().path_bytes)
+                    .is_some_and(|path| {
+                        context
+                            .effective_scope()
+                            .limits()
+                            .path_bytes
+                            .is_some_and(|maximum| path.len() > maximum.get())
+                    })
                 {
                     return Err(Error::Unauthorized(
                         "list_files path exceeds its effective scope".into(),
@@ -422,11 +428,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         scope: Option<&crate::runtime::RuntimeScope>,
         context: Option<&crate::runtime::ToolContext>,
         invocation: &crate::tool::ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> crate::Result<()> {
         let _ = (scope, context, invocation, work);
         let scope = context.map(|context| context.effective_scope()).or(scope);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             let context = context.ok_or(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -448,7 +454,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
                         .arguments
                         .get(key)
                         .and_then(Value::as_str)
-                        .is_some_and(|path| path.len() > maximum_path_bytes)
+                        .is_some_and(|path| {
+                            maximum_path_bytes.is_some_and(|maximum| path.len() > maximum.get())
+                        })
                     {
                         return Err(Error::NativeBoundary {
                             code: crate::wire::ErrorCode::Unauthorized,
@@ -495,7 +503,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         Box::pin(async move {
             let mut observed = self.observed.lock().await;
             let admission_digest =
-                crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
+                crate::executor::json::canonical_json_digest(&invocation, None, &mut None)?;
             if let Some(original) = observed.get(&invocation.operation_id) {
                 return if original.admission_digest == admission_digest {
                     self.recheck(&original.result, &invocation, _context.as_ref())
@@ -528,7 +536,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         Box::pin(async move {
             let observed = self.observed.lock().await;
             let admission_digest =
-                crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
+                crate::executor::json::canonical_json_digest(&invocation, None, &mut None)?;
             match observed.get(&invocation.operation_id) {
                 Some(original) if original.admission_digest == admission_digest => self
                     .recheck(&original.result, &invocation, _context.as_ref())
@@ -557,9 +565,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         context: &'a crate::runtime::ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (ToolResult, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
         self.authorize(None, Some(context), invocation, Some(work))?;
-        crate::NativeFutureBundle::new(work, || self.native_execute(context, invocation, work))
+        acyclic_fs::NativeFutureBundle::new(work, || self.native_execute(context, invocation, work))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -568,10 +582,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         context: &'a crate::runtime::ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
-    {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (Option<ToolResult>, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
         self.authorize(None, Some(context), invocation, Some(work))?;
-        crate::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             match self.native_observe(context, invocation, work).await? {
                 Some(mut output) => {
                     let retained = output
@@ -610,8 +629,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolProjec
         &self,
         _: &ToolInvocation,
         result: &ToolResult,
-        _work: crate::NativeWork<'_>,
-    ) -> Result<(Value, crate::NativeCustody)> {
+        _work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = _work {
             #[derive(serde::Serialize)]
@@ -636,7 +655,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolProjec
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+    fn supports_native_projection(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
         if let Some(work) = work {
             work.remaining().map_err(Error::from)?;
         }

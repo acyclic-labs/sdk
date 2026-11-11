@@ -96,7 +96,7 @@ fn demand_is_terminal(error: &crate::DemandError) -> bool {
     use crate::DemandError as E;
     match error {
         E::Mount(error) => source_is_terminal(error),
-        #[cfg(feature = "native-watch")]
+        #[cfg(not(target_arch = "wasm32"))]
         E::Observation(error) => !matches!(error.as_ref(), crate::watch::NativeWatchError::Io(_)),
         E::Io(_)
         | E::StaleSource

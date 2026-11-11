@@ -8,7 +8,7 @@ import { WasmExplorer, type WasmStream } from "../generated/wasm/acyclic_harness
 /** One visible tree row. `latest` is the newest committed conversation record. */
 export type ExplorerRow =
   | {
-    kind: "agent"; path: string; depth: bigint; status: unknown | null;
+    kind: "agent"; path: string; role: string | null; depth: bigint; status: unknown | null;
     conversation: bigint | null; latest: Uint8Array | null; expanded: boolean;
   }
   | { kind: "loading"; depth: bigint };
@@ -148,6 +148,10 @@ export class AgentExplorer {
   scroll(rows: number): void { this.#core.scroll(rows); this.schedule(); }
   hover(path: string | null): void { this.#core.hover(path ?? undefined); this.schedule(); }
   focus(path: string | null): void { this.#core.focus(path ?? undefined); this.schedule(); }
+  /** Input remains addressed to the closest orchestrator while contributors are inspected. */
+  inputTarget(path: string): string { return this.#core.inputTarget(path); }
+  /** Page through the underlying cursor window, including collapsed contributors. */
+  page(forward = true): void { this.#core.page(forward); this.schedule(); }
   expand(path: string): void { this.#core.expand(path); this.schedule(); }
   collapse(path: string): void { this.#core.collapse(path); this.schedule(); }
   open(path: string, rows: number): void { this.#core.open(path, rows); this.schedule(); }

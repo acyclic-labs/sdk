@@ -83,7 +83,7 @@ pub(super) fn capture_sort_by<T>(
         .map_err(CaptureError::from)
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
 #[path = "sort_properties.rs"]
 mod sort_properties;
 

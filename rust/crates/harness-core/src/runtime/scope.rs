@@ -65,7 +65,7 @@ pub struct RuntimeScope {
     pub(super) extensions_sealed: bool,
     pub(super) extension_runtime: Option<Arc<ExtensionRuntime>>,
     pub(super) extension_schemas: Option<SchemaRegistry>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) _native_grants_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -79,7 +79,7 @@ impl Clone for RuntimeScope {
             extensions_sealed: self.extensions_sealed,
             extension_runtime: self.extension_runtime.clone(),
             extension_schemas: self.extension_schemas.clone(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             _native_grants_custody: None,
         }
     }
@@ -97,7 +97,7 @@ impl RuntimeScope {
     }
 
     /// Moves already-paid grants into a checked native root, without a copy.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new_with_native_work(
         grants: (Capabilities, acyclic_fs::NativeAllocation),
         limits: Limits,
@@ -141,7 +141,7 @@ impl RuntimeScope {
             extensions_sealed: true,
             extension_runtime: self.extension_runtime.clone(),
             extension_schemas: self.extension_schemas.clone(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             _native_grants_custody: None,
         })
     }
@@ -149,7 +149,10 @@ impl RuntimeScope {
     pub(super) fn allows_authority(&self, grants: &Capabilities, limits: &Limits) -> bool {
         grants.is_subset_of(&self.grants)
             && limits.file_bytes <= self.limits.file_bytes
-            && limits.path_bytes <= self.limits.path_bytes
+            && self
+                .limits
+                .path_bytes
+                .is_none_or(|maximum| limits.path_bytes.is_some_and(|limit| limit <= maximum))
             && self
                 .limits
                 .attachments
@@ -172,7 +175,7 @@ impl RuntimeScope {
             })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn validate_narrowing_with_native_work(
         &self,
         grants: &Capabilities,
@@ -192,7 +195,7 @@ impl RuntimeScope {
     }
 
     /// Copies existing grants and concrete metadata on the original ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn clone_with_native_work(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -202,7 +205,7 @@ impl RuntimeScope {
     }
 
     /// Attenuates paid grants using the ordinary checks and native metadata copy.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn narrow_with_native_work(
         &self,
         grants: (Capabilities, acyclic_fs::NativeAllocation),
@@ -213,7 +216,7 @@ impl RuntimeScope {
         self.clone_native_metadata(grants, limits, true, work)
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn clone_native_metadata(
         &self,
         grants: (Capabilities, acyclic_fs::NativeAllocation),

@@ -56,7 +56,6 @@ pub(crate) trait MarkerWork {
 
 impl MarkerWork for Option<&crate::conversation::ContentIo> {
     fn remaining(&self) -> crate::Result<u64> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = self {
             return Ok(io.remaining()?.items_examined);
         }
@@ -64,7 +63,6 @@ impl MarkerWork for Option<&crate::conversation::ContentIo> {
     }
 
     fn charge(&self, items_examined: u64) -> crate::Result<()> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = self {
             io.charged(acyclic_fs::WorkCounters {
                 items_examined,
@@ -76,7 +74,7 @@ impl MarkerWork for Option<&crate::conversation::ContentIo> {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl MarkerWork for &acyclic_fs::NativeMaterializationWork {
     fn remaining(&self) -> crate::Result<u64> {
         Ok(acyclic_fs::NativeMaterializationWork::remaining(self)?.items_examined)
@@ -202,7 +200,7 @@ where
 mod tests {
     use super::*;
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn marker_work_charges_only_inspected_bytes_and_refuses_before_unfunded_work()
     -> crate::Result<()> {

@@ -18,7 +18,7 @@ use crate::{
     OperationId,
     agent::{
         AgentHandler, AgentHost, AgentId, AgentPath, Delivered, Error, ExecutorDriver, ForkAdopted,
-        IntentId, Sender, Spawn, VolumeBinding,
+        IntentId, Sender, Spawn, WorkspaceEntry,
     },
     approvals::ApprovalResponder,
     conversation::{ContentAccess, ContentPublisher, FileRef},
@@ -53,9 +53,9 @@ mod input_preview;
 mod journal;
 mod sessions;
 
-#[cfg(all(target_os = "linux", feature = "native-execution"))]
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 mod guest;
-#[cfg(all(target_os = "linux", feature = "native-execution"))]
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 pub use guest::{GuestAuthority, GuestMappingSource, LocalGuestEnrollment};
 
 /// The caller a host's platform verified for one request, before any of the
@@ -79,9 +79,9 @@ pub struct RootRequest {
     pub agent: AgentId,
     /// Volumes created, empty, in the root's own commit; the agent's private
     /// volume is one of them.
-    pub fresh: Vec<VolumeBinding>,
+    pub fresh: Vec<WorkspaceEntry>,
     /// Existing volumes the root binds as they are.
-    pub retained: Vec<VolumeBinding>,
+    pub retained: Vec<WorkspaceEntry>,
     /// Task brief, already staged, if any.
     pub brief: Option<FileRef>,
     /// Approval policy file, if any.
@@ -473,7 +473,7 @@ where
     ///
     /// # Errors
     /// When `root` is absent or its scope does not cover its observation.
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn client_credential(
         &self,
         root: &AgentPath,
@@ -485,7 +485,7 @@ where
 
     /// Explicit owner enrollment for the root directory of this placement.
     /// This is a platform operation, never callable by a session request.
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn session_credential(
         &self,
         root: &AgentPath,
@@ -498,7 +498,7 @@ where
             .await
     }
 
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     /// Session admission for this endpoint's root uses the same audience as
     /// its client enrollment. Local roots have a conversation audience;
     /// admitted workloads retain their original host-selected audience.
@@ -518,7 +518,7 @@ where
         .map_err(turn)
     }
 
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn client_observation(
         &self,
         root: &AgentPath,
@@ -541,7 +541,7 @@ where
             .client_observation(
                 &authority,
                 &state.path,
-                &authority.private.volume,
+                authority.private.volume()?,
                 clock,
                 Some(calls),
                 directory,
@@ -561,10 +561,10 @@ where
         let private = state
             .volumes
             .iter()
-            .find(|binding| binding.name == super::PRIVATE_VOLUME)
+            .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
             .ok_or(Error::Record("agent has no private volume"))?;
         self.volumes
-            .tool_resource(&private.volume)
+            .tool_resource(private.volume()?)
             .await
             .map_err(turn)
     }
@@ -760,7 +760,7 @@ where
         )
         .await
         .map_err(turn)?;
-        if at.is_some_and(|file| file.volume() != &authority.private.volume)
+        if at.is_some_and(|file| Some(file.volume()) != authority.private.as_volume())
             || (path.starts_with(super::InternalContentClass::ToolResult.prefix()) && at.is_none())
         {
             return Err(Error::Record(
@@ -774,7 +774,7 @@ where
         let grant = super::ContentGrant::verify_directory_read(
             &authority.verifier,
             &authority.scope,
-            &authority.private.volume,
+            authority.private.volume()?,
             super::TOOL_OUTPUT,
             &mut None,
         )
@@ -782,7 +782,7 @@ where
         let (bytes, _selection, length) = self
             .volumes
             .read_private_range(
-                &authority.private.volume,
+                authority.private.volume()?,
                 &grant,
                 path,
                 generation.as_ref(),
@@ -860,7 +860,7 @@ where
         let grant = super::ContentGrant::verify(
             &authority.verifier,
             &authority.scope,
-            &authority.private.volume,
+            authority.private.volume()?,
             crate::conversation::VolumeOperation::Read,
             u64::MAX,
             &mut None,
@@ -874,7 +874,7 @@ where
         let (file, bytes) = self
             .volumes
             .read_internal_range(
-                &authority.private.volume,
+                authority.private.volume()?,
                 &grant,
                 &path,
                 super::InternalContentClass::Interaction,
@@ -1134,7 +1134,7 @@ where
         let path = || format!("inputs/{operation}-{}.{extension}", blake3::hash(source));
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&self.volumes),
-            &authority.private.volume,
+            authority.private.volume()?,
             &authority.verifier,
             &authority.scope,
             self.maximum_bytes,
@@ -1182,7 +1182,7 @@ where
 
     /// Revalidates an existing agent's admission against its committed volume
     /// bindings, before restoring a platform-owned route. Performs no IO.
-    pub fn admit_agent(&self, agent: &AgentPath, volumes: &[VolumeBinding]) -> Result<(), Error> {
+    pub fn admit_agent(&self, agent: &AgentPath, volumes: &[WorkspaceEntry]) -> Result<(), Error> {
         super::agent_turns::AdmittedAgent::verify(&self.issuer, &self.admission, agent, volumes)
             .map_err(turn)?;
         Ok(())
@@ -1195,7 +1195,7 @@ where
             .fresh
             .iter()
             .chain(&request.retained)
-            .find(|binding| binding.name == super::PRIVATE_VOLUME)
+            .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
             .ok_or_else(|| turn(crate::Error::Invalid("agent has no private volume".into())))?;
         // Admission needs the original private binding, not a copy of every
         // proposed volume. Authority issuance remains on the execution path.
@@ -1207,7 +1207,9 @@ where
         )
         .map_err(turn)?;
         for binding in &request.fresh {
-            authority.authorize_volume(&binding.volume).map_err(turn)?;
+            if let Some(volume) = binding.as_volume() {
+                authority.authorize_volume(volume).map_err(turn)?;
+            }
         }
         Ok(())
     }
@@ -1232,7 +1234,8 @@ where
         intent: &IntentId,
         request: RootRequest,
     ) -> Result<Prepared, Error> {
-        self.prepare_root_request(intent, request, false).await
+        self.prepare_root_request(intent, request, false, None)
+            .await
     }
 
     /// Prepare an independent root and its directory membership in one commit.
@@ -1241,9 +1244,11 @@ where
         &self,
         intent: &IntentId,
         request: RootRequest,
+        questions: Option<bool>,
     ) -> Result<Prepared, Error> {
         self.admit_sessions()?;
-        self.prepare_root_request(intent, request, true).await
+        self.prepare_root_request(intent, request, true, questions)
+            .await
     }
 
     async fn prepare_root_request(
@@ -1251,6 +1256,7 @@ where
         intent: &IntentId,
         request: RootRequest,
         indexed: bool,
+        questions: Option<bool>,
     ) -> Result<Prepared, Error> {
         self.admit_root(&request)?;
         if self.turns.templates().is_some() {
@@ -1263,7 +1269,7 @@ where
             brief,
             policy,
         } = request;
-        let volumes: Vec<VolumeBinding> = fresh.iter().chain(&retained).cloned().collect();
+        let volumes: Vec<WorkspaceEntry> = fresh.iter().chain(&retained).cloned().collect();
         let Spawn { child, mut request } = self.agents.prepare_root(
             intent,
             ForkAdopted {
@@ -1277,6 +1283,7 @@ where
                 brief,
                 policy,
             },
+            questions.unwrap_or(self.turns.question_plugin()),
         )?;
         if indexed {
             self.index_session(&child, &mut request)?;
@@ -1285,10 +1292,10 @@ where
         let cancellation = CancellationToken::new();
         let mut creations = Vec::with_capacity(fresh.len());
         for binding in &fresh {
-            let (name, operation) = self
-                .volumes
-                .volume_creation(&binding.volume)
-                .map_err(turn)?;
+            let Some(volume) = binding.as_volume() else {
+                continue;
+            };
+            let (name, operation) = self.volumes.volume_creation(volume).map_err(turn)?;
             creations.push(CreateSpec {
                 name: WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &cancellation)
                     .map_err(|failure| turn(super::map_error(failure.error)))?

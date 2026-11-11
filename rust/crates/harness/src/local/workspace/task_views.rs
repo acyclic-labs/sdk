@@ -21,7 +21,7 @@ impl LocalWorkspace {
         &self,
         view: workspace::View,
         project: &VolumeRef,
-        bindings: &[crate::agent::VolumeBinding],
+        bindings: &[crate::agent::WorkspaceEntry],
         owner: &dyn super::owner::ViewOwner,
         authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<LocalWorkspace>> {
@@ -147,20 +147,22 @@ impl LocalWorkspace {
     /// that still hold them; retained logical history is independent.
     pub(in crate::local) fn release_physical_bindings(
         &self,
-        bindings: &[crate::agent::VolumeBinding],
+        bindings: &[crate::agent::WorkspaceEntry],
     ) -> Result<()> {
         if self.mounting != WorkspaceMounting::Physical {
             return Ok(());
         }
-        let Some(project) = bindings.iter().find(|binding| binding.name == "project") else {
+        let Some(project) = crate::agent::WorkspaceTable::primary_in(bindings)
+            .filter(|binding| binding.role == crate::agent::WorkspaceRole::User)
+        else {
             return Ok(());
         };
-        if project.volume.class() == crate::conversation::VolumeClass::SessionShared {
+        if project.volume()?.class() == crate::conversation::VolumeClass::SessionShared {
             return Ok(());
         }
         let id = self
             .filesystem
-            .workspace_id(&project.volume.storage_name(&mut None)?)
+            .workspace_id(project.volume()?.storage_name(&mut None)?)
             .map_err(storage)?;
         if id == self.view().workspace().id() {
             return Ok(());

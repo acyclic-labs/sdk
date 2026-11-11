@@ -1,5 +1,5 @@
 //! Configuration precedence, live rendering, parser invariants and negative controls.
-#![cfg(feature = "tui")]
+#![cfg(not(target_arch = "wasm32"))]
 use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, style::Color};
 use acyclic_harness_tui::{
     ACTIONS, Action, AppAction, Editor, InputEffect, PromptInput, PromptWidget, Viewport,

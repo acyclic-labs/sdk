@@ -1,7 +1,4 @@
-use crate::mcp::sync::{
-    Arc,
-    atomic::{AtomicU32, Ordering},
-};
+use crate::mcp::sync::Arc;
 use crate::{Error, OperationId, Result, mcp::McpToolTransport, runtime::ToolContext};
 use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree, run_blocking_io};
 use acyclic_stream::BoxProviderFuture;
@@ -21,7 +18,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
-use acyclic_mcp::BoundedCodec;
+use acyclic_mcp::{BoundedCodec, FrameBytePolicy};
 pub use acyclic_mcp::{
     JsonLineReader, ServeError, Settled, ToolCall, ToolProvider, ToolServer, Wake,
 };
@@ -30,7 +27,7 @@ pub use acyclic_mcp::{
 pub struct StdioMcpTransport {
     service: RunningService<RoleClient, ClientConfig>,
     timeout: Option<Duration>,
-    maximum_bytes: Arc<AtomicU32>,
+    maximum_bytes: Arc<FrameBytePolicy>,
     tools_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
     _process: Option<ProcessOwner>,
 }
@@ -44,7 +41,7 @@ impl StdioMcpTransport {
     ) -> Result<Self> {
         let timeout_ms = timeout_ms.into();
         validate_bounds(maximum_bytes, timeout_ms)?;
-        self.maximum_bytes.store(maximum_bytes, Ordering::Release);
+        self.maximum_bytes.set(maximum_bytes);
         self.timeout = timeout_ms.map(Duration::from_millis);
         Ok(self)
     }
@@ -165,7 +162,7 @@ impl StdioMcpTransport {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let maximum_bytes = Arc::new(AtomicU32::new(maximum_bytes));
+        let maximum_bytes = Arc::new(FrameBytePolicy::new(maximum_bytes));
         let tools_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let changed = tools_generation.clone();
         let read = FramedRead::new(

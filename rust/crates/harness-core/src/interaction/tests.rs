@@ -68,7 +68,7 @@ fn file(path: &str, bytes: &[u8]) -> Result<FileRef> {
     )
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 fn native_budget() -> acyclic_fs::WorkBudget {
     acyclic_fs::WorkBudget {
         source_bytes_read: 1_048_576,
@@ -82,7 +82,7 @@ fn native_budget() -> acyclic_fs::WorkBudget {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_typed_request_error_keeps_original_serde_source_and_custody() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
@@ -129,7 +129,7 @@ fn native_typed_request_error_keeps_original_serde_source_and_custody() -> Resul
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_request_preserves_original_raw_value_schema_semantics() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
@@ -167,7 +167,7 @@ fn native_request_preserves_original_raw_value_schema_semantics() -> Result<()> 
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_tool_approval_preserves_literal_arguments_and_original_custody() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
@@ -393,7 +393,7 @@ proptest::proptest! {
         proptest::prop_assert_eq!(&ticket.validate_request_bytes(&bytes, &mut None).unwrap().0, &request);
         let native = crate::executor::json::json_from_slice_bounded(
             std::marker::PhantomData::<Interaction>, &bytes,
-            crate::executor::json::JsonBounds { maximum_bytes: bytes.len() as u64, maximum_items: bytes.len() as u64, maximum_depth: 256 },
+            crate::executor::json::JsonBounds { maximum_bytes: Some(bytes.len() as u64), maximum_items: Some(bytes.len() as u64), maximum_depth: 256 },
             Some(crate::wire::ErrorCode::Invalid),
             Some(crate::executor::json::JsonValueSchema::Interaction), &mut |_| Ok(()),
         ).unwrap();

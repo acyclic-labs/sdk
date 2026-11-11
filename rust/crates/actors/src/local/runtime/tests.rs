@@ -1964,7 +1964,7 @@ async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult 
     let address = spawn_with(&store, "cancelled", &[b"emit"]).await?;
     let runtime = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
-        Arc::new(Limited::new(10_000, 1 << 16, true)?),
+        Arc::new(Limited::new(Some(10_000), Some(1 << 16), true)?),
         Arc::new(Manual(AtomicU64::new(1))),
     );
     runtime.track(address.clone())?;
@@ -2020,8 +2020,8 @@ struct Limited {
 }
 impl Limited {
     fn new(
-        timeout_ms: u64,
-        checkpoint_bytes: u64,
+        timeout_ms: Option<u64>,
+        checkpoint_bytes: Option<u64>,
         stall: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
@@ -2079,19 +2079,20 @@ fn refused(failures: &[(ActorReference, Error)], reason: &str) -> bool {
 /// oversized checkpoint is refused; neither consumes the input.
 #[tokio::test]
 async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult {
-    let stalled = run_limited(Limited::new(50, 1 << 16, true)?);
+    let stalled = run_limited(Limited::new(Some(50), Some(1 << 16), true)?);
     let (failures, published) = stalled.await?;
     assert!(refused(&failures, "timeout"), "{failures:?}");
     assert!(published.is_empty());
     // Control: the same package within its limits publishes.
-    let (failures, published) = run_limited(Limited::new(10_000, 1 << 16, false)?).await?;
+    let (failures, published) =
+        run_limited(Limited::new(Some(10_000), Some(1 << 16), false)?).await?;
     assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(published, vec![Bytes::from_static(b"r0")]);
-    // Zero means no deadline, rather than an immediate or fallback timeout.
-    let (failures, published) = run_limited(Limited::new(0, 1 << 16, false)?).await?;
+    // Absent reservations impose neither a fallback deadline nor a checkpoint cap.
+    let (failures, published) = run_limited(Limited::new(None, None, false)?).await?;
     assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(published, vec![Bytes::from_static(b"r0")]);
-    let (failures, published) = run_limited(Limited::new(10_000, 4, false)?).await?;
+    let (failures, published) = run_limited(Limited::new(Some(10_000), Some(4), false)?).await?;
     assert!(refused(&failures, "checkpoint"), "{failures:?}");
     assert!(published.is_empty());
     Ok(())

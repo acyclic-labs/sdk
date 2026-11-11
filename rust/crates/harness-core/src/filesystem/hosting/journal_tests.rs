@@ -65,16 +65,17 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
             &IntentId::try_from("root")?,
             RootRequest {
                 agent: id.clone(),
-                fresh: vec![VolumeBinding {
-                    name: PRIVATE_VOLUME.into(),
-                    volume: VolumeRef::new(
+                fresh: vec![WorkspaceEntry::initial_volume(
+                    crate::agent::WorkspaceRole::Private,
+                    PRIVATE_VOLUME.into(),
+                    VolumeRef::new(
                         provider,
                         "private".into(),
                         VolumeClass::AgentPrivate,
                         VolumeOwner::Agent(crate::AgentId::from_bytes(id.to_bytes())),
                         &mut None,
                     )?,
-                }],
+                )],
                 retained: Vec::new(),
                 brief: None,
                 policy: None,

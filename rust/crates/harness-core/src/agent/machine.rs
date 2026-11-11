@@ -12,7 +12,7 @@ pub use super::input::{Progress, Queued, TurnInput};
 use super::input::{awaits, input};
 use super::{
     AgentOutcome, AgentPath, ChildDone, ChildSettled, ChildSettlement, ChildWakes, Error,
-    ForkAdopted, InboxRecord, IntentId, Phase, StatusRecord, VolumeBinding,
+    ForkAdopted, InboxRecord, IntentId, Phase, StatusRecord, WorkspaceEntry,
     kernel::{self, Admit, Control, Mode, Pick},
 };
 use crate::conversation::FileRef;
@@ -87,7 +87,7 @@ pub struct AgentState {
     /// Role profile pinned at adoption.
     pub profile: Option<super::CreationConfig>,
     /// Owned volumes.
-    pub volumes: Vec<VolumeBinding>,
+    pub volumes: Vec<WorkspaceEntry>,
     /// Approval policy file.
     pub policy: Option<FileRef>,
     /// Identity digest of the brief its adoption named: on a spawned agent,
@@ -179,6 +179,13 @@ fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
 }
 
 impl AgentState {
+    pub(super) fn validate_parent(&self) -> Result<(), Error> {
+        if !self.path.parent_is(self.parent.as_ref()) {
+            return Err(Error::Record("agent parent is not its path's parent"));
+        }
+        Ok(())
+    }
+
     pub(super) fn already_steered(&self, sequence: u64, record: &InboxRecord) -> bool {
         sequence < self.steered_through
             && matches!(record, InboxRecord::Message(_) | InboxRecord::Notice { .. })
@@ -239,6 +246,7 @@ impl AgentState {
     /// # Errors
     /// When the adoption's brief has no identity digest.
     pub fn adopted(path: AgentPath, adopted: &ForkAdopted) -> Result<Self, Error> {
+        super::records::check_volumes(adopted.volumes.iter())?;
         let brief = adopted
             .brief
             .as_ref()
@@ -463,7 +471,7 @@ pub enum Out {
         /// for a host-requested spawn.
         profile: Option<super::CreationConfig>,
         /// Volumes bound to the child (filled by the filesystem contribution).
-        volumes: Vec<VolumeBinding>,
+        volumes: Vec<WorkspaceEntry>,
         /// Optional retained conversation cut selected by the caller.
         history: Option<super::HistorySelection>,
     },
@@ -676,10 +684,103 @@ impl PreparedStep {
     }
 }
 
+/// Owns the logical transition before the host chooses its publication encoding.
+struct StepDraft {
+    state: AgentState,
+    outs: Vec<Out>,
+    previous: (Phase, u64),
+    cursor: u64,
+    child_wakes: Option<ChildWakes>,
+    child_settlement: Option<ChildSettlement>,
+}
+
+impl StepDraft {
+    fn finish(self) -> Result<Step, Error> {
+        finalize_step(
+            self.state,
+            self.outs,
+            &self.previous,
+            self.cursor,
+            self.child_wakes,
+            self.child_settlement,
+        )
+    }
+}
+
+impl PreparedStep {
+    fn new(draft: StepDraft) -> Result<Self, Error> {
+        let StepDraft {
+            state,
+            outs,
+            previous,
+            cursor,
+            child_wakes,
+            child_settlement,
+        } = draft;
+        let tails = (state.conversation_tail, state.status_tail);
+        let completion = (
+            state.awaited,
+            state.checkpoint,
+            state.roster,
+            outs.len(),
+            state.pending_notices.clone(),
+        );
+        let mut step = finalize_step(
+            state,
+            outs,
+            &previous,
+            cursor,
+            child_wakes,
+            child_settlement,
+        )?;
+        let mut bytes = checkpoint::encode(&step.state)?;
+        // Check the exact final tails, then retain these same bytes for commit.
+        // Only a state that must shed its growing input is encoded again.
+        if bytes.len() > MAX_CHECKPOINT_BYTES {
+            let child_wakes = step
+                .status
+                .as_mut()
+                .map(|status| std::mem::take(&mut status.child_wakes))
+                .unwrap_or_default();
+            let child_settlement = step
+                .status
+                .as_mut()
+                .and_then(|status| status.child_settlement.take());
+            let Step {
+                mut state,
+                mut outs,
+                ..
+            } = step;
+            state.conversation_tail = tails.0;
+            state.status_tail = tails.1;
+            state.awaited = completion.0;
+            state.checkpoint = completion.1;
+            state.roster = completion.2;
+            state.pending_notices = completion.4;
+            outs.truncate(completion.3);
+            shed(&mut state, &mut outs, OVERSIZED_STATE);
+            step = finalize_step(
+                state,
+                outs,
+                &previous,
+                cursor,
+                child_wakes,
+                child_settlement,
+            )?;
+            bytes = checkpoint::encode(&step.state)?;
+        }
+        Ok(PreparedStep {
+            step,
+            checkpoint: checkpoint::from_encoded(bytes)?,
+        })
+    }
+}
+
 /// Runs one step for `wake`. Every control decision is made by [`kernel`].
 ///
 /// `state` is `None` only for the first delivery, which must be `ForkAdopted`.
 /// `now_unix_ms` is the delivery's clock: a wait's timeout counts from it.
+/// Returns logical effects; checkpoint serialization belongs to the publishing host.
 pub async fn step<T: TurnDriver + ?Sized>(
     driver: &T,
     path: &AgentPath,
@@ -688,7 +789,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
     wake: Wake,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<Step, Error> {
-    Ok(prepare_step(
+    draft_step(
         driver,
         path,
         state,
@@ -697,7 +798,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
         cancellation,
     )
     .await?
-    .step)
+    .finish()
 }
 
 pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
@@ -708,17 +809,46 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     wake: Wake,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<PreparedStep, Error> {
+    PreparedStep::new(
+        draft_step(
+            driver,
+            path,
+            state,
+            (cursor, now_unix_ms, settled_at_micros),
+            wake,
+            cancellation,
+        )
+        .await?,
+    )
+}
+
+async fn draft_step<T: TurnDriver + ?Sized>(
+    driver: &T,
+    path: &AgentPath,
+    state: Option<AgentState>,
+    (cursor, now_unix_ms, settled_at_micros): (u64, u64, Option<u64>),
+    wake: Wake,
+    cancellation: acyclic_actors::guest::CancellationToken,
+) -> Result<StepDraft, Error> {
     let mut outs = Vec::new();
     let alarm_wake = matches!(wake, Wake::Alarm);
     // Consuming a non-waking stream event never advances the model driver,
     // including when another turn is currently paused or executing.
-    let quiet_notice = matches!(
+    let workspace_change = matches!(
         &wake,
         Wake::Inbox {
-            record: InboxRecord::Notice { notice, .. },
+            record: InboxRecord::WorkspaceChanged(_),
             ..
-        } if !notice.wakes()
+        }
     );
+    let quiet_notice = workspace_change
+        || matches!(
+            &wake,
+            Wake::Inbox {
+                record: InboxRecord::Notice { notice, .. },
+                ..
+            } if !notice.wakes()
+        );
     // A requested spawn's step carries only that spawn: its child is created
     // by this step's commit, so no turn may reach it until the commit lands.
     // Pending turn work continues at once on the next step (the kernel's
@@ -776,6 +906,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             state
         }
     };
+    state.validate_parent()?;
     let mut child_wakes = None;
     let applied = outs.len();
     if state.closed {
@@ -794,61 +925,13 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         .await?;
     }
     apply_spawns(&mut state, &mut outs, applied).await?;
-    let tails = (state.conversation_tail, state.status_tail);
-    let completion = (
-        state.awaited,
-        state.checkpoint,
-        state.roster,
-        outs.len(),
-        state.pending_notices.clone(),
-    );
-    let mut step = finalize_step(
+    Ok(StepDraft {
         state,
         outs,
-        &previous,
+        previous,
         cursor,
         child_wakes,
         child_settlement,
-    )?;
-    let mut bytes = checkpoint::encode(&step.state)?;
-    // Check the exact final tails, then retain these same bytes for commit.
-    // Only a state that must shed its growing input is encoded again.
-    if bytes.len() > MAX_CHECKPOINT_BYTES {
-        let child_wakes = step
-            .status
-            .as_mut()
-            .map(|status| std::mem::take(&mut status.child_wakes))
-            .unwrap_or_default();
-        let child_settlement = step
-            .status
-            .as_mut()
-            .and_then(|status| status.child_settlement.take());
-        let Step {
-            mut state,
-            mut outs,
-            ..
-        } = step;
-        state.conversation_tail = tails.0;
-        state.status_tail = tails.1;
-        state.awaited = completion.0;
-        state.checkpoint = completion.1;
-        state.roster = completion.2;
-        state.pending_notices = completion.4;
-        outs.truncate(completion.3);
-        shed(&mut state, &mut outs, OVERSIZED_STATE);
-        step = finalize_step(
-            state,
-            outs,
-            &previous,
-            cursor,
-            child_wakes,
-            child_settlement,
-        )?;
-        bytes = checkpoint::encode(&step.state)?;
-    }
-    Ok(PreparedStep {
-        step,
-        checkpoint: checkpoint::from_encoded(bytes)?,
     })
 }
 
@@ -1130,6 +1213,9 @@ async fn admit(
         }
     }
     match &record {
+        InboxRecord::WorkspaceChanged(change) if !state.closed => {
+            super::workspaces::WorkspaceTable::apply_entries(&mut state.volumes, change)?;
+        }
         InboxRecord::Awaited => state.awaited = true,
         InboxRecord::ChildDone(ChildDone { child, .. })
         | InboxRecord::ChildSettled(ChildSettled { child }) => {
@@ -1193,11 +1279,13 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
 fn admissible(out: &Out) -> bool {
     match out {
         Out::Steered(_) | Out::PendingSpawns(_) => true,
-        Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
+        Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(
                 record,
-                InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
+                InboxRecord::ForkAdopted(_)
+                    | InboxRecord::Archive(_)
+                    | InboxRecord::WorkspaceChanged(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
         Out::Archive { .. }

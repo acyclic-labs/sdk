@@ -4,7 +4,7 @@
 use super::{
     FilesystemContentVerifier, FilesystemHost,
     agent_internal::AgentInternalFiles,
-    agent_turns::{AdmittedAgent, NoticeBlocks, TurnAdmission, agent_error},
+    agent_turns::{AdmittedAgent, NoticeBlocks, TurnAdmission},
 };
 use crate::{
     Error, OperationId, Result,
@@ -130,8 +130,8 @@ where
         };
         let selection = crate::agent::select_boundary(&*self.stream, &self.agent.path, from, until)
             .await
-            .map_err(agent_error)?;
-        let initial_notices = crate::agent::turn_notices(&self.agent).map_err(agent_error)?;
+            .map_err(Error::from)?;
+        let initial_notices = crate::agent::turn_notices(&self.agent).map_err(Error::from)?;
         let inputs = selection.inputs.into_iter().filter(|(inbox, input)| {
             !matches!(input, crate::agent::InboxRecord::Notice {
                 notice: crate::agent::NoticePayload::Quiet(_), ..
@@ -171,7 +171,7 @@ where
             if !waking_notice {
                 flush_notices(&mut notices, &mut messages);
             }
-            let content = crate::agent::model_input(&input.input).map_err(agent_error)?;
+            let content = crate::agent::model_input(&input.input).map_err(Error::from)?;
             let external = content.file_refs().cloned().collect::<Vec<_>>();
             // Staged inputs retain the original exact-file admission. Notice
             // JSON itself carries no authority to the paths it describes.

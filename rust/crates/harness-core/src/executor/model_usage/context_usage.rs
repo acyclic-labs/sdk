@@ -70,8 +70,8 @@ impl Header {
         self.cursor.feed(
             &bytes[(offset - origin) as usize..],
             JsonBounds {
-                maximum_bytes: length,
-                maximum_items: length,
+                maximum_bytes: Some(length),
+                maximum_items: Some(length),
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             None,
@@ -180,7 +180,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    #[cfg(feature = "filesystem")]
     #[tokio::test]
     async fn usage_reads_the_original_projection_with_deep_tool_schemas() -> Result<()> {
         use crate::{

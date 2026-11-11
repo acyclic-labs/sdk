@@ -1,7 +1,7 @@
 use super::*;
 
 impl StockExecutor {
-    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
         self
@@ -25,9 +25,9 @@ impl StockExecutor {
             context,
             tools,
             epoch_tools: None,
-            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             hooks: None,
-            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             prompt_block: None,
             limits: Limits::default(),
             tool_scope: RuntimeScope::default(),
@@ -81,7 +81,6 @@ impl StockExecutor {
         self
     }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) fn with_automatic_compaction(mut self) -> Result<Self> {
         if self.compaction.is_none() {
             self.compaction = Some(crate::context::CompactionPolicy::for_output(
@@ -139,7 +138,6 @@ impl StockExecutor {
     /// Offers the selected capabilities as `native`'s declarations. Called
     /// after any context manifest pins the selection, which a bound registry
     /// refuses, so each declaration runs the revision the manifest pins.
-    #[cfg(feature = "filesystem")]
     pub(crate) fn with_native_tools(
         mut self,
         native: &crate::tools::native::NativeTools,
@@ -156,6 +154,21 @@ impl StockExecutor {
             .0
             .retain(|grant| !grant.starts_with("tool:call:"));
         self
+    }
+
+    /// Optional plugin authority is granted only by the pinned role file.
+    pub(crate) fn without_question_authority(mut self) -> Result<Self> {
+        self.tool_scope
+            .grants
+            .0
+            .retain(|grant| grant != "tool:call:ask_question");
+        if let Some((context, operation)) = &self.task_context {
+            self.task_context = Some((
+                Arc::new(context.scoped(self.tool_scope.grants().clone(), self.limits)?),
+                *operation,
+            ));
+        }
+        Ok(self)
     }
 
     /// Intersect an immutable role ceiling with both model and executable
@@ -180,7 +193,6 @@ impl StockExecutor {
 impl StockExecutor {
     /// Retains this exact composition while refusing every fresh effect intent.
     #[cfg(test)]
-    #[cfg(feature = "filesystem")]
     pub(crate) fn into_reconciliation(mut self) -> Self {
         self.reconciliation_only = true;
         self
@@ -262,7 +274,7 @@ impl Executor for StockExecutor {
         Box::pin(StockExecutor::execute_progress(self, input, journal))
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,

@@ -147,6 +147,14 @@ mod tests {
                     idempotency_key: IdempotencyKey::new(b"parent".to_vec())?,
                 })
                 .await?;
+            memory
+                .append(AppendRequest {
+                    path: root.membership()?,
+                    records: vec![b"root membership".as_slice().into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new(b"root membership".to_vec())?,
+                })
+                .await?;
             // Batch fixture publication, never a per-agent task or thread.
             for first in (0..count).step_by(100) {
                 let mut mutations = Vec::new();
@@ -161,7 +169,15 @@ mod tests {
                         path: child.status()?,
                         records: vec![status.append_record()?],
                     });
+                    mutations.push(CommitMutation::Append {
+                        path: child.membership()?,
+                        records: vec![b"self membership".as_slice().into()],
+                    });
                 }
+                mutations.push(CommitMutation::Append {
+                    path: root.membership()?,
+                    records: vec![b"children created".as_slice().into()],
+                });
                 let committed = memory
                     .commit(CommitRequest {
                         deadline_unix_millis: None,
@@ -232,7 +248,11 @@ mod tests {
             large.view.reader_ref().issued()
         );
         assert_eq!(small_work, large_work);
-        assert!(large.view.reader_ref().issued() <= 16);
+        // One root witness and page; each visible row admits its status,
+        // children's witness and first page. No request depends on total size.
+        assert!(
+            large.view.reader_ref().issued() <= 2 + 3 * u64::try_from(large.view.rows().len())?
+        );
         let before = large.view.reader_ref().issued();
         large.view.scroll(64);
         loop {
@@ -327,6 +347,19 @@ mod tests {
                 idempotency_key: IdempotencyKey::new(b"nested-status".to_vec())?,
             })
             .await?;
+        for (agent, key) in [
+            (&parent, b"parent-created".as_slice()),
+            (&nested, b"nested-self".as_slice()),
+        ] {
+            small_provider
+                .append(AppendRequest {
+                    path: agent.membership()?,
+                    records: vec![key.into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new(key.to_vec())?,
+                })
+                .await?;
+        }
         status.cursor += 1;
         small_provider
             .append(AppendRequest {
@@ -512,7 +545,7 @@ mod tests {
             })
             .unwrap();
             let parent = explorer.root.clone();
-            let want = explorer.page(parent.clone(), 0);
+            let want = explorer.page_want(parent.clone(), 0);
             explorer.reader.plan([(want, Priority::Visible)]);
             let [first]: [Op; 1] = explorer.reader.poll(0).try_into().unwrap();
             let first_id = first.id();
@@ -632,7 +665,7 @@ mod tests {
             // seeking beyond them; unrelated wants cannot prolong residency.
             let wants: Vec<_> = std::iter::once(1_000_000)
                 .chain(0..=128)
-                .map(|index| (explorer.page(parent.clone(), index), Priority::Visible))
+                .map(|index| (explorer.page_want(parent.clone(), index), Priority::Visible))
                 .collect();
             explorer.reader.plan(wants);
             let requests = explorer.reader.poll(1);
@@ -715,22 +748,25 @@ mod tests {
                     .await
                     .unwrap();
             }
-            let status = target.status().unwrap();
+            let membership = target.membership().unwrap();
             provider
                 .append(AppendRequest {
-                    path: status.clone(),
+                    path: membership.clone(),
                     records: vec![b"parent witness".as_slice().into()],
                     if_tail: Some(0),
                     idempotency_key: IdempotencyKey::new(b"witness".to_vec()).unwrap(),
                 })
                 .await
                 .unwrap();
-            let head = provider.head(status.clone()).await.unwrap();
-            explorer.reader.cache_mut().observe_tail(&status, head.tail);
+            let head = provider.head(membership.clone()).await.unwrap();
             explorer
                 .reader
                 .cache_mut()
-                .observe_origin(&status, head.origin);
+                .observe_tail(&membership, head.tail);
+            explorer
+                .reader
+                .cache_mut()
+                .observe_origin(&membership, head.origin);
             let children = target.children().unwrap();
             let page = provider
                 .children_page(ChildrenPageRequest {
@@ -767,7 +803,7 @@ mod tests {
             assert_eq!(explorer.rows().len(), 2);
             assert_eq!(
                 explorer.reader.follows().collect::<Vec<_>>(),
-                vec![(&status, head.tail)]
+                vec![(&membership, head.tail)]
             );
             assert_eq!(
                 explorer.reader.take_follow_selection_visits(),
@@ -802,6 +838,8 @@ pub enum Row {
     Agent {
         /// Agent address.
         path: AgentPath,
+        /// Immutable creation role, absent until its bounded read completes.
+        role: Option<String>,
         /// Latest committed status, `None` until read.
         status: Option<StatusRecord>,
         /// Conversation tail, from the listing projection or a later read.
@@ -847,6 +885,8 @@ pub struct Explorer {
     /// Logical expansion intent and the page each agent was seen on. Only
     /// the viewport requests data; cache pressure never collapses intent.
     expanded: BTreeMap<AgentPath, u32>,
+    orchestrator_view: bool,
+    page_end: Option<Pos>,
     descend: bool,
     hover: Option<AgentPath>,
     focus: Option<AgentPath>,
@@ -914,6 +954,8 @@ impl Explorer {
             velocity: 0,
             frame_ms: 16,
             expanded: BTreeMap::new(),
+            orchestrator_view: false,
+            page_end: None,
             descend: false,
             hover: None,
             focus: None,
@@ -981,6 +1023,18 @@ impl Explorer {
         }
     }
 
+    /// Default human views center on orchestrators. Expanding an orchestrator
+    /// reveals its secondary roles using the same already-demanded child pages.
+    pub fn orchestrator_view(&mut self, enabled: bool) {
+        self.orchestrator_view = enabled;
+    }
+
+    /// Advance one demanded window, including rows hidden by role filtering.
+    pub fn page(&mut self, forward: bool) {
+        let rows = i64::try_from(self.height).unwrap_or(i64::MAX);
+        self.scroll(if forward { rows } else { -rows });
+    }
+
     /// Return to the scope's first page without collecting its descendants.
     pub fn home(&mut self) {
         self.anchor = Pos::Gap {
@@ -993,14 +1047,14 @@ impl Explorer {
     /// Advance one visible window in the expanded tree. A missing next page
     /// remains a resumable gap, planned by the same reader on the next frame.
     pub fn next_page(&mut self) -> Poll<bool> {
-        let Some((position, row)) = self.rows.last() else {
+        let Some(position) = self.page_end.as_ref() else {
             return if self.reader.cache().listing(&self.root, 0).is_some() {
                 Poll::Ready(false)
             } else {
                 Poll::Pending
             };
         };
-        if matches!(row, Row::Loading { .. }) {
+        if matches!(self.render(position), Row::Loading { .. }) {
             return Poll::Pending;
         }
         let Some(next) = self.next(position) else {
@@ -1288,10 +1342,10 @@ impl Explorer {
         }
     }
 
-    /// The want for one listing page. An agent's children change only in a
-    /// step that also writes its status, so that status witnesses the page.
-    fn page(&self, parent: StreamPath, index: u32) -> Want {
-        let witness = owner(&parent).and_then(|owner| owner.status().ok());
+    /// Creation appends the parent's membership feed in the same commit.
+    /// A spawn need not change its phase, so status cannot witness a listing.
+    fn page_want(&self, parent: StreamPath, index: u32) -> Want {
+        let witness = owner(&parent).and_then(|owner| owner.membership().ok());
         Want::Listing {
             parent,
             index,
@@ -1490,6 +1544,7 @@ impl Explorer {
                     .zip(conversation)
                     .and_then(|(s, tail)| cache.record(s, tail.checked_sub(1)?).cloned());
                 Row::Agent {
+                    role: crate::ui::agent_role(&self.reader, &path),
                     latest,
                     expanded: self.descend || self.expanded.contains_key(&path),
                     path,
@@ -1505,13 +1560,20 @@ impl Explorer {
         let (parent, page) = match pos {
             Pos::Row { parent, page, .. } | Pos::Gap { parent, page } => (parent, *page),
         };
-        out.push((self.page(parent.clone(), page), priority));
+        out.push((self.page_want(parent.clone(), page), priority));
         if let Pos::Row { page, offset, .. } = pos
             && let Some(agent) = self
                 .child(parent, *page, *offset)
                 .and_then(|c| agent_of(&c))
             && let Ok(status) = agent.status()
         {
+            let mut selected = Some(agent.clone());
+            while let Some(current) = selected {
+                if let Ok(want) = crate::ui::role_want(&self.reader, &current) {
+                    out.push((want, priority));
+                }
+                selected = current.parent();
+            }
             out.push((
                 Want::Last {
                     stream: status,
@@ -1538,7 +1600,7 @@ impl Explorer {
         let Some(children) = deep.then(|| agent.children().ok()).flatten() else {
             return;
         };
-        out.push((self.page(children.clone(), 0), Priority::Prefetch));
+        out.push((self.page_want(children.clone(), 0), Priority::Prefetch));
         if let Some(listing) = self.reader.cache().listing(&children, 0) {
             for child in listing.children.iter().take(self.height) {
                 if let Some(status) = agent_of(child).and_then(|c| c.status().ok()) {
@@ -1594,13 +1656,14 @@ impl Explorer {
             pos = self.next(&at);
             visible.push(at);
         }
+        self.page_end = visible.last().cloned();
         for at in &visible {
             self.wants_for(at, Priority::Visible, &mut wants);
         }
         // Ancestors' pages carry traversal across page and level ends.
         let ancestors = self.ancestors(&visible);
         for (parent, page) in &ancestors {
-            wants.push((self.page(parent.clone(), *page), Priority::Visible));
+            wants.push((self.page_want(parent.clone(), *page), Priority::Visible));
         }
         if let Some(history) = &self.history {
             self.history_wants(history, &mut wants);
@@ -1655,7 +1718,7 @@ impl Explorer {
                     .and_then(|c| agent_of(&c))
                     .and_then(|agent| agent.children().ok())
             {
-                wants.push((self.page(children, 0), Priority::Prefetch));
+                wants.push((self.page_want(children, 0), Priority::Prefetch));
             }
         }
         self.velocity /= 2;
@@ -1695,8 +1758,8 @@ impl Explorer {
             })
             .chain(ancestors.iter().map(|(parent, _)| parent));
         for parent in pages {
-            if let Some(status) = owner(parent).and_then(|owner| owner.status().ok()) {
-                follows.push(status);
+            if let Some(membership) = owner(parent).and_then(|owner| owner.membership().ok()) {
+                follows.push(membership);
             }
         }
         // An advancing status marks its agent recently active.
@@ -1730,6 +1793,22 @@ impl Explorer {
             .map(|at| {
                 let row = self.render(&at);
                 (at, row)
+            })
+            .filter(|(at, row)| {
+                if !self.orchestrator_view || self.descend {
+                    return true;
+                }
+                let Row::Agent {
+                    role: Some(role), ..
+                } = row
+                else {
+                    return true;
+                };
+                let parent = match at {
+                    Pos::Row { parent, .. } | Pos::Gap { parent, .. } => parent,
+                };
+                role == "orchestrator"
+                    || owner(parent).is_some_and(|parent| self.expanded.contains_key(&parent))
             })
             .collect();
         for (_, row) in &self.rows {

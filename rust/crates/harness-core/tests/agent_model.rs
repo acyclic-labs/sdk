@@ -22,7 +22,7 @@ mod corpus;
 mod driver;
 #[path = "agent_model/failed_publication.rs"]
 mod failed_publication;
-#[cfg(all(feature = "filesystem", feature = "test-support"))]
+#[cfg(feature = "test-support")]
 #[path = "agent_model/hosting.rs"]
 mod hosting;
 #[path = "agent_model/reply.rs"]
@@ -33,7 +33,7 @@ mod runtime;
 mod slot_schedules;
 #[path = "agent_model/steering.rs"]
 mod steering;
-#[cfg(all(feature = "filesystem", feature = "test-support"))]
+#[cfg(feature = "test-support")]
 #[path = "agent_model/wired.rs"]
 mod wired;
 
@@ -491,19 +491,20 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
         };
         let cancel = acyclic_actors::guest::CancellationToken::new;
         let first = step(&driver, &path, Some(state), (2, 0), wake(1), cancel()).await?;
-        // An Idle -> Idle turn must announce creation of its conversation, while
-        // later appends already have the conversation follow as their event.
-        assert_eq!(first.status.is_some(), initial_tail == 0);
-        if let Some(status) = &first.status {
-            assert_eq!(status.conversation, initial_tail + 2);
-            assert_eq!(status.phase, Phase::Idle);
-        }
+        // Same-phase appends still wake observers of the accepted input.
+        let status = first.status.as_ref().expect("conversation acknowledgement");
+        assert_eq!(status.conversation, initial_tail + 2);
+        assert_eq!(status.cursor, 2);
+        assert_eq!(status.phase, Phase::Idle);
         assert_eq!(first.state.checkpoint, Some(initial_tail + 1));
         assert_eq!(first.state.conversation_tail, initial_tail + 2);
         let later = step(&driver, &path, Some(first.state), (3, 0), wake(2), cancel()).await?;
         // Later turns keep the index, however many there are.
         assert_eq!(later.state.checkpoint, Some(initial_tail + 1));
-        assert!(later.status.is_none());
+        let status = later.status.as_ref().expect("conversation acknowledgement");
+        assert_eq!(status.conversation, initial_tail + 3);
+        assert_eq!(status.cursor, 3);
+        assert_eq!(status.phase, Phase::Idle);
         let spawned = spawning(later.state.clone(), "s1");
         let request = lower(&spawned, 3, delivery_key(&spawned.state, "s1")?)?;
         let adopted = request
@@ -577,18 +578,39 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
 }
 
 #[tokio::test]
-async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it() -> Result {
-    // A turn checkpoint past the record limit would make every retry of this
-    // step fail its commit; the step instead settles a visible failure.
+async fn a_logical_step_retains_its_driver_state_before_host_checkpoint_admission() -> Result {
+    // Model stepping returns the complete logical state; the actual host owns
+    // checkpoint serialization and its publication admission.
     let parent = AgentPath::root(&id(1));
     let (path, mut state) = child_of(&parent, 2)?;
     state.awaited = true;
     let driver = script(vec![TurnStep {
-        checkpoint: Some(vec![7; MAX_CHECKPOINT_BYTES]),
+        checkpoint: Some(vec![7; 2 * acyclic_stream::MAX_RECORD_BYTES]),
         outs: vec![Out::Conversation(b"partial".to_vec()), Out::Checkpoint],
         wait: Wait::Continue,
         drops: None,
     }]);
+    let mut forged = state.clone();
+    forged.parent = Some(AgentPath::root(&id(3)));
+    let rejected = step(
+        &driver,
+        &path,
+        Some(forged),
+        (2, 0),
+        Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::Approval(Approval { id: intent("q1") }),
+        },
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await;
+    assert!(matches!(
+        rejected,
+        Err(acyclic_harness_core::agent::Error::Record(
+            "agent parent is not its path's parent"
+        ))
+    ));
+    // The rejected lineage must not consume the driver's one original result.
     let stepped = step(
         &driver,
         &path,
@@ -601,37 +623,27 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
         acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
-    let failed = AgentOutcome::Failed {
-        message: OVERSIZED_STATE.into(),
-    };
-    assert_eq!(
-        stepped.state.phase,
-        Phase::Done {
-            outcome: failed.clone()
-        }
-    );
-    assert_eq!(stepped.state.turn, None);
-    assert_eq!(stepped.state.conversation_tail, 1);
-    assert_eq!(stepped.state.status_tail, 2);
-    assert!(stepped.state.reported);
-    assert!(!stepped.state.awaited);
-    assert_eq!(stepped.state.checkpoint, Some(0));
+    assert_eq!(stepped.state.phase, Phase::Running);
     assert_eq!(
         stepped
-            .outs
-            .iter()
-            .filter(|out| matches!(out,
-                Out::Send { to, record: InboxRecord::ChildSettled(settled) }
-                if *to == parent && settled.child == path
-            ))
-            .count(),
-        1
+            .state
+            .turn
+            .as_ref()
+            .map(|turn| turn.checkpoint.as_slice()),
+        Some(vec![7; 2 * acyclic_stream::MAX_RECORD_BYTES].as_slice())
     );
-    assert!(stepped.outs.iter().any(|out| matches!(
+    assert_eq!(stepped.state.conversation_tail, 1);
+    assert_eq!(stepped.state.status_tail, 2);
+    assert!(!stepped.state.reported);
+    assert!(stepped.state.awaited);
+    assert_eq!(stepped.state.checkpoint, Some(0));
+    assert!(!stepped.outs.iter().any(|out| matches!(
         out,
-        Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
+        Out::Send {
+            record: InboxRecord::ChildDone(_) | InboxRecord::ChildSettled(_),
+            ..
+        }
     )));
-    // The turn's own effects still commit with the failure.
     assert!(
         stepped
             .outs
@@ -990,6 +1002,7 @@ fn spawn_request(sequence: u64) -> Wake {
         sequence,
         record: InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                question_plugin: false,
                 topology: None,
                 model: None,
                 continuation: None,
@@ -1107,7 +1120,7 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
 async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_it() -> Result {
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
-    let oversized = vec![b'x'; MAX_RECORD_BYTES + 1];
+    let oversized = vec![b'x'; acyclic_stream::MAX_RECORD_BYTES + 1];
     let driver = script(vec![TurnStep {
         checkpoint: None,
         outs: vec![

@@ -59,7 +59,10 @@ impl ContextEpoch {
         F: Future<Output = Result<ContextManifest>>,
     {
         let path = Self::path(operation);
-        if path.len() > limits.path_bytes {
+        if limits
+            .path_bytes
+            .is_some_and(|maximum| path.len() > maximum.get())
+        {
             return Err(Error::Invalid(
                 "context epoch path exceeds path bound".into(),
             ));

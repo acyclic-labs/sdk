@@ -86,12 +86,16 @@ impl HttpTransport for Bounded {
         self.inner.now()
     }
 
+    fn unix_ms(&self) -> Result<u64> {
+        self.inner.unix_ms()
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn delay_with_native_work(
         &self,
         duration: Duration,
         work: &Work,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
         self.inner.delay_with_native_work(duration, work)
     }
 
@@ -105,8 +109,8 @@ impl HttpTransport for Bounded {
         &'a self,
         request: HttpRequest,
         work: &'a Work,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
-        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let (mut response, deadline) = self
                 .exchange(
                     || self.inner.send_with_native_work(request, work),
@@ -141,7 +145,7 @@ fn timeout(native: bool, total_ms: u64) -> Error {
 pub(crate) enum Wake {
     Portable(BoxProviderFuture<'static, Result<()>>),
     #[cfg(not(target_arch = "wasm32"))]
-    Native(acyclic_harness_core::NativeFutureBundle<'static, ()>),
+    Native(acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>),
 }
 
 impl Future for Wake {

@@ -397,7 +397,6 @@ pub fn project(
 mod tests {
     use super::*;
 
-    #[cfg(feature = "filesystem")]
     #[tokio::test]
     async fn committed_reads_keep_original_generations_after_the_path_changes() -> Result<()> {
         use crate::{

@@ -34,7 +34,6 @@ impl ContentAdmission {
         }
     }
 
-    #[cfg(feature = "filesystem")]
     pub(super) fn owned_bytes(&self) -> Result<u64> {
         slots(self.files.capacity(), std::mem::size_of::<usize>())
     }

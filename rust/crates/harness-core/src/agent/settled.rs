@@ -199,10 +199,10 @@ pub(crate) async fn named_child(
         super::SpawnResolution::Live(_, child) => Ok(Some(child)),
         super::SpawnResolution::Free(generation) if released && generation > 0 => {
             let intent = super::spawn_names::spawn_intent(reference, generation - 1)
-                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-            Ok(Some(super::TurnEffect::child(parent, &intent).map_err(
-                |error| crate::Error::Invalid(error.to_string()),
-            )?))
+                .map_err(crate::Error::from)?;
+            Ok(Some(
+                super::TurnEffect::child(parent, &intent).map_err(crate::Error::from)?,
+            ))
         }
         super::SpawnResolution::Free(_) => Ok(None),
     }

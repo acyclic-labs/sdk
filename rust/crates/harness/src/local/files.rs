@@ -5,7 +5,7 @@ impl LocalHarness {
     /// An authorized fork uses the tools' shared Git facade and request receipt.
     /// Host checkout merges retain native capture and publication; retained
     /// unbound parent volumes need no OS projection or additional authority.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) async fn merge_session(
         &self,
         agent: &crate::agent::AgentPath,
@@ -28,20 +28,16 @@ impl LocalHarness {
         if state.closed {
             return Err(Error::Refused("archived fork cannot be merged".into()));
         }
-        let project = state
-            .volumes
-            .iter()
-            .find(|binding| binding.name == "project")
+        let project = crate::agent::WorkspaceTable::primary_in(&state.volumes)
+            .filter(|binding| binding.role == crate::agent::WorkspaceRole::User)
             .ok_or_else(|| Error::Invalid("session has no project binding".into()))?;
-        let source = workspace.spawned_project_view(&project.volume).await?;
+        let source = workspace.spawned_project_view(project.volume()?).await?;
         let branch = format!("agents/{}", agent.id());
         if let Some(parent) = agent.parent().filter(|parent| parent != hosted.root()) {
             use super::workspace::owner::ViewOwner as _;
             let parent_state = hosted.agents().state(&parent).await.map_err(storage)?;
-            let project = parent_state
-                .volumes
-                .iter()
-                .find(|binding| binding.name == "project")
+            let project = crate::agent::WorkspaceTable::primary_in(&parent_state.volumes)
+                .filter(|binding| binding.role == crate::agent::WorkspaceRole::User)
                 .ok_or_else(|| Error::Invalid("parent has no project binding".into()))?;
             let (signed, verifier) = hosted
                 .server()
@@ -53,13 +49,13 @@ impl LocalHarness {
                 verifier.clone(),
                 signed.copy(&mut None)?,
             );
-            let view = workspace.spawned_project_view(&project.volume).await?;
+            let view = workspace.spawned_project_view(project.volume()?).await?;
             if workspace.has_physical_task_source(&view)? {
                 let bound = self
                     .project_workspace(
                         workspace,
                         &parent,
-                        &project.volume,
+                        project.volume()?,
                         &parent_state.volumes,
                         &signed,
                         &verifier,
@@ -68,7 +64,7 @@ impl LocalHarness {
                 return self
                     .merge_checkout(
                         &bound,
-                        &signed,
+                        (&signed, &verifier),
                         parent,
                         operation,
                         (branch, source.workspace().id()),
@@ -77,7 +73,7 @@ impl LocalHarness {
             }
             // A volume join needs no OS projection. Keep the same selected
             // checkout and original authority without minting a native grant.
-            let logical = workspace.context_task_view(view, &project.volume, &authority)?;
+            let logical = workspace.context_task_view(view, project.volume()?, &authority)?;
             let (selected, pending) = logical.selected_view().await?;
             if pending.is_some() {
                 return Err(Error::Conflict(
@@ -90,7 +86,7 @@ impl LocalHarness {
                 &verifier,
                 &signed,
                 signed.capabilities(),
-                Some(&project.volume),
+                Some(project.volume()?),
             )?;
             access.require(destination.workspace()).await?;
             acyclic_fs::GitCompatRepository::new(repository, workspace.store.clone())
@@ -115,6 +111,7 @@ impl LocalHarness {
                         authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                             .unwrap_or(i64::MAX),
                         request: Some(acyclic_fs::GitRequest {
+                            merge_source: None,
                             operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
                             unanswered: Arc::new(|_| true),
                         }),
@@ -131,7 +128,7 @@ impl LocalHarness {
         let signed = self.signed.copy(&mut None)?;
         self.merge_checkout(
             workspace,
-            &signed,
+            (&signed, &self.verifier),
             agent.parent().unwrap_or_else(|| agent.clone()),
             operation,
             (branch, source.workspace().id()),
@@ -139,11 +136,11 @@ impl LocalHarness {
         .await
     }
 
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn merge_checkout(
         &self,
         workspace: &Arc<super::workspace::LocalWorkspace>,
-        signed: &crate::core::Scope,
+        (signed, verifier): (&crate::core::Scope, &crate::core::AuthorityVerifier),
         owner: crate::agent::AgentPath,
         operation: OperationId,
         (branch, source): (String, acyclic_fs::WorkspaceId),
@@ -156,6 +153,7 @@ impl LocalHarness {
         let commands = super::workspace::git::Commands {
             workspace,
             signed,
+            verifier,
             clock: self.clock.as_ref(),
             capture_options: &configuration.0,
             capture_policy: &configuration.1,
@@ -168,6 +166,7 @@ impl LocalHarness {
                     operation,
                     scope: &scope,
                     request: Some(acyclic_fs::GitRequest {
+                        merge_source: None,
                         operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
                         unanswered: Arc::new(|_| true),
                     }),
@@ -208,7 +207,7 @@ impl LocalHarness {
     }
 
     /// Pin the selected checkout against its original complete import receipt.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) async fn project_diff_selection(
         &self,
     ) -> Result<(
@@ -288,7 +287,7 @@ impl LocalHarness {
     }
 }
 
-#[cfg(any(test, feature = "native-execution"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn merge_commit(output: acyclic_fs::GitCommandOutput) -> Result<Option<String>> {
     match output {
         acyclic_fs::GitCommandOutput::Committed(commit) => Ok(Some(commit.id.to_hex())),

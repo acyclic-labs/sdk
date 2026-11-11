@@ -1,8 +1,7 @@
 //! Pure view/editor preferences; defaults are compiled from data/settings.json.
 /// Notification filtering selected by the settings file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "tui", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "tui", serde(rename_all = "kebab-case"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum NotificationPolicy {
     /// All attention events.
     On,
@@ -13,10 +12,13 @@ pub enum NotificationPolicy {
 }
 
 /// Editor and view preferences projected from configuration files.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "tui", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "tui", serde(deny_unknown_fields))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UiSettings {
+    /// Show the running model's reasoning projection.
+    pub reasoning: bool,
+    /// Expand the original results beneath settled tool cards.
+    pub tool_details: bool,
     /// scrollback lines.
     pub scrollback_lines: usize,
     /// Render activity labels without animation.

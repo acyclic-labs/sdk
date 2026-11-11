@@ -17,7 +17,7 @@ run() {
     fi
 }
 
-features=filesystem-local,native-execution,test-support
+features=test-support
 if [[ -z "${VIRTIOFS_VMM_BINARY:-}" || -z "${VIRTIOFS_VMM_SHA256:-}" ]]; then
     printf 'step=select pinned VMM; recovery: VIRTIOFS_VMM_BINARY=/path/to/cloud-hypervisor VIRTIOFS_VMM_SHA256=<sha256> bash scripts/validate-virtiofs.sh\n' >&2
     exit 1

@@ -12,11 +12,14 @@ where
         operation: OperationId,
         target_tree: GitTreeRef,
         source: acyclic_fs::WorkspaceId,
+        source_generation: Option<acyclic_fs::GenerationId>,
         rebase: bool,
         tracked: &BTreeSet<String>,
     ) -> crate::Result<GitFilesystemResult> {
         let source = self.workspace(source).await?;
-        let plan = self.plan_join(&source, rebase).await?;
+        let plan = self
+            .plan_join_at(&source, source_generation, rebase)
+            .await?;
         let plan = self.without_reserved(plan, operation, rebase).await?;
         let options = ApplyOptions {
             if_target: plan.target_head(),
@@ -289,15 +292,46 @@ where
         source: &ManagedWorkspace<P, O>,
         rebase: bool,
     ) -> crate::Result<acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>> {
+        self.plan_join_at(source, None, rebase).await
+    }
+
+    async fn plan_join_at(
+        &self,
+        source: &ManagedWorkspace<P, O>,
+        generation: Option<acyclic_fs::GenerationId>,
+        rebase: bool,
+    ) -> crate::Result<acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>> {
         let mut builder = source.join_into(&self.current).git_metadata();
         if rebase {
             builder = builder.history(acyclic_fs::JoinHistory::Rebase);
         }
         super::helpers::prepared(
             async {
-                builder
-                    .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
+                let planned = match generation {
+                    Some(generation) => {
+                        let source = self.join_generation(source, generation).await?;
+                        let target = self
+                            .current
+                            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                            .await
+                            .map_err(|failure| Error::from(failure.error))?
+                            .value;
+                        builder
+                            .plan_at(
+                                &source,
+                                &target,
+                                WorkBudget::UNBOUNDED,
+                                &CancellationToken::new(),
+                            )
+                            .await
+                    }
+                    None => {
+                        builder
+                            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                            .await
+                    }
+                };
+                planned
                     .map(|receipt| receipt.value)
                     .map_err(|failure| Error::from(failure.error))
             },
@@ -322,11 +356,7 @@ where
     /// of either
     /// side's fork counts, so a parent merging its child and a child merging
     /// its parent agree.
-    #[cfg(not(all(
-        feature = "filesystem-local",
-        feature = "native-execution",
-        not(target_arch = "wasm32")
-    )))]
+    #[cfg(target_arch = "wasm32")]
     async fn exact_base(
         &self,
         _: &acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,
@@ -337,11 +367,7 @@ where
         Ok(None)
     }
 
-    #[cfg(all(
-        feature = "filesystem-local",
-        feature = "native-execution",
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn exact_base(
         &self,
         plan: &acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,

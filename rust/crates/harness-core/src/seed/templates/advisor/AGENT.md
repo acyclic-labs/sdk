@@ -1,5 +1,6 @@
 ---
 version: 1
+model: recon/morph-dsv41flash
 context: fresh
 may_spawn: [worker, advisor]
 ---

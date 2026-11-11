@@ -163,10 +163,7 @@ fn disabling_the_index_exposes_the_historical_scan_slope() {
                 .unwrap();
             let mut probes = 0usize;
             let sequence = path
-                .history
-                .as_ref()
-                .unwrap()
-                .keys()
+                .keys
                 .seek(
                     &crate::ReadKeySeek::exact(&b"target"[..], u64::MAX),
                     0,

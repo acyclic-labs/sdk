@@ -128,6 +128,13 @@ unsafe impl Send for Reads {}
 /// `STATUS_PENDING`: an `OVERLAPPED`'s status until its read completes.
 const STATUS_PENDING: usize = 0x103;
 impl Reads {
+    /// A failed operation has completed unless the kernel still owns its I/O.
+    /// Cancellation and ordinary collection must make the same ownership cut.
+    fn observe_completion(&mut self, result: &windows::core::Result<()>) {
+        self.pending =
+            matches!(result, Err(error) if error.code() == ERROR_IO_INCOMPLETE.to_hresult());
+        self.cancelling &= self.pending;
+    }
     /// Whether the pending read's completion has been collected.
     fn collected(&self) -> bool {
         // SAFETY: the port's thread writes the status while collecting the

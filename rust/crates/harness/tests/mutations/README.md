@@ -66,7 +66,7 @@ authority assertions. Explicit replay cursors keep their original semantics.
 home-generation lookup. Apply it from the repository root, then run from `rust`:
 
 ```sh
-cargo test --locked -p acyclic-harness --lib --features filesystem-local,hooks,test-support local::agent_settings::tests::a_settings_tree_keeps_one_generation_across_concurrent_home_edits -- --exact
+cargo test --locked -p acyclic-harness --lib --features test-support local::agent_settings::tests::a_settings_tree_keeps_one_generation_across_concurrent_home_edits -- --exact
 ```
 
 It must reach `settings admission refreshed its pinned home generation`.
@@ -80,7 +80,7 @@ points. A fresh admission must observe the edits. Reverse the patch with
 From the repository root, apply `diff-retained-authority.patch` and run:
 
 ```sh
-cargo nextest run --locked -p acyclic-harness --features hosting,test-support --test main -E 'test(live_diff_queries_fence_frontiers_and_cached_patches_against_policy_changes)'
+cargo nextest run --locked -p acyclic-harness --features test-support --test main -E 'test(live_diff_queries_fence_frontiers_and_cached_patches_against_policy_changes)'
 ```
 
 The unchanged test must fail at `revoked policy must stop the original query`.
@@ -93,7 +93,7 @@ patch and require the same test to pass.
 Apply `diff-utf8-midpoint.patch` and run:
 
 ```sh
-cargo nextest run --locked -p acyclic-harness --features hosting,test-support --test main -E 'test(workspace_diff_pages_exact_changes_since_the_fork_base)'
+cargo nextest run --locked -p acyclic-harness --features test-support --test main -E 'test(workspace_diff_pages_exact_changes_since_the_fork_base)'
 ```
 
 It must fail at `a fitting scalar must preserve its accepted prefix and continuation`.
@@ -106,7 +106,7 @@ treated an incomplete source import as an empty diff. Apply it and run the
 existing native capture control through the served client:
 
 ```sh
-cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --lib local::checkout_tools::capture::tests::unreadable_before_images_remain_optional_until_continuity_is_lost -- --exact --nocapture
+cargo test --locked -p acyclic-harness --features test-support --lib local::checkout_tools::capture::tests::unreadable_before_images_remain_optional_until_continuity_is_lost -- --exact --nocapture
 ```
 
 The test must fail at `uncertified source was reported as an exact diff`,
@@ -119,7 +119,7 @@ A compilation or setup failure does not qualify the mutation.
 comparison before the consumer's input allowance. Apply it and run:
 
 ```sh
-cargo nextest run --locked -p acyclic-harness --features hosting,test-support --test main -E 'test(workspace_diff_admits_range_restoration_before_reading_content)'
+cargo nextest run --locked -p acyclic-harness --features test-support --test main -E 'test(workspace_diff_admits_range_restoration_before_reading_content)'
 ```
 
 The unchanged test must fail at `content equality bypassed the page allowance`.
@@ -134,7 +134,7 @@ history after finding the instruction prefix. Apply it from the repository
 root and run:
 
 ```sh
-cargo nextest run --locked -p acyclic-harness-core --features filesystem,test-support --lib -E 'test(=model::instruction_review_tests::read_projection_has_exact_linear_index_work_and_quadratic_negative)' --no-tests=fail
+cargo nextest run --locked -p acyclic-harness-core --features test-support --lib -E 'test(=model::instruction_review_tests::read_projection_has_exact_linear_index_work_and_quadratic_negative)' --no-tests=fail
 ```
 
 The retained property must fail at `history traversal must visit only the
@@ -161,7 +161,7 @@ Reverse the patch afterward; restored production must pass this same control.
 for the committed conversation's message-admission proof. Run:
 
 ```sh
-cargo nextest run --locked -p acyclic-harness --lib --features serve,test-support,native-execution -E 'test(=local::tests::agents::historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_steering_cut)' --no-tests=fail --success-output immediate
+cargo nextest run --locked -p acyclic-harness --lib --features test-support -E 'test(=local::tests::agents::historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_steering_cut)' --no-tests=fail --success-output immediate
 ```
 
 The real actor accepts an initial message, steering message and reserved

@@ -637,7 +637,7 @@ where
                     agent: self.bound.latest_session().await?,
                 })
             }
-            AgentCommand::NewSession { id } | AgentCommand::ForkSession { id, .. } => {
+            AgentCommand::NewSession { id, .. } | AgentCommand::ForkSession { id, .. } => {
                 if !self.platform.sessions() {
                     return Err(Error::Record("this host serves one tree"));
                 }
@@ -725,10 +725,33 @@ where
                             _ => match self.platform.session_source() {
                                 Some(source) => {
                                     self.bound
-                                        .prepare_isolated_session(id, root, &source)
+                                        .prepare_isolated_session(
+                                            id,
+                                            root,
+                                            &source,
+                                            match command {
+                                                AgentCommand::NewSession { questions, .. } => {
+                                                    *questions
+                                                }
+                                                _ => None,
+                                            },
+                                        )
                                         .await?
                                 }
-                                None => self.bound.prepare_session_root(id, root).await?,
+                                None => {
+                                    self.bound
+                                        .prepare_session_root(
+                                            id,
+                                            root,
+                                            match command {
+                                                AgentCommand::NewSession { questions, .. } => {
+                                                    *questions
+                                                }
+                                                _ => None,
+                                            },
+                                        )
+                                        .await?
+                                }
                             },
                         }
                     }
@@ -760,13 +783,7 @@ where
                     settled: state.conversation_tail,
                     statuses: state.status_tail,
                     role: profile
-                        .and_then(|profile| match &profile.template {
-                            None => Some("orchestrator"),
-                            Some(file) => file
-                                .path()
-                                .strip_prefix("templates/")
-                                .and_then(|path| path.strip_suffix("/AGENT.md")),
-                        })
+                        .and_then(|profile| profile.role())
                         .map(str::to_owned),
                     model: profile.and_then(|profile| profile.model.clone()),
                     topology: profile.and_then(|profile| profile.topology.clone()),
@@ -1578,7 +1595,7 @@ fn children_cursor(version: &CommitId, after: &str) -> String {
 }
 
 fn page_json_bytes(value: &impl serde::Serialize) -> Result<u64, Error> {
-    crate::executor::json::json_byte_length(value, u64::MAX, &mut None)
+    crate::executor::json::json_byte_length(value, None, &mut None)
         .map_err(|_| Error::Record("agent page encoding failed"))
 }
 

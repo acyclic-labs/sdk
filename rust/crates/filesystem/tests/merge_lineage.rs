@@ -1,5 +1,4 @@
 //! Black-box invariants for immutable merge inputs, publication, and workspace lineage.
-#![cfg(feature = "memory")]
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,

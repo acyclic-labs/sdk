@@ -65,7 +65,7 @@ pub enum ReadResult {
 pub(super) fn validate_input(
     input: &ReadFileInput,
     limit: u32,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<()> {
     if input.range.is_some() || input.version.is_some() || limit == 0 {
         return Err(executor::rejection(
@@ -79,10 +79,10 @@ pub(super) fn validate_input(
 fn child_path(
     parent: &str,
     name: &str,
-    work: crate::NativeWork<'_>,
-) -> Result<(String, crate::NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(String, acyclic_fs::NativeCustody)> {
     let separator = if parent.is_empty() { "" } else { "/" };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         let (path, hold) = work.display(&format_args!("{parent}{separator}{name}"))?;
         return Ok((path, Some(hold)));
@@ -113,7 +113,7 @@ struct Entry<'a> {
     kind: DirectoryEntryKind,
     version: String,
     #[serde(skip)]
-    _holds: [crate::NativeCustody; 2],
+    _holds: [acyclic_fs::NativeCustody; 2],
 }
 
 pub(super) async fn read(
@@ -121,9 +121,9 @@ pub(super) async fn read(
     input: &ReadFileInput,
     after: Option<&str>,
     limit: u32,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(ToolResult, crate::NativeCustody)> {
+) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
     validate_input(input, limit, work)?;
     let (volume, path) = context.authorize_tool_directory_read(&input.path, io)?;
     let selected = after
@@ -201,8 +201,8 @@ pub(super) fn project(
     after: Option<&str>,
     limit: u32,
     result: &ToolResult,
-    work: crate::NativeWork<'_>,
-) -> Result<(Value, crate::NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(Value, acyclic_fs::NativeCustody)> {
     validate_input(input, limit, work)?;
     let (result, _hold) = decode::<DirectoryReadResult>(&result.value, work)?;
     if result.entries.len() > limit as usize || (result.has_more && result.entries.is_empty()) {

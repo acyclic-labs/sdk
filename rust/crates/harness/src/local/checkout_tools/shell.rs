@@ -83,7 +83,8 @@ impl CheckoutTools {
         )?;
         let spill_root = scratch
             .native_root
-            .clone()
+            .override_path()
+            .cloned()
             .unwrap_or_else(|| state.mounts.root.join(spill_directory));
         let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output.min(30_000));
         let cancellation = background

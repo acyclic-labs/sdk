@@ -89,6 +89,37 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     let mounts = &harness.workspace().unwrap().mounts;
     let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
     native_scope(mounts, async |claims| {
+        // Root checkout bindings carry the same explicit native roots as task
+        // aliases, and expose cwd/discovery only while execution projects them.
+        let prepared = crate::filesystem::native_process::shell::prepare(
+            crate::tools::ShellInput {
+                command: crate::tools::ShellCommand::Source("echo root".into()),
+                cwd: Some(HOME_PATH.into()),
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            mounts,
+            crate::filesystem::native_process::Invocation {
+                executable: std::env::current_exe().map_err(storage)?,
+                argv: Vec::new(),
+                cwd: mounts.root.clone(),
+                environment: Default::default(),
+                inherit_environment: false,
+                execution_grant: None,
+                schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
+                maximum_output_bytes: None,
+                standard_input: None,
+                process_custody: None,
+            },
+            0,
+        )?;
+        let native = std::fs::canonicalize(&scratch.destination).map_err(storage)?;
+        assert_eq!(prepared.cwd, native);
+        assert_eq!(
+            prepared.environment.get("ACYCLIC_VOLUME_HOME"),
+            Some(&scratch.destination.to_string_lossy().into_owned())
+        );
         write_projected(&scratch.destination.join("data"), b"acknowledged")?;
         Ok(((), claims))
     })
@@ -229,7 +260,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         let alias = aliases.named(Some("home"))?.1;
         assert!(Arc::ptr_eq(alias.view.source.as_ref().unwrap(), original));
         assert_eq!(
-            alias.native_root.as_deref(),
+            alias.native_root.override_path().map(PathBuf::as_path),
             Some(original.destination.as_path())
         );
         assert_eq!(
@@ -250,7 +281,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         original
     ));
     assert_eq!(
-        retained.native_root.as_deref(),
+        retained.native_root.override_path().map(PathBuf::as_path),
         Some(original.destination.as_path())
     );
     assert_eq!(std::fs::read_link(&alias).map_err(storage)?, relative);
@@ -283,7 +314,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         original
     ));
     assert_ne!(
-        rebound.native_root.as_deref(),
+        rebound.native_root.override_path().map(PathBuf::as_path),
         Some(original.destination.as_path())
     );
     let alias = task.path().join(HOME_PATH);

@@ -1,6 +1,6 @@
 import type { CreateMachine, MachineEventPage, MachineId, MachinesProvider } from "./index.js";
 import { MANAGED_OCI_CONTRACT } from "./managed-oci-contract.js";
-import { validatePageSize } from "../generated/wasm/acyclic_machines_wasm.js";
+import { pageSize as normalizePageSize } from "./wasm-runtime.js";
 
 export interface MachineListOptions {
   /** Exclusive cursor. */
@@ -20,14 +20,12 @@ export async function createMachine(provider: MachinesProvider, request: CreateM
   return machine.id;
 }
 export function machineEvents(provider: MachinesProvider, id: MachineId, afterSequence: number | null = null, limit = MANAGED_OCI_CONTRACT.maxEventPageSize): Promise<MachineEventPage> {
-  return provider.events(id, afterSequence, limit);
+  return provider.events(id, afterSequence, normalizePageSize(limit, MANAGED_OCI_CONTRACT.maxEventPageSize));
 }
 
 export async function* listMachines(provider: MachinesProvider, options: MachineListOptions = {}): AsyncIterable<MachineId> {
-  const pageSize = options.pageSize ?? MANAGED_OCI_CONTRACT.maxPageSize;
+  const pageSize = normalizePageSize(options.pageSize ?? MANAGED_OCI_CONTRACT.maxPageSize, MANAGED_OCI_CONTRACT.maxPageSize);
   const maximum = options.maximum;
-  try { validatePageSize(pageSize); }
-  catch (error) { throw new RangeError(error instanceof Error ? error.message : String(error)); }
   if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 0)) throw new RangeError("maximum must be a nonnegative safe integer");
   let cursor = options.after ?? null;
   let yielded = 0;

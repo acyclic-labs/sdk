@@ -25,9 +25,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             None => state
                 .volumes
                 .iter()
-                .find(|binding| binding.name == super::super::PRIVATE_VOLUME)
+                .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
                 .ok_or(Error::Record("agent has no private volume"))?
-                .volume
+                .volume()?
                 .clone(),
         };
         let admitted = super::super::agent_turns::AdmittedAgent::verify(

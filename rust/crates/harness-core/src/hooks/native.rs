@@ -43,13 +43,15 @@ impl Hooks {
             (workspace, cwd),
             input.into(),
             registry,
-            65_536,
+            None,
             (Arc::new(|| Ok(())), None, None),
         )
         .await
     }
 
     /// Runs with the original owner check/wake and optional host-approved execution.
+    /// `None` leaves capture and aggregate output unbounded; a supplied byte
+    /// credit is shared across concurrent captures and their merged outcome.
     /// A supplied execution never inherits ambient environment or retries unconfined.
     #[doc(hidden)]
     pub async fn run_checked(
@@ -58,7 +60,7 @@ impl Hooks {
         paths: (&Path, &Path),
         input: HookInput<'_>,
         registry: &ToolRegistry,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         control: (
             HookCheck,
             Option<acyclic_native_runtime::ProcessWake>,
@@ -98,7 +100,7 @@ pub(super) async fn run_hook(
     hook: Arc<HookSpec>,
     request: (PathBuf, PathBuf, Vec<u8>),
     owner_check: HookCheck,
-    maximum_bytes: usize,
+    maximum_bytes: Option<usize>,
     owner_wake: Option<acyclic_native_runtime::ProcessWake>,
     execution: Option<Arc<HookExecution>>,
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
@@ -118,7 +120,7 @@ pub(super) async fn run_hook(
     let capture = run_blocking_io(
         move || {
             let mut handler = handler;
-            if maximum_bytes == 0 {
+            if maximum_bytes == Some(0) {
                 return Err(Error::Process(crate::ProcessError::OutputLimit {
                     exit_code: None,
                     message: "hook capture budget exhausted".into(),

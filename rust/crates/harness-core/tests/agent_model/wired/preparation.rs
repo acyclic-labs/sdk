@@ -525,6 +525,7 @@ async fn parallel(
         id: intent("parallel-answer-child"),
         brief: Some(Box::new(answer(&**stream, parent, 0).await?.output)),
         profile: CreationConfig {
+            question_plugin: false,
             topology: None,
             model: None,
             continuation: None,

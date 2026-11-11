@@ -1,1 +1,1 @@
-export default { model: "anthropic/claude-sonnet-5-5" };
+export default { model: "recon/morph-dsv41flash" };

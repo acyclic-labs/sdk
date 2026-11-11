@@ -874,12 +874,10 @@ async fn exec_stream_errors_distinguish_unknown_and_completed_commands() {
 async fn read_output_preserves_wide_offsets_and_validates_evidence() {
     let (machine, io, shutdown, task) = fixture().await;
     let offset = 9_007_199_254_740_993;
-    for limit in [0, 65_537] {
-        assert!(matches!(
-            machine.read_output(offset, limit).await,
-            Err(ProviderError::Invalid(_))
-        ));
-    }
+    assert!(matches!(
+        machine.read_output(offset, 0).await,
+        Err(ProviderError::Invalid(_))
+    ));
     assert!(io.reads.lock().unwrap().is_empty());
     for data in [vec![0, 255], vec![]] {
         *io.output.lock().unwrap() = wire::MachineOutput {
@@ -930,6 +928,20 @@ async fn read_output_preserves_wide_offsets_and_validates_evidence() {
         && read.offset == offset
         && read.limit == 2
         && read.protocol == Some(protocol())));
+    for limit in [65_537, u32::MAX] {
+        *io.output.lock().unwrap() = wire::MachineOutput {
+            machine: Some(encode_machine(machine.id())),
+            offset: offset + 4,
+            data: vec![0, 255],
+        };
+        let output = machine.read_output(offset, limit).await.unwrap();
+        assert_eq!(output.offset, offset + 4);
+        assert_eq!(output.data, [0, 255]);
+        assert_eq!(
+            io.reads.lock().unwrap().last().unwrap().limit,
+            MAX_OUTPUT_READ_BYTES
+        );
+    }
     stop(shutdown, task).await;
 }
 

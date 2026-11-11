@@ -6,7 +6,9 @@
 use super::{LocalHarness, LocalStream, storage};
 use crate::{
     Error, OperationId, Result,
-    agent::{AgentHost, AgentPath, AgentState, IntentId, VolumeBinding},
+    agent::{
+        AgentHost, AgentPath, AgentState, IntentId, WorkspaceEntry, WorkspaceRole, WorkspaceTable,
+    },
     conversation::{ContentAccess, ContentPublisher},
     executor::{Executor, StockExecutor},
     filesystem::{
@@ -97,7 +99,7 @@ impl crate::hosting::Platform for LocalUser {
         })
     }
 
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn merge_session<'a>(
         &'a self,
         agent: &'a AgentPath,
@@ -129,7 +131,7 @@ impl crate::hosting::Platform for LocalUser {
         Box::pin(async move { self.harness()?.prompt_attachments(key, text).await })
     }
 
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn diff_source<'a>(
         &'a self,
         _: &'a acyclic_stream::session::CallAuthorization,
@@ -174,7 +176,7 @@ impl crate::hosting::Platform for LocalUser {
 }
 
 impl LocalUser {
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn diff_selection(
         &self,
         agent: &AgentPath,
@@ -195,22 +197,20 @@ impl LocalUser {
             .state(agent)
             .await
             .map_err(storage)?;
-        let project = state
-            .volumes
-            .iter()
-            .find(|binding| binding.name == "project")
+        let project = WorkspaceTable::primary_in(&state.volumes)
+            .filter(|binding| binding.role == WorkspaceRole::User)
             .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
-        let operation = crate::filesystem::spawned_operation(agent, &project.name);
+        let operation = crate::filesystem::spawned_operation(agent, project.id);
         let base = local
             .files
-            .creation_generation(&project.volume, operation)
+            .creation_generation(project.volume()?, operation)
             .await?
             .ok_or_else(|| {
                 Error::Unsupported("selected project has no fork creation receipt".into())
             })?;
         let reference = crate::filesystem::workspace_ref(
-            project.volume.provider().clone(),
-            &project.volume.storage_name(&mut None)?,
+            project.volume()?.provider().clone(),
+            &project.volume()?.storage_name(&mut None)?,
         )?;
         let current = local.files.resolve(&reference, None).await?.generation;
         let reader = local
@@ -226,7 +226,7 @@ impl LocalUser {
             reader,
             acyclic_harness_client::DiffSnapshot {
                 agent: agent.clone(),
-                volume: project.volume.clone(),
+                volume: project.volume()?.clone(),
                 base,
                 current,
             },
@@ -249,9 +249,9 @@ impl TurnContext for LocalContext {
                 .0
                 .upgrade()
                 .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             local.merge_completed_workspace(agent, turn).await?;
-            #[cfg(not(any(test, feature = "native-execution")))]
+            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
             let _ = (local, agent, turn);
             Ok(())
         })
@@ -300,7 +300,7 @@ impl TurnContext for LocalContext {
                     .ok_or_else(|| Error::Invalid("agent turn has no model boundary".into()))?
                     .include_prepared_sources(turn, through)?;
             }
-            #[cfg(any(test, feature = "hooks"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             let hooks = local.turn_hooks(turn, &**writer).await?;
             let (executor, context) =
                 Tasks::bind(&bindings.harness, executor, agent, turn, authority)?;
@@ -310,7 +310,7 @@ impl TurnContext for LocalContext {
             ));
             // SessionStart runs once per agent, keyed by the agent itself, so
             // a forked child (which inherits its parent's tail) runs its own.
-            #[cfg(any(test, feature = "hooks"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             let executor = executor
                 .with_agent_hooks(
                     &context,
@@ -320,7 +320,7 @@ impl TurnContext for LocalContext {
                     hooks.as_ref(),
                 )
                 .await?;
-            #[cfg(not(any(test, feature = "hooks")))]
+            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
             let _ = (context, input);
             Ok(executor)
         })
@@ -343,7 +343,7 @@ impl LocalHarness {
     /// Publish a child's fork before its terminal turn becomes observable.
     /// The shared workspace command engine owns capture, merge, conflict
     /// projection and physical/native reconciliation under the parent's lock.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn merge_completed_workspace(&self, agent: &AgentState, turn: OperationId) -> Result<()> {
         let (Some(parent), Some(root)) = (&agent.parent, &self.workspace) else {
             return Ok(());
@@ -354,11 +354,10 @@ impl LocalHarness {
             .ok_or_else(|| Error::Unsupported("agent hosting is closed".into()))?;
         let parent = hosted.agents().state(parent).await.map_err(storage)?;
         let project = |state: &AgentState| {
-            state
-                .volumes
-                .iter()
-                .find(|binding| binding.name == "project")
-                .map(|binding| binding.volume.clone())
+            WorkspaceTable::primary_in(&state.volumes)
+                .filter(|binding| binding.role == WorkspaceRole::User)
+                .and_then(|binding| binding.as_volume())
+                .cloned()
                 .ok_or_else(|| Error::Invalid("agent has no project volume".into()))
         };
         let child_project = project(agent)?;
@@ -419,109 +418,63 @@ impl LocalHarness {
         let commands = super::workspace::git::Commands {
             workspace: &parent_workspace,
             signed: &signed,
+            verifier: &verifier,
             clock: &*self.clock,
             capture_options: &capture_options,
             capture_policy: &capture_policy,
         };
         let scope = crate::runtime::RuntimeScope::new(authority.grants, Default::default())?;
-        let parsed = commands.fs_arguments(&format!("merge {branch}"), &scope)?;
-        let publication = acyclic_fs::OperationId::from_bytes(turn.into_bytes());
+        let source = child
+            .workspace()
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(storage)?
+            .value;
         let mut state = crate::sync::owned::lock_owned(super::workspace::StateArc::clone(
             &parent_workspace.state,
         ))
         .await;
-        let physical = parent_workspace
-            .selected_workspace(&mut state, &owner)
-            .await?;
-        if let Some(pending) = acyclic_fs::GitCompatRepository::new(
-            physical.view().workspace().id(),
-            physical.store.clone(),
-        )
-        .pending_transition()
-        .await
-        .map_err(storage)?
-            && pending.request != Some(publication)
-            && matches!(
-                pending.mutation,
-                acyclic_fs::GitPendingMutation::Join {
-                    conflicts: Some(_),
-                    ..
-                }
+        parent_workspace
+            .defer_publication(
+                turn,
+                branch,
+                acyclic_fs::GitGenerationRef {
+                    workspace_id: child.workspace().id(),
+                    generation: source.id(),
+                },
             )
-        {
-            // Let every worker settle so a parent waiting for all of them can
-            // resolve the conflict. The original request stays durable until
-            // the shared command path publishes it after that resolution.
-            return parent_workspace
-                .defer_publication(turn, branch, child.workspace().id())
-                .await;
-        }
-        let result = commands
-            .fs(
-                parsed,
+            .await?;
+        commands
+            .drain_publications(
                 &super::workspace::git::CommandContext {
                     owner: &owner,
                     operation: turn,
                     scope: &scope,
-                    request: Some(acyclic_fs::GitRequest {
-                        operation: publication,
-                        unanswered: Arc::new(|_| true),
-                    }),
+                    request: None,
                 },
                 &mut state,
-                &physical,
             )
-            .await?;
-        match result {
-            super::workspace::git::Outcome::Completed(_) => Ok(()),
-            super::workspace::git::Outcome::Rejected(error) => {
-                // A published conflict belongs to the parent's workspace, not
-                // the worker's conversation. Preserve the answer and allow
-                // follow-up work while the parent resolves the shared join.
-                if matches!(*error, Error::Conflict(_))
-                    && matches!(
-                        acyclic_fs::GitCompatRepository::new(
-                            physical.view().workspace().id(),
-                            physical.store.clone(),
-                        )
-                        .pending_transition()
-                        .await
-                        .map_err(storage)?,
-                        Some(acyclic_fs::GitPendingTransition {
-                            request: Some(request),
-                            mutation: acyclic_fs::GitPendingMutation::Join {
-                                conflicts: Some(_),
-                                rebase: false,
-                                source_branch,
-                                ..
-                            },
-                            ..
-                        }) if request == publication && source_branch == branch
-                    )
-                {
-                    return Ok(());
-                }
-                Err(*error)
-            }
-        }
+            .await
     }
-
     /// Bind a committed project using the same adapter for turns and human
     /// filesystem actions. Only an action needing native access binds a view.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) async fn project_workspace(
         &self,
         workspace: &Arc<super::workspace::LocalWorkspace>,
         agent: &AgentPath,
         project: &crate::conversation::VolumeRef,
-        bindings: &[VolumeBinding],
+        bindings: &[WorkspaceEntry],
         scope: &crate::core::Scope,
         verifier: &crate::core::AuthorityVerifier,
     ) -> Result<Arc<super::workspace::LocalWorkspace>> {
         if project == &self.project
             && self.session_bindings().iter().all(|expected| {
                 bindings.iter().any(|binding| {
-                    binding.name == expected.name && binding.volume == expected.volume
+                    binding.name == expected.name && binding.source == expected.source
                 })
             })
         {
@@ -541,15 +494,22 @@ impl LocalHarness {
 
     /// Retained session volumes are the same for model and native-host roots;
     /// each root binds its own private journal separately.
-    pub(super) fn session_bindings(&self) -> [VolumeBinding; 3] {
+    pub(super) fn session_bindings(&self) -> [WorkspaceEntry; 3] {
         [
-            ("project", &self.project),
-            (HOME_VOLUME, &self.scratch),
-            (super::SHARED_VOLUME, &self.shared),
+            (crate::agent::WorkspaceRole::User, "project", &self.project),
+            (
+                crate::agent::WorkspaceRole::Home,
+                HOME_VOLUME,
+                &self.scratch,
+            ),
+            (
+                crate::agent::WorkspaceRole::Shared,
+                super::SHARED_VOLUME,
+                &self.shared,
+            ),
         ]
-        .map(|(name, volume)| VolumeBinding {
-            name: name.to_owned(),
-            volume: volume.clone(),
+        .map(|(role, name, volume)| {
+            WorkspaceEntry::initial_volume(role, name.to_owned(), volume.clone())
         })
     }
 
@@ -562,43 +522,41 @@ impl LocalHarness {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<TurnBindings<'a>>> {
         Box::pin(async move {
-            let project = agent
-                .volumes
-                .iter()
-                .find(|binding| binding.name == "project")
-                .map(|binding| &binding.volume)
+            let project = WorkspaceTable::primary_in(&agent.volumes)
+                .and_then(|binding| binding.as_volume())
                 .ok_or_else(|| Error::Invalid("agent has no project volume".into()))?;
             let scratch = agent
                 .volumes
                 .iter()
-                .find(|binding| binding.name == HOME_VOLUME)
-                .map(|binding| &binding.volume)
+                .find(|binding| binding.role == WorkspaceRole::Home)
+                .and_then(|binding| binding.as_volume())
                 .ok_or_else(|| Error::Invalid("agent has no home volume".into()))?;
             let verifier = authority.issuer.verifier(&mut None)?;
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             let journal = agent
                 .volumes
                 .iter()
-                .find(|binding| binding.name == PRIVATE_VOLUME)
-                .map(|binding| &binding.volume)
+                .find(|binding| binding.role == WorkspaceRole::Private)
+                .and_then(|binding| binding.as_volume())
                 .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
             let context = super::context::Binding {
                 project,
                 scratch,
-                #[cfg(any(test, feature = "native-execution"))]
+                #[cfg(any(test, not(target_arch = "wasm32")))]
                 journal,
                 reader: authority.content.reader.as_ref(),
-                #[cfg(any(test, feature = "native-execution"))]
+                #[cfg(any(test, not(target_arch = "wasm32")))]
                 verifier: verifier.clone(),
-                #[cfg(any(test, feature = "native-execution"))]
+                #[cfg(any(test, not(target_arch = "wasm32")))]
                 scope: &authority.scope,
-                #[cfg(any(test, feature = "native-execution"))]
+                #[cfg(any(test, not(target_arch = "wasm32")))]
                 workspace: self.workspace.clone(),
             };
             if project == &self.project
                 && scratch == &self.scratch
                 && agent.volumes.iter().any(|binding| {
-                    binding.name == super::SHARED_VOLUME && binding.volume == self.shared
+                    binding.role == WorkspaceRole::Shared
+                        && binding.as_volume() == Some(&self.shared)
                 })
             {
                 return Ok(TurnBindings {
@@ -606,7 +564,7 @@ impl LocalHarness {
                     context,
                 });
             }
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             if super::open::uses_native_execution(&self.tools)?
                 && let Some(workspace) = &self.workspace
             {
@@ -645,7 +603,7 @@ impl LocalHarness {
                     )?,
                 });
             }
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             let context = if let Some(workspace) = &self.workspace {
                 let view = workspace.spawned_project_view(project).await?;
                 let authority = crate::filesystem::NativeMountAuthority::admitted(
@@ -732,6 +690,7 @@ impl LocalHarness {
                     Arc::new(LocalContext(Arc::downgrade(self))),
                 )
                 .with_agent_tools(&self.agent_tools)
+                .with_question_plugin(self.question_plugin)
                 .with_templates();
                 let executors = match &self.models {
                     Some(models) => executors.with_models(models.clone()),
@@ -749,7 +708,7 @@ impl LocalHarness {
 
 impl LocalHarness {
     /// Guest sources use the same public enrollment producer as hosted trees.
-    #[cfg(all(target_os = "linux", feature = "native-execution"))]
+    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
     pub(super) async fn guest_session(
         self: &Arc<Self>,
         enrollment: crate::filesystem::hosting::LocalGuestEnrollment,
@@ -772,7 +731,7 @@ impl LocalHarness {
                     maximum_bytes: self.limits.file_bytes,
                     history_turns: HISTORY_TURNS,
                 },
-                actors: ActorLimits::new(0, 1 << 20, 1 << 16).map_err(storage)?,
+                actors: ActorLimits::default(),
                 clock: Arc::new(SystemClock),
                 approval_policy: self.preset.approval_policy.clone(),
             },
@@ -807,11 +766,9 @@ impl LocalHarness {
     }
 
     pub(super) fn require_shared_binding(&self, state: &AgentState) -> Result<()> {
-        if state
-            .volumes
-            .iter()
-            .any(|binding| binding.name == super::SHARED_VOLUME && binding.volume == self.shared)
-        {
+        if state.volumes.iter().any(|binding| {
+            binding.role == WorkspaceRole::Shared && binding.as_volume() == Some(&self.shared)
+        }) {
             return Ok(());
         }
         Err(Error::Unsupported(
@@ -868,7 +825,7 @@ impl LocalHarness {
                 maximum_bytes: self.limits.file_bytes,
                 history_turns: HISTORY_TURNS,
             },
-            actors: ActorLimits::new(0, 1 << 20, 1 << 16).map_err(storage)?,
+            actors: ActorLimits::default(),
             clock: Arc::new(SystemClock),
             approval_policy: self.preset.approval_policy.clone(),
         };
@@ -884,13 +841,13 @@ impl LocalHarness {
         // A checkout's spawned children fork its retained lazy cut, so each
         // child's project is a related fork the parent can diff and merge.
         // Only native execution has checkouts; a configured volume has none.
-        #[cfg(any(test, feature = "native-execution"))]
+        #[cfg(any(test, not(target_arch = "wasm32")))]
         let cuts = self.workspace().map(|workspace| {
             Arc::new(crate::local::workspace::LocalVolumeResources(Arc::clone(
                 workspace,
             ))) as Arc<dyn crate::filesystem::VolumeResources>
         });
-        #[cfg(not(any(test, feature = "native-execution")))]
+        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
         let cuts: Option<Arc<dyn crate::filesystem::VolumeResources>> = None;
         let bound = if let Some(verifier) = &self.served {
             let caller = verifier.caller(
@@ -957,10 +914,11 @@ impl LocalHarness {
                 let request = RootRequest {
                     agent: id,
                     fresh: Vec::new(),
-                    retained: std::iter::once(VolumeBinding {
-                        name: PRIVATE_VOLUME.to_owned(),
-                        volume: self.journal.clone(),
-                    })
+                    retained: std::iter::once(WorkspaceEntry::initial_volume(
+                        crate::agent::WorkspaceRole::Private,
+                        PRIVATE_VOLUME.to_owned(),
+                        self.journal.clone(),
+                    ))
                     .chain(self.session_bindings())
                     .collect(),
                     brief: None,
@@ -987,7 +945,7 @@ impl LocalHarness {
 }
 
 /// The operation keying `agent`'s one `SessionStart`.
-#[cfg(any(test, feature = "hooks"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn session_operation(agent: &crate::agent::AgentPath) -> OperationId {
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.agent.session-start/v1");
     hasher.update(agent.as_str().as_bytes());

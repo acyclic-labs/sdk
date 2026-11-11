@@ -190,6 +190,7 @@ impl Credentials {
                     "openai" => "OPENAI_API_KEY",
                     "openrouter" => "OPENROUTER_API_KEY",
                     "gemini" => "GEMINI_API_KEY",
+                    "recon" => "MORPH_API_KEY",
                     _ => "",
                 };
                 if let Ok(key) = std::env::var(variable) {

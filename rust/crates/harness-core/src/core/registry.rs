@@ -24,7 +24,7 @@ impl SchemaRegistry {
     pub const fn new() -> Self {
         Self { schemas: None }
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         if let Some(io) = work.as_deref_mut().filter(|io| copying::is_native(&**io)) {
             io.check_cancellation()?;
@@ -70,20 +70,14 @@ impl SchemaRegistry {
             }
         }
         let binding = ExtensionBinding {
-            schema_digest: crate::executor::json::canonical_json_digest(
-                &schema,
-                u64::MAX,
-                &mut None,
-            )?,
+            schema_digest: crate::executor::json::canonical_json_digest(&schema, None, &mut None)?,
             schema,
             implementation_digest,
             fork_policy,
             dependencies: required,
             configuration_schema_digest: configuration_schema
                 .as_ref()
-                .map(|value| {
-                    crate::executor::json::canonical_json_digest(value, u64::MAX, &mut None)
-                })
+                .map(|value| crate::executor::json::canonical_json_digest(value, None, &mut None))
                 .transpose()?,
             configuration_schema,
         };
@@ -319,10 +313,8 @@ impl SchemaRegistry {
         }
         crate::executor::with_history_io(io, |work| content.descriptor().verify(bytes, work))?;
         let value;
-        #[cfg(feature = "filesystem")]
         let decoded;
         let value = match io {
-            #[cfg(feature = "filesystem")]
             Some(io) => {
                 decoded = io.decode(
                     std::marker::PhantomData::<Value>,

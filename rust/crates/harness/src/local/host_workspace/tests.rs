@@ -59,6 +59,7 @@ impl Fixture {
             Arc::clone(workspace),
             agent,
             &self.harness.signed,
+            &self.harness.verifier,
             acyclic_fs::hold_root(mounts).map_err(storage)?,
         )
         .await

@@ -64,8 +64,8 @@ impl ToolProjection for HostTool {
         &self,
         invocation: &ToolInvocation,
         result: &ToolResult,
-        _work: crate::NativeWork<'_>,
-    ) -> Result<(Value, crate::NativeCustody)> {
+        _work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         let invocation = to_js(invocation)
             .map_err(|_| Error::Invalid("tool projection invocation encoding failed".into()))?;
         let result = to_js(result)
@@ -122,14 +122,8 @@ impl HostModel {
                 let (reader, _) = self.content.as_ref().ok_or_else(|| {
                     Error::Unsupported("model file byte resolution is unavailable".into())
                 })?;
-                let (bytes, _hold) = verified_content_bytes(
-                    reader.as_ref(),
-                    file,
-                    file.descriptor().byte_length(),
-                    None,
-                    None,
-                )
-                .await?;
+                let (bytes, _hold) =
+                    verified_content_bytes(reader.as_ref(), file, None, None, None).await?;
                 files.push(&js_sys::Uint8Array::from(bytes.as_slice()));
             }
         }

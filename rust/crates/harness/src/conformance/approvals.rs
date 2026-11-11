@@ -184,14 +184,18 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
     };
     let issuer = AuthorityRoot::new("conformance", [7; 32], audience.clone());
     let agent = crate::conformance::fixtures::adopted().agent;
-    let private = volume(PRIVATE_VOLUME, agent.clone())?;
+    let private = volume(
+        acyclic_harness_core::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME,
+        agent.clone(),
+    )?;
     let grants = vec![
         INTERACTION_ROUTE.to_owned(),
         private
-            .volume
+            .volume()?
             .capability(VolumeOperation::Read, &mut None)?,
         private
-            .volume
+            .volume()?
             .capability(VolumeOperation::Write, &mut None)?,
     ];
     let scope = issuer.bootstrap_scope("root", &Capabilities::new(grants), None, &mut None)?;
@@ -207,7 +211,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
                 objects.into_store(storage.as_ref())?,
                 capabilities,
             ),
-            provider: private.volume.provider().clone(),
+            provider: private.volume()?.provider().clone(),
             within: ActorReference::new(b"conformance", b"agents", b"host")?,
         },
         Turns {

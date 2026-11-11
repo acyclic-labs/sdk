@@ -413,6 +413,7 @@ test("console reads preserve uint64 offsets, discarded-byte gaps and temporary e
   const { machines } = await fixture(t, {
     readOutput(query, context) {
       authenticate(context);
+      assert.ok(query.limit > 0 && query.limit <= MAX_OUTPUT_READ_BYTES);
       seen.push(query.offset);
       return { machine, offset: query.offset + (seen.length === 1 ? 4n : 0n), data: seen.length === 2 ? new Uint8Array() : new Uint8Array([0, 255]) };
     },
@@ -424,6 +425,7 @@ test("console reads preserve uint64 offsets, discarded-byte gaps and temporary e
   assert.equal((await machines.readOutput({ protocol, machine, offset: next, limit: 2 })).data.length, 0);
   assert.deepEqual((await machines.readOutput({ protocol, machine, offset: next, limit: 2 })).data, first.data);
   assert.deepEqual(seen, [offset, next, next]);
+  assert.deepEqual((await machines.readOutput({ protocol, machine, offset: next, limit: 0xffff_ffff })).data, first.data);
 });
 
 test("exec retains the original caller deadline without a completion grace window", async t => {
@@ -483,14 +485,17 @@ test("exec and console request bounds fail before reaching the server", async t 
   }
   for (const timeoutMs of [0n, 1n << 64n, 1000, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
   for (const cwd of ["", "a\0b"]) await assert.rejects(exec(machines, { ...request, cwd }), RangeError);
-  for (const limit of [0, 65537, 1.5]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 0n, limit }), RangeError);
+  for (const limit of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 0n, limit }), RangeError);
   for (const offset of [-1n, 1n << 64n]) await assert.rejects(machines.readOutput({ protocol, machine, offset, limit: 1 }), RangeError);
   assert.equal(attempts, 0);
 });
 
 test("exec and console reject substituted machines and invalid output ranges", async t => {
   const { machines } = await fixture(t, {
-    async *exec() { yield { machine: identity(7), output: { case: "exitCode", value: 0 } }; },
+    async *exec(query) {
+      assert.equal(query.timeoutMs, undefined);
+      yield { machine: identity(7), output: { case: "exitCode", value: 0 } };
+    },
     readOutput(query) {
       if (query.limit === 1) return { machine: identity(7), offset: query.offset };
       if (query.limit === 2) return { machine, offset: query.offset - 1n };
@@ -498,7 +503,8 @@ test("exec and console reject substituted machines and invalid output ranges", a
       return { machine, offset: (1n << 64n) - 1n, data: new Uint8Array(1) };
     },
   });
-  await assert.rejects(exec(machines, { protocol, machine, argv: ["echo"], timeoutMs: 1n }), error => error.code === Code.DataLoss);
+  // Identity evidence is independent of the caller's optional execution deadline.
+  await assert.rejects(exec(machines, { protocol, machine, argv: ["echo"] }), error => error.code === Code.DataLoss);
   for (const limit of [1, 2, 3, 4]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 1n, limit }), error => error.code === Code.DataLoss);
 });
 

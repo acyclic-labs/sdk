@@ -3,21 +3,18 @@
 use bytes::BytesMut;
 use libfuzzer_sys::fuzz_target;
 use rmcp::model::ServerJsonRpcMessage;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU32, Ordering},
-};
+use std::sync::Arc;
 use tokio_util::codec::{Decoder as _, Encoder as _};
 
 fuzz_target!(|input: &[u8]| {
     for maximum in [1, 16, 128, 4096] {
-        let bound = Arc::new(AtomicU32::new(maximum));
+        let bound = Arc::new(acyclic_mcp::FrameBytePolicy::new(maximum));
         let mut decoder =
             acyclic_mcp::BoundedCodec::<ServerJsonRpcMessage>::new(Arc::clone(&bound));
         let mut pending = BytesMut::new();
         for (index, chunk) in input.chunks(17).enumerate() {
             if index == 1 {
-                bound.store(4096, Ordering::Release);
+                bound.set(4096);
             }
             pending.extend_from_slice(chunk);
             loop {

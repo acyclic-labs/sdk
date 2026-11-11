@@ -127,7 +127,8 @@ async function prepare(test, gitOrigin) {
       capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true }
     }])),
     token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
-  await json(fixture.catalog, { ...(test.first_run ? { default_model: `${fixture.provider}/tiny` } : {}), [fixture.provider]: provider });
+  const recon = { ...provider, models: Object.fromEntries(["morph-kimik31", "morph-dsv41flash"].map(name => [name, provider.models[Object.keys(provider.models)[0]]])) };
+  await json(fixture.catalog, { recon, ...(test.first_run ? { default_model: `${fixture.provider}/tiny` } : {}), [fixture.provider]: provider });
   fixture.env.E2E_MOCK_URL = fixture.url;
   fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
   fixture.requested = request => events.has(requestKey(test.id, request));

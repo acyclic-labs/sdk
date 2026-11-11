@@ -236,11 +236,18 @@ proptest! {
         arguments in any::<[u64; 6]>(),
     ) {
         let code = filter(&ExecutionNetwork::On).unwrap();
+        let attributes = [libc::SYS_getxattr, libc::SYS_lgetxattr, libc::SYS_fgetxattr,
+            libc::SYS_listxattr, libc::SYS_llistxattr, libc::SYS_flistxattr];
         if !ALLOWED_SYSCALLS.iter().any(|call| *call == i64::from(syscall))
+            && !attributes.contains(&i64::from(syscall))
             && ![libc::SYS_read, libc::SYS_write, libc::SYS_fcntl, libc::SYS_ioctl,
                 libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid,
                 libc::SYS_clone3].contains(&(i64::from(syscall))) {
             prop_assert_eq!(evaluate(code, ARCH, syscall, arguments)?, DENY);
+        }
+        for call in attributes {
+            prop_assert_eq!(evaluate(code, ARCH, u32::try_from(call).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?,
+                0x0005_0000 | libc::EOPNOTSUPP as u32);
         }
         for call in [libc::SYS_shmget, libc::SYS_shmat, libc::SYS_shmctl,
             libc::SYS_msgget, libc::SYS_msgsnd, libc::SYS_msgrcv, libc::SYS_msgctl,

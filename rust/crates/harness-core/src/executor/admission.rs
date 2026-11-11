@@ -62,7 +62,7 @@ impl ModelEventAdmission {
                 block.validate_limits(limits, work)?;
                 crate::executor::json::json_byte_length(
                     event,
-                    limits.render_bytes.min(limits.file_bytes),
+                    Some(limits.render_bytes.min(limits.file_bytes)),
                     work,
                 )
                 .map(|_| ())
@@ -118,6 +118,7 @@ impl ModelEventAdmission {
 
     fn next_text_bytes(&self, event: &ModelEvent) -> Result<u64> {
         match event {
+            ModelEvent::Restarted => Ok(0),
             ModelEvent::Content { delta } => self
                 .text_bytes
                 .checked_add(delta.len() as u64)
@@ -179,6 +180,11 @@ impl ModelEventAdmission {
             .checked_add(1)
             .ok_or_else(|| stock_boundary(io, Invalid, "model event count overflow"))?;
         match event {
+            ModelEvent::Restarted => {
+                for call in self.calls.drain(..) {
+                    stock_retire_text(call, io)?;
+                }
+            }
             ModelEvent::ToolCall(crate::model::ToolCall { call_id, .. }) => {
                 let position = position.ok_or_else(|| {
                     stock_boundary(io, Invalid, "model call insertion position is missing")

@@ -10,18 +10,58 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 enum Reply {
     /// A complete response with this status and body.
     Full(u16, &'static str),
+    /// A complete response with provider-authored recovery headers.
+    Headers(u16, &'static str, &'static str),
     /// A response declaring the whole body but sending only `usize` bytes before closing.
-    Cut(u16, &'static str, usize),
+    Cut(u16, &'static str, &'static str, usize),
     /// The server reads the request, then closes without returning headers.
     Lost,
     /// Bytes that are not a TLS record.
     Garbage,
 }
 
-/// Counts every send while delegating to the platform transport, without backoff waits.
+/// Counts real exchanges and records recovery timers, optionally held on an event.
 struct Counted {
     inner: ReqwestTransport,
     sent: AtomicUsize,
+    waits: Mutex<Vec<std::time::Duration>>,
+    gate: Option<Arc<WaitGate>>,
+}
+
+struct WaitGate {
+    entered: Mutex<Option<tokio::sync::oneshot::Sender<std::time::Duration>>>,
+    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+impl Counted {
+    fn wait(
+        &self,
+        wait: std::time::Duration,
+    ) -> impl std::future::Future<Output = Result<()>> + Send + 'static + use<> {
+        self.waits.lock().unwrap().push(wait);
+        let gate = self.gate.clone();
+        async move {
+            if let Some(gate) = gate {
+                let release = gate
+                    .release
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("one recovery wait");
+                gate.entered
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(wait)
+                    .unwrap();
+                release
+                    .await
+                    .map_err(|_| invalid("recovery timer producer stopped"))?;
+            }
+            Ok(())
+        }
+    }
 }
 
 impl HttpTransport for Counted {
@@ -31,10 +71,13 @@ impl HttpTransport for Counted {
     }
     // Each failed exchange is the explicit model-redelivery step.
     fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
+        Box::pin(self.wait(wait))
     }
     fn now(&self) -> std::time::Duration {
         crate::fixtures::now()
+    }
+    fn unix_ms(&self) -> Result<u64> {
+        Ok(1_700_000_000_000)
     }
     fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         self.inner.supports_native(work)
@@ -43,7 +86,7 @@ impl HttpTransport for Counted {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
         self.sent.fetch_add(1, Ordering::SeqCst);
         self.inner.send_with_native_work(request, work)
     }
@@ -51,8 +94,8 @@ impl HttpTransport for Counted {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
-        self.inner.delay_with_native_work(wait, work)
+    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || self.wait(wait))
     }
 }
 
@@ -83,8 +126,12 @@ async fn serve(replies: Vec<Reply>) -> Result<(u16, Arc<AtomicUsize>)> {
                     "HTTP/1.1 {status} S\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 ),
-                Reply::Cut(status, body, sent) => format!(
-                    "HTTP/1.1 {status} S\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                Reply::Headers(status, headers, body) => format!(
+                    "HTTP/1.1 {status} S\r\n{headers}content-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                ),
+                Reply::Cut(status, headers, body, sent) => format!(
+                    "HTTP/1.1 {status} S\r\n{headers}content-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                     body.len(),
                     &body[..sent]
                 ),
@@ -135,6 +182,8 @@ fn model(base_url: &str) -> Result<(ResolvedModel, Arc<Counted>)> {
     let transport = Arc::new(Counted {
         inner: ReqwestTransport::new()?,
         sent: AtomicUsize::new(0),
+        waits: Mutex::new(Vec::new()),
+        gate: None,
     });
     Ok((
         super::provider_with(Adapter::Chat, base_url, transport.clone()),
@@ -154,41 +203,171 @@ fn failure(error: &Error) -> Option<ModelTransportFailure> {
     }
 }
 
-const ATTEMPTS: usize = 1 + crate::RetrySpec::DEFAULT.attempts as usize;
-
 #[tokio::test]
-async fn unreachable_host_is_a_typed_connect_failure_after_bounded_redelivery() -> Result<()> {
-    // Port zero cannot name a listener. Releasing an ephemeral port races a
-    // different binder and triggers Windows' delayed connection refusal.
-    // The live-server cases below are the control for a reachable destination.
-    let (provider, transport) = model("http://127.0.0.1:0/v1")?;
-    let error = generate(&provider)
-        .await
-        .expect_err("impossible destination port");
-    assert_eq!(
-        failure(&error),
-        Some(ModelTransportFailure::Connect),
-        "{error}"
-    );
-    assert_eq!(
-        error.code(),
-        acyclic_harness_core::wire::ErrorCode::Unavailable
-    );
-    assert!(!error.to_string().contains("127.0.0.1"), "{error}");
-    assert!(!error.to_string().contains("scripted-key"));
-    assert_eq!(transport.sent.load(Ordering::SeqCst), ATTEMPTS);
-    // The token count shares the class and the budget.
-    let (prepared, _) = super::request(&provider)?;
-    let error = provider
-        .count_tokens(&prepared, 0)
-        .await
-        .expect_err("impossible destination port");
-    assert_eq!(
-        failure(&error),
-        Some(ModelTransportFailure::Connect),
-        "{error}"
-    );
-    assert_eq!(transport.sent.load(Ordering::SeqCst), 2 * ATTEMPTS);
+async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_the_turn()
+-> Result<()> {
+    use std::time::Duration;
+    use tracing::instrument::WithSubscriber as _;
+    use tracing_subscriber::prelude::*;
+
+    #[derive(Clone)]
+    struct Log(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    for native in [false, true] {
+        for (status, headers, reason, seconds, cut) in [
+            (
+                429,
+                "Retry-After: 60\r\nRateLimit-Reset: 900\r\n",
+                "provider rate limit",
+                60,
+                None,
+            ),
+            (
+                429,
+                "RateLimit-Reset: 60\r\n",
+                "provider rate limit",
+                60,
+                None,
+            ),
+            (
+                429,
+                "x-ratelimit-remaining-requests: 0\r\nx-ratelimit-reset-requests: 1s\r\nx-ratelimit-remaining-tokens: 10000\r\nx-ratelimit-reset-tokens: 65s\r\n",
+                "provider rate limit",
+                65,
+                None,
+            ),
+            (
+                429,
+                "x-ratelimit-remaining-requests: 1000\r\nx-ratelimit-reset-requests: 1s\r\nx-ratelimit-remaining-tokens: 100\r\nx-ratelimit-reset-tokens: 65s\r\n",
+                "provider rate limit",
+                65,
+                None,
+            ),
+            (503, "Retry-After: 60\r\n", "provider transport", 60, None),
+            (
+                200,
+                "RateLimit-Reset: 65\r\n",
+                "provider transport",
+                65,
+                Some(0),
+            ),
+            (
+                200,
+                "Retry-After: 60\r\n",
+                "provider transport",
+                60,
+                Some(CHAT.find("\n\n").unwrap() + 10),
+            ),
+        ] {
+            let expected = Duration::from_secs(seconds);
+            let until = format!("until {}.000000000 (Unix seconds)", 1_700_000_000 + seconds);
+            let first = cut.map_or(
+                Reply::Headers(status, headers, r#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#),
+                |cut| Reply::Cut(status, headers, CHAT, cut),
+            );
+            let (port, accepted) = serve(vec![first, Reply::Full(200, CHAT)]).await?;
+            let (entered_tx, mut entered) = tokio::sync::oneshot::channel();
+            let (release, release_rx) = tokio::sync::oneshot::channel();
+            let transport = Arc::new(Counted {
+                inner: ReqwestTransport::new()?,
+                sent: AtomicUsize::new(0),
+                waits: Mutex::new(Vec::new()),
+                gate: Some(Arc::new(WaitGate {
+                    entered: Mutex::new(Some(entered_tx)),
+                    release: Mutex::new(Some(release_rx)),
+                })),
+            });
+            let provider = super::provider_with(
+                Adapter::Chat,
+                &format!("http://127.0.0.1:{port}/v1"),
+                transport.clone(),
+            );
+            let (request, dispatch) = super::request(&provider)?;
+            let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+            let baseline = work.live_allocation_bytes();
+            let report = acyclic_native_runtime::obs::WaitReport::default();
+            let log = Log(Arc::new(Mutex::new(Vec::new())));
+            let writer = log.clone();
+            let subscriber = tracing_subscriber::registry().with(report.clone()).with(
+                tracing_subscriber::fmt::layer()
+                    .without_time()
+                    .with_ansi(false)
+                    .with_writer(move || writer.clone()),
+            );
+            let run = async {
+                let (mut completed, mut calls, mut content, mut restarted) = (0, 0, false, 0);
+                let mut observe = |event: &ModelEvent| match event {
+                    ModelEvent::Restarted => {
+                        (completed, calls, content) = (0, 0, false);
+                        restarted += 1;
+                    }
+                    ModelEvent::Content { delta } => content |= delta == "hé",
+                    ModelEvent::ToolCall(call) => {
+                        assert_eq!(call.call_id, dispatch.tool_call_id(0));
+                        calls += 1;
+                    }
+                    ModelEvent::Completed { .. } => completed += 1,
+                    _ => {}
+                };
+                if native {
+                    let mut stream = provider
+                        .generate_with_native_work(&request, dispatch, &work)?
+                        .await?;
+                    while let Some(event) = stream.next().await {
+                        let (event, custody) = event?;
+                        observe(&event);
+                        drop((event, custody));
+                    }
+                } else {
+                    let mut stream = provider.generate(&request, dispatch);
+                    while let Some(event) = stream.next().await {
+                        observe(&event?);
+                    }
+                }
+                Ok::<_, Error>((completed, calls, content, restarted))
+            }
+            .with_subscriber(subscriber);
+            tokio::pin!(run);
+            tokio::select! {
+                result = &mut run => panic!("turn ended before its provider wait: {result:?}"),
+                wait = &mut entered => assert_eq!(wait.unwrap(), expected),
+            }
+            assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
+            assert_eq!(accepted.load(Ordering::SeqCst), 1);
+            assert_eq!(*transport.waits.lock().unwrap(), [expected]);
+            let waits = report.snapshot();
+            assert!(
+                waits
+                    .iter()
+                    .any(|wait| wait.primitive == reason && wait.key == until)
+            );
+            let visible = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+            assert!(
+                visible.contains(&format!("waiting for {reason} {until}")),
+                "{visible}"
+            );
+            release.send(()).unwrap();
+            assert_eq!(run.await?, (1, 1, true, usize::from(cut.is_some())));
+            assert_eq!(transport.sent.load(Ordering::SeqCst), 2);
+            assert_eq!(accepted.load(Ordering::SeqCst), 2);
+            assert!(
+                report
+                    .snapshot()
+                    .iter()
+                    .all(|wait| wait.primitive != reason)
+            );
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
     Ok(())
 }
 
@@ -196,9 +375,11 @@ async fn unreachable_host_is_a_typed_connect_failure_after_bounded_redelivery() 
 async fn refusal_then_success_redelivers_exactly_once() -> Result<()> {
     for native in [false, true] {
         for first in [
+            Reply::Lost,
+            Reply::Full(429, "rate limited"),
             Reply::Full(503, "busy"),
-            Reply::Cut(503, CHAT, 0),
-            Reply::Cut(503, CHAT, 12),
+            Reply::Cut(503, "", CHAT, 0),
+            Reply::Cut(503, "", CHAT, 12),
         ] {
             let (port, accepted) = serve(vec![first, Reply::Full(200, CHAT)]).await?;
             let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
@@ -243,6 +424,72 @@ async fn refusal_then_success_redelivers_exactly_once() -> Result<()> {
 }
 
 #[tokio::test]
+async fn interrupted_accepted_responses_restart_without_duplicate_output() -> Result<()> {
+    let first = CHAT.find("\n\n").unwrap() + 2;
+    for native in [false, true] {
+        for cut in [0, 12, first + 8] {
+            let (port, accepted) =
+                serve(vec![Reply::Cut(200, "", CHAT, cut), Reply::Full(200, CHAT)]).await?;
+            let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+            let (request, dispatch) = super::request(&provider)?;
+            let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+            let baseline = work.live_allocation_bytes();
+            let mut events = Vec::new();
+            let mut restarts = 0;
+            if native {
+                let mut stream = provider
+                    .generate_with_native_work(&request, dispatch, &work)?
+                    .await?;
+                while let Some(event) = stream.next().await {
+                    let (event, custody) = event?;
+                    assert_eq!(custody.bytes(), event.logical_owned_bytes()?);
+                    if matches!(event, ModelEvent::Restarted) {
+                        restarts += 1;
+                        events.clear();
+                    } else {
+                        events.push(event);
+                    }
+                    drop(custody);
+                }
+            } else {
+                let mut stream = provider.generate(&request, dispatch);
+                while let Some(event) = stream.next().await {
+                    let event = event?;
+                    if matches!(event, ModelEvent::Restarted) {
+                        restarts += 1;
+                        events.clear();
+                    } else {
+                        events.push(event);
+                    }
+                }
+            }
+            assert_eq!(restarts, 1);
+            let text: String = events
+                .iter()
+                .filter_map(|event| match event {
+                    ModelEvent::Content { delta } => Some(delta.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(text, "hé");
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, ModelEvent::ToolCall(_)))
+                    .count(),
+                1
+            );
+            assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
+            assert_eq!(transport.sent.load(Ordering::SeqCst), 2);
+            assert_eq!(accepted.load(Ordering::SeqCst), 2);
+            drop(events);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn response_status_keeps_its_original_interruption_before_and_after_output() -> Result<()> {
     // Reuse the existing shared Chat response, cutting before any bytes,
     // inside its first event and after one event. Also lose all response headers
@@ -254,19 +501,13 @@ async fn response_status_keeps_its_original_interruption_before_and_after_output
         // the original cut response; a final refusal must retain that boundary
         // even when its body ends with the same transport interruption.
         for (status, cut) in [
-            (200, None),
-            (200, Some(0)),
-            (200, Some(12)),
-            (200, Some(first + 8)),
-            (201, Some(0)),
-            (202, Some(first + 8)),
             (400, Some(0)),
             (400, Some(12)),
             (413, Some(0)),
             (413, Some(12)),
         ] {
             let (port, accepted) = serve(vec![
-                cut.map_or(Reply::Lost, |cut| Reply::Cut(status, CHAT, cut)),
+                cut.map_or(Reply::Lost, |cut| Reply::Cut(status, "", CHAT, cut)),
                 Reply::Full(200, CHAT),
             ])
             .await?;
@@ -324,8 +565,11 @@ async fn response_status_keeps_its_original_interruption_before_and_after_output
         for status in [400, 413] {
             for cut in [0, 12] {
                 let body = "{\"input_tokens\":7}";
-                let (port, accepted) =
-                    serve(vec![Reply::Cut(status, body, cut), Reply::Full(200, body)]).await?;
+                let (port, accepted) = serve(vec![
+                    Reply::Cut(status, "", body, cut),
+                    Reply::Full(200, body),
+                ])
+                .await?;
                 let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
                 let (prepared, _) = super::request(&provider)?;
                 let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
@@ -355,12 +599,24 @@ async fn response_status_keeps_its_original_interruption_before_and_after_output
 }
 
 #[tokio::test]
-async fn tls_failure_is_typed_and_never_redelivered() -> Result<()> {
-    let (port, accepted) = serve(vec![Reply::Garbage, Reply::Garbage]).await?;
+async fn tls_failure_is_typed_for_shared_recovery() -> Result<()> {
+    let (port, accepted) = serve(vec![Reply::Garbage]).await?;
     let (provider, transport) = model(&format!("https://127.0.0.1:{port}/v1"))?;
-    let error = generate(&provider).await.expect_err("not TLS");
+    let error = transport
+        .send(HttpRequest {
+            method: ::http::Method::POST,
+            url: provider.config.base_url.clone(),
+            headers: std::collections::BTreeMap::new(),
+            body: Bytes::new(),
+        })
+        .await
+        .err()
+        .expect("not TLS");
     assert_eq!(failure(&error), Some(ModelTransportFailure::Tls), "{error}");
-    assert_eq!(error.code(), acyclic_harness_core::wire::ErrorCode::Invalid);
+    assert_eq!(
+        error.code(),
+        acyclic_harness_core::wire::ErrorCode::Unavailable
+    );
     assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
     Ok(())

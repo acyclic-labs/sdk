@@ -13,6 +13,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(super) enum Source {
     Cost,
+    Question(String),
     Diff(Option<diff::Continuation>),
     History(Option<String>),
     AgentDiff(AgentPath, Option<diff::Continuation>),
@@ -31,6 +32,7 @@ impl Source {
     pub(super) fn title(&self) -> &'static str {
         match self {
             Self::Cost => "Subtree cost",
+            Self::Question(_) => "Question to you",
             Self::Diff(_) | Self::AgentDiff(..) => "Diff",
             Self::Wait(_) => "Wait",
             Self::Merge(..) => "Merge",
@@ -43,6 +45,7 @@ impl Source {
     pub(super) fn newest(&self) -> Self {
         match self {
             Self::Cost => Self::Cost,
+            Self::Question(path) => Self::Question(path.clone()),
             Self::Diff(_) => Self::Diff(None),
             Self::AgentDiff(agent, _) => Self::AgentDiff(agent.clone(), None),
             Self::Wait(agent) => Self::Wait(agent.clone()),
@@ -75,6 +78,11 @@ impl Source {
 pub(super) struct Context {
     pub approval_status: Option<u64>,
     history: Vec<u64>,
+    pub question: Option<(
+        String,
+        String,
+        Vec<acyclic_harness::client::ui::blocks::InputBlock>,
+    )>,
 }
 
 pub(super) type Panel = QueryPage<Source, Context>;
@@ -115,6 +123,29 @@ pub(super) async fn load(
     prices: Arc<acyclic_harness::executor::ModelPrices>,
 ) -> Result<Panel, Failure> {
     match source {
+        Source::Question(path) => {
+            let name = format!("ui/{path}");
+            let snapshot = conversation.agent_files(vec![name.clone()], None).await?;
+            let file = snapshot
+                .files
+                .get(&name)
+                .and_then(Option::as_ref)
+                .ok_or("Question file is absent")?;
+            let blocks = acyclic_harness::client::ui::blocks::parse(&file.text)?;
+            let mut lines = vec![Line::raw(format!(
+                "Orchestrator {} asks · Enter replies directly",
+                conversation.agent().id()
+            ))];
+            lines.extend(
+                file.text
+                    .lines()
+                    .map(|line| Line::raw(display_text(line).into_owned())),
+            );
+            Ok(QueryPage::new(lines, None, false).with_context(Context {
+                question: Some((path, file.file.version().to_owned(), blocks)),
+                ..Context::default()
+            }))
+        }
         Source::Cost => {
             let totals = conversation
                 .usage_totals(
@@ -222,6 +253,7 @@ pub(super) async fn load(
             .with_context(Context {
                 approval_status: None,
                 history: selected,
+                question: None,
             }))
         }
         Source::Approval {
@@ -280,6 +312,7 @@ pub(super) async fn load(
             .with_context(Context {
                 approval_status: Some(status),
                 history: Vec::new(),
+                question: None,
             }))
         }
     }
@@ -324,6 +357,7 @@ mod tests {
             .with_context(Context {
                 approval_status: Some(7),
                 history: Vec::new(),
+                question: None,
             }),
         );
         let input = PromptInput::default();
@@ -394,7 +428,7 @@ mod tests {
                 agent.clone(),
                 Some(Arc::clone(cursor.as_ref().unwrap_or(retained))),
             ),
-            Source::Wait(_) | Source::Merge(..) | Source::Discard(..) => {
+            Source::Question(_) | Source::Wait(_) | Source::Merge(..) | Source::Discard(..) => {
                 return QueryPage::new(vec![], None, false).with_context(Context::default());
             }
             Source::Approval { .. } => source.clone(),

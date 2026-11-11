@@ -54,7 +54,10 @@ pub use witness::codec_fuzz;
 mod directories;
 #[cfg(all(
     not(target_arch = "wasm32"),
-    any(windows, all(any(test, feature = "local"), feature = "native-mount"))
+    any(
+        windows,
+        all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32"))
+    )
 ))]
 use directories::*;
 #[cfg(not(target_arch = "wasm32"))]
@@ -63,25 +66,17 @@ mod checkout_work;
 mod reservation_meter;
 #[cfg(not(target_arch = "wasm32"))]
 mod runtime_meter;
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
+#[cfg(not(target_arch = "wasm32"))]
 mod stage_state;
 
-#[cfg(all(
-    any(test, feature = "local"),
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 native_modules! {
     preflight;
     pub publication;
     planning;
 }
 
-#[cfg(all(
-    any(test, feature = "local"),
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 mod directory_preparation;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

@@ -15,7 +15,7 @@
 
 use super::{
     AgentPath, AgentRecord, AgentState, Closed, Control, Error, ForkAdopted, InboxRecord, Out,
-    Sender, Step, VolumeBinding, commit,
+    Sender, Step, WorkspaceEntry, commit,
 };
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey,
@@ -121,6 +121,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 let child = adopted
                     .profile
                     .get_or_insert_with(|| super::CreationConfig {
+                        question_plugin: false,
                         topology: None,
                         model: None,
                         continuation: None,
@@ -182,10 +183,12 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             Out::Send { to, record } => {
                 if matches!(
                     record,
-                    InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
+                    InboxRecord::ForkAdopted(_)
+                        | InboxRecord::Archive(_)
+                        | InboxRecord::WorkspaceChanged(_)
                 ) {
                     return Err(Error::Record(
-                        "send carries neither ForkAdopted nor Archive",
+                        "send cannot carry adoption, archive or workspace changes",
                     ));
                 }
                 builder.recipient(to)?;
@@ -275,7 +278,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
 /// spawn names the child, and the fork cut is `cursor`.
 pub(super) fn adoption(
     state: &AgentState,
-    volumes: &[VolumeBinding],
+    volumes: &[WorkspaceEntry],
     cursor: u64,
     conversation_tail: u64,
 ) -> ForkAdopted {

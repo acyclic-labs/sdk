@@ -55,7 +55,7 @@ fn settings(args: &Args) -> Result<Option<SettingsConfig>, Failure> {
     }))
 }
 
-fn selection(args: &Args, registry: &Registry) -> Result<String, Failure> {
+fn selection(args: &Args, _registry: &Registry) -> Result<String, Failure> {
     if let Some(model) = &args.model {
         return Ok(model.clone());
     }
@@ -63,10 +63,11 @@ fn selection(args: &Args, registry: &Registry) -> Result<String, Failure> {
         .map(|settings| settings.configured_model())
         .transpose()?
         .flatten()
-        .unwrap_or_else(|| registry.default_model().into()))
+        .map(Ok)
+        .unwrap_or_else(acyclic_harness::templates::root_model)?)
 }
 
-const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a terminal to save a key in OS keychain service acyclic-harness, set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY (or GOOGLE_API_KEY), or pass --credentials FILE with an api_keys provider map";
+const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a terminal to save a key in OS keychain service acyclic-harness, set MORPH_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY (or GOOGLE_API_KEY), or pass --credentials FILE with an api_keys provider map";
 
 pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Option<Tty>, Failure> {
     let selected = selection(args, registry)?;

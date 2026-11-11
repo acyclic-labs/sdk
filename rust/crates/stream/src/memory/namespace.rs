@@ -94,6 +94,7 @@ impl MemoryStream {
         let blank = || PathState {
             history: None,
             ranges: HistoryRanges::default(),
+            keys: KeyTree::default(),
             prefix: [None, None],
             tail: 0,
         };
@@ -613,7 +614,7 @@ impl Namespace {
         out.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
         out
     }
-    #[cfg(any(test, feature = "local"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn values(&self) -> impl Iterator<Item = &PathState> {
         self.entries().into_iter().map(|(_, data)| data)
     }

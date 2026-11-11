@@ -1,5 +1,9 @@
 Cases launch the shipping GraphCoder binary with an ordinary provider catalog and isolated settings. Build GraphCoder and harness-mock-model and install scripts/graphcoder-pty dependencies before timing. Run `node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [CASE ...]`.
 
+A workspace file may use `{ "source": "capture.mjs" }` to seed an asset from
+this support directory. Programs executed by confined tools belong in the
+workspace fixture; the controller's checkout grants no implicit read authority.
+
 `node scripts/qualify-topology-modes.mjs GRAPHCODER MOCK_MODEL FRESH_OUTPUT`
 runs forced single and team cases plus a generated swarm with 257 siblings
 and depth 65. Team workers settle and retire across independent root turns before the

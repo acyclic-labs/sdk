@@ -8,7 +8,7 @@ fn main() {
     });
     if let Err(error) = serde_json::to_writer(std::io::stdout(), &inventory) {
         eprintln!(
-            "STEP_FAILED objects RPC inventory: {error}; recovery: cargo run --locked -p acyclic-objects --features grpc,http --bin objects-rpc-inventory"
+            "STEP_FAILED objects RPC inventory: {error}; recovery: cargo run --locked -p acyclic-objects --bin objects-rpc-inventory"
         );
         std::process::exit(1);
     }
@@ -17,7 +17,7 @@ fn main() {
 #[cfg(target_arch = "wasm32")]
 fn main() {
     eprintln!(
-        "STEP_FAILED objects RPC inventory requires native adapters; recovery: cargo run --locked -p acyclic-objects --features grpc,http --bin objects-rpc-inventory"
+        "STEP_FAILED objects RPC inventory requires native adapters; recovery: cargo run --locked -p acyclic-objects --bin objects-rpc-inventory"
     );
     std::process::exit(1);
 }

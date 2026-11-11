@@ -91,14 +91,8 @@ pub(crate) async fn resolve(
             let reader = files.reader.as_ref().ok_or_else(|| {
                 Error::Unsupported("model file byte resolution is unavailable".into())
             })?;
-            let (bytes, hold) = verified_content_bytes(
-                reader.as_ref(),
-                file,
-                file.descriptor().byte_length(),
-                None,
-                io,
-            )
-            .await?;
+            let (bytes, hold) =
+                verified_content_bytes(reader.as_ref(), file, None, None, io).await?;
             if let FileProjectionPolicy::ProjectInstructions(source) = policy {
                 let value =
                     acyclic_harness_core::model::InstructionSource::with_identity(file, source)

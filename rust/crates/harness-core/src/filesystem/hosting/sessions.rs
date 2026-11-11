@@ -218,8 +218,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         intent: &IntentId,
         root: RootRequest,
         source: &AgentPath,
+        questions: Option<bool>,
     ) -> Result<Prepared, Error> {
-        self.prepare_session_fork(intent, root, source, None).await
+        self.prepare_session_fork(intent, root, source, None, questions)
+            .await
     }
 
     /// A parentless session at an indexed coupled cut, born paused. Its
@@ -231,7 +233,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         source: &AgentPath,
         at: u64,
     ) -> Result<Prepared, Error> {
-        self.prepare_session_fork(intent, root, source, Some(at))
+        self.prepare_session_fork(intent, root, source, Some(at), None)
             .await
     }
 
@@ -241,6 +243,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         mut root: RootRequest,
         source: &AgentPath,
         at: Option<u64>,
+        questions: Option<bool>,
     ) -> Result<Prepared, Error> {
         self.admit_sessions()?;
         self.admit_path(source)?;
@@ -282,7 +285,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             (Some(at), Some(saved)) => self
                 .agents
                 .prepare_root_history(intent, &source, adopted, at, saved)?,
-            _ => self.agents.prepare_root(intent, adopted)?,
+            _ => self.agents.prepare_root(
+                intent,
+                adopted,
+                questions.unwrap_or(self.turns.question_plugin()),
+            )?,
         };
         self.index_session(&child, &mut request)?;
         let commit = self

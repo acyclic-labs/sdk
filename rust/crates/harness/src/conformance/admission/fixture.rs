@@ -14,7 +14,7 @@ use acyclic_harness_core::{
 
 pub(crate) struct Fixture {
     pub path: AgentPath,
-    pub binding: VolumeBinding,
+    pub binding: WorkspaceEntry,
     pub provider: Arc<Observed>,
     scheduler: Arc<Observed>,
     filesystem: Arc<
@@ -30,7 +30,11 @@ impl Fixture {
         let scheduler = Arc::new(Observed::new(raw.clone()));
         let provider = Arc::new(Observed::new(raw));
         let agent = crate::conformance::fixtures::adopted().agent;
-        let binding = crate::conformance::roots::volume(PRIVATE_VOLUME, agent.clone())?;
+        let binding = crate::conformance::roots::volume(
+            acyclic_harness_core::agent::WorkspaceRole::Private,
+            PRIVATE_VOLUME,
+            agent.clone(),
+        )?;
         let objects = storage.objects().await?;
         let capabilities = objects.capabilities;
         let executors = StockExecutors::new(
@@ -59,7 +63,7 @@ impl Fixture {
                     objects.into_store(storage.as_ref())?,
                     capabilities,
                 ),
-                provider: binding.volume.provider().clone(),
+                provider: binding.volume()?.provider().clone(),
                 within: acyclic_actors::addressing::ActorReference::new(
                     b"conformance",
                     b"agents",

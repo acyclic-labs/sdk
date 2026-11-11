@@ -34,10 +34,7 @@ impl Lines {
                 consumed: 0,
             });
         }
-        for (index, byte) in bytes.iter().enumerate() {
-            if *byte != b'\n' {
-                continue;
-            }
+        for index in memchr::memchr_iter(b'\n', bytes) {
             self.line += 1;
             let page_full = boundary(self.line, position + index as u64 + 1)?;
             if self.line == self.offset && start.is_none() {
@@ -74,9 +71,9 @@ pub(super) async fn read(
     source: super::source::ReadSource,
     offset: u64,
     limit: Option<u64>,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(ToolResult, crate::NativeCustody)> {
+) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
     let maximum = context.effective_scope().limits().render_bytes;
     let quantum = maximum
         .min(crate::tool::output::VIEW_BYTES)
@@ -150,13 +147,14 @@ pub(super) async fn read(
     };
     let mut start = None;
     loop {
-        edit::charge(&hold, 0, window.bytes.len() as u64)?;
+        edit::scan_source(&hold, window.bytes.len() as u64)?;
         let mut consumed = 0;
         while consumed < window.bytes.len() || (window.bytes.is_empty() && consumed == 0) {
             let remaining = &window.bytes[consumed..];
             // One scan both selects the view and records ordinal boundaries. A
             // full index page yields to its original publication before continuing.
             let selection = selector.select(remaining, position, |ordinal, position| {
+                edit::charge(&hold, 0, 1)?;
                 index
                     .as_mut()
                     .map_or(Ok(false), |index| index.record(ordinal, position))

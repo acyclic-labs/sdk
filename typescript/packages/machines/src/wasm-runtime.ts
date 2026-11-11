@@ -1,6 +1,7 @@
 import initMachinesWasm, {
   initSync as initMachinesWasmSync,
   normalize_identity as normalizeIdentityWasm,
+  pageSize as pageSizeWasm,
 } from "../generated/wasm/acyclic_machines_wasm.js";
 
 const wasmUrl = new URL("../generated/wasm/acyclic_machines_wasm_bg.wasm", import.meta.url);
@@ -33,4 +34,10 @@ function initializeMachinesWasmSync(): boolean {
   if (filesystem?.readFileSync === undefined) return false;
   initMachinesWasmSync({ module: filesystem.readFileSync(wasmUrl) });
   return true;
+}
+
+/** Normalize page and console hints through the shared Rust contract. */
+export function pageSize(value: number, chunk: number): number {
+  try { return pageSizeWasm(value, chunk); }
+  catch (error) { throw new RangeError(error instanceof Error ? error.message : String(error)); }
 }

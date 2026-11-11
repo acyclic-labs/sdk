@@ -161,6 +161,5 @@ use error::*;
 pub use error::{BlobBuildError, BlobBuildFailure, BlobReadError, BlobReadFailure};
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "../tests/blob/mod.rs"]
 mod tests;

@@ -5,7 +5,7 @@ pub(super) fn stock_context_capacity(
     model: &Model,
     io: Option<&PreparationIo>,
 ) -> Result<crate::context::ModelContextCapacity> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
         let work = io.original_native_work().ok_or_else(|| {
             stock_boundary(
@@ -17,7 +17,7 @@ pub(super) fn stock_context_capacity(
         io.check_cancellation()?;
         return provider.context_capacity_with_native_work(model, work);
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     if io.is_some() {
         return Err(stock_boundary(
             io,
@@ -36,7 +36,7 @@ pub(super) async fn stock_count_tokens(
     ceiling: u64,
     io: Option<&PreparationIo>,
 ) -> Result<crate::context::ModelTokenCount> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
         let work = io.original_native_work().ok_or_else(|| {
             stock_boundary(
@@ -52,7 +52,7 @@ pub(super) async fn stock_count_tokens(
         io.absorb_native_custody(custody)?;
         return Ok(count);
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     if io.is_some() {
         return Err(stock_boundary(
             io,
@@ -68,14 +68,13 @@ pub(super) fn stock_json_bound<T: Serialize>(
     maximum: u64,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.check_cancellation()?;
         return crate::executor::json::count_json_bytes_trusted(
             value,
             crate::executor::json::JsonBounds {
-                maximum_bytes: maximum,
-                maximum_items: io.remaining()?.items_examined,
+                maximum_bytes: Some(maximum),
+                maximum_items: Some(io.remaining()?.items_examined),
                 maximum_depth: 256,
             },
             io.original_native_work()
@@ -85,9 +84,7 @@ pub(super) fn stock_json_bound<T: Serialize>(
         )
         .map(|_| ());
     }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    crate::executor::json::json_byte_length(value, maximum, &mut None).map(|_| ())
+    crate::executor::json::json_byte_length(value, Some(maximum), &mut None).map(|_| ())
 }
 
 impl StockExecution<'_> {

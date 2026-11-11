@@ -21,11 +21,9 @@ pub const PARENT: &str = "parent";
 /// independent of the number of agents, files or generations in their volumes.
 pub const ORDER: [&str; 6] = [SEED, USER_ORG, SCOPE, TEMPLATE, PARENT, HOME];
 
-#[cfg(feature = "filesystem")]
 mod manifest;
-#[cfg(feature = "filesystem")]
 pub use manifest::Manifest;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use manifest::ManifestTree;
 
 /// Tool path of the agent's home volume.
@@ -33,6 +31,8 @@ pub const HOME_PATH: &str = ".volumes/home/";
 /// Read-only tool path of the calling agent's original private output volume.
 /// This is a model read route; it creates no guest mount or per-agent work.
 pub const OUTPUT_PATH: &str = ".volumes/output/";
+/// Tool address of agent-authored private UI files; never a guest mount.
+pub const PRIVATE_PATH: &str = ".volumes/private/";
 /// Tool path of the seed volume.
 pub const SEED_PATH: &str = ".volumes/seed/";
 /// Tool path of host-published system files.

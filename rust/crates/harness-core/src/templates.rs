@@ -21,6 +21,8 @@ struct Creation {
     may_spawn: Vec<String>,
     #[serde(default)]
     allowed_tools: Option<Vec<String>>,
+    #[serde(default)]
+    question: bool,
 }
 
 fn parse(bytes: &[u8]) -> Result<Creation> {
@@ -68,7 +70,14 @@ pub(crate) fn name_component(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// The default root's creation context. The root's model remains host-selected.
+/// Default model selected by the shipped orchestrator role, before host overrides.
+pub fn root_model() -> Result<String> {
+    root()?
+        .model
+        .ok_or_else(|| Error::Invalid("orchestrator role has no model".into()))
+}
+
+/// The default root uses the orchestrator role's model and capabilities.
 pub fn root() -> Result<CreationConfig> {
     root_with_topology(None)
 }
@@ -77,14 +86,12 @@ pub(crate) fn root_with_topology(
     topology: Option<&crate::topology::Topology>,
 ) -> Result<CreationConfig> {
     let root = parse(ROOT.as_bytes())?;
-    if root.context != SpawnContext::TopLevel {
-        return Err(Error::Invalid("the root default must be top_level".into()));
-    }
     Ok(CreationConfig {
+        question_plugin: false,
         topology: topology.cloned(),
         model: root.model,
         continuation: None,
-        context: root.context,
+        context: SpawnContext::TopLevel,
         template: None,
         peers: Default::default(),
     })
@@ -177,6 +184,7 @@ pub(crate) async fn select(
         ));
     }
     Ok(CreationConfig {
+        question_plugin: false,
         topology: None,
         model: creation.model,
         continuation: None,
@@ -193,6 +201,7 @@ pub(crate) struct Directive {
     pub digest: String,
     pub context: Arc<Context>,
     pub allowed_tools: Option<Vec<String>>,
+    pub question: bool,
 }
 
 pub(crate) async fn directive(
@@ -228,6 +237,7 @@ pub(crate) async fn directive(
     Ok(Directive {
         digest: digest.finalize().to_hex().to_string(),
         allowed_tools: capabilities.allowed_tools,
+        question: capabilities.question,
         context: Arc::new(Context {
             messages: (!text.is_empty())
                 .then(|| ModelMessage {

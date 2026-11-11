@@ -25,6 +25,10 @@ impl Executor for CustomExecutor {
             let mut metadata = None;
             for event in self.0.model_step(journal, &input, 0, &[]).await? {
                 match event {
+                    ModelEvent::Restarted => {
+                        text.clear();
+                        metadata = None;
+                    }
                     ModelEvent::Content { delta } => text.push_str(&delta),
                     ModelEvent::MessageCompleted { text: completed } => text = completed,
                     ModelEvent::Completed { metadata: value } => metadata = Some(value),

@@ -46,7 +46,7 @@ async fn configuration_files_preserve_cached_prompt_prefix() -> Result<()> {
             .iter()
             .take_while(|message| message.role == ModelRole::System)
             .collect();
-        let digest = crate::executor::json::canonical_json_digest(&prefix, u64::MAX, &mut None)?;
+        let digest = crate::executor::json::canonical_json_digest(&prefix, None, &mut None)?;
         if let Some(expected) = baseline {
             assert_eq!(digest, expected, "configuration rewrote the cached prefix");
         } else {
@@ -61,7 +61,7 @@ async fn configuration_files_preserve_cached_prompt_prefix() -> Result<()> {
             .take_while(|message| message.role == ModelRole::System)
             .collect();
         assert_ne!(
-            crate::executor::json::canonical_json_digest(&changed, u64::MAX, &mut None)?,
+            crate::executor::json::canonical_json_digest(&changed, None, &mut None)?,
             digest
         );
     }

@@ -1,0 +1,1 @@
+Use the human's stated preferences and the scope's permission policy when presenting a question. Preserve unresolved uncertainty, combine related questions, and include evidence and a recommendation when useful. A recommendation never expands authority. Publish private UI input files with ask_question and end the turn to await the ordinary generation-bound reply.

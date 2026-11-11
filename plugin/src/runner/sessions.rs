@@ -56,7 +56,14 @@ async fn select_inner(
             .transpose()?
             .map(String::from_utf8)
             .transpose()?;
-        return choose(connection, terminal, None, prices).await;
+        return choose(
+            connection,
+            terminal,
+            None,
+            prices,
+            super::questions_enabled(args),
+        )
+        .await;
     }
     if args.continue_session
         || matches!(
@@ -80,7 +87,12 @@ async fn select_inner(
             .operation
             .clone()
             .unwrap_or_else(|| OperationId::new().to_string());
-        let selected = sessions::create(&connection, &operation).await?;
+        let selected = sessions::create(
+            &connection,
+            &operation,
+            Some(super::questions_enabled(args)),
+        )
+        .await?;
         if let Some(Command::NewSession { title: Some(title) }) = &args.command {
             sessions::rename(&selected, OperationId::new(), title.clone()).await?;
         }
@@ -96,8 +108,9 @@ pub async fn picker(
     terminal: Option<Tty>,
     filter: Option<&str>,
     prices: Option<String>,
+    questions: bool,
 ) -> Result<(Connection, Option<Tty>), Failure> {
-    let (selected, terminal) = choose(connection, terminal, filter, prices).await?;
+    let (selected, terminal) = choose(connection, terminal, filter, prices, questions).await?;
     sessions::selected(&selected, &OperationId::new().to_string()).await?;
     Ok((selected, terminal))
 }
@@ -107,6 +120,7 @@ async fn choose(
     terminal: Option<Tty>,
     filter: Option<&str>,
     prices: Option<String>,
+    questions: bool,
 ) -> Result<(Connection, Option<Tty>), Failure> {
     let prices = prices
         .as_deref()
@@ -226,7 +240,12 @@ async fn choose(
             continue;
         }
         let selected = if choice == new_index {
-            sessions::create(&connection, &OperationId::new().to_string()).await?
+            sessions::create(
+                &connection,
+                &OperationId::new().to_string(),
+                Some(questions),
+            )
+            .await?
         } else {
             connection
                 .select(

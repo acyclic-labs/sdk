@@ -888,13 +888,14 @@ where
         maximum_entries: u32,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        crate::NativeFutureBundle<
+        acyclic_fs::NativeFutureBundle<
             'a,
             ((GenerationRef, DirectoryPage), acyclic_fs::NativeAllocation),
+            crate::Error,
         >,
     > {
         self.supports_native_directory_list(volume, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             self.verify_exact_file(None, Some(&PreparationIo::from_native_work(work)?))?;
             let mut observer = crate::store::HistoryWork::new(
                 crate::filesystem::PreparationIo::from_native_work(work)?,
@@ -907,9 +908,18 @@ where
                 &mut Some(&mut observer),
             )?;
             let grant_custody = observer.into_custody()?;
-            if path.len() > context.effective_scope().limits().path_bytes
-                || after
-                    .is_some_and(|name| name.len() > context.effective_scope().limits().path_bytes)
+            if context
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+                || after.is_some_and(|name| {
+                    context
+                        .effective_scope()
+                        .limits()
+                        .path_bytes
+                        .is_some_and(|maximum| name.len() > maximum.get())
+                })
                 || (after.is_some() && expected_generation.is_none())
             {
                 return Err(Error::NativeBoundary {

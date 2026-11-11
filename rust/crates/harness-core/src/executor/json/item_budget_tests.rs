@@ -3,7 +3,7 @@ thread_local! {
     pub(super) static RESTORE_BYTE_CHARGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::*;
     use crate::executor::json::canonical_json_digest;
@@ -40,7 +40,7 @@ mod native {
         let mut history = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(&native).unwrap(),
         );
-        let result = canonical_json_digest(&value, LIMIT, &mut Some(&mut history));
+        let result = canonical_json_digest(&value, Some(LIMIT), &mut Some(&mut history));
         if prior + ITEMS <= LIMIT {
             let digest = result
                 .map_err(|error| format!("admitted total {} rejected: {error:?}", prior + ITEMS))?;

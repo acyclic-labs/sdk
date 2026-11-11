@@ -281,28 +281,32 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
         0,
         None,
     );
-    initial.conditions.push(CommitCondition::Absent {
+    initial.effects[0].conditions.push(CommitCondition::Absent {
         path: stream_path(ID, "/epochs").unwrap(),
     });
-    initial.mutations.push(CommitMutation::Append {
+    initial.effects[0].mutations.push(CommitMutation::Append {
         path: stream_path(ID, "/epochs").unwrap(),
         records: vec![[EPOCH_DOMAIN, &epoch].concat().into()],
     });
     let change_request = match change {
         Change::Publish => {
             let mut publication = request("/records", vec![second_bytes.into()], 1, Some(2));
-            publication.conditions.push(CommitCondition::Tail {
-                path: stream_path(ID, "/epochs").unwrap(),
-                expected: 1,
-            });
-            publication.mutations.push(CommitMutation::Append {
-                path: stream_path(ID, "/epochs").unwrap(),
-                records: vec![
-                    [EPOCH_DOMAIN, &Epoch::new(2).unwrap().get().to_le_bytes()]
-                        .concat()
-                        .into(),
-                ],
-            });
+            publication.effects[0]
+                .conditions
+                .push(CommitCondition::Tail {
+                    path: stream_path(ID, "/epochs").unwrap(),
+                    expected: 1,
+                });
+            publication.effects[0]
+                .mutations
+                .push(CommitMutation::Append {
+                    path: stream_path(ID, "/epochs").unwrap(),
+                    records: vec![
+                        [EPOCH_DOMAIN, &Epoch::new(2).unwrap().get().to_le_bytes()]
+                            .concat()
+                            .into(),
+                    ],
+                });
             Some(publication)
         }
         Change::Fence => Some(request(

@@ -2,7 +2,6 @@
 
 #![doc = include_str!("../../docs/client/README.md")]
 
-#[cfg(any(feature = "hosting", feature = "wasm"))]
 pub use acyclic_harness_client::{
     AgentCommand, AgentPageRequest, AgentReply, ApprovalVerdict, DiffProjection, DiffQuery,
     DiffQueryEvent, DiffSnapshot, DiffSummary, EventCursor, ExecutionPosition, InputPreview,
@@ -19,7 +18,7 @@ mod diff;
 pub use diff::*;
 mod task_list;
 #[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub use acyclic_harness_client::{
@@ -30,6 +29,5 @@ pub use acyclic_harness_client::{
     CREDENTIAL_ENV, ConnectionConfigError, ConnectionOptions, DEFAULT_ENDPOINT, DemandError,
     DemandPolicy, ENDPOINT_ENV, ViewDemand, resolve_connection_options,
 };
-#[cfg(any(feature = "hosting", feature = "wasm"))]
 pub use acyclic_harness_client::{explorer, ui};
 pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};

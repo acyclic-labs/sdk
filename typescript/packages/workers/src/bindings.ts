@@ -3,8 +3,8 @@ import { materializeGuestAdmission, materializeSecretBinding, type GuestAdmissio
 import type { ObjectsV1BinaryPort } from "@acyclic-labs/objects";
 import { WorkerServiceBinding } from "./service.js";
 
-export type DeploymentBinding<A = never, H = never, M = never, S = never, B = never, E = never, F = never, I = never, N = never> = ActorNamespaceBinding | WorkerServiceBinding | ActorStateBinding | ObjectsV1BinaryPort | SecretBinding | A | H | M | S | B | E | F | I | N;
-export interface BindingAuthority<A = never, H = never, M = never, S = never, B = never, E = never, F = never, I = never, N = never> {
+export type DeploymentBinding<A = never, H = never, M = never, S = never, F = never, N = never> = ActorNamespaceBinding | WorkerServiceBinding | ActorStateBinding | ObjectsV1BinaryPort | SecretBinding | A | H | M | S | F | N;
+export interface BindingAuthority<A = never, H = never, M = never, S = never, F = never, N = never> {
   /** The host admits the declaration and returns the holder's scoped transport. */
   namespace(binding: semantic.Binding): Pick<ActorsClient, "invokeActor">;
   service(binding: semantic.Binding): Pick<ActorsClient, "invokeWorker">;
@@ -20,17 +20,14 @@ export interface BindingAuthority<A = never, H = never, M = never, S = never, B 
   /** The Streams owner supplies the original hosted provider for the shared subtree. */
   streams?(binding: semantic.Binding): S;
   /** Original host-admitted resource owners; each retains the selected grant and invocation. */
-  billing?(binding: semantic.Binding): B;
-  execution?(binding: semantic.Binding): E;
   fs?(binding: semantic.Binding): F;
-  identity?(binding: semantic.Binding): I;
   infer?(binding: semantic.Binding): N;
 }
 
 /** Resource producers by the product of the canonical `product:/path` name. */
-const RESOURCES = new Map<string, "objects" | "machinesWorkspace" | "streams" | "billing" | "execution" | "fs" | "identity" | "infer">([
+const RESOURCES = new Map<string, "objects" | "machinesWorkspace" | "streams" | "fs" | "infer">([
   ["objects", "objects"], ["machines", "machinesWorkspace"], ["streams", "streams"],
-  ["billing", "billing"], ["execution", "execution"], ["fs", "fs"], ["identity", "identity"], ["infer", "infer"],
+  ["fs", "fs"], ["infer", "infer"],
 ]);
 
 function kind(binding: semantic.Binding) {
@@ -49,12 +46,12 @@ function kind(binding: semantic.Binding) {
  * Complete canonical admission and require selected factory functions before any
  * host factory runs. Retain those exact producers and their original receiver for the
  * batch. Resource producers keep the original grant and invocation. */
-export async function materializeBindings<A = never, H = never, M = never, S = never, B = never, E = never, F = never, I = never, N = never>(declarations: readonly semantic.Binding[], authority: BindingAuthority<A, H, M, S, B, E, F, I, N>, secrets: readonly semantic.SecretSelection[] = []): Promise<Readonly<Record<string, DeploymentBinding<A, H, M, S, B, E, F, I, N>>>> {
+export async function materializeBindings<A = never, H = never, M = never, S = never, F = never, N = never>(declarations: readonly semantic.Binding[], authority: BindingAuthority<A, H, M, S, F, N>, secrets: readonly semantic.SecretSelection[] = []): Promise<Readonly<Record<string, DeploymentBinding<A, H, M, S, F, N>>>> {
   const selected = await admitDeploymentBindings(declarations);
   const names = new Set<string>();
   const kinds: ReturnType<typeof kind>[] = [];
-  const producers: Partial<BindingAuthority<A, H, M, S, B, E, F, I, N>> = Object.create(null);
-  function retain<K extends keyof BindingAuthority<A, H, M, S, B, E, F, I, N>>(key: K): void {
+  const producers: Partial<BindingAuthority<A, H, M, S, F, N>> = Object.create(null);
+  function retain<K extends keyof BindingAuthority<A, H, M, S, F, N>>(key: K): void {
     if (Object.hasOwn(producers, key)) return;
     const producer = authority[key];
     const absent = producer === undefined || producer === null;
@@ -78,7 +75,7 @@ export async function materializeBindings<A = never, H = never, M = never, S = n
   const secretHost = secrets.length ? authority.secretBindings : undefined;
   if (secrets.length && (!secretHost || typeof secretHost.verifyHmac !== "function"))
     throw new TypeError("binding materialization: missing protected secret host");
-  const env: Record<string, DeploymentBinding<A, H, M, S, B, E, F, I, N>> = Object.create(null) as Record<string, DeploymentBinding<A, H, M, S, B, E, F, I, N>>;
+  const env: Record<string, DeploymentBinding<A, H, M, S, F, N>> = Object.create(null) as Record<string, DeploymentBinding<A, H, M, S, F, N>>;
   for (const secret of secrets) env[secret.name] = materializeSecretBinding(secret.name, secretHost!);
   let state: ActorStateBinding | undefined;
   for (let index = 0; index < selected.length; index++) {
@@ -97,10 +94,7 @@ export async function materializeBindings<A = never, H = never, M = never, S = n
       }
       case "machinesWorkspace": env[binding.name] = producers.machinesWorkspace!.call(authority, binding); break;
       case "streams": env[binding.name] = producers.streams!.call(authority, binding); break;
-      case "billing": env[binding.name] = producers.billing!.call(authority, binding); break;
-      case "execution": env[binding.name] = producers.execution!.call(authority, binding); break;
       case "fs": env[binding.name] = producers.fs!.call(authority, binding); break;
-      case "identity": env[binding.name] = producers.identity!.call(authority, binding); break;
       case "infer": env[binding.name] = producers.infer!.call(authority, binding); break;
     }
   }

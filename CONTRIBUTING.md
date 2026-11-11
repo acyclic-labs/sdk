@@ -46,8 +46,12 @@ them before running Cargo:
 
 ```sh
 sudo apt-get update
-sudo apt-get install --no-install-recommends clang mold
+sudo apt-get install --no-install-recommends clang mold ripgrep
 ```
+
+Linux native-runtime policy tests execute `ls -la` and `rg --files` in the
+confined shell. Install ripgrep even when using a different linker; the shared
+Linux CI toolchain action provisions it too.
 
 To use the system C linker instead, override the workspace linker for the command:
 
@@ -86,8 +90,8 @@ are enabled, and require real disposable services. Focused storage qualification
 can select either capability module with its named profile:
 
 ```sh
-cargo nextest run --locked -p acyclic-stream --no-default-features --features postgres --profile postgres --no-tests=fail
-cargo nextest run --locked -p acyclic-objects --no-default-features --features s3 --profile s3 --no-tests=fail
+cargo nextest run --locked -p acyclic-stream --no-default-features --profile postgres --no-tests=fail
+cargo nextest run --locked -p acyclic-objects --no-default-features --profile s3 --no-tests=fail
 ```
 
 Set `STORAGE_POSTGRES_URL` to a disposable PostgreSQL database. Verifying the SQL

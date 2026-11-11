@@ -1,4 +1,6 @@
 {
+  "reasoning": true,
+  "tool_details": false,
   "scrollback_lines": 5000,
   "wrap": true,
   "notifications": "on",

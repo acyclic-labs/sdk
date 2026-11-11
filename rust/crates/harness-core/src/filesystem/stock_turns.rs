@@ -159,6 +159,7 @@ pub struct StockExecutors {
     compaction: Option<CompactionPolicy>,
     agent_tools: Vec<String>,
     templates: bool,
+    question_plugin: bool,
     /// Settings sampling (`agent.ts`) for every model call.
     sampling: Option<crate::config::Sampling>,
     context: Arc<dyn TurnContext>,
@@ -217,6 +218,7 @@ impl StockExecutors {
             compaction: compaction.into(),
             agent_tools: Vec::new(),
             templates: false,
+            question_plugin: false,
             sampling: None,
             context,
         }
@@ -253,6 +255,13 @@ impl StockExecutors {
         self
     }
 
+    /// Select the question plugin for new roots; each root pins this choice.
+    #[must_use]
+    pub fn with_question_plugin(mut self, enabled: bool) -> Self {
+        self.question_plugin = enabled;
+        self
+    }
+
     /// Reads creation templates through the original filesystem admission.
     #[must_use]
     pub fn with_templates(mut self) -> Self {
@@ -262,6 +271,9 @@ impl StockExecutors {
 }
 
 impl TurnExecutors for StockExecutors {
+    fn question_plugin(&self) -> bool {
+        self.question_plugin
+    }
     fn model_selection(&self) -> Option<String> {
         Some(format!("{}/{}", self.model.provider, self.model.name))
     }
@@ -301,7 +313,25 @@ impl TurnExecutors for StockExecutors {
                     Some(self.limits.file_bytes),
                 )
                 .unwrap_or(provider);
+            let directive = match (self.templates, &agent.profile) {
+                (true, Some(creation)) => Some(
+                    crate::templates::directive(creation, authority.content.reader.as_ref())
+                        .await?,
+                ),
+                _ => None,
+            };
             let mut tools = self.tools.clone();
+            let question_plugin = agent
+                .profile
+                .as_ref()
+                .is_some_and(|profile| profile.question_plugin);
+            let question_allowed = question_plugin
+                && directive
+                    .as_ref()
+                    .is_none_or(|directive| directive.question);
+            if !question_allowed && tools.get("ask_question", None, None)?.is_some() {
+                tools.remove_from_model("ask_question")?;
+            }
             let agent_tools = self
                 .agent_tools
                 .iter()
@@ -355,11 +385,13 @@ impl TurnExecutors for StockExecutors {
                 Some(native) => executor.with_native_tools(native)?,
                 None => executor,
             };
-            let executor = match (self.templates, &agent.profile) {
-                (true, Some(creation)) => {
-                    let directive =
-                        crate::templates::directive(creation, authority.content.reader.as_ref())
-                            .await?;
+            let executor = if question_allowed {
+                executor
+            } else {
+                executor.without_question_authority()?
+            };
+            let executor = match directive {
+                Some(directive) => {
                     let executor = match directive.allowed_tools.as_deref() {
                         Some(allowed) => executor.with_tool_ceiling(allowed)?,
                         None => executor,
@@ -371,7 +403,7 @@ impl TurnExecutors for StockExecutors {
                         crate::context::ContextPlacement::Prepend,
                     )))?
                 }
-                _ => executor,
+                None => executor,
             };
             let intervention = agent
                 .profile

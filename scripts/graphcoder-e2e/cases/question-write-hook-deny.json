@@ -1,0 +1,68 @@
+{
+  "id": "question-write-hook-deny",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "write",
+            "name": "ask_question",
+            "arguments": {
+              "path": ".volumes/private/ui/denied.md",
+              "content": "```input text id=x\nChoose\n```"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "text": [
+          "RULE_E2E_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "answer": "RULE_E2E_DONE",
+      "text": "apply deny policy"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "absent_files": [],
+    "jsonl": {
+      "hooks.jsonl": [
+        {
+          "hook_event_name": "PreToolUse"
+        }
+      ]
+    },
+    "tool_errors": [
+      "E2E approval policy"
+    ],
+    "tool_contains": [
+      "E2E approval policy"
+    ],
+    "model_tools": [
+      {
+        "step": 0,
+        "present": [
+          "ask_question"
+        ]
+      }
+    ]
+  },
+  "settings": {
+    ".claude/settings.json": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Write\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" deny\"}]}]}}"
+  },
+  "extra_args": [
+    "--questions=true"
+  ]
+}

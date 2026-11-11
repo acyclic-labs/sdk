@@ -38,6 +38,7 @@ pub(super) enum Intent {
 
 pub(super) struct Sidebar {
     pub source: LiveExplorer<ReadProvider>,
+    root: AgentPath,
     pub focused: bool,
     selected: usize,
     pub failure: Option<String>,
@@ -53,8 +54,11 @@ pub(super) struct Sidebar {
 
 impl Sidebar {
     pub fn new(conversation: &Arc<Conversation>) -> Result<Self, Failure> {
+        let mut source = conversation.tree()?;
+        source.view.orchestrator_view(true);
         Ok(Self {
-            source: conversation.tree()?,
+            source,
+            root: conversation.agent().clone(),
             focused: false,
             selected: 0,
             failure: None,
@@ -342,7 +346,7 @@ impl Sidebar {
             rows.push(Line::raw(if self.search.is_some() {
                 "No matching titles"
             } else {
-                "No children"
+                "Contributors collapsed · → inspect"
             }));
         }
         if let Some(error) = &self.failure {
@@ -553,17 +557,17 @@ impl Sidebar {
                 action: Action::Move(Motion::Left),
                 ..
             }) => {
-                if let Some(path) = selected {
-                    self.source.view.collapse(&path);
-                }
+                self.source
+                    .view
+                    .collapse(selected.as_ref().unwrap_or(&self.root));
             }
             Some(DecodedKey::Action {
                 action: Action::Move(Motion::Right),
                 ..
             }) => {
-                if let Some(path) = selected {
-                    self.source.view.expand(&path);
-                }
+                self.source
+                    .view
+                    .expand(selected.as_ref().unwrap_or(&self.root));
             }
             _ if key.code == KeyCode::Down => {
                 if self.selected + 1 < self.matches.len() {
@@ -582,14 +586,8 @@ impl Sidebar {
                 }
             }
             _ if key.code == KeyCode::PageDown && self.search.is_some() => self.search_next(),
-            _ if key.code == KeyCode::PageDown => self
-                .source
-                .view
-                .scroll(self.source.view.rows().len() as i64),
-            _ if key.code == KeyCode::PageUp => self
-                .source
-                .view
-                .scroll(-(self.source.view.rows().len() as i64)),
+            _ if key.code == KeyCode::PageDown => self.source.view.page(true),
+            _ if key.code == KeyCode::PageUp => self.source.view.page(false),
             _ => {}
         }
         Some(Intent::Consumed)

@@ -10,7 +10,7 @@ use crate::{
     agent::{
         AgentHost, AgentId, AgentPath, AgentRecord as _, AgentState, ConversationEntry,
         ForkAdopted, Hook, InboxRecord, IntentId, Message, Out, Queued, Sender, TurnDriver,
-        TurnFuture, TurnInput, TurnStep, VolumeBinding, Wait,
+        TurnFuture, TurnInput, TurnStep, Wait, WorkspaceEntry,
     },
     conversation::{ContentAccess, ContentResidencyVerifier as _, FileRef, VolumeOwner},
     core::AuthorityRoot,
@@ -246,7 +246,7 @@ impl HostDriver {
             )?,
             writer: FilesystemContentPublisher::new(
                 Arc::clone(&self.files),
-                &private.volume,
+                private.volume()?,
                 &verifier,
                 &scope,
                 bound,
@@ -543,7 +543,7 @@ pub(super) struct NativeAgents {
     driver: Arc<HostDriver>,
     files: Arc<LocalFilesystem>,
     issuer: AuthorityRoot,
-    bindings: [VolumeBinding; 3],
+    bindings: [WorkspaceEntry; 3],
 }
 
 impl NativeAgents {
@@ -599,7 +599,7 @@ impl NativeAgents {
         let mut bytes = [0; 16];
         hasher.finalize_xof().fill(&mut bytes);
         let agent = AgentId::from_bytes(bytes);
-        let project = &self.bindings[0].volume;
+        let project = self.bindings[0].volume()?;
         let private = VolumeRef::new(
             project.provider().clone(),
             format!("native-{agent}"),
@@ -608,10 +608,11 @@ impl NativeAgents {
             &mut None,
         )?;
         self.files.create_volume(&private).await?;
-        let mut volumes = vec![VolumeBinding {
-            name: PRIVATE_VOLUME.to_owned(),
-            volume: private,
-        }];
+        let mut volumes = vec![WorkspaceEntry::initial_volume(
+            crate::agent::WorkspaceRole::Private,
+            PRIVATE_VOLUME.to_owned(),
+            private,
+        )];
         volumes.extend(self.bindings.iter().cloned());
         let root = self
             .host
@@ -865,7 +866,7 @@ impl NativeAgents {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         for binding in &agent.volumes {
-            grants.push(binding.volume.directory_read_capability("", &mut None)?);
+            grants.push(binding.volume()?.directory_read_capability("", &mut None)?);
         }
         self.issuer.bootstrap_scope(
             "agent",

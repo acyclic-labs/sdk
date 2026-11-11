@@ -57,7 +57,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
-        tail: u64,
+        boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<(ResponseProjection, Option<ContextAccounting>)> {
         let base = self
             .canonical_base(journal, input, step, prior_messages)
@@ -107,7 +107,10 @@ impl StockExecution<'_> {
         };
         let projection = ResponseProjection {
             context: projection,
-            steering: None,
+            steering: boundary
+                .map(|boundary| boundary.prepared_snapshot(input.operation_id, step))
+                .transpose()?
+                .flatten(),
             canonical,
             checkpoint: None,
             working: None,
@@ -136,6 +139,10 @@ impl StockExecution<'_> {
         let prepared_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:prepared"), work)
         })?;
+        let _writer = self.journal_writes.lock().await;
+        let (tail, _) = self
+            .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+            .await?;
         if !journal
             .append_if_tail(
                 input.operation_id,
@@ -144,7 +151,9 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
-                    steering: None,
+                    steering: boundary
+                        .map(|boundary| boundary.selection(input.operation_id, step))
+                        .transpose()?,
                 },
                 self.io,
             )?
@@ -161,80 +170,86 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
+        boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<crate::model::PreparedModelRequest> {
-        let (tail, records) = self
-            .model_records(journal, input.operation_id, step, ModelPurpose::Response)
-            .await?;
-        let mut retained = records.iter().filter_map(|record| match &record.event {
-            ExecutionEvent::ContextPrepared {
-                step: recorded,
-                projection,
-                ..
-            } if *recorded == step => Some(projection),
-            _ => None,
-        });
-        let first = retained.next();
-        if retained.next().is_some() {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Storage,
-                "response projection was prepared more than once",
-            ));
-        }
-        let (mut projection, accounting) = match first {
-            None => {
-                if self.stock.reconciliation_only {
-                    return Err(Error::Indeterminate(input.operation_id));
+        // Preserve current future admission and publication custody on both
+        // sides; the original four-preparation algorithm remains independent.
+        crate::conversation::BoundedContentFuture::new(self.io, || async {
+            let (_, records) = self
+                .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+                .await?;
+            let mut retained = records.iter().filter_map(|record| match &record.event {
+                ExecutionEvent::ContextPrepared {
+                    step: recorded,
+                    projection,
+                    ..
+                } if *recorded == step => Some(projection),
+                _ => None,
+            });
+            let first = retained.next();
+            if retained.next().is_some() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "response projection was prepared more than once",
+                ));
+            }
+            let (mut projection, accounting) = match first {
+                None => {
+                    if self.stock.reconciliation_only {
+                        return Err(Error::Indeterminate(input.operation_id));
+                    }
+                    self.capture_response_original(journal, input, step, prior_messages, boundary)
+                        .await?
                 }
-                self.capture_response_original(journal, input, step, prior_messages, tail)
-                    .await?
-            }
-            Some(reference) => {
-                let mut projection = retain_preparation(
-                    load_response_projection(journal, reference, self.stock.limits, self.io)
-                        .await?,
-                )?;
-                let accounting = projection.accounting.take();
-                (projection, accounting)
-            }
-        };
-        crate::context::validate_projected_context(
-            &projection.context,
-            self.stock.limits,
-            self.io,
-        )?;
-        if projection.checkpoint.is_some() {
-            return Err(stock_boundary(
+                Some(reference) => {
+                    let mut projection = retain_preparation(
+                        load_response_projection(journal, reference, self.stock.limits, self.io)
+                            .await?,
+                    )?;
+                    let accounting = projection.accounting.take();
+                    (projection, accounting)
+                }
+            };
+            crate::context::validate_projected_context(
+                &projection.context,
+                self.stock.limits,
                 self.io,
-                crate::wire::ErrorCode::Storage,
-                "prepared context contains a later checkpoint",
-            ));
-        }
-        if projection.context.current_input_index.is_none() {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Storage,
-                "prepared response projection differs from its request",
-            ));
-        }
-        let request = if matches!(
-            self.compaction_policy()?,
-            crate::context::CompactionPolicy::Disabled
-        ) {
-            self.request_taking_context(&mut projection.context)?
-        } else {
-            self.request_from_context(&projection.context)?
-        };
-        let prepared =
-            crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
-        self.resolve_response_accounting_original(
-            journal,
-            (input, step),
-            projection,
-            accounting,
-            prepared,
-            &records,
-        )
+            )?;
+            if projection.checkpoint.is_some() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "prepared context contains a later checkpoint",
+                ));
+            }
+            if projection.context.current_input_index.is_none() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "prepared response projection differs from its request",
+                ));
+            }
+            let request = if matches!(
+                self.compaction_policy()?,
+                crate::context::CompactionPolicy::Disabled
+            ) {
+                self.request_taking_context(&mut projection.context)?
+            } else {
+                self.request_from_context(&projection.context)?
+            };
+            let prepared =
+                crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
+            self.resolve_response_accounting_original(
+                journal,
+                (input, step),
+                projection,
+                accounting,
+                prepared,
+                &records,
+            )
+            .await
+        })?
         .await
     }
 

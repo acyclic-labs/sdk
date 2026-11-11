@@ -110,7 +110,7 @@ async fn sampling_media(
             message_index,
             block_index,
         ),
-        u64::MAX,
+        None,
         &mut None,
     )?;
     let mut identity = [0; 16];

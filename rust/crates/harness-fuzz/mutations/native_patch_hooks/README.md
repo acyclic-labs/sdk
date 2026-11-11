@@ -38,5 +38,5 @@ failure policy. Invalid input blocks with the original reason, and no guard
 process starts for the rejected rewrite. Reverse this patch before qualification.
 
 ```sh
-cargo nextest run --locked -p acyclic-harness-core --lib --features test-support,filesystem,hooks -E 'test(hooks::request::tests::atomic_edit_guards_cover_every_path_and_rewritten_move_destination)'
+cargo nextest run --locked -p acyclic-harness-core --lib --features test-support -E 'test(hooks::request::tests::atomic_edit_guards_cover_every_path_and_rewritten_move_destination)'
 ```

@@ -175,10 +175,15 @@ impl StockExecution<'_> {
         input: &ContextInput,
         base: crate::context::Context,
     ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
+        let before = base.current_input_index.unwrap_or(0);
         let mut context = self
             .context_pipeline()
             .transform_required(input, base, self.stock.limits, self.io)
             .await?;
+        let prepended = context
+            .current_input_index
+            .unwrap_or(0)
+            .saturating_sub(before) as usize;
         let tools = self.request_tools()?;
         let compose_tools = self.code_composition(&tools)?;
         let message_count = context.messages.len();
@@ -213,8 +218,8 @@ impl StockExecution<'_> {
         }
         let request_frame = if self.context_pipeline().has_optional() {
             with_history_io(self.io, |work| {
-                let request_bytes = json::json_byte_length(&request, u64::MAX, work)?;
-                let messages = json::json_byte_length(&request.messages, u64::MAX, work)?;
+                let request_bytes = json::json_byte_length(&request, None, work)?;
+                let messages = json::json_byte_length(&request.messages, None, work)?;
                 Ok::<_, Error>(request_bytes - messages)
             })?
         } else {
@@ -230,6 +235,7 @@ impl StockExecution<'_> {
         self.context_pipeline().project_optional(
             &mut context,
             prefix_count,
+            prepended,
             self.stock.limits,
             request_frame,
             self.io,
@@ -311,12 +317,8 @@ impl StockExecution<'_> {
         tools: &[crate::tool::ToolDefinition],
     ) -> Result<()> {
         let request = prepared.request();
-        #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
-        #[cfg(feature = "filesystem")]
         let io = scope.io();
-        #[cfg(not(feature = "filesystem"))]
-        let io = self.io;
         // The authenticated prepared request owns its historical live tables.
         // Comparing those schemas with today's catalog would revoke a saved
         // result after removal. Fixed declarations must still match exactly.

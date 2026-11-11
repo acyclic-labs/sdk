@@ -1,4 +1,4 @@
-#![cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#![cfg(not(target_arch = "wasm32"))]
 
 use super::*;
 #[test]
@@ -10,8 +10,8 @@ fn hidden_raw_values_are_bounded_before_decode() {
         )
     };
     let limits = JsonBounds {
-        maximum_bytes: 16 * 1024 * 1024,
-        maximum_items: 2 * 1024 * 1024,
+        maximum_bytes: Some(16 * 1024 * 1024),
+        maximum_items: Some(2 * 1024 * 1024),
         maximum_depth: 256,
     };
     let payload = format!("[{}0]", "0,".repeat(64));
@@ -21,7 +21,7 @@ fn hidden_raw_values_are_bounded_before_decode() {
         (
             raw(&payload),
             JsonBounds {
-                maximum_items: 64,
+                maximum_items: Some(64),
                 ..limits
             },
             payload.len() as u64,
@@ -111,8 +111,8 @@ fn typed_shape_refusals_are_input_failures() {
         let error = admission::admit_json_layout(
             br#"{"not":"a list"}"#,
             JsonBounds {
-                maximum_bytes: 64,
-                maximum_items: 64,
+                maximum_bytes: Some(64),
+                maximum_items: Some(64),
                 maximum_depth: 8,
             },
             None,

@@ -29,7 +29,7 @@ const WORKSPACE_ID_DOMAIN: &[u8] = b"acyclic-fs-workspace-id-v1\0";
 const MAXIMUM_WORKSPACE_NAME_BYTES: usize = 255;
 
 pub(crate) mod access;
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
 mod access_tests;
 #[cfg(test)]
 mod accounting_tests;
@@ -69,7 +69,7 @@ mod publication;
 mod read_core;
 mod reads;
 mod restore;
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
 mod retention_accounting_tests;
 mod reverse_paths;
 pub use reverse_paths::FileIdentityPaths;

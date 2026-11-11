@@ -182,10 +182,14 @@ pub(crate) struct CauseText<'a>(pub &'a Error);
 
 impl fmt::Display for CauseText<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cause: &dyn fmt::Display = match self.0 {
+            Error::Process(error) => error,
+            error => error,
+        };
         let mut probe = Visible(false);
-        let _ = write!(probe, "{}", self.0);
+        let _ = write!(probe, "{cause}");
         if probe.0 {
-            write!(formatter, "{}", Sanitized(self.0))
+            write!(formatter, "{}", Sanitized(cause))
         } else {
             write!(formatter, "{} error", ToolErrorClass::of(self.0).label())
         }
@@ -239,7 +243,7 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    #[cfg(all(feature = "filesystem", feature = "hooks", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn execution_refusal_keeps_its_reason_in_the_ordinary_tool_failure() -> Result<()> {
         let error = acyclic_native_runtime::execution::ExecutionGrant::new(
@@ -302,7 +306,7 @@ mod tests {
             3 => Error::Unauthorized(text),
             4 => Error::Storage(text),
             5 => Error::InteractionRejected(crate::InteractionRejection::Denied),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             6 => Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Conflict,
                 reason: ["", " ", "\n\t", "\u{1b}"][text.len() % 4],
@@ -336,7 +340,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_blank_error_is_described_by_its_class() -> Result<()> {
         let blank = Error::NativeBoundary {
@@ -364,7 +368,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
         #[test]

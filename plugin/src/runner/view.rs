@@ -122,7 +122,7 @@ fn work(tools: Vec<ToolCard>, answer: String) -> impl Iterator<Item = (BlockKind
                 BlockKind::Tool {
                     failed: card.failed,
                 },
-                card.line(),
+                card.text(),
             )
         })
         .chain((!answer.is_empty()).then_some((BlockKind::Answer, answer)))
@@ -141,6 +141,31 @@ fn notice(action: &ContextAction) -> Option<String> {
 /// Rows of the newest tool call's output, or of the running reasoning,
 /// shown while the agent works.
 const OUTPUT_ROWS: usize = 8;
+
+/// The same live projection responds to deltas and settings-file changes.
+fn live_rows(kind: LiveKind, live: &str, input: &PromptInput) -> Vec<Line<'static>> {
+    if kind == LiveKind::Answer
+        || (kind == LiveKind::Reasoning && !input.editor.settings().reasoning)
+    {
+        return Vec::new();
+    }
+    let style = if kind == LiveKind::Reasoning {
+        input
+            .theme
+            .token(Token::Muted)
+            .add_modifier(Modifier::ITALIC)
+    } else {
+        Style::default()
+    };
+    let mut rows = live
+        .lines()
+        .rev()
+        .take(OUTPUT_ROWS)
+        .map(|line| Line::styled(line.to_owned(), style))
+        .collect::<Vec<_>>();
+    rows.reverse();
+    rows
+}
 /// What an interrupted turn shows in its place.
 const CANCELLED: &str = "interaction cancelled";
 const COMPACTED: &str = "Compacted conversation";
@@ -760,6 +785,7 @@ pub async fn run(
     mut resume: bool,
     mut terminal: Option<Tty>,
     price_file: Option<String>,
+    questions: bool,
 ) -> Result<(), Failure> {
     loop {
         match run_current(
@@ -776,6 +802,7 @@ pub async fn run(
                 let connection = acyclic_harness::local::sessions::create(
                     conversation.connection(),
                     &acyclic_harness::OperationId::new().to_string(),
+                    Some(questions),
                 )
                 .await?;
                 conversation = Conversation::open(connection);
@@ -787,6 +814,7 @@ pub async fn run(
                     None,
                     None,
                     price_file.clone(),
+                    questions,
                 )
                 .await?;
                 conversation = Conversation::open(connection);
@@ -870,6 +898,8 @@ async fn run_current(
         .apply(&mut input, &profile)
         .map_err(|errors| format!("UI configuration: {errors:?}"))?;
     view.transcript.set_theme(input.theme);
+    view.transcript
+        .set_tool_details(input.editor.settings().tool_details);
     view.pending_dirty = true;
     view.tail_dirty = true;
     // The open panel's title and rows; Esc closes it.
@@ -996,6 +1026,19 @@ async fn run_current(
             }
         } else {
             approval_failed = None;
+        }
+        if let Some(Phase::WaitingUser { path }) = &view.phase
+            && queries.source().is_none()
+            && overlay.is_none()
+            && view.prompt.is_none()
+        {
+            queries.select(query::Source::Question(path.clone()), query_future.as_mut());
+            overlay_top = 0;
+        }
+        if matches!(queries.source(), Some(query::Source::Question(_)))
+            && !matches!(view.phase, Some(Phase::WaitingUser { .. }))
+        {
+            queries.close(query_future.as_mut());
         }
         let feedback = matches!(view.prompt, Some(Prompt::Feedback));
         if let Some(panel) = queries.page.as_mut() {
@@ -1240,17 +1283,7 @@ async fn run_current(
                     view.reply.push_str(answer);
                     view.tail_dirty = true;
                 }
-                // Reasoning shows muted in the strip tool output uses.
-                let style = if kind == LiveKind::Reasoning {
-                    input.theme.token(Token::Muted).add_modifier(Modifier::ITALIC)
-                } else {
-                    Style::default()
-                };
-                output_rows = if kind == LiveKind::Answer { "" } else { live }
-                    .lines().rev().take(OUTPUT_ROWS)
-                    .map(|line| Line::styled(line.to_owned(), style))
-                    .collect();
-                output_rows.reverse();
+                output_rows = live_rows(kind, live, &input);
             }
             batch = async {
                 if let Some(agent) = navigation {
@@ -1517,7 +1550,7 @@ async fn run_current(
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
                                         return view.exit().map(|()| Next::Exit);
                                     }
-                                    Ok(Some(resolution @ CommandResolution::Submit { request: CommandRequest::Theme { .. } })) => {
+                                    Ok(Some(resolution @ (CommandResolution::Submit { request: CommandRequest::Theme { .. } } | CommandResolution::Select { query: CommandQuery::Details | CommandQuery::Reasoning }))) => {
                                         match ui.submit(&conversation, &resolution).await {
                                             Ok(()) => files_changed = true,
                                             Err(error) => view.notice = Some(error.to_string()),
@@ -1555,7 +1588,21 @@ async fn run_current(
                                         continue;
                                     }
                                 }
-                                // A refused prompt, such as an unknown `/name`, stays
+                                if let Some((path, generation, blocks)) = queries.page.as_ref().and_then(|page| page.context.question.as_ref()) {
+                                    let reply = acyclic_harness::client::ui::Reply {
+                                        path: acyclic_harness::client::ui::UiPath::new(path.clone())?,
+                                        generation: generation.clone(),
+                                        answers: Default::default(),
+                                        text: text.clone(),
+                                    };
+                                    let command = reply.command(conversation.agent().clone(), acyclic_harness::agent::IntentId::try_from(acyclic_harness::OperationId::new().to_string())?, blocks)?;
+                                    match conversation.connection().execute(&command).await {
+                                        Ok(_) => { queries.close(query_future.as_mut()); }
+                                        Err(error) => { view.notice = refusal(error); input.editor = Editor::new(&text); }
+                                    }
+                                    continue;
+                                }
+                                // A refused prompt, such as an unknown /name, stays
                                 // in the editor with its reason. Sending the same text
                                 // again reuses its message id, so a send whose commit
                                 // was uncertain replays exactly and never commits twice.
@@ -1563,7 +1610,9 @@ async fn run_current(
                                     Some((id, sent)) if sent == text => id,
                                     _ => acyclic_harness::OperationId::new().to_string(),
                                 };
-                                let inbox = match conversation.send(&id, &text).await {
+                                let target = acyclic_harness::client::ui::input_target(sidebar.source.view.reader_ref(), conversation.agent());
+                                let recipient = if &target == conversation.agent() { Arc::clone(&conversation) } else { root.select(target).await? };
+                                let inbox = match recipient.send(&id, &text).await {
                                     Ok(inbox) => inbox,
                                     Err(error) => {
                                         view.notice = refusal(error);
@@ -1572,6 +1621,10 @@ async fn run_current(
                                         continue;
                                     }
                                 };
+                                if recipient.agent() != conversation.agent() {
+                                    view.notice = Some(format!("Sent to orchestrator {}", recipient.agent().id()));
+                                    continue;
+                                }
                                 view.pending.push((inbox, text));
                                 view.back = 0;
                                 view.pending_dirty = true;
@@ -1632,6 +1685,12 @@ async fn run_current(
                             InputEffect::Host(Action::App(AppAction::Find)) => {
                                 view.find(input.editor.text(), usize::from(areas.transcript.height));
                             }
+                            InputEffect::Host(Action::App(AppAction::Details)) => {
+                                match ui.submit(&conversation, &CommandResolution::Select { query: CommandQuery::Details }).await {
+                                    Ok(()) => files_changed = true,
+                                    Err(error) => view.notice = Some(error.to_string()),
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -1660,6 +1719,10 @@ async fn run_current(
                 .apply(&mut input, &profile)
                 .map_err(|errors| format!("UI configuration: {errors:?}"))?;
             view.transcript.set_theme(input.theme);
+            view.transcript
+                .set_tool_details(input.editor.settings().tool_details);
+            let (kind, live) = events.live();
+            output_rows = live_rows(kind, live, &input);
             view.pending_dirty = true;
             view.tail_dirty = true;
             if overlay.as_ref().is_some_and(|(title, _)| *title == "Help") {

@@ -38,12 +38,10 @@ impl Budget {
         }
     }
 
-    #[cfg(feature = "s3")]
     pub(crate) fn live(&self) -> u64 {
         self.held.lock().unwrap().0
     }
 
-    #[cfg(feature = "s3")]
     pub(crate) fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
     }

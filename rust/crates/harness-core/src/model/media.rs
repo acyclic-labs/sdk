@@ -112,6 +112,9 @@ impl FileProjectionPolicy {
         limits: Limits,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
+        if matches!(self, Self::Reference) {
+            return limits.validate_file_metadata(file, work);
+        }
         if let Self::Native(policy) = self {
             return policy.validate(file, limits, work);
         }
@@ -124,7 +127,10 @@ impl FileProjectionPolicy {
         }
         if let Self::ProjectInstructions(source) = self {
             source.validate(work)?;
-            if source.path().len() > limits.path_bytes {
+            if limits
+                .path_bytes
+                .is_some_and(|maximum| source.path().len() > maximum.get())
+            {
                 return Err(invalid(work, "instruction source exceeds path bound"));
             }
             if InstructionSource::with_identity(file, source).framed_bytes()? > limits.render_bytes
@@ -159,11 +165,8 @@ impl NativeConfigurationBinding {
         runtime: Option<&crate::extension::ExtensionRuntime>,
         io: Option<&PreparationIo>,
     ) -> Result<(&'a crate::core::SchemaRegistry, [u8; 32])> {
-        #[cfg(feature = "filesystem")]
         let _hold;
-        #[cfg(feature = "filesystem")]
         let _bytes;
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             _bytes = io.encode(self, io.remaining()?.bytes_encoded, false)?;
             _hold = io.guard_owned(_bytes.len() as u64)?;
@@ -172,7 +175,6 @@ impl NativeConfigurationBinding {
         let admission = admission.ok_or_else(|| {
             Error::Unsupported("original task extension admission is unavailable".into())
         })?;
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             let _hold;
             let bytes = io.encode(

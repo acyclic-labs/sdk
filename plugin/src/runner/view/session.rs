@@ -246,6 +246,30 @@ impl Session {
                     .insert(path.into(), serde_json::from_str(&file.text)?);
             }
         }
+        if let CommandResolution::Select {
+            query: query @ (CommandQuery::Details | CommandQuery::Reasoning),
+        } = resolution
+        {
+            let key = if *query == CommandQuery::Details {
+                "tool_details"
+            } else {
+                "reasoning"
+            };
+            let settings = self
+                .config
+                .settings()
+                .map_err(|errors| format!("UI configuration: {errors:?}"))?;
+            let current = if *query == CommandQuery::Details {
+                settings.tool_details
+            } else {
+                settings.reasoning
+            };
+            snapshot
+                .entry(CommandFileRoot::Config)
+                .or_default()
+                .entry("settings.json".into())
+                .or_insert_with(|| serde_json::json!({}))[key] = Value::Bool(current);
+        }
         let operation = OperationId::new();
         let changes = resolution.file_changes(&snapshot, operation)?;
         self.publish(conversation, operation, changes).await
@@ -483,6 +507,32 @@ mod tests {
         )
         .await?;
         let theme_commands = CommandCatalog::builtins()?;
+        for query in [CommandQuery::Details, CommandQuery::Reasoning] {
+            let before = ui
+                .config
+                .settings()
+                .map_err(|errors| format!("{errors:?}"))?;
+            for toggled in [true, false] {
+                ui.submit(
+                    &conversation,
+                    &CommandResolution::Select {
+                        query: query.clone(),
+                    },
+                )
+                .await?;
+                let reopened = Session::open(&conversation).await?;
+                let settings = reopened
+                    .config
+                    .settings()
+                    .map_err(|errors| format!("{errors:?}"))?;
+                let (current, original) = if query == CommandQuery::Details {
+                    (settings.tool_details, before.tool_details)
+                } else {
+                    (settings.reasoning, before.reasoning)
+                };
+                assert_eq!(current, original ^ toggled);
+            }
+        }
         for mode in ["light", "dark", "auto"] {
             let resolution = theme_commands
                 .resolve(&format!("/theme {mode}"), u64::MAX)?

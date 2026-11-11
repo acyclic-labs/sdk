@@ -207,7 +207,7 @@ impl LocalWorkspace {
     pub(super) async fn bound_mounts(
         &self,
         project: &VolumeRef,
-        bindings: &[crate::agent::VolumeBinding],
+        bindings: &[crate::agent::WorkspaceEntry],
         authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<Mounts>> {
         // Bind auxiliary volumes outside the sparse projection. Linux's
@@ -231,18 +231,20 @@ impl LocalWorkspace {
             None,
             bindings
                 .iter()
-                .filter(|binding| {
-                    (native || binding.volume.class() == VolumeClass::SessionShared)
+                .filter_map(|binding| {
+                    let volume = binding.as_volume()?;
+                    ((native || volume.class() == VolumeClass::SessionShared)
                         && binding.name != "project"
-                        && binding.name != crate::filesystem::PRIVATE_VOLUME
+                        && binding.name != crate::filesystem::PRIVATE_VOLUME)
+                        .then_some((binding, volume))
                 })
-                .map(|binding| {
+                .map(|(binding, volume)| {
                     let source = self
                         .mounts
                         .mounts()
-                        .find(|(_, mount)| mount.view.volume == binding.volume)
+                        .find(|(_, mount)| &mount.view.volume == volume)
                         .and_then(|(_, mount)| mount.view.source.clone());
-                    (binding.name.clone(), binding.volume.clone(), source)
+                    (binding.name.clone(), volume.clone(), source)
                 }),
         )?;
         volumes::attach(

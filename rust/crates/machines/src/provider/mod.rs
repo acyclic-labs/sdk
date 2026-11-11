@@ -69,7 +69,8 @@ pub trait MachinesProvider: acyclic_stream::ProviderPlatform {
         machine: MachineId,
         command: ExecCommand,
     ) -> Result<ExecStream, ProviderError>;
-    /// Reads 1..65536 live console bytes without treating empty data as EOF.
+    /// Reads one live console chunk, normalizing larger positive hints to its
+    /// physical width. Continue from the returned end; empty data is not EOF.
     async fn read_output(
         &self,
         machine: MachineId,
@@ -297,14 +298,14 @@ mod client;
 pub use client::*;
 mod capture;
 pub use capture::{CapturedExec, capture_exec};
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod admitted;
-#[cfg(all(any(feature = "local", feature = "grpc"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod deadline;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod journal;
 #[cfg(all(
-    any(feature = "local", feature = "test-support"),
+    any(not(target_arch = "wasm32"), feature = "test-support"),
     not(target_arch = "wasm32")
 ))]
 pub(crate) mod journal_codec;

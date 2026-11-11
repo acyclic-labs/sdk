@@ -542,5 +542,5 @@ async fn composed_fork_keeps_its_original_proof_through_durable_settlement()
     Ok(())
 }
 
-#[cfg(all(feature = "local", any(unix, windows)))]
+#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
 mod local;

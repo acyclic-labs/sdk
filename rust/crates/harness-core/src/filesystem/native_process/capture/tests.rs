@@ -9,32 +9,60 @@ fn launch_failure_returns_its_cause_and_original_custody()
         .enable_all()
         .build()?;
     let root = tempfile::tempdir()?;
-    let invocation = Invocation {
-        executable: root.path().join("absent-executable"),
-        argv: Vec::new(),
-        cwd: root.path().into(),
-        environment: Default::default(),
-        inherit_environment: false,
-        execution_grant: None,
-        schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-        maximum_output_bytes: Some(1024),
-        standard_input: None,
-        process_custody: None,
-    };
-    let custody = Arc::new(());
-    let (output, returned) = runtime.block_on(capture_with_custody(
-        invocation,
-        |_, _| Ok(()),
-        || Ok(()),
-        Arc::clone(&custody),
-        None,
-        OutputRetention::Collect,
-    ))?;
-    assert!(Arc::ptr_eq(&custody, &returned));
-    assert!(matches!(
-        output,
-        Err(Error::Process(crate::ProcessError::NotFound { .. }))
-    ));
+    for observe in [false, true] {
+        for lost_worker in [false, true] {
+            let invocation = Invocation {
+                executable: if lost_worker {
+                    std::env::current_exe()?
+                } else {
+                    root.path().join("absent-executable")
+                },
+                argv: vec![
+                    "--exact".into(),
+                    "filesystem::native_process::capture::tests::capture_output_child".into(),
+                ],
+                cwd: root.path().into(),
+                environment: Default::default(),
+                inherit_environment: false,
+                execution_grant: None,
+                schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
+                maximum_output_bytes: Some(1024),
+                standard_input: None,
+                process_custody: None,
+            };
+            let custody = Arc::new(());
+            let captured = runtime.block_on(capture_with_custody(
+                invocation,
+                |_, _| Ok(()),
+                move || {
+                    assert!(!lost_worker, "planted launch-worker loss");
+                    Ok(())
+                },
+                Arc::clone(&custody),
+                None,
+                if observe {
+                    OutputRetention::Observe
+                } else {
+                    OutputRetention::Collect
+                },
+            ));
+            let error = if lost_worker {
+                captured.expect_err("lost worker cannot prove launch completion")
+            } else {
+                let (output, returned) = captured?;
+                assert!(Arc::ptr_eq(&custody, &returned));
+                output.expect_err("failed spawn cannot prove launch completion")
+            };
+            assert!(error.uncertain(), "{error:?}");
+            assert!(error.leaves_outcome_uncertain(), "{error:?}");
+            assert!(!error.is_tool_failure(), "{error:?}");
+            assert!(
+                error.to_string().contains("reconcile the original command"),
+                "{error}"
+            );
+            assert_eq!(Arc::strong_count(&custody), 1);
+        }
+    }
     Ok(())
 }
 

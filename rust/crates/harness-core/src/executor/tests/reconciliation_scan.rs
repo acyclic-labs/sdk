@@ -95,8 +95,9 @@ impl ToolPolicy for DenyMode {
         invocation: &'a ToolInvocation,
         _: &'a RuntimeScope,
         _: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
-    {
+    ) -> Result<
+        crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
+    > {
         let decision = if mode_of(invocation) == "deny" {
             ToolPolicyDecision::Deny {
                 reason: "denied".into(),
