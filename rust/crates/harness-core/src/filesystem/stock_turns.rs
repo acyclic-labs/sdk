@@ -292,7 +292,10 @@ impl TurnExecutors for StockExecutors {
             let (model, provider) = self.selected(agent)?;
             let native = self.native.get(&model, || provider.native_tools(&model))?;
             let provider = provider
-                .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
+                .bind_content(
+                    authority.content.reader.clone(),
+                    Some(self.limits.file_bytes),
+                )
                 .unwrap_or(provider);
             let mut tools = self.tools.clone();
             // The agent tools act for this turn: their effects commit with it.

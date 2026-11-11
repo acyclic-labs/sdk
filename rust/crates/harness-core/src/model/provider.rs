@@ -287,12 +287,13 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
             "selected provider cannot admit a profile; recovery: select a provider with epoch profile admission".into(),
         ))
     }
-    /// Binds the composition's authenticated reader for file-backed model input.
+    /// Binds the composition's authenticated reader and optional file projection credit.
+    /// `None` leaves projection size unbounded; native work admission still applies.
     /// Providers that consume canonical file references directly need no rebinding.
     fn bind_content(
         &self,
         _: std::sync::Arc<dyn crate::conversation::ContentResidencyVerifier>,
-        _: u64,
+        _: Option<u64>,
     ) -> Option<std::sync::Arc<dyn ModelProvider>> {
         None
     }
