@@ -148,28 +148,28 @@ descriptors through the same compiler. Shared manifest digest joins remain open.
 The new table appends its 84
 messages after the original 403, preserving the captured selectors.
 
-Harness v2 `RuntimeLimits.model_events_per_step` (field 6) and
-`tool_calls_per_step` (field 7), `path_bytes` (field 2), `context_messages` (field 8), and `attachments`
-(field 3) have explicit
-protobuf presence. Absence
-means unbounded; a supplied limit must be positive. This is an intentional
-contract change, bound by the generated negotiated descriptor identity and
-the Harness schema digest in `manifest.json`.
+Harness v2 `RuntimeLimits.file_bytes` (field 1), `path_bytes` (field 2),
+`attachments` (field 3), `render_bytes` (field 4), `model_events_per_step`
+(field 6), `tool_calls_per_step` (field 7) and `context_messages` (field 8)
+have explicit protobuf presence. Absence means unbounded; a supplied limit must
+be positive. This contract change is bound by the negotiated descriptor identity
+and the Harness schema digest in `manifest.json`.
 
 The segmented model request manifest persists these limits as positive integers
-or JSON `null`. Version 3 also makes the path byte allowance optional;
-`None` is unbounded while finite allowances remain positive. Its canonical JSON
-starts with `{"$version":3,`; the reserved
-version key sorts before all payload keys in both canonical encoding paths.
-The original reader verifies the immutable file descriptor, then admits this header before
-ordinary or funded payload decoding. Headerless and foreign-version manifests
-refuse with `Unsupported`, without migration. Version 3 is also bound into the
-existing manifest attestation. The Rust-owned producer recaptured the committed
-descriptor with optional path presence, retaining the earlier attachment and
-context-message presence. Independent semantic and raw comparisons, including
-unknown fields, prove that only path presence, its synthetic oneof and the
-corresponding source token spans changed from the preceding capture. Existing
-protobuf writer captures and historical goldens remain unchanged.
+or JSON `null`. Version 4 makes the root file and render byte policies optional,
+retaining the earlier optional path and count policies. Its canonical JSON starts
+with `{"$version":4,`; the reserved version key sorts before all payload keys in
+both canonical encoding paths. The original reader verifies the immutable file
+descriptor, then admits this header before ordinary or funded payload decoding.
+Headerless, older and unknown versions refuse with `Unsupported`, without
+migration. Version 4 is also bound into the existing manifest attestation.
+
+The canonical Rust-owned producer recaptured the committed descriptor with file
+and render byte presence. Independent semantic and raw comparisons, including
+unknown protobuf fields, preserve every other field identity and oneof name;
+only these two presence flags, their synthetic oneofs and corresponding source
+token spans change from the preceding path-presence capture. Existing protobuf
+writer captures and historical goldens remain unchanged.
 
 Fixed-width codecs do constant work. Variable payload codecs necessarily take
 work proportional to the admitted payload; their cost must not depend on retained
