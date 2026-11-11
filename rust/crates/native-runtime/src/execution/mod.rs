@@ -273,7 +273,12 @@ impl BoundPath {
         if !path.is_absolute() {
             return Err(refused("execution grant paths must be absolute"));
         }
-        let canonical = std::fs::canonicalize(path).map_err(failure)?;
+        let canonical = std::fs::canonicalize(path).map_err(|error| {
+            failure(io::Error::new(
+                error.kind(),
+                format!("execution grant root {}: {error}", path.display()),
+            ))
+        })?;
         #[cfg(target_os = "macos")]
         if path
             .components()

@@ -810,10 +810,11 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         agent: root.clone(),
         page: Default::default(),
     };
-    assert!(matches!(
-        diff_call(&client, "agents", &diff).await?,
-        Ok(AgentReply::Diff { items }) if items.is_empty()
-    ));
+    let empty_diff = diff_call(&client, "agents", &diff).await?;
+    assert!(
+        matches!(&empty_diff, Ok(AgentReply::Diff { items }) if items.is_empty()),
+        "the original empty source must finish normally: {empty_diff:?}"
+    );
     // The real session admits this query before its source suspends. Revoking
     // policy during that wait must refuse disclosure, including an empty result.
     let (entered, waiting) = tokio::sync::oneshot::channel();
