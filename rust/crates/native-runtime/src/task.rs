@@ -11,10 +11,12 @@ pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking, try_spa
 pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking, try_spawn};
 
 mod custody;
+mod retained;
 #[cfg(feature = "test-support")]
 pub(crate) use custody::cancelled_error;
 pub(crate) use custody::panic_error;
 pub use custody::{OwnedTask, TaskCompletion, spawn_owned};
+pub use retained::{OwnedFuture, retain_future};
 
 /// Completes a ready owned operation inline, transferring pending work to the
 /// same task owner as [`spawn`]. A ready operation needs no task allocation.

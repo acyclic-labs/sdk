@@ -19,6 +19,7 @@ mod positional_interrupted;
 mod prepared_order;
 mod range;
 mod reservations;
+mod retained_future;
 mod source;
 mod spare;
 use source::SourceFixture;
