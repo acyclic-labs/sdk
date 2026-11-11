@@ -147,3 +147,55 @@ fn retained_future_panic_retires_the_frame_before_reporting_failure() -> io::Res
     assert_eq!(observed.memory.load(Ordering::Acquire), 0);
     Ok(())
 }
+
+#[test]
+fn retained_future_self_stop_never_claims_callback_quiescence() -> io::Result<()> {
+    struct SelfStop {
+        owner: Arc<Mutex<Option<crate::OwnedFuture>>>,
+        wake: Arc<Mutex<Option<Waker>>>,
+        retired: Arc<AtomicBool>,
+    }
+    impl Future for SelfStop {
+        type Output = ();
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            *self.wake.lock().unwrap() = Some(cx.waker().clone());
+            let owner = self.owner.lock().unwrap().take();
+            if let Some(owner) = owner {
+                assert_eq!(
+                    owner.stop().err().unwrap().kind(),
+                    io::ErrorKind::WouldBlock
+                );
+                assert!(!owner.is_stopped(), "the callback is still running");
+                drop(owner);
+            }
+            Poll::Pending
+        }
+    }
+    impl Drop for SelfStop {
+        fn drop(&mut self) {
+            self.retired.store(true, Ordering::Release);
+        }
+    }
+    let observed = Arc::new(ReadBudgetMeter::new(0, 0));
+    let meter: Arc<dyn NativeReadMeter> = observed.clone();
+    let owner = Arc::new(Mutex::new(None));
+    let wake = Arc::new(Mutex::new(None));
+    let retired = Arc::new(AtomicBool::new(false));
+    let future = SelfStop {
+        owner: Arc::clone(&owner),
+        wake: Arc::clone(&wake),
+        retired: Arc::clone(&retired),
+    };
+    let retained = crate::retain_future(future, &meter)?;
+    *owner.lock().unwrap() = Some(retained);
+    let pending = wake
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or(io::ErrorKind::InvalidData)?;
+    pending.wake();
+    assert!(retired.load(Ordering::Acquire));
+    drop(wake.lock().unwrap().take());
+    assert_eq!(observed.memory.load(Ordering::Acquire), 0);
+    Ok(())
+}

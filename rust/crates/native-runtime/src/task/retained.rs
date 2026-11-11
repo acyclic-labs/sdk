@@ -24,10 +24,11 @@ struct Frame {
 }
 struct State {
     frame: Option<Frame>,
-    failure: Option<Arc<io::Error>>,
+    failure: Option<Box<dyn std::any::Any + Send>>,
 }
 struct Inner {
     state: InlineMutex<State>,
+    owner: InlineMutex<Option<std::thread::ThreadId>>,
     retired: InlineCondvar,
     notified: AtomicBool,
     driving: AtomicBool,
@@ -39,7 +40,8 @@ struct Inner {
 /// Owns one future without submitting a task or creating an executor. The
 /// initial poll and subsequent wake-driven polls run on the calling thread;
 /// pending futures retain only their frame, original credit and event waker.
-/// Polls must be nonblocking and must not stop or drop their own owner.
+/// Polls must be nonblocking. Stopping from the future's own callback requests
+/// retirement but returns `WouldBlock` until that callback has returned.
 ///
 /// `stop` observes destruction of this frame, including a concurrent poll's
 /// retained state. Effects detached by the future need their own completion
@@ -79,6 +81,7 @@ where
             frame: Some(frame),
             failure: None,
         }),
+        owner: InlineMutex::new(None),
         retired: InlineCondvar::new(),
         notified: AtomicBool::new(false),
         driving: AtomicBool::new(false),
@@ -95,8 +98,20 @@ impl OwnedFuture {
     /// uses the existing inline lock/condition primitive; it never waits for a
     /// pending future to become ready or relies on an executor making progress.
     /// This retirement path needs no new admission after cancellation.
+    /// A polling or destruction panic is retained by the owner and reported
+    /// as `Other`, without allocating a new error wrapper during cleanup.
     pub fn stop(&self) -> io::Result<()> {
         self.inner.stopping.store(true, Ordering::Release);
+        if self
+            .inner
+            .owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some_and(|owner| owner == std::thread::current().id())
+        {
+            self.inner.notified.store(true, Ordering::Release);
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
         let frame = self
             .inner
             .state
@@ -119,9 +134,10 @@ impl OwnedFuture {
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        match &state.failure {
-            Some(error) => Err(io::Error::new(error.kind(), Arc::clone(error))),
-            None => Ok(()),
+        if state.failure.is_some() {
+            Err(io::ErrorKind::Other.into())
+        } else {
+            Ok(())
         }
     }
     /// True only after the owned future frame and its payload credit retired.
@@ -160,6 +176,7 @@ impl Inner {
         let Some(frame) = state.frame.as_mut() else {
             return;
         };
+        self.set_owner(Some(std::thread::current().id()));
         let result = if self.stopping.load(Ordering::Acquire) {
             Ok(Poll::Ready(()))
         } else {
@@ -183,11 +200,12 @@ impl Inner {
                 }
             }))
         };
-        if matches!(result, Ok(Poll::Pending)) {
+        if matches!(result, Ok(Poll::Pending)) && !self.stopping.load(Ordering::Acquire) {
+            self.set_owner(None);
             return;
         }
         if let Err(payload) = result {
-            state.failure = Some(Arc::new(super::panic_error(payload)));
+            state.failure = Some(payload);
         }
         let frame = state.frame.take();
         drop(state);
@@ -196,19 +214,31 @@ impl Inner {
         }
     }
     fn retire(&self, frame: Frame) {
+        self.set_owner(Some(std::thread::current().id()));
         let result = catch_unwind(AssertUnwindSafe(|| drop(frame)));
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Err(payload) = result {
-            state
-                .failure
-                .get_or_insert_with(|| Arc::new(super::panic_error(payload)));
-        }
+        let discarded = match result {
+            Err(payload) if state.failure.is_none() => {
+                state.failure = Some(payload);
+                None
+            }
+            Err(payload) => Some(payload),
+            Ok(()) => None,
+        };
         self.stopped.store(true, Ordering::Release);
+        self.set_owner(None);
         drop(state);
         self.retired.notify_all();
+        drop(discarded);
+    }
+    fn set_owner(&self, owner: Option<std::thread::ThreadId>) {
+        *self
+            .owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = owner;
     }
 }
 impl Wake for Inner {
