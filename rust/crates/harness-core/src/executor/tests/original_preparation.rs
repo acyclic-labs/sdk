@@ -58,6 +58,7 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
         tail: u64,
+        boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<(ResponseProjection, Option<ContextAccounting>)> {
         let base = self
             .canonical_base(journal, input, step, prior_messages)
@@ -104,7 +105,10 @@ impl StockExecution<'_> {
         };
         let projection = ResponseProjection {
             context: projection,
-            steering: None,
+            steering: boundary
+                .map(|boundary| boundary.prepared_snapshot(input.operation_id, step))
+                .transpose()?
+                .flatten(),
             canonical,
             checkpoint: None,
             working: None,
@@ -141,7 +145,9 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
-                    steering: None,
+                    steering: boundary
+                        .map(|boundary| boundary.selection(input.operation_id, step))
+                        .transpose()?,
                 },
                 self.io,
             )?
@@ -158,6 +164,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
+        boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<crate::model::PreparedModelRequest> {
         // Both factories retain the current admitted future owner. The
         // reference keeps its independent preparation algorithm, not the
@@ -187,8 +194,15 @@ impl StockExecution<'_> {
                     if self.stock.reconciliation_only {
                         return Err(Error::Indeterminate(input.operation_id));
                     }
-                    self.capture_response_original(journal, input, step, prior_messages, tail)
-                        .await?
+                    self.capture_response_original(
+                        journal,
+                        input,
+                        step,
+                        prior_messages,
+                        tail,
+                        boundary,
+                    )
+                    .await?
                 }
                 Some(reference) => {
                     let mut projection = retain_preparation(

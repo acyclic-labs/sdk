@@ -77,7 +77,7 @@ fn pair(
                     let execution = StockExecution::ordinary(&executor);
                     if old || restore_old_factory {
                         execution
-                            .prepared_response_original(&journal, &input, 0, &[])
+                            .prepared_response_original(&journal, &input, 0, &[], None)
                             .await
                     } else {
                         execution
