@@ -32,6 +32,7 @@ impl DecodeWork for OriginalDecodeWork<'_, '_> {
     }
 }
 
+/// A JSON projection failure, preserving the original accounting error.
 #[derive(Debug, thiserror::Error)]
 pub enum MetadataDecodeError {
     /// Work, cancellation or allocation admission failed.
@@ -43,9 +44,10 @@ pub enum MetadataDecodeError {
 }
 
 impl KernelAccounting<'_> {
-    /// Decodes JSON with the shared funded visitor, retaining every owned
-    /// destination allocation on this caller's original ledger. Unselected
-    /// fields are parsed without materializing their strings or collections.
+    /// Decodes JSON with the shared funded visitor. The returned value retains
+    /// its admitted allocation credit on this caller's original ledger.
+    /// Unselected fields are parsed without materializing their strings or
+    /// collections.
     pub fn decode_json<T: serde::de::DeserializeOwned>(
         &mut self,
         input: &[u8],

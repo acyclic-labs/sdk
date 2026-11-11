@@ -134,6 +134,14 @@ mod tests {
             ..WorkBudget::UNBOUNDED
         };
         let mut caller = KernelAccounting::standalone(budget, &cancellation);
+        // Independent leases promote the ordinary ledger once. That control
+        // allocation lives as long as the caller, rather than as read payload.
+        drop(RetainedAllocation::claim(0, 0, &mut caller)?);
+        let baseline = caller
+            .standalone_parts()
+            .ok_or("missing original ledger")?
+            .0
+            .live_bytes();
         caller.charge_items(7)?;
         let owner = NativeAccounting::take(&mut caller)?;
         assert!(matches!(
@@ -180,7 +188,7 @@ mod tests {
             .ok_or("missing original ledger")?
             .0
             .live_bytes();
-        assert!(held >= decoded.text.len() as u64);
+        assert!(held >= baseline + decoded.text.len() as u64);
         drop(decoded);
         assert_eq!(
             caller
@@ -188,7 +196,7 @@ mod tests {
                 .ok_or("missing original ledger")?
                 .0
                 .live_bytes(),
-            0
+            baseline
         );
         let remaining = caller.remaining()?.items_examined;
         caller.charge_items(remaining)?;
