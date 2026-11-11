@@ -766,7 +766,6 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
         .ok_or(StreamError::Unavailable)?
         .clone();
     corrupted.history = Some(Arc::new(History::Prefix {
-        keys: Default::default(),
         source: future,
         tail: 1,
         _allocation: Default::default(),

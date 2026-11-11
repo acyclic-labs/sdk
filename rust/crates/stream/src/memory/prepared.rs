@@ -36,6 +36,8 @@ pub(crate) struct PreparedCommit {
     headers: crate::record_headers::PreparedHeaders,
     key_nodes: Allocation,
     key_probes: ReplayProbes,
+    /// Only this admitted append retains the key view it will extend at binding.
+    base_keys: KeyTree,
 }
 
 struct PreparedKeyWork<'a> {
@@ -127,14 +129,12 @@ impl MemoryStream {
             expected;
         // Header keys arrive with the body. The shared radix owns its physical
         // node layout and fixed-width work bound; prepay both before issuance.
+        let base_keys = state
+            .paths
+            .get(&append(&plan.result).path)
+            .map_or_else(KeyTree::default, |path| path.keys.clone());
         let count = crate::MAX_RECORD_KEYS as u64;
-        let bound = plan
-            .histories
-            .first()
-            .ok_or(StreamError::Unavailable)?
-            .history
-            .keys()
-            .0
+        let bound = base_keys
             .insertion_bound(count)
             .ok_or(StreamError::Capacity)?;
         let key_nodes = self.allocate(
@@ -196,6 +196,7 @@ impl MemoryStream {
                 headers,
                 key_nodes,
                 key_probes,
+                base_keys,
             },
             recovery,
         ))
@@ -441,24 +442,17 @@ impl PreparedCommit {
             let id = commit_identity(decision, digest);
             bind_body(&mut self.plan, body)?;
             for history in &mut self.plan.histories {
-                if let History::Batch {
-                    parent,
-                    records,
-                    keys,
-                    ..
-                } = Arc::get_mut(&mut history.history).ok_or(StreamError::Unavailable)?
+                if let History::Batch { records, .. } =
+                    Arc::get_mut(&mut history.history).ok_or(StreamError::Unavailable)?
                 {
-                    *keys = parent
-                        .as_ref()
-                        .map_or_else(KeyTree::default, |parent| parent.keys().clone())
-                        .append_reserved(
-                            records,
-                            &mut PreparedKeyWork {
-                                work: &work,
-                                allocation: &mut self.key_nodes,
-                                probes: &mut self.key_probes,
-                            },
-                        )?;
+                    history.keys = self.base_keys.append_reserved(
+                        records,
+                        &mut PreparedKeyWork {
+                            work: &work,
+                            allocation: &mut self.key_nodes,
+                            probes: &mut self.key_probes,
+                        },
+                    )?;
                 }
             }
             self.plan
