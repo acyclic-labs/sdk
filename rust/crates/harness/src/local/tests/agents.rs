@@ -1735,79 +1735,18 @@ async fn follow_tool_output(
     }
 }
 
-/// A local HTTP peer that answers each request with its own ordinal, so a
-/// hook that ran again would add different context.
-#[cfg(unix)]
-struct CountingServer {
-    port: u16,
-    calls: Arc<std::sync::atomic::AtomicUsize>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-#[cfg(unix)]
-impl Drop for CountingServer {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-#[cfg(unix)]
-async fn counting_server() -> Result<CountingServer> {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(agent)?;
-    let port = listener.local_addr().map_err(agent)?.port();
-    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let served = Arc::clone(&count);
-    let task = tokio::spawn(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            let ordinal = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            let mut request = [0; 8192];
-            let mut used: usize = 0;
-            loop {
-                let start = used.saturating_sub(3);
-                match stream.read(&mut request[used..]).await {
-                    Ok(0) | Err(_) => return,
-                    Ok(read) => used += read,
-                }
-                if request[start..used]
-                    .windows(4)
-                    .any(|window| window == b"\r\n\r\n")
-                {
-                    break;
-                }
-            }
-            let body = format!("HOOK-HTTP-{ordinal}");
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            if stream.write_all(response.as_bytes()).await.is_err() {
-                return;
-            }
-        }
-    });
-    Ok(CountingServer {
-        port,
-        calls: count,
-        task,
-    })
-}
-
-/// A turn whose `UserPromptSubmit` hook called an HTTP peer is interrupted
+/// A turn whose `UserPromptSubmit` hook updated its project counter is interrupted
 /// after the hook's outcome was recorded; the reopened agent replays the
-/// turn from `hooks/{turn}/{op}.json`, with no new hook run or HTTP call,
+/// turn from `hooks/{turn}/{op}.json`, without updating the counter again,
 /// and the model sees the identical recorded context.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let directory = tempfile::tempdir().map_err(agent)?;
-    let peer = counting_server().await?;
-    let (port, calls) = (peer.port, &peer.calls);
     let home = directory.path().join("home");
     std::fs::create_dir_all(home.join(".claude")).map_err(agent)?;
-    let hook = format!("cat >/dev/null; curl -sS http://127.0.0.1:{port}/");
+    // The original workspace-write sandbox intentionally isolates networking.
+    let hook = r#"cat >/dev/null; n=0; if test -f hook-count; then read -r n < hook-count; fi; n=$((n + 1)); printf '%s\n' "$n" > hook-count; printf 'HOOK-RUN-%s\n' "$n""#;
     std::fs::write(
         home.join(".claude/settings.json"),
         serde_json::to_vec(
@@ -1858,8 +1797,19 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         .request(0)
         .ok_or_else(|| Error::NotFound("hook model request".into()))?;
     let recorded = super::request_text(&harness, &request).await?;
-    assert!(recorded.contains("HOOK-HTTP-1"), "{recorded}");
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(recorded.contains("HOOK-RUN-1"), "{recorded}");
+    let project = crate::filesystem::workspace_ref(
+        harness.project.provider().clone(),
+        &harness.project.storage_name(&mut None)?,
+    )?;
+    assert_eq!(
+        harness
+            .files
+            .read(&project, None, "/hook-count", 16, None)
+            .await?
+            .as_ref(),
+        b"1\n",
+    );
     // Crash: the turn is still waiting on the model when the harness drops.
     drop(observed);
     drop(harness);
@@ -1884,13 +1834,20 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let (agents, root) = (Arc::clone(agents), root.clone());
     let entries = settled(&harness, &root).await?;
     assert_eq!(entries.len(), 1);
-    // The replay ran no hook and made no HTTP call.
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // The replay ran no hook: the retained project counter is unchanged.
+    assert_eq!(
+        harness
+            .files
+            .read(&project, None, "/hook-count", 16, None)
+            .await?
+            .as_ref(),
+        b"1\n",
+    );
     // A re-dispatched request carries the identical recorded context.
     if let Some(request) = resumed.request(0) {
         let replayed = super::request_text(&harness, &request).await?;
         assert!(
-            replayed.contains("HOOK-HTTP-1") && !replayed.contains("HOOK-HTTP-2"),
+            replayed.contains("HOOK-RUN-1") && !replayed.contains("HOOK-RUN-2"),
             "{replayed}"
         );
     }

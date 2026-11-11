@@ -60,6 +60,7 @@
     "Ctrl+/": "app.help",
     "Ctrl+Shift+r": "app.reasoning",
     "Ctrl+Shift+d": "app.details",
+    "Ctrl+o": "app.details",
     "Ctrl+Shift+e": "app.open-changes",
     "Alt+Left": "app.navigation-back",
     "Alt+Right": "app.navigation-forward",

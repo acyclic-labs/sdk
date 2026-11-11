@@ -61,6 +61,9 @@ impl TaskContext {
             )
             .tool_input());
         }
+        if let Some((binding, relative)) = self.private_content_path(path, io)? {
+            return Ok((Some(binding), relative));
+        }
         Ok(self.home_content_path(path).map_or_else(
             || (self.tool_content(None), path),
             |(binding, relative)| (Some(binding), relative),

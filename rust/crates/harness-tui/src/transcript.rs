@@ -47,14 +47,31 @@ impl Block {
         width: usize,
         theme: &ThemeStyles,
         cache: &acyclic_markdown::CodeCache,
+        tool_details: bool,
     ) -> Wrapped {
-        if self.kind == BlockKind::Answer {
+        if matches!(self.kind, BlockKind::Tool { .. }) {
+            let mut header = wrap(self.kind, &self.text, width, theme);
+            if tool_details && let Some((_, source)) = self.text.split_once('\n') {
+                let mut body =
+                    wrap_rendered(self.kind, literal(source, Style::default()), width, theme);
+                header.lines.append(&mut body.lines);
+                header.links.append(&mut body.links);
+                header.code.append(&mut body.code);
+            }
+            return header;
+        }
+        let source = if self.kind == BlockKind::Answer {
+            Some(self.text.as_str())
+        } else {
+            None
+        };
+        if let Some(source) = source {
             if self.parsed.is_none() {
                 let mut parser = acyclic_markdown::Markdown::with_deferred_code_in(
                     u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
                     cache.clone(),
                 );
-                parser.push(&self.text);
+                parser.push(source);
                 self.parsed = Some((width, parser));
             }
             if let Some((columns, parser)) = &mut self.parsed {
@@ -97,6 +114,7 @@ pub struct TranscriptRows {
     tail_rows: usize,
     tail_parser: Option<(usize, acyclic_markdown::Markdown)>,
     code_cache: acyclic_markdown::CodeCache,
+    tool_details: bool,
 }
 
 impl Default for TranscriptRows {
@@ -112,6 +130,7 @@ impl Default for TranscriptRows {
             tail_rows: 0,
             tail_parser: None,
             code_cache: acyclic_markdown::CodeCache::default(),
+            tool_details: false,
         }
     }
 }
@@ -130,7 +149,12 @@ impl TranscriptRows {
             text,
             parsed: None,
         };
-        let wrapped = block.wrap(self.width.max(1), &self.theme, &self.code_cache);
+        let wrapped = block.wrap(
+            self.width.max(1),
+            &self.theme,
+            &self.code_cache,
+            self.tool_details,
+        );
         self.lines.extend(wrapped.lines);
         self.links.extend(wrapped.links);
         self.code.extend(wrapped.code);
@@ -153,7 +177,7 @@ impl TranscriptRows {
                 text,
                 parsed: None,
             };
-            let wrapped = block.wrap(width, &self.theme, &self.code_cache);
+            let wrapped = block.wrap(width, &self.theme, &self.code_cache, self.tool_details);
             rows.extend(wrapped.lines);
             links.extend(wrapped.links);
             code.extend(wrapped.code);
@@ -191,6 +215,15 @@ impl TranscriptRows {
         }
     }
 
+    /// Fold or expand the original tool results. Only changing the setting
+    /// reflows settled rows; ordinary frames and token deltas keep their cache.
+    pub fn set_tool_details(&mut self, expanded: bool) {
+        if self.tool_details != expanded {
+            self.tool_details = expanded;
+            self.rewrap();
+        }
+    }
+
     /// The already laid out rows and their link metadata, borrowed together.
     /// Call `rows` first when changing width; no rendering or I/O happens here.
     pub fn presentation(
@@ -222,7 +255,12 @@ impl TranscriptRows {
         self.links.clear();
         self.code.clear();
         for block in &mut self.blocks {
-            let wrapped = block.wrap(self.width.max(1), &self.theme, &self.code_cache);
+            let wrapped = block.wrap(
+                self.width.max(1),
+                &self.theme,
+                &self.code_cache,
+                self.tool_details,
+            );
             self.lines.extend(wrapped.lines);
             self.links.extend(wrapped.links);
             self.code.extend(wrapped.code);
@@ -367,17 +405,21 @@ fn wrap(kind: BlockKind, text: &str, width: usize, theme: &ThemeStyles) -> Wrapp
     let marked = width > 1;
     let columns = if marked { width - 1 } else { width };
     let rendered = if prompt {
-        crate::markdown::Rendered {
-            text: text.to_owned(),
-            styles: vec![(0..text.len(), Style::default().add_modifier(Modifier::BOLD))],
-            links: Vec::new(),
-            bands: Vec::new(),
-            code: Vec::new(),
-        }
+        literal(text, Style::default().add_modifier(Modifier::BOLD))
     } else {
         crate::markdown::render(text, columns, theme)
     };
     wrap_rendered(kind, rendered, width, theme)
+}
+
+fn literal(text: &str, style: Style) -> crate::markdown::Rendered {
+    crate::markdown::Rendered {
+        text: text.to_owned(),
+        styles: vec![(0..text.len(), style)],
+        links: Vec::new(),
+        bands: Vec::new(),
+        code: Vec::new(),
+    }
 }
 
 fn wrap_rendered(
@@ -409,6 +451,8 @@ fn wrap_rendered(
             ""
         } else if prompt && index == 0 {
             "›"
+        } else if matches!(kind, BlockKind::Tool { .. }) {
+            " "
         } else if index == 0 {
             "●"
         } else {
@@ -683,7 +727,7 @@ mod tests {
     #[test]
     fn a_tool_card_is_one_row_whose_outcome_survives_clipping() {
         let mut transcript = TranscriptRows::default();
-        let call = "shell  cargo test -p foo --all-features\nsecond line";
+        let call = "shell  cargo test -p foo --all-features\nExit code: 0\nfirst\n**second**\n`code`\n> literal";
         transcript.push(BlockKind::Tool { failed: false }, call);
         transcript.push(BlockKind::Tool { failed: true }, "read  missing.txt");
         for width in [80, 24, 9] {
@@ -692,13 +736,29 @@ mod tests {
             assert!(rows.iter().all(|row| row.width() <= usize::from(width)));
             assert!(rows[0].starts_with('\u{23fa}') && rows[0].ends_with('\u{2713}'));
             assert!(rows[1].ends_with('\u{2717}'), "{rows:?}");
-            assert!(!rows[0].contains("second line"));
+            assert!(!rows[0].contains("**second**"));
         }
         let wide = text(transcript.rows(80));
         assert!(wide[0].contains("--all-features") && !wide[0].contains('\u{2026}'));
         // Negative control: a narrow card is clipped, never wrapped.
         let narrow = text(transcript.rows(24));
         assert!(narrow[0].contains('\u{2026}') && !narrow[0].contains("--all-features"));
+        transcript.set_tool_details(true);
+        let expanded = text(transcript.rows(80));
+        assert_eq!(
+            &expanded[1..6],
+            [
+                " Exit code: 0",
+                " first",
+                " **second**",
+                " `code`",
+                " > literal"
+            ]
+        );
+        transcript.set_tool_details(false);
+        assert_eq!(text(transcript.rows(80)).len(), 2);
+        transcript.set_tool_details(true);
+        assert_eq!(text(transcript.rows(80)), expanded);
     }
 
     #[test]

@@ -15,6 +15,10 @@ pub enum NotificationPolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UiSettings {
+    /// Show the running model's reasoning projection.
+    pub reasoning: bool,
+    /// Expand the original results beneath settled tool cards.
+    pub tool_details: bool,
     /// scrollback lines.
     pub scrollback_lines: usize,
     /// Render activity labels without animation.

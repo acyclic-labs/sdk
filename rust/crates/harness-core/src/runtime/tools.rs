@@ -928,6 +928,9 @@ impl ToolContext {
             ))
             .tool_input());
         }
+        if let Some((binding, relative)) = self.task().private_content_path(path, io)? {
+            return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
+        }
         if let (Some(relative), Some(seed)) = (
             path.strip_prefix(SEED_PATH).or_else(|| {
                 (kind == crate::tool::ReadPathKind::Directory

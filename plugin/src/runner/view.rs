@@ -122,7 +122,7 @@ fn work(tools: Vec<ToolCard>, answer: String) -> impl Iterator<Item = (BlockKind
                 BlockKind::Tool {
                     failed: card.failed,
                 },
-                card.line(),
+                card.text(),
             )
         })
         .chain((!answer.is_empty()).then_some((BlockKind::Answer, answer)))
@@ -141,6 +141,31 @@ fn notice(action: &ContextAction) -> Option<String> {
 /// Rows of the newest tool call's output, or of the running reasoning,
 /// shown while the agent works.
 const OUTPUT_ROWS: usize = 8;
+
+/// The same live projection responds to deltas and settings-file changes.
+fn live_rows(kind: LiveKind, live: &str, input: &PromptInput) -> Vec<Line<'static>> {
+    if kind == LiveKind::Answer
+        || (kind == LiveKind::Reasoning && !input.editor.settings().reasoning)
+    {
+        return Vec::new();
+    }
+    let style = if kind == LiveKind::Reasoning {
+        input
+            .theme
+            .token(Token::Muted)
+            .add_modifier(Modifier::ITALIC)
+    } else {
+        Style::default()
+    };
+    let mut rows = live
+        .lines()
+        .rev()
+        .take(OUTPUT_ROWS)
+        .map(|line| Line::styled(line.to_owned(), style))
+        .collect::<Vec<_>>();
+    rows.reverse();
+    rows
+}
 /// What an interrupted turn shows in its place.
 const CANCELLED: &str = "interaction cancelled";
 const COMPACTED: &str = "Compacted conversation";
@@ -895,6 +920,8 @@ async fn run_current(
         .apply(&mut input, &profile)
         .map_err(|errors| format!("UI configuration: {errors:?}"))?;
     view.transcript.set_theme(input.theme);
+    view.transcript
+        .set_tool_details(input.editor.settings().tool_details);
     view.pending_dirty = true;
     view.tail_dirty = true;
     // The open panel's title and rows; Esc closes it.
@@ -1265,17 +1292,7 @@ async fn run_current(
                     view.reply.push_str(answer);
                     view.tail_dirty = true;
                 }
-                // Reasoning shows muted in the strip tool output uses.
-                let style = if kind == LiveKind::Reasoning {
-                    input.theme.token(Token::Muted).add_modifier(Modifier::ITALIC)
-                } else {
-                    Style::default()
-                };
-                output_rows = if kind == LiveKind::Answer { "" } else { live }
-                    .lines().rev().take(OUTPUT_ROWS)
-                    .map(|line| Line::styled(line.to_owned(), style))
-                    .collect();
-                output_rows.reverse();
+                output_rows = live_rows(kind, live, &input);
             }
             batch = async {
                 if let Some(agent) = navigation {
@@ -1542,7 +1559,7 @@ async fn run_current(
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
                                         return view.exit().map(|()| Next::Exit);
                                     }
-                                    Ok(Some(resolution @ CommandResolution::Submit { request: CommandRequest::Theme { .. } })) => {
+                                    Ok(Some(resolution @ (CommandResolution::Submit { request: CommandRequest::Theme { .. } } | CommandResolution::Select { query: CommandQuery::Details | CommandQuery::Reasoning }))) => {
                                         match ui.submit(&conversation, &resolution).await {
                                             Ok(()) => files_changed = true,
                                             Err(error) => view.notice = Some(error.to_string()),
@@ -1657,6 +1674,12 @@ async fn run_current(
                             InputEffect::Host(Action::App(AppAction::Find)) => {
                                 view.find(input.editor.text(), usize::from(areas.transcript.height));
                             }
+                            InputEffect::Host(Action::App(AppAction::Details)) => {
+                                match ui.submit(&conversation, &CommandResolution::Select { query: CommandQuery::Details }).await {
+                                    Ok(()) => files_changed = true,
+                                    Err(error) => view.notice = Some(error.to_string()),
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -1685,6 +1708,10 @@ async fn run_current(
                 .apply(&mut input, &profile)
                 .map_err(|errors| format!("UI configuration: {errors:?}"))?;
             view.transcript.set_theme(input.theme);
+            view.transcript
+                .set_tool_details(input.editor.settings().tool_details);
+            let (kind, live) = events.live();
+            output_rows = live_rows(kind, live, &input);
             view.pending_dirty = true;
             view.tail_dirty = true;
             if overlay.as_ref().is_some_and(|(title, _)| *title == "Help") {

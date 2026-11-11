@@ -182,7 +182,7 @@ mod work;
 mod workspace_creation;
 
 pub use crate::kernel::{DirectoryBindingChange, FileRecordChange, GenerationDiff};
-pub(crate) use access_policy::policy_head_is_current;
+pub(crate) use access_policy::policy_revision_is_current;
 pub use attributes::NamedAttributeWriteMode;
 use authored_compile::clone_authored_path;
 #[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]
