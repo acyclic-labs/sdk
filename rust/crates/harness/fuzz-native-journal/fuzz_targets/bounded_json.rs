@@ -22,7 +22,7 @@ fn check(input: &[u8]) -> Result<(), String> {
     // inputs exercise the same accounting instead of disappearing at a cutoff.
     let bounds = JsonBounds {
         maximum_bytes: Some(input.len().max(encoded.len()) as u64),
-        maximum_items: input.len() as u64,
+        maximum_items: Some(input.len() as u64),
         maximum_depth: 128,
     };
     let raw = prefix & 1 != 0;

@@ -14,7 +14,7 @@ pub(super) fn context_contract<T: Serialize>(
         let remaining = work.remaining()?;
         let bounds = crate::executor::json::JsonBounds {
             maximum_bytes: Some(remaining.bytes_encoded),
-            maximum_items: remaining.items_examined,
+            maximum_items: Some(remaining.items_examined),
             maximum_depth: 256,
         };
         let labels: u64 = 597;

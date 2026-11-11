@@ -180,7 +180,7 @@ impl ContextManifest {
             bytes,
             JsonBounds {
                 maximum_bytes: Some(limits.render_bytes),
-                maximum_items: limits.render_bytes,
+                maximum_items: Some(limits.render_bytes),
                 maximum_depth: 256,
             },
             None,

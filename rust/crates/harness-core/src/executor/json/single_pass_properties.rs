@@ -59,7 +59,7 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
     };
     let bounds = JsonBounds {
         maximum_bytes: Some(65536),
-        maximum_items: 65536,
+        maximum_items: Some(65536),
         maximum_depth: 256,
     };
     let mut actual = if canonical {
@@ -151,7 +151,7 @@ fn check_comparison(value: &Value, expected: &[u8], buffered: bool) -> TestCaseR
     let mut storage = 0;
     let bounds = JsonBounds {
         maximum_bytes: Some(65536),
-        maximum_items: 65536,
+        maximum_items: Some(65536),
         maximum_depth: 256,
     };
     let mut charge = |event| {
@@ -268,7 +268,7 @@ fn index_scan_examines_exactly_its_admitted_items() {
     let items = lexical_items(document);
     let bounds = JsonBounds {
         maximum_bytes: Some(65536),
-        maximum_items: 65536,
+        maximum_items: Some(65536),
         maximum_depth: 256,
     };
     for (funded, reason) in [
@@ -327,7 +327,7 @@ mod allocation_prefixes {
                 value,
                 JsonBounds {
                     maximum_bytes: Some(65536),
-                    maximum_items: 65536,
+                    maximum_items: Some(65536),
                     maximum_depth: 256,
                 },
                 Some(crate::wire::ErrorCode::Invalid),

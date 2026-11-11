@@ -120,7 +120,7 @@ fn admit_schema_value(value: &serde_json::Value, scope: &mut CodecQuota<'_, '_>)
         value,
         JsonBounds {
             maximum_bytes: Some(u64::MAX),
-            maximum_items: u64::MAX,
+            maximum_items: None,
             maximum_depth: 256,
         },
         JsonValueSchema::None,

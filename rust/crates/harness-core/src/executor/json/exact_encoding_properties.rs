@@ -52,7 +52,7 @@ fn check_encoder(index: usize, canonical: bool, repeat: bool) -> TestCaseResult 
     let input = values().into_iter().nth(index).unwrap();
     let bounds = JsonBounds {
         maximum_bytes: Some(65536),
-        maximum_items: 65536,
+        maximum_items: Some(65536),
         maximum_depth: 128,
     };
     let [(old, _), (new, _)] = differential::pair::<_, _, (&'static str, u64)>(
@@ -97,7 +97,7 @@ fn encode_with_ledger(
 ) -> Result<acyclic_stream::OwnedBytes> {
     let bounds = JsonBounds {
         maximum_bytes: Some(65536),
-        maximum_items: 65536,
+        maximum_items: Some(65536),
         maximum_depth: 128,
     };
     let code = Some(crate::wire::ErrorCode::Invalid);

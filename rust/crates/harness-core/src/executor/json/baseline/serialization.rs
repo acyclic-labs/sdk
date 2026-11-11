@@ -225,7 +225,7 @@ impl Formatter for Format<'_, '_, '_> {
                     maximum_items: scope
                         .bounds
                         .maximum_items
-                        .saturating_sub(scope.lexical.items),
+                        .map(|maximum| maximum.saturating_sub(scope.lexical.items)),
                     ..scope.bounds
                 };
                 let code = scope.code;

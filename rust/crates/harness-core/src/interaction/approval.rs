@@ -40,7 +40,7 @@ impl Interaction {
             bytes,
             JsonBounds {
                 maximum_bytes: Some(bytes.len() as u64),
-                maximum_items: bytes.len() as u64,
+                maximum_items: Some(bytes.len() as u64),
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             None,

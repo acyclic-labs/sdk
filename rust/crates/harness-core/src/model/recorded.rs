@@ -64,7 +64,7 @@ impl RecordedToolOutcome {
                     &result.value,
                     JsonBounds {
                         maximum_bytes: Some(u64::MAX),
-                        maximum_items: io.remaining()?.items_examined,
+                        maximum_items: Some(io.remaining()?.items_examined),
                         maximum_depth: RECORD_MAXIMUM_DEPTH,
                     },
                     Some(crate::wire::ErrorCode::Storage),

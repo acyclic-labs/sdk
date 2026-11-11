@@ -117,7 +117,7 @@ mod tests {
         let mut scope = super::super::scope(
             JsonBounds {
                 maximum_bytes: maximum,
-                maximum_items: u64::MAX,
+                maximum_items: None,
                 maximum_depth: 256,
             },
             None,

@@ -75,7 +75,7 @@ pub(super) fn stock_json_bound<T: Serialize>(
             value,
             crate::executor::json::JsonBounds {
                 maximum_bytes: Some(maximum),
-                maximum_items: io.remaining()?.items_examined,
+                maximum_items: Some(io.remaining()?.items_examined),
                 maximum_depth: 256,
             },
             io.original_native_work()

@@ -107,6 +107,14 @@ fn compare(value: &Value, canonical: bool, bounds: JsonBounds) -> TestCaseResult
             |state, old| run(state, old, canonical, bounds, false),
         );
     prop_assert_eq!(&old.0, &new.0, "complete bytes or exact error differs");
+    if bounds.maximum_bytes.is_none() && bounds.maximum_items.is_none() {
+        let mut expected = value.clone();
+        if canonical {
+            expected.sort_all_objects();
+        }
+        let expected = serde_json::to_vec(&expected).unwrap();
+        prop_assert_eq!(new.0.as_ref().ok(), Some(&expected));
+    }
     if new.0.is_ok() {
         prop_assert_eq!(
             old_trace
@@ -142,11 +150,13 @@ proptest! {
         let value = serde_json::json!({"z": text, "a": (0..width).collect::<Vec<_>>()});
         for canonical in [false, true] {
             for bounds in [
-                JsonBounds { maximum_bytes: None, maximum_items: 65536, maximum_depth: 128 },
-                JsonBounds { maximum_bytes: Some(65536), maximum_items: 65536, maximum_depth: 128 },
-                JsonBounds { maximum_bytes: Some(limit), maximum_items: 65536, maximum_depth: 128 },
-                JsonBounds { maximum_bytes: Some(65536), maximum_items: limit, maximum_depth: 128 },
-                JsonBounds { maximum_bytes: Some(65536), maximum_items: 65536, maximum_depth: 0 },
+                JsonBounds { maximum_bytes: None, maximum_items: None, maximum_depth: 128 },
+                JsonBounds { maximum_bytes: None, maximum_items: Some(65536), maximum_depth: 128 },
+                JsonBounds { maximum_bytes: Some(65536), maximum_items: None, maximum_depth: 128 },
+                JsonBounds { maximum_bytes: Some(65536), maximum_items: Some(65536), maximum_depth: 128 },
+                JsonBounds { maximum_bytes: Some(limit), maximum_items: Some(65536), maximum_depth: 128 },
+                JsonBounds { maximum_bytes: Some(65536), maximum_items: Some(limit), maximum_depth: 128 },
+                JsonBounds { maximum_bytes: Some(65536), maximum_items: Some(65536), maximum_depth: 0 },
             ] { compare(&value, canonical, bounds)?; }
         }
     }

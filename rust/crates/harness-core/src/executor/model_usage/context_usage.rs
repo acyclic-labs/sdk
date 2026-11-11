@@ -71,7 +71,7 @@ impl Header {
             &bytes[(offset - origin) as usize..],
             JsonBounds {
                 maximum_bytes: Some(length),
-                maximum_items: length,
+                maximum_items: Some(length),
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             None,

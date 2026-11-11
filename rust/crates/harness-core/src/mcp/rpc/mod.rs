@@ -135,7 +135,7 @@ pub(super) fn check<T: DeserializeOwned + crate::HeapLayout>(
             Cow::Borrowed(value),
             crate::JsonBounds {
                 maximum_bytes: Some(remaining.peak_allocation_bytes),
-                maximum_items: remaining.items_examined,
+                maximum_items: Some(remaining.items_examined),
                 maximum_depth: 256,
             },
             Some(ErrorCode::Invalid),

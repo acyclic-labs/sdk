@@ -192,7 +192,7 @@ pub fn assert_stream_invariants(input: &[u8]) {
                     // reject invalid strings, including inside skipped fields.
                     let bounds = acyclic_harness_core::JsonBounds {
                         maximum_bytes: Some(block.continuity.len() as u64),
-                        maximum_items: block.continuity.len() as u64,
+                        maximum_items: Some(block.continuity.len() as u64),
                         maximum_depth: 128,
                     };
                     assert!(

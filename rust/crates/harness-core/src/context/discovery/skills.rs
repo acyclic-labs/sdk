@@ -316,7 +316,7 @@ pub(super) fn skill_text_native(
         crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     let bounds = crate::executor::json::JsonBounds {
         maximum_bytes: Some(size),
-        maximum_items: work.remaining()?.items_examined,
+        maximum_items: Some(work.remaining()?.items_examined),
         maximum_depth: 256,
     };
     let diagnostic = work.claim(

@@ -42,7 +42,7 @@ fn literal_at_depth(bytes: &[u8], maximum_depth: u32) -> acyclic_harness_core::R
         raw,
         acyclic_harness_core::JsonBounds {
             maximum_bytes: Some(bytes.len() as u64),
-            maximum_items: bytes.len() as u64,
+            maximum_items: Some(bytes.len() as u64),
             maximum_depth,
         },
         None,

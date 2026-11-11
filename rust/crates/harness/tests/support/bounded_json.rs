@@ -10,7 +10,7 @@ pub fn check(input: &[u8]) {
     }
     let bounds = JsonBounds {
         maximum_bytes: Some(131_072),
-        maximum_items: 1_048_576,
+        maximum_items: Some(1_048_576),
         maximum_depth: 256,
     };
     // Record seeds are generated internal format values, not provider captures.

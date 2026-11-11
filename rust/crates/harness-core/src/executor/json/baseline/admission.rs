@@ -63,14 +63,17 @@ impl Lexical {
             }
         };
         if item {
-            if self.items >= bounds.maximum_items {
+            if bounds
+                .maximum_items
+                .is_some_and(|maximum| self.items >= maximum)
+            {
                 return Err(boundary("JSON exceeds declared structural bound", code));
             }
             if depth > bounds.maximum_depth {
                 return Err(input_error(JsonInputError::Depth, code));
             }
             charge.borrow_mut()(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-            self.items += 1;
+            self.items = checked(self.items.checked_add(1), "JSON item count overflow")?;
         }
         Ok(item)
     }

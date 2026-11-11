@@ -13,7 +13,7 @@ impl Hooks {
             self,
             crate::executor::json::JsonBounds {
                 maximum_bytes: Some(maximum_bytes),
-                maximum_items: maximum_bytes,
+                maximum_items: Some(maximum_bytes),
                 maximum_depth: 16,
             },
             None,

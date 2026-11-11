@@ -282,7 +282,7 @@ pub(crate) fn canonical_bytes_with_work<T: Serialize + ?Sized>(
         value,
         crate::executor::json::JsonBounds {
             maximum_bytes: Some(maximum_bytes),
-            maximum_items: maximum_bytes.saturating_add(1),
+            maximum_items: Some(maximum_bytes.saturating_add(1)),
             maximum_depth: 256,
         },
         work,

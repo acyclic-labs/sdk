@@ -143,7 +143,7 @@ impl ProgramLogs {
             source.as_bytes(),
             crate::executor::json::JsonBounds {
                 maximum_bytes: Some(source.len() as u64),
-                maximum_items: u64::MAX,
+                maximum_items: None,
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             None,

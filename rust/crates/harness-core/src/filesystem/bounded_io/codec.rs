@@ -29,7 +29,7 @@ impl PreparationIo {
         let remaining = self.remaining()?;
         let bounds = JsonBounds {
             maximum_bytes: Some(remaining.bytes_encoded),
-            maximum_items: remaining.items_examined,
+            maximum_items: Some(remaining.items_examined),
             maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
         let code = self
@@ -62,7 +62,7 @@ impl PreparationIo {
         }
         let bounds = JsonBounds {
             maximum_bytes: Some(remaining.bytes_encoded),
-            maximum_items: remaining.items_examined,
+            maximum_items: Some(remaining.items_examined),
             maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
         let code = self
@@ -92,7 +92,7 @@ impl PreparationIo {
     fn bounds(&self, bytes: u64, depth: u32) -> Result<JsonBounds> {
         Ok(JsonBounds {
             maximum_bytes: Some(bytes),
-            maximum_items: self.remaining()?.items_examined,
+            maximum_items: Some(self.remaining()?.items_examined),
             maximum_depth: depth,
         })
     }
@@ -101,7 +101,7 @@ impl PreparationIo {
         let remaining = self.remaining()?;
         let bounds = JsonBounds {
             maximum_bytes: Some((bytes.len() as u64).min(remaining.bytes_encoded)),
-            maximum_items: remaining.items_examined,
+            maximum_items: Some(remaining.items_examined),
             maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
         let code = self
@@ -144,7 +144,7 @@ impl PreparationIo {
         }
         let bounds = JsonBounds {
             maximum_bytes: Some(maximum.min(remaining.bytes_encoded)),
-            maximum_items: remaining.items_examined,
+            maximum_items: Some(remaining.items_examined),
             maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
         let code = self

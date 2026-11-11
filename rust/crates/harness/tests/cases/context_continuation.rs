@@ -173,7 +173,7 @@ async fn fixture() -> Result<Fixture> {
         &source,
         acyclic_harness::JsonBounds {
             maximum_bytes: Some(65_536),
-            maximum_items: 4_096,
+            maximum_items: Some(4_096),
             maximum_depth: 64,
         },
         None,

@@ -393,7 +393,7 @@ pub(super) async fn read(
     }
     let bounds = JsonBounds {
         maximum_bytes: Some(window.source.byte_length()),
-        maximum_items: u64::MAX,
+        maximum_items: None,
         maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
     };
     let code = Some(crate::wire::ErrorCode::Invalid);

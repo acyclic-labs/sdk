@@ -438,14 +438,17 @@ impl<const TRACK_SCRATCH: bool> Lexer<TRACK_SCRATCH> {
             }
         };
         if item {
-            if self.items >= bounds.maximum_items {
+            if bounds
+                .maximum_items
+                .is_some_and(|maximum| self.items >= maximum)
+            {
                 return Err(boundary("JSON exceeds declared structural bound", code));
             }
             if depth > bounds.maximum_depth {
                 return Err(input_error(JsonInputError::Depth, code));
             }
             charge.borrow_mut()(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-            self.items += 1;
+            self.items = checked(self.items.checked_add(1), "JSON item count overflow")?;
         }
         Ok(item)
     }
@@ -530,7 +533,7 @@ fn finish(
 ) -> Result<JsonValueShape> {
     if items
         .checked_add(counts.nodes)
-        .is_none_or(|items| items > bounds.maximum_items)
+        .is_none_or(|items| bounds.maximum_items.is_some_and(|maximum| items > maximum))
     {
         return Err(boundary("JSON item limit exceeded", code));
     }
@@ -617,7 +620,7 @@ pub(super) fn admit_typed(
 pub(crate) fn layout_reservation<T: super::layout::HeapLayout>(bytes: &[u8]) -> Option<u64> {
     let bounds = JsonBounds {
         maximum_bytes: Some(u64::MAX),
-        maximum_items: u64::MAX,
+        maximum_items: None,
         maximum_depth: 256,
     };
     admit_json_layout(bytes, bounds, None, T::LAYOUT, None, &mut |_| Ok(()))
