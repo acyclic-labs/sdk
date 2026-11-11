@@ -357,7 +357,7 @@ impl LocalHarness {
             "Shell commands retain the host boundary; native OS confinement is not yet available."
         };
         manifest.conventions.push(format!(
-            "Approval mode: {mode}. {sandbox} A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home}"
+            "Approval mode: {mode}. {sandbox} A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home} .volumes/shared belongs to this session tree and is shared with its descendants; condition edits on the exact version you read."
         ));
         #[cfg(any(test, feature = "native-execution"))]
         if let Some(workspace) = &binding.workspace {

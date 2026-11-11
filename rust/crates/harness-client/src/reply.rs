@@ -6,7 +6,7 @@ use acyclic_harness_core::{
         AgentPath, Delivered, Error as AgentError, IntentId, Phase, Reply, StatusRecord, TurnInput,
     },
     context::{DiffCursor, DiffFilePage},
-    conversation::PrivateDirectoryPage,
+    conversation::{PrivateDirectoryPage, VolumeClass, VolumeOwner},
     interaction::ApprovalBinding,
 };
 use acyclic_stream::{CommitRequest, wire_codec};
@@ -32,6 +32,10 @@ pub struct ChildAgent {
     pub agent: AgentPath,
     /// Actual published status, or no status record at this cut.
     pub status: Option<StatusRecord>,
+    /// Original immutable directory admission time, when this is a session.
+    pub created_at_micros: Option<u64>,
+    /// Commit time of the status returned at this page cut.
+    pub updated_at_micros: Option<u64>,
 }
 
 /// Original pending action identity; the immutable request is read separately.
@@ -69,11 +73,33 @@ pub enum AgentReply {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
     },
+    /// Latest independent root from the placement's directory membership feed.
+    LatestSession {
+        /// No entry means the directory has no independent sessions yet.
+        #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
+        agent: Option<AgentPath>,
+    },
+    /// The actor runtime committed the requested paused state.
+    Paused {
+        /// True for pause, false for resume.
+        paused: bool,
+    },
+    /// Original Git-facade merge receipt; an unchanged source needs no commit.
+    Merged {
+        /// Content-addressed merge commit, when the facade created one.
+        commit: Option<String>,
+    },
     /// Requested session files at one committed generation.
     ClientFiles {
         /// Exactly the requested paths at the selected committed generation.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
         snapshot: acyclic_harness_core::client_files::ClientFiles,
+    },
+    /// Bounded previews, without full-file replacement descriptors.
+    FilePreviews {
+        /// Exactly the requested paths and display credit.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        snapshot: acyclic_harness_core::client_files::FilePreviews,
     },
     /// Exact generation produced by the conditional publication.
     ClientFilesPublished {
@@ -168,6 +194,13 @@ pub enum AgentReply {
     Diff {
         /// Visible fragments in cursor order; empty only for an empty projection.
         items: Vec<DiffFilePage>,
+    },
+    /// Ordered original wait-completion measurements.
+    ChildWakes {
+        /// Only the requested page at the original status cut.
+        items: Vec<acyclic_harness_core::agent::ChildWake>,
+        /// Next original status sequence when more samples may remain.
+        next: Option<String>,
     },
     /// Authorized names at one generation, without eager file reads.
     Directory {
@@ -427,7 +460,10 @@ fn validate_reply(
     bytes: usize,
 ) -> Result<(), CommandError> {
     let page = match (reply, command) {
-        (AgentReply::ClientFilesPublished { .. }, AgentCommand::PublishClientFiles { .. }) => {
+        (
+            AgentReply::ClientFilesPublished { .. },
+            AgentCommand::PublishClientFiles { .. } | AgentCommand::PublishAgentFiles { .. },
+        ) => {
             return Ok(());
         }
         (
@@ -439,21 +475,117 @@ fn validate_reply(
                 after,
             },
         ) => {
+            return validate_files(snapshot, paths, after.as_ref(), |file| {
+                acyclic_harness_core::client_files::volume(
+                    file.volume().provider().clone(),
+                    agent,
+                    *session,
+                )
+                .is_ok_and(|volume| &volume == file.volume())
+            });
+        }
+        (
+            AgentReply::ClientFiles { snapshot },
+            AgentCommand::AgentFiles {
+                agent,
+                paths,
+                after,
+            },
+        ) => {
+            return validate_files(snapshot, paths, after.as_ref(), |file| {
+                // Binding roles do not prescribe a volume name.
+                file.volume().class() == VolumeClass::AgentPrivate
+                    && file.volume().owner()
+                        == &VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+                            agent.id_bytes(),
+                        ))
+            });
+        }
+        (
+            AgentReply::FilePreviews { snapshot },
+            AgentCommand::AgentFilePreviews {
+                paths,
+                after,
+                bytes,
+                ..
+            },
+        ) => {
             return if after.as_ref() != Some(&snapshot.generation)
                 && snapshot.files.len() == paths.len()
                 && paths.iter().all(|path| {
-                    snapshot.files.get(path).is_some_and(|file| {
-                        file.as_ref().is_none_or(|file| {
-                            file.file.path() == path
-                                && acyclic_harness_core::client_files::volume(
-                                    file.file.volume().provider().clone(),
-                                    agent,
-                                    *session,
-                                )
-                                .is_ok_and(|volume| &volume == file.file.volume())
-                        })
+                    snapshot.files.get(path).is_some_and(|value| {
+                        value
+                            .as_ref()
+                            .is_none_or(|text| text.len() as u64 <= *bytes)
                     })
                 }) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (AgentReply::Merged { commit }, AgentCommand::MergeSession { .. }) => {
+            return if commit.as_ref().is_none_or(|commit| {
+                commit.len() == 64
+                    && commit
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            }) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (AgentReply::LatestSession { agent }, AgentCommand::LatestSession {}) => {
+            return if agent.as_ref().is_none_or(|agent| agent.parent().is_none()) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Paused { paused },
+            AgentCommand::Pause {
+                paused: requested, ..
+            },
+        ) => {
+            return if paused == requested {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Root { agent },
+            AgentCommand::NewSession { .. }
+            | AgentCommand::ForkSession { .. }
+            | AgentCommand::ResolveSession { .. },
+        ) => {
+            return if agent.parent().is_none() {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Root { agent },
+            AgentCommand::SelectSession {
+                agent: requested, ..
+            },
+        ) => {
+            return if agent == requested {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Root { agent },
+            AgentCommand::NameSession {
+                agent: requested, ..
+            },
+        ) => {
+            return if agent == requested {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)
@@ -466,6 +598,7 @@ fn validate_reply(
         | (
             AgentReply::Delivered { .. },
             AgentCommand::Prompt { .. }
+            | AgentCommand::Archive { .. }
             | AgentCommand::Cancel { .. }
             | AgentCommand::Decide { .. }
             | AgentCommand::Compact { .. }
@@ -576,7 +709,13 @@ fn validate_reply(
                     || page.end > *after
                     || *observed_children != Some(*open_children))
                 && page.items.len() <= 32
-                && (page.context.is_none() || page.end > *after)
+                && (page.context.is_none()
+                    || page.end > *after
+                    || (*settled
+                        && matches!(
+                            page.context,
+                            Some(acyclic_harness_core::executor::ContextUsage::Unavailable)
+                        )))
                 && !matches!(
                     page.context,
                     Some(acyclic_harness_core::executor::ContextUsage::Counted {
@@ -698,6 +837,27 @@ fn validate_reply(
             }
             return Ok(());
         }
+        (AgentReply::ChildWakes { items, next }, AgentCommand::ChildWakes { page, .. }) => {
+            if items
+                .array_windows::<2>()
+                .any(|[a, b]| a.status.checked_add(1) != Some(b.status))
+                || page.cursor().is_some_and(|after| {
+                    after.parse::<u64>().ok() != items.first().map(|item| item.status)
+                        && !items.is_empty()
+                })
+                || next.as_deref().is_some_and(|next| {
+                    items
+                        .last()
+                        .and_then(|item| item.status.checked_add(1))
+                        .map(|n| n.to_string())
+                        .as_deref()
+                        != Some(next)
+                })
+            {
+                return Err(CommandError::Invalid);
+            }
+            (items.len(), next, page)
+        }
         (AgentReply::Diff { items }, AgentCommand::Diff { page, .. }) => {
             return validate_diff_page(items, page, bytes);
         }
@@ -706,6 +866,16 @@ fn validate_reply(
             if items
                 .iter()
                 .any(|item| !item.agent.is_child_of(agent) || !seen.insert(&item.agent))
+            {
+                return Err(CommandError::Invalid);
+            }
+            (items.len(), next, page)
+        }
+        (AgentReply::Children { items, next }, AgentCommand::Sessions { page }) => {
+            let mut seen = std::collections::BTreeSet::new();
+            if items
+                .iter()
+                .any(|item| item.agent.parent().is_some() || !seen.insert(&item.agent))
             {
                 return Err(CommandError::Invalid);
             }
@@ -1595,5 +1765,26 @@ mod tests {
             b"original-key"
         );
         Ok(())
+    }
+}
+
+fn validate_files(
+    snapshot: &acyclic_harness_core::client_files::ClientFiles,
+    paths: &[String],
+    after: Option<&acyclic_harness_core::resources::GenerationRef>,
+    owns: impl Fn(&acyclic_harness_core::conversation::FileRef) -> bool,
+) -> Result<(), CommandError> {
+    if after != Some(&snapshot.generation)
+        && snapshot.files.len() == paths.len()
+        && paths.iter().all(|path| {
+            snapshot.files.get(path).is_some_and(|file| {
+                file.as_ref()
+                    .is_none_or(|file| file.file.path() == path && owns(&file.file))
+            })
+        })
+    {
+        Ok(())
+    } else {
+        Err(CommandError::Invalid)
     }
 }

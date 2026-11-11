@@ -157,7 +157,7 @@ async fn model_adapter(
 #[tokio::test]
 async fn chat_without_a_counter_starts_with_explicit_no_compaction() {
     const CHAT: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
-    for unchecked in [false, true] {
+    for (unchecked, session_client) in [(false, false), (true, false), (true, true)] {
         let fixture = fixture();
         let model = model_adapter(
             fixture._directory.path(),
@@ -169,6 +169,9 @@ async fn chat_without_a_counter_starts_with_explicit_no_compaction() {
         let mut args = vec!["-p", "hello"];
         if unchecked {
             args.push("--no-compaction");
+        }
+        if session_client {
+            args.push("--new-session");
         }
         let output = graphcoder(&fixture, &model.catalog, args, "").await;
         if unchecked {
@@ -1204,7 +1207,7 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         .await
         .unwrap();
 
-    for (command, kind) in [("sessions", "children"), ("history", "history")] {
+    for command in ["sessions", "history"] {
         let output = graphcoder(
             &fixture,
             &model.catalog,
@@ -1220,7 +1223,9 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         )
         .await;
         let reply: Value = serde_json::from_str(&succeeded(&output)).unwrap();
-        assert_eq!(reply["kind"], kind);
+        if command == "history" {
+            assert_eq!(reply["kind"], "history");
+        }
         assert_eq!(reply["items"], json!([]));
         assert!(reply["next"].is_null());
     }

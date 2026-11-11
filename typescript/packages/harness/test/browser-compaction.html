@@ -47,20 +47,13 @@ try {
   rejects(() => contracts.decodeExecutionEventJson(new TextEncoder().encode(JSON.stringify(checkpoint))),
     "noncanonical checkpoint wire");
   const policy = contracts.defaultCompactionPolicy();
-  check(policy.kind === "threshold", "stock threshold policy");
-  check(policy.config.response_reserve_tokens === 16_384 && policy.config.recent_tokens === 20_000,
-    "Rust default budgets");
-  const otherPolicy = contracts.defaultCompactionPolicy();
-  otherPolicy.config.recent_tokens = 1;
-  check(policy.config.recent_tokens === 20_000 &&
-    contracts.defaultCompactionPolicy().config.recent_tokens === 20_000, "Rust policy outputs have separate ownership");
+  check(policy.kind === "capacity", "stock capacity policy");
   const capacity = { context_tokens: 65_536, output_tokens: 4_096 };
-  check(contracts.validateThresholdCompaction(policy.config, capacity, undefined) === 4_096, "finite selected output");
-  check(contracts.validateThresholdCompaction({ ...policy.config, response_reserve_tokens: 1_024,
-    recent_tokens: 2_048 }, capacity, undefined) === 1_024, "replaceable reserve");
-  rejects(() => contracts.validateThresholdCompaction(policy.config,
-    { ...capacity, context_tokens: 32_768 }, undefined), "impossible selected capacity");
-  rejects(() => contracts.validateThresholdCompaction(policy.config, capacity, 1.5), "fractional output");
+  check(contracts.validateCapacityCompaction(policy.config, capacity, undefined) === 4_096, "finite selected output");
+  check(contracts.validateCapacityCompaction({ ...policy.config, response_reserve_tokens: 1_024 }, capacity, undefined) === 4_096, "replaceable reserve");
+  rejects(() => contracts.validateCapacityCompaction(policy.config,
+    { ...capacity, context_tokens: 0 }, undefined), "impossible selected capacity");
+  rejects(() => contracts.validateCapacityCompaction(policy.config, capacity, 1.5), "fractional output");
   const request = {
     compose_tools: false,
     model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },

@@ -122,6 +122,7 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
                     )
                     .unwrap();
                     let options = CaptureOptions {
+                        source_namespace: None,
                         source_root: source.path().to_owned(),
                         expected_root_identity: capture_root_identity(source.path()).unwrap(),
                         maximum_paths: 8,

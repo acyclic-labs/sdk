@@ -251,7 +251,7 @@ async function hook(run) {
 }
 
 function git(cloud, args) {
-  const result = spawnSync("git", ["--no-optional-locks", "-c", `safe.directory=${cloud}`, "-C", cloud, ...args], { encoding: "utf8" });
+  const result = spawnSync("git", ["--no-optional-locks", "-c", `safe.directory=${cloud}`, "-C", cloud, ...args], { maxBuffer: Infinity, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${String(result.stderr).trim()}`);
   return result.stdout.trim();
 }
@@ -343,7 +343,7 @@ async function main(options) {
   const define = (name, value) => `-D${name}="${wrapperPath(value)}"`;
   const cc = spawnSync("cc", ["-O2", "-o", path.join(bin, "cloud-e2e"), source,
     define("REAL", path.join(options.binaries, "cloud-e2e")), define("NODE", process.execPath),
-    define("SCRIPT", fileURLToPath(import.meta.url))], { encoding: "utf8" });
+    define("SCRIPT", fileURLToPath(import.meta.url))], { maxBuffer: Infinity, encoding: "utf8" });
   if (cc.status !== 0) throw new Error(`wrapper compile failed: ${cc.stderr}`);
   const started = performance.now();
   const gateLog = path.join(options.out, "gate.log");

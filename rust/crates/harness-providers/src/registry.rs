@@ -56,11 +56,12 @@ impl Registry {
         self.resolver = Some(resolver);
     }
 
-    /// Binds the owner's bounded content reader used by every adapter.
+    /// Binds the owner's content reader and optional aggregate projection credit.
+    /// `None` imposes no aggregate byte policy.
     pub fn with_content(
         mut self,
         reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Self {
         self.files = crate::files::Files {
             reader: Some(reader),
@@ -232,13 +233,15 @@ impl Registry {
         let transport = crate::deadline::Bounded::new(transport, config.timeouts);
         Ok(ResolvedModel {
             resolver: self.resolver.as_ref().map(Arc::downgrade),
-            unbound_transport: self.transport.clone(),
+            unbound_transport: (!Arc::ptr_eq(&transport, &self.transport))
+                .then(|| self.transport.clone()),
             #[cfg(not(target_arch = "wasm32"))]
             account_pin: codex_login
                 .as_ref()
                 .map_or_else(|| Arc::new(std::sync::OnceLock::new()), |login| login.pin()),
             inputs: Some(self.inputs.clone()),
-            credential_config: Some(credential_config),
+            credential_config: (!Arc::ptr_eq(&config, &credential_config))
+                .then_some(credential_config),
             files: self.files.clone(),
             accounting: crate::resolved::Accounting::new(config.adapter),
             model,

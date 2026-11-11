@@ -1,7 +1,7 @@
 # Committed history controls
 
 History is a projection of the original conversation and volume generations.
-A settled conversation entry and its version-one `HistoryCheckpoint` descriptor
+A settled conversation entry and its version-two `HistoryCheckpoint` descriptor
 are published together. The descriptor names exact retained project generations
 and a direct model-context cut. Retention uses structural sharing in the volume
 owner.
@@ -58,7 +58,7 @@ recover paths outside the captured volumes. A context-only selection does not
 undo file changes. Shell changes belong to a checkpoint only after the original
 filesystem capture has settled them into the selected generation.
 
-## Forks and current integration limits
+## Forks
 
 `AgentCommand::Fork` selects the original parent's exact turn and uses the shared
 stream fork and volume fork composition. The child inherits the selected
@@ -67,20 +67,26 @@ conversation and files. The new brief is staged by the authorized host. Like
 `Spawn`, a fork names the child's `role`, which the parent's role must admit; a
 fresh-context role is refused, because it would inherit no conversation to select.
 
-Complete lazy-workspace restoration still requires retained source, overlay and
-shadow state to join the authored generation in the original filesystem commit.
-The current selected-generation fork can fail with `spawned project has no
-prepared fork` when its native view needs a lazy companion that was not retained.
-An authored-generation-only result does not establish complete lazy-workspace
-restoration or captured-shell settlement.
+`AgentCommand::ForkSession` uses the owner's admitted session directory to create
+an independent sibling root at the selected turn. It composes the same stream
+and volume fork with a fresh inbox, private journal and actor. The new actor is
+paused with zero escrow; no model runs until an explicit resume. The original
+source keeps its later conversation and files. A repeated request retains the
+same prepared publication; changing its source or cut under that identity is
+refused.
 
-The current fork control is consumed through the parent's inbox. An archived
-parent therefore refuses the request. Forking any retained turn of an archived
-session remains unfinished. Selected descendant observation also requires the
-original admission and current revocation checks; selecting a path does not grant
-access to it.
+Each settled turn retains its project generation through the shared volume
+composer. Native bindings prepare their lazy fork companion at that same cut;
+later history forks use the retained workspace rather than the source's current
+head. Shell writes belong to that cut only after their original capture settles.
+External effects and children are never rewound.
 
-Generation sharing alone does not establish constant-cost cold admission: an
-unretained publication proof can still require a complete source proof walk.
-Reusable proof custody, complete lazy-state publication and archived fork
-composition must be resolved before claiming those guarantees.
+GraphCoder's `/fork` and `/rewind` open the same newest-first history chooser.
+Both select a paused sibling and preserve the abandoned branch. `/unpause`
+explicitly resumes it. Directory admission also permits a retained cut of an
+archived source to be forked without reopening the source's closed inbox.
+
+Inherited transcript reads prove the exact committed conversation record and
+grant only its referenced files. They never grant the source's private volume.
+Selection remains subject to the original admission and current revocation
+checks; knowing a path conveys no authority.

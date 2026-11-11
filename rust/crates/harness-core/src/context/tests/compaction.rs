@@ -29,12 +29,9 @@ fn every_cut_of_the_only_protected_exchange_retains_all_input() -> Result<()> {
         ],
         Some(0),
     );
-    let policy = ThresholdCompaction {
-        recent_tokens: 1,
-        ..Default::default()
-    };
+    let policy = CapacityCompaction::default();
     let capacity = ModelContextCapacity {
-        context_tokens: 65_536,
+        context_tokens: 32_768,
         output_tokens: Some(4_096),
     };
     let input_bytes = source.messages.iter().try_fold(100_u64, |total, message| {
@@ -448,23 +445,17 @@ fn compaction_keeps_fragmented_schemas_only_for_retained_exchanges() -> Result<(
         dropped_one_exchange,
         "one schema table must not pin every call in its epoch"
     );
-    let policy = ThresholdCompaction {
-        recent_tokens: 1,
-        ..Default::default()
-    };
-    let count = ModelTokenCount::from_upper_bounds([0; 32], 0, vec![1; source.messages.len()]);
-    let messages = u32::try_from(source.messages.len())
-        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    let policy = CapacityCompaction::default();
     let schema_position = source
         .messages
         .iter()
         .position(|message| message == &second[0])
         .expect("schema position");
     let mut planned_retained_schema = false;
-    for recent_tokens in 1..=messages {
+    for requested_cut in 1..source.messages.len() {
         for maximum in 2..=source.messages.len() {
             if let Ok((through, maximum)) =
-                policy.projection_budget(&source, &count, maximum, recent_tokens, &mut None)
+                policy.projection_budget(&source, maximum, requested_cut, &mut None)
             {
                 let (retained, proof) = compact(&source, maximum, through)?;
                 validate_compaction(&proof, &source, &retained, None)?;

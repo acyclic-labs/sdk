@@ -8,6 +8,7 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateFile {
+                file_id: None,
                 path,
                 bytes: (bytes::Bytes::from(bytes.to_vec())).into(),
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
@@ -22,6 +23,7 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path,
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
             },)
@@ -39,6 +41,7 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateSymbolicLink {
+                file_id: None,
                 path,
                 target: (bytes::Bytes::from(target.to_vec())).into(),
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
@@ -54,6 +57,7 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateEmptySpecial {
+                file_id: None,
                 path,
                 kind,
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
@@ -77,6 +81,7 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateDevice {
+                file_id: None,
                 path,
                 kind,
                 major,
@@ -97,6 +102,7 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateReparsePoint {
+                file_id: None,
                 path,
                 payload: (bytes::Bytes::from(payload.to_vec())).into(),
                 metadata: acyclic_fs::kernel::FileMetadata::default(),

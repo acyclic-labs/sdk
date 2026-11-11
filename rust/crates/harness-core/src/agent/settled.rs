@@ -134,8 +134,7 @@ pub(crate) async fn named_child(
     if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
         return Ok(path.is_child_of(parent).then_some(path));
     }
-    if parent.depth() == super::MAX_DEPTH || super::spawn_names::spawn_intent(reference, 0).is_err()
-    {
+    if super::spawn_names::spawn_intent(reference, 0).is_err() {
         return Ok(None);
     }
     let Some(observer) = observer else {

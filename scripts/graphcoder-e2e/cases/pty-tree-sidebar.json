@@ -1,0 +1,348 @@
+{
+  "id": "pty-tree-sidebar",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "TREE_ROOT"
+        },
+        "tools": [
+          {
+            "id": "spawn-tree",
+            "name": "spawn",
+            "arguments": {
+              "name": "oak",
+              "task": "TREE_CHILD",
+              "role": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TREE_CHILD"
+        },
+        "tools": [
+          {
+            "id": "row-title",
+            "name": "write",
+            "arguments": {
+              "path": ".volumes/private/ui/title",
+              "content": "Oak"
+            }
+          },
+          {
+            "id": "row-model",
+            "name": "write",
+            "arguments": {
+              "path": ".volumes/private/ui/model",
+              "content": "M"
+            }
+          },
+          {
+            "id": "row-cost",
+            "name": "write",
+            "arguments": {
+              "path": ".volumes/private/ui/cost",
+              "content": "$1"
+            }
+          },
+          {
+            "id": "row-age",
+            "name": "write",
+            "arguments": {
+              "path": ".volumes/private/ui/age",
+              "content": "2m"
+            }
+          },
+          {
+            "id": "child-project",
+            "name": "write",
+            "arguments": {
+              "path": "tree.txt",
+              "content": "TREE_PROJECT_EDIT\n"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TREE_CHILD",
+          "tool_result": "version"
+        },
+        "text": [
+          "TREE_CHILD_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "TREE_ROOT",
+          "tool_result": "agent"
+        },
+        "tools": [
+          {
+            "id": "wait-tree",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "oak"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TREE_ROOT",
+          "tool_result": "TREE_CHILD_DONE"
+        },
+        "text": [
+          "TREE_ROOT_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "TREE_RENAME"
+        },
+        "tools": [
+          {
+            "id": "rename-tree",
+            "name": "write",
+            "arguments": {
+              "path": ".volumes/private/ui/title",
+              "content": "Pine"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TREE_RENAME",
+          "tool_result": "version"
+        },
+        "text": [
+          "TREE_RENAMED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "service"
+    },
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "TREE_ROOT"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Oak · M · $1 · 2m"
+            ]
+          },
+          "send": "\u0014"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE"
+            ],
+            "absent": [
+              "Oak · M · $1 · 2m"
+            ]
+          },
+          "send": "\u0014"
+        },
+        {
+          "when": {
+            "contains": [
+              "Oak · M · $1 · 2m",
+              "Enter attach"
+            ]
+          },
+          "send": "/ok"
+        },
+        {
+          "when": {
+            "contains": [
+              "/ok",
+              "Oak · M · $1 · 2m"
+            ]
+          },
+          "send": "\r"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_CHILD_DONE"
+            ],
+            "absent": [
+              "TREE_ROOT_DONE"
+            ],
+            "cursor": true
+          },
+          "prompt": "TREE_RENAME"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_RENAMED",
+              "Pine · M · $1 · 2m"
+            ]
+          },
+          "send": "\u001b[1;3A"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ]
+          },
+          "send": "\u001b[1;3D"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_RENAMED"
+            ],
+            "absent": [
+              "TREE_ROOT_DONE"
+            ]
+          },
+          "send": "\u001b[1;3C"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ]
+          },
+          "send": "\u0014"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE"
+            ],
+            "absent": [
+              "Pine · M · $1 · 2m"
+            ]
+          },
+          "send": "\u0014"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ]
+          },
+          "send": "d"
+        },
+        {
+          "when": {
+            "contains": [
+              "Diff",
+              "tree.txt",
+              "TREE_PROJECT_EDIT"
+            ]
+          },
+          "send": "\u001b"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ],
+            "absent": [
+              "Diff"
+            ]
+          },
+          "send": "w"
+        },
+        {
+          "when": {
+            "contains": [
+              "Captured inputs settled"
+            ]
+          },
+          "send": "\u001b"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ],
+            "absent": [
+              "Captured inputs settled"
+            ]
+          },
+          "send": "m"
+        },
+        {
+          "when": {
+            "contains": [
+              "Merged ·"
+            ]
+          },
+          "send": "\u001b"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ],
+            "absent": [
+              "Merged ·"
+            ]
+          },
+          "send": "x"
+        },
+        {
+          "when": {
+            "contains": [
+              "Discarded · agent archived without merging"
+            ]
+          },
+          "send": "\u001b"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ],
+            "absent": [
+              "Discarded ·"
+            ]
+          },
+          "send": "\u0004\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 7,
+    "files": {
+      "tree.txt": "TREE_PROJECT_EDIT\n"
+    }
+  }
+}

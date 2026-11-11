@@ -8,7 +8,7 @@ struct Resident {
 impl Resident {
     fn visit(&mut self, depth: u32, payload: usize, charge: &Charge<'_>) -> Result<()> {
         let code = Some(crate::wire::ErrorCode::Invalid);
-        if depth > self.bounds.maximum_depth.min(256) {
+        if depth > self.bounds.maximum_depth.min(RECORD_MAXIMUM_DEPTH) {
             return Err(boundary("JSON nesting limit exceeded", code));
         }
         if self.nodes >= self.bounds.maximum_items {

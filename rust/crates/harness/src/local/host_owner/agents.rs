@@ -62,8 +62,8 @@ pub(super) struct Running {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 enum SessionVersion {
     #[default]
-    #[serde(rename = "1")]
-    V1,
+    #[serde(rename = "2")]
+    V2,
 }
 
 /// A completion already lives in its immutable admitted request file.
@@ -83,8 +83,6 @@ pub(super) struct Session {
     version: SessionVersion,
     /// Parent-local name of a spawned session, from its brief.
     pub(super) reference: Option<String>,
-    /// Parent-local names of its children still open, in spawn order.
-    pub(super) spawned: Vec<String>,
     /// The input its open turn runs.
     pub(super) running: Option<Running>,
     /// Settled turns.
@@ -419,12 +417,7 @@ impl HostDriver {
                 None
             }
             TurnInput::Message { .. } => return start(session, inbox, input),
-            TurnInput::ChildDone { done } => {
-                session.spawned.retain(|reference| {
-                    child(&agent.path, reference).ok().as_ref() != Some(&done.child)
-                });
-                None
-            }
+            TurnInput::ChildDone { .. } => None,
             // Native hosts decide their own tool approvals and own their
             // model context.
             TurnInput::Approval { .. }
@@ -445,7 +438,7 @@ impl HostDriver {
                             }
                         )
                         .then_some(inbox);
-                        apply(agent, &mut session, id, event, decoded, &mut outs)?
+                        apply(agent, &mut session, id, event, decoded, &mut outs).await?
                     }
                     Err(error) => reject(&mut session, id, &error.to_string()),
                 }

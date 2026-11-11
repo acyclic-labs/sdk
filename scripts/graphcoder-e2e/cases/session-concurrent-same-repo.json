@@ -1,0 +1,44 @@
+{
+  "id": "session-concurrent-same-repo",
+  "workspace": { "kind": "plain", "files": { "seed.txt": "base" } },
+  "physical": true,
+  "model": { "steps": [
+    { "when": { "user": "edit first isolated session" }, "tools": [
+      { "id": "first-edit", "name": "shell", "arguments": { "command": "node -e \"const f=require('node:fs');const b=f.readFileSync('seed.txt','utf8');f.writeFileSync('seed.txt','first');f.writeFileSync('first.txt','first private');process.stdout.write('A_BASE='+b)\"" } }
+    ] },
+    { "when": { "tool_result": "A_BASE=base" }, "text": ["FIRST_SESSION_EDITED"] },
+    { "when": { "user": "edit second isolated session" }, "tools": [
+      { "id": "second-edit", "name": "shell", "arguments": { "command": "node -e \"const f=require('node:fs');const b=f.readFileSync('seed.txt','utf8');f.writeFileSync('seed.txt','second');f.writeFileSync('second.txt','second private');process.stdout.write('B_BASE='+b)\"" } }
+    ] },
+    { "when": { "tool_result": "B_BASE=base" }, "text": ["SECOND_SESSION_EDITED"] },
+    { "when": { "user": "inspect first after the second edit" }, "tools": [
+      { "id": "first-inspection", "name": "shell", "arguments": { "command": "node -e \"process.stdout.write('A_STILL='+require('node:fs').readFileSync('seed.txt','utf8'))\"" } }
+    ] },
+    { "when": { "tool_result": "A_STILL=first" }, "text": ["FIRST_SESSION_STILL_ISOLATED"] }
+  ] },
+  "inputs": [
+    { "mode": "service" },
+    { "mode": "text", "args": ["new", "First isolated session"], "environment": { "TERM": "dumb" }, "capture_root": "first" },
+    { "mode": "text", "args": ["new", "Second isolated session"], "environment": { "TERM": "dumb" }, "capture_root": "second" },
+    { "mode": "pty-group", "terminals": [
+      { "name": "first", "args": ["--agent", "{{session:first}}"], "actions": [
+        { "when": { "contains": ["GraphCoder"], "cursor": true }, "prompt": "edit first isolated session" },
+        { "when": { "contains": ["FIRST_SESSION_EDITED", "○"] }, "signal": "first-written" },
+        { "when": { "contains": ["FIRST_SESSION_EDITED", "○"] }, "after_signal": "second-written", "prompt": "inspect first after the second edit" },
+        { "when": { "contains": ["FIRST_SESSION_STILL_ISOLATED", "○"] }, "prompt": "/merge " },
+        { "when": { "contains": ["Merged into checkout:"] }, "signal": "first-merged", "prompt": "/quit " }
+      ] },
+      { "name": "second", "args": ["--agent", "{{session:second}}"], "actions": [
+        { "when": { "contains": ["GraphCoder"], "cursor": true }, "after_signal": "first-written", "prompt": "edit second isolated session" },
+        { "when": { "contains": ["SECOND_SESSION_EDITED", "○"] }, "signal": "second-written" },
+        { "when": { "contains": ["SECOND_SESSION_EDITED", "○"] }, "after_signal": "first-merged", "prompt": "/quit " }
+      ] }
+    ] }
+  ],
+  "assert": {
+    "requests": 6,
+    "tool_contains": ["A_BASE=base", "B_BASE=base", "A_STILL=first"],
+    "files": { "seed.txt": "first", "first.txt": "first private" },
+    "absent_files": ["second.txt"]
+  }
+}

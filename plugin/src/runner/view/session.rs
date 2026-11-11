@@ -21,6 +21,7 @@ pub(super) struct Session {
     // depends on the verified contents, not unrelated files at that cut.
     price_source: Option<FileDescriptor>,
     open_view: Option<String>,
+    pub tree: Option<bool>,
 }
 
 const COMMANDS: &str = "commands/commands.json";
@@ -57,6 +58,7 @@ impl Session {
             prices: Arc::default(),
             price_source: None,
             open_view: None,
+            tree: None,
         };
         session.project()?;
         Ok(session)
@@ -74,6 +76,21 @@ impl Session {
             self.prices = Arc::new(prices);
             self.price_source = source.map(|file| file.file.descriptor().clone());
         }
+        self.tree = self
+            .snapshot
+            .files
+            .get("layout.json")
+            .and_then(Option::as_ref)
+            .map(|file| -> Result<Option<bool>, Failure> {
+                let layout: Value = serde_json::from_str(&file.text)?;
+                match layout.get("tree") {
+                    None => Ok(None),
+                    Some(Value::Bool(value)) => Ok(Some(*value)),
+                    Some(_) => Err("layout.json tree must be boolean".into()),
+                }
+            })
+            .transpose()?
+            .flatten();
         self.catalog = match self.snapshot.files.get(COMMANDS).and_then(Option::as_ref) {
             Some(file) => {
                 let document: CommandFile = serde_json::from_str(&file.text)?;
@@ -165,6 +182,23 @@ impl Session {
         conversation: &Conversation,
         query: Option<&CommandQuery>,
     ) -> Result<(), Failure> {
+        self.change(conversation, query, None).await
+    }
+
+    pub async fn show_tree(
+        &mut self,
+        conversation: &Conversation,
+        shown: bool,
+    ) -> Result<(), Failure> {
+        self.change(conversation, None, Some(shown)).await
+    }
+
+    async fn change(
+        &mut self,
+        conversation: &Conversation,
+        query: Option<&CommandQuery>,
+        tree: Option<bool>,
+    ) -> Result<(), Failure> {
         let mut snapshot = CommandFileSnapshot::new();
         if let Some(file) = self
             .snapshot
@@ -178,7 +212,18 @@ impl Session {
             );
         }
         let operation = OperationId::new();
-        let changes = view_changes(&snapshot, query, operation)?;
+        let changes = if let Some(shown) = tree {
+            let mut changes = CommandResolution::Select {
+                query: CommandQuery::Tree,
+            }
+            .file_changes(&snapshot, operation)?;
+            for change in &mut changes {
+                change.contents["tree"] = Value::Bool(shown);
+            }
+            changes
+        } else {
+            view_changes(&snapshot, query, operation)?
+        };
         self.publish(conversation, operation, changes).await
     }
 
@@ -257,6 +302,33 @@ pub(super) fn follow(
     super::super::phase(|| async move {
         conversation
             .client_files(conversation.client_session(), paths(), Some(after))
+            .await
+    })
+}
+
+pub(super) fn title(snapshot: &acyclic_harness::client_files::FilePreviews) -> String {
+    snapshot
+        .files
+        .get("ui/title")
+        .and_then(Option::as_ref)
+        .map(|text| text.chars().filter(|ch| !ch.is_control()).collect())
+        .unwrap_or_default()
+}
+
+pub(super) fn follow_title(
+    conversation: Arc<Conversation>,
+    after: acyclic_harness::resources::GenerationRef,
+) -> futures::future::LocalBoxFuture<
+    'static,
+    acyclic_harness::Result<acyclic_harness::client_files::FilePreviews>,
+> {
+    super::super::phase(|| async move {
+        conversation
+            .agent_file_previews(
+                vec!["ui/title".into()],
+                Some(after),
+                acyclic_harness::client::MAX_READ_BYTES,
+            )
             .await
     })
 }

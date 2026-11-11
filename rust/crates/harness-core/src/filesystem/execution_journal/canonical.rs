@@ -212,11 +212,8 @@ mod tests {
             ContextPipeline::default(),
             ToolRegistry::default(),
         )
-        .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
-            crate::context::ThresholdCompaction {
-                recent_tokens: 1,
-                ..Default::default()
-            },
+        .with_compaction_policy(crate::context::CompactionPolicy::Capacity(
+            crate::context::CapacityCompaction::default(),
         ));
         let input = TurnInput {
             max_steps: None,
@@ -258,11 +255,26 @@ mod tests {
 
         // A valid working cut cannot authorize a claim about aggregate history.
         projected.canonical = Some(projection.clone());
-        let invalid = crate::executor::stage_json(
+        let request = records
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ModelStarted {
+                    purpose: crate::executor::ModelPurpose::Response,
+                    request,
+                    ..
+                } => Some(request),
+                _ => None,
+            })
+            .expect("original response request");
+        let prepared =
+            crate::executor::load_model_request(&journal, request, Limits::default(), None).await?;
+        let invalid = crate::executor::transcript::stage_projection(
             &journal,
             input.operation_id,
             "unprovable-canonical",
             &projected,
+            &prepared,
+            projected.accounting.as_ref(),
             None,
         )
         .await?;

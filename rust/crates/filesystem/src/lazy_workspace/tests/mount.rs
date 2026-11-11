@@ -174,6 +174,7 @@ async fn dirty_candidate_keeps_unpublished_files_and_shared_aliases_until_public
     checkout
         .apply_authored_transaction(
             vec![AuthoredMutation::CreateFile {
+                file_id: None,
                 path,
                 bytes: acyclic_stream::OwnedBytes::from_static(b"dirty"),
                 metadata: FileMetadata::default(),
@@ -262,6 +263,7 @@ async fn mounted_listing_includes_dirty_authored_bindings() {
     checkout
         .apply_authored_transaction(
             vec![AuthoredMutation::CreateFile {
+                file_id: None,
                 path: root
                     .namespace_path("/new.txt", accounting!())
                     .unwrap()
@@ -326,6 +328,7 @@ async fn replacement_directory_hides_old_source_children() {
     checkout
         .apply_authored_transaction(
             vec![AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: root.namespace_path("/d", accounting!()).unwrap().value,
                 metadata: FileMetadata::default(),
             }],
@@ -430,6 +433,7 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
         checkout
             .apply_authored_transaction(
                 vec![AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: path.clone(),
                     bytes: content.clone(),
                     metadata: FileMetadata::default(),

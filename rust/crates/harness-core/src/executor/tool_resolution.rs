@@ -139,6 +139,7 @@ impl StockExecution<'_> {
         reason: ToolFailureKind,
         cause: ToolFailureCause,
     ) -> Result<crate::model::ToolResultContent> {
+        let _writer = self.journal_writes.lock().await;
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;

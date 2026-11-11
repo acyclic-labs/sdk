@@ -63,7 +63,7 @@ if (Object.keys(expectedExports).length !== packageEntries.length) {
 }
 
 const run = (command, args, options = {}) => {
-  const result = spawnSync(command, args, {
+  const result = spawnSync(command, args, { maxBuffer: Infinity,
     cwd: options.cwd ?? root,
     encoding: "utf8",
     stdio: options.capture === false ? "inherit" : ["ignore", "pipe", "pipe"],

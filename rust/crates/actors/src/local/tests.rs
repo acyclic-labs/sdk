@@ -1226,11 +1226,29 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
         let wake_from = provider.tail(store.root().clone()).await?;
         let mut binding = store.bind_state(initial, 1)?;
         assert_eq!(binding.seed()?.journal_tail, "0");
+        binding.transaction(|state| {
+            state.put("retired".into(), Bytes::from_static(b"remove"));
+            state.put("packet-only".into(), Bytes::from_static(b"remove"));
+            state.put("metadata".into(), Bytes::from_static(b"replace"));
+            Ok(())
+        })?;
         binding.apply(crate::guest::ActorStateCommit {
-            writes: vec![crate::guest::ActorMetadataWrite {
-                key: "metadata".into(),
-                value: Bytes::from_static(b"accepted"),
-            }],
+            deletions: vec![
+                "retired".into(),
+                "packet-only".into(),
+                "metadata".into(),
+                "absent".into(),
+            ],
+            writes: vec![
+                crate::guest::ActorMetadataWrite {
+                    key: "metadata".into(),
+                    value: Bytes::from_static(b"accepted"),
+                },
+                crate::guest::ActorMetadataWrite {
+                    key: "retired".into(),
+                    value: Bytes::from_static(b"durable"),
+                },
+            ],
             journal_from: "0".into(),
             journal: vec![Bytes::from_static(b"first"), Bytes::from_static(b"second")],
             alarm: crate::guest::ActorStateAlarm::Set {
@@ -1242,11 +1260,14 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
                 state.get("metadata").map(Bytes::as_ref),
                 Some(b"accepted".as_slice())
             );
-            assert_eq!(state.entries().count(), 1);
+            assert_eq!(state.entries().count(), 2);
             Ok(())
         })?;
         let refused: Result<(), Error> = binding.transaction(|state| {
+            state.delete("metadata");
+            assert!(state.get("metadata").is_none());
             state.put("metadata".into(), Bytes::from_static(b"rolled-back"));
+            state.delete("metadata");
             state.append_journal(2, vec![Bytes::from_static(b"rolled-back")])?;
             state.alarm(None)?;
             Err(Error::Invalid("transaction refused"))
@@ -1302,6 +1323,14 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
                 key("state-transaction/checkpoint")?,
             )
             .await?;
+        // Deletion uses the same durable state publication and survives reopen.
+        let mut removed = store.bind_state(store.load(&address).await?, 1)?;
+        removed.transaction(|state| {
+            state.delete("retired");
+            Ok(())
+        })?;
+        removed.flush(key("state-transaction/delete")?).await?;
+        removed.finish()?;
         // A changed native journal tail must refuse metadata and alarm too.
         let mut stale = store.bind_state(store.load(&address).await?, 1)?;
         let current = store.load(&address).await?;

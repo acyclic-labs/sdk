@@ -8,6 +8,7 @@ pub use scoped::Scoped;
 mod capture;
 pub use capture::CaptureObservation;
 mod report_port;
+pub(crate) use report_port::LAUNCH_ENVIRONMENT;
 mod wait_report;
 pub use report_port::{ReportAck, ReportAdmission, ReportOutcome, ReportPort, ReportRequest};
 mod waiting;

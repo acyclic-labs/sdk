@@ -12,6 +12,7 @@
 //! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
 mod client_files;
+pub use client_files::VisibleFiles;
 mod directory;
 mod events;
 mod history;
@@ -141,8 +142,34 @@ impl Conversation {
         Ok(Self::open(self.connection.observation().await?))
     }
 
-    fn agent(&self) -> &AgentPath {
+    /// The selected agent; navigation never reconstructs identity from UI text.
+    pub fn agent(&self) -> &AgentPath {
         self.connection.root()
+    }
+
+    /// The same authenticated tree connection, selected at an existing node.
+    pub async fn select(&self, agent: AgentPath) -> Result<Arc<Self>> {
+        Ok(Self::open(self.connection.select(agent).await?))
+    }
+
+    /// A lazy sidebar on this session's primitives. No descendant is read
+    /// until the shared explorer plans a visible row or lookahead page.
+    pub fn tree(
+        &self,
+    ) -> Result<acyclic_harness_client::explorer::LiveExplorer<acyclic_stream::session::ReadProvider>>
+    {
+        acyclic_harness_client::explorer::LiveExplorer::children(
+            acyclic_harness_client::ReaderPolicy::default(),
+            self.agent(),
+            Arc::new(self.connection.session.read_provider()),
+        )
+        .map_err(failed)
+    }
+
+    /// The authenticated selection shared by session controls and observation.
+    #[must_use]
+    pub fn connection(&self) -> &Connection {
+        &self.connection
     }
 
     /// The root agent's id in operation form: the task its failures name.
@@ -386,7 +413,7 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn phase(&self) -> Result<Phase> {
-        Ok(self.settlement().await?.2)
+        Ok(self.settlement(false).await?.2)
     }
 
     /// Reads all of `target` on `agent`, one bounded range at a time.
@@ -430,12 +457,18 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn text(&self, file: &FileRef) -> Result<String> {
-        let bytes = Self::read(
-            &self.connection,
-            self.agent(),
-            ReadTarget::File { file: file.clone() },
-        )
-        .await?;
+        self.selected_text(file, None).await
+    }
+
+    async fn selected_text(&self, file: &FileRef, sequence: Option<u64>) -> Result<String> {
+        let target = match sequence {
+            Some(sequence) => ReadTarget::Conversation {
+                sequence,
+                file: file.clone(),
+            },
+            None => ReadTarget::File { file: file.clone() },
+        };
+        let bytes = Self::read(&self.connection, self.agent(), target).await?;
         String::from_utf8(bytes).map_err(failed)
     }
 
@@ -510,11 +543,25 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn turn(&self, entry: &ConversationEntry) -> Result<Turn> {
+        self.selected_turn(entry, None).await
+    }
+
+    /// Render a turn with its original committed sequence as the exact-file
+    /// proof. This also reads inherited turns without source-volume authority.
+    pub async fn turn_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<Turn> {
+        self.selected_turn(entry, Some(sequence)).await
+    }
+
+    async fn selected_turn(
+        &self,
+        entry: &ConversationEntry,
+        sequence: Option<u64>,
+    ) -> Result<Turn> {
         let prompt = match &entry.input {
-            TurnInput::Message { body, .. } => Some(self.text(body).await?),
+            TurnInput::Message { body, .. } => Some(self.selected_text(body, sequence).await?),
             _ => None,
         };
-        let output = self.output(entry).await?;
+        let output = self.output(entry, sequence).await?;
         Ok(Turn {
             prompt,
             tools: output.tool_cards(),
@@ -529,19 +576,32 @@ impl Conversation {
     /// # Errors
     /// Session, host or output decoding failures.
     pub async fn output_text(&self, entry: &ConversationEntry) -> Result<String> {
-        Ok(self.output(entry).await?.text)
+        Ok(self.output(entry, None).await?.text)
     }
 
-    async fn output(&self, entry: &ConversationEntry) -> Result<TurnOutput> {
-        let output = self.text(&entry.output).await?;
+    /// Read an inherited output with its exact committed record as proof.
+    pub async fn output_text_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<String> {
+        Ok(self.output(entry, Some(sequence)).await?.text)
+    }
+
+    async fn output(&self, entry: &ConversationEntry, sequence: Option<u64>) -> Result<TurnOutput> {
+        let output = self.selected_text(&entry.output, sequence).await?;
         serde_json::from_str(&output).map_err(failed)
     }
 
-    async fn settlement(&self) -> Result<(u64, u64, Phase)> {
+    /// Wait for all inputs committed before this request, including queued or
+    /// paused work. Inputs arriving later do not extend the captured fence.
+    /// Dropping the request cancels observation without changing the agent.
+    pub async fn wait_current_input(&self) -> Result<Phase> {
+        Ok(self.settlement(true).await?.2)
+    }
+
+    async fn settlement(&self, wait: bool) -> Result<(u64, u64, Phase)> {
         match self
             .connection
             .execute(&AgentCommand::Settlement {
                 agent: self.agent().clone(),
+                wait,
             })
             .await?
         {
@@ -630,7 +690,7 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn dropped(&self) -> Result<String> {
-        let (_, _, phase) = self.settlement().await?;
+        let (_, _, phase) = self.settlement(false).await?;
         Ok(finished(&phase).unwrap_or_else(|| "the prompt was cancelled".into()))
     }
 
@@ -639,7 +699,7 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn settled(&self) -> Result<u64> {
-        Ok(self.settlement().await?.0)
+        Ok(self.settlement(false).await?.0)
     }
 
     /// Observes new turns and the latest status, returning the current phase
@@ -649,7 +709,7 @@ impl Conversation {
     /// # Errors
     /// Session, host, decoding or follow admission failures.
     pub async fn observe_current(&self) -> Result<(super::Observer, Phase)> {
-        let (settled, statuses, phase) = self.settlement().await?;
+        let (settled, statuses, phase) = self.settlement(false).await?;
         Ok((
             super::Observer::open(&self.connection, settled, statuses.saturating_sub(1))?,
             phase,
@@ -665,7 +725,7 @@ impl Conversation {
     /// # Errors
     /// Session or host failures, or refused follows.
     pub async fn observe(&self, from: Option<u64>) -> Result<super::Observer> {
-        let (settled, statuses, _) = self.settlement().await?;
+        let (settled, statuses, _) = self.settlement(false).await?;
         super::Observer::open(
             &self.connection,
             from.unwrap_or(settled),
@@ -686,7 +746,7 @@ impl Conversation {
             return Ok(entries);
         }
         // The status follow starts at its tail: only the turns are read.
-        let (_, statuses, _) = self.settlement().await?;
+        let (_, statuses, _) = self.settlement(false).await?;
         let mut turns = self
             .connection
             .controls

@@ -36,6 +36,7 @@ pub(super) async fn write<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore 
         }
     } else {
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: path.value,
             bytes: bytes.into(),
             metadata: FileMetadata::default(),

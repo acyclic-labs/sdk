@@ -149,8 +149,7 @@ export class InferenceClient {
     requireFixed(request.context, INFERENCE_FIXED_WIDTHS.contextRevision, "context revision");
     request = clone(RetainWarmRequestSchema, request);
     const expected = request.context.slice();
-    const related = toBinary(RetainWarmRequestSchema, request);
-    await validateContract("retain_warm_request", RetainWarmRequestSchema, request);
+    const related = await validateContract("retain_warm_request", RetainWarmRequestSchema, request);
     const view = await this.transport.retainWarm(request);
     await validateContract("warm_context", WarmViewSchema, view, expected, related);
     return view;
@@ -165,8 +164,7 @@ export class InferenceClient {
     requireFixed(request.commitment, INFERENCE_FIXED_WIDTHS.renewWarmCommitment, "warm commitment");
     request = clone(RenewWarmRequestSchema, request);
     const expected = request.commitment.slice();
-    const related = toBinary(RenewWarmRequestSchema, request);
-    await validateContract("renew_warm_request", RenewWarmRequestSchema, request);
+    const related = await validateContract("renew_warm_request", RenewWarmRequestSchema, request);
     const view = await this.transport.renewWarm(request);
     await validateContract("warm_commitment", WarmViewSchema, view, expected, related);
     return view;
@@ -239,10 +237,9 @@ export class InferenceClient {
     requireFixed(request.identity.requestId, INFERENCE_FIXED_WIDTHS.requestId, "evaluation request ID");
     if (request.spec === undefined) throw new InferenceProtocolError("evaluation spec is absent");
     requireFixed(request.spec.specDigest, INFERENCE_FIXED_WIDTHS.evaluationSpecDigest, "evaluation spec digest");
-    await validateContract("evaluation_spec", EvaluationSpecSchema, request.spec);
+    const related = await validateContract("evaluation_spec", EvaluationSpecSchema, request.spec);
     const view = await this.transport.createEvaluation(request);
-    await validateContract("evaluation_view", EvaluationViewSchema, view, request.identity.requestId,
-      toBinary(EvaluationSpecSchema, request.spec));
+    await validateContract("evaluation_view", EvaluationViewSchema, view, request.identity.requestId, related);
     return view;
   }
   async inspectEvaluation(evaluationId: Uint8Array): Promise<EvaluationView> {

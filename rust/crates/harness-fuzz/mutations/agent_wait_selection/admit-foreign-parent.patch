@@ -8,5 +8,5 @@
 +        let _ = path.is_child_of(parent);
 +        return Ok(Some(path));
      }
-     if parent.depth() == super::MAX_DEPTH || super::spawn_names::spawn_intent(reference, 0).is_err()
+     if super::spawn_names::spawn_intent(reference, 0).is_err()
      {

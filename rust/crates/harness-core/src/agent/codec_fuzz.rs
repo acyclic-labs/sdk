@@ -347,310 +347,324 @@ fn history(bytes: &[u8]) {
 
 /// Seed bytes come from the same writers used by committed actor transitions.
 pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
-    fn written<T: AgentRecord + PartialEq + std::fmt::Debug>(
-        value: &T,
-    ) -> Result<Vec<u8>, super::Error> {
-        let bytes = value.encode()?;
-        assert_eq!(
-            T::decode(&bytes)?,
-            *value,
-            "agent record lost the writer's input"
-        );
-        Ok(bytes)
-    }
-    let agent = AgentId::from_bytes([7; 16]);
-    let path = AgentPath::root(&agent);
-    let adopted = ForkAdopted {
-        profile: None,
-        agent,
-        parent: None,
-        forked_at: 0,
-        conversation_tail: 0,
-        checkpoint: None,
-        volumes: Vec::new(),
-        brief: None,
-        policy: None,
-    };
-    let mut state = AgentState::adopted(path.clone(), &adopted)?;
-    let encoded = checkpoint::encode(&state)?;
-    let envelope = checkpoint::from_encoded(encoded.clone())?;
-    let id = IntentId::try_from("captured-intent")?;
-    let mut seeds = vec![
-        (
-            "adopted",
-            InboxRecord::ForkAdopted(Box::new(adopted)).encode()?,
-        ),
-        ("awaited", InboxRecord::Awaited.encode()?),
-        (
-            "status",
-            StatusRecord {
-                child_wakes: Vec::new(),
-                phase: Phase::Idle,
+    futures::executor::block_on(async {
+        fn written<T: AgentRecord + PartialEq + std::fmt::Debug>(
+            value: &T,
+        ) -> Result<Vec<u8>, super::Error> {
+            let bytes = value.encode()?;
+            assert_eq!(
+                T::decode(&bytes)?,
+                *value,
+                "agent record lost the writer's input"
+            );
+            Ok(bytes)
+        }
+        let agent = AgentId::from_bytes([7; 16]);
+        let path = AgentPath::root(&agent);
+        let adopted = ForkAdopted {
+            profile: None,
+            agent,
+            parent: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: Vec::new(),
+            brief: None,
+            policy: None,
+        };
+        let mut state = AgentState::adopted(path.clone(), &adopted)?;
+        let encoded = checkpoint::encode(&state)?;
+        let envelope = checkpoint::from_encoded(encoded.clone())?;
+        let id = IntentId::try_from("captured-intent")?;
+        let mut seeds = vec![
+            (
+                "adopted",
+                InboxRecord::ForkAdopted(Box::new(adopted)).encode()?,
+            ),
+            ("awaited", InboxRecord::Awaited.encode()?),
+            (
+                "status",
+                StatusRecord {
+                    child_settlement: None,
+                    child_wakes: None,
+                    phase: Phase::Idle,
+                    cursor: 0,
+                    conversation: 0,
+                }
+                .encode()?,
+            ),
+            (
+                "closed",
+                Closed {
+                    by: Sender::Agent { path: path.clone() },
+                    id: id.clone(),
+                }
+                .encode()?,
+            ),
+            (
+                "closed-portable-intent",
+                written(&Closed {
+                    by: Sender::Host {
+                        host: "native".into(),
+                    },
+                    id: IntentId::try_from("a".repeat(records::MAX_INTENT_BYTES))?,
+                })?,
+            ),
+            (
+                "effect",
+                records::seal(&TurnEffect::Archive { target: path, id })?,
+            ),
+            ("checkpoint", encoded),
+            (
+                "checkpoint-envelope",
+                crate::contract::canonical_json_bytes(&envelope)?,
+            ),
+        ];
+        // These records carry distinct nested history types, not the history
+        // descriptor format. Capture them through their original record writer.
+        let volume = crate::conversation::VolumeRef::new(
+            crate::resources::ProviderRef::new(
+                "agents".into(),
+                "filesystem".into(),
+                "2".into(),
+                &mut None,
+            )?,
+            "project".into(),
+            crate::conversation::VolumeClass::Project,
+            crate::conversation::VolumeOwner::Project("project".into()),
+            &mut None,
+        )?;
+        let file = crate::conversation::FileRef::new(
+            volume.clone(),
+            "inputs/brief.txt".into(),
+            "captured-revision".into(),
+            crate::conversation::FileDescriptor::new([19; 32], 37, "text/plain".into())?,
+            "brief".into(),
+            &mut None,
+        )?;
+        let spawn = InboxRecord::Spawn(super::SpawnRequest {
+            by: Sender::Agent {
+                path: state.path.clone(),
+            },
+            id: IntentId::try_from("captured-spawn")?,
+            brief: Some(Box::new(file.clone())),
+            profile: super::CreationConfig {
+                model: None,
+                continuation: None,
+                context: super::SpawnContext::Fork,
+                template: Some(file.clone()),
+                peers: Default::default(),
+            },
+            history: Some(super::HistorySelection {
+                conversation: 23,
+                checkpoint: Some(17),
+            }),
+        });
+        seeds.push(("spawn-history", written(&spawn)?));
+        // Capture every named/positional combination at the two struct boundaries
+        // used by the independent history projection. All fields come from the
+        // same typed record and every byte goes through the actual record writer.
+        for (name, positional_spawn, positional_history) in [
+            ("spawn-positional", true, false),
+            ("spawn-history-positional", false, true),
+            ("spawn-and-history-positional", true, true),
+        ] {
+            let mut input = serde_json::to_value(&spawn)?;
+            let fields = input["spawn"].as_object_mut().expect("named spawn writer");
+            if positional_history {
+                let history = fields.get_mut("history").expect("written history");
+                *history = serde_json::json!([history["conversation"], history["checkpoint"]]);
+            }
+            if positional_spawn {
+                input["spawn"] = ["by", "id", "brief", "profile", "history"]
+                    .map(|field| fields.remove(field).expect("written spawn field"))
+                    .into();
+            }
+            let bytes = records::seal(&input)?;
+            assert_eq!(InboxRecord::decode(&bytes)?, spawn);
+            seeds.push((name, bytes));
+        }
+        for (name, mode) in [
+            ("restore-files", super::RestoreMode::Files),
+            ("restore-context", super::RestoreMode::Context),
+            ("restore-both", super::RestoreMode::Both),
+        ] {
+            let action = super::ContextAction::Restore {
+                at: 23,
+                mode,
+                expected: if mode.files() {
+                    vec![super::HistoryVolume {
+                        binding: super::VolumeBinding {
+                            name: "project".into(),
+                            volume: volume.clone(),
+                        },
+                        generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
+                            kind: acyclic_fs::ObjectKind::GenerationRoot,
+                            digest: acyclic_fs::Digest::from_bytes([23; 32]),
+                            storage: Some(acyclic_fs::ObjectStorage {
+                                locator: acyclic_fs::Digest::from_bytes([29; 32]),
+                                root_file_id: acyclic_fs::FileId::from_bytes([31; 16]),
+                                origin_generation: acyclic_fs::Digest::from_bytes([37; 32]),
+                            }),
+                        }),
+                    }]
+                } else {
+                    Vec::new()
+                },
+            };
+            seeds.push((
+                name,
+                written(&InboxRecord::Context(super::ContextRequest {
+                    by: Sender::Agent {
+                        path: state.path.clone(),
+                    },
+                    id: IntentId::try_from("captured-restore")?,
+                    action: action.clone(),
+                }))?,
+            ));
+            if mode == super::RestoreMode::Both {
+                seeds.push((
+                    "conversation-restore",
+                    written(&ConversationEntry {
+                        observed_through: 0,
+                        inbox: 29,
+                        input: super::TurnInput::Context {
+                            from: Sender::Agent {
+                                path: state.path.clone(),
+                            },
+                            id: IntentId::try_from("captured-restore")?,
+                            action,
+                        },
+                        output: file.clone(),
+                        outcome: super::TurnOutcome::RestoreConflict,
+                        goal: Some(crate::OperationId::from_bytes([41; 16])),
+                        targets: Some(file.clone()),
+                        tool_results: Some("tools/.results/captured-turn".into()),
+                        steering: Some(super::SteeringTranscript {
+                            through: 31,
+                            file: file.clone(),
+                        }),
+                        notices: Some(super::NoticeSelection {
+                            source: state.path.clone(),
+                            range: 7..11,
+                        }),
+                    })?,
+                ));
+            }
+        }
+        for (names, binding) in [
+            (
+                [
+                    "status-approval-bound",
+                    "checkpoint-approval-bound",
+                    "checkpoint-envelope-approval-bound",
+                ],
+                Some(crate::interaction::ApprovalBinding {
+                    operation_id: crate::OperationId::from_bytes([11; 16]),
+                    action_digest: [13; 32],
+                }),
+            ),
+            (
+                [
+                    "status-approval-external",
+                    "checkpoint-approval-external",
+                    "checkpoint-envelope-approval-external",
+                ],
+                None,
+            ),
+        ] {
+            state.phase = Phase::WaitingApproval {
+                id: IntentId::try_from("captured-approval")?,
+                binding,
+            };
+            let status = StatusRecord {
+                child_settlement: None,
+                child_wakes: None,
+                phase: state.phase.clone(),
                 cursor: 0,
                 conversation: 0,
+            };
+            let status_bytes = status.encode()?;
+            assert_eq!(StatusRecord::decode(&status_bytes)?, status);
+            let encoded = checkpoint::encode(&state)?;
+            let envelope = checkpoint::from_encoded(encoded.clone())?;
+            assert_eq!(checkpoint::checkpoint_state(&envelope)?, state);
+            seeds.extend([
+                (names[0], status_bytes),
+                (names[1], encoded),
+                (names[2], crate::contract::canonical_json_bytes(&envelope)?),
+            ]);
+        }
+        // Retain independent persistent roots and a paused turn's raw checkpoint.
+        state.path = state.path.child(&AgentId::from_bytes([8; 16]))?;
+        state.parent = state.path.parent();
+        state.conversation_tail = 23;
+        state.status_tail = 29;
+        for n in 0..9 {
+            let child = state.path.child(&AgentId::from_bytes([n; 16]))?;
+            state.open_children.insert(&child).await?;
+            if matches!(n, 0 | 7 | 8) {
+                state.awaiting.insert(&child).await?;
             }
-            .encode()?,
-        ),
-        (
-            "closed",
-            Closed {
-                by: Sender::Agent { path: path.clone() },
-                id: id.clone(),
+        }
+        state.need = 2;
+        state.turn = Some(Progress {
+            inbox: 17,
+            checkpoint: vec![0, 1, 255],
+        });
+
+        state.phase = Phase::Waiting {
+            input: false,
+            deadline_unix_ms: Some(1_700_000_000_000),
+        };
+        for (names, archived) in [
+            (
+                ["checkpoint-wait", "checkpoint-envelope-wait", "state-wait"],
+                false,
+            ),
+            (
+                [
+                    "checkpoint-archive",
+                    "checkpoint-envelope-archive",
+                    "state-archive",
+                ],
+                true,
+            ),
+        ] {
+            if archived {
+                state.closed = true;
+                for n in 7..9 {
+                    let child = state.path.child(&AgentId::from_bytes([n; 16]))?;
+                    state.archive_pending.insert(&child).await?;
+                }
+                state.awaiting.clear();
+                state.need = 0;
+                state.turn = None;
+
+                state.phase = Phase::Idle;
             }
-            .encode()?,
-        ),
-        (
-            "effect",
-            records::seal(&TurnEffect::Archive { target: path, id })?,
-        ),
-        ("checkpoint", encoded),
-        (
-            "checkpoint-envelope",
-            crate::contract::canonical_json_bytes(&envelope)?,
-        ),
-    ];
-    // These records carry distinct nested history types, not the history
-    // descriptor format. Capture them through their original record writer.
-    let volume = crate::conversation::VolumeRef::new(
-        crate::resources::ProviderRef::new(
-            "agents".into(),
-            "filesystem".into(),
-            "2".into(),
-            &mut None,
-        )?,
-        "project".into(),
-        crate::conversation::VolumeClass::Project,
-        crate::conversation::VolumeOwner::Project("project".into()),
-        &mut None,
-    )?;
-    let file = crate::conversation::FileRef::new(
-        volume.clone(),
-        "inputs/brief.txt".into(),
-        "captured-revision".into(),
-        crate::conversation::FileDescriptor::new([19; 32], 37, "text/plain".into())?,
-        "brief".into(),
-        &mut None,
-    )?;
-    let spawn = InboxRecord::Spawn(super::SpawnRequest {
-        by: Sender::Agent {
-            path: state.path.clone(),
-        },
-        id: IntentId::try_from("captured-spawn")?,
-        brief: Some(Box::new(file.clone())),
-        profile: super::CreationConfig {
-            model: None,
-            continuation: None,
-            context: super::SpawnContext::Fork,
-            template: Some(file.clone()),
-            peers: Default::default(),
-        },
-        history: Some(super::HistorySelection {
-            conversation: 23,
-            checkpoint: Some(17),
-        }),
-    });
-    seeds.push(("spawn-history", written(&spawn)?));
-    // Capture every named/positional combination at the two struct boundaries
-    // used by the independent history projection. All fields come from the
-    // same typed record and every byte goes through the actual record writer.
-    for (name, positional_spawn, positional_history) in [
-        ("spawn-positional", true, false),
-        ("spawn-history-positional", false, true),
-        ("spawn-and-history-positional", true, true),
-    ] {
-        let mut input = serde_json::to_value(&spawn)?;
-        let fields = input["spawn"].as_object_mut().expect("named spawn writer");
-        if positional_history {
-            let history = fields.get_mut("history").expect("written history");
-            *history = serde_json::json!([history["conversation"], history["checkpoint"]]);
+            let encoded = checkpoint::encode(&state)?;
+            assert_eq!(
+                checkpoint::decode(&encoded)?,
+                state,
+                "checkpoint lost the writer's state"
+            );
+            let envelope = checkpoint::from_encoded(encoded.clone())?;
+            assert_eq!(checkpoint::checkpoint_state(&envelope)?, state);
+            seeds.extend([
+                (names[0], encoded),
+                (names[1], crate::contract::canonical_json_bytes(&envelope)?),
+                (names[2], crate::contract::canonical_json_bytes(&state)?),
+            ]);
         }
-        if positional_spawn {
-            input["spawn"] = ["by", "id", "brief", "profile", "history"]
-                .map(|field| fields.remove(field).expect("written spawn field"))
-                .into();
-        }
-        let bytes = records::seal(&input)?;
-        assert_eq!(InboxRecord::decode(&bytes)?, spawn);
-        seeds.push((name, bytes));
-    }
-    for (name, mode) in [
-        ("restore-files", super::RestoreMode::Files),
-        ("restore-context", super::RestoreMode::Context),
-        ("restore-both", super::RestoreMode::Both),
-    ] {
-        let action = super::ContextAction::Restore {
-            at: 23,
-            mode,
-            expected: if mode.files() {
-                vec![super::HistoryVolume {
-                    binding: super::VolumeBinding {
-                        name: "project".into(),
-                        volume: volume.clone(),
-                    },
-                    generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
-                        kind: acyclic_fs::ObjectKind::GenerationRoot,
-                        digest: acyclic_fs::Digest::from_bytes([23; 32]),
-                        storage: Some(acyclic_fs::ObjectStorage {
-                            locator: acyclic_fs::Digest::from_bytes([29; 32]),
-                            root_file_id: acyclic_fs::FileId::from_bytes([31; 16]),
-                            origin_generation: acyclic_fs::Digest::from_bytes([37; 32]),
-                        }),
-                    }),
-                }]
-            } else {
-                Vec::new()
-            },
-        };
-        seeds.push((
-            name,
-            written(&InboxRecord::Context(super::ContextRequest {
-                by: Sender::Agent {
-                    path: state.path.clone(),
-                },
-                id: IntentId::try_from("captured-restore")?,
-                action: action.clone(),
-            }))?,
-        ));
-        if mode == super::RestoreMode::Both {
-            seeds.push((
-                "conversation-restore",
-                written(&ConversationEntry {
-                    observed_through: 0,
-                    inbox: 29,
-                    input: super::TurnInput::Context {
-                        from: Sender::Agent {
-                            path: state.path.clone(),
-                        },
-                        id: IntentId::try_from("captured-restore")?,
-                        action,
-                    },
-                    output: file.clone(),
-                    outcome: super::TurnOutcome::RestoreConflict,
-                    goal: Some(crate::OperationId::from_bytes([41; 16])),
-                    targets: Some(file.clone()),
-                    tool_results: Some("tools/.results/captured-turn".into()),
-                    steering: Some(super::SteeringTranscript {
-                        through: 31,
-                        file: file.clone(),
-                    }),
-                    notices: Some(super::NoticeSelection {
-                        source: state.path.clone(),
-                        range: 7..11,
-                    }),
-                })?,
-            ));
-        }
-    }
-    for (names, binding) in [
-        (
-            [
-                "status-approval-bound",
-                "checkpoint-approval-bound",
-                "checkpoint-envelope-approval-bound",
-            ],
-            Some(crate::interaction::ApprovalBinding {
-                operation_id: crate::OperationId::from_bytes([11; 16]),
-                action_digest: [13; 32],
-            }),
-        ),
-        (
-            [
-                "status-approval-external",
-                "checkpoint-approval-external",
-                "checkpoint-envelope-approval-external",
-            ],
-            None,
-        ),
-    ] {
-        state.phase = Phase::WaitingApproval {
-            id: IntentId::try_from("captured-approval")?,
-            binding,
-        };
-        let status = StatusRecord {
-            child_wakes: Vec::new(),
-            phase: state.phase.clone(),
-            cursor: 0,
-            conversation: 0,
-        };
-        let status_bytes = status.encode()?;
-        assert_eq!(StatusRecord::decode(&status_bytes)?, status);
-        let encoded = checkpoint::encode(&state)?;
-        let envelope = checkpoint::from_encoded(encoded.clone())?;
-        assert_eq!(checkpoint::checkpoint_state(&envelope)?, state);
-        seeds.extend([
-            (names[0], status_bytes),
-            (names[1], encoded),
-            (names[2], crate::contract::canonical_json_bytes(&envelope)?),
-        ]);
-    }
-    // Cross a bitmap byte boundary, retaining a paused turn's slots and raw
-    // checkpoint. A child path also exercises reconstruction of its parent.
-    state.path = state.path.child(&AgentId::from_bytes([8; 16]))?;
-    state.parent = state.path.parent();
-    state.conversation_tail = 23;
-    state.status_tail = 29;
-    for n in 0..9 {
-        state
-            .open_children
-            .insert(state.path.child(&AgentId::from_bytes([n; 16]))?);
-    }
-    state.awaiting = state
-        .open_children
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| matches!(index, 0 | 7 | 8))
-        .map(|(_, child)| child.clone())
-        .collect();
-    state.need = 2;
-    state.turn = Some(Progress {
-        inbox: 17,
-        checkpoint: vec![0, 1, 255],
-    });
-    state.reserved_children = 3;
-    state.phase = Phase::Waiting {
-        deadline_unix_ms: Some(1_700_000_000_000),
-        input: false,
-    };
-    for (names, archived) in [
-        (
-            ["checkpoint-wait", "checkpoint-envelope-wait", "state-wait"],
-            false,
-        ),
-        (
-            [
-                "checkpoint-archive",
-                "checkpoint-envelope-archive",
-                "state-archive",
-            ],
-            true,
-        ),
-    ] {
-        if archived {
-            state.closed = true;
-            state.archive_pending = state.open_children.iter().skip(7).cloned().collect();
-            state.awaiting.clear();
-            state.need = 0;
-            state.turn = None;
-            state.reserved_children = 0;
-            state.phase = Phase::Idle;
-        }
-        let encoded = checkpoint::encode(&state)?;
-        assert_eq!(
-            checkpoint::decode(&encoded)?,
-            state,
-            "checkpoint lost the writer's state"
-        );
-        let envelope = checkpoint::from_encoded(encoded.clone())?;
-        assert_eq!(checkpoint::checkpoint_state(&envelope)?, state);
-        seeds.extend([
-            (names[0], encoded),
-            (names[1], crate::contract::canonical_json_bytes(&envelope)?),
-            (names[2], crate::contract::canonical_json_bytes(&state)?),
-        ]);
-    }
-    seeds.extend(history_seeds()?);
-    seeds.extend(roster_seeds()?);
-    Ok(seeds)
+        seeds.extend(history_seeds()?);
+        seeds.extend(roster_seeds()?);
+        // Captured from the real canonical payload writer, before inbox frame
+        // admission: the old writer admitted this identity and stranded its turn.
+        let oversized = serde_json::json!({ "approval": { "id": "a".repeat(records::MAX_RECORD_BYTES - 255) } });
+        seeds.push(("inbox-settlement-overflow", records::seal(&oversized)?));
+        Ok(seeds)
+    })
 }
 
 fn roster_seeds() -> Result<[(&'static str, Vec<u8>); 2], Box<dyn std::error::Error>> {

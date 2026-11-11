@@ -82,6 +82,6 @@ export function runWorker(dir: string, model: string, task: string, opts: Worker
 }
 
 export function opencodeAvailable(binary = process.env.OPENCODE_BIN ?? "opencode"): string | null {
-  const p = spawnSync(binary, ["--version"], { encoding: "utf8" });
+  const p = spawnSync(binary, ["--version"], { maxBuffer: Infinity, encoding: "utf8" });
   return !p.error && p.status === 0 ? p.stdout.trim() : null;
 }

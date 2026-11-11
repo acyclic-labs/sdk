@@ -27,7 +27,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const {GITHUB_REPOSITORY: repo, GITHUB_RUN_ID: run, GITHUB_RUN_ATTEMPT: attempt, GITHUB_OUTPUT: output} = process.env;
   if (!output) throw new Error('GITHUB_OUTPUT is required for qualification artifact outputs');
   const pages = JSON.parse(execFileSync('gh', ['api', '--paginate', '--slurp',
-    `repos/${repo}/actions/runs/${run}/artifacts?per_page=100`], {encoding:'utf8'}));
+    `repos/${repo}/actions/runs/${run}/artifacts?per_page=100`], { maxBuffer: Infinity,encoding:'utf8'}));
   const artifacts = selectArtifacts(pages.flatMap(page => page.artifacts), run, attempt);
   fs.appendFileSync(output, `artifacts=${JSON.stringify(artifacts)}\n`);
 }

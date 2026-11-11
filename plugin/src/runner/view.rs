@@ -42,6 +42,7 @@ use acyclic_harness::completion::Exit;
 mod diff;
 mod query;
 mod session;
+mod tree;
 
 async fn usage(mut query: UsageQuery) -> (UsageQuery, acyclic_harness::Result<bool>) {
     let result = query.advance().await;
@@ -71,7 +72,7 @@ async fn older(
             cleared: false,
             blocks: Vec::new(),
         };
-        for entry in conversation.entries(from, to).await? {
+        for (sequence, entry) in (from..to).zip(conversation.entries(from, to).await?) {
             if let Some(action) = checkpoint(&entry) {
                 match notice(&action) {
                     Some(text) => page.blocks.push((BlockKind::Answer, text)),
@@ -82,7 +83,8 @@ async fn older(
                     }
                 }
             } else {
-                page.blocks.extend(turn(&conversation, &entry).await?);
+                page.blocks
+                    .extend(turn(&conversation, sequence, &entry).await?);
             }
         }
         acyclic_harness::Result::Ok(page)
@@ -94,12 +96,13 @@ async fn older(
 /// if it was interrupted, the mark. A cancelled checkpoint shows nothing.
 async fn turn(
     conversation: &Conversation,
+    sequence: u64,
     entry: &ConversationEntry,
 ) -> acyclic_harness::Result<Vec<(BlockKind, String)>> {
     if entry.input.context().is_some() {
         return Ok(Vec::new());
     }
-    let turn = conversation.turn(entry).await?;
+    let turn = conversation.turn_at(sequence, entry).await?;
     let mut blocks = Vec::new();
     blocks.extend(turn.prompt.map(|prompt| (BlockKind::Prompt, prompt)));
     blocks.extend(work(turn.tools, turn.answer));
@@ -173,6 +176,8 @@ enum Prompt {
     Feedback,
     /// A command that runs once its yes arrives.
     Confirm(CommandRequest),
+    /// Explicit terminal-exit choice; quitting otherwise only detaches.
+    StopOrDetach,
     /// Choose an action for the exact history turn selected on screen.
     History { at: u64 },
     /// A fork names its admitted role before preparing the immutable request.
@@ -194,6 +199,9 @@ enum Prompt {
 
 #[derive(Default)]
 struct View {
+    /// Retain one requested merge identity across transport uncertainty and
+    /// conflict resolution; a redraw or repeated command cannot replace it.
+    merge_operation: Option<acyclic_harness::OperationId>,
     transcript: TranscriptRows,
     /// Sent prompts not yet settled, by inbox sequence.
     pending: Vec<(u64, String)>,
@@ -208,6 +216,8 @@ struct View {
     stopped: Option<(u64, u64)>,
     /// A cancelled entry already marked its turn's stop.
     cancel_marked: bool,
+    /// The authored session title, projected only for this attached view.
+    title: String,
     /// The running turn's answer while it streams.
     reply: String,
     phase: Option<Phase>,
@@ -355,7 +365,13 @@ impl View {
                     .map(|at| self.pending.remove(at).1);
                 // A turn's text is its committed entry's, a cancelled one's
                 // too, whichever of it and its status arrived first.
-                let turn = conversation.turn(&entry).await?;
+                let turn = conversation
+                    .turn_at(
+                        seen.checked_sub(1)
+                            .ok_or("turn has no committed sequence")?,
+                        &entry,
+                    )
+                    .await?;
                 if let Some(text) = sent.or(turn.prompt) {
                     self.transcript.push(BlockKind::Prompt, &text);
                 }
@@ -437,6 +453,53 @@ impl View {
         request: CommandRequest,
     ) -> Result<(), Failure> {
         let id = acyclic_harness::OperationId::new().to_string();
+        if matches!(request, CommandRequest::Merge {}) {
+            let operation = *self
+                .merge_operation
+                .get_or_insert_with(acyclic_harness::OperationId::new);
+            match acyclic_harness::local::sessions::merge(
+                conversation.connection(),
+                &operation.to_string(),
+            )
+            .await
+            {
+                Ok(commit) => {
+                    self.merge_operation = None;
+                    self.notice = Some(commit.map_or_else(
+                        || "Session already integrated".into(),
+                        |commit| format!("Merged into checkout: {commit}"),
+                    ));
+                }
+                Err(error) => self.notice = Some(error.to_string()),
+            }
+            return Ok(());
+        }
+        if let CommandRequest::Pause { scope } | CommandRequest::Resume { scope } = &request {
+            let paused = matches!(request, CommandRequest::Pause { .. });
+            match scope {
+                acyclic_harness::client::commands::CommandTaskScope::Subtree => {
+                    acyclic_harness::local::sessions::pause_subtree(
+                        conversation.connection(),
+                        conversation.connection().root().clone(),
+                        paused,
+                    )
+                    .await?;
+                }
+                acyclic_harness::client::commands::CommandTaskScope::All => {
+                    acyclic_harness::local::sessions::pause_all(conversation.connection(), paused)
+                        .await?;
+                }
+            }
+            self.notice = Some(
+                if paused {
+                    "Session paused"
+                } else {
+                    "Session resumed"
+                }
+                .into(),
+            );
+            return Ok(());
+        }
         let inbox = match &request {
             CommandRequest::Compact { instructions } => {
                 let instructions = instructions.trim();
@@ -444,7 +507,6 @@ impl View {
                     .compact(&id, (!instructions.is_empty()).then_some(instructions))
                     .await?
             }
-            CommandRequest::Rewind {} => conversation.rewind(&id).await?,
             CommandRequest::ClearAll {} => conversation.clear_all(&id).await?,
             _ => {
                 self.notice = Some(format!("{request:?} is not available in this view"));
@@ -597,6 +659,9 @@ impl View {
             Span::raw(if self.busy() { "● " } else { "○ " }),
             Span::styled("GraphCoder", Style::default().add_modifier(Modifier::BOLD)),
         ];
+        if !self.title.is_empty() {
+            spans.push(Span::raw(format!(" · {}", self.title)));
+        }
         if self.outcome == Outcome::Cancelled && !self.busy() {
             spans.push(Span::raw(" ■ STOPPED"));
         }
@@ -604,6 +669,9 @@ impl View {
     }
 
     fn status(&self) -> String {
+        if matches!(self.prompt, Some(Prompt::StopOrDetach)) {
+            return "Stop or detach? s stops this turn; d or Ctrl+D detaches; Esc stays.".into();
+        }
         if let Some(Prompt::Confirm(CommandRequest::ClearAll {})) = &self.prompt {
             return "Clear all conversations? Enter yes or no.".into();
         }
@@ -643,7 +711,8 @@ impl View {
             (_, Some(id)) => format!("approval {} · y once · r exact rule · n deny", id.as_str()),
             (Some(Phase::Done { outcome }), _) => format!("conversation ended: {outcome:?}"),
             _ if self.busy() => "working · Esc or Ctrl+C interrupts".into(),
-            _ => "Enter sends · Ctrl+F finds prompt text · Ctrl+D quits".into(),
+            _ => "Enter sends · Ctrl+F finds prompt text · Ctrl+S sessions · Ctrl+D stop or detach"
+                .into(),
         }
     }
 }
@@ -699,13 +768,79 @@ fn terminal_events(
 /// Runs the terminal view; `resume` reopens the last conversation's recent
 /// turns, paged in from the stream as they show, otherwise the view starts
 /// empty.
+enum Next {
+    Exit,
+    Picker,
+    New,
+    HistoryBranch,
+}
+
 pub async fn run(
-    conversation: Arc<Conversation>,
+    mut conversation: Arc<Conversation>,
+    inline: bool,
+    mut resume: bool,
+    mut terminal: Option<Tty>,
+    price_file: Option<String>,
+) -> Result<(), Failure> {
+    loop {
+        match run_current(
+            Arc::clone(&conversation),
+            inline,
+            resume,
+            terminal.take(),
+            price_file.clone(),
+        )
+        .await?
+        {
+            Next::Exit => return Ok(()),
+            Next::New => {
+                let connection = acyclic_harness::local::sessions::create(
+                    conversation.connection(),
+                    &acyclic_harness::OperationId::new().to_string(),
+                )
+                .await?;
+                conversation = Conversation::open(connection);
+                resume = false;
+            }
+            Next::Picker => {
+                let (connection, owned) =
+                    super::sessions::picker(conversation.connection().clone(), None, None).await?;
+                conversation = Conversation::open(connection);
+                terminal = owned;
+                resume = true;
+            }
+            Next::HistoryBranch => {
+                let (connection, owned) =
+                    super::sessions::history_picker(conversation.connection().clone(), None)
+                        .await?;
+                conversation = Conversation::open(connection);
+                terminal = owned;
+                resume = true;
+            }
+        }
+    }
+}
+
+async fn run_current(
+    mut conversation: Arc<Conversation>,
     inline: bool,
     resume: bool,
     terminal: Option<Tty>,
     price_file: Option<String>,
-) -> Result<(), Failure> {
+) -> Result<Next, Failure> {
+    let title = conversation
+        .agent_file_previews(
+            vec!["ui/title".into()],
+            None,
+            acyclic_harness::client::MAX_READ_BYTES,
+        )
+        .await?;
+    let mut title_future = std::pin::pin!(session::follow_title(
+        Arc::clone(&conversation),
+        title.generation.clone()
+    ));
+    let root = Arc::clone(&conversation);
+    let mut sidebar = tree::Sidebar::new(&conversation)?;
     let mut ui = session::Session::open(&conversation).await?;
     if let Some(text) = price_file {
         ui.prices(&conversation, text).await?;
@@ -738,6 +873,7 @@ pub async fn run(
     };
     let mut events = conversation.observe(from).await?;
     let mut view = View {
+        title: session::title(&title),
         top: events.seen(),
         floor: if resume { 0 } else { events.seen() },
         ..View::default()
@@ -790,6 +926,7 @@ pub async fn run(
     let mut approval_failed = None;
     let mut approval_reviewed = None;
     let start = Instant::now();
+    let tree_marker = [Line::raw("")];
     loop {
         // Any session read can first observe a price publication, including
         // a layout command racing the file follow. Replace the projection
@@ -806,11 +943,37 @@ pub async fn run(
                 overlay_top = 0;
             }
         }
+        let navigation = sidebar.navigation();
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let size: Size = size()?;
         usage_page.wrap(size.width);
         let busy = view.busy();
         input.busy = busy;
+        let shown = ui.tree.unwrap_or_else(|| sidebar.has_children());
+        // The same layout as painting owns row credit, including a growing
+        // prompt, the usage footer and a running tool's terminal strip.
+        let tree_area = Screen {
+            tree: if shown { &tree_marker } else { &[] },
+            usage: if usage_stopped.is_some() {
+                &usage_unavailable[..]
+            } else {
+                &usage_page.lines
+            },
+            terminal: if busy { &output_rows[..] } else { &[] },
+            ..Screen::default()
+        }
+        .areas(Rect::from((Position::ORIGIN, size)), &input)
+        .tree;
+        sidebar.frame(now, tree_area);
+        let tree_shown = ui.tree.unwrap_or_else(|| sidebar.has_children());
+        let tree_rows = sidebar.rows(root.agent(), tree_shown && size.width >= 80, size.width / 3);
+        let transcript_width = size
+            .width
+            .saturating_sub(if tree_shown && size.width >= 80 {
+                size.width / 3
+            } else {
+                0
+            });
         let back = view.back;
         if std::mem::take(&mut view.ring) {
             terminal.bell();
@@ -856,14 +1019,18 @@ pub async fn run(
         }
         let (areas, page) = {
             let status = Line::raw(view.status());
-            let header = view.header();
-            view.rows(size.width.saturating_sub(1));
+            let mut header = view.header();
+            header
+                .spans
+                .push(Span::raw(format!(" · {}", conversation.agent().id())));
+            view.rows(transcript_width.saturating_sub(1));
             let (transcript, links, code) = view.transcript.presentation();
             let mut screen = Screen {
                 header,
                 transcript,
                 links,
                 code,
+                tree: &tree_rows,
                 terminal: if busy { &output_rows[..] } else { &[] },
                 status,
                 usage: if usage_stopped.is_some() {
@@ -940,6 +1107,7 @@ pub async fn run(
         queries.start(credit, query_future.as_mut(), |source, rows| {
             query::load(
                 Arc::clone(&conversation),
+                Arc::clone(&root),
                 rows,
                 source.clone(),
                 Arc::clone(&ui.prices),
@@ -959,7 +1127,24 @@ pub async fn run(
         }
         let mut previous_layout = None;
         let mut files_changed = false;
+        let tree_deadline = sidebar.source.next_deadline();
         tokio::select! {
+            () = futures::future::poll_fn(|cx| sidebar.files.poll_changed(cx)) => {}
+            () = futures::future::poll_fn(|cx| sidebar.source.poll_changed(now, cx)) => {}
+            () = async {
+                if let Some(deadline) = tree_deadline {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(
+                        start + std::time::Duration::from_millis(deadline)
+                    )).await;
+                } else {
+                    std::future::pending().await
+                }
+            } => {}
+            title = &mut title_future => {
+                let title = title?;
+                view.title = session::title(&title);
+                title_future.set(session::follow_title(Arc::clone(&conversation), title.generation));
+            }
             snapshot = &mut files_future => {
                 let snapshot = snapshot?;
                 previous_layout = ui.layout_digest();
@@ -1077,9 +1262,95 @@ pub async fn run(
                     .collect();
                 output_rows.reverse();
             }
-            batch = keys.next() => {
+            batch = async {
+                if let Some(agent) = navigation {
+                    Some(Ok((Some(agent), Vec::new())))
+                } else {
+                    keys.next().await.map(|batch| batch.map(|events| (None, events)))
+                }
+            } => {
                 previous_layout = ui.layout_digest();
-                for event in batch.ok_or("terminal input ended")?? {
+                let (navigation, batch) = batch.ok_or("terminal input ended")??;
+                for event in navigation.into_iter().map(Err).chain(batch.into_iter().map(Ok)) {
+                    let intent = match &event {
+                        Err(agent) => Some(tree::Intent::Attach(agent.clone())),
+                        Ok(event) if overlay.is_none() && queries.source().is_none() => sidebar.event(event, &input.keymap, areas.tree),
+                        Ok(_) => None,
+                    };
+                    if let Some(intent) = intent {
+                        let attach = match intent {
+                            tree::Intent::Toggle => {
+                                let shown = !ui.tree.unwrap_or(tree_shown);
+                                ui.show_tree(&conversation, shown).await?;
+                                sidebar.focused = shown;
+                                files_changed = true;
+                                None
+                            }
+                            tree::Intent::Attach(agent) => Some((agent, None)),
+                            tree::Intent::Parent => conversation.agent().parent()
+                                .filter(|agent| root.agent().contains(agent)).map(|agent| (agent, None)),
+                            tree::Intent::History(direction) => sidebar.history_target(direction),
+                            tree::Intent::Sibling(forward) => {
+                                sidebar.sibling(conversation.agent(), forward);
+                                None
+                            }
+                            tree::Intent::Diff(agent) => {
+                                queries.select(query::Source::AgentDiff(agent, None), query_future.as_mut());
+                                None
+                            }
+                            tree::Intent::Merge(agent) => {
+                                queries.select(query::Source::Merge(agent, acyclic_harness::OperationId::new().to_string()), query_future.as_mut());
+                                None
+                            }
+                            tree::Intent::Discard(agent) => {
+                                queries.select(query::Source::Discard(agent, acyclic_harness::OperationId::new().to_string()), query_future.as_mut());
+                                None
+                            }
+                            tree::Intent::Wait(agent) => {
+                                queries.select(query::Source::Wait(agent), query_future.as_mut());
+                                None
+                            }
+                            tree::Intent::Input | tree::Intent::Consumed => None,
+                        };
+                        if let Some((agent, history)) = attach {
+                            let opening = async {
+                                let selected = root.select(agent.clone()).await?;
+                                let from = selected.settled().await?.saturating_sub(1);
+                                let events = selected.observe(Some(from)).await?;
+                                let session = session::Session::open(&selected).await?;
+                                let title = selected.agent_file_previews(vec!["ui/title".into()], None, acyclic_harness::client::MAX_READ_BYTES).await?;
+                                Ok::<_, Failure>((selected, events, session, title))
+                            }.await;
+                            let (selected, selected_events, session, title) = match opening {
+                                Ok(opened) => opened,
+                                Err(error) => {
+                                    sidebar.cancel_navigation();
+                                    view.notice = refusal(format_args!("Attach unavailable: {error}"));
+                                    continue;
+                                }
+                            };
+                            sidebar.attached(&agent, history);
+                            events = selected_events;
+                            conversation = selected;
+                            view = View { title: session::title(&title), top: events.seen(), floor: 0, pending_dirty: true, tail_dirty: true, ..View::default() };
+                            title_future.set(session::follow_title(Arc::clone(&conversation), title.generation));
+                            ui = session;
+                            queries.close(query_future.as_mut());
+                            overlay = None;
+                            older_future.set(None);
+                            output_rows.clear();
+                            usage_stopped = None;
+                            usage_page = QueryPage::new(vec![Line::raw("Loading usage…")], None, false);
+                            usage_prices = Arc::clone(&ui.prices);
+                            usage_future.set(Some(usage(conversation.usage_query_with_prices(Arc::clone(&usage_prices)))));
+                            sidebar.focused = false;
+                            input.editor = Editor::default();
+                            unsent = None;
+                            files_changed = true;
+                        }
+                        continue;
+                    }
+                    let Ok(event) = event else { continue };
                     let effects = areas
                         .event(&mut input, event, &mut viewport, now, &mut |_| None)
                         .collect::<Vec<_>>();
@@ -1096,6 +1367,14 @@ pub async fn run(
                                             "Feedback saved locally ({} this session)",
                                             view.reports.len()
                                         ));
+                                        continue;
+                                    }
+                                    Some(Prompt::StopOrDetach) => {
+                                        match text.trim().to_ascii_lowercase().as_str() {
+                                            "s" | "stop" => { conversation.cancel().await?; return Ok(Next::Exit); }
+                                            "d" | "detach" | "" => return view.exit().map(|()| Next::Exit),
+                                            _ => { view.prompt = Some(Prompt::StopOrDetach); }
+                                        }
                                         continue;
                                     }
                                     Some(Prompt::Confirm(request)) => {
@@ -1234,8 +1513,17 @@ pub async fn run(
                                 }
                                 match ui.catalog.resolve(&text, u64::MAX) {
                                     Ok(None) => {}
+                                    Ok(Some(CommandResolution::Submit { request: CommandRequest::New {} })) => {
+                                        return Ok(Next::New);
+                                    }
+                                    Ok(Some(CommandResolution::Submit { request: CommandRequest::Rewind {} })) => {
+                                        return Ok(Next::HistoryBranch);
+                                    }
+                                    Ok(Some(CommandResolution::Select { query: CommandQuery::Sessions })) => {
+                                        return Ok(Next::Picker);
+                                    }
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
-                                        return view.exit();
+                                        return view.exit().map(|()| Next::Exit);
                                     }
                                     Ok(Some(resolution @ CommandResolution::Submit { request: CommandRequest::Theme { .. } })) => {
                                         match ui.submit(&conversation, &resolution).await {
@@ -1296,6 +1584,10 @@ pub async fn run(
                                 view.back = 0;
                                 view.pending_dirty = true;
                             }
+                            InputEffect::Interrupt if queries.source().is_some() => {
+                                queries.close(query_future.as_mut());
+                                overlay_top = 0;
+                            }
                             InputEffect::Host(Action::Escape) if view.prompt.is_some() => {
                                 view.prompt = None;
                             }
@@ -1321,7 +1613,8 @@ pub async fn run(
                                 conversation.cancel().await?;
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
-                            InputEffect::Quit => return view.exit(),
+                            InputEffect::Quit if matches!(view.prompt, Some(Prompt::StopOrDetach)) => return view.exit().map(|()| Next::Exit),
+                            InputEffect::Quit => { view.prompt = Some(Prompt::StopOrDetach); }
                             InputEffect::Scroll(rows) if queries.source().is_some() && credit != 0 => {
                                 queries.scroll(&mut overlay_top, rows, areas.overlay_rows(0),
                                     query_future.as_mut(), query::Source::newest);
@@ -1336,6 +1629,9 @@ pub async fn run(
                                     .saturating_add_signed(rows)
                                     .min(view.transcript.len().saturating_sub(page));
                             }
+                            InputEffect::Host(Action::App(AppAction::Sessions)) => return Ok(Next::Picker),
+                            InputEffect::Host(Action::App(AppAction::NewSession)) => return Ok(Next::New),
+                            InputEffect::Host(Action::App(AppAction::Quit)) => return view.exit().map(|()| Next::Exit),
                             InputEffect::Host(Action::App(AppAction::Find)) => {
                                 view.find(input.editor.text(), usize::from(areas.transcript.height));
                             }
@@ -1413,6 +1709,7 @@ mod tests {
             ScriptedModelProvider::new([
                 ScriptedTurn::Text("before".into()),
                 ScriptedTurn::Text("after".into()),
+                ScriptedTurn::Text("fork ready".into()),
             ])
             .with_context_capacity(ModelContextCapacity {
                 context_tokens: 32_768,
@@ -1440,6 +1737,103 @@ mod tests {
         for id in ["before", "after"] {
             let inbox = conversation.send(id, id).await?;
             conversation.settle(id, inbox, &mut events).await?;
+        }
+        let mut fork =
+            conversation.prepare_fork("older-fork", 1, "worker".into(), "forked brief".into())?;
+        let child = match fork.execute().await.map_err(|error| error.to_string())? {
+            AgentReply::Spawned { agent, .. } => agent.clone(),
+            _ => return Err("fork did not return its retained child".into()),
+        };
+        let forked = conversation.select(child).await?;
+        forked.wait_current_input().await?;
+        let inherited = forked.entries(0, 1).await?;
+        assert!(
+            forked.turn(&inherited[0]).await.is_err(),
+            "an inherited file needs its original conversation proof"
+        );
+        let page = older(Arc::clone(&forked), 0, 0, 1).await?;
+        assert_eq!(
+            page.blocks,
+            vec![
+                (BlockKind::Prompt, "before".into()),
+                (BlockKind::Answer, "before".into())
+            ]
+        );
+
+        let mut sidebar = tree::Sidebar::new(&forked)?;
+        sidebar.focused = true;
+        for key in ['c', 'd', 's', 'n'] {
+            use acyclic_harness::tui::key_event::{KeyCode, KeyEvent, KeyModifiers};
+            let key = KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL);
+            let mut input = PromptInput::default();
+            input.busy = true;
+            assert!(
+                sidebar
+                    .event(
+                        &InputEvent::Key(key),
+                        &input.keymap,
+                        Rect::new(0, 0, 30, 12)
+                    )
+                    .is_none(),
+                "application action was swallowed: {key:?}"
+            );
+            let effects = input.key(key, 0, 80);
+            assert!(
+                effects.iter().any(|effect| matches!(
+                    effect,
+                    InputEffect::Interrupt
+                        | InputEffect::Quit
+                        | InputEffect::Host(Action::App(
+                            AppAction::Sessions | AppAction::NewSession
+                        ))
+                )),
+                "application action did not reach its normal router: {effects:?}"
+            );
+        }
+        {
+            use acyclic_harness::tui::key_event::{KeyCode, KeyEvent, KeyModifiers};
+            let marker = [Line::raw("tree")];
+            let screen = Screen {
+                tree: &marker,
+                ..Screen::default()
+            };
+            let mut input = PromptInput::default();
+            let wide = screen.areas(Rect::new(0, 0, 100, 24), &input).tree;
+            let discard = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+            sidebar.focused = true;
+            assert!(
+                sidebar
+                    .event(&InputEvent::Key(discard), &input.keymap, wide)
+                    .is_some()
+            );
+            for (width, height) in [(79, 24), (100, 0), (100, 3)] {
+                let hidden = screen.areas(Rect::new(0, 0, width, height), &input).tree;
+                sidebar.focused = true;
+                sidebar.frame(0, hidden);
+                assert!(!sidebar.focused, "resize retained invisible tree focus");
+                let toggle = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+                assert!(matches!(
+                    sidebar.event(&InputEvent::Key(toggle), &input.keymap, hidden),
+                    Some(tree::Intent::Toggle)
+                ));
+                // A toggle and typing can arrive in the same input batch,
+                // before another frame has released the requested focus.
+                sidebar.focused = true;
+                assert!(
+                    sidebar
+                        .event(&InputEvent::Key(discard), &input.keymap, hidden)
+                        .is_none()
+                );
+                assert!(!sidebar.focused);
+                let _ = input.key(discard, 0, usize::from(width));
+                assert_eq!(input.editor.text(), "x");
+                input = PromptInput::default();
+                sidebar.frame(0, wide);
+                assert!(
+                    !sidebar.focused,
+                    "growing the terminal restored stale focus"
+                );
+            }
         }
         drop(events);
         let (mut events, phase) = conversation.observe_current().await?;
@@ -1479,7 +1873,7 @@ mod tests {
         }
         assert_eq!(
             provider.request_count(),
-            2,
+            3,
             "restoration must not redispatch the model"
         );
         Ok(())

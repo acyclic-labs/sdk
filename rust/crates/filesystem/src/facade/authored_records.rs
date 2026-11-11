@@ -19,13 +19,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         path: NamespacePath,
         kind: FileKind,
         payload: FilePayload,
-        metadata: FileMetadata,
+        definition: (FileMetadata, Option<FileId>),
         allocation: &mut crate::kernel::allocation::KernelOwnedAllocation,
         bytes: &mut u64,
         staged_metadata: &mut AuthoredMetadataCache,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileId, FsError> {
+        let (metadata, file_id) = definition;
         let metadata = self
             .stage_authored_metadata_with_accounting(
                 metadata,
@@ -34,7 +35,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 cancellation,
             )
             .await?;
-        let file_id = self.authored_file_id(kind, &path, operations.value.len(), accounting)?;
+        let file_id = match file_id {
+            Some(id) => id,
+            None => self.authored_file_id(kind, &path, operations.value.len(), accounting)?,
+        };
         push_authored_operation(
             operations,
             allocation,

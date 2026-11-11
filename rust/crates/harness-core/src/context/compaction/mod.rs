@@ -2,54 +2,34 @@
 //! model's window and a mechanical overflow backstop that evicts the oldest
 //! whole dependency groups into one fixed marker, with no model call.
 
-use super::{Context, ContextSummary, ModelContextCapacity, ModelTokenCount};
+use super::{Context, ContextSummary, ModelContextCapacity};
 use crate::{Error, Result, model::ModelContentPart};
 use serde::{Deserialize, Serialize};
 
-/// Ordinary configurable threshold compaction; no model-family heuristic.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+/// Capacity admission against the selected model, with optional caller headroom.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct ThresholdCompaction {
-    /// Input headroom retained for each response.
+pub struct CapacityCompaction {
+    /// Caller-reserved response headroom; zero uses the selected output capacity.
     pub response_reserve_tokens: u32,
-    /// Recent suffix the backstop retains alongside the irreducible set: its
-    /// low-water mark, so one eviction leaves room for later steps instead of
-    /// evicting, and breaking the prefix cache, on each.
-    pub recent_tokens: u32,
 }
 
-impl Default for ThresholdCompaction {
-    fn default() -> Self {
-        Self {
-            response_reserve_tokens: 16_384,
-            recent_tokens: 20_000,
-        }
-    }
-}
-
-impl ThresholdCompaction {
-    /// Reserves the selected output capacity before splitting remaining input.
+impl CapacityCompaction {
+    /// Rejects selections that leave no room for history and its summary.
     #[doc(hidden)]
     pub fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
-        capacity.validate()?;
-        let output = capacity.output_reservation(None)?;
-        let usable = capacity
-            .context_tokens
-            .checked_sub(fixed_tokens)
-            .and_then(|available| available.checked_sub(output))
-            .filter(|available| *available >= 2)
-            .ok_or_else(|| {
-                Error::Invalid("compaction budgets exceed selected model capacity".into())
-            })?;
-        let mut policy = Self::default();
-        policy.response_reserve_tokens = output;
-        policy.recent_tokens = policy.recent_tokens.min(usable / 2);
-        policy.validate(capacity, None)?;
+        let policy = Self::default();
+        let output = policy.validate(capacity, None)?;
+        if u64::from(fixed_tokens) + u64::from(output) + 2 > u64::from(capacity.context_tokens) {
+            return Err(Error::Invalid(
+                "compaction budgets exceed selected model capacity".into(),
+            ));
+        }
         Ok(policy)
     }
 
-    /// Validates the defaults or replacement against the actual selected capacity.
+    /// Validates caller headroom against the actual selected output capacity.
     pub fn validate(
         &self,
         capacity: ModelContextCapacity,
@@ -57,12 +37,7 @@ impl ThresholdCompaction {
     ) -> Result<u32> {
         capacity.validate()?;
         let output = capacity.output_reservation(output_tokens)?;
-        let required =
-            u64::from(self.response_reserve_tokens.max(output)) + u64::from(self.recent_tokens);
-        if self.response_reserve_tokens == 0
-            || self.recent_tokens == 0
-            || required >= u64::from(capacity.context_tokens)
-        {
+        if self.response_reserve_tokens.max(output) >= capacity.context_tokens {
             return Err(Error::Invalid(
                 "compaction budgets exceed selected model capacity".into(),
             ));
@@ -70,7 +45,7 @@ impl ThresholdCompaction {
         Ok(output)
     }
 
-    /// Tests input pressure against the validated response reserve.
+    /// Only actual model capacity can require a rewrite.
     pub fn needs_compaction(
         &self,
         capacity: ModelContextCapacity,
@@ -80,7 +55,7 @@ impl ThresholdCompaction {
         Ok(input_tokens > self.input_ceiling(capacity, output_tokens)?)
     }
 
-    /// The most input admitted without compaction under the response reserve.
+    /// Selected context capacity less the response reservation.
     pub fn input_ceiling(
         &self,
         capacity: ModelContextCapacity,
@@ -93,7 +68,7 @@ impl ThresholdCompaction {
     }
 }
 
-/// Selects automatic threshold compaction or the installed context pipeline.
+/// Selects capacity-bound compaction or the installed context pipeline.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(
@@ -107,7 +82,7 @@ pub enum CompactionPolicy {
     Disabled,
     /// Admit each request against the selected model's window, evicting into
     /// the backstop's marker at overflow.
-    Threshold(ThresholdCompaction),
+    Capacity(CapacityCompaction),
 }
 
 impl CompactionPolicy {
@@ -136,11 +111,11 @@ impl CompactionPolicy {
             .and_then(|profile| profile.max_output_tokens()));
         let reservation = capacity.output_reservation(output)?;
         match selected {
-            Some(Self::Threshold(policy)) => {
+            Some(Self::Capacity(policy)) => {
                 policy.validate(capacity, output)?;
-                Ok(Self::Threshold(policy))
+                Ok(Self::Capacity(policy))
             }
-            _ => Ok(Self::Threshold(ThresholdCompaction::for_capacity(
+            _ => Ok(Self::Capacity(CapacityCompaction::for_capacity(
                 ModelContextCapacity {
                     output_tokens: Some(reservation),
                     ..capacity
@@ -153,13 +128,13 @@ impl CompactionPolicy {
 
 impl Default for CompactionPolicy {
     fn default() -> Self {
-        Self::Threshold(ThresholdCompaction::default())
+        Self::Capacity(CapacityCompaction::default())
     }
 }
 
 mod exchanges;
 mod selection;
-pub(crate) use selection::{compact_context, mandatory_messages};
+pub(crate) use selection::{compact_context, mandatory_message_count, mandatory_messages};
 mod copying;
 pub(crate) use copying::{clone_context, clone_messages, clone_metadata};
 mod allocation;

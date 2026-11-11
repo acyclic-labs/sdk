@@ -38,9 +38,52 @@ struct Invocation<'a> {
     lease: &'a acyclic_fs::OperationWindowLease,
     watcher: &'a mut Option<capture::Cursor>,
     access: &'a crate::filesystem::WorkspaceAccess,
+    capture_cut: acyclic_fs::GenerationId,
 }
 
 impl Commands<'_> {
+    /// One serialized entry to the git facade, shared by native hosts and
+    /// platform-owned session integration. The existing capture, recovery,
+    /// publication window and conflict projection all remain inside it.
+    pub(in crate::local) fn invoke<'a>(
+        &'a self,
+        command: &'a str,
+        context: CommandContext<'a>,
+        before: acyclic_stream::BoxProviderFuture<'a, Result<()>>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_fs::GitCommandOutput>> {
+        Box::pin(async move {
+            context.owner.verify().await?;
+            let parsed = self.fs_arguments(command, context.scope)?;
+            let mut state =
+                crate::sync::owned::lock_owned(StateArc::clone(&self.workspace.state)).await;
+            let selected: acyclic_stream::BoxProviderFuture<'_, _> =
+                Box::pin(self.workspace.selected_view());
+            let (selected, pending) = selected.await?;
+            let verify = || context.owner.verify();
+            let recovery: acyclic_stream::BoxProviderFuture<'_, _> =
+                Box::pin(reconciliation::recover_pending(
+                    self.workspace,
+                    selected.as_ref().unwrap_or_else(|| self.workspace.view()),
+                    pending,
+                    &verify,
+                ));
+            recovery.await?;
+            state.active = selected;
+            let physical: acyclic_stream::BoxProviderFuture<'_, _> =
+                Box::pin(self.workspace.selected_workspace(&mut state, context.owner));
+            let physical = physical.await?;
+            before.await?;
+            let command: acyclic_stream::BoxProviderFuture<'_, Result<Outcome>> =
+                Box::pin(self.fs(parsed, &context, &mut state, &physical));
+            let result = command.await?;
+            context.owner.verify().await?;
+            match result {
+                Outcome::Completed(output) => Ok(*output),
+                Outcome::Rejected(error) => Err(*error),
+            }
+        })
+    }
+
     pub(in crate::local) fn fs_arguments(
         &self,
         command: &str,
@@ -119,10 +162,10 @@ impl Commands<'_> {
         let (source, reserved) =
             self.fs_target_with_reserved_paths(workspace, &parsed, context.scope)?;
         let native = match &source {
-            Some(source) => Some(source.native().await),
+            Some(source) => Some(source.publication().await?),
             None => None,
         };
-        let native = native.as_ref().and_then(|guard| guard.as_ref());
+        let native = native.as_ref().and_then(|(guard, _)| guard.as_ref());
         let State {
             active, watcher, ..
         } = state;
@@ -175,6 +218,7 @@ impl Commands<'_> {
                     lease: &lease,
                     watcher,
                     access: &access,
+                    capture_cut: parent.id(),
                 },
             )
             .await;
@@ -270,15 +314,21 @@ impl Commands<'_> {
             lease,
             watcher,
             access,
+            capture_cut,
         } = invocation;
         let owner = context.owner;
         owner.verify().await?;
         if source.is_none() {
+            // A conflict continuation retains the Git request, but captures a
+            // new checkout transition. Its selected cut distinguishes that
+            // publication from an earlier capture under the same request.
+            let capture_operation =
+                reconciliation_operation(context.operation, b"capture", capture_cut, capture_cut);
             capture::capture(
                 (self.capture_options, self.capture_policy),
                 (workspace, checkout),
                 watcher,
-                (context.operation, 0),
+                (OperationId::from_bytes(capture_operation.into_bytes()), 0),
                 lease.publication_permit(),
             )
             .await?;

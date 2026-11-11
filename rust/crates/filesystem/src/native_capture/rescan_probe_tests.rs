@@ -49,6 +49,7 @@ fn fixture_in(runtime: &tokio::runtime::Runtime, parent: Option<&Path>) -> Fixtu
         })
         .to_vec();
     let options = CaptureOptions {
+        source_namespace: None,
         source_root: source.path().to_owned(),
         expected_root_identity: capture_root_identity(source.path()).unwrap(),
         maximum_paths: 8,

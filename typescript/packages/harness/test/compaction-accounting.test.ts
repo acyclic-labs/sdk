@@ -47,20 +47,19 @@ test("generated optional current-input marker matches actual context projection 
 
 test("generated compaction policy validates actual capacity and finite output in Rust", () => {
   const policy = contracts.defaultCompactionPolicy();
-  expect(policy.kind).toBe("threshold");
-  if (policy.kind !== "threshold") throw new Error("expected stock threshold policy");
-  expect(policy.config.response_reserve_tokens).toBe(16_384);
-  expect(policy.config.recent_tokens).toBe(20_000);
+  expect(policy.kind).toBe("capacity");
+  if (policy.kind !== "capacity") throw new Error("expected stock capacity policy");
+  expect(policy.config.response_reserve_tokens).toBe(0);
   const capacity = { context_tokens: 65_536, output_tokens: 4_096 };
-  expect(contracts.validateThresholdCompaction(policy.config, capacity, undefined)).toBe(4_096);
-  const replacement = { ...policy.config, response_reserve_tokens: 1_024, recent_tokens: 2_048 };
-  expect(contracts.validateThresholdCompaction(replacement, capacity, undefined)).toBe(1_024);
-  expect(() => contracts.validateThresholdCompaction(policy.config,
-    { ...capacity, context_tokens: 32_768 }, undefined)).toThrow();
-  expect(() => contracts.validateThresholdCompaction(policy.config,
+  expect(contracts.validateCapacityCompaction(policy.config, capacity, undefined)).toBe(4_096);
+  const replacement = { ...policy.config, response_reserve_tokens: 1_024 };
+  expect(contracts.validateCapacityCompaction(replacement, capacity, undefined)).toBe(4_096);
+  expect(() => contracts.validateCapacityCompaction(policy.config,
+    { ...capacity, context_tokens: 0 }, undefined)).toThrow();
+  expect(() => contracts.validateCapacityCompaction(policy.config,
     { ...capacity, output_tokens: 0 }, undefined)).toThrow();
   for (const output of [0, -1, 0.5, 1.5, 4_097, 4_294_967_296, Infinity, NaN]) {
-    expect(() => contracts.validateThresholdCompaction(policy.config, capacity, output)).toThrow();
+    expect(() => contracts.validateCapacityCompaction(policy.config, capacity, output)).toThrow();
   }
 });
 

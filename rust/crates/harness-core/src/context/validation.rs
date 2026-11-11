@@ -2,17 +2,16 @@ use super::*;
 use crate::{executor::stock_boundary, wire::ErrorCode};
 
 pub(crate) fn plan_compaction_budget(
-    policy: &ThresholdCompaction,
+    policy: &CapacityCompaction,
     context: &Context,
-    count: &ModelTokenCount,
     maximum_messages: usize,
-    recent_tokens: u32,
+    requested_cut: usize,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(usize, usize)> {
-    // Weights select the retained suffix; they cannot reject or admit a request.
+    // The requested rewrite cut is adjusted only to preserve dependencies.
     // The completed compacted request is counted before response dispatch.
     crate::executor::with_history_io(io, |work| {
-        policy.projection_budget(context, count, maximum_messages, recent_tokens, work)
+        policy.projection_budget(context, maximum_messages, requested_cut, work)
     })
 }
 

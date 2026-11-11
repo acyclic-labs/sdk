@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export function harnessPackageClosure(selected = "acyclic-harness") {
-  const result = spawnSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"], {
+  const result = spawnSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"], { maxBuffer: Infinity,
     cwd: root,
     encoding: "utf8",
   });

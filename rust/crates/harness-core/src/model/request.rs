@@ -413,6 +413,7 @@ pub struct PreparedModelRequest {
     request: ModelRequest,
     bytes: acyclic_stream::OwnedBytes,
     request_digest: [u8; 32],
+    context_window: Option<crate::context::ContextWindow>,
     replay_key: std::sync::OnceLock<[u8; 32]>,
     projection_nodes: AtomicUsize,
     admitted_limits: Limits,
@@ -430,6 +431,7 @@ impl Clone for PreparedModelRequest {
             request: self.request.clone(),
             bytes: self.bytes.clone(),
             request_digest: self.request_digest,
+            context_window: self.context_window,
             replay_key: self.replay_key.clone(),
             projection_nodes: AtomicUsize::new(self.projection_nodes.load(Ordering::Relaxed)),
             admitted_limits: self.admitted_limits,
@@ -446,6 +448,20 @@ impl Clone for PreparedModelRequest {
 }
 
 impl PreparedModelRequest {
+    pub(crate) fn retain_context_window(
+        &mut self,
+        window: crate::context::ContextWindow,
+    ) -> Result<()> {
+        window.validate()?;
+        self.context_window = Some(window);
+        Ok(())
+    }
+
+    /// Original verified admission, separate from provider-visible request bytes.
+    pub(crate) const fn context_window(&self) -> Option<crate::context::ContextWindow> {
+        self.context_window
+    }
+
     /// Semantic replay identity, retained after its first successful use.
     /// Warm consumers need no decode, hash, payload copy or history walk;
     /// requests outside replay pay no hash work. Concurrent cold consumers may
@@ -576,6 +592,7 @@ impl PreparedModelRequest {
                 request,
                 bytes,
                 request_digest,
+                context_window: None,
                 replay_key: std::sync::OnceLock::new(),
                 projection_nodes: AtomicUsize::new(0),
                 admitted_limits: limits,
@@ -648,6 +665,7 @@ impl PreparedModelRequest {
             request,
             bytes,
             request_digest,
+            context_window: None,
             replay_key: std::sync::OnceLock::new(),
             projection_nodes: AtomicUsize::new(0),
             admitted_limits: limits,

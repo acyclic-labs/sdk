@@ -85,7 +85,6 @@ members = [
   "rust/fuzz/task-volume",
   "rust/proofs/id-codecs",
   "rust/proofs/model-epochs",
-  "rust/proofs/spawn-slots",
   "rust/vendor/ts-rs-macros-12.0.1",
   "rust/vendor/ts-rs-macros-12.0.1/fuzz",
   "rust/verification/sdk-fixtures",

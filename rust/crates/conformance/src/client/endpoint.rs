@@ -150,7 +150,15 @@ pub async fn verify_with_reply_wait(
             &acyclic_harness_client::AgentId::from_bytes([1; 16]),
         );
     }
-    match execute(&controls, &AgentCommand::Settlement { agent: foreign }).await {
+    match execute(
+        &controls,
+        &AgentCommand::Settlement {
+            agent: foreign,
+            wait: false,
+        },
+    )
+    .await
+    {
         Err(AgentExchangeError::Control(error)) if error.code() == "no_such_agent" => {}
         Err(error) => return Err(exchange_failure("tree_admission", error)),
         Ok(_) => return Err(failure("tree_admission", "endpoint exposed a foreign tree")),
@@ -204,6 +212,7 @@ pub async fn verify_with_reply_wait(
             &controls,
             &AgentCommand::Settlement {
                 agent: agent.clone(),
+                wait: false,
             },
         )
         .await
@@ -293,6 +302,7 @@ async fn wait_reply(
         controls,
         &AgentCommand::Settlement {
             agent: agent.clone(),
+            wait: false,
         },
     )
     .await

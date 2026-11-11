@@ -745,6 +745,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
                         purpose: ModelPurpose::Response,
                         request_digest: request.request_digest(),
                         request: request_file.clone(),
+                        context: None,
                     },
                     None,
                 )?

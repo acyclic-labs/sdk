@@ -8,6 +8,7 @@
 // all temporary directories and is mandatory on Windows.
 // E2E_OUTPUT selects the matrix/capture directory; roots are retained on failure.
 // E2E_CASES_ROOT selects an isolated cases/ and coverage.json input tree.
+// E2E_PTY_FRAMES=1 logs observed frames, consumed actions and model requests.
 // Unix requires python3 and a controlling PTY; no alternate GraphCoder runtime.
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -73,6 +74,7 @@ const json = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + "
 function expand(value, fixture) {
   return expandFixture(value, { support: directory.replaceAll("\\", "/"),
     provider: fixture.provider,
+    sessions: fixture.sessions,
     repository: resolve(directory, "../..").replaceAll("\\", "/"),
     workspace: fixture.workspace.replaceAll("\\", "/"),
     ...(port ? { url: `http://127.0.0.1:${port}/${nativeCases.has(fixture.id) ? 'native-' : ''}${fixture.id}/v1` } : {}) });
@@ -152,6 +154,33 @@ async function execute(test, prepared) {
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
       const inputFixture = { ...fixture, env: { ...fixture.env, ...input.environment } };
+      if (input.mode === "service") {
+        // The service belongs to the case, rather than to a terminal whose
+        // original custody owner correctly retires all of its descendants.
+        const service = await processes.startOwned(binary,
+          [...fixture.args, ...(input.endpoint ? ["serve", "127.0.0.1:0"] : ["--local-service", "--signal-ready"])],
+          { cwd: fixture.workspace, env: inputFixture.env });
+        if (input.endpoint) {
+          const publication = await new Spool(service.child.stdout, service.closed,
+            { transcript: join(artifact, "endpoint.jsonl") }).next(() => true);
+          fixture.env.ACYCLIC_API_KEY = publication.credential;
+          fixture.args.push("--endpoint", publication.endpoint);
+          continue;
+        }
+        await new Promise((resolve, reject) => {
+          const ready = bytes => {
+            service.child.stdout.off("data", ready);
+            if (bytes[0] === 10) resolve();
+            else reject(new Error("session service refused readiness"));
+          };
+          service.child.stdout.on("data", ready);
+          service.closed.then(result => {
+            service.child.stdout.off("data", ready);
+            reject(new Error(`session service exited before readiness: ${result.stderr}`));
+          }, reject);
+        });
+        continue;
+      }
       if (input.mode === "conversation") {
         await conversation(processes, binary, fixture, { ...input, operation: input.operation ?? operation },
           capture => captures.push(capture));
@@ -164,6 +193,18 @@ async function execute(test, prepared) {
       if (input.mode === "pty") {
         const { pty } = await import("./pty.mjs");
         await pty(processes, binary, inputFixture, input, capture => captures.push(capture));
+        continue;
+      }
+      if (input.mode === "pty-group") {
+        const { pty } = await import("./pty.mjs");
+        const seen = new Set(), listeners = new Set();
+        const signal = name => { seen.add(name); for (const listener of listeners) listener(); };
+        const shared = { ...inputFixture, signal, signalled: name => seen.has(name),
+          onSignal: listener => { listeners.add(listener); return () => listeners.delete(listener); } };
+        const results = await Promise.allSettled(input.terminals.map(terminal =>
+          pty(processes, binary, shared, terminal, capture => captures.push(capture))
+            .finally(() => signal(`${terminal.name}:closed`))));
+        for (const result of results) if (result.status === "rejected") throw result.reason;
         continue;
       }
       const op = input.operation ?? operation;
@@ -184,6 +225,15 @@ async function execute(test, prepared) {
           running.child.stdin.end(input.stdin ?? JSON.stringify({ prompt: input.text ?? "hello", id: messageId }) + "\n");
         } else running.child.stdin.end();
         const result = await closed(running); captures.push(result);
+        if (input.capture_root) {
+          executionSucceeded(result);
+          const root = JSON.parse(result.stdout);
+          assert.equal(root.kind, "root");
+          assert.equal(typeof root.agent, "string");
+          fixture.sessions ??= {};
+          assert.ok(!Object.hasOwn(fixture.sessions, input.capture_root));
+          fixture.sessions[input.capture_root] = root.agent;
+        }
         if ((input.exit ?? 0) === 0) executionSucceeded(result);
         else assert.equal(result.code, input.exit, `exit ${result.code} (signal ${result.signal}), expected ${input.exit}; stderr: ${result.stderr.trim() || "(empty)"}\nstdout tail: ${result.stdout.slice(-1500)}`);
         if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}; stdout tail: ${result.stdout.slice(-1500) || "(empty)"}`);

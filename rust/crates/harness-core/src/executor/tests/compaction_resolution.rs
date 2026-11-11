@@ -77,7 +77,7 @@ async fn compaction_policy_matrix_resolves_through_the_task_writer() -> Result<(
                     (false, None) => &CompactionPolicy::Disabled,
                 };
                 let case = format!("writer {writer}, override {policy:?}, summary {summary}");
-                let armed = matches!(expected, CompactionPolicy::Threshold(_));
+                let armed = matches!(expected, CompactionPolicy::Capacity(_));
                 if armed && !writer {
                     assert!(
                         matches!(execution.compaction(), Err(Error::Unauthorized(_))),

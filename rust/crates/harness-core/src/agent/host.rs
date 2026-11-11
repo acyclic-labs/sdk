@@ -8,20 +8,21 @@
 //! ([`AgentPath::status`], [`AgentPath::conversation`]) any client follows.
 
 use super::{
-    AgentComposer, AgentHandler, AgentLifecycle, AgentPath, CreationConfig, Error, ForkAdopted,
-    INBOX, InboxRecord, IntentId, Sender, Spawn, SpawnOutcome, SpawnTemplates, SpawnVolumes,
-    Submitted, TurnDriver, archive, handler::Agents, send, submit,
+    AgentComposer, AgentHandler, AgentLifecycle, AgentPath, AgentRecord as _, CreationConfig,
+    Error, ForkAdopted, INBOX, InboxRecord, IntentId, Sender, Spawn, SpawnOutcome, SpawnRefusal,
+    SpawnTemplates, SpawnVolumes, StatusRecord, Submitted, TurnDriver, archive, handler::Agents,
+    send, submit,
 };
 use acyclic_actors::{
     addressing::ActorReference,
     domain::ActorLimits,
     guest::{Composer, Handler},
-    local::{Clock, Runtime, State, Store},
+    local::{Clock, Runtime, Store},
 };
 use acyclic_stream::{
     CommitRequest, ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
-use futures::{StreamExt as _, TryStreamExt as _};
+use futures::TryStreamExt as _;
 use std::{convert::Infallible, sync::Arc};
 
 /// Outcome of one control commit.
@@ -296,7 +297,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             .ok_or(Error::Record("agent inbox subscription differs"))?;
         let (settled, closed, open_children) = if let Some(checkpoint) = state.checkpoint() {
             let observed = super::checkpoint_state(checkpoint)?;
-            if &observed.path != agent || observed.parent != agent.parent() {
+            if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
                 return Err(Error::Record("agent state binding differs"));
             }
             // Archive retires the producer, not its durable observations. At
@@ -319,6 +320,92 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         })
     }
 
+    /// Wait until every input through `input` has settled or been disposed.
+    /// Queued work and a paused turn are included; an idle phase alone is not
+    /// a settlement fence. Each recheck follows an original actor publication.
+    pub async fn wait_for_input(&self, agent: &AgentPath, input: u64) -> Result<(), Error> {
+        loop {
+            let progress = self.input_progress(agent, input).await?;
+            if progress.settled {
+                return Ok(());
+            }
+            acyclic_stream::records_only(
+                self.provider
+                    .follow(progress.follow)
+                    .await
+                    .map_err(Error::Stream)?,
+            )
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .ok_or(Error::Stream(StreamError::Unavailable))?;
+        }
+    }
+
+    /// Replays and follows conversation, including before its first turn.
+    /// First publication is observed through the original actor checkpoint;
+    /// same-phase turns need no extra status record. A terminal checkpoint with
+    /// no conversation preserves the original missing-stream refusal.
+    pub async fn follow_conversation(
+        &self,
+        agent: &AgentPath,
+        from: u64,
+    ) -> Result<acyclic_stream::RecordStream, Error> {
+        let conversation = agent.conversation()?;
+        match self.provider.tail(conversation.clone()).await {
+            Ok(_) => return self.conversation_cursor(conversation, from).await,
+            Err(StreamError::NotFound) if from == 0 => {}
+            Err(error) => return Err(Error::Stream(error)),
+        }
+        let actor = self.actor(agent)?;
+        loop {
+            let snapshot = self
+                .runtime
+                .store()
+                .load(&actor)
+                .await
+                .map_err(actor_error)?;
+            let state = snapshot
+                .state()
+                .ok_or(Error::Stream(StreamError::NotFound))?;
+            if let Some(checkpoint) = state.checkpoint() {
+                let observed = super::checkpoint_state(checkpoint)?;
+                if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
+                    return Err(Error::Record("agent state binding differs"));
+                }
+                if observed.conversation_tail > 0 {
+                    return self.conversation_cursor(conversation, from).await;
+                }
+                if matches!(observed.phase, super::Phase::Done { .. }) {
+                    return Err(Error::Stream(StreamError::NotFound));
+                }
+            }
+            let mut committed = acyclic_stream::records_only(
+                self.provider
+                    .follow(snapshot.follow_request())
+                    .await
+                    .map_err(Error::Stream)?,
+            );
+            committed
+                .try_next()
+                .await
+                .map_err(Error::Stream)?
+                .ok_or(Error::Stream(StreamError::Unavailable))?;
+        }
+    }
+
+    async fn conversation_cursor(
+        &self,
+        conversation: StreamPath,
+        from: u64,
+    ) -> Result<acyclic_stream::RecordStream, Error> {
+        self.provider
+            .follow(acyclic_stream::FollowRequest::new(conversation, from))
+            .await
+            .map(acyclic_stream::records_only)
+            .map_err(Error::Stream)
+    }
+
     /// The committed reply to `agent`'s message `id` at inbox sequence `inbox`
     /// (see [`super::reply`]), from its committed checkpoint.
     pub async fn reply(
@@ -334,7 +421,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// What `parent`'s step did with the spawn named `intent` that its inbox
     /// record `sequence` requested: the outcome that step committed, never a
     /// guess from an earlier state, however many steps later it is asked.
-    /// Waits, on the parent's actor state stream, for that step to commit.
+    /// Waits on the parent's actor state stream for that step to commit, then
+    /// reads the child's original creation status. Later steps and archival
+    /// retain that status, so the work is independent of history length.
     /// An intent not named by `sequence` is a conflict, refused before IO.
     /// The original inbox record must be a committed spawn before waiting.
     pub async fn spawned(
@@ -356,85 +445,97 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         }
         let actor = self.actor(parent)?;
         let store = self.runtime.store();
-        let path = store.path(&actor).map_err(actor_error)?;
+        let inbox = parent.inbox()?;
         loop {
-            // Follow from the tail read before the load, so a step committing
-            // after the load is never missed.
-            let tail = match self.provider.tail(path.clone()).await {
-                Ok(tail) => tail,
-                Err(StreamError::NotFound) => 0,
-                Err(error) => return Err(Error::Stream(error)),
-            };
-            let consumed = store
-                .load(&actor)
-                .await
-                .map_err(actor_error)?
-                .state()
-                .and_then(|state| state.cursor(INBOX))
-                .is_some_and(|cursor| cursor > sequence);
-            if consumed {
-                return self.applied(&path, sequence, intent).await;
+            let snapshot = store.load(&actor).await.map_err(actor_error)?;
+            let state = snapshot.state().ok_or(Error::NoSuchAgent)?;
+            let subscription = state
+                .subscriptions()
+                .get(INBOX)
+                .filter(|subscription| subscription.path == inbox)
+                .ok_or(Error::Record("agent inbox subscription differs"))?;
+            if subscription.cursor > sequence {
+                return self
+                    .spawn_result(parent, sequence, intent, state.checkpoint())
+                    .await;
+            }
+            if let Some(checkpoint) = state.checkpoint()
+                && super::checkpoint_state(checkpoint)?.closed
+                && sequence
+                    >= self
+                        .provider
+                        .tail(inbox.clone())
+                        .await
+                        .map_err(Error::Stream)?
+            {
+                return Err(Error::Conflict("spawn sequence follows the closed inbox"));
             }
             let mut committed = acyclic_stream::records_only(
                 self.provider
-                    .follow(acyclic_stream::FollowRequest::new(path.clone(), tail))
+                    .follow(snapshot.follow_request())
                     .await
                     .map_err(Error::Stream)?,
             );
-            match committed.next().await {
-                Some(Ok(_)) => {}
-                Some(Err(error)) => return Err(Error::Stream(error)),
-                None => return Err(Error::Stream(StreamError::Unavailable)),
-            }
+            committed
+                .try_next()
+                .await
+                .map_err(Error::Stream)?
+                .ok_or(Error::Stream(StreamError::Unavailable))?;
         }
     }
 
-    /// The outcome of the spawn the step consuming inbox record `sequence`
-    /// applied, from the actor state history at `path`: the first state whose
-    /// inbox cursor passes `sequence` is that step's commit. History is append-only and
-    /// cursors only advance, so this is O(log history) reads.
-    async fn applied(
+    /// Creation and the parent's consumed cursor share one commit. The first
+    /// status is outside the forked subtree and survives the child's retirement.
+    async fn spawn_result(
         &self,
-        path: &StreamPath,
+        parent: &AgentPath,
         sequence: u64,
         intent: &IntentId,
+        checkpoint: Option<&acyclic_actors::guest::Checkpoint>,
     ) -> Result<SpawnOutcome, Error> {
-        let tail = self
+        let child = parent.child(&super::AgentId::derive(&parent.id(), intent.as_str()))?;
+        match self
             .provider
-            .tail(path.clone())
+            .read(ReadRequest {
+                key: None,
+                path: child.status()?,
+                from: 0,
+                limit: 1,
+                at_least: Default::default(),
+            })
             .await
-            .map_err(Error::Stream)?;
-        let (mut low, mut high) = (0, tail);
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let passed = self
-                .committed(path, middle)
-                .await?
-                .cursor(INBOX)
-                .is_some_and(|cursor| cursor > sequence);
-            if passed {
-                high = middle;
-            } else {
-                low = middle + 1;
+        {
+            Ok(mut records) => {
+                let record = records
+                    .try_next()
+                    .await
+                    .map_err(Error::Stream)?
+                    .filter(|record| record.sequence == 0)
+                    .ok_or(Error::Record("spawn creation status is missing"))?;
+                let status = StatusRecord::decode(&record.value)?;
+                if status.phase != super::Phase::Idle
+                    || sequence.checked_add(1) != Some(status.cursor)
+                {
+                    return Err(Error::Record("spawn creation status differs"));
+                }
+                return Ok(SpawnOutcome::Spawned { child });
             }
+            Err(StreamError::NotFound) => {}
+            Err(error) => return Err(Error::Stream(error)),
         }
-        if low == tail {
-            return Err(Error::Record("no committed step consumed the spawn"));
-        }
-        let state = self.committed(path, low).await?;
-        let checkpoint = state.checkpoint().ok_or(Error::Record(
+        let state = super::checkpoint_state(checkpoint.ok_or(Error::Record(
             "the step consuming the spawn has no checkpoint",
-        ))?;
-        Ok(super::checkpoint_state(checkpoint)?.spawn_outcome(intent))
-    }
-
-    /// Actor state record `sequence` of the state stream at `path`.
-    async fn committed(&self, path: &StreamPath, sequence: u64) -> Result<State, Error> {
+        ))?)?;
+        if !state.closed {
+            return Err(Error::Record("consumed spawn has no creation status"));
+        }
+        // Absence proves a refusal only for an actual Spawn input. A caller
+        // naming a different input must not receive a fabricated outcome.
         let mut records = self
             .provider
             .read(ReadRequest {
                 key: None,
-                path: path.clone(),
+                path: parent.inbox()?,
                 from: sequence,
                 limit: 1,
                 at_least: Default::default(),
@@ -446,8 +547,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             .await
             .map_err(Error::Stream)?
             .filter(|record| record.sequence == sequence)
-            .ok_or(Error::Record("actor state history is incomplete"))?;
-        State::decode(&record.value).map_err(actor_error)
+            .ok_or(Error::Record("consumed spawn input is missing"))?;
+        if !matches!(InboxRecord::decode(&record.value)?, InboxRecord::Spawn(_)) {
+            return Err(Error::Conflict(
+                "the inbox sequence consumed another request",
+            ));
+        }
+        Ok(SpawnOutcome::Refused {
+            reason: SpawnRefusal::Archived,
+        })
     }
 
     /// Prepares, without IO, the one commit creating root agent
@@ -476,6 +584,46 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             adopted.profile = Some(profile);
         }
         self.agents.prepare_root(&self.within, intent, adopted)
+    }
+
+    /// Prepare a root branch of an admitted source at its coupled history cut.
+    /// Its creation pins the actor paused with independent zero escrow, so
+    /// publishing a branch cannot run the model or spend source funding.
+    pub(crate) fn prepare_root_history(
+        &self,
+        intent: &IntentId,
+        source: &super::AgentState,
+        mut adopted: ForkAdopted,
+        at: u64,
+        saved: &super::HistoryCheckpoint,
+    ) -> Result<Spawn, Error> {
+        if saved.conversation
+            != at
+                .checked_add(1)
+                .ok_or(Error::Record("history cut overflow"))?
+            || saved.conversation > source.conversation_tail
+        {
+            return Err(Error::Record("root branch requires a settled source cut"));
+        }
+        let mut profile = source.profile.clone().ok_or(Error::Record(
+            "a historical root requires the source's admitted creation config",
+        ))?;
+        profile.context = super::SpawnContext::Fork;
+        profile.continuation = Some(Box::new(super::Continuation::at(
+            &source.path,
+            at,
+            saved,
+            None,
+        )));
+        adopted.profile = Some(profile);
+        adopted.conversation_tail = saved.conversation;
+        adopted.checkpoint = saved.checkpoint;
+        let history = super::HistorySelection {
+            conversation: saved.conversation,
+            checkpoint: saved.checkpoint,
+        };
+        self.agents
+            .prepare_root_history(&self.within, intent, adopted, &source.path, &history)
     }
 
     /// Create root agent `adopted.agent` in one commit, and start hosting it.
@@ -511,14 +659,37 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         self.deliver(to, send(to, from, record)?).await
     }
 
-    /// Close `target` and, through its cascade, its open descendants.
-    pub async fn archive(
-        &self,
-        target: &AgentPath,
-        by: &Sender,
-        id: &IntentId,
-    ) -> Result<Delivered, Error> {
-        self.deliver(target, archive(target, by, id)?).await
+    /// Close `target` and its open descendants. Closing admission precedes
+    /// resuming each actor through its original runtime control owner: a
+    /// paused actor must still execute its ordinary closing/cleanup step.
+    /// Only currently open children are visited, never retained history.
+    pub fn archive<'a>(
+        &'a self,
+        target: &'a AgentPath,
+        by: &'a Sender,
+        id: &'a IntentId,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Delivered, Error>> {
+        Box::pin(async move {
+            let delivered = self.deliver(target, archive(target, by, id)?).await?;
+            self.pause(target, false).await?;
+            let state = self.state(target).await?;
+            let mut ancestry = vec![(target.clone(), state.open_children, None)];
+            while let Some((parent, children, after)) = ancestry.last_mut() {
+                // One child is a page credit, not a subtree-size bound. The
+                // persistent cursor and ancestry are the only retained work.
+                let Some(next) = children.page(after.as_ref(), 1).await?.pop() else {
+                    ancestry.pop();
+                    continue;
+                };
+                let child = parent.child(&next)?;
+                *after = Some(next);
+                self.deliver(&child, archive(&child, by, id)?).await?;
+                self.pause(&child, false).await?;
+                let state = self.state(&child).await?;
+                ancestry.push((child, state.open_children, None));
+            }
+            Ok(delivered)
+        })
     }
 
     /// Durably pause or resume one agent. A paused agent consumes nothing:

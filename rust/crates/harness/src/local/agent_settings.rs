@@ -393,7 +393,7 @@ async fn settle(
                     .output_reservation(Some(output))
                     .map_err(Refused::selection)?;
             }
-            crate::context::CompactionPolicy::Threshold(policy) => {
+            crate::context::CompactionPolicy::Capacity(policy) => {
                 policy
                     .validate(capacity, Some(output))
                     .map_err(Refused::selection)?;

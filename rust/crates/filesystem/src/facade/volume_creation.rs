@@ -577,6 +577,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .checked_add(retained)
                 .ok_or(WorkError::Overflow)?;
             operations.value.push(AuthoredMutation::CreateFile {
+                file_id: None,
                 path,
                 bytes: bytes.clone(),
                 metadata: FileMetadata::default(),

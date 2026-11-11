@@ -1,5 +1,18 @@
 # Harness client views
 
+The terminal's agent tree is the shared `Explorer` over `children_page` and
+`follow`. Its visible rows follow explicit private `ui/` files: `title`,
+`glyph`, `status.md`, `model`, `cost` and `age`. Authored files override the
+default projection, with explicit default embedding supported. Missing model,
+price or age facts display `—`; no provider, currency or creation clock is
+inferred. Offscreen file snapshots and requests are released.
+
+Ctrl-T toggles the tree through its session's `layout.json`. Enter attaches;
+Alt-Up selects the parent, Alt-[ and Alt-] select siblings, and Alt-Left/Right
+navigate successful attachments. While the tree has focus, `/` or Ctrl-F
+fuzzy-matches titles in the expanded tree. Results page lazily, PgDn advances
+to the next matching window, and Escape clears the filter.
+
 The [headless event contract](headless.md) describes versioned JSONL output,
 payload acknowledgements, replay identities, final artifacts and paged browsing
 over this same client.

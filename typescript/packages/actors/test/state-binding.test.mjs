@@ -77,13 +77,17 @@ test('rollback preserves an earlier pending metadata, journal and alarm group', 
   const owner = host({metadata:[{key:'seed',value:Uint8Array.of(7)}],journalTail:'0'}), binding = materializeActorState(owner);
   binding.transaction(state => {
     state.put('kept',Uint8Array.of(1));
+    state.delete('seed');
+    state.delete('absent');
     state.appendJournal(0n,[Uint8Array.of(2)]);
     state.alarm(123n);
   });
   const refusal = new Error('callback refused');
   assert.throws(() => binding.transaction(state => {
+    state.delete('kept');
     state.put('kept',Uint8Array.of(9));
     state.put('kept',Uint8Array.of(8));
+    state.delete('kept');
     state.put('discarded',Uint8Array.of(9));
     state.put('seed',Uint8Array.of(9));
     state.appendJournal(1n,[Uint8Array.of(9)]);
@@ -93,12 +97,12 @@ test('rollback preserves an earlier pending metadata, journal and alarm group', 
   binding.transaction(state => {
     assert.deepEqual(state.get('kept'),Uint8Array.of(1));
     assert.equal(state.get('discarded'),undefined);
-    assert.deepEqual(state.get('seed'),Uint8Array.of(7));
+    assert.equal(state.get('seed'),undefined);
     assert.equal(state.journalTail,1n);
   });
   await binding.flush();
   assert.deepEqual(owner.commits,[{
-    writes:[{key:'kept',value:Uint8Array.of(1)}],journalFrom:'0',
+    writes:[{key:'kept',value:Uint8Array.of(1)}],deletions:['seed'],journalFrom:'0',
     journal:[Uint8Array.of(2)],alarm:{type:'set',deadline:'123'},
   }]);
 });
