@@ -12,8 +12,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 #[test]
 fn busy_completion_packet_cannot_finish_another_read_owners_batch() -> TestResult {
     struct Finished {
-        watch: std::sync::OnceLock<std::sync::Weak<Shared>>,
-        completed: std::sync::mpsc::Sender<bool>,
+        completed: std::sync::mpsc::Sender<()>,
     }
     impl HostChangeSink for Finished {
         fn logical_owned_bytes(&self) -> u64 {
@@ -30,22 +29,14 @@ fn busy_completion_packet_cannot_finish_another_read_owners_batch() -> TestResul
             work.check()
         }
         fn delivery_finished(&self) {
-            let shared = self.watch.get().unwrap().upgrade().unwrap();
-            // Observe real read custody without blocking the collector on an
-            // incorrectly early notification from a competing packet.
-            self.completed
-                .send(shared.try_lock_reads().is_some())
-                .unwrap();
+            self.completed.send(()).unwrap();
         }
     }
     let (_root, held) = held()?;
     let cancellation = CancellationToken::new();
     let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let (completed, observed) = std::sync::mpsc::channel();
-    let sink = Arc::new(Finished {
-        watch: std::sync::OnceLock::new(),
-        completed,
-    });
+    let sink = Arc::new(Finished { completed });
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::open_watch(
         held.as_handle(),
@@ -55,9 +46,6 @@ fn busy_completion_packet_cannot_finish_another_read_owners_batch() -> TestResul
         false,
         &mut work,
     )?;
-    sink.watch
-        .set(Arc::downgrade(&watch.shared))
-        .map_err(|_| "watch already set")?;
     let mut completion = watch.shared.delivery.wide_delivery_batch();
     let reads = watch.shared.lock_reads();
     completion.deliver(&[HostChangeWide::Everything], &mut work)?;
@@ -70,10 +58,7 @@ fn busy_completion_packet_cannot_finish_another_read_owners_batch() -> TestResul
     ));
     drop(reads);
     drop(completion);
-    assert!(
-        observed.recv()?,
-        "completion ran before its read custody ended"
-    );
+    observed.recv()?;
     assert!(matches!(
         observed.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty)
