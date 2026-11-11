@@ -45,6 +45,8 @@ pub enum SimulationOperation {
     ObjectRead,
     /// Ordered immutable-object batch read.
     ObjectReadMany,
+    /// Publication durability barrier over the authenticated immutable closure.
+    ObjectFlush,
     /// Immutable-object presence probe.
     ObjectContains,
 }
@@ -52,6 +54,8 @@ pub enum SimulationOperation {
 /// One exact injected backend behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SimulationFault {
+    /// Signal the selected object await and suspend until its caller drops it.
+    PauseBefore,
     /// Reject before touching the wrapped primitive.
     RejectBefore,
     /// Simulate an unavailable partition before touching the wrapped primitive.
@@ -75,6 +79,14 @@ pub enum SimulationFault {
 impl SimulationFault {
     const fn compatible(self, operation: SimulationOperation) -> bool {
         match self {
+            Self::PauseBefore => matches!(
+                operation,
+                SimulationOperation::ObjectPut
+                    | SimulationOperation::ObjectRead
+                    | SimulationOperation::ObjectReadMany
+                    | SimulationOperation::ObjectContains
+                    | SimulationOperation::ObjectFlush
+            ),
             Self::RejectBefore | Self::PartitionBefore => true,
             Self::DelayObjectVisibility => matches!(operation, SimulationOperation::ObjectPut),
             Self::CorruptObjectRead | Self::PartialObjectRead => matches!(
@@ -184,6 +196,7 @@ pub struct Simulation<
     state: Arc<Mutex<State>>,
     authority: Arc<A>,
     objects: Arc<O>,
+    paused: Arc<tokio::sync::Notify>,
 }
 
 impl Simulation<ReferenceAuthority, ReferenceObjects> {
@@ -220,6 +233,7 @@ impl<A, O> Simulation<A, O> {
             })),
             authority: Arc::new(authority),
             objects: Arc::new(objects),
+            paused: Arc::new(tokio::sync::Notify::new()),
         })
     }
 
@@ -230,10 +244,12 @@ impl<A, O> Simulation<A, O> {
             SimulatedStore {
                 state: self.state.clone(),
                 inner: self.authority.clone(),
+                paused: self.paused.clone(),
             },
             SimulatedStore {
                 state: self.state.clone(),
                 inner: self.objects.clone(),
+                paused: self.paused.clone(),
             },
         )
     }
@@ -280,6 +296,12 @@ impl<A, O> Simulation<A, O> {
         Ok(self.lock_state()?.trace.clone())
     }
 
+    /// Wait for a scheduled pause at an actual object-store await. The caller
+    /// can then drop the interrupted future to simulate a process crash.
+    pub async fn wait_for_pause(&self) {
+        self.paused.notified().await;
+    }
+
     fn lock_state(&self) -> Result<MutexGuard<'_, State>, SimulationError> {
         self.state.lock().map_err(|_| SimulationError::Poisoned)
     }
@@ -323,6 +345,7 @@ impl Default for Simulation {
 pub struct SimulatedStore<T> {
     state: Arc<Mutex<State>>,
     inner: Arc<T>,
+    paused: Arc<tokio::sync::Notify>,
 }
 
 fn reference_backends() -> (ReferenceAuthority, ReferenceObjects) {

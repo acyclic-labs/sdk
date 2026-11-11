@@ -234,7 +234,7 @@ pub use facade::{
     StagedContent, Volume, VolumeInitialization,
 };
 #[cfg(any(test, feature = "distributed"))]
-pub use facade::{CreateSpec, ForkSpec, ForkedGeneration, RestoreSpec};
+pub use facade::{CreateSpec, ForkSpec, ForkedGeneration, PublishSpec, RestoreSpec};
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use facade::{
     LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
