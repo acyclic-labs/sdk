@@ -89,7 +89,7 @@ pub fn heads_to_wire(value: crate::Heads) -> Result<wire::HeadsResponse, StreamE
 /// Validates every head and the shared authority cut before exposing the view.
 pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, StreamError> {
     let projection = projection_from_wire(value.projection)?;
-    Ok(crate::Heads {
+    let heads = crate::Heads {
         retained: value
             .retained
             .into_iter()
@@ -120,7 +120,9 @@ pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, S
             .children
             .map(children_page_from_response)
             .transpose()?,
-    })
+    };
+    heads.validate_revision()?;
+    Ok(heads)
 }
 
 /// Validates an atomic head without reconstructing it through other operations.
@@ -138,6 +140,7 @@ fn head_observation_from_wire(
         return Err(StreamError::InvalidResponse);
     }
     let mut head = crate::PathHead {
+        changed_at: value.changed_at,
         retained_through: value.retained_through,
         tail: value.tail,
         // A head names no path of its own, so its last record spells its origin.
@@ -175,6 +178,7 @@ fn projection_to_wire(value: crate::HeadProjection) -> i32 {
 /// Projects one provider observation, retaining the original record bytes.
 pub fn head_to_wire(value: crate::PathHead) -> wire::PathHead {
     wire::PathHead {
+        changed_at: value.changed_at,
         retained_through: value.retained_through,
         tail: value.tail,
         last: value.last.map(|record| record_wire(record, None)),

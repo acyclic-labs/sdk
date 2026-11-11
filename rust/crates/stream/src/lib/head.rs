@@ -5,6 +5,11 @@ pub type HeadSet<T> = smallvec::SmallVec<[T; 1]>;
 /// One atomic observation of a path's accepted history and durable prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PathHead {
+    /// Last authority revision that changed this path's accepted history,
+    /// direct-child membership, or covering fork. Combine this index with
+    /// `Heads.snapshot`'s scope and incarnation to wait on that input alone.
+    /// Unrelated publications leave it unchanged; it is not a stream offset.
+    pub changed_at: u64,
     /// Explicit irreversible-prefix proof, independent of crash persistence.
     /// Present only in response to a requested `durable_through` confirmation.
     pub retained_through: Option<u64>,
@@ -155,6 +160,7 @@ impl Heads {
                 return Err(StreamError::InvalidResponse);
             }
         }
+        self.validate_revision()?;
         for head in self.heads.iter().flatten() {
             head.validate_projection(self.projection)?;
             if head.retained_through.is_some() && head.retained_through != request.durable_through {
@@ -163,6 +169,18 @@ impl Heads {
         }
         if let (Some(page), Some(selected)) = (&self.children, &request.children) {
             page.validate_for(selected)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_revision(&self) -> Result<(), StreamError> {
+        if self
+            .heads
+            .iter()
+            .flatten()
+            .any(|head| head.changed_at > self.snapshot.index)
+        {
+            return Err(StreamError::InvalidResponse);
         }
         Ok(())
     }

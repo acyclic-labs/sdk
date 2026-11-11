@@ -1626,6 +1626,7 @@ mod reader_tests {
         origin: Option<Provenance<StreamPath, ForkCut>>,
     ) -> PathHead {
         PathHead {
+            changed_at: 0,
             retained_through: None,
             tail,
             durable: 0,
@@ -1960,6 +1961,7 @@ mod reader_tests {
                 reader.complete(
                     id,
                     Outcome::Head(PathHead {
+                        changed_at: 0,
                         retained_through: None,
                         tail: 0,
                         last: None,
@@ -1992,6 +1994,7 @@ mod reader_tests {
             reader.observed_head(
                 &stream,
                 PathHead {
+                    changed_at: 0,
                     retained_through: None,
                     tail: 2,
                     durable: 0,

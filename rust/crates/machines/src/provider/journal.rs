@@ -160,6 +160,7 @@ impl Journal {
     async fn head(&self, path: StreamPath) -> Result<PathHead, ProviderError> {
         match self.streams.head(path).await {
             Err(StreamError::NotFound) => Ok(PathHead {
+                changed_at: 0,
                 tail: 0,
                 last: None,
                 durable: 0,

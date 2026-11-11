@@ -65,6 +65,7 @@ impl MemoryStream {
         let claim = |bytes| self.allocate(bytes);
         let mut builder = NamespaceBuilder::new(&claim);
         let blank = || PathState {
+            changed_at: 0,
             history: None,
             ranges: HistoryRanges::default(),
             prefix: [None, None],
@@ -386,12 +387,14 @@ impl Namespace {
         &mut self,
         path: &StreamPath,
         node: Arc<NamespaceNode>,
+        changed_at: u64,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<(), StreamError> {
         fn put(
             index: &Index,
             mut parts: std::str::Split<'_, char>,
             node: Arc<NamespaceNode>,
+            changed_at: u64,
             build: &mut NamespaceBuilder<'_>,
         ) -> Result<Index, StreamError> {
             let name = parts.next().ok_or(StreamError::InvalidArgument)?;
@@ -400,33 +403,52 @@ impl Namespace {
                 node
             } else {
                 let parent = existing.ok_or(StreamError::Unavailable)?;
-                let children = put(&parent.children, parts, node, build)?;
-                build.node(parent.data.clone(), children, parent.origin.clone())?
+                let children = put(&parent.children, parts, node, changed_at, build)?;
+                let mut data = parent.data.clone();
+                if width(&children) != width(&parent.children) {
+                    data.changed_at = changed_at;
+                }
+                build.node(data, children, parent.origin.clone())?
             };
             // Share existing segment text; charge a fresh segment with its edge.
             let name = segment(index, name).map_or_else(|| SegmentText::new(name, build), Ok)?;
             index_put(index, name, Some(next), build)
         }
-        self.roots = put(&self.roots, path.as_str().split('/'), node, build)?;
+        self.roots = put(
+            &self.roots,
+            path.as_str().split('/'),
+            node,
+            changed_at,
+            build,
+        )?;
         Ok(())
     }
     #[cfg(test)]
     fn insert(&mut self, path: &StreamPath, data: PathState) {
-        self.put_data(path, data, None, &mut NamespaceBuilder::new(&|_| Ok(None)))
-            .expect("validated snapshot namespace");
+        let changed_at = data.changed_at;
+        self.put_data(
+            path,
+            data,
+            None,
+            changed_at,
+            &mut NamespaceBuilder::new(&|_| Ok(None)),
+        )
+        .expect("validated snapshot namespace");
     }
     fn put_data(
         &mut self,
         path: &StreamPath,
-        data: PathState,
+        mut data: PathState,
         origin: Option<ForkMarker>,
+        changed_at: u64,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<(), StreamError> {
         let existing = self.node(path);
         let children = existing.and_then(|n| n.children.clone());
         let origin = origin.or_else(|| existing.and_then(|n| n.origin.clone()));
+        data.changed_at = changed_at;
         let node = build.node(data, children, origin)?;
-        self.put(path, node, build)
+        self.put(path, node, changed_at, build)
     }
     fn excluded(
         node: &Arc<NamespaceNode>,

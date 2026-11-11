@@ -219,9 +219,17 @@ fn head_at(
 ) -> Result<Option<crate::PathHead>, StreamError> {
     state
         .paths
-        .get(path)
-        .map(|stream| {
+        .observation_with(path, || {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = _work {
+                return work.record(work.meter.examine(1, 0));
+            }
+            Ok(())
+        })?
+        .map(|observation| {
+            let stream = &observation.node.data;
             Ok(crate::PathHead {
+                changed_at: observation.changed_at(),
                 retained_through: through.filter(|through| *through <= stream.tail),
                 tail: stream.tail,
                 last: if projection == crate::HeadProjection::History {

@@ -143,6 +143,7 @@ async fn fork_namespace_allocation_is_independent_of_descendant_count() -> Resul
         next.put(
             &StreamPath::new("copy")?,
             source.clone(),
+            state.decision + 1,
             &mut NamespaceBuilder::new(&|_| {
                 count.set(count.get() + 1);
                 Ok(None)

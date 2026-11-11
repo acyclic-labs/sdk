@@ -169,6 +169,7 @@ pub(super) fn seeds(streams: &[(String, Vec<u8>)]) -> Result<Seeds, Box<dyn std:
         .checked_add(1)
         .ok_or("Stream producer tail overflow")?;
     let head = PathHead {
+        changed_at: 0,
         tail,
         durable: tail,
         retained_through: None,

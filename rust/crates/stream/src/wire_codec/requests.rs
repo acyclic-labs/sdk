@@ -92,6 +92,7 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
             block_len(head.as_ref().map_or(0, |head| {
                 block_len(
                     uint_len((head.tail != 0).then_some(head.tail))
+                        .saturating_add(uint_len((head.changed_at != 0).then_some(head.changed_at)))
                         .saturating_add(
                             head.last
                                 .as_ref()

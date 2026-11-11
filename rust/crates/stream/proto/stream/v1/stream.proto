@@ -159,6 +159,8 @@ message ForkOrigin {
 }
 
 message PathHead {
+  // Last relevant authority revision; interpreted in HeadsResponse.snapshot.
+  uint64 changed_at = 6;
   uint64 tail = 1;
   Record last = 2;
   uint64 durable = 3;
