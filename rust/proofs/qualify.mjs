@@ -270,13 +270,13 @@ const claims = {
   "terminal-drain-stop": [
     "rust/crates/harness-tui/tests/terminal_frames.rs", "acyclic-harness-tui",
     "terminal_drain_cancellation_does_not_require_slave_closure",
-    "a retained PTY slave must not keep a cancelled drainer waiting", [],
+    "a retained PTY slave must not keep a cancelled drainer waiting", ["--features", "tui"],
     { target: ["--test", "terminal_frames"] },
   ],
   "native-usage-counters": [
     "rust/crates/harness-core/src/executor/model_usage.rs", "acyclic-harness-core",
     "executor::model_usage::tests::usage_dialects_preserve_units_absence_and_malformed_controls",
-    "Test failed:", ["--features", "test-support"],
+    "Test failed:", ["--features", "filesystem-local,native-execution,test-support"],
   ],
   "native-event-cut": [
     "rust/crates/harness/src/local/host_process/children.rs", "acyclic-harness",
@@ -291,12 +291,12 @@ const claims = {
   "capture-marker-retirement": [
     "rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs", "acyclic-harness-core",
     "filesystem::native_process::capture::tests::interactive_completion_retains_input_producer_and_cleanup",
-    "retired capture retained its unused marker producer", ["--features", "test-support"],
+    "retired capture retained its unused marker producer", ["--features", "filesystem-local,native-execution,test-support"],
   ],
   "append-invocation": [
     "rust/crates/harness-core/src/filesystem/execution_journal/summary/turn_cost.rs", "acyclic-harness-core",
     "filesystem::execution_journal::summary::tests::turn_cost::append_work_is_bounded_per_invocation_across_history",
-    "append inherited prior invocation work", ["--features", "test-support"],
+    "append inherited prior invocation work", ["--features", "filesystem-local,native-execution,test-support"],
   ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "acyclic-plugin",
