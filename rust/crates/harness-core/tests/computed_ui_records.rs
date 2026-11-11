@@ -72,6 +72,118 @@ fn status(path: &str) -> StatusRecord {
 }
 
 #[tokio::test]
+async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> Result {
+    use acyclic_fs::demand::{SourceChange, SourceChangeSink, SourceFence};
+    use acyclic_harness_core::{
+        agent::{AgentId, IntentId, create_root, spawn},
+        ui::{StreamUiProvider, View},
+    };
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    #[derive(Default)]
+    struct Sink {
+        changes: Mutex<Vec<SourceChange>>,
+        lost: AtomicUsize,
+    }
+    impl SourceChangeSink for Sink {
+        fn source_changed(
+            &self,
+            changes: &[SourceChange],
+            _: &mut KernelAccounting<'_>,
+        ) -> std::result::Result<(), DemandError> {
+            self.changes.lock().unwrap().extend_from_slice(changes);
+            Ok(())
+        }
+        fn delivery_lost(&self) {
+            self.lost.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let streams = Arc::new(MemoryStream::default());
+    let root = create_root(
+        &IntentId::try_from("watched".to_owned())?,
+        adoption(AgentId::from_bytes([9; 16])),
+    )?;
+    let agent = root.child;
+    streams.commit(root.request).await?;
+    let source = StreamUiProvider::new(
+        streams.clone(),
+        Arc::new(NoContent),
+        agent.clone(),
+        View::new(2)?,
+        [4; 16],
+        navigation,
+    )
+    .into_source();
+    let cancellation = CancellationToken::new();
+    let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = native.live_allocation_bytes();
+    let sink = Arc::new(Sink::default());
+    let watch = source
+        .watch(sink.clone(), &native, &cancellation)?
+        .ok_or("missing watch")?;
+    assert_eq!(
+        sink.changes.lock().unwrap().len(),
+        5,
+        "opening invalidates earlier observations"
+    );
+    sink.changes.lock().unwrap().clear();
+    let mut ctx = KernelAccounting::NativeOriginal {
+        work: &native,
+        cancellation: &cancellation,
+    };
+    assert_eq!(watch.fence(&mut ctx)?, SourceFence::Unconfirmed);
+    assert!(watch.is_exact());
+    streams
+        .append(AppendRequest {
+            path: agent.status()?,
+            records: vec![status("reply.md").encode()?.into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    assert_eq!(
+        *sink.changes.lock().unwrap(),
+        [
+            SourceChange::Entry(namespace("/index.md")),
+            SourceChange::Entry(namespace("/status.md"))
+        ]
+    );
+    sink.changes.lock().unwrap().clear();
+    let child = spawn(
+        &agent,
+        &IntentId::try_from("watched-child".to_owned())?,
+        1,
+        adoption(AgentId::from_bytes([10; 16])),
+    )?;
+    streams.commit(child.request).await?;
+    assert_eq!(
+        *sink.changes.lock().unwrap(),
+        [SourceChange::Entry(namespace("/children"))]
+    );
+    assert_eq!(sink.lost.load(Ordering::SeqCst), 0);
+    watch.stop_accepted_cleanup()?;
+    assert!(watch.is_stopped());
+    assert!(!watch.is_exact());
+    assert_eq!(sink.lost.load(Ordering::SeqCst), 1);
+    let delivered = sink.changes.lock().unwrap().len();
+    streams
+        .append(AppendRequest {
+            path: agent.status()?,
+            records: vec![status("later.md").encode()?.into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    assert_eq!(sink.changes.lock().unwrap().len(), delivered);
+    drop(watch);
+    assert_eq!(native.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_status_projection_preserves_original_credit_and_cancellation() -> Result {
     let expected = status("reply/étude.md");
     let stream = MemoryStream::default();

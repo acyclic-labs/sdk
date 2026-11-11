@@ -1,4 +1,5 @@
 //! Stream-backed inputs to the same UI View used by reader clients.
+mod watch;
 use super::{Affected, Children, Cut, Error, FilesystemCut, View, project::page_number};
 use crate::{
     agent::{AgentPath, AgentRecord, AgentStream, ConversationEntry, StatusRecord},
@@ -589,10 +590,22 @@ where
     }
     fn watch(
         &self,
-        _: Arc<dyn ViewChangeSink<Affected>>,
-        _: &mut KernelAccounting<'_>,
+        sink: Arc<dyn ViewChangeSink<Affected>>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<Box<dyn SourceWatch>>, DemandError> {
-        Err(DemandError::NativeWorkUnavailable)
+        let KernelAccounting::NativeOriginal { work, .. } = ctx else {
+            return Err(DemandError::NativeWorkUnavailable);
+        };
+        let original = (*work).clone();
+        let paths = [
+            native_path(
+                &self.agent.stream_parts(AgentStream::Conversation),
+                &original,
+            )?,
+            native_path(&self.agent.stream_parts(AgentStream::Status), &original)?,
+            native_path(&self.agent.stream_parts(AgentStream::Membership), &original)?,
+        ];
+        watch::start(Arc::clone(&self.streams), paths, original, sink, ctx).map(Some)
     }
 }
 

@@ -61,6 +61,14 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<P: crate::NativeStreamProvider> crate::ExplicitNativeStreamProvider for Counted<P> {
+    fn native_follow(
+        &self,
+        request: FollowRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, NativeRecordStream> {
+        self.record(RequestClass::Data);
+        self.inner().native_follow(request, meter)
+    }
     fn native_heads(
         &self,
         request: HeadsRequest,

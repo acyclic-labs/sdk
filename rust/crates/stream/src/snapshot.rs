@@ -11,8 +11,9 @@ pub(crate) mod model;
 
 // Implementations acquire locks first, then synchronously update their cursor.
 // Cancellation before readiness must leave the cursor unchanged. This module is
-// the only place stream snapshots are polled: pending acquisitions are dropped
-// within the poll and restarted under independent ownership, never in a Stream.
+// the only place stream snapshots are polled. Portable snapshots restart pending
+// acquisitions under independent ownership; native snapshots keep them directly
+// in the caller-owned frame so its retirement proves cancellation quiescence.
 pub(crate) trait Snapshot: Send + 'static {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     const OBSERVE: bool = false;

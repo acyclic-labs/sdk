@@ -50,6 +50,7 @@ async fn live_native_follows_keep_original_credit_across_creation_and_appends()
         assert_eq!(meter.read.load(Ordering::SeqCst), 4);
         drop(output);
         meter.assert_refunded();
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     }
     Ok(())
 }
@@ -76,6 +77,7 @@ async fn native_follow_stop_destroys_pending_acquisition_before_returning()
     assert!(owner.is_stopped());
     drop(owner);
     meter.assert_refunded();
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     drop(held);
     assert!(provider.inner.publication.try_write().is_ok());
     Ok(())
