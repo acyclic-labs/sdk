@@ -4,13 +4,46 @@ use super::*;
 struct NativeEventBatch<'a>(&'a Delivery);
 
 #[cfg(windows)]
-struct WideDeliveryBatch<'a>(&'a Delivery);
+pub(super) struct WideDeliveryBatch<'a> {
+    delivery: &'a Delivery,
+    pending: bool,
+}
 
 #[cfg(windows)]
 impl Drop for WideDeliveryBatch<'_> {
     fn drop(&mut self) {
-        if self.0.completion_pending.swap(false, Ordering::AcqRel) {
-            self.0.callback(|| self.0.sink.delivery_finished());
+        if self.pending {
+            self.delivery
+                .callback(|| self.delivery.sink.delivery_finished());
+        }
+    }
+}
+
+#[cfg(windows)]
+impl WideDeliveryBatch<'_> {
+    pub(super) fn deliver<W: SourceDemandReadWork>(
+        &mut self,
+        changes: &[HostChangeWide<'_>],
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        // Only the batch that owns this callback may notify its completion.
+        // Other packets can return without acquiring the native read lock.
+        self.pending = true;
+        let delivery = self.delivery;
+        if let Some(mut native) = work.native_source_work().cloned() {
+            delivery.callback(|| {
+                delivery
+                    .sink
+                    .host_changed_wide_with_native_work(changes, &mut native)
+            })
+        } else {
+            work.with_ordinary_work(|work| {
+                delivery.callback(|| delivery.sink.host_changed_wide(changes, work))
+            })
+            .unwrap_or(Err(DemandError::NativeWorkUnavailable))
         }
     }
 }
@@ -84,8 +117,6 @@ impl Delivery {
             sink,
             exact: AtomicBool::new(true),
             retired: AtomicBool::new(false),
-            #[cfg(windows)]
-            completion_pending: AtomicBool::new(false),
             budget,
             cancellation,
             failure: std::sync::Mutex::new(None),
@@ -272,34 +303,11 @@ impl Delivery {
     }
 
     #[cfg(windows)]
-    pub(super) fn wide_delivery_batch(&self) -> impl Drop + '_ {
-        WideDeliveryBatch(self)
-    }
-
-    #[cfg(windows)]
-    pub(super) fn deliver_wide<W: SourceDemandReadWork>(
-        &self,
-        changes: &[HostChangeWide<'_>],
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        if changes.is_empty() {
-            return Ok(());
+    pub(super) fn wide_delivery_batch(&self) -> WideDeliveryBatch<'_> {
+        WideDeliveryBatch {
+            delivery: self,
+            pending: false,
         }
-        let result = if let Some(mut native) = work.native_source_work().cloned() {
-            self.callback(|| {
-                self.sink
-                    .host_changed_wide_with_native_work(changes, &mut native)
-            })
-        } else {
-            work.with_ordinary_work(|work| {
-                self.callback(|| self.sink.host_changed_wide(changes, work))
-            })
-            .unwrap_or(Err(DemandError::NativeWorkUnavailable))
-        };
-        // The caller's batch guard wakes observers after releasing the native
-        // read lock as well as this callback's original ledger scope.
-        self.completion_pending.store(true, Ordering::Release);
-        result
     }
 
     /// The host stopped reporting changes exactly: report everything once, after which the watch is inexact for good.
