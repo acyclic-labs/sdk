@@ -286,7 +286,7 @@ impl<P: NativeStreamProvider + ?Sized, S: AsyncObjectStore> FoldCache<P, S> {
             generation: self.identity.generation,
             state: (),
         };
-        if descriptor.key != expected.accounted_key(ctx)? {
+        if descriptor.version != 1 || descriptor.key != expected.accounted_key(ctx)? {
             return Err(FoldObjectError::Mismatch);
         }
         Ok(*descriptor)
@@ -328,7 +328,8 @@ impl<P: NativeStreamProvider + ?Sized, S: AsyncObjectStore> FoldCache<P, S> {
             return Err(FoldObjectError::Mismatch);
         }
         let descriptor = self.descriptor(record.value(), boundary, ctx)?;
-        if records.value_mut().next().await.is_some() {
+        if let Some(record) = records.value_mut().next().await {
+            output(record, work)?;
             return Err(FoldObjectError::Mismatch);
         }
         Ok(descriptor)
@@ -353,16 +354,16 @@ impl<P: NativeStreamProvider + ?Sized, S: AsyncObjectStore> FoldCache<P, S> {
             serde_json::to_writer(sink, &descriptor).map_err(FoldObjectError::from)
         })?;
         ctx.charge(WorkCounters {
-            bytes_hashed: (self.catalog.as_str().len() + descriptor.key.len()) as u64,
+            bytes_hashed: (self.catalog.as_str().len() + bytes.bytes.len()) as u64,
             ..WorkCounters::UNCHARGED
         })?;
         let mut hash = blake3::Hasher::new();
         hash.update(self.catalog.as_str().as_bytes());
-        hash.update(&descriptor.key);
+        hash.update(&bytes.bytes);
         let digest = hash.finalize();
         let key = OwnedSourceChunk::produce(ctx, |sink| {
             sink.write_all(digest.as_bytes())
-                .map_err(crate::FsError::from)
+                .map_err(DemandError::from)
                 .map_err(FoldObjectError::from)
         })?;
         let mut records = Retained::allocate(1, ctx)?;

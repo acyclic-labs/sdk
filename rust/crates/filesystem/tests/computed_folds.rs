@@ -113,6 +113,12 @@ async fn checkpoint_refuses_wrong_prefix_length_and_cancelled_original() -> Resu
     };
     let descriptor = FoldCheckpointObject::save(&store, &checkpoint, &mut ctx).await?;
     let mut wrong = descriptor;
+    wrong.version = 2;
+    assert!(matches!(
+        wrong.load::<_, Total>(&store, &mut ctx).await,
+        Err(FoldObjectError::Mismatch)
+    ));
+    wrong = descriptor;
     wrong.key[0] ^= 1;
     assert!(matches!(
         wrong.load::<_, Total>(&store, &mut ctx).await,

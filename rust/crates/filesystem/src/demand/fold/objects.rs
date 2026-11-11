@@ -38,6 +38,8 @@ pub enum FoldObjectError {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FoldCheckpointObject {
+    /// Cache descriptor format, currently v1.
+    pub version: u32,
     /// Stable (view, sequence, generation) index key.
     pub key: [u8; 32],
     /// Authenticated immutable object identity.
@@ -73,6 +75,7 @@ impl FoldCheckpointObject {
             let mut work = AuthorityWork::native(&native.work, cancellation);
             let object = store.prepare_hashed(object, &mut work).await?;
             let descriptor = Self {
+                version: 1,
                 key,
                 object: object.object_id(),
                 bytes: object.length(),
@@ -93,7 +96,7 @@ impl FoldCheckpointObject {
         store: &S,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Retained<FoldCheckpoint<T>>, FoldObjectError> {
-        if self.object.kind != ObjectKind::BlobChunk {
+        if self.version != 1 || self.object.kind != ObjectKind::BlobChunk {
             return Err(FoldObjectError::Mismatch);
         }
         let cancellation = ctx.cancellation();
