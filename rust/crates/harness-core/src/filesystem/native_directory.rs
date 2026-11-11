@@ -44,7 +44,7 @@ impl NativeDirectory<'_> {
         drop(lossy);
         // `agents` is reserved by the mount table. A caller-chosen volume
         // alias must never select or conceal this recovery namespace.
-        const PREFIX: &[u8] = b".volumes/agents/.publication-v1/";
+        const PREFIX: &[u8] = crate::workspace::namespace::CHECKOUT_RECOVERY_PREFIX.as_bytes();
         let encoding = acyclic_fs::WorkCounters {
             bytes_encoded: 44,
             bytes_copied: (PREFIX.len() + 56) as u64,

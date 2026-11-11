@@ -98,7 +98,8 @@ There are no per-agent processes, threads, mounts, scans, timers or new limits.
 
 Checkout publication stages recovery data under `.volumes/agents/.publication-v1`
 in the checkout's reserved agent namespace. Named volume aliases cannot select
-that data. This keeps staging on the checkout filesystem and requires no
+that data: volume and agent mount names reserve each private component across
+ASCII case spellings. This keeps staging on the checkout filesystem and requires no
 write access to its parent. The materialization primitive admits this layout
 only beneath an excluded namespace, resolves it through the held checkout,
 and rejects edits to that namespace. Original allocation, journal and cleanup

@@ -455,11 +455,7 @@ pub fn compose<T>(
 }
 
 fn component(name: &str) -> Result<()> {
-    if name.is_empty()
-        || matches!(name, "." | ".." | "agents")
-        || name.contains(['/', '\\', '\0', ':'])
-        || name.chars().any(char::is_control)
-    {
+    if !super::namespace::valid_component(name) {
         return Err(Error::Invalid(
             "invalid or reserved volume mount name".into(),
         ));
