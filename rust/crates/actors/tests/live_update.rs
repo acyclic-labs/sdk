@@ -296,6 +296,7 @@ impl Handler for Package {
                 alarm: AlarmChange::Keep,
                 effects,
                 participant: None,
+                subscriptions: Vec::new(),
             })
         })
     }
@@ -771,6 +772,7 @@ impl Handler for Held {
                 alarm: AlarmChange::Keep,
                 effects: Vec::new(),
                 participant: None,
+                subscriptions: Vec::new(),
             })
         })
     }

@@ -24,13 +24,32 @@ record!(
     ReadFileInput,
     self,
     self.path.capacity(),
-    self.version.as_ref().map_or(0, String::capacity)
+    self.version.as_ref().map_or(0, String::capacity),
+    selection_bytes(&self.selection)
+);
+record!(
+    DirectoryReadResult,
+    self,
+    self.entries.capacity() * std::mem::size_of::<DirectoryEntry>(),
+    self.entries.iter().try_fold(0u64, |n, entry| {
+        n.checked_add(entry.name.capacity() as u64)
+            .and_then(|n| n.checked_add(entry.path.capacity() as u64))
+            .and_then(|n| n.checked_add(entry.version.capacity() as u64))
+            .ok_or_else(|| invalid("directory result ownership overflow"))
+    })?
 );
 record!(
     WriteFileInput,
     self,
     self.path.capacity(),
+    self.if_version.as_ref().map_or(0, String::capacity),
     self.content.capacity()
+);
+record!(
+    RemoveFileInput,
+    self,
+    self.path.capacity(),
+    self.if_version.capacity()
 );
 record!(
     EditFileInput,
@@ -80,6 +99,7 @@ record!(
     self,
     self.file.logical_owned_bytes()?,
     self.text.capacity(),
+    selection_bytes(&self.media),
     self.outputs.capacity() * std::mem::size_of::<NotebookOutput>(),
     self.outputs.iter().try_fold(0u64, |total, output| {
         total
@@ -87,3 +107,10 @@ record!(
             .ok_or_else(|| invalid("notebook output ownership overflow"))
     })?
 );
+
+fn selection_bytes(selection: &Option<ReadSelection>) -> usize {
+    match selection {
+        Some(ReadSelection::Directory { after, .. }) => after.as_ref().map_or(0, String::capacity),
+        _ => 0,
+    }
+}

@@ -24,6 +24,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "model_usage"
+path = "fuzz_targets/model_usage.rs"
+required-features = ["core"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "native_answer"
 path = "fuzz_targets/native_answer.rs"
 required-features = ["native-answer"]
@@ -375,6 +383,14 @@ tracing-subscriber.workspace = true
 name = "bounded_json"
 path = "fuzz_targets/bounded_json.rs"
 required-features = ["bounded-json"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_version"
+path = "fuzz_targets/file_version.rs"
+required-features = ["filesystem-access"]
 test = false
 doc = false
 bench = false

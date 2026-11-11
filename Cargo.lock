@@ -702,6 +702,7 @@ dependencies = [
  "js-sys",
  "jsonschema",
  "loom",
+ "notify",
  "once_cell",
  "oxc_allocator",
  "oxc_codegen",

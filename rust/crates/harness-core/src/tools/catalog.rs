@@ -4,8 +4,8 @@ use crate::{
     tool::{
         JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolProjection,
         files::{
-            EditFileInput, FileProjection, FileResult, FileTool, ReadFileInput, ReadFileResult,
-            WriteFileInput,
+            EditFileInput, FileProjection, FileResult, FileTool, ReadFileInput, ReadResult,
+            RemoveFileInput, WriteFileInput,
         },
         schema::{self, ProjectionMode},
     },
@@ -86,9 +86,9 @@ impl ToolSpec {
 /// The stock coding catalog, in model registration order. No mutable global state.
 pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
     #[cfg(not(target_arch = "wasm32"))]
-    let specs = [&SHELL, &FS, &READ, &WRITE, &EDIT, &CODE];
+    let specs = [&SHELL, &FS, &READ, &WRITE, &REMOVE, &EDIT, &CODE];
     #[cfg(target_arch = "wasm32")]
-    let specs = [&SHELL, &FS, &READ, &WRITE, &EDIT];
+    let specs = [&SHELL, &FS, &READ, &WRITE, &REMOVE, &EDIT];
     specs.into_iter()
 }
 
@@ -103,8 +103,8 @@ pub(crate) fn is_native_declaration(name: &str) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 static CODE: ToolSpec = ToolSpec {
     name: "code",
-    revision: "1",
-    description: "Run JavaScript for multi-step reads, filters, loops and batches of tools. Use await tools[name](arguments) or Promise.all for independent calls, with each tool's existing JSON input schema; functions expose input_schema. tools.changed notices carry ordered JSON tool-table fragments: concatenate body.json by body.offset until body.complete. The table is refreshed for each program. Only the final expression is returned; call logs and console.log(...values) stream to tool-output files. Await console.log for publication before continuing; unawaited logs retire before the program returns. Values use JSON encoding. Intermediate results stay in JavaScript. No host, filesystem, network or environment access exists except granted tools. Inner calls retain normal approvals and receipts; failures throw Error('tool execution failed: <reason>').",
+    revision: "3",
+    description: "Run a JavaScript ES module for multi-step reads, filters, loops and batches of tools. Use await tools[name](arguments) or Promise.all for independent calls, with each tool's existing JSON input schema; functions expose input_schema. tools.changed notices carry ordered JSON tool-table fragments: concatenate body.json by body.offset until body.complete. The table is refreshed for each program. Export the result with export default; its value is awaited and returned; call logs and console.log(...values) stream to tool-output files. Await console.log for publication before continuing; unawaited logs retire before the program returns. Values use JSON encoding. Intermediate results stay in JavaScript. No host, filesystem, network or environment access exists except granted tools. Inner calls retain normal approvals and receipts; failures throw Error('tool execution failed: <reason>').",
     hook_names: &[],
     binding: ToolBinding::Volume,
     input: || {
@@ -152,12 +152,12 @@ static FS: ToolSpec = ToolSpec {
 
 pub(crate) static READ: ToolSpec = ToolSpec {
     name: "read",
-    revision: "portable-10",
-    description: "Read text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
+    revision: "portable-12",
+    description: "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
     hook_names: &["Read"],
     binding: ToolBinding::Volume,
     input: schema::input::<ReadFileInput>,
-    output: schema::output::<ReadFileResult>,
+    output: schema::output::<ReadResult>,
     projection_schema: FileProjection::read_schema,
     executor: |_| Arc::new(FileTool::Read),
     projection: |mode| Arc::new(FileProjection::Read(mode)),
@@ -165,8 +165,8 @@ pub(crate) static READ: ToolSpec = ToolSpec {
 
 pub(crate) static WRITE: ToolSpec = ToolSpec {
     name: "write",
-    revision: "portable-6",
-    description: "Write UTF-8 content to a workspace path, creating or replacing the file",
+    revision: "portable-7",
+    description: "Write UTF-8 content to a workspace path. ifVersion any replaces unconditionally; absent creates only when missing; an opaque read version replaces only that source",
     hook_names: &["Write"],
     binding: ToolBinding::Volume,
     input: schema::input::<WriteFileInput>,
@@ -174,6 +174,19 @@ pub(crate) static WRITE: ToolSpec = ToolSpec {
     projection_schema: FileProjection::model_schema,
     executor: |_| Arc::new(FileTool::Write),
     projection: |mode| Arc::new(FileProjection::Publication(mode)),
+};
+
+pub(crate) static REMOVE: ToolSpec = ToolSpec {
+    name: "remove",
+    revision: "portable-1",
+    description: "Remove a file at its current binding with ifVersion any, or require an opaque version from an earlier read or publication. Recovery returns the original removal without redispatch",
+    hook_names: &[],
+    binding: ToolBinding::Volume,
+    input: schema::input::<RemoveFileInput>,
+    output: schema::output::<()>,
+    projection_schema: |mode| mode.schema::<()>(),
+    executor: |_| Arc::new(FileTool::Remove),
+    projection: |_| Arc::new(JsonToolProjection),
 };
 
 pub(crate) static EDIT: ToolSpec = ToolSpec {

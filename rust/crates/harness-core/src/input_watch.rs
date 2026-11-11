@@ -9,6 +9,9 @@ use std::{
 
 /// A source set's revision. Registrations share native roots across consumers;
 /// readers subscribe before observing and reread only after an event.
+/// Replacing an input or any watched ancestor invalidates it. On Windows a
+/// directory is watched through a handle inside it, so renaming a watched
+/// ancestor is refused while the watch is held: no replacement goes unseen.
 pub struct InputWatch {
     paths: Vec<PathBuf>,
     changed: tokio::sync::watch::Sender<u64>,
@@ -400,7 +403,16 @@ mod tests {
         }
         let watch = InputWatch::new(vec![current.join("codex/config.toml")])?;
         let changed = watch.credential_watch();
-        std::fs::rename(&current, home.path().join("old")).map_err(Error::process_io)?;
+        let moved = std::fs::rename(&current, home.path().join("old"));
+        if cfg!(windows) {
+            // The held ancestor registrations pin the original tree.
+            assert_eq!(
+                moved.map_err(|error| error.kind()).err(),
+                Some(std::io::ErrorKind::PermissionDenied)
+            );
+            return Ok(());
+        }
+        moved.map_err(Error::process_io)?;
         std::fs::rename(&replacement, &current).map_err(Error::process_io)?;
         changed
             .await

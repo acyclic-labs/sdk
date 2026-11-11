@@ -16,22 +16,24 @@ pub(crate) struct PreparedInput {
 
 impl PreparedInput {
     pub async fn new(provider: Arc<ResolvedModel>, request: PreparedModelRequest) -> Result<Self> {
-        let current = provider.current_credentials()?;
-        current.validate(&request.request().model)?;
-        let spec = counting::specification(&current.config, None)?;
+        // The encoded bodies and their credentials are one immutable selection.
+        // Protected transports still resolve current authority on every send.
+        let provider = Arc::new(provider.current_credentials()?);
+        provider.validate(&request.request().model)?;
+        let spec = counting::specification(&provider.config, None)?;
         let names = crate::tool_names::Names::new(request.request());
         let auth = dispatch::authenticate(
-            &current,
+            &provider,
             #[cfg(not(target_arch = "wasm32"))]
             None,
         )
         .await?;
-        let origin = current.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let mut files = crate::files::resolve(&current.files, &request, None).await?;
+        let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
+        let mut files = crate::files::resolve(&provider.files, &request, None).await?;
         let body =
-            projection::body_named(&current, request.request(), &names, &origin, &mut files)?;
-        let encoded = projection::cache::encode(&body, &current, &origin)?;
-        let count = counting::wire::body(body, &current.model.name, spec.adapter)?.into();
+            projection::body_named(&provider, request.request(), &names, &origin, &mut files)?;
+        let encoded = projection::cache::encode(&body, &provider, &origin)?;
+        let count = counting::wire::body(body, &provider.model.name, spec.adapter)?.into();
         drop(auth);
         drop(names);
         Ok(Self {
@@ -44,8 +46,7 @@ impl PreparedInput {
     }
 
     pub async fn count(&self) -> Result<ModelTokenCount> {
-        let current = self.provider.current_credentials()?;
-        let provider = &current;
+        let provider = &self.provider;
         let spec = counting::specification(&provider.config, None)?;
         let auth = dispatch::authenticate(
             provider,
@@ -79,8 +80,7 @@ impl PreparedInput {
     + acyclic_stream::ProviderTask {
         async_stream::try_stream! {
             let input = prepared.as_ref();
-            let current = input.provider.current_credentials()?;
-            let provider = &current;
+            let provider = &input.provider;
             if input.request.request_digest() != dispatch.request_digest {
                 Err(crate::invalid("model dispatch digest differs from prepared request"))?;
             }

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/executor/model_usage.rs b/rust/crates/harness-core/src/executor/model_usage.rs
+--- a/rust/crates/harness-core/src/executor/model_usage.rs
++++ b/rust/crates/harness-core/src/executor/model_usage.rs
+@@ -425,7 +425,7 @@ impl CallClock {
+ 
+     pub(super) fn completed_at(&self) -> Option<u64> {
+         // A reconciled call must not acquire the recovery process's time.
+-        self.started_millis
++        self.started_at()
+             .and_then(|_| Self::wall_millis().checked_mul(1_000_000))
+     }
+ 

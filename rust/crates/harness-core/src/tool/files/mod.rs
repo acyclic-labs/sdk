@@ -24,6 +24,11 @@ pub fn write() -> Result<Tool> {
     FileTool::Write.assemble(super::schema::ProjectionMode::Full)
 }
 
+/// Removes a file through the task's original atomic content publisher.
+pub fn remove() -> Result<Tool> {
+    FileTool::Remove.assemble(super::schema::ProjectionMode::Full)
+}
+
 /// Edits exact text or notebook cells at a project path. Text replacements require
 /// one unambiguous match unless all occurrences are requested. An optional opaque
 /// version rejects publication if that source generation is no longer current.
@@ -46,18 +51,51 @@ pub fn patch_file(maximum_work: u64, maximum_hunks: u32) -> Result<Tool> {
     .assemble(super::schema::ProjectionMode::Full)
 }
 
+mod directory;
 mod inputs;
 mod source;
+pub use directory::{DirectoryEntry, DirectoryEntryKind, DirectoryReadResult, ReadResult};
 pub(crate) use inputs::FileView;
 pub use inputs::{
     EditFileInput, FileResult, NotebookCell, NotebookEdit, NotebookOutput, PatchFileInput,
-    ReadFileInput, ReadFileResult, ReadPage, ReadSelection, WriteFileInput,
+    ReadFileInput, ReadFileResult, ReadPage, ReadSelection, RemoveFileInput, WriteFileInput,
 };
 pub use source::FileReadSource;
 mod executor;
 mod version;
 pub(crate) use executor::FileTool;
-pub(crate) use version::encode_version;
+pub(crate) use version::SelectedVersion;
+#[cfg(all(
+    feature = "test-support",
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+#[doc(hidden)]
+pub use version::check_version;
+pub(crate) use version::{encode_path_version, encode_version};
+
+/// The same opaque version used by file projections, without a second codec in
+/// guest code. Decode only the immutable reference, not the retained text.
+pub(crate) fn result_version(
+    name: &str,
+    result: &Value,
+    work: crate::NativeWork<'_>,
+) -> Result<Option<(String, crate::NativeCustody)>> {
+    let Some(file) = result.get("file") else {
+        return Ok(None);
+    };
+    match name {
+        "read" => {
+            let (source, _custody) = decode::<FileReadSource>(file, work)?;
+            version::encode_source(&source, work).map(Some)
+        }
+        "write" => {
+            let (file, _custody) = decode::<FileRef>(file, work)?;
+            encode_version(&file, work).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
 mod assembly;
 mod authorization;
 mod index;

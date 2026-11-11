@@ -345,8 +345,11 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         physical.clone(),
         Arc::clone(&caller_waited),
     )?;
+    // Keep the transport quiet but pollable through the physical retirement.
+    let (transport, _peer) = std::os::unix::net::UnixStream::pair()?;
+    let descriptor: std::os::fd::OwnedFd = transport.into();
     let device = Arc::new(super::super::host_io::HostIo::new(
-        std::fs::File::open("/dev/null")?,
+        std::fs::File::from(descriptor),
         &original,
     )?);
     core.stop();
