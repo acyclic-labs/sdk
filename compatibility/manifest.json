@@ -13,8 +13,8 @@
     "actors": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:21edfc694c69d16f31177f32700f5a0a3e711a3877ed93f1fb35e606cf65edc9",
-      "descriptorDigest": "sha256:1320388e370be8064d1ec571aae373e4b3240a0ea83120d4536fe6efff0b3e14"
+      "schemaDigest": "sha256:9a599b2710fdc0dc41f4c37a0896874c76f768f65ab7b9d2e0fb0e5a24a98bf8",
+      "descriptorDigest": "sha256:5b63d9044e1f01a93e7926e835923a27412a8bff9cb00de3ce0e1f3a7f813eda"
     },
     "harness": {
       "version": "0.2.0",

@@ -89,7 +89,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.name)
         || !match (&request.limits, &request.worker_limits) {
-            (Some(limits), None) => limits.memory_bytes > 0 && limits.checkpoint_bytes > 0,
+            (Some(limits), None) => domain::ActorLimits::try_from(limits.clone()).is_ok(),
             (None, Some(limits)) => {
                 limits.cpu_millis > 0
                     && limits.memory_bytes > 0
@@ -144,7 +144,7 @@ pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), Con
         || !request
             .limits
             .as_ref()
-            .is_some_and(|limits| limits.memory_bytes > 0 && limits.checkpoint_bytes > 0)
+            .is_some_and(|limits| domain::ActorLimits::try_from(limits.clone()).is_ok())
     {
         return Err(ContractError::InvalidArgument);
     }

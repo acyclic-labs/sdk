@@ -735,7 +735,7 @@ impl LocalHarness {
                     maximum_bytes: self.limits.file_bytes,
                     history_turns: HISTORY_TURNS,
                 },
-                actors: ActorLimits::new(0, 1 << 20, 1 << 16).map_err(storage)?,
+                actors: ActorLimits::default(),
                 clock: Arc::new(SystemClock),
                 approval_policy: self.preset.approval_policy.clone(),
             },
@@ -831,7 +831,7 @@ impl LocalHarness {
                 maximum_bytes: self.limits.file_bytes,
                 history_turns: HISTORY_TURNS,
             },
-            actors: ActorLimits::new(0, 1 << 20, 1 << 16).map_err(storage)?,
+            actors: ActorLimits::default(),
             clock: Arc::new(SystemClock),
             approval_policy: self.preset.approval_policy.clone(),
         };
