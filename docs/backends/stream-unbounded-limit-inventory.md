@@ -57,6 +57,31 @@ Paths in this table are relative to `rust/crates`. Tests tied to these ceilings
 must follow the API change; do not delete unrelated application format or
 configured-capacity tests merely because they mention a constant.
 
+## TypeScript primitive surface
+
+The non-Rust SDK is part of the same cutover. These are primitive adapters and
+public client checks, not just downstream applications. They must use the Rust
+shared staging/reader mechanism through the native/WASM bindings rather than
+implementing another chunker in TypeScript.
+
+| Source relative to `typescript/packages/stream/src` | Current behavior | Required disposition |
+| --- | --- | --- |
+| `client.ts:192`, `client.ts:235` | Rejects append record counts above `MAX_ITEMS`; rejects read/list page limits outside the same ceiling. | Remove logical append ceilings after routing to staging; treat page sizes as work hints and preserve malformed-number validation. |
+| `record.ts:74` | Rejects a decoded record body above `MAX_RECORD_BYTES`, even if its cursor is valid. | Resolve the shared content representation through bounded frames; keep cursor, origin, key and commit-identity validation. |
+| `http.ts:82` | Refuses a children-page request above `MAX_ITEMS`. | Page through the shared reader without restoring a public logical count ceiling. |
+| `contract.ts`, called by `client.ts` and adapters | Calls WASM append/commit validation, whose Rust exports currently reject complete command bytes. | Export and use shared staged request/result operations. Removing only the TypeScript count check would still fail in WASM. |
+| `session-websocket.ts:81`, `session-websocket.ts:100` | Bounds one incoming frame, then refuses a send when cumulative `bufferedAmount` plus the frame exceeds `MAX_COMMAND_BYTES`. | Retain protective frame decoding after shared splitting; turn transport occupancy into event-driven credit/backpressure, not legitimate-request failure. |
+| `session-websocket.ts:29`, `grpc.ts:169` | Uses `MAX_ITEMS` to size session queues. | Audit the queue's admission behavior: credit waits may stay; queue occupancy must not become a logical operation count rejection. |
+| `contract.ts:85`, `native.ts:310` | Maps `limit_exceeded` into public error objects. | Preserve error mapping until producers are classified; changing the message does not remove a limit. |
+
+The HTTP bearer-token and gRPC CA-certificate bounds are separate authentication
+input policies, not proven protective merely by their names. Audit them with
+their respective auth contracts; do not confuse them with the record/effect
+staging change. Generated `StreamLimit` declarations come from the protobuf
+schema and must be regenerated with it, not edited by hand. Existing call-time
+input snapshot and allocation-custody guarantees must survive the staged
+native/WASM bridge.
+
 ```text
 rust/crates/stream/proto\stream\v1\stream.proto:12:  STREAM_LIMIT_MAX_RECORD_BYTES = 65536;
 rust/crates/stream/proto\stream\v1\stream.proto:13:  STREAM_LIMIT_MAX_ITEMS = 1024;
