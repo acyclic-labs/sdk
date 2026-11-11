@@ -164,7 +164,7 @@ pub(crate) async fn read_value<'a>(
         ));
     }
     let _bytes_hold;
-    let bytes = resolver.read(file, maximum, None, io)?.await?;
+    let bytes = resolver.read(file, Some(maximum), None, io)?.await?;
     {
         _bytes_hold = match io {
             Some(io) if io.original_native_work().is_none() => bytes

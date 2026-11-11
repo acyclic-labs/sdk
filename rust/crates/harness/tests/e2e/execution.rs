@@ -75,7 +75,8 @@ pub(super) async fn run_with_filesystem<
     stream: Arc<P>,
 ) -> TestResult<Outcome<P, A, O>> {
     let storage =
-        MemoryHarnessStorage::from_providers(AgentId::new(), 1_048_576, filesystem, stream).await?;
+        MemoryHarnessStorage::from_providers(AgentId::new(), Some(1_048_576), filesystem, stream)
+            .await?;
     publish(&storage, &case.seed).await?;
     case.seed.clear();
     let (executor, provider, source) = configure(&mut case);
@@ -433,7 +434,7 @@ pub(super) async fn normalized_observation(
 #[tokio::test]
 async fn scenario_observations_normalize_inline_and_file_events() -> TestResult {
     use acyclic_harness::executor::ModelPurpose;
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let event = serde_json::to_string(&acyclic_harness::model::ModelEvent::Content {
         delta: "hello".into(),

@@ -6,7 +6,7 @@ pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
     pub(in crate::filesystem) host: Arc<FilesystemHost<A, O>>,
     pub(in crate::filesystem) authority: Arc<crate::core::VerifiedScope>,
     pub(in crate::filesystem) exact_file: Option<FileRef>,
-    pub(in crate::filesystem) maximum_bytes: u64,
+    pub(in crate::filesystem) maximum_bytes: Option<u64>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) _native_metadata: Option<Arc<acyclic_fs::NativeAllocation>>,
 }
@@ -36,10 +36,10 @@ impl<A, O> FilesystemContentVerifier<A, O> {
         host: Arc<FilesystemHost<A, O>>,
         verifier: &AuthorityVerifier,
         scope: &Scope,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&PreparationIo>,
     ) -> Result<Arc<Self>> {
-        if maximum_bytes == 0 {
+        if maximum_bytes == Some(0) {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
@@ -112,12 +112,17 @@ where
     fn read<'a>(
         &'a self,
         reference: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-        acyclic_differential::record(("content read", maximum_bytes));
+        acyclic_differential::record((
+            "content read",
+            maximum_bytes.map_or(reference.descriptor().byte_length(), |maximum| {
+                maximum.min(reference.descriptor().byte_length())
+            }),
+        ));
         crate::conversation::BoundedContentFuture::new(io, || {
             self.read_file(reference, maximum_bytes, ceiling, io)
         })
@@ -132,7 +137,9 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.verify_exact_file(Some(reference), io)?;
-            if range.length > self.maximum_bytes
+            if self
+                .maximum_bytes
+                .is_some_and(|maximum| range.length > maximum)
                 || range
                     .offset
                     .checked_add(range.length)
@@ -173,7 +180,7 @@ where
     fn verify<'a>(
         &'a self,
         reference: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -188,11 +195,16 @@ where
     fn verify_publication<'a>(
         &'a self,
         reference: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            if reference.descriptor().byte_length() > maximum_bytes.min(self.maximum_bytes) {
+            if maximum_bytes
+                .into_iter()
+                .chain(self.maximum_bytes)
+                .min()
+                .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
+            {
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
@@ -242,7 +254,11 @@ where
 
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.verify_exact_file(None, io)?;
-            if maximum_bytes == 0 || maximum_bytes > self.maximum_bytes {
+            if maximum_bytes == 0
+                || self
+                    .maximum_bytes
+                    .is_some_and(|maximum| maximum_bytes > maximum)
+            {
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
@@ -585,7 +601,10 @@ where
             let grant_hold = io
                 .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
                 .transpose()?;
-            if range.length > self.maximum_bytes {
+            if self
+                .maximum_bytes
+                .is_some_and(|maximum| range.length > maximum)
+            {
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
@@ -631,7 +650,7 @@ where
         granted_prefix: &'a str,
         path: &'a str,
         expected_generation: Option<&'a GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
@@ -670,7 +689,7 @@ where
                     &grant,
                     path,
                     expected_generation,
-                    maximum_bytes.min(self.maximum_bytes),
+                    maximum_bytes.into_iter().chain(self.maximum_bytes).min(),
                     crate::conversation::ContentAccess { ceiling, io },
                 )
                 .await?;
@@ -714,7 +733,7 @@ where
     pub(in crate::filesystem) async fn read_file(
         &self,
         reference: &FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
@@ -734,7 +753,7 @@ where
             .read_file_with_access(
                 self.authority.scope(),
                 reference,
-                maximum_bytes.min(self.maximum_bytes),
+                maximum_bytes.into_iter().chain(self.maximum_bytes).min(),
                 self.exact_file.is_some(),
                 ceiling,
                 authority_io,

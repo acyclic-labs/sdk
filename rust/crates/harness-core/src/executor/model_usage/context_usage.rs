@@ -190,7 +190,8 @@ mod tests {
             },
         };
         let storage =
-            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 131_072).await?;
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(131_072))
+                .await?;
         let journal = storage.journal();
         let maximum_depth = crate::executor::json::RECORD_MAXIMUM_DEPTH;
         // Record, header, tool list, tool, schema and properties precede the

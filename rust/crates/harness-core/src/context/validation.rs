@@ -62,7 +62,7 @@ pub(crate) fn validate_projected_context(
         Ok(())
     })?;
     let mut remaining = limits.render_bytes;
-    crate::model::reserve_instruction_bodies(&context.messages, &mut remaining, io)
+    crate::model::reserve_instruction_bodies(&context.messages, &mut remaining, io).map(|_| ())
 }
 
 /// Message and instruction bounds were established by this immutable request's
@@ -124,7 +124,7 @@ pub(crate) async fn verify_file(
         ));
     }
     verifier
-        .verify(file, file.descriptor().byte_length(), io)?
+        .verify(file, Some(file.descriptor().byte_length()), io)?
         .await
 }
 
@@ -183,7 +183,11 @@ pub(crate) fn restrict_context_limits(
         admitted.validate(work)
     })?;
     Ok(Limits {
-        file_bytes: pinned.file_bytes.min(admitted.file_bytes),
+        file_bytes: pinned
+            .file_bytes
+            .into_iter()
+            .chain(admitted.file_bytes)
+            .min(),
         path_bytes: pinned
             .path_bytes
             .into_iter()
@@ -194,7 +198,11 @@ pub(crate) fn restrict_context_limits(
             .into_iter()
             .chain(admitted.attachments)
             .min(),
-        render_bytes: pinned.render_bytes.min(admitted.render_bytes),
+        render_bytes: pinned
+            .render_bytes
+            .into_iter()
+            .chain(admitted.render_bytes)
+            .min(),
         model_events_per_step: pinned
             .model_events_per_step
             .into_iter()

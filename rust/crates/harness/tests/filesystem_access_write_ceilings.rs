@@ -24,7 +24,7 @@ proptest! {
             let caller = fixture.narrowed_for(&actions, caller_path, caller_expired)?;
             let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
                 fixture.host.clone(), &fixture.volume, &fixture.issuer.verifier(&mut None)?,
-                &bound, 4096, None,
+                &bound, Some(4096), None,
             )?;
             let task = context::content_context(fixture.reader(&fixture.scope)?, Some(writer), capabilities(&caller)).await?;
             let result = task.stage_file_once(OperationId::new(), "secrets/new", b"new", "text/plain", "new", None).await;
@@ -54,7 +54,7 @@ async fn direct_writer_rejects_empty_and_unrelated_callers() -> Result<(), Box<d
         &fixture.volume,
         &fixture.issuer.verifier(&mut None)?,
         &fixture.scope,
-        4096,
+        Some(4096),
         None,
     )?;
     for grants in [
@@ -123,7 +123,7 @@ async fn cached_reply_checks_the_callers_list_ceiling() -> Result<(), Box<dyn Er
         &fixture.volume,
         &fixture.issuer.verifier(&mut None)?,
         &fixture.scope,
-        4096,
+        Some(4096),
         None,
     )?;
     let operation = OperationId::new();

@@ -34,7 +34,7 @@ async fn content_admission_rechecks_only_new_text_and_keeps_scope_binding() -> R
         let mut full_work = Vec::new();
         for count in [1, 10, 100, 1_000] {
             let storage =
-                crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+                crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
             let journal = storage.journal();
             let stock = executor()?;
             let cancellation = acyclic_fs::CancellationToken::new();

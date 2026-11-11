@@ -81,7 +81,8 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
         )?
         .with_max_output_tokens(1024)?;
         let storage =
-            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536))
+                .await?;
         let journal = storage.journal();
         let journal = journal.as_ref();
         let operation = OperationId::new();
@@ -137,7 +138,7 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
     for output_capacity in [Some(4096), None] {
         let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
             crate::AgentId::new(),
-            65_536,
+            Some(65_536),
         ))?;
         let journal = storage.journal();
         let journal = journal.as_ref();
@@ -268,7 +269,7 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
     for source in ["projected", "selected", "working"] {
         let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
             AgentId::new(),
-            65_536,
+            Some(65_536),
         ))?;
         let journal = storage.journal();
         let journal = journal.as_ref();
@@ -593,13 +594,14 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
     ] {
         let limits = Limits {
             context_messages: std::num::NonZeroUsize::new(1),
-            render_bytes: 4_096,
-            file_bytes,
+            render_bytes: Some(4_096),
+            file_bytes: Some(file_bytes),
             ..Limits::default()
         };
         let executor = base.clone().with_limits(limits);
         let storage =
-            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536))
+                .await?;
         let (generation, _) = storage.list_private_directory("", None, None, 1).await?;
         let journal = storage.journal();
         let journal = journal.as_ref();
@@ -683,7 +685,7 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
     .with_max_output_tokens(1_024)?;
     let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
         crate::AgentId::new(),
-        65_536,
+        Some(65_536),
     ))?;
     let journal = storage.journal();
     let journal = journal.as_ref();
@@ -750,7 +752,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
     )
     .with_max_output_tokens(1024)?;
     let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let journal = journal.as_ref();
     let operation = OperationId::new();

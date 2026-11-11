@@ -14,7 +14,7 @@ impl ContentResidencyVerifier for ManifestBytes {
     fn read<'a>(
         &'a self,
         _: &'a FileRef,
-        _: u64,
+        _: Option<u64>,
         _: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {

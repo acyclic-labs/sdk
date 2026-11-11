@@ -81,7 +81,7 @@ pub(super) async fn seed(
         host.clone(),
         &issuer.verifier(&mut None)?,
         &scope,
-        65_536,
+        Some(65_536),
         None,
     )?;
     // The verifier observes this owner's trust publications. Dropping the

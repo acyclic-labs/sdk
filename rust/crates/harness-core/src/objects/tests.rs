@@ -104,7 +104,9 @@ async fn an_upload_retry_naming_other_content_is_refused()
                 let before = read_cut.requests.load(Ordering::SeqCst);
                 let read = match range {
                     Some(range) => binding.read_range(&file, range, None, None)?,
-                    None => binding.read(&file, file.descriptor().byte_length(), None, None)?,
+                    None => {
+                        binding.read(&file, Some(file.descriptor().byte_length()), None, None)?
+                    }
                 };
                 let mut read = core::pin::pin!(read);
                 assert!(futures::poll!(read.as_mut()).is_pending());
@@ -135,7 +137,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
             )?;
             assert!(matches!(
                 binding
-                    .read(&forged, forged.descriptor().byte_length(), None, None)?
+                    .read(&forged, Some(forged.descriptor().byte_length()), None, None)?
                     .await,
                 Err(Error::Unauthorized(_))
             ));
@@ -144,8 +146,12 @@ async fn an_upload_retry_naming_other_content_is_refused()
                 *read_cut.delivery.lock().expect("read delivery") = Some(delivered);
                 let (failed, failure) = tokio::sync::oneshot::channel();
                 *read_cut.failure.lock().expect("content failure") = Some(failed);
-                let read =
-                    binding.read(reference, reference.descriptor().byte_length(), None, None)?;
+                let read = binding.read(
+                    reference,
+                    Some(reference.descriptor().byte_length()),
+                    None,
+                    None,
+                )?;
                 let mut read = core::pin::pin!(read);
                 match futures::future::select(read.as_mut(), failure).await {
                     futures::future::Either::Right((Ok(()), _)) => {}
@@ -165,7 +171,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
             drop(release);
             assert!(matches!(
                 binding
-                    .read(&file, file.descriptor().byte_length(), None, None)?
+                    .read(&file, Some(file.descriptor().byte_length()), None, None)?
                     .await,
                 Err(Error::Storage(_))
             ));
@@ -325,7 +331,7 @@ async fn upload_contract(
     objects.collect().await.map_err(storage)?;
     assert_eq!(
         owner_store
-            .read(&file, file.descriptor().byte_length(), None, None)?
+            .read(&file, Some(file.descriptor().byte_length()), None, None)?
             .await?
             .as_slice(),
         b"owner bytes"
@@ -544,7 +550,7 @@ async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Resu
     grant_a.require_file_read(&file_a, None)?;
     assert_eq!(
         reader_a
-            .read(&file_a, file_a.descriptor().byte_length(), None, None)?
+            .read(&file_a, Some(file_a.descriptor().byte_length()), None, None)?
             .await?
             .as_slice(),
         b"bucket a"
@@ -553,7 +559,7 @@ async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Resu
     grant_b.require_file_read(&file_b, None)?;
     assert_eq!(
         reader_b
-            .read(&file_b, file_b.descriptor().byte_length(), None, None)?
+            .read(&file_b, Some(file_b.descriptor().byte_length()), None, None)?
             .await?
             .as_slice(),
         b"bucket b"
@@ -572,7 +578,7 @@ async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Resu
         )?;
         assert!(matches!(
             owner_store_a
-                .read(&forged, forged.descriptor().byte_length(), None, None)?
+                .read(&forged, Some(forged.descriptor().byte_length()), None, None)?
                 .await,
             Err(Error::Unauthorized(_))
         ));

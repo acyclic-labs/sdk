@@ -11,7 +11,7 @@ impl ContentResidencyVerifier for Resolver {
     fn read<'a>(
         &'a self,
         _: &'a FileRef,
-        _: u64,
+        _: Option<u64>,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {

@@ -19,7 +19,7 @@ impl ContentResidencyVerifier for Resolver {
     fn read<'a>(
         &'a self,
         _: &'a FileRef,
-        _: u64,
+        _: Option<u64>,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
@@ -56,7 +56,7 @@ async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Resu
         fn read<'a>(
             &'a self,
             _: &'a FileRef,
-            _: u64,
+            _: Option<u64>,
             _ceiling: Option<&'a crate::Capabilities>,
             io: Option<&'a PreparationIo>,
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
@@ -243,7 +243,7 @@ fn dispatch_admission_checks_bounds_and_current_user() {
     assert!(
         selected
             .validate_for_dispatch(Limits {
-                render_bytes: 4,
+                render_bytes: Some(4),
                 ..Limits::default()
             })
             .is_err()
@@ -293,7 +293,7 @@ async fn manifest_projection_checks_limit_before_resolution_and_exact_count_afte
     let limits = Limits {
         context_messages: std::num::NonZeroUsize::new(256),
         attachments: std::num::NonZeroUsize::new(1),
-        render_bytes: 128 * 1024,
+        render_bytes: Some(128 * 1024),
         ..Limits::default()
     };
     assert!(
@@ -396,7 +396,7 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
         fn read<'a>(
             &'a self,
             _: &'a FileRef,
-            _: u64,
+            _: Option<u64>,
             _ceiling: Option<&'a crate::Capabilities>,
             io: Option<&'a PreparationIo>,
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>

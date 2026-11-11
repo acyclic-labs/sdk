@@ -163,7 +163,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         input: &'a B,
         media_type: &'a str,
         display_name: &'a str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         idempotency_key: &'a IdempotencyKey,
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&'a GenerationRef>,
@@ -564,7 +564,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &'a self,
         generation: &'a Generation<A, O>,
         reference: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -620,7 +620,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn read_pinned_io(
         &self,
         reference: &FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&bounded_io::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         // Keep the Result temporary across await for the original admitted caller frame.
@@ -639,7 +639,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn read_pinned_receipt_io(
         &self,
         reference: &FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&bounded_io::PreparationIo>,
     ) -> Result<PinnedRead<A, O>> {
         if io.is_none() {
@@ -659,7 +659,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     fn read_pinned_unmetered<'a, T, F>(
         &'a self,
         reference: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         project: F,
     ) -> impl std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a
     where
@@ -701,7 +701,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     fn read_pinned_metered<'a>(
         &'a self,
         reference: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&'a bounded_io::PreparationIo>,
     ) -> impl std::future::Future<Output = Result<acyclic_stream::OwnedBytes>>
     + acyclic_stream::ProviderTask

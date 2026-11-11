@@ -13,7 +13,7 @@ proptest! {
         tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
             let fs = Fs::memory();
             let storage = MemoryHarnessStorage::from_providers(
-                AgentId::new(), 4096, fs.clone(), Arc::new(MemoryStream::default()),
+                AgentId::new(), Some(4096), fs.clone(), Arc::new(MemoryStream::default()),
             ).await?;
             let file = storage.stage(OperationId::new(), "secrets/key", b"cached", "text/plain", "key").await?;
             assert_eq!(storage.read(&file).await?.as_ref(), b"cached");
@@ -117,12 +117,12 @@ proptest! {
         tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
             let fs = Fs::memory();
             let storage = MemoryHarnessStorage::from_providers(
-                AgentId::new(), 4096, fs.clone(), Arc::new(MemoryStream::default()),
+                AgentId::new(), Some(4096), fs.clone(), Arc::new(MemoryStream::default()),
             ).await?;
             for name in ["one", "two"] {
                 storage.stage(OperationId::new(), &format!("notes/{name}"), b"data", "text/plain", name).await?;
             }
-            let tool = storage.list_files_tool(Limits { file_bytes: 4096, ..Limits::default() })?;
+            let tool = storage.list_files_tool(Limits { file_bytes: Some(4096), ..Limits::default() })?;
             let invocation = ToolInvocation {
                 operation_id: OperationId::new(), call_id: "cached-list".into(), name: "acyclic.list_files".into(),
                 arguments: json!({"path":"notes", "maximum_entries":8}),
@@ -164,7 +164,7 @@ async fn local_publication_evidence_rechecks_current_disclosure_policy() -> Resu
     let fs = Fs::memory();
     let storage = MemoryHarnessStorage::from_providers(
         AgentId::new(),
-        4096,
+        Some(4096),
         fs.clone(),
         Arc::new(MemoryStream::default()),
     )

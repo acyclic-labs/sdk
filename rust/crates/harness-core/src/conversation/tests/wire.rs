@@ -98,7 +98,7 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
         fn read<'a>(
             &'a self,
             reference: &'a FileRef,
-            maximum_bytes: u64,
+            maximum_bytes: Option<u64>,
             _ceiling: Option<&'a crate::Capabilities>,
             io: Option<&'a ContentIo>,
         ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
@@ -176,7 +176,7 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
         .verify_manifest(&manifest, 1, &Limits::default(), None)?
         .await?;
     let mut narrow = Limits::default();
-    narrow.file_bytes = manifest.descriptor().byte_length().saturating_add(1);
+    narrow.file_bytes = Some(manifest.descriptor().byte_length().saturating_add(1));
     narrow.render_bytes = narrow.file_bytes;
     assert!(narrow.file_bytes < member.descriptor().byte_length());
     assert!(matches!(
@@ -251,8 +251,12 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
         &mut None,
     )?;
     assert!(matches!(
-        lazy.verify(&unauthorized, unauthorized.descriptor().byte_length(), None)?
-            .await,
+        lazy.verify(
+            &unauthorized,
+            Some(unauthorized.descriptor().byte_length()),
+            None
+        )?
+        .await,
         Err(Error::Unauthorized(_))
     ));
     let same_provider_member = FileRef::new(

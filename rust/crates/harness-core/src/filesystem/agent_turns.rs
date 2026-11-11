@@ -426,7 +426,7 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
 #[derive(Clone, Copy, Debug)]
 pub struct TurnLimits {
     /// Journal bytes per turn.
-    pub maximum_bytes: u64,
+    pub maximum_bytes: Option<u64>,
     /// Page size of the settled history in the model context. The window
     /// starts at a multiple of this many conversation entries and holds at
     /// least this many and fewer than twice as many, so it advances one whole
@@ -604,7 +604,7 @@ where
             Some(file) => {
                 let bytes = content
                     .reader
-                    .read(file, file.descriptor().byte_length(), None, None)?
+                    .read(file, Some(file.descriptor().byte_length()), None, None)?
                     .await?;
                 AgentApprovalPolicy::from_file(
                     agent.path.id(),
@@ -871,7 +871,7 @@ where
             Arc::clone(&self.host),
             &verifier,
             &scope,
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             None,
         )?;
         // Open only the committed input envelopes under their original grant.
@@ -907,7 +907,7 @@ where
                     Arc::clone(&self.host),
                     &verifier,
                     &scope,
-                    crate::conversation::MAX_EXACT_JS_INTEGER,
+                    Some(crate::conversation::MAX_EXACT_JS_INTEGER),
                     None,
                 )?;
             }
@@ -917,7 +917,7 @@ where
             private.volume()?,
             &verifier,
             &scope,
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             None,
         )?;
         let journal = FilesystemExecutionJournal::new(
@@ -1606,7 +1606,7 @@ impl<'a> TurnContext<'a> {
 /// pinned length.
 async fn staged_text(reader: &dyn ContentResidencyVerifier, output: &FileRef) -> Result<String> {
     let bytes = reader
-        .read(output, output.descriptor().byte_length(), None, None)?
+        .read(output, Some(output.descriptor().byte_length()), None, None)?
         .await?;
     serde_json::from_slice::<TurnOutput>(&bytes)
         .map(|output| output.text)
@@ -1625,7 +1625,7 @@ async fn staged_transcript(
     mut fallback: Vec<ModelMessage>,
 ) -> Result<Vec<ModelMessage>> {
     let bytes = reader
-        .read(output, output.descriptor().byte_length(), None, None)?
+        .read(output, Some(output.descriptor().byte_length()), None, None)?
         .await?;
     let output = serde_json::from_slice::<TurnOutput>(&bytes)
         .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
@@ -1803,7 +1803,7 @@ where
                         Arc::clone(&self.host),
                         &authority.verifier,
                         &authority.scope,
-                        crate::conversation::MAX_EXACT_JS_INTEGER,
+                        Some(crate::conversation::MAX_EXACT_JS_INTEGER),
                         None,
                     )?;
                     for settled in &mut context.settled {
@@ -1811,7 +1811,7 @@ where
                             continue;
                         };
                         let bytes = reader
-                            .read(file, file.descriptor().byte_length(), None, None)?
+                            .read(file, Some(file.descriptor().byte_length()), None, None)?
                             .await?;
                         settled.steered = crate::contract::json_from_slice(&bytes)
                             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -1985,7 +1985,7 @@ struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
     admission: TurnAdmission,
     agent: AgentPath,
     volumes: Vec<WorkspaceEntry>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 impl<P, A, O> crate::agent::TurnChildren for FilesystemTurnChildren<P, A, O>

@@ -414,10 +414,10 @@ message WorkflowRecord {
 }
 
 message RuntimeLimits {
-  uint64 file_bytes = 1;
+  optional uint64 file_bytes = 1;
   optional uint64 path_bytes = 2;
   optional uint64 attachments = 3;
-  uint64 render_bytes = 4;
+  optional uint64 render_bytes = 4;
   reserved 5;
   reserved "model_steps";
   optional uint64 model_events_per_step = 6;

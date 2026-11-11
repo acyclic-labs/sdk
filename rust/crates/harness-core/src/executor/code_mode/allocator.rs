@@ -336,7 +336,7 @@ mod tests {
                 acyclic_stream::OwnedBytes::from_static(b"[]"),
                 send,
                 tokio_util::sync::CancellationToken::new(),
-                4096,
+                Some((4096) as u64),
                 allocator,
                 super::super::interpreter::INTERRUPT_BUDGET,
             )
@@ -433,7 +433,7 @@ mod tests {
             acyclic_stream::OwnedBytes::from_static(b"[]"),
             send,
             tokio_util::sync::CancellationToken::new(),
-            8192,
+            Some((8192) as u64),
             allocator,
             super::super::interpreter::INTERRUPT_BUDGET,
         )

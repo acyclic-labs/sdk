@@ -131,13 +131,13 @@ mod tests {
 
     #[tokio::test]
     async fn output_replay_retains_original_files_after_visible_edits() -> Result<()> {
-        let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+        let storage = MemoryHarnessStorage::new(AgentId::new(), Some(4096)).await?;
         let mut bindings = Bindings::local();
         bindings.scope = RuntimeScope::new(
             storage.owner_scope().capabilities().clone(),
             Limits {
-                file_bytes: 2,
-                render_bytes: 4,
+                file_bytes: Some(2),
+                render_bytes: Some(4),
                 ..Limits::default()
             },
         )?;

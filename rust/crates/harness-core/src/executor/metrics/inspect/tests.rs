@@ -498,7 +498,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         model::ModelEvent,
     };
 
-    let storage = MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+    let storage = MemoryHarnessStorage::new(crate::AgentId::new(), Some(4096)).await?;
     let journal = storage.journal();
     let operation = source().operation;
     journal

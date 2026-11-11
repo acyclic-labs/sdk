@@ -594,7 +594,7 @@ impl LocalHarness {
         let locate = |path: &str| path.to_owned();
         for file in self.resolve_at(&project, text, reader, locate).await? {
             let bytes = reader
-                .read(&file, file.descriptor().byte_length(), None, None)?
+                .read(&file, Some(file.descriptor().byte_length()), None, None)?
                 .await?;
             copies.insert(file.path().trim_start_matches('/').to_owned(), bytes);
         }

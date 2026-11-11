@@ -148,7 +148,10 @@ impl RuntimeScope {
 
     pub(super) fn allows_authority(&self, grants: &Capabilities, limits: &Limits) -> bool {
         grants.is_subset_of(&self.grants)
-            && limits.file_bytes <= self.limits.file_bytes
+            && self
+                .limits
+                .file_bytes
+                .is_none_or(|maximum| limits.file_bytes.is_some_and(|limit| limit <= maximum))
             && self
                 .limits
                 .path_bytes
@@ -157,7 +160,10 @@ impl RuntimeScope {
                 .limits
                 .attachments
                 .is_none_or(|maximum| limits.attachments.is_some_and(|limit| limit <= maximum))
-            && limits.render_bytes <= self.limits.render_bytes
+            && self
+                .limits
+                .render_bytes
+                .is_none_or(|maximum| limits.render_bytes.is_some_and(|limit| limit <= maximum))
             && self.limits.model_events_per_step.is_none_or(|maximum| {
                 limits
                     .model_events_per_step

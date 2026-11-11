@@ -194,7 +194,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
             Turns {
                 executors,
                 limits: TurnLimits {
-                    maximum_bytes: 1 << 20,
+                    maximum_bytes: Some(1 << 20),
                     history_turns: 8,
                 },
                 actors: acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
@@ -260,7 +260,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         authority.private.volume()?,
         &authority.verifier,
         &authority.scope,
-        1 << 20,
+        Some(1 << 20),
         None,
     )?;
     use acyclic_harness::conversation::{ContentAccess, ContentPublisher};

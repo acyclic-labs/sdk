@@ -11,7 +11,7 @@ impl ContentResidencyVerifier for SnapshotReader {
     fn verify<'a>(
         &'a self,
         file: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
         self.verifies.fetch_add(1, Ordering::SeqCst);
@@ -30,7 +30,7 @@ impl ContentResidencyVerifier for SnapshotReader {
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
@@ -58,7 +58,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
     use acyclic_harness::context::{ContextInput, ContextStage as _, PinnedContextStage};
     use std::collections::BTreeMap;
 
-    let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 131_072).await?);
+    let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), Some(131_072)).await?);
     let metadata = storage
         .stage(
             OperationId::new(),
@@ -145,7 +145,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             reader.clone(),
             ContextPlacement::Prepend,
             Limits {
-                render_bytes: 1,
+                render_bytes: Some(1),
                 ..limits
             },
         )
@@ -186,7 +186,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             .run(
                 &input,
                 Limits {
-                    file_bytes: narrow_file_bytes,
+                    file_bytes: Some(narrow_file_bytes),
                     ..limits
                 },
                 None

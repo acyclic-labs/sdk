@@ -51,7 +51,7 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 4096, None)?;
+    let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, Some(4096), None)?;
     let access = crate::conversation::ContentAccess::default();
     let absent = reader
         .read_private_range(
@@ -148,7 +148,7 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
             &volume,
             &verifier,
             &scope,
-            4096,
+            Some(4096),
             None,
         )?),
     };
@@ -165,8 +165,8 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
                 "tool:call:read".into(),
             ]),
             crate::conversation::Limits {
-                file_bytes: 4096,
-                render_bytes: 4096,
+                file_bytes: Some(4096),
+                render_bytes: Some(4096),
                 ..Default::default()
             },
         )?,
@@ -281,7 +281,8 @@ fn native_reader_reuses_immutable_authentication_and_refuses_revocation() -> Res
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 4096, Some(&io))?;
+    let reader =
+        FilesystemContentVerifier::new(host.clone(), &verifier, &scope, Some(4096), Some(&io))?;
     let before = work.receipt().bytes_hashed;
     let examined = work.receipt().items_examined;
     for _ in 0..4 {
@@ -305,7 +306,9 @@ fn native_reader_reuses_immutable_authentication_and_refuses_revocation() -> Res
     forged["id"] = "other".into();
     let forged =
         serde_json::from_value(forged).map_err(|error| Error::Invalid(error.to_string()))?;
-    assert!(FilesystemContentVerifier::new(host, &verifier, &forged, 4096, Some(&io)).is_err());
+    assert!(
+        FilesystemContentVerifier::new(host, &verifier, &forged, Some(4096), Some(&io)).is_err()
+    );
     issuer.revoke_workload(&scope)?;
     assert!(
         reader.require_native_work(&work).is_err(),

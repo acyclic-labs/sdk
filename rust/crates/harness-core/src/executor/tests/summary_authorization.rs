@@ -170,7 +170,10 @@ fn only_the_authenticated_immutable_summary_is_admitted() -> Result<()> {
         .enable_all()
         .build()
         .unwrap();
-    let storage = runtime.block_on(MemoryHarnessStorage::new(crate::AgentId::new(), 65_536))?;
+    let storage = runtime.block_on(MemoryHarnessStorage::new(
+        crate::AgentId::new(),
+        Some(65_536),
+    ))?;
     let journal = storage.journal();
     let operation = OperationId::new();
     let file = runtime.block_on(journal.stage(

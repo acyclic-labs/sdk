@@ -174,7 +174,12 @@ async fn caller_ceiling_and_its_storage_use_the_original_native_ledger()
         for _ in 0..2 {
             let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
             let result = reader
-                .read(&fixture.file, 4096, Some(caller.capabilities()), Some(&io))?
+                .read(
+                    &fixture.file,
+                    Some(4096),
+                    Some(caller.capabilities()),
+                    Some(&io),
+                )?
                 .await;
             assert_eq!(result.is_ok(), allowed);
             drop(result);
@@ -282,7 +287,7 @@ proptest! {
                 _ => Capabilities::new([fixture.volume.directory_read_capability("secrets", &mut None)?]),
             };
             let reader = fixture.reader(&fixture.scope)?;
-            assert_eq!(reader.read(&fixture.file, 4096, Some(&grants), None)?.await.is_ok(), kind >= 3 && !denied);
+            assert_eq!(reader.read(&fixture.file, Some(4096), Some(&grants), None)?.await.is_ok(), kind >= 3 && !denied);
             let directory = kind == 3 || kind == 5;
             let generation = fixture.generation()?;
             assert_eq!(reader.read_private_prefix(&fixture.volume, "secrets", "secrets/key", &generation, 2, acyclic_harness::conversation::ContentAccess { ceiling: Some(&grants), io: None })?.await.is_ok(), directory && !denied);

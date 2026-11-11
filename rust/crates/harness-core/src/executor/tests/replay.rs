@@ -267,7 +267,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         selected_context: None,
     };
     let narrow = Limits {
-        render_bytes: "bounded".len() as u64 - 1,
+        render_bytes: Some("bounded".len() as u64 - 1),
         ..Limits::default()
     };
     assert!(matches!(
@@ -286,7 +286,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
             .all(|request| request.max_output_tokens.is_none())
     );
     let changed = Limits {
-        file_bytes: Limits::default().file_bytes - 1,
+        file_bytes: Some(crate::conversation::MAX_EXACT_JS_INTEGER - 1),
         ..Limits::default()
     };
     assert!(matches!(
@@ -661,7 +661,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         );
         let limits = Limits {
             context_messages: std::num::NonZeroUsize::new(message_limit),
-            render_bytes,
+            render_bytes: Some(render_bytes),
             ..Limits::default()
         };
         // Bind the manifest before installing the inherited prefix, as public
@@ -727,7 +727,8 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
 /// stale tail is refused.
 #[tokio::test]
 async fn a_retried_settlement_is_one_record() -> Result<()> {
-    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let operation = OperationId::new();
     let other_operation = OperationId::new();

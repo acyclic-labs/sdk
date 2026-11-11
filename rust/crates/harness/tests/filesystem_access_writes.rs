@@ -136,7 +136,7 @@ async fn inbox_creation_is_idempotent_without_read_list_or_overwrite() -> Result
     assert!(
         fixture
             .reader(&scope)?
-            .read(&created, 4096, None, None)?
+            .read(&created, Some(4096), None, None)?
             .await
             .is_err()
     );

@@ -267,7 +267,9 @@ pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
         ));
     }
     let hold;
-    let bytes = verifier.read(reference, source_bytes, ceiling, io)?.await?;
+    let bytes = verifier
+        .read(reference, Some(source_bytes), ceiling, io)?
+        .await?;
     {
         hold = match io {
             Some(io) => {
@@ -299,7 +301,12 @@ pub async fn load_manifest<'a, V: ContentResidencyVerifier + ?Sized>(
     }
     let _bytes_hold;
     let bytes = verifier
-        .read(reference, reference.descriptor().byte_length(), None, io)?
+        .read(
+            reference,
+            Some(reference.descriptor().byte_length()),
+            None,
+            io,
+        )?
         .await?;
     {
         _bytes_hold = match io {
@@ -355,7 +362,7 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
             }
             limits.validate_file(&item.file, work)
         })?;
-        verified_content_bytes(verifier, &item.file, Some(limits.file_bytes), None, io).await?;
+        verified_content_bytes(verifier, &item.file, limits.file_bytes, None, io).await?;
     }
     Ok(output)
 }

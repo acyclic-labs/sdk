@@ -374,7 +374,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         "messages",
     )?;
     let delegated_reader =
-        FilesystemContentVerifier::new(host.clone(), &verifier, &delegated_scope, 16, None)?;
+        FilesystemContentVerifier::new(host.clone(), &verifier, &delegated_scope, Some(16), None)?;
     let (listed_generation, page) = delegated_reader
         .list_private_directory(
             &volume,

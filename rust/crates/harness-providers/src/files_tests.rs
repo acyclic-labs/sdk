@@ -80,7 +80,7 @@ impl ContentResidencyVerifier for Reader {
     fn read<'a>(
         &'a self,
         _file: &'a FileRef,
-        _maximum: u64,
+        _maximum: Option<u64>,
         _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
@@ -280,7 +280,7 @@ async fn summary_files_keep_source_then_instruction_resolution_order() -> Result
         fn read<'a>(
             &'a self,
             file: &'a FileRef,
-            maximum: u64,
+            maximum: Option<u64>,
             ceiling: Option<&'a acyclic_harness::Capabilities>,
             io: Option<&'a ContentIo>,
         ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
@@ -289,7 +289,7 @@ async fn summary_files_keep_source_then_instruction_resolution_order() -> Result
             } else {
                 &self.instruction_reader
             };
-            reader.read(file, maximum, ceiling, io)
+            reader.read(file, Some(maximum), ceiling, io)
         }
     }
     for (adapter, _) in fixtures() {

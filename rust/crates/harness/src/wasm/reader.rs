@@ -16,7 +16,7 @@ impl ContentResidencyVerifier for BrowserContentReader {
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
-        maximum: u64,
+        maximum: Option<u64>,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {

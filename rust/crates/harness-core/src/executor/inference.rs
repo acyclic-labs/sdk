@@ -25,7 +25,10 @@ impl InferenceResult<'_> {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<T> {
-        if self.text.len() as u64 > limits.render_bytes {
+        if limits
+            .render_bytes
+            .is_some_and(|maximum| self.text.len() as u64 > maximum)
+        {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,

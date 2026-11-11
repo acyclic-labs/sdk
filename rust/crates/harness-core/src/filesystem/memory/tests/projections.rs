@@ -5,7 +5,7 @@ use crate::runtime::{Bindings, TaskContext, ToolContext};
 #[tokio::test]
 async fn native_notebook_insert_ids_follow_operations_through_publication_and_replay() -> Result<()>
 {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 8192).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(8192)).await?;
     storage
         .stage(
             OperationId::new(),
@@ -166,8 +166,8 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let source = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 131_072))?;
-    let private = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 8192))?;
+    let source = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), Some(131_072)))?;
+    let private = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), Some(8192)))?;
     // Captured from the actual PNG encoder; provenance accompanies the bytes.
     let image = include_bytes!("../../../../tests/fixtures/notebook-output.png");
     let encoded = STANDARD.encode(image);
@@ -194,8 +194,8 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
         "outputs.ipynb",
     ))?;
     let limits = Limits {
-        file_bytes: 8192,
-        render_bytes: 8192,
+        file_bytes: Some(8192),
+        render_bytes: Some(8192),
         ..Limits::default()
     };
     let task = Bindings {
@@ -365,7 +365,7 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
         "many.ipynb",
     ))?;
     let narrow = Limits {
-        render_bytes: 4096,
+        render_bytes: Some(4096),
         ..limits
     };
     let paged = task.scoped(task.scope().grants().clone(), narrow)?;
@@ -410,8 +410,8 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let storage = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 131_072))?;
-    let private = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 4096))?;
+    let storage = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), Some(131_072)))?;
+    let private = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), Some(4096)))?;
     let selected = json!({"id":"selected", "cell_type":"code", "source":["λ\n"],
         "outputs":[{"output_type":"stream","name":"stdout","text":["kept\n"]}],
         "execution_count":4,"metadata":{"retain":true}});
@@ -434,8 +434,8 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
         "book.ipynb",
     ))?;
     let limits = Limits {
-        file_bytes: 4096,
-        render_bytes: 4096,
+        file_bytes: Some(4096),
+        render_bytes: Some(4096),
         ..Limits::default()
     };
     let task = Bindings {
@@ -749,8 +749,8 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let source = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 16_384))?;
-    let private = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 65_536))?;
+    let source = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), Some(16_384)))?;
+    let private = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), Some(65_536)))?;
     let workspace = super::super::super::bounded_io::content_workspace(
         &source.host.provider,
         &source.volume,
@@ -764,8 +764,8 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
         "lines.txt",
     ))?;
     let limits = Limits {
-        file_bytes: 4096,
-        render_bytes: 4096,
+        file_bytes: Some(4096),
+        render_bytes: Some(4096),
         ..Limits::default()
     };
     let source_grants = [source.read_capability.clone(), "tool:call:read".into()];
@@ -872,8 +872,8 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
                 "tool:call:read".into(),
             ]),
             Limits {
-                file_bytes: 65_536,
-                render_bytes: 4096,
+                file_bytes: Some(65_536),
+                render_bytes: Some(4096),
                 ..limits
             },
         )?,

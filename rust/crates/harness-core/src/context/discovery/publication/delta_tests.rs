@@ -55,7 +55,8 @@ async fn a_referenced_delta_skips_unchanged_invalid_skills_without_a_second_disc
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
+    let reader =
+        FilesystemContentVerifier::new(host.clone(), &verifier, &scope, Some(32_768), None)?;
     let root = ContextRoot {
         volume: volume.clone(),
         directory: "skills".into(),
