@@ -43,15 +43,33 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     );
     assert!(page.map_err(exchange)?.children.is_empty());
     let conversation = super::super::agent_conversation::Conversation::open(connection.clone());
-    let mut fork = conversation.prepare_fork(
-        "reader-child",
-        0,
-        "worker".into(),
-        "exercise the enrolled child listing".into(),
-    )?;
-    let child = match fork.execute().await.map_err(exchange)? {
+    let mut tree = conversation.tree()?;
+    tree.view.set_viewport(1, 0, 16);
+    loop {
+        tree.view.frame(0);
+        if tree
+            .view
+            .reader_ref()
+            .cache()
+            .listing(&connection.root.children().map_err(exchange)?, 0)
+            .is_some_and(|listing| listing.fresh && listing.children.is_empty())
+        {
+            break;
+        }
+        futures::future::poll_fn(|cx| tree.poll_changed(0, cx)).await;
+    }
+    let child = match connection
+        .execute(&acyclic_harness_client::AgentCommand::Spawn {
+            parent: connection.root.clone(),
+            id: crate::agent::IntentId::try_from("reader-child").map_err(exchange)?,
+            role: "worker".into(),
+            brief: crate::model::ModelContent::Text("exercise the enrolled child listing".into()),
+        })
+        .await
+        .map_err(|error| Error::Conflict(format!("spawn child: {error}")))?
+    {
         AgentReply::Spawned { agent, .. } => agent.clone(),
-        _ => return Err(Error::Conflict("fork returned no child".into())),
+        _ => return Err(Error::Conflict("spawn returned no child".into())),
     };
     conversation
         .select(child.clone())
@@ -70,6 +88,19 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         .map_err(exchange)?;
     assert_eq!(populated.children.len(), 1, "{populated:?}");
     assert_eq!(populated.children[0].path.as_str(), child.as_str());
+    loop {
+        tree.view.frame(0);
+        if tree.view.rows().iter().any(|(_, row)| {
+            matches!(row,
+            acyclic_harness_client::explorer::Row::Agent { path, .. } if path == &child)
+        }) {
+            break;
+        }
+        if let Some((path, issue)) = tree.view.reader_ref().issues().next() {
+            return Err(Error::Conflict(format!("tree reader {path}: {issue:?}")));
+        }
+        futures::future::poll_fn(|cx| tree.poll_changed(0, cx)).await;
+    }
     let outside = AgentPath::root(&crate::agent::AgentId::from_bytes([0; 16]));
     assert_eq!(
         reader.head(outside.status().map_err(exchange)?).await,
