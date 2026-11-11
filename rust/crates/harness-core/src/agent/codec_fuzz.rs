@@ -662,6 +662,9 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         seeds.extend(history_seeds()?);
         seeds.extend(roster_seeds()?);
         let entry = super::WorkspaceEntry {
+            id: super::EntryId::from_bytes([53; 16]),
+            role: super::WorkspaceRole::Tree,
+            filter: super::WorkspaceFilter::None,
             name: "tree".into(),
             kind: super::WorkspaceKind::Tree,
             source: super::WorkspaceSource::Subtree(state.path.clone()),
@@ -675,12 +678,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             ("workspace-add-v1", super::WorkspaceOp::Add),
             ("workspace-remove-v1", super::WorkspaceOp::Remove),
             ("workspace-rename-v1", super::WorkspaceOp::Rename),
-            (
-                "workspace-reroot-v1",
-                super::WorkspaceOp::Reroot {
-                    previous: entry.source.clone(),
-                },
-            ),
+            ("workspace-reroot-v1", super::WorkspaceOp::Reroot),
         ] {
             seeds.push((
                 name,

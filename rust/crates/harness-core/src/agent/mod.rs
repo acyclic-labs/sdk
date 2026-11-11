@@ -73,8 +73,8 @@ pub use targets::{
 };
 mod workspaces;
 pub use workspaces::{
-    WorkspaceChanged, WorkspaceEntry, WorkspaceInherit, WorkspaceKind, WorkspaceMode, WorkspaceOp,
-    WorkspaceSource, WorkspaceTable,
+    EntryId, WorkspaceChanged, WorkspaceEntry, WorkspaceFilter, WorkspaceInherit, WorkspaceKind,
+    WorkspaceMode, WorkspaceOp, WorkspaceRole, WorkspaceSource, WorkspaceTable,
 };
 mod volumes;
 pub use volumes::SpawnVolumes;

@@ -4,12 +4,30 @@ use proptest::prelude::*;
 
 fn entry(id: u8, name: String, root: String) -> WorkspaceEntry {
     WorkspaceEntry {
+        id: EntryId::from_bytes([id; 16]),
+        role: WorkspaceRole::User,
         name,
-        kind: WorkspaceKind::Tree,
-        source: WorkspaceSource::Subtree(AgentPath::root(&AgentId::from_bytes([id; 16]))),
+        kind: WorkspaceKind::Volume,
+        source: WorkspaceSource::Volume(
+            crate::conversation::VolumeRef::new(
+                crate::resources::ProviderRef::new(
+                    "fixture".into(),
+                    "filesystem".into(),
+                    "1".into(),
+                    &mut None,
+                )
+                .unwrap(),
+                format!("volume-{id}"),
+                crate::conversation::VolumeClass::Project,
+                crate::conversation::VolumeOwner::Project("fixture".into()),
+                &mut None,
+            )
+            .unwrap(),
+        ),
         root,
-        mode: WorkspaceMode::ReadOnly,
-        inherit: WorkspaceInherit::Own,
+        mode: WorkspaceMode::ReadWrite,
+        inherit: WorkspaceInherit::Fork,
+        filter: WorkspaceFilter::None,
     }
 }
 
@@ -25,7 +43,7 @@ proptest! {
         let mut reference = Vec::<WorkspaceEntry>::new();
         for (op, id, label) in operations {
             let source = entry(id, format!("w{label}"), String::new());
-            let position = reference.iter().position(|prior| prior.source == source.source);
+            let position = reference.iter().position(|prior| prior.id == source.id);
             let mut next = reference.clone();
             let (op, changed, mut accepts) = match (op, position) {
                 (0, position) => {
@@ -41,16 +59,15 @@ proptest! {
                     (WorkspaceOp::Rename, next[index].clone(), true)
                 }
                 (3, Some(index)) => {
-                    let previous = next[index].source.clone();
-                    next[index].source = entry(id.wrapping_add(1), String::new(), String::new()).source;
+                                        next[index].source = entry(id.wrapping_add(1), String::new(), String::new()).source;
                     next[index].root = [".git", ".system", ".volumes", ".acyclic-state"][usize::from(label % 4)].into();
-                    (WorkspaceOp::Reroot { previous }, next[index].clone(), true)
+                    (WorkspaceOp::Reroot, next[index].clone(), true)
                 }
                 (_, None) => (WorkspaceOp::Remove, source, false),
                 _ => unreachable!(),
             };
             for (index, candidate) in next.iter().enumerate() {
-                accepts &= next[..index].iter().all(|prior| prior.name != candidate.name && prior.source != candidate.source);
+                accepts &= next[..index].iter().all(|prior| prior.name != candidate.name && prior.id != candidate.id);
             }
             let change = WorkspaceChanged { version: 1, op, entry: changed };
             let bytes = serde_json::to_vec(&change).unwrap();
@@ -70,7 +87,7 @@ proptest! {
         let mut table = WorkspaceTable::new(vec![original.clone()]).unwrap();
         let mut invalid = original;
         invalid.root = root.into();
-        let change = WorkspaceChanged { version: 1, op: WorkspaceOp::Reroot { previous: invalid.source.clone() }, entry: invalid };
+        let change = WorkspaceChanged { version: 1, op: WorkspaceOp::Reroot, entry: invalid };
         let before = table.clone();
         prop_assert!(table.apply(&change).is_err());
         prop_assert_eq!(&table, &before);
@@ -81,43 +98,71 @@ proptest! {
 }
 
 #[test]
-fn lazy_subtree_binding_is_independent_of_peer_count_and_name() {
-    let table = WorkspaceTable::new(
-        (0..=255)
-            .map(|id| entry(id, format!("w{id}"), ".git".into()))
-            .collect(),
-    )
-    .unwrap();
-    assert_eq!(table.entries().len(), 256);
-    let mut renamed = entry(0, "agents".into(), ".git".into());
-    let mut table = table;
+fn role_entries_are_stable_and_primary_is_the_first_user() {
+    let first = entry(1, "first".into(), ".git".into());
+    let second = entry(2, "second".into(), ".system".into());
+    let mut tree = entry(3, "arbitrary".into(), String::new());
+    tree.kind = WorkspaceKind::Tree;
+    tree.role = WorkspaceRole::Tree;
+    tree.source = WorkspaceSource::Subtree(AgentPath::root(&AgentId::from_bytes([9; 16])));
+    tree.mode = WorkspaceMode::ReadOnly;
+    tree.inherit = WorkspaceInherit::Own;
+    let mut table = WorkspaceTable::new(vec![tree.clone(), first.clone(), second.clone()]).unwrap();
+    assert_eq!(table.primary(), Some(&first));
+    for op in [
+        WorkspaceOp::Remove,
+        WorkspaceOp::Rename,
+        WorkspaceOp::Reroot,
+    ] {
+        let before = table.clone();
+        assert!(
+            table
+                .apply(&WorkspaceChanged {
+                    version: 1,
+                    op,
+                    entry: tree.clone()
+                })
+                .is_err()
+        );
+        assert_eq!(table, before);
+    }
+    table
+        .apply(&WorkspaceChanged {
+            version: 1,
+            op: WorkspaceOp::Remove,
+            entry: first,
+        })
+        .unwrap();
+    assert_eq!(table.primary(), Some(&second));
+    tree.mode = WorkspaceMode::ReadWrite;
+    assert!(tree.check().is_err());
+}
+
+#[test]
+fn user_names_and_source_aliases_have_no_reserved_role_meaning() {
+    let mut entries = (0..=255)
+        .map(|id| entry(id, format!("w{id}"), ".git".into()))
+        .collect::<Vec<_>>();
+    entries[0].name = "home".into();
+    entries[1].source = entries[0].source.clone();
+    let mut table = WorkspaceTable::new(entries).unwrap();
+    let mut changed = table.entries()[0].clone();
+    changed.name = "tree".into();
     table
         .apply(&WorkspaceChanged {
             version: 1,
             op: WorkspaceOp::Rename,
-            entry: renamed.clone(),
+            entry: changed.clone(),
         })
         .unwrap();
-    for (kind, mode, inherit) in [
-        (
-            WorkspaceKind::Volume,
-            WorkspaceMode::ReadOnly,
-            WorkspaceInherit::Own,
-        ),
-        (
-            WorkspaceKind::Tree,
-            WorkspaceMode::ReadWrite,
-            WorkspaceInherit::Own,
-        ),
-        (
-            WorkspaceKind::Tree,
-            WorkspaceMode::ReadOnly,
-            WorkspaceInherit::Fork,
-        ),
-    ] {
-        renamed.kind = kind;
-        renamed.mode = mode;
-        renamed.inherit = inherit;
-        assert!(renamed.check().is_err());
-    }
+    let id = changed.id;
+    changed.source = entry(4, "ignored".into(), String::new()).source;
+    table
+        .apply(&WorkspaceChanged {
+            version: 1,
+            op: WorkspaceOp::Reroot,
+            entry: changed,
+        })
+        .unwrap();
+    assert_eq!(table.primary().unwrap().id, id);
 }
