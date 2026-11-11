@@ -806,7 +806,6 @@ pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
     /// Reads this record on the original filesystem accounting context.
     /// Version, whole-input and structural checks are identical to `decode`;
     /// decoded fields retain their original allocation credit.
-    #[cfg(feature = "filesystem")]
     fn decode_accounted(
         bytes: &[u8],
         accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,

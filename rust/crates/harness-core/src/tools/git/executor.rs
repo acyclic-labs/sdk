@@ -196,7 +196,7 @@ where
                 acyclic_stream::erase_provider_future(|| {
                     self.join(
                         operation_id,
-                        *target_tree,
+                        target_tree,
                         *source,
                         *source_generation,
                         *rebase,

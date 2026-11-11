@@ -302,6 +302,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     pub async fn latest_session(&self) -> Result<Option<AgentPath>, Error> {
         self.admit_sessions()?;
         let request = HeadsRequest {
+            at: None,
             paths: [self.session_directory()?].into_iter().collect(),
             retained: Default::default(),
             durable_through: None,
