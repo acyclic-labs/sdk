@@ -97,7 +97,7 @@ fn input_logical_name(name: wire::LogicalName) -> Result<LogicalName, Status> {
         .map_err(|_| Status::invalid_argument("name encoding is invalid"))?;
     let encoding = hosted_contract::name_encoding_from_wire(value)
         .ok_or_else(|| Status::invalid_argument("name encoding is required"))?;
-    LogicalName::new(encoding, name.bytes, 255)
+    LogicalName::new(encoding, name.bytes)
         .map_err(|error| Status::invalid_argument(error.to_string()))
 }
 

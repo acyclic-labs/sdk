@@ -45,8 +45,7 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
     let store = MemoryObjectStore::default();
     let entries = put_tree_page(&store, &TreePage::Leaf(Vec::new()), 8).await?;
     let metadata = put_file_metadata(&store, FileMetadata::default()).await?;
-    let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
-    config.limits.maximum_path_depth = 10_001;
+    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     // Three traversals plus full-key comparisons are bounded by the key width,
     // independently of stack depth. Frame growth is measured separately below.
     let membership_bound = 4 * (u64::from(u128::BITS) + 16 + 1);

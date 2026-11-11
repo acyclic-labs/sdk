@@ -229,7 +229,7 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
             assert!(live > baseline, "diff backing left the original ledger");
             assert!(spent.peak_allocation_bytes > baseline);
             let paths = changes
-                .changed_paths(64, budget, &cancellation)
+                .changed_paths(Some(64), budget, &cancellation)
                 .await?
                 .value
                 .0;
@@ -1345,7 +1345,7 @@ async fn workspace_byte_reads_retire_namespace_scratch_and_keep_original_output(
                             &workspace,
                             selector,
                             "/inline",
-                            5,
+                            Some(5),
                             &source,
                             &cancellation,
                         )

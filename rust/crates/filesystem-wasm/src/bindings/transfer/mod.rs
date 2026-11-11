@@ -46,7 +46,7 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .export_manifest(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+            .export_manifest(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(js_error)?;
         encode_export_manifest(receipt.value, receipt.work)
@@ -72,14 +72,8 @@ pub(in crate::bindings) fn encode_export_manifest(
 pub(in crate::bindings) fn decode_export_manifest(
     manifest: &ImportManifest,
 ) -> Result<GenerationExportManifest, JsValue> {
-    const MAXIMUM_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
-    const MAXIMUM_MANIFEST_OBJECTS: u64 = 1_000_000;
-    let decoded = decode_generation_export_manifest(
-        &manifest.manifest_bytes,
-        MAXIMUM_MANIFEST_BYTES,
-        MAXIMUM_MANIFEST_OBJECTS,
-    )
-    .map_err(js_error)?;
+    let decoded = decode_generation_export_manifest(&manifest.manifest_bytes, None, None)
+        .map_err(js_error)?;
     if manifest.objects.len() != decoded.objects.len() {
         return Err(js_error(
             "manifest object list does not match canonical manifest",

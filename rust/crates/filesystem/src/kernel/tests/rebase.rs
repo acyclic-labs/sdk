@@ -14,9 +14,8 @@ impl CheckoutDependencies {
     fn extend_observations(
         &mut self,
         dependencies: Vec<Dependency>,
-        maximum: u32,
     ) -> Result<(), DependencyError> {
-        let extension = self.prepare_observations(dependencies, maximum)?;
+        let extension = self.prepare_observations(dependencies)?;
         self.commit(extension);
         Ok(())
     }
@@ -85,7 +84,7 @@ fn generation(byte: u8) -> GenerationId {
 }
 
 fn name(value: &[u8]) -> Result<LogicalName, Box<dyn std::error::Error>> {
-    Ok(LogicalName::new(NameEncoding::Utf8, value.to_vec(), 255)?)
+    Ok(LogicalName::new(NameEncoding::Utf8, value.to_vec())?)
 }
 
 #[test]
@@ -97,7 +96,6 @@ fn equal_root_rebase_is_constant_work_and_makes_no_probe() -> Result<(), Box<dyn
             expected: DependencyState::Present(Digest::from_bytes([2; 32])),
         }],
         [],
-        10,
     )?;
     let probe = Probe {
         calls: Cell::new(0),
@@ -133,7 +131,6 @@ fn changed_negative_lookup_is_a_region_specific_conflict() -> Result<(), Box<dyn
             region: region.clone(),
             expected: DependencyState::Absent,
         }],
-        10,
     )?;
     let target = generation(5);
     let actual = DependencyState::Present(Digest::from_bytes([6; 32]));
@@ -182,7 +179,7 @@ fn only_distinct_captured_regions_are_probed() -> Result<(), Box<dyn std::error:
         expected: DependencyState::Absent,
     };
     let dependencies =
-        CheckoutDependencies::new([first.clone(), first.clone(), second.clone()], [], 2)?;
+        CheckoutDependencies::new([first.clone(), first.clone(), second.clone()], [])?;
     assert_eq!(dependencies.len(), 2);
     let target = generation(11);
     let probe = Probe {
@@ -220,7 +217,6 @@ fn malformed_and_contradictory_dependencies_fail_at_capture() {
                 expected: DependencyState::Absent,
             }],
             [],
-            1,
         ),
         Err(DependencyError::EmptyContentRange)
     ));
@@ -235,7 +231,6 @@ fn malformed_and_contradictory_dependencies_fail_at_capture() {
                 region,
                 expected: DependencyState::Present(Digest::from_bytes([14; 32])),
             }],
-            1,
         ),
         Err(DependencyError::ContradictoryState)
     ));
@@ -256,7 +251,7 @@ fn clearing_reverted_mutations_preserves_observations() -> Result<(), Dependency
         expected: DependencyState::Absent,
     };
     let mut dependencies =
-        CheckoutDependencies::new([observed.clone(), both.clone()], [mutated, both], 3)?;
+        CheckoutDependencies::new([observed.clone(), both.clone()], [mutated, both])?;
     dependencies.clear_mutations();
     assert_eq!(dependencies.len(), 2);
     assert!(dependencies.captured.entries.contains_key(&observed.region));
@@ -279,11 +274,11 @@ fn merged_proofs_hold_both_histories_or_refuse_a_contradiction() -> Result<(), D
     let shared = dependency(20, DependencyState::Absent);
     let observed = dependency(21, DependencyState::Absent);
     let mutated = dependency(22, DependencyState::Absent);
-    let base = CheckoutDependencies::new([shared.clone()], [], 8)?;
+    let base = CheckoutDependencies::new([shared.clone()], [])?;
     let mut readers = base.clone();
-    readers.extend_observations(vec![observed.clone()], 8)?;
+    readers.extend_observations(vec![observed.clone()])?;
     let mut writer = base.clone();
-    writer.commit(writer.prepare_mutations(vec![mutated.clone(), shared.clone()], 8)?);
+    writer.commit(writer.prepare_mutations(vec![mutated.clone(), shared.clone()])?);
 
     let merged = writer
         .merged(&readers)
@@ -321,14 +316,13 @@ fn merged_proofs_hold_both_histories_or_refuse_a_contradiction() -> Result<(), D
             DependencyState::Present(Digest::from_bytes([1; 32])),
         )],
         [],
-        8,
     )?;
     assert_eq!(readers.merged(&contradicting), None);
     Ok(())
 }
 
 #[test]
-fn dependency_bounds_and_extensions_are_atomic() -> Result<(), Box<dyn std::error::Error>> {
+fn dependency_extensions_are_atomic() -> Result<(), Box<dyn std::error::Error>> {
     let first = Dependency {
         region: DependencyRegion::FileRecord(FileId::from_bytes([21; 16])),
         expected: DependencyState::Absent,
@@ -337,27 +331,16 @@ fn dependency_bounds_and_extensions_are_atomic() -> Result<(), Box<dyn std::erro
         region: DependencyRegion::Metadata(FileId::from_bytes([22; 16])),
         expected: DependencyState::Absent,
     };
-    assert!(matches!(
-        CheckoutDependencies::new([], [], 0),
-        Err(DependencyError::ZeroLimit)
-    ));
-    assert!(matches!(
-        CheckoutDependencies::new([first.clone(), second.clone()], [], 1),
-        Err(DependencyError::TooManyDependencies { maximum: 1 })
-    ));
 
-    let mut dependencies = CheckoutDependencies::new([first.clone()], [], 2)?;
+    let mut dependencies = CheckoutDependencies::new([first.clone()], [])?;
     let original = dependencies.clone();
-    assert!(matches!(
-        dependencies.extend_observations(Vec::new(), 0),
-        Err(DependencyError::ZeroLimit)
-    ));
+
     let contradictory = Dependency {
         region: first.region.clone(),
         expected: DependencyState::Present(Digest::from_bytes([23; 32])),
     };
     assert!(matches!(
-        dependencies.prepare_mutations(vec![contradictory], 2),
+        dependencies.prepare_mutations(vec![contradictory]),
         Err(DependencyError::ContradictoryState)
     ));
     assert_eq!(dependencies, original);
@@ -367,17 +350,12 @@ fn dependency_bounds_and_extensions_are_atomic() -> Result<(), Box<dyn std::erro
         expected: DependencyState::Present(Digest::from_bytes([24; 32])),
     };
     assert!(matches!(
-        dependencies.extend_observations(vec![second.clone(), staged_conflict], 2),
+        dependencies.extend_observations(vec![second.clone(), staged_conflict]),
         Err(DependencyError::ContradictoryState)
     ));
     assert_eq!(dependencies, original);
-    assert!(matches!(
-        dependencies.extend_observations(vec![second.clone()], 1),
-        Err(DependencyError::TooManyDependencies { maximum: 1 })
-    ));
-    assert_eq!(dependencies, original);
 
-    let extension = dependencies.prepare_mutations(vec![first.clone()], 2)?;
+    let extension = dependencies.prepare_mutations(vec![first.clone()])?;
     assert_eq!(dependencies, original, "preparing never changes the proof");
     dependencies.commit(extension);
     assert!(matches!(
@@ -388,8 +366,8 @@ fn dependency_bounds_and_extensions_are_atomic() -> Result<(), Box<dyn std::erro
             .map(|state| state.usage),
         Some(DependencyUse::ObservationAndMutation)
     ));
-    dependencies.extend_observations(vec![first], 2)?;
-    dependencies.extend_observations(vec![second], 2)?;
+    dependencies.extend_observations(vec![first])?;
+    dependencies.extend_observations(vec![second])?;
     assert_eq!(dependencies.len(), 2);
     Ok(())
 }
@@ -405,22 +383,15 @@ fn dependency_data_budget_denies_cow_before_copy_and_eq_ignores_caches()
         expected: DependencyState::Absent,
     };
     let mut proof = CheckoutDependencies::new(
-        [dependency(LogicalName::new(
-            NameEncoding::Utf8,
-            padded,
-            64,
-        )?)],
+        [dependency(LogicalName::new(NameEncoding::Utf8, padded)?)],
         [],
-        8,
     )?;
     let exact = CheckoutDependencies::new(
         [dependency(LogicalName::new(
             NameEncoding::Utf8,
             b"key".to_vec(),
-            64,
         )?)],
         [],
-        8,
     )?;
     assert_eq!(
         proof, exact,
@@ -429,13 +400,10 @@ fn dependency_data_budget_denies_cow_before_copy_and_eq_ignores_caches()
     assert_ne!(proof.logical_data().2, exact.logical_data().2);
     let held = proof.clone();
     let before = proof.logical_data();
-    let extension = proof.prepare_observations(
-        vec![Dependency {
-            region: DependencyRegion::Metadata(FileId::from_bytes([72; 16])),
-            expected: DependencyState::Absent,
-        }],
-        8,
-    )?;
+    let extension = proof.prepare_observations(vec![Dependency {
+        region: DependencyRegion::Metadata(FileId::from_bytes([72; 16])),
+        expected: DependencyState::Absent,
+    }])?;
     let owner = Arc::new(ProofDataCustody::default());
     let mut allocations = super::super::allocation::AllocationLedger::default();
     let mut work = WorkCounters::default();
@@ -483,7 +451,7 @@ fn conflicting_dependencies() -> Result<(CheckoutDependencies, Probe), Dependenc
     };
     let target = generation(33);
     Ok((
-        CheckoutDependencies::new([first.clone(), second.clone()], [], 2)?,
+        CheckoutDependencies::new([first.clone(), second.clone()], [])?,
         Probe {
             calls: Cell::new(0),
             states: BTreeMap::from([
@@ -547,7 +515,7 @@ fn followed_ledger_is_a_charged_copy_of_the_live_ledger() -> Result<(), Box<dyn 
     let file = DependencyRegion::FileLength(FileId::from_bytes([81; 16]));
     let name = DependencyRegion::DirectoryName {
         directory_id: FileId::from_bytes([83; 16]),
-        name: LogicalName::new(NameEncoding::Utf8, b"report.txt".to_vec(), 64)?,
+        name: LogicalName::new(NameEncoding::Utf8, b"report.txt".to_vec())?,
     };
     let old = DependencyState::Present(Digest::from_bytes([84; 32]));
     let new = DependencyState::Present(Digest::from_bytes([85; 32]));
@@ -557,7 +525,6 @@ fn followed_ledger_is_a_charged_copy_of_the_live_ledger() -> Result<(), Box<dyn 
             expected: old,
         }),
         [],
-        8,
     )?;
     let held = ledger.clone();
     let mut settled = vec![

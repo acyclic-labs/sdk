@@ -1,8 +1,5 @@
 use super::*;
 
-#[cfg(feature = "native-mount")]
-pub(crate) const MAX_NATIVE_EXACT_CAPTURE_PATHS: usize = 65_536;
-
 /// A native view may have host-generated timestamps that are not SDK metadata.
 #[derive(Clone, Copy)]
 pub(crate) struct NativeViewBaseline {
@@ -81,9 +78,9 @@ pub struct CaptureOptions {
     /// checkouts use `None` and keep their ordinary transaction identities.
     pub source_namespace: Option<[u8; 16]>,
     /// Maximum changed paths admitted in one atomic transaction.
-    pub maximum_paths: u32,
-    /// Maximum physically allocated host ranges admitted per regular file.
-    pub maximum_extent_spans: u32,
+    pub maximum_paths: Option<u32>,
+    /// Optional caller policy for physically allocated host ranges per regular file.
+    pub maximum_extent_spans: Option<u32>,
 }
 
 /// Canonical path eligibility for native capture.

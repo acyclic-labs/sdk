@@ -6,9 +6,11 @@ pub fn classify_rebase<P: RebaseProbe>(
     base: GenerationId,
     candidate: GenerationId,
     dependencies: &CheckoutDependencies,
-    maximum_conflicts: u32,
+    maximum_conflicts: impl Into<Option<u32>>,
     budget: WorkBudget,
 ) -> Result<RebaseReceipt, OperationFailure<RebaseError<P::Error>>> {
+    let maximum_conflicts = maximum_conflicts.into();
+
     if base == candidate {
         return Ok(RebaseReceipt {
             decision: RebaseDecision::Safe {
@@ -17,7 +19,7 @@ pub fn classify_rebase<P: RebaseProbe>(
             work: WorkCounters::default(),
         });
     }
-    if maximum_conflicts == 0 {
+    if maximum_conflicts == Some(0) {
         return Err(OperationFailure::before_work(
             RebaseError::ZeroConflictLimit,
         ));
@@ -45,7 +47,7 @@ pub fn classify_rebase<P: RebaseProbe>(
         work.verify(budget)
             .map_err(|error| OperationFailure::new(error.into(), work))?;
         if actual.value != captured.expected {
-            if u32::try_from(conflicts.len()).unwrap_or(u32::MAX) < maximum_conflicts {
+            if maximum_conflicts.is_none_or(|maximum| conflicts.len() < maximum as usize) {
                 conflicts.push(RebaseConflict {
                     region: region.clone(),
                     usage: captured.usage,
@@ -76,10 +78,12 @@ pub async fn classify_rebase_async<P: AsyncRebaseProbe>(
     base: GenerationId,
     candidate: GenerationId,
     dependencies: &CheckoutDependencies,
-    maximum_conflicts: u32,
+    maximum_conflicts: impl Into<Option<u32>>,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<RebaseReceipt, OperationFailure<RebaseError<P::Error>>> {
+    let maximum_conflicts = maximum_conflicts.into();
+
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
     let adapter = StandaloneClassificationProbe(probe);
     let classified = classify_rebase_with_accounting(
@@ -235,13 +239,15 @@ pub(crate) async fn classify_rebase_with_accounting<P: AccountingRebaseProbe>(
     base: GenerationId,
     candidate: GenerationId,
     dependencies: &CheckoutDependencies,
-    maximum_conflicts: u32,
+    maximum_conflicts: impl Into<Option<u32>>,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<
     (RebaseDecision, super::allocation::KernelOwnedAllocation),
     ClassifyRebaseFailure<P::Error>,
 > {
+    let maximum_conflicts = maximum_conflicts.into();
+
     let (decision, allocation, settled) = classify_rebase_settling_with_accounting(
         probe,
         base,
@@ -373,12 +379,12 @@ struct ConflictSink {
 
 impl ConflictSink {
     fn new(
-        maximum: u32,
+        maximum: Option<u32>,
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {
         Ok(Self {
             conflicts: super::persistent_point::Owned::allocate(0, accounting)?,
-            maximum: maximum as usize,
+            maximum: maximum.map_or(usize::MAX, |maximum| maximum as usize),
             truncated: false,
         })
     }
@@ -432,7 +438,7 @@ pub(crate) async fn classify_rebase_settling_with_accounting<'d, P: AccountingRe
     base: GenerationId,
     candidate: GenerationId,
     dependencies: &'d CheckoutDependencies,
-    maximum_conflicts: u32,
+    maximum_conflicts: impl Into<Option<u32>>,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<
@@ -443,6 +449,8 @@ pub(crate) async fn classify_rebase_settling_with_accounting<'d, P: AccountingRe
     ),
     ClassifyRebaseFailure<P::Error>,
 > {
+    let maximum_conflicts = maximum_conflicts.into();
+
     use super::persistent_point::Owned;
     accounting
         .check()
@@ -459,7 +467,7 @@ pub(crate) async fn classify_rebase_settling_with_accounting<'d, P: AccountingRe
             None,
         ));
     }
-    if maximum_conflicts == 0 {
+    if maximum_conflicts == Some(0) {
         return Err(ClassifyRebaseFailure::ZeroConflictLimit);
     }
     let mut work = Classification::allocate(maximum_conflicts, accounting)
@@ -543,9 +551,11 @@ struct Classification<'d> {
 
 impl Classification<'_> {
     fn allocate(
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {
+        let maximum_conflicts = maximum_conflicts.into();
+
         use super::persistent_point::Owned;
         let conflicts = ConflictSink::new(maximum_conflicts, accounting)?;
         let settled = match ConflictSink::new(maximum_conflicts, accounting) {
@@ -780,7 +790,7 @@ fn clone_conflict_region(
     match region {
         DependencyRegion::DirectoryName { directory_id, name } => {
             let (name, allocation) =
-                super::persistent_io::clone_key::<TreeFormat>(name, u32::MAX, accounting, None, 0)?;
+                super::persistent_io::clone_key::<TreeFormat>(name, accounting, None, 0)?;
             let bytes = TreeFormat::key_owned_bytes(&name);
             Ok((
                 DependencyRegion::DirectoryName {
@@ -796,13 +806,8 @@ fn clone_conflict_region(
             after: Some(after),
             maximum_entries,
         } => {
-            let (after, allocation) = super::persistent_io::clone_key::<TreeFormat>(
-                after,
-                u32::MAX,
-                accounting,
-                None,
-                0,
-            )?;
+            let (after, allocation) =
+                super::persistent_io::clone_key::<TreeFormat>(after, accounting, None, 0)?;
             let bytes = TreeFormat::key_owned_bytes(&after);
             Ok((
                 DependencyRegion::DirectoryRange {

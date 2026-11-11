@@ -2,7 +2,6 @@
 use acyclic_fs::mount_qualification::{COVERAGE, ReceiptError, ReleaseTarget, verify};
 use serde_json::Value;
 use std::io;
-const MAXIMUM_RECEIPT_BYTES: usize = 65_536; // Existing native ingress contract.
 const CASES: &[&str] = &[
     "real-mount-mutation-matrix",
     "crash-detach-recovery",
@@ -55,24 +54,6 @@ fn policy_refuses_duplicate_known_fields_before_json_map_materialization()
             "duplicate {field}"
         );
     }
-    Ok(())
-}
-
-#[test]
-fn policy_preserves_the_native_receipt_size_bound() -> Result<(), Box<dyn std::error::Error>> {
-    let target = ReleaseTarget {
-        os: "linux",
-        arch: "x86_64",
-        version: "test-release",
-    };
-    let mut bytes = serde_json::to_vec(&input(target.os, target.arch))?;
-    bytes.resize(MAXIMUM_RECEIPT_BYTES, b' ');
-    verify(bytes.as_slice(), &b"artifact"[..], target)?;
-    bytes.push(b' ');
-    assert!(matches!(
-        verify(bytes.as_slice(), &b"artifact"[..], target),
-        Err(ReceiptError::TooLarge)
-    ));
     Ok(())
 }
 

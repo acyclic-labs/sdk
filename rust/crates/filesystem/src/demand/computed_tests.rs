@@ -111,7 +111,7 @@ impl SourceWatch for Watch {
 }
 struct Projection(Arc<Counts>);
 fn name() -> LogicalName {
-    LogicalName::new(NameEncoding::Utf8, b"index.md".to_vec(), 255).unwrap()
+    LogicalName::new(NameEncoding::Utf8, b"index.md".to_vec()).unwrap()
 }
 fn metadata(bytes: Option<u64>) -> SourceNode {
     SourceNode {
@@ -245,7 +245,7 @@ async fn computed_lazy_overlay_and_fork_use_one_demand_path() {
     let provider = Provider::new();
     let source = Arc::new(Routed::new(
         Empty,
-        LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255).unwrap(),
+        LogicalName::new(NameEncoding::Utf8, b"ui".to_vec()).unwrap(),
         computed(&provider),
         crate::VolumeLimits::default(),
     ));
@@ -390,7 +390,7 @@ async fn computed_exact_versions_ranges_and_routed_root_pages() {
     ));
     let routed = Routed::new(
         Empty,
-        LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255).unwrap(),
+        LogicalName::new(NameEncoding::Utf8, b"ui".to_vec()).unwrap(),
         view,
         crate::VolumeLimits::default(),
     );
@@ -483,7 +483,7 @@ async fn computed_mounted_override_removal_preserves_the_original_data_decision(
         let provider = Provider::new();
         let source = Arc::new(Routed::new(
             Empty,
-            LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255).unwrap(),
+            LogicalName::new(NameEncoding::Utf8, b"ui".to_vec()).unwrap(),
             computed(&provider),
             crate::VolumeLimits::default(),
         ));
@@ -589,7 +589,7 @@ async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
         .unwrap();
     let routed = Routed::new(
         Empty,
-        LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255).unwrap(),
+        LogicalName::new(NameEncoding::Utf8, b"ui".to_vec()).unwrap(),
         view,
         crate::VolumeLimits::default(),
     );

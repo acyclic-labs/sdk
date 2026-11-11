@@ -93,7 +93,11 @@ fn refuses_versions(
     mut unsupported: impl FnMut(&[u8], u16) -> bool,
 ) {
     let mut header = bytes[..version_offset + 2].to_vec();
-    for version in [0_u16, 2, u16::MAX] {
+    let admitted = u16::from_le_bytes([header[version_offset], header[version_offset + 1]]);
+    for version in [0_u16, 1, 2, u16::MAX] {
+        if version == admitted {
+            continue;
+        }
         header[version_offset..].copy_from_slice(&version.to_le_bytes());
         assert!(unsupported(&header, version));
     }
@@ -192,7 +196,7 @@ pub fn check(bytes: &[u8]) {
             b"acyclic-fs-volume-created-v1\0".len(),
             |header, version| {
                 matches!(decode_volume_created::<VolumeCreatedError>(header, u64::MAX, &mut |_| Ok(())),
-                Err(VolumeCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 1 })) if found == version)
+                Err(VolumeCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 2 })) if found == version)
             },
         );
     }
@@ -213,7 +217,7 @@ pub fn check(bytes: &[u8]) {
             b"acyclic-fs-retention-created-v1\0".len(),
             |header, version| {
                 matches!(decode_retention_created(header, u64::MAX),
-                Err(RetentionCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 1 })) if found == version)
+                Err(RetentionCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 2 })) if found == version)
             },
         );
     }
@@ -242,7 +246,7 @@ pub fn check(bytes: &[u8]) {
             b"acyclic-fs-generation-export-v1\0".len(),
             |header, version| {
                 matches!(decode_generation_export_manifest(header, u64::MAX, u64::MAX),
-                Err(GenerationExportManifestError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 1 })) if found == version)
+                Err(GenerationExportManifestError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 2 })) if found == version)
             },
         );
     }
@@ -410,4 +414,16 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
     seeds.extend(publication_codec_fuzz::seeds()?);
     seeds.extend(historical::seeds()?);
     Ok(seeds)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn current_writer_records_preserve_mixed_layout_versions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (_, bytes) in super::seeds()? {
+            super::check(&bytes);
+        }
+        Ok(())
+    }
 }

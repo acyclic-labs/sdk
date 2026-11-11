@@ -34,9 +34,10 @@ describe("filesystem binding byte results", () => {
   test("batch lookup entries own their file identities", () => {
     const fileId = id(1);
     const [entry] = copyBatchLookupEntries([
-      { exists: true, fileId, fileKind: "regular", resolvedComponents: 1 },
+      { exists: true, fileId, fileKind: "regular", resolvedComponents: 65_536n },
     ]);
 
+    expect(entry?.resolvedComponents).toBe(65_536n);
     expect(Buffer.isBuffer(entry?.fileId)).toBe(false);
     expect(entry?.fileId).toEqual(new Uint8Array(fileId));
     entry!.fileId![0] = 9;

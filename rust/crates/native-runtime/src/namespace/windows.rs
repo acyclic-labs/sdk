@@ -249,3 +249,39 @@ pub(super) fn extended_path(
     }
     Ok((output, allocation))
 }
+
+/// Opens an already prepared native path without another path allocation.
+#[allow(
+    unsafe_code,
+    reason = "opens a retained terminated UTF-16 name and adopts the returned handle exactly once"
+)]
+pub(super) fn open_read_terminated(path: &[u16]) -> io::Result<File> {
+    use windows_sys::Win32::{
+        Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, OPEN_EXISTING,
+        },
+    };
+    if path.last() != Some(&0) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    // SAFETY: the retained slice contains its terminator and remains live for
+    // the call. A successful handle is adopted once; failure owns no handle.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: CreateFileW returned a new owned file handle above.
+    Ok(unsafe { File::from_raw_handle(handle) })
+}

@@ -87,7 +87,15 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
             let meter = Arc::new(crate::test_meter::Meter::local());
             let request = super::prepared_fixture(&stream).await?;
             let packet = stream
-                .native_prepare_commit(request.clone(), 64, meter.original())
+                .native_prepare_commit(
+                    request.clone(),
+                    crate::PreparedRecordCapacity {
+                        payload_bytes: 64,
+                        keys: 64,
+                        attributes: 16,
+                    },
+                    meter.original(),
+                )
                 .await??;
             let (packet, allocation) = packet.into_parts();
             let mut revision = stream.wait_applied(&Default::default()).await?;
@@ -187,7 +195,15 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                 ),
                 Box::pin(
                     stream
-                        .native_prepare_commit(request, 64, meter.original())
+                        .native_prepare_commit(
+                            request,
+                            crate::PreparedRecordCapacity {
+                                payload_bytes: 64,
+                                keys: 64,
+                                attributes: 16,
+                            },
+                            meter.original(),
+                        )
                         .map(observed),
                 ),
                 Box::pin(
@@ -322,7 +338,15 @@ async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::
             let prepared = if mode == 2 {
                 Some(
                     stream
-                        .native_prepare_commit(request.clone(), 64, meter.original())
+                        .native_prepare_commit(
+                            request.clone(),
+                            crate::PreparedRecordCapacity {
+                                payload_bytes: 64,
+                                keys: 64,
+                                attributes: 16,
+                            },
+                            meter.original(),
+                        )
                         .await??,
                 )
             } else {

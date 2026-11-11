@@ -216,7 +216,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 self.dependencies.extend_observations(
                     dependencies,
                     &mut observed.1,
-                    self.volume.config.limits.maximum_checkout_dependencies,
                     accounting,
                     cancellation,
                 )?;
@@ -377,7 +376,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 self.dependencies.extend_observations(
                     dependencies,
                     &mut observed.1,
-                    self.volume.config.limits.maximum_checkout_dependencies,
                     accounting,
                     cancellation,
                 )?;
@@ -437,7 +435,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             self.dependencies.extend_observations(
                 dependencies,
                 &mut observed.1,
-                self.volume.config.limits.maximum_checkout_dependencies,
                 accounting,
                 cancellation,
             )?;

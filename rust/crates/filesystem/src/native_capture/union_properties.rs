@@ -75,7 +75,7 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
         let expected: BTreeSet<_> = host.union(&checkout).copied().collect();
         let before = original.receipt();
         let (observations, paths) = order_host_checkout_union(
-            observed, paths, expected.len(), &scope.native,
+            observed, paths, Some(expected.len()), &scope.native,
         ).unwrap();
         let after = original.receipt();
         prop_assert_eq!(paths.len(), expected.len());
@@ -104,7 +104,7 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
             let (observed, paths) = inputs(&host, &checkout, &stat, &scope.native);
             let before = original.receipt();
             prop_assert!(matches!(order_host_checkout_union(
-                observed, paths, expected.len() - 1, &scope.native,
+                observed, paths, Some(expected.len() - 1), &scope.native,
             ), Err(CaptureError::InvalidOptions)));
             // The exact cardinality refusal precedes either output allocation.
             prop_assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
@@ -121,7 +121,7 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
         let (observed, paths) = inputs(&duplicate, &duplicate, &stat, &scope.native);
         // Both original names use the eight admitted input bytes. The former
         // uncharged unzip would incorrectly succeed with no output copy credit.
-        let error = order_host_checkout_union(observed, paths, 1, &scope.native).unwrap_err();
+        let error = order_host_checkout_union(observed, paths, Some(1), &scope.native).unwrap_err();
         let refused_copy = matches!(error, CaptureError::Kernel(error) if matches!(
             *error, crate::FsError::Work(WorkError::BudgetExceeded { counter: "bytes_copied", .. }),
         ));
@@ -130,7 +130,7 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
         prop_assert_eq!(original.live_allocation_bytes(), baseline);
 
         cancellation.cancel();
-        let error = order_host_checkout_union(Vec::new(), Vec::new(), 0, &original).unwrap_err();
+        let error = order_host_checkout_union(Vec::new(), Vec::new(), Some(0), &original).unwrap_err();
         prop_assert!(matches!(error, CaptureError::Kernel(error) if matches!(*error, crate::FsError::Cancelled(_))));
         prop_assert_eq!(original.live_allocation_bytes(), baseline);
         Ok(())

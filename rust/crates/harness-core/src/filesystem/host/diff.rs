@@ -31,11 +31,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .diff_to(&after.generation, u32::MAX, &io, io.cancellation())
                 .await,
         )?;
-        let (changed, _changed) = io.sdk(
-            changes
-                .changed_paths(u32::MAX, &io, io.cancellation())
-                .await,
-        )?;
+        let (changed, _changed) =
+            io.sdk(changes.changed_paths(None, &io, io.cancellation()).await)?;
         let root = ContextRoot {
             volume: volume.clone(),
             directory: String::new(),

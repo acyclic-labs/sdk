@@ -98,7 +98,7 @@ fn literal_view() -> Result<(Arc<CompiledPolicy>, PathTrie), InvalidPolicy> {
         now: 10,
         approvals: 0,
     };
-    let mut remaining = MAXIMUM_WORK;
+    let mut remaining = 4_194_304;
     let program = Arc::new(CompiledPolicy::compile_with_work(
         &policy,
         config,
@@ -140,7 +140,7 @@ fn policy_cache_literal_binding_counts_only_reachable_pairs() -> Result<(), Inva
     assert_eq!(program.states.len(), 82);
     assert_eq!(view.states.len(), 82);
     assert_eq!(view.state_count(), 82);
-    assert!(view.state_ids().any(|state| state >= MAXIMUM_STATES));
+    assert!(view.state_ids().any(|state| state >= view.state_count()));
     // The subtree walk must translate sparse product identifiers to dense visits.
     assert_eq!(
         view.subtree_action_mask("", 10),
@@ -154,18 +154,7 @@ fn policy_cache_literal_binding_counts_only_reachable_pairs() -> Result<(), Inva
 }
 
 #[test]
-#[should_panic(expected = "unreachable Cartesian pairs reject an allowed literal")]
-fn policy_cache_negative_control_cartesian_bound_rejects_a_reachable_literal() {
-    let (program, view) = literal_view().expect("the reachable literal must compile");
-    assert!(
-        program.states.len() * view.states.len() <= MAXIMUM_STATES,
-        "unreachable Cartesian pairs reject an allowed literal",
-    );
-}
-
-#[test]
-fn policy_cache_reachable_pair_limit_still_rejects_an_oversized_product()
--> Result<(), InvalidPolicy> {
+fn policy_cache_reachable_pair_traversal_continues_past_4096() -> Result<(), InvalidPolicy> {
     let (mut program, mut view) = literal_view()?;
     // Drop the binding's Arc before replacing the fixture's two automata with
     // independent 65-state cycles: all 4,225 pairs are reachable.
@@ -194,10 +183,120 @@ fn policy_cache_reachable_pair_limit_still_rejects_an_oversized_product()
     program.states = cycles(true);
     view.states = cycles(false);
     let mut remaining = usize::MAX;
-    let result = program.reachable_pairs(&view, &mut remaining, &mut |_| Ok(()));
+    let reachable = program
+        .reachable_pairs(&view, &mut remaining, &mut |_| Ok(()))?
+        .ok_or(InvalidPolicy("missing reachable pairs"))?;
+    assert_eq!(reachable, (0..65 * 65).collect::<Vec<_>>());
+    Ok(())
+}
+
+#[test]
+fn policy_determinization_admits_discovered_states_and_preserves_finite_denials()
+-> Result<(), InvalidPolicy> {
+    let mut nfa = Nfa::default();
+    let (start, end) = nfa.pattern(&"a".repeat(5000), false)?;
+    let mut admitted = 0;
+    let mut reserve = |bytes| {
+        assert!(bytes > 0);
+        admitted += 1;
+        Ok(())
+    };
+    let mut admission = StateAdmission {
+        reserve: &mut reserve,
+        symbols: 1,
+        state_bytes: size_of::<State>(),
+    };
+    let decisions = |subset: &[usize]| {
+        [Outcome {
+            rule: None,
+            denial: (!subset.contains(&end)).then_some(Denial::Capability),
+        }; 12]
+    };
+    let mut remaining = usize::MAX;
+    let states = determinize(
+        &nfa,
+        vec![start],
+        &['a'],
+        'b',
+        decisions,
+        1,
+        &mut remaining,
+        &mut admission,
+    )?;
+    assert_eq!(admitted, states.len());
+    assert!(states.len() > 4096);
+    let mut state = 0;
+    for _ in 0..5000 {
+        assert_eq!(states[state].actions, 0);
+        state = states[state].transitions[0];
+    }
+    assert_eq!(states[state].actions, (1 << 12) - 1);
+    assert_eq!(states[states[state].transitions[0]].actions, 0);
+    assert_eq!(states[states[0].transitions[1]].actions, 0);
+
+    let mut accepted = 0;
+    let denied = InvalidPolicy("fixture storage admission denied");
+    let mut reserve = |_| {
+        accepted += 1;
+        if accepted == 3 {
+            Err(denied.clone())
+        } else {
+            Ok(())
+        }
+    };
+    let mut admission = StateAdmission {
+        reserve: &mut reserve,
+        symbols: 1,
+        state_bytes: size_of::<State>(),
+    };
+    let mut remaining = usize::MAX;
     assert_eq!(
-        result.err(),
-        Some(InvalidPolicy("combined policy exceeds DFA state limit"))
+        determinize(
+            &nfa,
+            vec![start],
+            &['a'],
+            'b',
+            decisions,
+            1,
+            &mut remaining,
+            &mut admission
+        )
+        .err(),
+        Some(denied)
     );
+    assert_eq!(accepted, 3);
+    let mut admission = StateAdmission {
+        reserve: &mut |_| Ok(()),
+        symbols: 1,
+        state_bytes: size_of::<State>(),
+    };
+    let mut remaining = 0;
+    assert!(
+        determinize(
+            &nfa,
+            vec![start],
+            &['a'],
+            'b',
+            decisions,
+            1,
+            &mut remaining,
+            &mut admission
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn policy_alphabet_indexes_the_full_unicode_scalar_domain() -> Result<(), InvalidPolicy> {
+    let symbols: Vec<_> = (1..=70_000).filter_map(char::from_u32).collect();
+    let alphabet = Alphabet::new(&symbols)?;
+    for (index, ch) in symbols.iter().enumerate() {
+        assert_eq!(alphabet.symbol(*ch), Some(index));
+    }
+    assert_eq!(alphabet.symbol('\u{10ffff}'), Some(symbols.len()));
+    let mut nfa = Nfa::default();
+    nfa.pattern(&"a".repeat(33_000), false)?;
+    assert!(nfa.nodes.len() > 32_768);
     Ok(())
 }

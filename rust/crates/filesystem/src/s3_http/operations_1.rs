@@ -34,7 +34,7 @@ where
             .input
             .continuation_token
             .as_deref()
-            .map(|token| S3ListCursor::decode(token, self.limits.maximum_key_bytes))
+            .map(S3ListCursor::decode)
             .transpose()
             .map_err(|error| s3_error(&error))?;
         let options = S3ListOptions {
@@ -43,7 +43,6 @@ where
             start_after: request.input.start_after.clone(),
             continuation,
             maximum_keys,
-            maximum_entries_examined: self.limits.maximum_list_entries_examined,
         };
         let view = principal.workspace.s3();
         let page = match principal.generation {
@@ -154,7 +153,6 @@ where
             delimiter: None,
             start_after: request.input.key_marker.clone(),
             maximum_keys,
-            maximum_entries_examined: self.limits.maximum_list_entries_examined,
             ..S3ListOptions::default()
         };
         let view = principal.workspace.s3();

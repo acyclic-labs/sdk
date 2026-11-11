@@ -1,6 +1,7 @@
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::{EncodeWorkStep, Encoder};
+const SNAPSHOT_VERSION: u16 = 2;
 const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v1\0";
 #[cfg(not(target_arch = "wasm32"))]
 const CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-context-v1\0";
@@ -32,7 +33,7 @@ pub(crate) fn publication_evidence(
     let (bytes, guard) = crate::kernel::codec::encode_owned(ctx, |observe, reserve| {
         let mut encoder = Encoder::with_exact_capacity(
             SNAPSHOT_DOMAIN,
-            1,
+            SNAPSHOT_VERSION,
             SNAPSHOT_DOMAIN.len() + 2 + body,
             |step| {
                 match step {
@@ -148,7 +149,7 @@ pub(super) fn decode_publication_context(
         let mut decoder = crate::kernel::Decoder::new::<crate::FsError>(
             bytes,
             SNAPSHOT_DOMAIN,
-            1,
+            SNAPSHOT_VERSION,
             maximum as u64,
             &mut observe,
         )?;
@@ -227,4 +228,26 @@ fn invalid_context() -> crate::FsError {
         "original publication context differs",
     ))
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn obsolete_snapshot_configuration_refuses_before_any_fields() {
+        let cancellation = crate::CancellationToken::new();
+        let mut accounting =
+            KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+        for version in [0_u16, 1, u16::MAX] {
+            let mut bytes = SNAPSHOT_DOMAIN.to_vec();
+            bytes.extend_from_slice(&version.to_le_bytes());
+            assert!(matches!(
+                decode_publication_context(&bytes, crate::OperationId::new(), &mut accounting),
+                Err(crate::FsError::Decode(crate::kernel::CanonicalDecodeError::UnsupportedVersion {
+                    found, expected: 2
+                })) if found == version
+            ));
+        }
+    }
 }

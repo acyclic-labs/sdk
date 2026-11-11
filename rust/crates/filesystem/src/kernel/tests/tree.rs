@@ -2,7 +2,7 @@ use super::*;
 
 use crate::kernel::Child;
 fn name(value: &[u8]) -> Result<LogicalName, TreePageError> {
-    LogicalName::new(NameEncoding::Utf8, value.to_vec(), 255)
+    LogicalName::new(NameEncoding::Utf8, value.to_vec())
 }
 
 #[test]

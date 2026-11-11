@@ -49,7 +49,7 @@ async fn composed_merge(stale: bool, native: bool) -> TestResult {
     }
     assert!(matches!(
         merge
-            .prepare_merge(seed.generation_id(), 32, 8, B, &cancel)
+            .prepare_merge(seed.generation_id(), Some(32), Some(8), B, &cancel)
             .await?
             .value,
         MergePreparation::Prepared { .. }

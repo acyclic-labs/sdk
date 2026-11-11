@@ -84,7 +84,6 @@ fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
         vec![LogicalName::new(
             NameEncoding::Utf8,
             value.as_bytes().to_vec(),
-            config().limits.maximum_component_bytes,
         )?],
         config().limits,
     )?)
@@ -93,13 +92,7 @@ fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
 fn path_parts(values: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {
     let components = values
         .iter()
-        .map(|value| {
-            LogicalName::new(
-                NameEncoding::Utf8,
-                value.as_bytes().to_vec(),
-                config().limits.maximum_component_bytes,
-            )
-        })
+        .map(|value| LogicalName::new(NameEncoding::Utf8, value.as_bytes().to_vec()))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(NamespacePath::new(components, config().limits)?)
 }

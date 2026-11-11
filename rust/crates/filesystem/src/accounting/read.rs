@@ -23,8 +23,8 @@ pub async fn accounting_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     maximum_records: u32,
     work: &mut crate::AuthorityWork<'_>,
 ) -> Result<AccountingPage, AccountingError> {
+    let maximum_records = maximum_records.min(256);
     if maximum_records == 0
-        || maximum_records > 256
         || (cursor.sequence == Sequence::GENESIS && cursor.digest != Digest::ZERO)
         || (cursor.sequence == Sequence::GENESIS && cursor.settled_at_micros != 0)
     {
@@ -113,7 +113,7 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         {
             return Err(AccountingError::InvalidHistory);
         }
-        if decode_workspace_deleted(&record.payload, MAX_EVENT_BYTES).is_ok() {
+        if decode_workspace_deleted(&record.payload, record.payload.len() as u64).is_ok() {
             return Err(AccountingError::InvalidHistory);
         }
     }
@@ -126,7 +126,7 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Err(AccountingError::InvalidHistory);
     }
     let kind = if let Ok(created) =
-        decode_volume_created(&initial.payload, MAX_EVENT_BYTES, &mut |_| {
+        decode_volume_created(&initial.payload, initial.payload.len() as u64, &mut |_| {
             Ok::<_, crate::kernel::VolumeCreatedError>(())
         }) {
         if volume_authority_id(created.volume_id) != authority_id {
@@ -136,7 +136,9 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             volume_id: created.volume_id,
             config: created.config,
         }
-    } else if let Ok(retained) = decode_retention_created(&initial.payload, MAX_EVENT_BYTES) {
+    } else if let Ok(retained) =
+        decode_retention_created(&initial.payload, initial.payload.len() as u64)
+    {
         if retention_authority_id(retained.volume_id, retained.kind, &retained.label)
             != authority_id
         {
@@ -186,11 +188,12 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 AuthorityKind::Volume { volume_id, config }
                     if record.sequence == Sequence::new(1) =>
                 {
-                    let created =
-                        decode_volume_created(&record.payload, MAX_EVENT_BYTES, &mut |_| {
-                            Ok::<_, crate::kernel::VolumeCreatedError>(())
-                        })
-                        .map_err(|_| AccountingError::InvalidHistory)?;
+                    let created = decode_volume_created(
+                        &record.payload,
+                        record.payload.len() as u64,
+                        &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()),
+                    )
+                    .map_err(|_| AccountingError::InvalidHistory)?;
                     let bytes = prove_bytes(
                         objects,
                         created.initial_generation_root,
@@ -207,11 +210,11 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     }
                 }
                 AuthorityKind::Volume { volume_id, config } => {
-                    if let Ok(published) =
-                        decode_published_generation(&record.payload, MAX_EVENT_BYTES, |_| {
-                            Ok::<_, crate::kernel::CanonicalDecodeError>(())
-                        })
-                    {
+                    if let Ok(published) = decode_published_generation(
+                        &record.payload,
+                        record.payload.len() as u64,
+                        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                    ) {
                         if published.volume_id != *volume_id {
                             return Err(AccountingError::InvalidHistory);
                         }
@@ -230,8 +233,9 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                             logical_regular_file_bytes: bytes,
                         }
                     } else {
-                        let deleted = decode_workspace_deleted(&record.payload, MAX_EVENT_BYTES)
-                            .map_err(|_| AccountingError::InvalidHistory)?;
+                        let deleted =
+                            decode_workspace_deleted(&record.payload, record.payload.len() as u64)
+                                .map_err(|_| AccountingError::InvalidHistory)?;
                         if deleted != *volume_id || record.sequence != head.sequence {
                             return Err(AccountingError::InvalidHistory);
                         }
@@ -246,8 +250,9 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     if record.sequence != Sequence::new(1) {
                         return Err(AccountingError::InvalidHistory);
                     }
-                    let retained = decode_retention_created(&record.payload, MAX_EVENT_BYTES)
-                        .map_err(|_| AccountingError::InvalidHistory)?;
+                    let retained =
+                        decode_retention_created(&record.payload, record.payload.len() as u64)
+                            .map_err(|_| AccountingError::InvalidHistory)?;
                     if retained.volume_id != *volume_id
                         || retained.kind != *kind
                         || retention_authority_id(
@@ -356,7 +361,7 @@ async fn replay<A: AsyncAuthorityStore>(
 ) -> Result<Retained<Vec<DurableCommit>>, AccountingError> {
     let limit = ReplayLimit {
         records: maximum_records,
-        payload_bytes: MAX_EVENT_BYTES * u64::from(maximum_records),
+        payload_bytes: work.remaining()?.source_bytes_read,
     };
     let (records, allocation) = authority.replay(authority_id, after, limit, work).await?;
     let bytes = (records.capacity() as u64)
@@ -376,12 +381,7 @@ async fn replay<A: AsyncAuthorityStore>(
         crate::kernel::Owned::new(records, allocation, bytes),
         &mut work.accounting(),
     )?;
-    if records.value.len() > maximum_records as usize
-        || records
-            .value
-            .iter()
-            .any(|record| record.payload.len() as u64 > MAX_EVENT_BYTES)
-    {
+    if records.value.len() > maximum_records as usize {
         return Err(AccountingError::InvalidHistory);
     }
     Ok(records)

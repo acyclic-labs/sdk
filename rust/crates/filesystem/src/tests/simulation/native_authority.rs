@@ -95,8 +95,7 @@ async fn opaque_native_reads_and_mutations_never_fall_back_to_ordinary_io_or_own
     let simulation = Simulation::wrap(
         crate::facade::test_authority::OpaqueAuthority::default(),
         (),
-        SimulationOptions::default(),
-    )?;
+    );
     let (authority, _) = simulation.stores();
     let cancel = CancellationToken::new();
     let original = NativeMaterializationWork::new(budget(), &cancel).map_err(|(error, _)| error)?;

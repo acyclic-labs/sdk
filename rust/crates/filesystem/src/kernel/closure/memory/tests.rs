@@ -26,7 +26,7 @@ fn object(ordinal: u64) -> ObjectId {
 }
 
 #[test]
-fn indexed_proof_membership_preserves_order_bounds_and_original_custody()
+fn indexed_proof_membership_preserves_order_and_original_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let meter = ProofMeter::standalone(WorkBudget::UNBOUNDED, &cancellation)?;
@@ -74,8 +74,7 @@ fn indexed_proof_membership_preserves_order_bounds_and_original_custody()
             assert_eq!(after.allocation_operations, before.allocation_operations);
             assert_eq!(after.bytes_copied, before.bytes_copied);
         }
-        assert!(!set.insert(object(0), Some(population))?);
-        assert!(set.insert(object(population), Some(population)).is_err());
+        assert!(!set.insert(object(0))?);
         assert_eq!(set.len(), population as usize);
         assert!(!set.contains(object(population))?);
         assert_eq!(

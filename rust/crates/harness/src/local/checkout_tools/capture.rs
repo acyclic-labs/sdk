@@ -20,7 +20,6 @@ const EXCLUDED: &[&str] = &[
     ".system",
     crate::local::workspace::HOST_VIEW_ROOT,
 ];
-const MAXIMUM_PATHS: u32 = 262_144;
 
 pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
@@ -458,8 +457,8 @@ pub(in crate::local) fn configuration(
         source_namespace: Some(workspace.view().source_reference().identity),
         source_root: workspace.path.clone(),
         expected_root_identity: workspace.identity,
-        maximum_paths: MAXIMUM_PATHS,
-        maximum_extent_spans: 65_536,
+        maximum_paths: None,
+        maximum_extent_spans: None,
     };
     let mut excluded = EXCLUDED
         .iter()

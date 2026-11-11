@@ -171,10 +171,7 @@ async fn comparison_preserves_independent_custody<S: crate::AsyncObjectStore>(
             &store,
             selected,
             original,
-            (
-                crate::kernel::DecodeLimits::for_volume(config),
-                config.limits.maximum_read_bytes,
-            ),
+            crate::kernel::DecodeLimits::for_volume(config),
             &mut accounting,
             &cancellation,
         )

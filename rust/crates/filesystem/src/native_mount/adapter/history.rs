@@ -36,12 +36,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let mut components = inputs.vec(path.components().len())?;
             for component in path.components() {
-                let name = match native_name(
-                    component,
-                    self.config.profile,
-                    self.config.limits,
-                    &mut inputs,
-                ) {
+                let name = match native_name(component, self.config.profile, &mut inputs) {
                     Ok(name) => name,
                     Err(
                         MountSourceError::Unsupported(_)

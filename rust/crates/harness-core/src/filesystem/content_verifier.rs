@@ -330,7 +330,7 @@ where
                         quota.transfer();
                         Ok::<_, Error>(bytes)
                     })?;
-                    LogicalName::new(NameEncoding::Utf8, bytes, u32::MAX)
+                    LogicalName::new(NameEncoding::Utf8, bytes)
                         .map_err(|_| ledger.invalid("directory cursor is not a child name"))
                 })
                 .transpose()?;
@@ -868,14 +868,12 @@ where
                 .map_err(Error::from)?;
                 let (bytes, custody) = work.copy_bytes(name.as_bytes()).map_err(Error::from)?;
                 cursor_custody = Some(custody);
-                Some(
-                    LogicalName::new(NameEncoding::Utf8, bytes, u32::MAX).map_err(|_| {
-                        Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Invalid,
-                            reason: "private directory cursor is not a logical child name",
-                        }
-                    })?,
-                )
+                Some(LogicalName::new(NameEncoding::Utf8, bytes).map_err(|_| {
+                    Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "private directory cursor is not a logical child name",
+                    }
+                })?)
             } else {
                 cursor_custody = None;
                 None

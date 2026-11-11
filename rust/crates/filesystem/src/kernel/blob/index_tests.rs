@@ -3,7 +3,7 @@ use proptest::prelude::*;
 
 fn options(bytes: u64, chunk: u32, width: u32) -> BlobBuildOptions {
     BlobBuildOptions {
-        maximum_blob_bytes: bytes,
+        maximum_blob_bytes: Some(bytes),
         chunk_bytes: chunk,
         page_items: width,
         page_bytes: u32::MAX,
@@ -35,15 +35,21 @@ proptest! {
     ) {
         let store = crate::memory::MemoryObjectStore::default();
         let cancellation = CancellationToken::new();
-        let build = |maximum| futures::executor::block_on(build_blob(
-            &store, &mut std::io::Cursor::new(&bytes),
-            options(maximum, chunk, width), WorkBudget::UNBOUNDED, &cancellation,
-        ));
-        let tight = build((bytes.len() as u64).max(1)).unwrap();
-        let loose = build(1024 * 1024).unwrap();
-        prop_assert_eq!(tight.root, loose.root);
-        prop_assert_eq!(tight.logical_bytes, bytes.len() as u64);
-        prop_assert_eq!(tight.work.source_bytes_read, loose.work.source_bytes_read);
+        let build = |maximum| {
+            let mut policy = options((bytes.len() as u64).max(1), chunk, width);
+            policy.maximum_blob_bytes = maximum;
+            futures::executor::block_on(build_blob(
+                &store, &mut std::io::Cursor::new(&bytes), policy,
+                WorkBudget::UNBOUNDED, &cancellation,
+            ))
+        };
+        let tight = build(Some((bytes.len() as u64).max(1))).unwrap();
+        for maximum in [Some(1024 * 1024), None] {
+            let loose = build(maximum).unwrap();
+            prop_assert_eq!(tight.root, loose.root);
+            prop_assert_eq!(tight.logical_bytes, bytes.len() as u64);
+            prop_assert_eq!(tight.work.source_bytes_read, loose.work.source_bytes_read);
+        }
     }
 }
 
