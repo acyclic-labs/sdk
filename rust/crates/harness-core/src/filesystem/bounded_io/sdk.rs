@@ -125,6 +125,31 @@ impl PreparationIo {
         self.sdk((result, recorded))
     }
 
+    /// Settles the incremental work of an owned filesystem cursor. Native
+    /// cursors already charge the original owner directly; standalone cursors
+    /// report cumulative receipts, so only their new work is added here.
+    pub(crate) fn cursor_receipt<T, E: Into<Error>>(
+        &self,
+        result: acyclic_fs::MeasuredResult<OperationReceipt<T>, E>,
+        previous: &mut WorkCounters,
+    ) -> Result<T> {
+        let cumulative = match &result {
+            Ok(receipt) => receipt.work,
+            Err(failure) => failure.work,
+        };
+        if matches!(self, Self::Owned { .. }) {
+            let delta = cumulative
+                .checked_sub_cumulative(previous)
+                .map_err(acyclic_fs::FsError::from)?;
+            self.spent(delta)?;
+            self.remaining()?;
+        }
+        *previous = cumulative;
+        result
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error.into())
+    }
+
     #[doc(hidden)]
     pub fn sdk<T, E: Into<Error>>(
         &self,
