@@ -41,6 +41,14 @@ test("explicit view reservations count distinct stream paths", async () => {
   await bindLocalSession(stream);
   const path = `${root}/conversation`;
   await appendRecord(stream, path, conversation("original", 0n));
+  for (const invalid of [-1, 0, 1.5, 2 ** 32 + 1, NaN, Infinity, "1", true]) {
+    expect(() => new WireSession(stream, invalid as number, 1)).toThrow();
+    expect(() => new WireSession(stream, 1, invalid as number)).toThrow();
+  }
+  const unreserved = new WireSession(stream, undefined, undefined);
+  try {
+    unreserved.setView(Array.from({ length: 513 }, (_, index) => `view/${index}`), [], []);
+  } finally { unreserved.free(); }
   const session = new WireSession(stream, 1, 1);
   try {
     session.setView([path, path], [], []);

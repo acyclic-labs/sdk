@@ -1,5 +1,6 @@
 //! Browser access to the same selected-stream owner used by native clients.
 
+use super::optional_from_js;
 use acyclic_harness_client::{DemandPolicy, StreamView, ViewDemand, WireSession, WireSessionError};
 use acyclic_stream::{StreamPath, WasmStream, wire};
 use js_sys::{Array, JsString, Uint8Array};
@@ -133,10 +134,12 @@ impl WasmWireSession {
     #[wasm_bindgen(constructor)]
     pub fn new(
         stream: &WasmStream,
-        selected: Option<usize>,
-        expanded: Option<usize>,
+        #[wasm_bindgen(unchecked_param_type = "number | bigint | null | undefined")]
+        selected: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | bigint | null | undefined")]
+        expanded: JsValue,
     ) -> Result<Self, JsValue> {
-        let policy = DemandPolicy::new(selected, expanded)
+        let policy = DemandPolicy::new(optional_from_js(selected)?, optional_from_js(expanded)?)
             .map_err(|cause| session_error(WireSessionError::Demand(cause)))?;
         let client = stream
             .session_client()
