@@ -4,7 +4,7 @@ use acyclic_harness_client::DiffProjection;
 use acyclic_stream::session::{PreparedSocketOpen, SocketChannel, SocketInbound, SocketProvider};
 use futures::StreamExt as _;
 
-struct PreparedDiff<P: AuthorityProvider + ?Sized, O: AsyncObjectStore> {
+struct PreparedDiff<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> {
     server: Arc<Server<P, O>>,
     call: AgentCall,
     projection: DiffProjection,
