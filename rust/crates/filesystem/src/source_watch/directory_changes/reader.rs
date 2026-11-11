@@ -29,6 +29,8 @@ impl Shared {
         }
     }
     fn serve_packet(&self) {
+        // Declared before read/work guards: completion wakes may re-enter them.
+        let _completion = self.delivery.wide_delivery_batch();
         // A stale packet for a watch with no retirement left to resume.
         if self.stopping.load(Ordering::Acquire) && !self.resumes_retirement() {
             return;
@@ -394,6 +396,7 @@ impl NativeSourceWatch {
         &self,
         work: &mut W,
     ) -> Result<bool, DemandError> {
+        let _completion = self.shared.delivery.wide_delivery_batch();
         work.check()?;
         if self.shared.stopping.load(Ordering::Acquire) {
             return Err(io::Error::from(io::ErrorKind::BrokenPipe).into());

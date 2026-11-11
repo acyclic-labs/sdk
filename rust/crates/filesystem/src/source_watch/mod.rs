@@ -237,6 +237,8 @@ pub(crate) struct Delivery {
     exact: AtomicBool,
     /// Published only by the original driver after physical retirement.
     retired: AtomicBool,
+    #[cfg(windows)]
+    completion_pending: AtomicBool,
     budget: crate::performance::WorkBudget,
     cancellation: crate::cancellation::CancellationToken,
     failure: std::sync::Mutex<Option<(DemandError, Option<WorkCounters>)>>,

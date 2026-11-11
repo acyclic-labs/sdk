@@ -49,13 +49,19 @@ fn repeated_capture_counts_nested_checkout_union_once() -> Result<(), Box<dyn st
         maximum_extent_spans: Some(8),
     };
     let policy = CapturePolicy::default();
+    let subtree_options = CaptureOptions {
+        // Subtree capture includes its selected root; baseline captures only
+        // the three descendants. Both allowances equal the exact unique count.
+        maximum_paths: Some(4),
+        ..options.clone()
+    };
     // Once populated, checkout traversal is a,z,a/x while the host is a,a/x,z.
     // Exercise both public capture entry points with the exact union allowance.
     for _ in 0..2 {
         runtime.block_on(capture_subtrees_with_native_work(
             &mut checkout,
             &[path("/")],
-            &options,
+            &subtree_options,
             &policy,
             setup.cancellation(),
             None,

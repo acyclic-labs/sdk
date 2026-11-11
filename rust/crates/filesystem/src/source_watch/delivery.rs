@@ -3,6 +3,18 @@ use super::*;
 #[cfg(target_os = "linux")]
 struct NativeEventBatch<'a>(&'a Delivery);
 
+#[cfg(windows)]
+struct WideDeliveryBatch<'a>(&'a Delivery);
+
+#[cfg(windows)]
+impl Drop for WideDeliveryBatch<'_> {
+    fn drop(&mut self) {
+        if self.0.completion_pending.swap(false, Ordering::AcqRel) {
+            self.0.callback(|| self.0.sink.delivery_finished());
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl Drop for NativeEventBatch<'_> {
     fn drop(&mut self) {
@@ -72,6 +84,8 @@ impl Delivery {
             sink,
             exact: AtomicBool::new(true),
             retired: AtomicBool::new(false),
+            #[cfg(windows)]
+            completion_pending: AtomicBool::new(false),
             budget,
             cancellation,
             failure: std::sync::Mutex::new(None),
@@ -258,6 +272,11 @@ impl Delivery {
     }
 
     #[cfg(windows)]
+    pub(super) fn wide_delivery_batch(&self) -> impl Drop + '_ {
+        WideDeliveryBatch(self)
+    }
+
+    #[cfg(windows)]
     pub(super) fn deliver_wide<W: SourceDemandReadWork>(
         &self,
         changes: &[HostChangeWide<'_>],
@@ -277,7 +296,9 @@ impl Delivery {
             })
             .unwrap_or(Err(DemandError::NativeWorkUnavailable))
         };
-        self.callback(|| self.sink.delivery_finished());
+        // The caller's batch guard wakes observers after releasing the native
+        // read lock as well as this callback's original ledger scope.
+        self.completion_pending.store(true, Ordering::Release);
         result
     }
 
