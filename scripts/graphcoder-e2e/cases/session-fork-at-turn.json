@@ -1,0 +1,45 @@
+{
+  "id": "session-fork-at-turn",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [
+    { "when": { "user": "make the fork cut" }, "tools": [
+      { "id": "cut", "name": "shell", "arguments": { "command": "node -e \"require('node:fs').writeFileSync('fork.txt','cut');process.stdout.write('CUT_CREATED')\"" } }
+    ] },
+    { "when": { "tool_result": "CUT_CREATED" }, "text": ["SOURCE_FIRST"] },
+    { "when": { "user": "keep this later source turn" }, "tools": [
+      { "id": "later", "name": "shell", "arguments": { "command": "node -e \"require('node:fs').writeFileSync('fork.txt','after');process.stdout.write('CUT_CHANGED')\"" } }
+    ] },
+    { "when": { "tool_result": "CUT_CHANGED" }, "text": ["SOURCE_SECOND"] },
+    { "when": { "user": "inspect the fork", "contains": "SOURCE_FIRST" }, "tools": [
+      { "id": "fork-read", "name": "shell", "arguments": { "command": "node -e \"process.stdout.write('FORK_FILE='+require('node:fs').readFileSync('fork.txt','utf8'))\"" } }
+    ] },
+    { "when": { "tool_result": "FORK_FILE=cut" }, "text": ["FORK_BRANCH_DONE"] },
+    { "when": { "user": "inspect the retained source", "contains": "SOURCE_SECOND" }, "tools": [
+      { "id": "source-read", "name": "shell", "arguments": { "command": "node -e \"process.stdout.write('SOURCE_FILE='+require('node:fs').readFileSync('fork.txt','utf8'))\"" } }
+    ] },
+    { "when": { "tool_result": "SOURCE_FILE=after" }, "text": ["SOURCE_RETAINED_DONE"] }
+  ] },
+  "inputs": [
+    { "mode": "service" },
+    { "mode": "text", "args": ["new", "Retained source"], "environment": { "TERM": "dumb" }, "capture_root": "source" },
+    { "mode": "pty", "args": ["--agent", "{{session:source}}"], "actions": [
+      { "when": { "contains": ["GraphCoder"], "cursor": true }, "prompt": "make the fork cut" },
+      { "when": { "contains": ["SOURCE_FIRST", "○"] }, "prompt": "keep this later source turn" },
+      { "when": { "contains": ["SOURCE_SECOND", "○"] }, "prompt": "/fork " },
+      { "when": { "contains": ["Fork / rewind to turn", "Turn 1"] }, "send": "2\r" },
+      { "when": { "contains": ["GraphCoder", "SOURCE_FIRST"], "absent": ["SOURCE_SECOND"], "cursor": true }, "prompt": "/unpause " },
+      { "when": { "contains": ["Session resumed", "○"] }, "prompt": "inspect the fork" },
+      { "when": { "contains": ["FORK_BRANCH_DONE", "○"] }, "prompt": "/quit " }
+    ] },
+    { "mode": "pty", "args": ["--agent", "{{session:source}}"], "actions": [
+      { "when": { "contains": ["GraphCoder", "SOURCE_SECOND"], "absent": ["FORK_BRANCH_DONE"], "cursor": true }, "prompt": "inspect the retained source" },
+      { "when": { "contains": ["SOURCE_RETAINED_DONE", "○"] }, "prompt": "/quit " }
+    ] }
+  ],
+  "assert": {
+    "requests": 8,
+    "tool_contains": ["FORK_FILE=cut", "SOURCE_FILE=after"],
+    "last_model_contains": ["SOURCE_FIRST", "SOURCE_SECOND"],
+    "last_model_absent": ["FORK_BRANCH_DONE", "inspect the fork"]
+  }
+}

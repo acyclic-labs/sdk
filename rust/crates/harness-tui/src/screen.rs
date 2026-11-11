@@ -487,11 +487,14 @@ impl Screen<'_> {
         rows(frame, self.terminal, areas.terminal, 0);
         rows(frame, self.notifications, areas.notifications, 0);
         rows(frame, self.usage, areas.usage, 0);
+        let status = if self.status.width() > usize::from(areas.status.width) {
+            // Preserve the outcome when a long receipt or error needs clipping.
+            self.status.clone().left_aligned()
+        } else {
+            self.status.clone().right_aligned()
+        };
         frame.render_widget(
-            self.status
-                .clone()
-                .right_aligned()
-                .style(input.theme.token(crate::config::Token::Muted)),
+            status.style(input.theme.token(crate::config::Token::Muted)),
             areas.status,
         );
         if !self.tree.is_empty() {

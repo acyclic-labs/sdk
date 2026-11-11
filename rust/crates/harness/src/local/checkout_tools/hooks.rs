@@ -16,13 +16,8 @@ impl CheckoutTools {
         context: ToolContext,
         reconcile_only: bool,
     ) -> Result<Option<HookOutput>> {
-        let scope = context.effective_scope();
-        if !scope.grants().contains(&self.read_grant) || !scope.grants().contains(&self.write_grant)
-        {
-            return Err(Error::Unauthorized(
-                "hooks require the selected project grants".into(),
-            ));
-        }
+        // Retained outcomes are immutable private files, read under this
+        // task's own grant without waiting behind a live checkout command.
         crate::hooks::effects::run_once(
             &context,
             event,
@@ -48,8 +43,7 @@ impl CheckoutTools {
         let operation = capture_operation(context.operation_id(), event);
         serialized(&self.state, async |mut state| {
             let workspace = self
-                .workspace
-                .selected_workspace(&mut state, context.task())
+                .command_workspace(&mut state, context, "local hooks")
                 .await?;
             let view = state
                 .active

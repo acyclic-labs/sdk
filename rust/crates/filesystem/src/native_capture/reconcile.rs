@@ -14,19 +14,18 @@ pub(super) async fn capture_observed_paths_from_root<
     meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
     let states = lookup_capture_states(checkout, observed, batch_size, meter).await?;
-    let bytes = vector_bytes(&states);
-    let count = states.len();
-    let mut batch = CaptureBatch {
+    let mut batch = CaptureBatch::new(
         source_root,
-        watch_epoch: None,
         baseline,
         source_namespace,
         maximum_extent_spans,
         meter,
-        host_links: Vec::new(),
-        mutations: Vec::new(),
-        receipt: CaptureReceipt::default(),
-    };
+    );
+    let (relocated, states) =
+        super::relocate::observed_paths(checkout, states, batch_size, &batch).await?;
+    batch.receipt.changed_paths = relocated;
+    let bytes = vector_bytes(&states);
+    let count = states.len();
     for (index, (observation, path, current)) in states.into_iter().enumerate() {
         batch
             .prepare(
@@ -144,7 +143,27 @@ pub(super) struct CaptureBatch<'a> {
     pub(super) receipt: CaptureReceipt,
 }
 
-impl CaptureBatch<'_> {
+impl<'a> CaptureBatch<'a> {
+    pub(super) fn new(
+        source_root: &'a HostRoot,
+        baseline: Option<&'a NativeViewBaseline>,
+        source_namespace: Option<[u8; 16]>,
+        maximum_extent_spans: u32,
+        meter: &'a NativeMaterializationWork,
+    ) -> Self {
+        Self {
+            source_root,
+            baseline,
+            source_namespace,
+            maximum_extent_spans,
+            meter,
+            watch_epoch: None,
+            host_links: Vec::new(),
+            mutations: Vec::new(),
+            receipt: CaptureReceipt::default(),
+        }
+    }
+
     pub(super) async fn prepare<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &mut self,
         checkout: &mut Checkout<A, O>,
@@ -296,35 +315,18 @@ impl CaptureBatch<'_> {
         } else {
             None
         };
-        let source_file_id = if let Some(namespace) =
-            self.source_namespace.filter(|_| !exists_with_kind)
-        {
-            // Linux's metadata-only capture stat omits generation cookies.
-            // One metered identity stat for a new source-backed object buys
-            // the same inode-reuse protection and identity as lazy reads.
-            #[cfg(target_os = "linux")]
-            let identity_metadata = {
-                let observed = self
-                    .source_root
-                    .stat(&host_path, &mut self.meter.clone())
-                    .map_err(capture_demand_error)?;
-                ensure_same_host_node(&metadata, &observed)?;
-                observed
+        let source_file_id =
+            if let Some(namespace) = self.source_namespace.filter(|_| !exists_with_kind) {
+                Some(source_capture_id(
+                    self.source_root,
+                    &host_path,
+                    &metadata,
+                    namespace,
+                    self.meter,
+                )?)
+            } else {
+                None
             };
-            #[cfg(target_os = "linux")]
-            let identity_metadata = &identity_metadata;
-            #[cfg(not(target_os = "linux"))]
-            let identity_metadata = &metadata;
-            let identity = crate::demand::native::file_identity(identity_metadata);
-            let file_id = crate::demand::source_file_id(
-                &namespace,
-                &identity,
-                &mut crate::kernel::KernelAccounting::native(self.meter, self.meter.cancellation()),
-            )?;
-            Some(file_id)
-        } else {
-            None
-        };
         let changed = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
             self.metadata_only(
                 path,
@@ -675,6 +677,35 @@ impl CaptureBatch<'_> {
         capture_drop_host_path(host_path, self.meter)?;
         Ok(())
     }
+}
+
+pub(super) fn source_capture_id(
+    root: &HostRoot,
+    path: &CaptureHostPath,
+    metadata: &HostStat,
+    namespace: [u8; 16],
+    meter: &NativeMaterializationWork,
+) -> Result<crate::FileId, CaptureError> {
+    // Metadata-only Linux stats omit generation cookies. This identity stat
+    // buys the same inode-reuse protection and identity as lazy reads.
+    #[cfg(target_os = "linux")]
+    let observed = {
+        let observed = root
+            .stat(path, &mut meter.clone())
+            .map_err(capture_demand_error)?;
+        ensure_same_host_node(metadata, &observed)?;
+        observed
+    };
+    #[cfg(target_os = "linux")]
+    let metadata = &observed;
+    #[cfg(not(target_os = "linux"))]
+    let _ = (root, path);
+    let identity = crate::demand::native::file_identity(metadata);
+    Ok(crate::demand::source_file_id(
+        &namespace,
+        &identity,
+        &mut crate::kernel::KernelAccounting::native(meter, meter.cancellation()),
+    )?)
 }
 
 /// Whether an observation proves that the path is absent, including a descendant

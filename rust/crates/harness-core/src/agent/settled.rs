@@ -1,10 +1,12 @@
 //! Settlement from the original actor checkpoint and consumed inbox cursor.
 //! Status records announce phase changes; conversation entries announce replies.
 
-use super::{AgentPath, ConversationEntry, Error, Phase, inbox_tail};
+use super::{AgentPath, AgentRecord as _, ConversationEntry, Error, Phase, inbox_tail};
+use futures::TryStreamExt as _;
 use std::{collections::HashSet, sync::Arc};
 
-/// A phase, readiness and answer position from the same actor checkpoint.
+/// An original checkpoint's phase, readiness and answer against its accepted
+/// inbox cut, including a delivery whose next checkpoint is not committed yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settlement {
     /// Whether the checkpoint covers the observed inbox cut.
@@ -20,8 +22,10 @@ pub struct Settlement {
 /// this call (idle, waiting for a user, or done): one read of its
 /// inbox tail and its original actor state, read concurrently. `within` selects
 /// the original account and namespace; no actor discovery or history scan.
-/// An inbox cut newer than the actor checkpoint can only defer settlement:
-/// the checkpoint must cover that cut before an idle agent is returned.
+/// An inbox cut newer than the actor checkpoint can only defer settlement.
+/// If an idle checkpoint has pending input, one lazy read of the accepted
+/// inbox range finds its first waking input; non-waking controls never invent
+/// running work. The fixed observed cut excludes later concurrent deliveries.
 ///
 /// # Errors
 /// [`Error::NoSuchAgent`] when `agent` was never created; stream failures and
@@ -31,6 +35,14 @@ pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
 ) -> Result<Settlement, Error> {
+    Ok(snapshot(provider, within, agent).await?.1)
+}
+
+pub(super) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static>(
+    provider: &Arc<P>,
+    within: &acyclic_actors::addressing::ActorReference,
+    agent: &AgentPath,
+) -> Result<(super::AgentState, Settlement), Error> {
     let actor = super::handler::Agents::<P>::actor(within, &agent.id())?;
     let agents = super::handler::Agents::new(super::actor_store(provider)?);
     let (inbox, (state, cursor)) =
@@ -38,12 +50,55 @@ pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
     let settled = matches!(state.phase, Phase::Done { .. })
         || matches!(state.phase, Phase::Idle | Phase::WaitingUser { .. })
             && state.settled_before(cursor) >= inbox;
-    Ok(Settlement {
+    let mut phase = super::machine::published(&state);
+    if !settled
+        && !state.closed
+        && cursor < inbox
+        && matches!(phase, Phase::Idle | Phase::WaitingUser { .. })
+    {
+        let mut sequence = cursor;
+        'accepted: while sequence < inbox {
+            // Chunking bounds each read, never the accepted pending range.
+            let limit = (inbox - sequence).min(64) as u32;
+            let end = sequence + u64::from(limit);
+            let mut records = provider
+                .read(acyclic_stream::ReadRequest {
+                    key: None,
+                    path: agent.inbox()?,
+                    from: sequence,
+                    limit,
+                    at_least: Default::default(),
+                })
+                .await
+                .map_err(Error::Stream)?;
+            while sequence < end {
+                let original = records
+                    .try_next()
+                    .await
+                    .map_err(Error::Stream)?
+                    .filter(|record| record.sequence == sequence)
+                    .ok_or(Error::Record("accepted inbox input is unavailable"))?;
+                let record = super::InboxRecord::decode(&original.value)?;
+                let wakes = match record {
+                    record if state.already_steered(sequence, &record) => false,
+                    super::InboxRecord::ForkAdopted(adopted) => adopted.brief.is_some(),
+                    record => super::input::input(sequence, record).is_some(),
+                };
+                if wakes {
+                    phase = Phase::Running;
+                    break 'accepted;
+                }
+                sequence += 1;
+            }
+        }
+    }
+    let settlement = Settlement {
         settled,
-        phase: state.phase,
+        phase,
         answer: (settled && state.conversation_tail > state.conversation_base)
             .then(|| state.conversation_tail - 1),
-    })
+    };
+    Ok((state, settlement))
 }
 
 /// `agent`'s immutable answer at the exact position selected by [`settled`].

@@ -870,6 +870,7 @@ mod tests {
             directory.start(Path::new("nonexistent-service-executable"), &[])?;
             let first = Conversation::open(directory.connect().await?);
             let second = Conversation::open(directory.connect().await?);
+            assert!(!first.phase().await?.in_turn(), "adoption alone is not a turn");
             let mut events = second.observe(None).await?;
             let inbox = first
                 .send("shared-operation", "finish after I detach")
@@ -890,6 +891,21 @@ mod tests {
                 }
             }
             drop(first);
+            let attached = Conversation::open(directory.connect().await?);
+            let (mut attached_events, phase) = attached.observe_with_phase(None).await?;
+            assert!(phase.in_turn(), "a fresh attachment must see the running turn");
+            let status = attached.path().status().map_err(storage)?;
+            let resource = acyclic_stream::wire_codec::session::stream_resource(status.as_str());
+            loop {
+                let (event, delivery) = attached_events.next_projected().await?;
+                if delivery.resource == resource
+                    && matches!(delivery.frame.body, Some(acyclic_stream::wire::session_frame::Body::Data(_)))
+                {
+                    assert!(event?.is_none(), "old idle status must not replace the opening phase");
+                    break;
+                }
+                event?;
+            }
             assert_eq!(
                 second
                     .send("shared-operation", "finish after I detach")
@@ -907,6 +923,15 @@ mod tests {
             };
             assert_eq!(second.output_text(&entry).await?, "settled after detach");
             assert_eq!(provider.request_count(), 1);
+            loop {
+                if let super::super::Event::Status(status) = attached_events.next().await? {
+                    assert_eq!(status.conversation, 1, "settlement publishes the new cut");
+                    assert_eq!(status.phase, crate::agent::Phase::Idle);
+                    break;
+                }
+            }
+            assert!(!attached.phase().await?.in_turn());
+            drop((attached, attached_events));
             drop((second, events));
             let reattached = Conversation::open(directory.connect().await?);
             assert_eq!(reattached.settled().await?, 1);
@@ -1041,16 +1066,16 @@ mod tests {
         // Spend the first attempt's capture identity before the merge reports
         // its conflict. Resolution is another capture under the same request.
         std::fs::write(checkout.path().join("local.txt"), b"local edit\n").map_err(storage)?;
-        let conflict = sessions::merge(&second, "publish-second")
+        let conflict_error = sessions::merge(&second, "publish-second")
             .await
-            .expect_err("concurrent edits must report a merge conflict");
+            .expect_err("divergent session edits must conflict");
         let conflicted =
             std::fs::read_to_string(checkout.path().join("shared.txt")).map_err(storage)?;
         assert!(
             conflicted.contains("<<<<<<<")
                 && conflicted.contains("first")
                 && conflicted.contains("second"),
-            "merge conflicts must remain ordinary checkout files: {conflicted}; reported: {conflict}"
+            "merge conflicts must remain ordinary checkout files: {conflicted}; merge error: {conflict_error}"
         );
         assert_eq!(
             std::fs::read(checkout.path().join("nested/first.txt")).map_err(storage)?,

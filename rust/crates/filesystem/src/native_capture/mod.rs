@@ -54,6 +54,7 @@ mod inline_reuse;
 #[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
 mod inline_reuse_tests;
 mod reconcile;
+mod relocate;
 pub use reconcile::host_path_is_absent;
 use reconcile::*;
 mod checkout_walk;

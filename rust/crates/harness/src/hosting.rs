@@ -739,7 +739,7 @@ where
                         agents.wait_for_input(agent, input).await?;
                     }
                 }
-                let state = agents.state(agent).await?;
+                let (state, settlement) = agents.settlement_snapshot(agent).await?;
                 let profile = state.profile.as_ref();
                 Ok(AgentReply::Settlement {
                     settled: state.conversation_tail,
@@ -755,7 +755,7 @@ where
                         .map(str::to_owned),
                     model: profile.and_then(|profile| profile.model.clone()),
                     topology: profile.and_then(|profile| profile.topology.clone()),
-                    phase: state.phase,
+                    phase: settlement.phase,
                 })
             }
             AgentCommand::Diff { agent, page } => {

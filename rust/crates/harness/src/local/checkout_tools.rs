@@ -25,8 +25,6 @@ mod tests;
 pub(super) struct CheckoutTools {
     workspace: Arc<LocalWorkspace>,
     signed: Scope,
-    read_grant: String,
-    write_grant: String,
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
@@ -146,8 +144,6 @@ impl CheckoutTools {
             }
             Ok(Self {
                 signed: signed.clone(),
-                read_grant: project.capability(VolumeOperation::Read, &mut None)?,
-                write_grant: project.capability(VolumeOperation::Write, &mut None)?,
                 capture_options,
                 capture_policy,
                 workspace,
@@ -222,18 +218,21 @@ impl CheckoutTools {
                 started,
             } = command;
             let result = serialized(&self.state, async |mut state| {
-                let owner = context.task();
-                let workspace = self.workspace.selected_workspace(&mut state, owner).await?;
+                let workspace = self
+                    .command_workspace(
+                        &mut state,
+                        context,
+                        if invocation.name == "fs" {
+                            "local fs facade"
+                        } else {
+                            "local shell"
+                        },
+                    )
+                    .await?;
                 let view = state
                     .active
                     .as_ref()
                     .unwrap_or_else(|| self.workspace.view());
-                self.require_command_access(
-                    view.workspace(),
-                    context.effective_scope().grants(),
-                    invocation.name == "fs",
-                )
-                .await?;
                 if reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await? {
                     state.watcher = None;
                 }
@@ -461,14 +460,17 @@ impl ToolExecutor for CheckoutTools {
         if (invocation.name != crate::tools::shell::PLATFORM.name && invocation.name != "fs")
             || context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
-            || !(scope.grants().contains(&self.read_grant)
-                && scope.grants().contains(&self.write_grant))
-            || crate::tools::catalog()
-                .find(|spec| spec.name == invocation.name)
-                .is_none_or(|spec| !scope.grants().contains(&spec.capability()))
         {
             return Err(Error::Unauthorized(
-                "checkout command differs from its task authority".into(),
+                "checkout command identity differs from its task".into(),
+            ));
+        }
+        if crate::tools::catalog()
+            .find(|spec| spec.name == invocation.name)
+            .is_none_or(|spec| !scope.grants().contains(&spec.capability()))
+        {
+            return Err(Error::Unauthorized(
+                "checkout command requires its tool-call grant".into(),
             ));
         }
         Ok(())
@@ -567,13 +569,17 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
+            let context = context
+                .as_ref()
+                .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
+            // A started receipt is immutable private data. Its own read grant
+            // authorizes replay without queueing behind the running command.
             if invocation.name == crate::tools::shell::PLATFORM.name
                 && invocation
                     .arguments
                     .get("background")
                     .and_then(serde_json::Value::as_bool)
                     == Some(true)
-                && let Some(context) = context.as_ref()
                 && let (Some(file), _) = context
                     .observe_staged_file_once(
                         output::writer::operation(context, "started.json"),
@@ -593,7 +599,17 @@ impl ToolExecutor for CheckoutTools {
             // reaped. Once the guard is held, the call's process is gone
             // unless this process failed to reap it, and its outcome was never
             // recorded: it settles as interrupted.
-            let state = lock_owned(StateArc::clone(&self.state)).await;
+            let mut state = lock_owned(StateArc::clone(&self.state)).await;
+            self.command_workspace(
+                &mut state,
+                context,
+                if invocation.name == "fs" {
+                    "local fs facade"
+                } else {
+                    "local shell"
+                },
+            )
+            .await?;
             if state.unsettled.contains(&invocation.operation_id) {
                 return Ok(None);
             }

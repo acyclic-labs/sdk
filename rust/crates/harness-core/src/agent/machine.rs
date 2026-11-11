@@ -179,6 +179,11 @@ fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
 }
 
 impl AgentState {
+    pub(super) fn already_steered(&self, sequence: u64, record: &InboxRecord) -> bool {
+        sequence < self.steered_through
+            && matches!(record, InboxRecord::Message(_) | InboxRecord::Notice { .. })
+    }
+
     /// A terminal setup failure frees its name only before any reply or action
     /// committed. Model failure after a tool action must retain the identity.
     /// The brief is queued at adoption, not appended to the conversation: the
@@ -727,7 +732,9 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     );
     // The last published phase: the creating commit published `Idle`, and
     // admitting a record (a cancel) can itself change the phase.
-    let previous = state.as_ref().map_or(Phase::Idle, published);
+    let previous = state.as_ref().map_or((Phase::Idle, 0), |state| {
+        (published(state), state.dropped_before)
+    });
     let mut child_settlement = None;
     let mut state = match (state, wake) {
         (
@@ -875,7 +882,7 @@ pub(super) async fn failed_step(
         ) => AgentState::adopted(path.clone(), &adopted)?,
         _ => return Err(Error::Record("first agent input is not ForkAdopted")),
     };
-    let previous = published(&state);
+    let previous = (published(&state), state.dropped_before);
     let mut outs = Vec::new();
     shed(&mut state, &mut outs, failure);
     let step = finalize_step(state, outs, &previous, cursor, None, None)?;
@@ -904,7 +911,7 @@ fn wake_input(state: &AgentState) -> bool {
 fn finalize_step(
     mut state: AgentState,
     mut outs: Vec<Out>,
-    previous: &Phase,
+    previous: &(Phase, u64),
     cursor: u64,
     child_wakes: Option<ChildWakes>,
     child_settlement: Option<ChildSettlement>,
@@ -1007,7 +1014,14 @@ fn finalize_step(
         .conversation_tail
         .checked_add(appended)
         .ok_or(Error::Record("agent conversation tail overflow"))?;
-    let status = (&phase != previous || child_wakes.is_some() || child_settlement.is_some())
+    // Settled entries and dropped inputs wake observers even when the actor's
+    // phase stays unchanged. An opening snapshot may have reported Running
+    // from accepted input while the committed checkpoint still said Idle.
+    let status = (phase != previous.0
+        || state.dropped_before != previous.1
+        || child_wakes.is_some()
+        || child_settlement.is_some()
+        || appended != 0)
         .then_some(StatusRecord {
             child_settlement,
             child_wakes,
@@ -1027,9 +1041,9 @@ fn finalize_step(
     })
 }
 
-/// The phase a status publishes: an idle agent still holding input runs it
-/// next, so it publishes `Running`; `Idle` always means nothing is pending.
-fn published(state: &AgentState) -> Phase {
+/// The phase a status publishes: retained input runs next, so `Idle` means
+/// that no admitted input remains pending in this checkpoint.
+pub(super) fn published(state: &AgentState) -> Phase {
     if matches!(state.phase, Phase::Idle | Phase::WaitingUser { .. })
         && (!state.queued.is_empty() || state.overflow.is_some())
     {
@@ -1066,9 +1080,7 @@ async fn admit(
     settled_at_micros: Option<u64>,
 ) -> Result<(AgentState, Option<ChildSettlement>), Error> {
     let mut fact = None;
-    if sequence < state.steered_through
-        && matches!(record, InboxRecord::Message(_) | InboxRecord::Notice { .. })
-    {
+    if state.already_steered(sequence, &record) {
         return Ok((state, None));
     }
     let kind = match &record {

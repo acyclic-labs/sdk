@@ -321,6 +321,29 @@ impl View {
         Ok(Some((id.clone(), binding.clone(), verdict)))
     }
 
+    async fn restore_phase(
+        &mut self,
+        conversation: &Conversation,
+        phase: Phase,
+    ) -> Result<(), Failure> {
+        if !matches!((&phase, &self.approval_shown),
+            (Phase::WaitingApproval { id, binding: Some(binding) }, Some(shown))
+            if id == &shown.id && binding == &shown.binding)
+        {
+            self.approval_shown = None;
+        }
+        self.approval_status = match &phase {
+            Phase::WaitingApproval { id, binding } => conversation
+                .pending_approval(id)
+                .await?
+                .filter(|pending| Some(&pending.binding) == binding.as_ref())
+                .map(|pending| pending.status),
+            _ => None,
+        };
+        self.phase = Some(phase);
+        Ok(())
+    }
+
     /// Applies `event`; `seen` is the next conversation sequence the
     /// observer has not returned.
     async fn apply(
@@ -395,20 +418,6 @@ impl View {
             }
             Event::Delta => return Ok(()),
             Event::Status(status) => {
-                if !matches!((&status.phase, &self.approval_shown),
-                    (Phase::WaitingApproval { id, binding: Some(binding) }, Some(shown))
-                    if id == &shown.id && binding == &shown.binding)
-                {
-                    self.approval_shown = None;
-                }
-                self.approval_status = match &status.phase {
-                    Phase::WaitingApproval { id, binding } => conversation
-                        .pending_approval(id)
-                        .await?
-                        .filter(|pending| Some(&pending.binding) == binding.as_ref())
-                        .map(|pending| pending.status),
-                    _ => None,
-                };
                 // A settled agent consumed every request before its cursor:
                 // a context request it passed without an entry was dropped
                 // (cancelled) or failed, and is no longer work.
@@ -438,7 +447,7 @@ impl View {
                     }
                 }
                 self.pending_dirty = true;
-                self.phase = Some(status.phase);
+                self.restore_phase(conversation, status.phase).await?;
                 self.stop(seen);
             }
         }
@@ -871,13 +880,14 @@ async fn run_current(
     } else {
         None
     };
-    let mut events = conversation.observe(from).await?;
+    let (mut events, phase) = conversation.observe_with_phase(from).await?;
     let mut view = View {
         title: session::title(&title),
         top: events.seen(),
         floor: if resume { 0 } else { events.seen() },
         ..View::default()
     };
+    view.restore_phase(&conversation, phase).await?;
     let mut older_future = std::pin::pin!(None);
     let mut output_rows = Vec::new();
     let mut input = PromptInput::default();
@@ -1227,6 +1237,11 @@ async fn run_current(
                 let settled = matches!(&event, Event::Turn(_));
                 if matches!(event, Event::Delta) {
                     events.absorb().await?;
+                    // Another client can start a turn while this view is idle.
+                    // Refresh once when its live output becomes visible.
+                    if !view.busy() && !events.live().1.is_empty() {
+                        view.restore_phase(&conversation, conversation.phase().await?).await?;
+                    }
                 }
                 // Only a turn this view waited on rings; a reopened
                 // history is not news.
@@ -1316,12 +1331,14 @@ async fn run_current(
                             let opening = async {
                                 let selected = root.select(agent.clone()).await?;
                                 let from = selected.settled().await?.saturating_sub(1);
-                                let events = selected.observe(Some(from)).await?;
+                                let (events, phase) = selected.observe_with_phase(Some(from)).await?;
                                 let session = session::Session::open(&selected).await?;
                                 let title = selected.agent_file_previews(vec!["ui/title".into()], None, acyclic_harness::client::MAX_READ_BYTES).await?;
-                                Ok::<_, Failure>((selected, events, session, title))
+                                let mut view = View { title: session::title(&title), top: events.seen(), floor: 0, pending_dirty: true, tail_dirty: true, ..View::default() };
+                                view.restore_phase(&selected, phase).await?;
+                                Ok::<_, Failure>((selected, events, session, title, view))
                             }.await;
-                            let (selected, selected_events, session, title) = match opening {
+                            let (selected, selected_events, session, title, selected_view) = match opening {
                                 Ok(opened) => opened,
                                 Err(error) => {
                                     sidebar.cancel_navigation();
@@ -1332,7 +1349,7 @@ async fn run_current(
                             sidebar.attached(&agent, history);
                             events = selected_events;
                             conversation = selected;
-                            view = View { title: session::title(&title), top: events.seen(), floor: 0, pending_dirty: true, tail_dirty: true, ..View::default() };
+                            view = selected_view;
                             title_future.set(session::follow_title(Arc::clone(&conversation), title.generation));
                             ui = session;
                             queries.close(query_future.as_mut());
@@ -1605,12 +1622,17 @@ async fn run_current(
                                     Err(error) => view.notice = Some(error.to_string()),
                                 }
                             }
-
-                            InputEffect::Interrupt | InputEffect::Host(Action::Escape)
-                                if view.busy() =>
-                            {
-                                view.cancelling = true;
-                                conversation.cancel().await?;
+                            InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {
+                                // No output need have arrived from a peer's
+                                // turn yet; a cached idle phase cannot discard
+                                // an explicit interrupt of accepted input.
+                                if !view.busy() {
+                                    view.restore_phase(&conversation, conversation.phase().await?).await?;
+                                }
+                                if view.busy() {
+                                    view.cancelling = true;
+                                    conversation.cancel().await?;
+                                }
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
                             InputEffect::Quit if matches!(view.prompt, Some(Prompt::StopOrDetach)) => return view.exit().map(|()| Next::Exit),
@@ -1971,6 +1993,7 @@ mod tests {
             binding: Some(binding.clone()),
         });
         assert!(view.approval_answer("yes").is_err());
+        assert!(view.approval_answer("no").is_err());
         view.approval_shown = Some(acyclic_harness_client::PendingApproval {
             id: id.clone(),
             binding: binding.clone(),

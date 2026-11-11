@@ -2,25 +2,32 @@
 use super::*;
 
 impl CheckoutTools {
-    pub(super) async fn require_command_access(
+    /// Select and authorize the same workspace while its command guard is held.
+    /// The shared check admits structured filesystem grants and exact volume
+    /// grants, and refuses any restrictive policy before exposing raw files.
+    pub(super) async fn command_workspace(
         &self,
-        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
-        ceiling: &Capabilities,
-        facade: bool,
-    ) -> Result<()> {
+        state: &mut State,
+        context: &ToolContext,
+        surface: &'static str,
+    ) -> Result<Arc<LocalWorkspace>> {
+        let workspace = self
+            .workspace
+            .selected_workspace(state, context.task())
+            .await?;
+        let view = state
+            .active
+            .as_ref()
+            .unwrap_or_else(|| self.workspace.view());
         require_mount_access(
-            workspace,
-            &self.workspace.mounts,
+            view.workspace(),
+            &state.mounts,
             &self.signed,
-            ceiling,
-            if facade {
-                "local fs facade"
-            } else {
-                "local bash"
-            },
+            context.effective_scope().grants(),
+            surface,
         )
         .await?;
-        Ok(())
+        Ok(workspace)
     }
 }
 

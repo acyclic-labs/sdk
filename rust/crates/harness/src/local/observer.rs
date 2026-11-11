@@ -42,6 +42,9 @@ pub struct Observer {
     resource: String,
     /// Next conversation sequence not yet returned to the caller.
     next_turn: u64,
+    /// A phase-aware opening supplied this checkpoint's phase. A replayed idle
+    /// status must not replace accepted input that is already running.
+    status_floor: Option<(u64, bool)>,
     tail: OutputTail,
 }
 
@@ -62,6 +65,17 @@ impl Observer {
             AgentSelection::new(connection.root().clone(), from, status_from),
             None,
         )
+    }
+
+    pub(super) fn open_at_phase(
+        connection: &Connection,
+        from: u64,
+        statuses: u64,
+        phase: &crate::agent::Phase,
+    ) -> Result<Self> {
+        let mut observer = Self::open(connection, from, statuses.saturating_sub(1))?;
+        observer.status_floor = Some((statuses, phase.in_turn()));
+        Ok(observer)
     }
 
     pub(super) fn replay(
@@ -135,6 +149,7 @@ impl Observer {
             status: agent.status().map_err(storage)?,
             resource: connection.tools.clone(),
             next_turn: from,
+            status_floor: None,
             tail: OutputTail::default(),
             connection: connection.clone(),
             agent,
@@ -152,11 +167,17 @@ impl Observer {
         let delivery = futures::future::poll_fn(|cx| self.client.poll_delivery(cx))
             .await
             .map_err(|error| self.follow_error(error))?;
+        let after = match &delivery.frame.body {
+            Some(wire::session_frame::Body::Data(data)) => {
+                data.after.as_ref().map(|cursor| cursor.next)
+            }
+            _ => None,
+        };
         let event = self
             .client
             .decode_delivery(&delivery)
             .map_err(|error| self.follow_error(error))
-            .and_then(|event| self.apply(event));
+            .and_then(|event| self.apply(event, after));
         Ok((event, delivery))
     }
 
@@ -169,13 +190,18 @@ impl Observer {
         ]
     }
 
-    fn apply(&mut self, event: AgentEvent) -> Result<Option<Event>> {
+    fn apply(&mut self, event: AgentEvent, after: Option<u64>) -> Result<Option<Event>> {
         Ok(match event {
             AgentEvent::Status { status, .. } => {
-                if matches!(
-                    status.phase,
-                    crate::agent::Phase::Idle | crate::agent::Phase::Done { .. }
-                ) {
+                if let Some((floor, opening_turn)) = self.status_floor.take() {
+                    let after = after.ok_or_else(|| {
+                        Error::Invalid("status delivery has no source cursor".into())
+                    })?;
+                    if after <= floor && opening_turn && !status.phase.in_turn() {
+                        return Ok(None);
+                    }
+                }
+                if !status.phase.in_turn() {
                     self.reset_output()?;
                 }
                 Some(Event::Status(status))
@@ -198,12 +224,8 @@ impl Observer {
     /// Fails when a follow is refused or ends, including on revocation.
     pub async fn next(&mut self) -> Result<Event> {
         loop {
-            let event = self
-                .client
-                .next()
-                .await
-                .map_err(|error| self.follow_error(error))?;
-            if let Some(event) = self.apply(event)? {
+            let (event, _) = self.next_projected().await?;
+            if let Some(event) = event? {
                 return Ok(event);
             }
         }

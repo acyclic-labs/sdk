@@ -1,0 +1,95 @@
+{
+  "id": "session-approval-reattach",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "approval across detach"
+        },
+        "tools": [
+          {
+            "id": "approval-shell",
+            "name": "shell",
+            "arguments": {
+              "command": "node -e \"const log=require('node:fs').readFileSync('hooks.jsonl','utf8').trim().split('\\n');process.stdout.write('APPROVED_AFTER_ATTACH hooks='+log.length)\""
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "APPROVED_AFTER_ATTACH"
+        },
+        "text": [
+          "APPROVAL_RESUMED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "service"
+    },
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "approval across detach"
+        },
+        {
+          "when": {
+            "contains": [
+              "Original action",
+              "PgDn: more · PgUp: start"
+            ]
+          },
+          "prompt": "/quit "
+        }
+      ]
+    },
+    {
+      "mode": "pty",
+      "resume": true,
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "Original action",
+              "PgDn: more · PgUp: start"
+            ],
+            "cursor": true
+          },
+          "send": "y\r"
+        },
+        {
+          "when": {
+            "contains": [
+              "APPROVAL_RESUMED",
+              "○"
+            ]
+          },
+          "prompt": "/quit "
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "tool_contains": [
+      "APPROVED_AFTER_ATTACH hooks=1"
+    ]
+  },
+  "settings": {
+    ".claude/settings.json": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"hooks.jsonl\\\" ask\"}]}]}}"
+  }
+}

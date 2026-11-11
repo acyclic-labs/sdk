@@ -266,6 +266,16 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         Ok(self.agents.state(&self.actor(agent)?, agent).await?.0)
     }
 
+    /// The original checkpoint and its settlement against the accepted inbox
+    /// cut, read concurrently. Pending accepted input remains running even
+    /// while its executing delivery has not committed a new checkpoint.
+    pub async fn settlement_snapshot(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<(super::AgentState, super::Settlement), Error> {
+        super::settled::snapshot(&self.provider, &self.within, agent).await
+    }
+
     /// The live child currently owning a spawn name, or its free generation.
     pub async fn resolve_spawn_name(
         &self,

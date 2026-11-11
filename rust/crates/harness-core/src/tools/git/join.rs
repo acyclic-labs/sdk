@@ -146,7 +146,17 @@ where
                     needs_resolution |= matches!(&resolution, acyclic_fs::MergeResolution::Text(text)
                         if acyclic_fs::text_merge::has_conflict_markers(text));
                     if needs_resolution {
-                        unresolved.push(format!("{} ({:?})", conflict.path.as_deref().unwrap_or("/"), conflict.key));
+                        let path = conflict.path.as_deref().unwrap_or("/");
+                        let description = if matches!(conflict.key, acyclic_fs::ConflictKey::Binding { .. }) {
+                            let binding = |value: &acyclic_fs::ConflictValue| match value {
+                                acyclic_fs::ConflictValue::Binding(id) => Some(*id),
+                                _ => None,
+                            };
+                            format!("{path} ({:?}; base={:?}, ours={:?}, theirs={:?})", conflict.key, binding(&conflict.base), binding(&conflict.ours), binding(&conflict.theirs))
+                        } else {
+                            format!("{path} ({:?})", conflict.key)
+                        };
+                        unresolved.push(description);
                     }
                     resolutions.insert(conflict.key.clone(), resolution);
                 }

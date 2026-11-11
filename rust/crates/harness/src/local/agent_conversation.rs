@@ -726,12 +726,31 @@ impl Conversation {
     /// # Errors
     /// Session or host failures, or refused follows.
     pub async fn observe(&self, from: Option<u64>) -> Result<super::Observer> {
-        let (settled, statuses, _) = self.settlement(false).await?;
-        super::Observer::open(
-            &self.connection,
-            from.unwrap_or(settled),
-            statuses.saturating_sub(1),
-        )
+        self.open_observation(from, true)
+            .await
+            .map(|(observer, _)| observer)
+    }
+
+    /// Opens the same observation with its authoritative initial phase. A
+    /// reattached client can accept control input before the first follow
+    /// delivery without mistaking an unknown phase for an idle agent.
+    pub async fn observe_with_phase(&self, from: Option<u64>) -> Result<(super::Observer, Phase)> {
+        self.open_observation(from, false).await
+    }
+
+    async fn open_observation(
+        &self,
+        from: Option<u64>,
+        replay_status: bool,
+    ) -> Result<(super::Observer, Phase)> {
+        let (settled, statuses, phase) = self.settlement(false).await?;
+        let from = from.unwrap_or(settled);
+        let observer = if replay_status {
+            super::Observer::open(&self.connection, from, statuses.saturating_sub(1))?
+        } else {
+            super::Observer::open_at_phase(&self.connection, from, statuses, &phase)?
+        };
+        Ok((observer, phase))
     }
 
     /// The settled entries at conversation sequences `from..to`, every one

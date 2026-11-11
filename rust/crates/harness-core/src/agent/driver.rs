@@ -650,6 +650,33 @@ fn host_error(error: crate::Error) -> Error {
     Error::Turn(Box::new(error))
 }
 
+// Opening may be interrupted before an executor or output writer exists.
+// Only the original stop's typed cancellation drops this input; other opening
+// failures retain their ordinary classification.
+fn opened<T>(
+    result: crate::Result<T>,
+    stop: &acyclic_actors::guest::CancellationToken,
+) -> Result<Option<T>, Error> {
+    match result {
+        Ok(open) => Ok(Some(open)),
+        Err(crate::Error::InteractionRejected(crate::InteractionRejection::Cancelled))
+            if stop.is_cancelled() =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(host_error(error)),
+    }
+}
+
+fn cancelled_open(cursor: u64) -> TurnStep {
+    TurnStep {
+        checkpoint: None,
+        outs: Vec::new(),
+        wait: Wait::Input,
+        drops: Some(cursor),
+    }
+}
+
 /// Stages `text` as `turn`'s whole output.
 async fn stage_text(
     outputs: &dyn TurnOutputs,
@@ -889,11 +916,15 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     .selection(agent, action)
                     .await
                     .map_err(host_error)?;
-                let open = self
-                    .host
-                    .open_control(agent, action, cancellation)
-                    .await
-                    .map_err(host_error)?;
+                let Some(open) = opened(
+                    self.host
+                        .open_control(agent, action, cancellation.clone())
+                        .await,
+                    &cancellation,
+                )?
+                else {
+                    return Ok(cancelled_open(cursor));
+                };
                 return settle_selection(agent, &open, turn, inbox, input, refusal).await;
             }
             if agent.turn.is_none()
@@ -920,11 +951,15 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             let turn = turn_id(agent, &input)?;
             let stop = cancellation;
             let content = model_input(&input)?;
-            let open = self
-                .host
-                .open(agent, turn, inbox, cursor, &content, stop.clone())
-                .await
-                .map_err(host_error)?;
+            let Some(open) = opened(
+                self.host
+                    .open(agent, turn, inbox, cursor, &content, stop.clone())
+                    .await,
+                &stop,
+            )?
+            else {
+                return Ok(cancelled_open(cursor));
+            };
             let progress = open
                 .executor
                 .execute_progress(

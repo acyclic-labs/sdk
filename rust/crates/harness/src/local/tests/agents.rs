@@ -4006,8 +4006,40 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         "creating a branch must never dispatch the model"
     );
     let selected = connection.select(repeated.clone()).await?;
-    let mut observed = ObservedConversation::observe(Conversation::open(selected), Some(1)).await?;
+    let queued = Conversation::open(selected);
+    assert!(
+        !queued.phase().await?.in_turn(),
+        "adoption alone stays idle"
+    );
+    let inbox = queued
+        .send("cancel-before-resume", "do not run this queued prompt")
+        .await?;
+    let (mut queued_events, phase) = queued.observe_with_phase(Some(1)).await?;
+    assert!(
+        phase.in_turn(),
+        "unread adoption must not hide accepted work from cancellation"
+    );
+    queued.cancel().await?;
     crate::local::sessions::pause_subtree(&connection, repeated.clone(), false).await?;
+    queued.wait_current_input().await?;
+    assert_eq!(queued.settled().await?, 1);
+    assert!(matches!(
+        queued.reply("cancel-before-resume", inbox).await?,
+        crate::agent::Reply::Dropped
+    ));
+    assert_eq!(
+        provider.requests().len(),
+        2,
+        "cancelled queued work must never dispatch"
+    );
+    loop {
+        if let crate::local::Event::Status(status) = queued_events.next().await? {
+            assert_eq!(status.phase, crate::agent::Phase::Idle);
+            break;
+        }
+    }
+    drop(queued_events);
+    let mut observed = ObservedConversation::observe(queued, Some(1)).await?;
     observed
         .send("branch-input", "continue the selected decision")
         .await?;

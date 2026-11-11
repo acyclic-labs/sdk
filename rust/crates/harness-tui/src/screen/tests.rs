@@ -4,6 +4,48 @@ use ratatui::{Terminal, backend::TestBackend};
 #[path = "tests/tui_render_work.rs"]
 mod tui_render_work;
 
+#[test]
+fn long_status_keeps_the_outcome_visible() {
+    for width in [16, 40, 80] {
+        for (prefix, message) in [
+            (
+                "Merged",
+                format!("Merged into checkout: {}", "a".repeat(64)),
+            ),
+            (
+                "✗ Permission",
+                format!("✗ Permission denied: {}", "長いパス/".repeat(24)),
+            ),
+            (
+                "approval",
+                format!(
+                    "approval {} · y once · r exact rule · n deny",
+                    "a".repeat(64)
+                ),
+            ),
+        ] {
+            let input = PromptInput::default();
+            let screen = Screen {
+                status: Line::raw(message),
+                ..Default::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let areas = screen.render(frame, &input, &mut Viewport::default(), 0, 0);
+                    let row: String = (areas.status.x..areas.status.right())
+                        .map(|x| frame.buffer_mut()[(x, areas.status.y)].symbol().to_owned())
+                        .collect();
+                    assert!(
+                        row.starts_with(prefix),
+                        "outcome clipped at width {width}: {row}"
+                    );
+                })
+                .unwrap();
+        }
+    }
+}
+
 fn model<const SCAN: bool, const UNGATED: bool>(length: usize, hidden: u8) {
     let transcript = vec![Line::raw("retained history"); length / 2];
     let tools = vec![Line::raw("retained tool"); length - transcript.len()];

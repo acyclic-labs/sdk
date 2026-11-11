@@ -157,7 +157,8 @@ async fn model_adapter(
 #[tokio::test]
 async fn chat_without_a_counter_starts_with_explicit_no_compaction() {
     const CHAT: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
-    for (unchecked, session_client) in [(false, false), (true, false), (true, true)] {
+    for (unchecked, session_client) in [(false, false), (true, false), (false, true), (true, true)]
+    {
         let fixture = fixture();
         let model = model_adapter(
             fixture._directory.path(),

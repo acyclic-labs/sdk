@@ -603,6 +603,20 @@ mod tests {
                 assert!(args.prepare_input().is_err());
             }
         }
+        for selection in [
+            vec!["-r"],
+            vec!["-r", "previous"],
+            vec!["-c"],
+            vec!["--new-session"],
+        ] {
+            let mut args = Args::try_parse_from(
+                ["acyclic", "serve", "127.0.0.1:0"]
+                    .into_iter()
+                    .chain(selection),
+            )
+            .unwrap();
+            assert!(args.prepare_input().is_err());
+        }
     }
 
     #[test]

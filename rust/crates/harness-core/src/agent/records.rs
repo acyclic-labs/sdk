@@ -570,7 +570,7 @@ pub enum Phase {
         /// Canonical path relative to the agent's `ui/` root.
         path: String,
     },
-    /// A turn is executing.
+    /// A turn is executing or accepted input awaits execution.
     Running,
     /// Waiting for an approval response.
     WaitingApproval {

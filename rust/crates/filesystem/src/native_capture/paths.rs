@@ -53,7 +53,20 @@ pub(super) fn capture_excludes(
     path: &NamespacePath,
     meter: &NativeMaterializationWork,
 ) -> Result<bool, CaptureError> {
-    for prefix in &policy.excluded_prefixes {
+    capture_within_roots(&policy.excluded_prefixes, path, meter)
+}
+
+/// Membership in a sorted, disjoint set of subtree roots.
+pub(super) fn capture_within_roots(
+    roots: &[NamespacePath],
+    path: &NamespacePath,
+    meter: &NativeMaterializationWork,
+) -> Result<bool, CaptureError> {
+    let mut lower = 0;
+    let mut upper = roots.len();
+    while lower < upper {
+        let middle = lower + (upper - lower) / 2;
+        let prefix = &roots[middle];
         capture_charge(
             meter,
             WorkCounters {
@@ -62,11 +75,24 @@ pub(super) fn capture_excludes(
                 ..WorkCounters::UNCHARGED
             },
         )?;
-        if path.is_within(prefix) {
-            return Ok(true);
+        if prefix <= path {
+            lower = middle + 1;
+        } else {
+            upper = middle;
         }
     }
-    Ok(false)
+    let Some(prefix) = lower.checked_sub(1).and_then(|index| roots.get(index)) else {
+        return Ok(false);
+    };
+    capture_charge(
+        meter,
+        WorkCounters {
+            items_examined: 1,
+            source_path_components: prefix.depth().min(path.depth()) as u64,
+            ..WorkCounters::UNCHARGED
+        },
+    )?;
+    Ok(path.is_within(prefix))
 }
 
 pub(super) fn clone_capture_paths(
@@ -127,7 +153,13 @@ pub(super) fn canonical_subtree_roots_measured(
     policy: &CapturePolicy,
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<NamespacePath>, CaptureError> {
-    let mut sorted = clone_capture_paths(roots, Some(policy), meter)?;
+    canonicalize_capture_roots(clone_capture_paths(roots, Some(policy), meter)?, meter)
+}
+
+pub(super) fn canonicalize_capture_roots(
+    mut sorted: Vec<NamespacePath>,
+    meter: &NativeMaterializationWork,
+) -> Result<Vec<NamespacePath>, CaptureError> {
     capture_sort_by(&mut sorted, Ord::cmp, meter)?;
     for root in &sorted {
         capture_charge(

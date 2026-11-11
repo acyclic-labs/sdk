@@ -34,7 +34,20 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Input, InvalidNativeArgument> {
     if (!native_doctor
         && matches!(
             first,
-            Some("run" | "serve" | "attach" | "exec" | "sessions" | "history" | "study" | "doctor")
+            Some(
+                "run"
+                    | "serve"
+                    | "attach"
+                    | "exec"
+                    | "sessions"
+                    | "history"
+                    | "study"
+                    | "doctor"
+                    | "new"
+                    | "name"
+                    | "rename"
+                    | "archive"
+            )
         ))
         || first.is_some_and(|argument| {
             argument.starts_with('-')
