@@ -170,6 +170,19 @@ fn exposed(turns: Arc<dyn TurnExecutors>) -> Result<Exposed> {
     })
 }
 
+fn tree(source: &WorkspaceEntry, path: &AgentPath) -> WorkspaceEntry {
+    WorkspaceEntry {
+        id: EntryId::from_bytes([33; 16]),
+        name: "hierarchy".into(),
+        role: WorkspaceRole::Tree,
+        kind: WorkspaceKind::Tree,
+        source: WorkspaceSource::Subtree(path.clone()),
+        mode: WorkspaceMode::ReadOnly,
+        inherit: WorkspaceInherit::Own,
+        ..source.clone()
+    }
+}
+
 async fn change(
     stream: &MemoryStream,
     path: &AgentPath,
@@ -234,7 +247,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
     ));
     let host = committing(&stream, &files, driver)?;
     let mut adoption = adopted(id(32));
-    adoption.volumes = vec![private, users[0].clone()];
+    adoption.volumes = vec![tree(&users[0], &path), private, users[0].clone()];
     host.create(&intent("root"), adoption).await?;
     let mut second = users[1].clone();
     let mut previous_document = None::<AnnouncedDocument>;
@@ -434,7 +447,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             Arc::new(acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(files)),
         )?;
         let mut adoption = adopted(path.id());
-        adoption.volumes = vec![private, users[0].clone()];
+        adoption.volumes = vec![tree(&users[0], &path), private, users[0].clone()];
         host.create(&intent("paused-root"), adoption).await?;
         let waiting = deliver(&host, &path, requested("pause-with-instructions", &path)).await?;
         assert_eq!(
