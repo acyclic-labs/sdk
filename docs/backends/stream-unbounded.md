@@ -588,3 +588,37 @@ path validation does not observe Stream state, reserve destinations, settle
 conditions, assign positions or provide any of the outstanding publication
 proofs. Its conformance control must include paths larger than the old byte and
 segment ceilings and malformed segments crossing physical page boundaries.
+
+### Paged ordered index for the shared planner
+
+The planner needs immutable ordered maps whose keys and values may themselves
+be arbitrarily large content roots. Each index node contains bounded references
+and a bounded key prefix; comparisons past that prefix stream verified content
+pages. Node payloads use the existing content writer and declare every key,
+value and child as retained manifest dependencies. A copy-on-write update changes
+only the bounded search spine and returns a private successor root. It does not
+install an authority root or settle Stream conditions.
+
+Reuse collections page shapes and the existing ordered binary-search decision
+tree. Extract its comparison continuation so a caller can await a content-key
+comparison without adding a second binary-search implementation. Page-format
+keys need equality and ownership, but ordering belongs to the admitted comparator;
+algorithms that directly call Ord retain that explicit bound. The eventual shared
+planner uses these maps for canonical descriptors, namespace indexes and terminal
+receipts, rather than materializing complete vectors. Physical fanout and u64
+coordinates bound each step; they are not accepted logical request ceilings.
+
+The index must demonstrate immutable predecessor visibility, keys sharing an
+arbitrarily long prefix, splits across multiple levels, ordered seek, overwrite,
+missing keys and retained content dependencies using the real-file content store.
+These index controls do not replace the required production publication, crash,
+loom and all-backend proofs. Root publication still requires the one shared
+authority decision described above.
+
+The first index prerequisite extracts Search/Probe continuations from the
+existing collections search; synchronous callers immediately resolve the same
+continuations. A generator checks unique sorted positions, admitted probe
+subsequences and refusal boundaries against the standard ordered result, and
+a full-width coordinate case allocates no slice. The content-key map, async
+comparison adapter and page-format bound change remain to be implemented; this
+continuation extraction alone is not an index or atomic publication.

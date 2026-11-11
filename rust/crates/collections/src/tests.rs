@@ -9,6 +9,7 @@ mod ordered;
 mod persistent;
 mod prefix;
 mod preparation;
+mod search;
 
 fn audit<V, A, const N: usize>(table: &FixedIndex<V, A, N>) {
     let mut pending = vec![(table.root.as_ref(), None)];
