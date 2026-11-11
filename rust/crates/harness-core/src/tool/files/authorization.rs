@@ -236,8 +236,8 @@ impl FileTool {
                         > scope
                             .limits()
                             .file_bytes
-                            .map_or(*maximum_result_bytes, |maximum| {
-                                (*maximum_result_bytes).min(maximum)
+                            .map_or(maximum_result_bytes, |maximum| {
+                                maximum_result_bytes.min(maximum)
                             })
                 {
                     return Err(error(
