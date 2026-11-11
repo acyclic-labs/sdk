@@ -492,6 +492,8 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             .map_err(agent)?
             .open_children
             .contains(&original_child)
+            .await
+            .map_err(agent)?
     );
     assert_eq!(
         workspace
@@ -2195,6 +2197,115 @@ async fn a_prompt_past_two_frames_is_accepted_and_reads_back_exactly() -> Result
         })
         .await?;
     assert!(connection.execute(&head(&digest)).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> {
+    use crate::model::{ModelContent, ModelEvent, ToolCall};
+    use crate::test_support::{ScriptedEvent, ScriptedTurn};
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+    let call = |name: &str, arguments| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                name.into(),
+                name.into(),
+                arguments,
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ])
+    };
+    let provider = super::scripted([
+        call(
+            "write",
+            serde_json::json!({"path":".volumes/shared/board.txt", "content":"shared-board-sentinel-73dae"}),
+        ),
+        ScriptedTurn::Text("writer settled".into()),
+        call(
+            "read",
+            serde_json::json!({"path":".volumes/shared/board.txt"}),
+        ),
+        ScriptedTurn::Text("reader settled".into()),
+    ]);
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(
+                directory.path(),
+                volume(directory.path()).await?,
+                provider.clone(),
+            )?
+            .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+            .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let root = connection.root().clone();
+    for (id, brief) in [
+        ("writer", "write the shared board"),
+        ("reader", "read the shared board"),
+    ] {
+        let AgentReply::Spawned { agent: child, .. } = connection
+            .execute(&AgentCommand::Spawn {
+                parent: root.clone(),
+                id: crate::agent::IntentId::try_from(id).map_err(agent)?,
+                brief: ModelContent::Text(brief.into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("shared-board spawn refused".into()));
+        };
+        // Creation's initial idle status is not the brief's completion.
+        // Wait for the child's actual turn record through its served follow.
+        let conversation = Conversation::open(harness.attach(Some(child.clone()), true).await?);
+        let mut events = conversation.observe(Some(0)).await?;
+        let entry = loop {
+            match events.next().await? {
+                crate::local::Event::Turn(entry) => break entry,
+                crate::local::Event::Status(status)
+                    if matches!(status.phase, crate::agent::Phase::Done { .. }) =>
+                {
+                    return Err(Error::Conflict(format!(
+                        "shared-board child ended before its turn: {status:?}; model_requests={}",
+                        provider.request_count()
+                    )));
+                }
+                _ => {}
+            }
+        };
+        assert!(matches!(
+            entry.outcome,
+            crate::agent::TurnOutcome::Completed
+        ));
+    }
+    assert_eq!(provider.request_count(), 4);
+    let request = provider
+        .request(3)
+        .ok_or_else(|| Error::NotFound("shared-board read request".into()))?;
+    let result = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id, content, ..
+            } if call_id == "read" => Some(content),
+            _ => None,
+        })
+        .ok_or_else(|| Error::NotFound("shared-board read result".into()))?;
+    assert!(
+        !matches!(result, crate::model::ToolResultContent::Error { .. }),
+        "shared-board read failed: {result:?}"
+    );
+    let observed = serde_json::to_string(result).map_err(agent)?;
+    assert!(
+        observed.contains("shared-board-sentinel-73dae"),
+        "the sibling did not read the original shared write: {observed}"
+    );
     Ok(())
 }
 

@@ -11,12 +11,20 @@ struct Fixture {
 
 impl Fixture {
     async fn for_host(host: &str) -> Result<Self> {
+        Self::for_host_mounting(host, crate::local::WorkspaceMounting::Native).await
+    }
+
+    async fn for_host_mounting(
+        host: &str,
+        mounting: crate::local::WorkspaceMounting,
+    ) -> Result<Self> {
         let checkout = tempfile::tempdir().map_err(storage)?;
         let state = tempfile::tempdir().map_err(storage)?;
         std::fs::write(checkout.path().join("source.txt"), b"source").map_err(storage)?;
         let local = Arc::new(
             LocalHarness::open(
                 LocalHarnessConfig::native_host(checkout.path())
+                    .workspace_mounting(mounting)
                     .state_directory(state.path().join("owner")),
             )
             .await?,
@@ -811,6 +819,8 @@ async fn native_cancel_interrupts_the_claim_and_archive_settles_unstarted_inputs
             OperationId::new(),
             HostAction::Agents {
                 task: fixture.parent.clone(),
+                after: None,
+                limit: 256,
             },
         )
         .await?;
@@ -977,6 +987,8 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
     fixture.session("settled", SessionAction::Next {}).await?;
     let agents = HostAction::Agents {
         task: fixture.parent.clone(),
+        after: None,
+        limit: 256,
     };
     fixture.owner.dispatch(OperationId::new(), agents).await?;
     assert_eq!(
@@ -1322,7 +1334,66 @@ async fn permission_prompts_gate_spawn_and_preserve_host_tool_decisions() -> Res
 /// thread can finish.
 #[tokio::test]
 async fn concurrent_spawns_from_a_child_both_start() -> Result<()> {
-    let mut fixture = Fixture::for_host("claude-code").await?;
+    concurrent_spawns_with_shared_bindings(crate::local::WorkspaceMounting::Native).await
+}
+
+/// Native host coordination also supports ordinary directory views. Its
+/// logical shared binding has no native projection, including during capture.
+#[tokio::test]
+async fn physical_native_host_children_keep_logical_shared_bindings() -> Result<()> {
+    concurrent_spawns_with_shared_bindings(crate::local::WorkspaceMounting::Physical).await
+}
+
+async fn concurrent_spawns_with_shared_bindings(
+    mounting: crate::local::WorkspaceMounting,
+) -> Result<()> {
+    use crate::conversation::{ContentPublisher as _, ContentResidencyVerifier as _};
+    let mut fixture = Fixture::for_host_mounting("claude-code", mounting).await?;
+    let local = Arc::clone(&fixture.owner.local);
+    let verifier = local
+        .root_authority
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("fixture signing authority absent".into()))?
+        .verifier(&mut None)?;
+    let writer = crate::filesystem::FilesystemContentPublisher::new(
+        Arc::clone(&local.files),
+        &local.shared,
+        &verifier,
+        &local.signed,
+        4096,
+        None,
+    )?;
+    let (shared_file, _) = writer
+        .stage_once(
+            OperationId::new(),
+            "shared-proof.txt",
+            b"shared native content",
+            "text/plain",
+            "shared native content",
+            Default::default(),
+        )?
+        .await?;
+    async fn shared_text(
+        owner: &HostWorkspaceOwner,
+        agent: &AgentPath,
+        verifier: &crate::core::AuthorityVerifier,
+        file: &crate::conversation::FileRef,
+    ) -> Result<Vec<u8>> {
+        let state = owner.native.state(agent).await?;
+        let scope = owner.native.view_scope(&state).await?;
+        let reader = crate::filesystem::FilesystemContentVerifier::new(
+            Arc::clone(&owner.local.files),
+            verifier,
+            &scope,
+            4096,
+            None,
+        )?;
+        Ok(reader.read(file, 4096, None, None)?.await?.to_vec())
+    }
+    assert_eq!(
+        shared_text(&fixture.owner, &fixture.parent, &verifier, &shared_file).await?,
+        b"shared native content"
+    );
     let spawned = fixture
         .session(
             "parent",
@@ -1364,8 +1435,87 @@ async fn concurrent_spawns_from_a_child_both_start() -> Result<()> {
             .await?;
         assert_eq!(turn["task"], json!(child));
         assert_eq!(turn["prompt"], reference);
+        // Exercise the actual content reader with the native view's signed
+        // grants. This proves authority even on a physical host, where named
+        // volume projections are deliberately absent.
+        for reopen in [false, true] {
+            if reopen {
+                fixture.restart(&child).await?;
+            }
+            assert_eq!(
+                shared_text(&fixture.owner, &child, &verifier, &shared_file).await?,
+                b"shared native content"
+            );
+        }
         views.push(cwd(&turn)?);
     }
     assert_ne!(views[0], views[1], "each child runs in its own view");
+    // Traverse the same committed children through the actual public exchanges,
+    // one reference per page. The final seek proves exhaustion without repeats.
+    let mut after = None;
+    let mut references = BTreeSet::new();
+    for index in 0..3 {
+        let page = fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Sessions {
+                    parent: parent.clone(),
+                    after: after.clone(),
+                    limit: 1,
+                },
+            )
+            .await?;
+        let current: Vec<String> =
+            serde_json::from_value(page["references"].clone()).map_err(storage)?;
+        let agents = fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Agents {
+                    task: parent.clone(),
+                    after: after.clone(),
+                    limit: 1,
+                },
+            )
+            .await?;
+        let listed = agents["agents"].as_array().expect("agent page");
+        assert_eq!(listed.len(), current.len());
+        assert_eq!(agents["next"], page["next"]);
+        for (agent, reference) in listed.iter().zip(&current) {
+            assert_eq!(agent["reference"], *reference);
+        }
+        assert_eq!(current.len(), usize::from(index < 2));
+        for reference in current {
+            assert!(references.insert(reference));
+        }
+        let next: Option<crate::agent::AgentId> =
+            serde_json::from_value(page["next"].clone()).map_err(storage)?;
+        if index < 2 {
+            assert!(next.is_some());
+            assert_ne!(next, after);
+        } else {
+            assert!(next.is_none());
+        }
+        after = next;
+    }
+    assert_eq!(
+        references,
+        BTreeSet::from(["left".to_owned(), "right".to_owned()])
+    );
+    assert!(matches!(
+        fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Sessions {
+                    parent,
+                    after: None,
+                    limit: 0,
+                }
+            )
+            .await,
+        Err(Error::Invalid(_))
+    ));
     Ok(())
 }

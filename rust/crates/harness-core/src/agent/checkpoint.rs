@@ -1,35 +1,10 @@
-//! The agent checkpoint's one encoding, and the static size bound of every
-//! record an agent step writes.
-//!
-//! The parts that scale with the agent's limits are raw protobuf fields
-//! rather than JSON: each open child is its 16-byte id (its path, like the
-//! agent's parent, is derived from the agent's path), the children still to
-//! archive and the children awaited are bitmaps over them, and the turn
-//! driver's checkpoint is raw bytes. The rest uses the shared named MessagePack
-//! payload.
-//!
-//! Every part of every agent record is bounded at admission: paths by
-//! [`super::MAX_DEPTH`], file and volume references by the conversation
-//! maxima ([`crate::conversation::MAX_PATH_BYTES`] and
-//! [`crate::conversation::MAX_LABEL_BYTES`], enforced wherever a reference is
-//! built or decoded), and texts by their own limits. `tests` builds the worst
-//! case of each record kind a step appends and checks it encodes, and the
-//! worst settled checkpoint within [`MAX_CHECKPOINT_BYTES`] and one stream
-//! record. Only the input window and the turn grow with traffic; a state
-//! whose window and turn would not fit fails the agent visibly instead (see
-//! [`super::machine`]), so no step can wedge an agent on a record its stream
-//! refuses.
-use super::{AgentId, AgentRecord as _, AgentState, Error};
+//! Agent checkpoint: persistent membership roots and raw turn bytes.
+use super::{AgentRecord as _, AgentState, Error};
 use acyclic_actors::guest::{Checkpoint, CodecIdentity};
 use prost::Message as _;
-use std::collections::BTreeSet;
 
-/// Largest agent checkpoint.
+/// Protective bound on the complete encoded actor checkpoint.
 pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
-/// Maximum encoded width of the conversation and status tails, used by the
-/// worst-case record construction proof.
-#[cfg(test)]
-pub(crate) const TAIL_SLACK: usize = 2 * 20;
 
 /// The checkpoint codec every agent actor commits with. Checkpoint state and
 /// inbox records carry independent format versions.
@@ -41,8 +16,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            // V3 retains whether an actor wait also accepts inbox input.
-            version: "4".into(),
+            // V6 also retains wait measurements behind an immutable membership root.
+            version: "6".into(),
         });
     &IDENTITY
 }
@@ -81,24 +56,15 @@ struct Encoded {
     /// The shared record payload, without the fields below.
     #[prost(bytes = "vec", tag = "2")]
     state: Vec<u8>,
-    /// Each open child's id, in path order.
-    #[prost(bytes = "vec", repeated, tag = "3")]
-    open_children: Vec<Vec<u8>>,
-    /// Bit `i` set: open child `i` still has to receive `Archive`.
-    #[prost(bytes = "vec", tag = "4")]
-    archive_pending: Vec<u8>,
     /// Turn driver checkpoint.
     #[prost(bytes = "vec", optional, tag = "5")]
     turn: Option<Vec<u8>>,
     /// Inbox sequence of the input that started the turn.
     #[prost(uint64, optional, tag = "6")]
     turn_inbox: Option<u64>,
-    /// Bit `i` set: the turn waits for open child `i` to settle.
-    #[prost(bytes = "vec", tag = "7")]
-    awaiting: Vec<u8>,
 }
 
-/// Retains the exact encoding checked against the selected checkpoint limit.
+/// Retains the exact final checkpoint bytes for atomic publication.
 pub(super) fn from_encoded(bytes: Vec<u8>) -> Result<Checkpoint, Error> {
     if bytes.len() > MAX_CHECKPOINT_BYTES {
         return Err(Error::Record(
@@ -113,46 +79,15 @@ pub(super) fn from_encoded(bytes: Vec<u8>) -> Result<Checkpoint, Error> {
 
 /// Artifact state as checkpoint bytes. Subscription cuts belong to Actors.
 pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
-    let mut rest = state.clone();
-    let open_children = std::mem::take(&mut rest.open_children);
-    let archive_pending = std::mem::take(&mut rest.archive_pending);
-    let awaiting = std::mem::take(&mut rest.awaiting);
-    let turn = rest.turn.take();
-    if rest.parent.take() != state.path.parent() {
+    if !state.path.parent_is(state.parent.as_ref()) {
         return Err(Error::Record("agent parent is not its path's parent"));
     }
-    let mut ids = Vec::with_capacity(open_children.len());
-    let mut bitmap = vec![0; open_children.len().div_ceil(8)];
-    let mut awaited = vec![0; open_children.len().div_ceil(8)];
-    for (index, child) in open_children.iter().enumerate() {
-        if !child.is_child_of(&state.path) {
-            return Err(Error::Record("an open child is not a direct child"));
-        }
-        ids.push(child.id_bytes().to_vec());
-        if archive_pending.contains(child) {
-            bitmap[index / 8] |= 1 << (index % 8);
-        }
-        if awaiting.contains(child) {
-            awaited[index / 8] |= 1 << (index % 8);
-        }
-    }
-    if !archive_pending.is_subset(&open_children) {
-        return Err(Error::Record("a child to archive is not open"));
-    }
-    if !awaiting.is_subset(&open_children) {
-        return Err(Error::Record("an awaited child is not open"));
-    }
+    let mut rest = state.clone();
+    let turn = rest.turn.take();
+    rest.parent = None;
     Ok(Encoded {
         state: super::records::encode_payload(&rest)
             .map_err(|_| Error::Record("agent checkpoint does not encode"))?,
-        open_children: ids,
-        archive_pending: bitmap,
-        // Empty unless a turn waits: no bytes in every other checkpoint.
-        awaiting: if awaiting.is_empty() {
-            Vec::new()
-        } else {
-            awaited
-        },
         turn_inbox: turn.as_ref().map(|turn| turn.inbox),
         turn: turn.map(|turn| turn.checkpoint),
     }
@@ -165,44 +100,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<AgentState, Error> {
     let encoded = Encoded::decode(bytes).map_err(|_| malformed())?;
     let mut state: AgentState =
         super::records::decode_payload(&encoded.state).map_err(|_| malformed())?;
-    if !state.open_children.is_empty()
-        || !state.archive_pending.is_empty()
-        || !state.awaiting.is_empty()
-        || state.turn.is_some()
-        || state.parent.is_some()
-    {
+    if state.turn.is_some() || state.parent.is_some() {
         return Err(malformed());
     }
     state.parent = state.path.parent();
-    let bitmap = encoded.open_children.len().div_ceil(8);
-    if encoded.archive_pending.len() != bitmap
-        || !(encoded.awaiting.is_empty() || encoded.awaiting.len() == bitmap)
-    {
-        return Err(malformed());
-    }
-    let mut open_children = BTreeSet::new();
-    let mut archive_pending = BTreeSet::new();
-    let mut awaiting = BTreeSet::new();
-    for (index, id) in encoded.open_children.iter().enumerate() {
-        let id: [u8; 16] = id.as_slice().try_into().map_err(|_| malformed())?;
-        let child = state.path.child(&AgentId::from_bytes(id))?;
-        if encoded.archive_pending[index / 8] & (1 << (index % 8)) != 0 {
-            archive_pending.insert(child.clone());
-        }
-        if encoded
-            .awaiting
-            .get(index / 8)
-            .is_some_and(|bits| bits & (1 << (index % 8)) != 0)
-        {
-            awaiting.insert(child.clone());
-        }
-        if !open_children.insert(child) {
-            return Err(malformed());
-        }
-    }
-    state.open_children = open_children;
-    state.archive_pending = archive_pending;
-    state.awaiting = awaiting;
     state.turn = match (encoded.turn, encoded.turn_inbox) {
         (Some(checkpoint), Some(inbox)) => Some(super::Progress { inbox, checkpoint }),
         (None, None) => None,
@@ -229,102 +130,20 @@ pub(super) fn check_wire(bytes: &[u8]) {
     };
     let rest: AgentState = super::records::decode_payload(&encoded.state)
         .unwrap_or_else(|_| panic!("checkpoint state writer"));
-    for field in 0..5 {
+    for field in 0..2 {
         let mut changed = rest.clone();
-        let reason = match field {
-            0 => {
-                changed.parent = state.parent.clone();
-                "checkpoint admitted an embedded parent"
-            }
-            1 => {
-                changed.open_children = state.open_children.clone();
-                "checkpoint admitted embedded open children"
-            }
-            2 => {
-                changed.archive_pending = state.archive_pending.clone();
-                "checkpoint admitted embedded archive children"
-            }
-            3 => {
-                changed.awaiting = state.awaiting.clone();
-                "checkpoint admitted embedded awaited children"
-            }
-            _ => {
-                changed.turn = state.turn.clone();
-                "checkpoint admitted an embedded turn"
-            }
+        let reason = if field == 0 {
+            changed.parent = state.parent.clone();
+            "checkpoint admitted an embedded parent"
+        } else {
+            changed.turn = state.turn.clone();
+            "checkpoint admitted an embedded turn"
         };
         if changed != rest {
             let mut wire = encoded.clone();
             wire.state = super::records::encode_payload(&changed).expect("checkpoint state writer");
             refuses(wire, reason);
         }
-    }
-    for archive in [false, true] {
-        let mut changed = encoded.clone();
-        let bitmap = if archive {
-            &mut changed.archive_pending
-        } else {
-            &mut changed.awaiting
-        };
-        *bitmap = vec![0; encoded.open_children.len().div_ceil(8) + 1];
-        refuses(changed, "checkpoint admitted an invalid bitmap width");
-    }
-    let width = encoded.open_children.len().div_ceil(8);
-    if width > 0 {
-        let mut changed = encoded.clone();
-        changed.archive_pending.truncate(width - 1);
-        refuses(changed, "checkpoint admitted a short archive bitmap");
-    }
-    // Empty awaiting means no children are awaited; it remains valid.
-    if width > 1 {
-        let mut changed = encoded.clone();
-        changed.awaiting = vec![0; width - 1];
-        refuses(changed, "checkpoint admitted a short awaited bitmap");
-    }
-    if let Some(child) = encoded.open_children.first() {
-        // The payload path can be valid while reconstructing its children
-        // exceeds the same public path boundary. Keep that typed path error,
-        // distinct from malformed checkpoint ownership or bitmap fields.
-        let root = super::AgentPath::root(&state.path.id());
-        let nested = root.child(&state.path.id()).expect("one child path");
-        let segment = nested
-            .as_str()
-            .strip_prefix(root.as_str())
-            .expect("child path suffix");
-        let mut changed = rest.clone();
-        changed.path = super::AgentPath::try_from(format!(
-            "{}{}",
-            root.as_str(),
-            segment.repeat(super::MAX_DEPTH)
-        ))
-        .expect("path at the public depth boundary");
-        let mut wire = encoded.clone();
-        wire.state = super::records::encode_payload(&changed).expect("checkpoint state writer");
-        assert!(
-            matches!(
-                decode(&wire.encode_to_vec()),
-                Err(Error::Path("agent nesting exceeds MAX_DEPTH"))
-            ),
-            "checkpoint reconstructed a child beyond its path boundary"
-        );
-        for oversized in [false, true] {
-            let mut changed = encoded.clone();
-            let id = &mut changed.open_children[0];
-            if oversized {
-                id.push(0);
-            } else {
-                id.pop();
-            }
-            refuses(changed, "checkpoint admitted an invalid child id width");
-        }
-        let mut changed = encoded.clone();
-        changed.open_children.push(child.clone());
-        let bitmap = changed.open_children.len().div_ceil(8);
-        changed.archive_pending.resize(bitmap, 0);
-        if !changed.awaiting.is_empty() {
-            changed.awaiting.resize(bitmap, 0);
-        }
-        refuses(changed, "checkpoint admitted a duplicate child");
     }
     for retained_body in [false, true] {
         let mut changed = encoded.clone();
@@ -338,9 +157,9 @@ pub(super) fn check_wire(bytes: &[u8]) {
 mod tests {
     use super::*;
     use crate::agent::{
-        AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
-        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH, MAX_INTENT_BYTES,
-        MAX_MESSAGE_BYTES, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
+        AgentId, AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control,
+        ConversationEntry, ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH,
+        MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
         Message, NoticePayload, Phase, Sender, SpawnRequest, StatusRecord, TurnInput,
         VolumeBinding,
     };
@@ -350,6 +169,7 @@ mod tests {
     };
     use crate::resources::ProviderRef;
     use acyclic_actors::local::{SUBSCRIPTION_OVERHEAD, State};
+    use std::collections::BTreeSet;
 
     fn id(n: u64) -> AgentId {
         let mut bytes = [0xff; 16];
@@ -606,166 +426,171 @@ mod tests {
     }
 
     #[test]
-    fn every_record_a_step_writes_fits_its_limit_at_the_configured_maxima() {
-        assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
-        // Names admit no control character, so `widest` is their worst case.
-        let control = Sender::User {
-            principal: "\0".into(),
-        };
-        assert!(
-            InboxRecord::Message(Message {
-                from: control,
-                id: intent(),
-                body: Box::new(file()),
-                attachments: None,
-            })
-            .encode()
-            .is_err()
-        );
-        let deepest = agent(MAX_DEPTH);
-        // Sends, adoptions (host-bound volumes included), reports, archives.
-        for record in inbox_records() {
-            record.encode().expect("every inbox record fits");
-        }
-        // Waking payload bytes never enter the settlement record. The largest
-        // exact file length still has a fixed-width descriptor, unlike inline
-        // JSON, whose escaping alone could overflow the record.
-        let waking = InboxRecord::Notice {
-            id: intent(),
-            notice: widest_notice(),
-        };
-        let InboxRecord::Notice {
-            notice: NoticePayload::Waking(waking_file),
-            ..
-        } = &waking
-        else {
-            unreachable!()
-        };
-        assert_eq!(waking_file.descriptor().byte_length(), MAX_EXACT_JS_INTEGER);
-        assert!(waking.encode().expect("fixed-size waking reference").len() < MAX_RECORD_BYTES);
-        for by in senders() {
-            Closed { by, id: intent() }
-                .encode()
-                .expect("a closed marker fits");
-        }
-        // Statuses and conversation entries.
-        for outcome in outcomes() {
-            let encoded = serde_json::to_vec(&outcome).expect("outcome");
-            assert!(encoded.len() <= MAX_OUTCOME_BYTES, "{}", encoded.len());
-            StatusRecord {
-                child_wakes: Vec::new(),
-                phase: Phase::Done { outcome },
-                cursor: u64::MAX,
-                conversation: u64::MAX,
-            }
-            .encode()
-            .expect("a status fits");
-        }
-        for input in turn_inputs() {
-            ConversationEntry {
-                observed_through: u64::MAX,
-                inbox: u64::MAX,
-                input,
-                output: file(),
-                outcome: crate::agent::TurnOutcome::Failed {
-                    message: widest_text(MAX_MESSAGE_BYTES),
-                },
-                goal: Some(crate::OperationId::from_bytes([255; 16])),
-                targets: Some(file()),
-                steering: Some(crate::agent::SteeringTranscript {
-                    through: u64::MAX,
-                    file: file(),
-                }),
-                tool_results: Some(format!(
-                    "tools/.results/{}",
-                    crate::OperationId::from_bytes([255; 16])
-                )),
-                notices: Some(crate::agent::NoticeSelection {
-                    source: deepest.clone(),
-                    range: 0..u64::MAX,
-                }),
-            }
-            .encode()
-            .expect("a conversation entry fits");
-        }
-        // The widest settled checkpoint: deepest agent that can have children,
-        // every child open and to archive, the widest adoption, settled with
-        // the widest outcome, counters at their widest, every child awaited.
-        let adopted = adoption();
-        for depth in [MAX_DEPTH - 1, MAX_DEPTH] {
-            let path = agent(depth);
-            let children = if depth < MAX_DEPTH {
-                MAX_OPEN_CHILDREN
-            } else {
-                0
+    fn record_frames_and_persistent_checkpoint_roots_retain_their_fields() {
+        futures::executor::block_on(async {
+            assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
+            // Names admit no control character, so `widest` is their worst case.
+            let control = Sender::User {
+                principal: "\0".into(),
             };
-            let open_children: BTreeSet<_> = (0..children as u64)
-                .map(|n| path.child(&id(n)).expect("below MAX_DEPTH"))
-                .collect();
-            for outcome in outcomes() {
-                let state = AgentState {
-                    child_settlements: open_children
-                        .iter()
-                        .map(|child| (child.id(), u64::MAX))
-                        .collect(),
-                    profile: adopted.profile.clone(),
-                    parent: path.parent(),
-                    path: path.clone(),
-                    volumes: adopted.volumes.clone(),
-                    policy: adopted.policy.clone(),
-                    brief: Some([u8::MAX; 32]),
-                    conversation_base: u64::MAX,
-                    committed_actions: true,
-                    conversation_tail: u64::MAX,
-                    steered_through: u64::MAX,
-                    steering_tail: u64::MAX,
-                    pending_notices: Some(0..u64::MAX),
-                    dropped_before: u64::MAX,
-                    checkpoint: Some(u64::MAX),
-                    roster: Some([u8::MAX; 32]),
-                    status_tail: u64::MAX,
-                    phase: Phase::Done { outcome },
-                    archive_pending: open_children.clone(),
-                    archive_refused: true,
-                    awaiting: open_children.clone(),
-                    need: u32::MAX,
-                    awaited: true,
-                    open_children: open_children.clone(),
-                    queued: Default::default(),
-                    overflow: None,
-                    taken: BTreeSet::new(),
-                    closed: true,
-                    reported: true,
-                    turn: None,
-                    reserved_children: u16::MAX,
-                };
-                let bytes = encode(&state).expect("encodes");
-                assert!(
-                    bytes.len() + TAIL_SLACK <= MAX_CHECKPOINT_BYTES,
-                    "{} > {MAX_CHECKPOINT_BYTES}",
-                    bytes.len() + TAIL_SLACK
-                );
-                assert_eq!(decode(&bytes).expect("decodes"), state);
-                // Retired tag 1 cannot override Actors' committed cut. Keep
-                // the same artifact decoder for checkpoints carrying it.
-                let mut with_retired_cursor = bytes;
-                with_retired_cursor.extend_from_slice(&[0x08, 0x01]);
-                assert_eq!(decode(&with_retired_cursor).expect("retired cursor"), state);
+            assert!(
+                InboxRecord::Message(Message {
+                    from: control,
+                    id: intent(),
+                    body: Box::new(file()),
+                    attachments: None,
+                })
+                .encode()
+                .is_err()
+            );
+            let deepest = agent(MAX_DEPTH);
+            // Sends, adoptions (host-bound volumes included), reports, archives.
+            for record in inbox_records() {
+                record.encode().expect("every inbox record fits");
             }
-        }
-        // Wrapped in the actor state record with its one inbox subscription.
-        let inbox = deepest.inbox().expect("inbox");
-        let codec = codec();
-        let record = State::record_bound(
-            codec.name.len() + codec.version.len() + MAX_CHECKPOINT_BYTES,
-            INBOX.len() + inbox.as_str().len() + SUBSCRIPTION_OVERHEAD,
-            0,
-        );
-        assert!(
-            record <= acyclic_stream::MAX_RECORD_BYTES,
-            "{record} > {}",
-            acyclic_stream::MAX_RECORD_BYTES
-        );
+            // Waking payload bytes never enter the settlement record. The largest
+            // exact file length still has a fixed-width descriptor, unlike inline
+            // JSON, whose escaping alone could overflow the record.
+            let waking = InboxRecord::Notice {
+                id: intent(),
+                notice: widest_notice(),
+            };
+            let InboxRecord::Notice {
+                notice: NoticePayload::Waking(waking_file),
+                ..
+            } = &waking
+            else {
+                unreachable!()
+            };
+            assert_eq!(waking_file.descriptor().byte_length(), MAX_EXACT_JS_INTEGER);
+            assert!(waking.encode().expect("fixed-size waking reference").len() < MAX_RECORD_BYTES);
+            for by in senders() {
+                Closed { by, id: intent() }
+                    .encode()
+                    .expect("a closed marker fits");
+            }
+            // Statuses and conversation entries.
+            for outcome in outcomes() {
+                let encoded = serde_json::to_vec(&outcome).expect("outcome");
+                assert!(encoded.len() <= MAX_OUTCOME_BYTES, "{}", encoded.len());
+                StatusRecord {
+                    child_wakes: None,
+                    phase: Phase::Done { outcome },
+                    cursor: u64::MAX,
+                    conversation: u64::MAX,
+                }
+                .encode()
+                .expect("a status fits");
+            }
+            for input in turn_inputs() {
+                ConversationEntry {
+                    observed_through: u64::MAX,
+                    inbox: u64::MAX,
+                    input,
+                    output: file(),
+                    outcome: crate::agent::TurnOutcome::Failed {
+                        message: widest_text(MAX_MESSAGE_BYTES),
+                    },
+                    goal: Some(crate::OperationId::from_bytes([255; 16])),
+                    targets: Some(file()),
+                    steering: Some(crate::agent::SteeringTranscript {
+                        through: u64::MAX,
+                        file: file(),
+                    }),
+                    tool_results: Some(format!(
+                        "tools/.results/{}",
+                        crate::OperationId::from_bytes([255; 16])
+                    )),
+                    notices: Some(crate::agent::NoticeSelection {
+                        source: deepest.clone(),
+                        range: 0..u64::MAX,
+                    }),
+                }
+                .encode()
+                .expect("a conversation entry fits");
+            }
+            // Persistent membership remains independent of the checkpoint frame.
+            // Cross the former bitmap byte boundary while retaining all three roots.
+            let adopted = adoption();
+            for depth in [MAX_DEPTH - 1, MAX_DEPTH] {
+                let path = agent(depth);
+                let children = if depth < MAX_DEPTH { 9 } else { 0 };
+                let mut open_children = super::super::Children::new();
+                for n in 0..children as u64 {
+                    let child = path.child(&id(n)).expect("below MAX_DEPTH");
+                    open_children
+                        .insert(&child)
+                        .await
+                        .expect("membership insert");
+                }
+                let mut settlements = super::super::Children::new();
+                for n in 0..children as u64 {
+                    settlements
+                        .insert_value(&path.child(&id(n)).unwrap(), u64::MAX)
+                        .await
+                        .unwrap();
+                }
+                for outcome in outcomes() {
+                    let state = AgentState {
+                        child_settlements: settlements.clone(),
+                        profile: adopted.profile.clone(),
+                        parent: path.parent(),
+                        path: path.clone(),
+                        volumes: adopted.volumes.clone(),
+                        policy: adopted.policy.clone(),
+                        brief: Some([u8::MAX; 32]),
+                        conversation_base: u64::MAX,
+                        committed_actions: true,
+                        conversation_tail: u64::MAX,
+                        steered_through: u64::MAX,
+                        steering_tail: u64::MAX,
+                        pending_notices: Some(0..u64::MAX),
+                        dropped_before: u64::MAX,
+                        checkpoint: Some(u64::MAX),
+                        roster: Some([u8::MAX; 32]),
+                        status_tail: u64::MAX,
+                        phase: Phase::Done { outcome },
+                        archive_pending: open_children.clone(),
+                        archive_refused: true,
+                        awaiting: open_children.clone(),
+                        need: u32::MAX,
+                        awaited: true,
+                        open_children: open_children.clone(),
+                        queued: Default::default(),
+                        overflow: None,
+                        taken: BTreeSet::new(),
+                        closed: true,
+                        reported: true,
+                        turn: None,
+                    };
+                    let bytes = encode(&state).expect("encodes");
+                    assert!(
+                        bytes.len() + 2 * 20 <= MAX_CHECKPOINT_BYTES,
+                        "{} > {MAX_CHECKPOINT_BYTES}",
+                        bytes.len() + 2 * 20
+                    );
+                    assert_eq!(decode(&bytes).expect("decodes"), state);
+                    // Retired tag 1 cannot override Actors' committed cut. Keep
+                    // the same artifact decoder for checkpoints carrying it.
+                    let mut with_retired_cursor = bytes;
+                    with_retired_cursor.extend_from_slice(&[0x08, 0x01]);
+                    assert_eq!(decode(&with_retired_cursor).expect("retired cursor"), state);
+                }
+            }
+            // Wrapped in the actor state record with its one inbox subscription.
+            let inbox = deepest.inbox().expect("inbox");
+            let codec = codec();
+            let record = State::record_bound(
+                codec.name.len() + codec.version.len() + MAX_CHECKPOINT_BYTES,
+                INBOX.len() + inbox.as_str().len() + SUBSCRIPTION_OVERHEAD,
+                0,
+            );
+            assert!(
+                record <= acyclic_stream::MAX_RECORD_BYTES,
+                "{record} > {}",
+                acyclic_stream::MAX_RECORD_BYTES
+            );
+        });
     }
 
     // Exercise the canonical encoder itself, before its size refusal. A refused
@@ -858,11 +683,7 @@ mod tests {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);
             for phase in phases.into_iter().chain(record_outcomes.map(|outcome| Phase::Done { outcome })) {
-                let record = StatusRecord { child_wakes: (0..super::super::MAX_OPEN_CHILDREN).map(|n| super::super::ChildWake {
-                    child: super::super::AgentId::from_bytes((n as u128).to_be_bytes()),
-                    settled_at_micros: u64::MAX,
-                    woke_at_micros: u64::MAX,
-                }).collect(), phase, cursor: u64::MAX, conversation: u64::MAX };
+                let record = StatusRecord { child_wakes: Some(super::super::ChildWakeSet { root: [255; 32], count: u64::MAX, woke_at_micros: u64::MAX }), phase, cursor: u64::MAX, conversation: u64::MAX };
                 let worst = assert_record_bound(&record);
                 let mut sample: StatusRecord = varied(&record, name, text);
                 sample.cursor = cursor;
@@ -881,7 +702,7 @@ mod tests {
     fn waiting_host_status_requires_a_bounded_name() {
         for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
             let record = StatusRecord {
-                child_wakes: Vec::new(),
+                child_wakes: None,
                 phase: Phase::WaitingHost { host },
                 cursor: 0,
                 conversation: 0,
@@ -892,7 +713,7 @@ mod tests {
             );
         }
         let record = StatusRecord {
-            child_wakes: Vec::new(),
+            child_wakes: None,
             phase: Phase::WaitingHost {
                 host: widest(MAX_INTENT_BYTES),
             },

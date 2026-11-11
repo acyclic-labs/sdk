@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "status": "bounded_component_proofs_passed",
+  "status": "historical_component_proofs",
   "qualification": {
     "local": "unqualified",
     "cloud": "unqualified"
@@ -160,5 +160,15 @@
   ],
   "remaining": [
     "Extend the qualified native reservation-reopen control to complete shell progress, cancellation and failure branches; arithmetic source inclusion and a controlled driver do not qualify native executor/provider behavior."
-  ]
+  ],
+  "retirement": {
+    "reason": "The fixed slot mechanism and its Cargo package are retired. These receipts describe only their recorded historical sources, and are not qualification for persistent child membership.",
+    "historical_producer": "run.py",
+    "replacement": "rust/crates/harness-core/src/agent/children.rs",
+    "controls": [
+      "persistent_pages_and_point_updates_match_membership_after_reopen",
+      "admission_schedules_preserve_every_spawn_and_replay",
+      "a_root_crosses_the_former_child_ceiling_with_a_paged_checkpoint"
+    ]
+  }
 }

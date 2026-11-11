@@ -7,6 +7,8 @@
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
 mod checkpoint;
+mod children;
+pub use children::Children;
 mod continuation;
 pub use continuation::{Continuation, ContinuationOverride, ContinuationRequest, ForcedCall};
 #[cfg(any(test, feature = "test-support"))]
@@ -55,7 +57,6 @@ pub(crate) use settled::{named_child, select_children};
 pub(crate) mod spawn_names;
 pub use spawn_names::{SpawnResolution, resolve_spawn_name};
 mod messaging;
-mod slots;
 mod steering;
 pub use messaging::{MessageDelivery, peer_send_allowed, sibling_send_allowed};
 pub use steering::{
@@ -89,17 +90,17 @@ pub use layout::{
 };
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,
-    MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome,
-    SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Until, Wait, Wake,
-    requested_child, step,
+    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OUTCOME_BYTES, MAX_QUEUED, MAX_QUEUED_BYTES,
+    OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome, SpawnRefusal, Step,
+    TurnDriver, TurnFuture, TurnInput, TurnStep, Until, Wait, Wake, requested_child, step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, ChildWake,
-    Closed, ContextAction, ContextRequest, Control, CreationConfig, ForkAdopted, Hook, InboxRecord,
-    IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Membership,
-    Message, NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext, SpawnRequest,
-    SpawnTemplates, StatusRecord, UnsupportedRecordVersion, VolumeBinding, decode_record,
+    ChildWakeSet, Closed, ContextAction, ContextRequest, Control, CreationConfig, ForkAdopted,
+    Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES,
+    MAX_VOLUMES, Membership, Message, NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext,
+    SpawnRequest, SpawnTemplates, StatusRecord, UnsupportedRecordVersion, VolumeBinding,
+    decode_record,
 };
 pub use reply::{Reply, SteeringReply, reply};
 

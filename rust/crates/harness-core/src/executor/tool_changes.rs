@@ -139,7 +139,13 @@ impl StockExecution<'_> {
                 }
             }
         }
-        if previous == table {
+        // With no current, inherited or announced tools there is no table
+        // transition. Retain explicit empty updates when revoking a prior table.
+        if previous == table
+            || (tools.0.is_empty()
+                && previous.is_empty()
+                && self.stock.epoch_tools.as_deref().is_none_or(Vec::is_empty))
+        {
             return Ok(());
         }
         let decoded;

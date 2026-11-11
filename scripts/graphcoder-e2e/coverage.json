@@ -47,7 +47,8 @@
         "topology-pipeline",
         "topology-debate-ring",
         "topology-group-chat",
-        "topology-blackboard"
+        "topology-blackboard",
+        "topology-hierarchy"
       ]
     },
     "A4": {

@@ -32,7 +32,7 @@ pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
     pub(super) destination: PathBuf,
-    pub(super) options: acyclic_fs::MountOptions,
+    pub(super) options: Option<acyclic_fs::MountOptions>,
     pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
     /// Native execution scopes currently using `native`.
@@ -178,8 +178,8 @@ impl LocalWorkspace {
         }
         Ok(owned)
     }
-    /// The mounts of a view of `project` with `scratch` bound beside it, under
-    /// the original admitted workload that grants both.
+    /// Binds a child's home beside its project and retains the session's
+    /// already admitted shared projections.
     pub(super) async fn bound_mounts(
         &self,
         project: &VolumeRef,
@@ -205,19 +205,34 @@ impl LocalWorkspace {
             root.path(),
             project,
             None,
-            native.then(|| (crate::filesystem::HOME_VOLUME.into(), scratch, None)),
+            native
+                .then(|| (crate::filesystem::HOME_VOLUME.into(), scratch, None))
+                .into_iter()
+                .chain(
+                    self.mounts
+                        .mounts()
+                        .filter(|(_, mount)| {
+                            mount.view.volume.class() == VolumeClass::SessionShared
+                        })
+                        .map(|(_, mount)| {
+                            (
+                                mount.view.name.clone(),
+                                mount.view.volume.clone(),
+                                mount.view.source.clone(),
+                            )
+                        }),
+                ),
         )?;
-        if native {
-            volumes::attach(
-                &self.filesystem,
-                &self.store,
-                &root,
-                &mut mounts,
-                authority,
-                &self.task_view_admission,
-            )
-            .await?;
-        }
+        volumes::attach(
+            &self.filesystem,
+            &self.store,
+            &root,
+            &mut mounts,
+            Some(authority),
+            &self.task_view_admission,
+            native,
+        )
+        .await?;
         Ok(Arc::new(mounts))
     }
 
@@ -337,16 +352,26 @@ pub(super) struct OwnerState {
 }
 
 /// What a checkout or volume view attaches as: the volume it serves, its
-/// scratch volume, its control directory and the operation that attaches it.
+/// auxiliary volumes, its control directory and the operation that attaches it.
 pub(super) struct Attach<'a> {
     pub(super) authority: Option<(&'a AuthorityRoot, AgentId)>,
     pub(super) volume: &'a VolumeRef,
     pub(super) scratch: &'a VolumeRef,
+    pub(super) shared: Option<&'a VolumeRef>,
     pub(super) directory: &'a Path,
     pub(super) operation: acyclic_fs::OperationId,
     pub(super) native_mounts: bool,
     pub(super) mounting: WorkspaceMounting,
     pub(super) native_mount_probe: &'a acyclic_fs::NativeMountProbe,
+}
+
+impl Attach<'_> {
+    fn auxiliary(&self) -> impl Iterator<Item = (&'static str, &VolumeRef)> {
+        self.native_mounts
+            .then_some((crate::filesystem::HOME_VOLUME, self.scratch))
+            .into_iter()
+            .chain(self.shared.map(|volume| (super::SHARED_VOLUME, volume)))
+    }
 }
 
 pub(super) async fn open(
@@ -369,7 +394,9 @@ pub(super) async fn open(
     // there can neither attach this state nor receive its scratch setup.
     let path = root.path().to_path_buf();
     let identity = root.identity();
-    volumes::exclude_state(&root)?;
+    if native_mounts {
+        volumes::exclude_state(&root, attach.auxiliary().map(|(name, _)| name))?;
+    }
     let setup = if native_mounts {
         Some(root.try_clone().map_err(storage)?)
     } else {
@@ -377,9 +404,12 @@ pub(super) async fn open(
     };
     #[cfg(target_os = "linux")]
     if let Some(setup) = &setup {
-        volumes::recover_after_crash(setup)?;
+        for (name, _) in attach.auxiliary() {
+            volumes::recover_after_crash(setup, &Path::new(".volumes").join(name))?;
+        }
     }
     volumes::seed::adopt_home(filesystem, scratch, &root).await?;
+    let binding_root = root.try_clone().map_err(storage)?;
     let (view, fresh) = lazy_view(filesystem, attach, root, existing, &store).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     acyclic_fs::WorkspaceGraph::new(store.clone())
@@ -395,25 +425,26 @@ pub(super) async fn open(
         &path,
         volume,
         None,
-        native_mounts.then(|| (crate::filesystem::HOME_VOLUME.into(), scratch.clone(), None)),
+        attach
+            .auxiliary()
+            .map(|(name, volume)| (name.into(), volume.clone(), None)),
     )?;
     let task_view_admission = Arc::new(std::sync::OnceLock::new());
     let mount_authority = attach
         .authority
         .map(|(issuer, agent)| crate::filesystem::NativeMountAuthority::new(issuer, agent))
         .transpose()?;
+    volumes::attach(
+        filesystem,
+        &store,
+        &binding_root,
+        &mut mounts,
+        mount_authority.as_ref(),
+        &task_view_admission,
+        native_mounts,
+    )
+    .await?;
     if let Some(setup) = &setup {
-        volumes::attach(
-            filesystem,
-            &store,
-            setup,
-            &mut mounts,
-            mount_authority
-                .as_ref()
-                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
-            &task_view_admission,
-        )
-        .await?;
         Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
     }
     let context_line = mounts.context_line();
@@ -459,10 +490,7 @@ async fn lazy_view(
     store: &LocalCoreStateStore,
 ) -> Result<(View, bool)> {
     let &Attach {
-        volume,
-        operation,
-        native_mounts,
-        ..
+        volume, operation, ..
     } = attach;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
@@ -495,7 +523,7 @@ async fn lazy_view(
         root,
         config,
         original.as_ref().map(|state| state.source),
-        native_mounts,
+        attach,
         &work,
         &cancellation,
     )
@@ -527,13 +555,13 @@ async fn lazy_view(
     Ok((view, fresh))
 }
 
-/// The held root's native source. Scratch mounts and the incarnation
+/// The held root's native source. Auxiliary mounts and the incarnation
 /// namespace are excluded, so capture never records them.
 async fn held_source(
     root: acyclic_fs::HeldRoot,
     config: acyclic_fs::VolumeConfig,
     reference: Option<acyclic_fs::demand::SourceReference>,
-    native_mounts: bool,
+    attach: &Attach<'_>,
     work: &NativeMaterializationWork,
     cancellation: &acyclic_fs::CancellationToken,
 ) -> Result<Arc<NativeDemandSource>> {
@@ -549,11 +577,14 @@ async fn held_source(
     )
     .await
     .map_err(storage)?;
-    let mut exclusions = if native_mounts {
-        volumes::excluded(&path, config, volumes::HOME_PATH)?
-    } else {
-        Vec::new()
-    };
+    let mut exclusions = Vec::new();
+    for (name, _) in attach.auxiliary() {
+        exclusions.extend(volumes::excluded(
+            &path,
+            config,
+            &format!(".volumes/{name}"),
+        )?);
+    }
     exclusions.push(volumes::namespace(
         &path,
         config,

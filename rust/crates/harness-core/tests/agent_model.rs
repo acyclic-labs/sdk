@@ -237,7 +237,7 @@ async fn seeded() -> Result<Seeded> {
                     path: status,
                     records: vec![
                         StatusRecord {
-                            child_wakes: Vec::new(),
+                            child_wakes: None,
                             phase: Phase::Running,
                             cursor: 1,
                             conversation: 2,
@@ -302,7 +302,7 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
             },
         ],
         status: Some(StatusRecord {
-            child_wakes: Vec::new(),
+            child_wakes: None,
             phase: Phase::Idle,
             cursor: 1,
             conversation: 3,
@@ -346,7 +346,7 @@ async fn spawn_forks_the_pre_step_subtree_in_one_commit() -> Result {
     assert_eq!(values(&provider, parent.conversation()?).await?.len(), 3);
     // The child's first status rides with its membership: Idle at its ForkAdopted.
     let first = StatusRecord {
-        child_wakes: Vec::new(),
+        child_wakes: None,
         phase: Phase::Idle,
         cursor: 1,
         conversation: 2,
@@ -459,59 +459,63 @@ fn child_of(parent: &AgentPath, byte: u8) -> Result<(AgentPath, AgentState)> {
 
 #[tokio::test]
 async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> Result {
-    let parent = AgentPath::root(&id(1));
-    let (path, mut state) = child_of(&parent, 2)?;
-    state.conversation_tail = 100;
-    let entry = |text: &str| Out::Conversation(text.as_bytes().to_vec());
-    let driver = script(vec![
-        TurnStep {
-            reserved_children: 0,
-            checkpoint: None,
-            outs: vec![entry("before"), entry("summary"), Out::Checkpoint],
-            wait: Wait::Input,
-            drops: None,
-        },
-        TurnStep {
-            reserved_children: 0,
-            checkpoint: None,
-            outs: vec![entry("later")],
-            wait: Wait::Input,
-            drops: None,
-        },
-    ]);
-    let wake = |sequence| Wake::Inbox {
-        sequence,
-        record: InboxRecord::Approval(Approval { id: intent("q1") }),
-    };
-    let cancel = acyclic_actors::guest::CancellationToken::new;
-    let first = step(&driver, &path, Some(state), (2, 0), wake(1), cancel()).await?;
-    // The summary is the second append after tail 100.
-    assert_eq!(first.state.checkpoint, Some(101));
-    assert_eq!(first.state.conversation_tail, 102);
-    let later = step(&driver, &path, Some(first.state), (3, 0), wake(2), cancel()).await?;
-    // Later turns keep the index, however many there are.
-    assert_eq!(later.state.checkpoint, Some(101));
-    let spawned = spawning(later.state.clone(), "s1");
-    let request = lower(&spawned, 3, delivery_key(&spawned.state, "s1")?)?;
-    let adopted = request.effects[0]
-        .mutations
-        .iter()
-        .find_map(|mutation| match mutation {
-            CommitMutation::Fork { records, .. } => records.first(),
-            _ => None,
-        })
-        .map(|record| InboxRecord::decode(&record.value))
-        .transpose()?;
-    let Some(InboxRecord::ForkAdopted(adopted)) = adopted else {
-        panic!("spawn carries no adoption");
-    };
-    assert_eq!(adopted.checkpoint, Some(101));
-    assert_eq!(
-        AgentState::adopted(path.child(&id(9))?, &adopted)
-            .expect("adopts")
-            .checkpoint,
-        Some(101)
-    );
+    for initial_tail in [0, 100] {
+        let parent = AgentPath::root(&id(1));
+        let (path, mut state) = child_of(&parent, 2)?;
+        state.conversation_tail = initial_tail;
+        let entry = |text: &str| Out::Conversation(text.as_bytes().to_vec());
+        let driver = script(vec![
+            TurnStep {
+                checkpoint: None,
+                outs: vec![entry("before"), entry("summary"), Out::Checkpoint],
+                wait: Wait::Input,
+                drops: None,
+            },
+            TurnStep {
+                checkpoint: None,
+                outs: vec![entry("later")],
+                wait: Wait::Input,
+                drops: None,
+            },
+        ]);
+        let wake = |sequence| Wake::Inbox {
+            sequence,
+            record: InboxRecord::Approval(Approval { id: intent("q1") }),
+        };
+        let cancel = acyclic_actors::guest::CancellationToken::new;
+        let first = step(&driver, &path, Some(state), (2, 0), wake(1), cancel()).await?;
+        // The original actor checkpoint publishes the first conversation cut.
+        // Same-phase turns use that event rather than an extra status append.
+        assert!(first.status.is_none());
+        assert_eq!(first.state.checkpoint, Some(initial_tail + 1));
+        assert_eq!(first.state.conversation_tail, initial_tail + 2);
+        let later = step(&driver, &path, Some(first.state), (3, 0), wake(2), cancel()).await?;
+        // Later turns keep the index, however many there are.
+        assert_eq!(later.state.checkpoint, Some(initial_tail + 1));
+        assert!(later.status.is_none());
+        let spawned = spawning(later.state.clone(), "s1");
+        let request = lower(&spawned, 3, delivery_key(&spawned.state, "s1")?)?;
+        let adopted = request
+            .effects
+            .iter()
+            .flat_map(|effect| &effect.mutations)
+            .find_map(|mutation| match mutation {
+                CommitMutation::Fork { records, .. } => records.first(),
+                _ => None,
+            })
+            .map(|record| InboxRecord::decode(&record.value))
+            .transpose()?;
+        let Some(InboxRecord::ForkAdopted(adopted)) = adopted else {
+            panic!("spawn carries no adoption");
+        };
+        assert_eq!(adopted.checkpoint, Some(initial_tail + 1));
+        assert_eq!(
+            AgentState::adopted(path.child(&id(9))?, &adopted)
+                .expect("adopts")
+                .checkpoint,
+            Some(initial_tail + 1)
+        );
+    }
     Ok(())
 }
 
@@ -520,7 +524,6 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
     let driver = script(vec![TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs: vec![Out::Conversation(b"answer".to_vec())],
         wait: Wait::Done(AgentOutcome::Succeeded { result: None }),
@@ -572,7 +575,6 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
     let (path, mut state) = child_of(&parent, 2)?;
     state.awaited = true;
     let driver = script(vec![TurnStep {
-        reserved_children: 0,
         checkpoint: Some(vec![7; MAX_CHECKPOINT_BYTES]),
         outs: vec![Out::Conversation(b"partial".to_vec()), Out::Checkpoint],
         wait: Wait::Continue,
@@ -634,7 +636,6 @@ async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> R
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
     let driver = script(vec![TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Done(AgentOutcome::Failed {
@@ -729,7 +730,6 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
     assert_eq!(state.overflow, Some(33));
     // The awaited response is taken out of order, and remembered as taken.
     let resumed = script(vec![TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Input,
@@ -776,7 +776,8 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
     for byte in 0..40 {
         state
             .open_children
-            .insert(path.child(&AgentId::from_bytes([byte; 16]))?);
+            .insert(&path.child(&AgentId::from_bytes([byte; 16]))?)
+            .await?;
     }
     let driver = script(Vec::new());
     let archive_record = InboxRecord::Archive(Control {
@@ -936,14 +937,37 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| "corpus name")?;
         let data = std::fs::read(entry.path())?;
-        assert_eq!(
-            Some(&data),
-            generated.get(name.as_str()),
-            "stale corpus seed {name}; recovery: bun scripts/generate-contracts.mjs write harness"
-        );
-        let Some((selector, bytes)) = data.split_first() else {
+        let (selector, bytes) = data.split_first().ok_or("empty agent corpus input")?;
+        if let Some(expected) = generated.get(name.as_str()) {
+            assert_eq!(
+                &data, expected,
+                "stale current corpus seed {name}; recovery: bun scripts/generate-contracts.mjs write harness"
+            );
+        } else {
+            // Historical production bytes remain immutable. Their original
+            // version is refused before the current payload reader runs.
+            let header = bytes
+                .get(..4)
+                .ok_or("historical agent frame has no version")?;
+            let version = u32::from_be_bytes(header.try_into()?);
+            assert_ne!(
+                version, RECORD_VERSION,
+                "unattributed current corpus seed {name}"
+            );
+            let refusal = match selector % 4 {
+                0 => InboxRecord::decode(bytes).map(drop),
+                1 => StatusRecord::decode(bytes).map(drop),
+                2 => Closed::decode(bytes).map(drop),
+                _ => return Err("historical agent corpus input is not a record".into()),
+            };
+            assert!(
+                matches!(refusal,
+                Err(acyclic_harness_core::agent::Error::UnsupportedRecordVersion(found))
+                    if found.found == version && found.expected == RECORD_VERSION),
+                "historical writer {name} lost its typed version refusal"
+            );
             continue;
-        };
+        }
         let accepted = match selector % 4 {
             0 => InboxRecord::decode(bytes)
                 .map(|record| record.encode().map(drop))
@@ -960,16 +984,16 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
     Ok(())
 }
 
-/// Root at `MAX_OPEN_CHILDREN - 1` open children, idle.
-fn one_below_the_child_limit() -> Result<(AgentPath, AgentState)> {
+async fn populated_parent(count: usize) -> Result<(AgentPath, AgentState)> {
     let root = AgentPath::root(&id(1));
     let mut state = AgentState::adopted(root.clone(), &adopted(id(1))).expect("adopts");
-    for n in 0..MAX_OPEN_CHILDREN - 1 {
+    for n in 0..count {
         let mut bytes = [0; 16];
         bytes[..8].copy_from_slice(&(n as u64).to_le_bytes());
         state
             .open_children
-            .insert(root.child(&AgentId::from_bytes(bytes))?);
+            .insert(&root.child(&AgentId::from_bytes(bytes))?)
+            .await?;
     }
     Ok((root, state))
 }
@@ -1002,48 +1026,6 @@ fn spawns(outs: &[Out]) -> Vec<IntentId> {
         .collect()
 }
 
-#[tokio::test]
-async fn concurrent_spawn_requests_at_the_limit_spawn_one_and_refuse_the_other() -> Result {
-    // Two clients' requests land at inbox 1 and 2; the parent's steps apply
-    // them in order and each records its outcome in the committed state.
-    let (root, state) = one_below_the_child_limit()?;
-    let driver = script(Vec::new());
-    let first = step(
-        &driver,
-        &root,
-        Some(state),
-        (2, 0),
-        spawn_request(1),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let second = step(
-        &driver,
-        &root,
-        Some(first.state.clone()),
-        (3, 0),
-        spawn_request(2),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let (one, child) = requested_child(&root, 1)?;
-    let (two, _) = requested_child(&root, 2)?;
-    assert_eq!(spawns(&first.outs), [one.clone()]);
-    assert!(spawns(&second.outs).is_empty());
-    assert_eq!(
-        first.state.spawn_outcome(&one),
-        SpawnOutcome::Spawned { child }
-    );
-    assert_eq!(
-        second.state.spawn_outcome(&two),
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
-        }
-    );
-    assert_eq!(second.state.open_children.len(), MAX_OPEN_CHILDREN);
-    Ok(())
-}
-
 /// Spawns `spawn:tool` on its one turn, recording how many children it saw.
 struct ToolSpawner(Mutex<Option<usize>>);
 
@@ -1058,7 +1040,6 @@ impl TurnDriver for ToolSpawner {
         *self.0.lock().expect("seen lock") = Some(agent.open_children.len());
         Box::pin(async move {
             Ok(TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: vec![Out::Spawn {
                     profile: None,
@@ -1076,7 +1057,8 @@ impl TurnDriver for ToolSpawner {
 
 #[tokio::test]
 async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> Result {
-    let (root, mut state) = one_below_the_child_limit()?;
+    // Cross the former 256-child ceiling using the actual step protocol.
+    let (root, mut state) = populated_parent(255).await?;
     state.queued.push_back(Queued {
         steering: false,
         inbox: 1,
@@ -1099,7 +1081,7 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
     assert_eq!(spawns(&requested.outs), [client.clone()]);
     assert_eq!(requested.outs.len(), 1);
     assert_eq!(
-        requested.state.spawn_outcome(&client),
+        requested.state.spawn_outcome(&client).await?,
         SpawnOutcome::Spawned {
             child: child.clone()
         }
@@ -1115,87 +1097,21 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
         acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
-    // It runs with the client's child open and reachable, and the tool's
-    // spawn past the limit is refused rather than failing every retry.
+    // It runs with the client's child open and reachable. The next spawn
+    // has no population ceiling and retains the same commit ordering.
+    assert_eq!(*driver.0.lock().expect("seen lock"), Some(256));
+    assert_eq!(spawns(&stepped.outs), [intent("spawn:tool")]);
     assert_eq!(
-        *driver.0.lock().expect("seen lock"),
-        Some(MAX_OPEN_CHILDREN)
-    );
-    assert!(spawns(&stepped.outs).is_empty());
-    assert_eq!(
-        stepped.state.spawn_outcome(&client),
+        stepped.state.spawn_outcome(&client).await?,
         SpawnOutcome::Spawned { child }
     );
     assert_eq!(
-        stepped.state.spawn_outcome(&intent("spawn:tool")),
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
+        stepped.state.spawn_outcome(&intent("spawn:tool")).await?,
+        SpawnOutcome::Spawned {
+            child: TurnEffect::child(&root, &intent("spawn:tool"))?
         }
     );
-    assert_eq!(stepped.state.open_children.len(), MAX_OPEN_CHILDREN);
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> Result {
-    // The turn's tool recorded a spawn into the last slot, then paused.
-    let (root, mut state) = one_below_the_child_limit()?;
-    state.turn = Some(Progress {
-        inbox: 0,
-        checkpoint: Vec::new(),
-    });
-    state.phase = Phase::WaitingApproval {
-        id: intent("q"),
-        binding: None,
-    };
-    state.reserved_children = 1;
-    let driver = script(vec![TurnStep {
-        reserved_children: 0,
-        checkpoint: None,
-        outs: vec![Out::Spawn {
-            profile: None,
-            history: None,
-            intent: intent("spawn:tool"),
-            brief: None,
-            volumes: Vec::new(),
-        }],
-        wait: Wait::Input,
-        drops: None,
-    }]);
-    // A client's spawn meanwhile is refused rather than taking that slot.
-    let requested = step(
-        &driver,
-        &root,
-        Some(state),
-        (2, 0),
-        spawn_request(1),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let (client, _) = requested_child(&root, 1)?;
-    assert!(spawns(&requested.outs).is_empty());
-    assert_eq!(
-        requested.state.spawn_outcome(&client),
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
-        }
-    );
-    // The resumed turn's spawn opens the child its tool reported.
-    let resumed = step(
-        &driver,
-        &root,
-        Some(requested.state),
-        (3, 0),
-        Wake::Inbox {
-            sequence: 2,
-            record: InboxRecord::Approval(Approval { id: intent("q") }),
-        },
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    assert_eq!(spawns(&resumed.outs), [intent("spawn:tool")]);
-    assert_eq!(resumed.state.open_children.len(), MAX_OPEN_CHILDREN);
-    assert_eq!(resumed.state.reserved_children, 0);
+    assert_eq!(stepped.state.open_children.len(), 257);
     Ok(())
 }
 
@@ -1205,7 +1121,6 @@ async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_i
     let (path, state) = child_of(&parent, 2)?;
     let oversized = vec![b'x'; MAX_RECORD_BYTES + 1];
     let driver = script(vec![TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs: vec![
             Out::Conversation(oversized),
@@ -1265,16 +1180,16 @@ async fn quorum_wait() -> Result {
         .map(|byte| root.child(&id(byte)))
         .collect::<std::result::Result<_, _>>()?;
     let mut state = AgentState::adopted(root.clone(), &adopted(id(1))).expect("adopts");
-    state.open_children.clone_from(&children);
+    for child in &children {
+        state.open_children.insert(child).await?;
+    }
     let wait = || TurnStep {
-        reserved_children: 0,
         checkpoint: Some(b"waiting".to_vec()),
         outs: Vec::new(),
         wait: Wait::Until(Until::quorum(children.clone(), 2).within(Some(1_000))),
         drops: None,
     };
     let done = || TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Input,
@@ -1427,7 +1342,6 @@ async fn a_wait_parks_only_on_children_that_can_settle() -> Result {
             Vec::new()
         };
         let driver = script(vec![TurnStep {
-            reserved_children: 0,
             checkpoint: Some(b"waiting".to_vec()),
             outs,
             wait: Wait::Until(
@@ -1472,14 +1386,12 @@ async fn attention_alarm_default_resumes_on_input_or_original_deadline() -> Resu
         let initial = AgentState::adopted(root.clone(), &adopted(id(1)))?;
         let parked = || TurnStep {
             checkpoint: Some(b"waiting-for-reply".to_vec()),
-            reserved_children: 0,
             outs: Vec::new(),
             wait: Wait::Until(Until::input(timeout)),
             drops: None,
         };
         let done = || TurnStep {
             checkpoint: None,
-            reserved_children: 0,
             outs: Vec::new(),
             wait: Wait::Input,
             drops: None,

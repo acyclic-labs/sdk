@@ -90,6 +90,7 @@ async fn open_fixture(
             &workspace::Attach {
                 volume: &project,
                 scratch: &private,
+                shared: None,
                 directory: state.path(),
                 operation: acyclic_fs::OperationId::new(),
                 native_mounts: false,
