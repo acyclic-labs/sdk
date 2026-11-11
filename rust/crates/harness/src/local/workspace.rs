@@ -409,6 +409,7 @@ pub(super) async fn open(
         }
     }
     volumes::seed::adopt_home(filesystem, scratch, &root).await?;
+    let binding_root = root.try_clone().map_err(storage)?;
     let (view, fresh) = lazy_view(filesystem, attach, root, existing, &store).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     acyclic_fs::WorkspaceGraph::new(store.clone())
@@ -436,7 +437,7 @@ pub(super) async fn open(
     volumes::attach(
         filesystem,
         &store,
-        &root,
+        &binding_root,
         &mut mounts,
         mount_authority
             .as_ref()
