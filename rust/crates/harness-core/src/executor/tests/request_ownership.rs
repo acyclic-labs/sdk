@@ -1,7 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn funded_request_and_projection_share_one_owned_history() -> Result<()> {
     let executor = uncompacted_executor(

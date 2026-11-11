@@ -422,11 +422,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         scope: Option<&crate::runtime::RuntimeScope>,
         context: Option<&crate::runtime::ToolContext>,
         invocation: &crate::tool::ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> crate::Result<()> {
         let _ = (scope, context, invocation, work);
         let scope = context.map(|context| context.effective_scope()).or(scope);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             let context = context.ok_or(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -557,9 +557,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         context: &'a crate::runtime::ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (ToolResult, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
         self.authorize(None, Some(context), invocation, Some(work))?;
-        crate::NativeFutureBundle::new(work, || self.native_execute(context, invocation, work))
+        acyclic_fs::NativeFutureBundle::new(work, || self.native_execute(context, invocation, work))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -568,10 +574,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         context: &'a crate::runtime::ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
-    {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (Option<ToolResult>, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
         self.authorize(None, Some(context), invocation, Some(work))?;
-        crate::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             match self.native_observe(context, invocation, work).await? {
                 Some(mut output) => {
                     let retained = output
@@ -610,8 +621,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolProjec
         &self,
         _: &ToolInvocation,
         result: &ToolResult,
-        _work: crate::NativeWork<'_>,
-    ) -> Result<(Value, crate::NativeCustody)> {
+        _work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = _work {
             #[derive(serde::Serialize)]
@@ -636,7 +647,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolProjec
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+    fn supports_native_projection(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
         if let Some(work) = work {
             work.remaining().map_err(Error::from)?;
         }

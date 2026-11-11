@@ -14,7 +14,6 @@ pub use kernel::{Boundary, Cut, fits, inherited, token_bound};
 pub mod protocol;
 mod snapshot;
 mod summary;
-#[cfg(feature = "filesystem")]
 pub use snapshot::EncodedSnapshot;
 pub use snapshot::{Snapshot, SnapshotError, SummaryOutcome};
 pub use summary::{NativeSummary, SummaryError, SummaryRef};

@@ -117,7 +117,7 @@ fn decode_metadata_payload(
 #[cfg(any(
     test,
     feature = "test-support",
-    all(any(test, feature = "local"), feature = "native-mount")
+    all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32"))
 ))]
 pub(super) fn encode_native_metadata(
     metadata: &crate::WorkspaceMetadata,

@@ -277,7 +277,7 @@ fn recovery_binding(
 }
 
 #[cfg(test)]
-#[cfg(feature = "mcp-stdio")]
+#[cfg(not(target_arch = "wasm32"))]
 mod path_tests;
 #[cfg(test)]
 mod tests;

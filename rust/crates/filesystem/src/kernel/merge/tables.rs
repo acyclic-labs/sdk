@@ -17,7 +17,7 @@ enum MergeFileTableOutcome {
     },
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn merge_file_tables_with_accounting<S: AsyncObjectStore>(
     store: &S,
     request: MergeFileTableRequest<'_>,

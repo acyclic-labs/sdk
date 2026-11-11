@@ -54,14 +54,12 @@ impl PathSelection {
         self.view().matches_content(file)
     }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.view().logical_owned_bytes(self.path.capacity())
     }
 }
 
 impl PathSelectionView<'_> {
-    #[cfg(feature = "filesystem")]
     fn logical_owned_bytes(&self, path_capacity: usize) -> Result<u64> {
         crate::core::owned_sum([
             self.volume.logical_owned_bytes()?,
@@ -157,7 +155,6 @@ impl FilePathSelection {
         self.path_selection().validate(work)
     }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.path_selection()
             .logical_owned_bytes(self.path.capacity())

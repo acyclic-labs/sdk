@@ -37,7 +37,7 @@ proptest! {
             && call_max.is_none_or(|max| child_call_max.is_some_and(|value| value <= max))
             && message_max.is_none_or(|max| child_message_max.is_some_and(|value| value <= max))
             && attachment_max.is_none_or(|max| child_attachment_max.is_some_and(|value| value <= max)));
-        #[cfg(feature = "filesystem")]
+
         {
             prop_assert_eq!(super::transcript::limits_admit(limits, child),
                 child_message_max.is_none_or(|max| message_max.is_some_and(|value| value <= max))

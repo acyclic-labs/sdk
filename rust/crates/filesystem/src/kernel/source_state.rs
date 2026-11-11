@@ -2,19 +2,19 @@
 
 #[cfg(any(
     test,
-    feature = "native-watch",
+    not(target_arch = "wasm32"),
     feature = "test-support",
     feature = "fuzzing"
 ))]
 use super::codec::Encoder;
 use super::codec::{CanonicalDecodeError, Decoder};
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use crate::foundation::AuthorityId;
 use crate::foundation::{Digest, GenerationId, VolumeId};
 use thiserror::Error;
 
 pub(super) const DOMAIN: &[u8] = b"acyclic-fs-source-state-v1\0";
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 const ID_DOMAIN: &[u8] = b"acyclic-fs-source-authority-v1\0";
 const VERSION: u16 = 1;
 
@@ -65,7 +65,7 @@ pub(crate) enum SourceFactError {
     Decode(#[from] CanonicalDecodeError),
 }
 
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn source_authority_id(volume_id: VolumeId) -> AuthorityId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(ID_DOMAIN);
@@ -77,7 +77,7 @@ pub(crate) fn source_authority_id(volume_id: VolumeId) -> AuthorityId {
 
 #[cfg(any(
     test,
-    feature = "native-watch",
+    not(target_arch = "wasm32"),
     feature = "test-support",
     feature = "fuzzing"
 ))]
@@ -154,11 +154,7 @@ pub(crate) fn decode_source_fact(
     Ok(value)
 }
 
-#[cfg(all(
-    any(test, feature = "local"),
-    feature = "native-watch",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn decode_source_volume(
     bytes: &[u8],
     maximum_payload_bytes: u64,
@@ -178,7 +174,7 @@ fn validate(value: SourceFact) -> Result<(), SourceFactError> {
 
 #[cfg(any(
     test,
-    feature = "native-watch",
+    not(target_arch = "wasm32"),
     feature = "test-support",
     feature = "fuzzing"
 ))]
@@ -211,7 +207,7 @@ fn invariant(message: &'static str) -> CanonicalDecodeError {
     CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(message))
 }
 
-#[cfg(all(test, feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32"), not(target_arch = "wasm32")))]
 mod tests {
     #[test]
     fn source_authority_is_domain_separated() {

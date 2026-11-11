@@ -8,6 +8,7 @@ use crate::{
     conversation::{ContentAccess, ContentGrant, VolumeOperation},
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn open(
     directory: &std::path::Path,
     project: &crate::conversation::VolumeRef,
@@ -892,7 +893,7 @@ async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts()
     Ok(())
 }
 
-#[cfg(feature = "hooks")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
@@ -938,7 +939,7 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
     Ok(())
 }
 
-#[cfg(feature = "hooks")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn a_directory_at_the_selected_plugins_entry_refuses_startup() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
@@ -956,7 +957,7 @@ async fn a_directory_at_the_selected_plugins_entry_refuses_startup() -> Result<(
     }
 }
 
-#[cfg(feature = "hooks")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn an_enabled_guard_file_read_refusal_cannot_remove_the_guard() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;

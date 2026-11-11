@@ -12,7 +12,7 @@ pub fn fresh_uuid() -> uuid::Uuid {
 }
 
 /// Fills persistent local owner keys through the same entropy boundary as IDs.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn fill_random(bytes: &mut [u8]) -> Result<(), getrandom::Error> {
     acyclic_native_runtime::owner_record::fill_random(bytes)
 }

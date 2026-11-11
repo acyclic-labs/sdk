@@ -2,11 +2,7 @@ use super::*;
 use crate::mcp::McpTransport;
 use serde_json::json;
 
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "test-support",
-    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 mod isolation {
     use super::*;
     use proptest::prelude::*;
@@ -203,7 +199,7 @@ async fn canonical_aliases_keep_the_highest_declared_scope() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "hooks")]
+#[cfg(not(target_arch = "wasm32"))]
 async fn stop_hooks(
     snapshot: NativeSettings,
     fixture: &Fixture,
@@ -220,7 +216,7 @@ async fn stop_hooks(
         .await
 }
 
-#[cfg(feature = "hooks")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn disabling_hooks_uses_trusted_settings_precedence_before_registration() -> Result<()> {
     let fixture = Fixture::new()?;
@@ -279,7 +275,7 @@ async fn disabling_hooks_uses_trusted_settings_precedence_before_registration() 
     Ok(())
 }
 
-#[cfg(all(unix, feature = "hooks"))]
+#[cfg(all(unix, not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn canonical_aliases_preserve_the_first_hook_bearing_source_order() -> Result<()> {
     let fixture = Fixture::new()?;

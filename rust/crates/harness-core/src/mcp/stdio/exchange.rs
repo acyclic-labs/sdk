@@ -4,20 +4,24 @@ use super::*;
 pub struct McpStdioExchange {
     pub(super) initialization: OperationId,
     pub(super) operation: OperationId,
-    pub(super) request: Option<(Vec<u8>, NativeCustody)>,
+    pub(super) request: Option<(Vec<u8>, acyclic_fs::NativeCustody)>,
     pub(super) failed: bool,
     pub(super) line: BytesMut,
 
     pub(super) received: usize,
     pub(super) maximum_bytes: usize,
-    pub(super) result: Option<(Value, NativeCustody)>,
+    pub(super) result: Option<(Value, acyclic_fs::NativeCustody)>,
     // LAST: all parser/control storage is physically dropped before custody.
-    pub(super) custody: NativeCustody,
+    pub(super) custody: acyclic_fs::NativeCustody,
 }
 
 impl McpStdioExchange {
     /// Consumes stdout on the supplied ledger and transfers its writes and custody.
-    pub fn push(&mut self, bytes: &[u8], work: NativeWork<'_>) -> Result<(Vec<u8>, NativeCustody)> {
+    pub fn push(
+        &mut self,
+        bytes: &[u8],
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Vec<u8>, acyclic_fs::NativeCustody)> {
         let result = (|| {
             self.check_work(work)?;
             if self.failed {
@@ -38,8 +42,8 @@ impl McpStdioExchange {
         result
     }
 
-    fn check_work(&self, work: NativeWork<'_>) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn check_work(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
         match (&self.custody, work) {
             (None, None) => {}
             (Some(guard), Some(work)) => {
@@ -63,7 +67,11 @@ impl McpStdioExchange {
         charge(work, 0, 0, 0)
     }
 
-    fn consume(&mut self, bytes: &[u8], work: NativeWork<'_>) -> Result<(Vec<u8>, NativeCustody)> {
+    fn consume(
+        &mut self,
+        bytes: &[u8],
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Vec<u8>, acyclic_fs::NativeCustody)> {
         let received = self
             .received
             .checked_add(bytes.len())
@@ -97,7 +105,7 @@ impl McpStdioExchange {
             let body = body.strip_suffix(b"\r").unwrap_or(body);
             let body = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
             let (message, frame_custody) = decode_value(body, work)?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             let mut frame_custody = frame_custody;
             self.line.advance(end + 1);
             scanned = 0;
@@ -113,7 +121,7 @@ impl McpStdioExchange {
                 writes = request;
             } else if self.result.is_none() {
                 let value = rpc_result(message, self.operation, work)?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(guard) = frame_custody.as_mut() {
                     let retained = crate::executor::json::json_value_logical_owned_bytes(&value)?;
                     guard
@@ -137,8 +145,8 @@ impl McpStdioExchange {
     }
 
     /// Requires complete newline-terminated responses at process EOF.
-    pub fn finish(mut self) -> Result<(Value, NativeCustody)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn finish(mut self) -> Result<(Value, acyclic_fs::NativeCustody)> {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(custody) = &self.custody {
             charge(Some(custody.work()), 0, 0, 0)?;
         }

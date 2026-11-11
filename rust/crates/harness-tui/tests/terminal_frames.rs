@@ -572,7 +572,7 @@ fn real_terminal_frame_cost() -> io::Result<()> {
             io::Error::new(
                 error.kind(),
                 format!(
-                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --features tui --test terminal_frames -E 'test(=real_terminal_frame_cost)'"
+                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --test terminal_frames -E 'test(=real_terminal_frame_cost)'"
                 ),
             )
         });

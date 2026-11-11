@@ -1,5 +1,5 @@
 //! Allocation bounds for the production streaming input decoder.
-#![cfg(feature = "tui")]
+#![cfg(not(target_arch = "wasm32"))]
 
 use std::{io, time::Instant};
 

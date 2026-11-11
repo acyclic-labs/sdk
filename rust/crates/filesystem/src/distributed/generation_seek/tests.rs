@@ -335,7 +335,7 @@ async fn first_generation_seek_retains_identity_prefix_and_original_funding() ->
     )?;
     first_occurrence(simulated.stores().0, true).await?;
     forged_header_is_not_publication_evidence().await?;
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let directory = tempfile::tempdir()?;
         let provider =

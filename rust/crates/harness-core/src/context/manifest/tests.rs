@@ -130,8 +130,7 @@ proptest! {
 
     // Property: the manifest round-trips its immutable sources, and
     // configuration files obey the same bounds as instructions.
-    #[cfg(feature = "filesystem")]
-    #[test]
+        #[test]
     fn configuration_sources_round_trip(path in "[a-zé猫]{1,40}", text in ".{0,80}", bound in 1usize..256) {
         use crate::conversation::{FileDescriptor, FileRef};
         let reference = FileRef::new(
@@ -309,7 +308,7 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;

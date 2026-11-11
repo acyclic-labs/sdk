@@ -17,13 +17,9 @@ pub const COMPONENT_LABEL_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
 pub mod capability {
     use std::fmt::Display;
 
-    #[cfg(feature = "filesystem")]
     pub(crate) const CONVERSATION_BIND: &str = "conversation:bind";
-    #[cfg(feature = "filesystem")]
     pub(crate) const CONVERSATION_APPEND: &str = "conversation:append";
-    #[cfg(feature = "filesystem")]
     pub(crate) const CONVERSATION_SELECT_CONTEXT: &str = "conversation:select_context";
-    #[cfg(feature = "filesystem")]
     pub(crate) const INTERACTION_OPEN: &str = "interaction:open";
     #[doc(hidden)]
     pub const INTERACTION_ROUTE: &str = "interaction:route";
@@ -272,7 +268,7 @@ crate::core::ownership::owned_tuple!(Capabilities, (values));
 
 impl Capabilities {
     /// Copies borrowed grants on the original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn copy<'a>(
         values: impl IntoIterator<Item = &'a str>,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -701,7 +697,6 @@ mod tests {
         assert!(!resolved.contains("shell"));
     }
 
-    #[cfg(feature = "filesystem")]
     #[test]
     fn filesystem_selection_preserves_ceilings_without_scanning_unrelated_grants() -> Result<()> {
         use crate::store::history::HistoryIo as _;

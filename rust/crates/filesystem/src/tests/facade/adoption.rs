@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn prepared_candidate_adoption_rejects_new_observations() -> TestResult {
     let cancel = CancellationToken::new();

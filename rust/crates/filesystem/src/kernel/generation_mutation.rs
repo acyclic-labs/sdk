@@ -1,7 +1,6 @@
 //! One-volume generation transaction composition over sparse persistent kernels. Ordinary and original-native transactions share this sparse engine. Producers run outside Root loans and keep explicit preadmitted custody for actual data.
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 use super::allocation::AllocationLedger;
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::generation::clone_generation_root_with_accounting;
@@ -2378,6 +2377,5 @@ fn failed(error: GenerationMutationError) -> crate::FsError {
 }
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "tests/generation_mutation.rs"]
 mod tests;

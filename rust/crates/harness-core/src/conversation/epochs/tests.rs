@@ -1,7 +1,5 @@
 use super::*;
-#[cfg(feature = "filesystem")]
 use acyclic_stream::StreamProviderExt as _;
-#[cfg(feature = "filesystem")]
 use protocol::{Completion, Demand, Refusal, State};
 
 /// Deliberately enumerates every source item. Unlike the implementation this
@@ -68,7 +66,6 @@ fn budget_bound_preserves_reservation_and_refuses_overflow() {
 
 /// Full materialized model: a summary marks source items individually. It
 /// intentionally pays O(history) to serve as an independent coverage oracle.
-#[cfg(feature = "filesystem")]
 #[derive(Clone, Default)]
 struct Reference {
     items: Vec<bool>,
@@ -76,7 +73,6 @@ struct Reference {
     job: Option<(protocol::SummaryId, usize, Option<Completion>)>,
 }
 
-#[cfg(feature = "filesystem")]
 impl Reference {
     fn verify(&self, state: State) {
         let cursor = self.items.iter().take_while(|covered| **covered).count();
@@ -143,8 +139,7 @@ impl Reference {
 }
 
 proptest::proptest! {
-    #[cfg(feature = "filesystem")]
-    #[test]
+        #[test]
     fn epoch_reducer_matches_materialized_history_at_every_commit_cut(
         schedule in proptest::collection::vec((0_u8..6, 0_u8..8, proptest::bool::ANY), 1..128)
     ) {
@@ -154,7 +149,6 @@ proptest::proptest! {
     }
 }
 
-#[cfg(feature = "filesystem")]
 async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
     use acyclic_stream::{
         AppendRecord, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
@@ -338,7 +332,6 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
     );
 }
 
-#[cfg(feature = "filesystem")]
 async fn last_snapshot(
     provider: &acyclic_stream::MemoryStream,
     path: &StreamPath,
@@ -362,7 +355,6 @@ async fn last_snapshot(
     record
 }
 
-#[cfg(feature = "filesystem")]
 fn snapshot_io() -> crate::filesystem::PreparationIo {
     crate::filesystem::PreparationIo::from_budget(
         acyclic_fs::performance::work_budget(10_000_000, 10_000_000),
@@ -371,13 +363,11 @@ fn snapshot_io() -> crate::filesystem::PreparationIo {
     .unwrap()
 }
 
-#[cfg(feature = "filesystem")]
 struct SnapshotRequest<'io> {
     request: acyclic_stream::CommitRequest,
     encoded: EncodedSnapshot<'io>,
 }
 
-#[cfg(feature = "filesystem")]
 impl SnapshotRequest<'_> {
     async fn commit(
         self,
@@ -389,7 +379,6 @@ impl SnapshotRequest<'_> {
     }
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn snapshot_encoding_keeps_its_original_reservation_and_refuses_without_credit() -> crate::Result<()>
 {
@@ -433,7 +422,6 @@ fn snapshot_encoding_keeps_its_original_reservation_and_refuses_without_credit()
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 fn snapshot_request<'io>(
     snapshot: &Snapshot,
     path: StreamPath,
@@ -466,7 +454,6 @@ fn snapshot_request<'io>(
     SnapshotRequest { request, encoded }
 }
 
-#[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across_reopen() {
     use acyclic_stream::{CommitOutcome, MemoryStream};

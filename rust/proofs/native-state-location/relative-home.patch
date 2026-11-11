@@ -3,11 +3,11 @@
 @@ -121,9 +121,7 @@
      match read {
          Read::Variable(name) => std::env::var_os(name),
-         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+         #[cfg(not(target_arch = "wasm32"))]
 -        Read::Home => dirs::home_dir()
 -            .filter(|directory| directory.is_absolute())
 -            .map(PathBuf::into_os_string),
 +        Read::Home => dirs::home_dir().map(PathBuf::into_os_string),
-         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+         #[cfg(not(target_arch = "wasm32"))]
          Read::State(None) => {
              // Native directory APIs can ignore process-level overrides. Resolve

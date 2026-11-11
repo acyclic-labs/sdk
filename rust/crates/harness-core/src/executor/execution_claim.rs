@@ -5,10 +5,7 @@ use super::*;
 #[derive(Default)]
 pub struct ExecutionClaims(acyclic_fs::OperationClaims);
 
-#[cfg(feature = "filesystem")]
 type Storage = Option<crate::filesystem::PreparationCustody>;
-#[cfg(not(feature = "filesystem"))]
-type Storage = ();
 
 /// Owns a live attempt until its execution future has finished or is dropped.
 pub struct ExecutionClaim<'a> {
@@ -75,7 +72,6 @@ pub(crate) fn acquire<'a>(
         key,
         || crate::model::charge_items(io, 1),
         |bytes, allocations| -> Result<Storage> {
-            #[cfg(feature = "filesystem")]
             {
                 io.map(|io| {
                     for _ in 0..allocations {
@@ -85,11 +81,6 @@ pub(crate) fn acquire<'a>(
                     io.take_owned_custody(bytes)
                 })
                 .transpose()
-            }
-            #[cfg(not(feature = "filesystem"))]
-            {
-                let _ = (io, bytes, allocations);
-                Ok(())
             }
         },
     )?;
@@ -103,7 +94,7 @@ pub(crate) fn acquire<'a>(
     })
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Retains a real callback refusal after joining only its physical driver.
-#[cfg(all(target_os = "linux", feature = "native-mount"))]
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 pub(crate) fn terminal_failure_watch(
     root: &Path,
     work: &mut crate::NativeMaterializationWork,

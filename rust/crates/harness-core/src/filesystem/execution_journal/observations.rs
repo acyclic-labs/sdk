@@ -205,7 +205,7 @@ where
                         let work = io.original_native_work().ok_or_else(|| {
                             io.invalid("execution replay requires original native work")
                         })?;
-                        crate::NativeFutureBundle::new(work, || {
+                        acyclic_fs::NativeFutureBundle::new(work, || {
                             self.replay_page(
                                 operation,
                                 summary.tail,

@@ -101,7 +101,7 @@ pub enum DecodedCacheAdmission {
     Shared(DecodedCacheValue),
 }
 
-#[cfg(all(any(test, feature = "distributed"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn owned_read(
     read: ObjectRead,
     original: &crate::materializer::NativeMaterializationWork,

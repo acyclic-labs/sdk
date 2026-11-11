@@ -11,7 +11,7 @@ use acyclic_stream::BoxProviderFuture;
 pub(super) mod access;
 pub(super) mod capture;
 mod git;
-#[cfg(any(test, feature = "hooks"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod hooks;
 mod output;
 pub(super) mod publisher;
@@ -386,7 +386,7 @@ impl ToolExecutor for CheckoutTools {
         invocation: &'a ToolInvocation,
         _context: &'a ToolContext,
         grant: &'a acyclic_native_runtime::execution::ExecutionGrant,
-        work: crate::NativeWork<'a>,
+        work: acyclic_fs::NativeWork<'a>,
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
             if invocation.name != crate::tools::shell::PLATFORM.name {
@@ -409,7 +409,7 @@ impl ToolExecutor for CheckoutTools {
         &'a self,
         path: &'a str,
         kind: crate::tool::ReadPathKind,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         let (mount, relative) = self
             .workspace
@@ -430,7 +430,7 @@ impl ToolExecutor for CheckoutTools {
         true
     }
 
-    #[cfg(any(test, feature = "hooks"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn run_hooks<'a>(
         &'a self,
         configuration: (&'a crate::hooks::Hooks, [u8; 32]),
@@ -455,7 +455,7 @@ impl ToolExecutor for CheckoutTools {
         _scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
         if work.is_some() {
             return Err(Error::NativeBoundary {

@@ -155,7 +155,7 @@ test("the workspace gate, docs and generation run as independent required matrix
  const script=readFileSync("scripts/qualify-ci.sh","utf8").replaceAll("\r\n","\n");
  const branch=name=>script.match(new RegExp("^  "+name+"\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)","m"))?.[1] ?? assert.fail(`missing qualification branch: ${name}`);
  assert.match(branch("gate"),/sdk_workspace nextest --all-features --locked/);
- assert.match(branch("gate"),/cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features filesystem --lib --tests/);
+ assert.match(branch("gate"),/cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --lib --tests/);
  assert.doesNotMatch(branch("gate"),/sdk-docs|sdk-generation/);
  assert.match(branch("docs"),/cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo.toml --locked/);
  assert.match(branch("generation"),/cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo.toml --locked/);
@@ -260,7 +260,7 @@ test("four clippy workers retain every feature invocation and fail when any work
   assert.deepEqual([...new Set(parallel.calls.map(call => call.target))].sort(), ["target", "target-clippy-1", "target-clippy-2", "target-clippy-3"]);
   assert.ok(parallel.calls.every(call => call.command === "cargo" && call.jobs === "4"));
   assert.ok(parallel.calls.some(call => JSON.stringify(call.args) === JSON.stringify([
-    "clippy", "-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--all-targets", "--features", "filesystem", "--locked", "--", "-D", "warnings",
+    "clippy", "-p", "acyclic-harness", "--all-targets", "--no-default-features", "--locked", "--", "-D", "warnings",
   ])));
   assert.equal(parallel.exitCode, 0);
   const failed = await execute(4, true);
@@ -273,7 +273,7 @@ test("Linux mount and fork/join qualification overlap packages on an independent
   const branch = name => script.match(new RegExp("^  " + name + "\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)", "m"))?.[1] ?? assert.fail(`missing qualification branch: ${name}`);
   const runtime = branch("linux-runtime"), packages = branch("linux");
   assert.ok(runtime.includes("cargo fetch --locked"));
-  assert.ok(runtime.includes("cargo test -p acyclic-fs --features native-mount --locked --lib --"));
+  assert.ok(runtime.includes("cargo test -p acyclic-fs --locked --lib --"));
   assert.ok(runtime.includes("--ignored --test-threads=1"));
   assert.ok(runtime.includes("fork_join_conformance"));
   assert.doesNotMatch(packages, /fork_join_conformance|cargo test -p acyclic-fs/);

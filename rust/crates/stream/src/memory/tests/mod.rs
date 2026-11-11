@@ -28,5 +28,5 @@ mod head;
 mod key_seek;
 mod subtree;
 
-#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod durable;

@@ -1144,8 +1144,8 @@ impl acyclic_harness_core::tool::ToolApprovalVerifier for PublicationDecision {
         operation: acyclic_harness_core::OperationId,
         digest: [u8; 32],
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'a, ()>> {
-        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
+    ) -> acyclic_harness_core::Result<acyclic_fs::NativeFutureBundle<'a, (), crate::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             if self.approved
                 && self.interaction == interaction
                 && self.operation == operation

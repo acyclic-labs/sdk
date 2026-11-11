@@ -24,7 +24,7 @@ impl SchemaRegistry {
     pub const fn new() -> Self {
         Self { schemas: None }
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         if let Some(io) = work.as_deref_mut().filter(|io| copying::is_native(&**io)) {
             io.check_cancellation()?;
@@ -319,10 +319,8 @@ impl SchemaRegistry {
         }
         crate::executor::with_history_io(io, |work| content.descriptor().verify(bytes, work))?;
         let value;
-        #[cfg(feature = "filesystem")]
         let decoded;
         let value = match io {
-            #[cfg(feature = "filesystem")]
             Some(io) => {
                 decoded = io.decode(
                     std::marker::PhantomData::<Value>,

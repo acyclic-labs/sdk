@@ -81,7 +81,6 @@ fn usage() -> ModelUsageRecord {
     }
 }
 
-#[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn storage_file_borrows_the_proven_authority_fact_without_physical_inference() {
     use acyclic_fs::accounting::{AccountingCursor, AccountingTransition, accounting_page};
@@ -258,9 +257,7 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
         totals.push(&file.call).unwrap();
         let counters = Counters::project(source, Some(&totals)).unwrap();
         assert_eq!(counters.model.unwrap().cached.value(), Some(3));
-        #[cfg(feature = "filesystem")]
         assert!(counters.work.is_none());
-        #[cfg(feature = "machines")]
         assert!(counters.machine.is_none());
         let wire = serde_json::to_value(&counters).unwrap();
         assert_eq!(wire["source"]["account"], serde_json::json!([255, 1]));
@@ -309,7 +306,6 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
                 .estimated_resident,
             None
         );
-        #[cfg(feature = "machines")]
         {
             // Capture the actual lifecycle producer's settled output. The
             // simulator supplies a logical binding, not physical placement.

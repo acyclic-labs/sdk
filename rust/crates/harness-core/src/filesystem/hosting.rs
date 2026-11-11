@@ -52,9 +52,9 @@ mod client_files;
 mod journal;
 mod sessions;
 
-#[cfg(all(target_os = "linux", feature = "native-execution"))]
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 mod guest;
-#[cfg(all(target_os = "linux", feature = "native-execution"))]
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 pub use guest::{GuestAuthority, GuestMappingSource, LocalGuestEnrollment};
 
 /// The caller a host's platform verified for one request, before any of the
@@ -472,7 +472,7 @@ where
     ///
     /// # Errors
     /// When `root` is absent or its scope does not cover its observation.
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn client_credential(
         &self,
         root: &AgentPath,
@@ -484,7 +484,7 @@ where
 
     /// Explicit owner enrollment for the root directory of this placement.
     /// This is a platform operation, never callable by a session request.
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn session_credential(
         &self,
         root: &AgentPath,
@@ -497,7 +497,7 @@ where
             .await
     }
 
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     /// Session admission for this endpoint's root uses the same audience as
     /// its client enrollment. Local roots have a conversation audience;
     /// admitted workloads retain their original host-selected audience.
@@ -517,7 +517,7 @@ where
         .map_err(turn)
     }
 
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn client_observation(
         &self,
         root: &AgentPath,

@@ -8,7 +8,7 @@ use crate::{Error, Result};
 #[doc(hidden)]
 pub mod capture;
 mod invocation;
-#[cfg(any(feature = "filesystem-local", all(test, unix)))]
+#[cfg(any(not(target_arch = "wasm32"), all(test, unix)))]
 #[doc(hidden)]
 pub mod shell;
 pub use capture::NativeProcessObserver;

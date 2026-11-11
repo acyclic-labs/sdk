@@ -181,7 +181,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     }
 }
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn candidate_diff<W: FsWork>(
         &self,
         candidate: &Self,
