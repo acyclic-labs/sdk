@@ -23,7 +23,6 @@ fn navigation(
     child: &StreamPath,
     ctx: &mut KernelAccounting<'_>,
 ) -> std::result::Result<acyclic_fs::kernel::OwnedSourceChunk, DemandError> {
-    use std::io::Write;
     acyclic_fs::kernel::OwnedSourceChunk::produce(ctx, |sink| {
         write!(sink, "/{}/ui", child.as_str()).map_err(DemandError::from)
     })

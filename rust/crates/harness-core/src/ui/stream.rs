@@ -19,7 +19,7 @@ use acyclic_stream::{
     StreamPath,
 };
 use futures::StreamExt;
-use std::{borrow::Cow, io::Write, ops::Range, sync::Arc};
+use std::{borrow::Cow, ops::Range, sync::Arc};
 
 /// Read-only UI inputs from an authenticated stream provider and the existing
 /// pinned-content reader. Construction starts no IO, follow or background work.
