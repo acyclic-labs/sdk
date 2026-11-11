@@ -812,7 +812,7 @@ where
             if let Some(saved) = saved {
                 let source = saved
                     .iter()
-                    .find(|source| source.binding.name == binding.name)
+                    .find(|source| source.binding.id == binding.id)
                     .ok_or_else(|| Error::Unauthorized("saved project binding differs".into()))?;
                 let retained = io.sdk(
                     self.host
@@ -1780,7 +1780,7 @@ where
                     || saved
                         .volumes
                         .iter()
-                        .filter(|value| value.binding.name == head.binding.name)
+                        .filter(|value| value.binding.id == head.binding.id)
                         .count()
                         != 1
                 {

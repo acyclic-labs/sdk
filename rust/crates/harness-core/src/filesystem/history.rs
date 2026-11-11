@@ -160,7 +160,7 @@ where
             let source = saved
                 .volumes
                 .iter()
-                .find(|source| source.binding.name == binding.name)
+                .find(|source| source.binding.id == binding.id)
                 .ok_or_else(|| guest("saved project binding differs"))?;
             let workspace = fs
                 .open_workspace(&source.retained_workspace, WorkBudget::UNBOUNDED, &cancel)
@@ -308,7 +308,7 @@ where
             if let Some(saved) = &restored_snapshots {
                 let mut saved = saved
                     .iter()
-                    .find(|saved| saved.binding.name == binding.name)
+                    .find(|saved| saved.binding.id == binding.id)
                     .ok_or_else(|| guest("restored snapshot is absent"))?
                     .clone();
                 saved.binding = binding.clone();
@@ -328,7 +328,7 @@ where
             let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.history.volume.v1");
             hash.update(parent.path.as_str().as_bytes());
             hash.update(&sequence.to_be_bytes());
-            hash.update(binding.name.as_bytes());
+            hash.update(binding.id.to_string().as_bytes());
             // A refused publication can retry this turn at a newer project
             // head. Both the companion cut and fork operation belong to the
             // complete selected generation, not just the conversation slot.
