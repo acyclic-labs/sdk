@@ -458,37 +458,48 @@ mod tests {
     fn exact_edit_preserves_utf8_and_rejects_overlapping_matches() -> Result<()> {
         let mut work = None;
         assert_eq!(
-            replace("before 🦀 after", "🦀", "日本語", false, 64, &mut work)?,
+            replace(
+                "before 🦀 after",
+                "🦀",
+                "日本語",
+                false,
+                Some(64),
+                &mut work
+            )?,
             "before 日本語 after"
         );
         assert_eq!(
-            replace("a\r\nb\n", "\r\n", "\n", false, 8, &mut work)?,
+            replace("a\r\nb\n", "\r\n", "\n", false, Some(8), &mut work)?,
             "a\nb\n"
         );
         assert!(matches!(
-            replace("aaa", "aa", "b", false, 8, &mut work),
+            replace("aaa", "aa", "b", false, Some(8), &mut work),
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
-            replace("ééé", "éé", "b", false, 8, &mut work),
+            replace("ééé", "éé", "b", false, Some(8), &mut work),
             Err(Error::Conflict(_))
         ));
-        assert!(replace("one one", "one", "two", false, 8, &mut work).is_err());
-        assert!(replace("one", "missing", "two", false, 8, &mut work).is_err());
-        assert!(replace("one", "", "two", false, 8, &mut work).is_err());
+        assert!(replace("one one", "one", "two", false, Some(8), &mut work).is_err());
+        assert!(replace("one", "missing", "two", false, Some(8), &mut work).is_err());
+        assert!(replace("one", "", "two", false, Some(8), &mut work).is_err());
         Ok(())
     }
 
     #[test]
     fn exact_edit_checks_input_and_output_byte_bounds() -> Result<()> {
         let mut work = None;
-        assert_eq!(replace("abc", "b", "", false, 3, &mut work)?, "ac");
-        assert_eq!(replace("abc", "abc", "xyz", false, 3, &mut work)?, "xyz");
-        assert!(replace("abc", "b", "long", false, 4, &mut work).is_err());
-        assert!(replace("abc", "abc", "a", false, 2, &mut work).is_err());
-        assert!(replace("abc", "a", "a", false, 0, &mut work).is_err());
-        assert!(replace("abc", "a", "a", false, u64::MAX, &mut work).is_err());
-        assert!(replace("é", "é", "🦀", false, 3, &mut work).is_err());
+        assert_eq!(replace("é", "é", "🦀", false, None, &mut work)?, "🦀");
+        assert_eq!(replace("abc", "b", "", false, Some(3), &mut work)?, "ac");
+        assert_eq!(
+            replace("abc", "abc", "xyz", false, Some(3), &mut work)?,
+            "xyz"
+        );
+        assert!(replace("abc", "b", "long", false, Some(4), &mut work).is_err());
+        assert!(replace("abc", "abc", "a", false, Some(2), &mut work).is_err());
+        assert!(replace("abc", "a", "a", false, Some(0), &mut work).is_err());
+        assert!(replace("abc", "a", "a", false, Some(u64::MAX), &mut work).is_err());
+        assert!(replace("é", "é", "🦀", false, Some(3), &mut work).is_err());
         Ok(())
     }
 
@@ -514,9 +525,9 @@ mod tests {
                                         .map(|_| offset)
                                 })
                                 .collect();
-                            let result = replace(&source, &needle, "X", false, 64, &mut work);
+                            let result = replace(&source, &needle, "X", false, Some(64), &mut work);
                             assert_eq!(
-                                replace(&source, &needle, "X", true, 64, &mut work).unwrap(),
+                                replace(&source, &needle, "X", true, Some(64), &mut work).unwrap(),
                                 source.replace(&needle, "X")
                             );
                             if matches.len() == 1 {
