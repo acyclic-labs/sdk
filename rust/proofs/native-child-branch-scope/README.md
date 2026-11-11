@@ -12,8 +12,8 @@ the nested owner inherits its parent's admitted policy arguments.
 The shared diff dispatcher recognizes both the public child operand and the
 resolved canonical branch, so address resolution retains the inspection path.
 
-The retained inverse restores the actual native checkout-wide alias registration
-and command routing. The unchanged control must reject that production mutation
+The retained inverse restores checkout-wide alias registration alongside the
+canonical branch. The unchanged control must reject that production mutation
 at the second root's claim, then complete with exact original source restored.
 This component qualification does not run installed native host CLIs or establish
 complete platform acceptance.
