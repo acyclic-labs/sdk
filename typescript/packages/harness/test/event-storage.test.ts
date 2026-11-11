@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { SqliteEventStorage, SqliteJournal, type SqliteStorage } from "../src/cloudflare-storage.js";
 import { materializeActorState } from "../../actors/src/state-binding.js";
 import { ActorStateStorage } from "../src/actor-state-storage.js";
-import { WakeIndex } from "../src/event-storage.js";
+import { metadataPages, WakeIndex } from "../src/event-storage.js";
 import { sqlite } from "./support/sqlite.js";
 
 function backend(database: Database) {
@@ -75,6 +75,27 @@ test("SQLite metadata pages retain Unicode prefixes and exact cursors", () => {
           .filter(key => compare(key, "page/😀") > 0).slice(0, limit).map(key => [key, `value:${key}`]));
       }
     }
+  } finally { database.close(); }
+});
+
+test("SQLite metadata traversal is lazy, bounded and complete across pages", () => {
+  const database = new Database(":memory:");
+  try {
+    const metadata = storage(database, "traversal");
+    const pages = metadataPages(metadata, "route/", 2);
+    // No eager read: rows inserted after iterator creation must be visible.
+    for (const name of ["e", "d", "c", "b", "a"]) metadata.put("route/" + name, name);
+    metadata.put("foreign", "excluded");
+    expect(pages.next().value).toEqual([["route/a", "a"], ["route/b", "b"]]);
+    metadata.delete("route/a"); metadata.delete("route/b");
+    // Cursor progress survives changes to an already consumed page.
+    metadata.put("route/f", "f");
+    expect([...pages]).toEqual([
+      [["route/c", "c"], ["route/d", "d"]],
+      [["route/e", "e"], ["route/f", "f"]],
+    ]);
+    expect([...metadataPages(metadata, "missing/", 2)]).toEqual([]);
+    for (const limit of [0, -1, Infinity]) expect(() => [...metadataPages(metadata, "", limit)]).toThrow("page size");
   } finally { database.close(); }
 });
 

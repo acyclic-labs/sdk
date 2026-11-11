@@ -24,6 +24,19 @@ export function checkMetadataPage(limit: number): void {
   }
 }
 
+/** Lazily visit bounded metadata pages; the chunk never limits total rows. */
+export function* metadataPages(storage: EventStorage, prefix: string, limit: number): Generator<[string, string][]> {
+  checkMetadataPage(limit);
+  let after = "";
+  for (;;) {
+    const page = storage.entries(prefix, after, limit);
+    if (page.length === 0) return;
+    after = page[page.length - 1]![0];
+    yield page;
+    if (page.length < limit) return;
+  }
+}
+
 export function decodeMetadata(value: string): unknown {
   try { return JSON.parse(value); }
   catch { throw new Error("STEP host-metadata-read failed; recovery: restore host metadata from a verified backup"); }
