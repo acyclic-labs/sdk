@@ -467,7 +467,7 @@ impl ToolProjection for FileProjection {
                         work,
                     );
                 }
-                if result.0.media.is_none() {
+                if result.0.media.is_none() && matches!(file, FileReadSource::Authored(_)) {
                     let version = super::version::encode_source(file, work)?;
                     return schema::project_json(
                         &FileView {

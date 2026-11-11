@@ -42,7 +42,24 @@ async fn read(task: &TaskContext, arguments: Value) -> Result<Value> {
     reference
         .definition
         .validate_projection(&compact, task.scope().limits(), None)?;
-    assert_eq!(compact["value"]["page"], full["value"]["page"]);
+    let source: crate::tool::files::FileReadSource =
+        serde_json::from_value(result.value["file"].clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    match source {
+        crate::tool::files::FileReadSource::Content(expected) => {
+            let projected: crate::model::ToolResultContent = serde_json::from_value(compact)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let crate::model::ToolResultContent::Parts { parts } = projected else {
+                panic!("immutable read lost its reference projection")
+            };
+            assert!(parts.iter().any(|part| matches!(part,
+                crate::model::ModelDataPart::File { file, policy: crate::model::FileProjectionPolicy::Reference }
+                    if file == &expected)));
+        }
+        crate::tool::files::FileReadSource::Authored(_) => {
+            assert_eq!(compact["value"]["page"], full["value"]["page"]);
+        }
+    }
     Ok(full["value"].clone())
 }
 
