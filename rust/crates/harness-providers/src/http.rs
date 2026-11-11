@@ -154,10 +154,10 @@ fn reqwest_failure(native: bool, error: &reqwest::Error) -> acyclic_harness_core
             None => break,
         }
     }
-    let failure = if tls {
-        ModelTransportFailure::Tls
-    } else if error.is_timeout() {
+    let failure = if error.is_timeout() {
         ModelTransportFailure::Timeout
+    } else if tls {
+        ModelTransportFailure::Tls
     } else if error.is_connect() {
         ModelTransportFailure::Connect
     } else {

@@ -129,6 +129,7 @@ async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> R
         success: &'static str,
         mixed: bool,
         count: bool,
+        failure: acyclic_harness_core::ModelTransportFailure,
         sent: Mutex<Vec<HttpRequest>>,
         waits: Mutex<Vec<Duration>>,
     }
@@ -148,6 +149,18 @@ async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> R
                     sent.push(request);
                     index
                 };
+                if index < 300
+                    && !matches!(
+                        self.failure,
+                        acyclic_harness_core::ModelTransportFailure::Status(_)
+                    )
+                {
+                    return Err(crate::transport_failure(
+                        false,
+                        self.failure,
+                        "recorded transport failure",
+                    ));
+                }
                 if self.mixed && index == 301 {
                     return Err(crate::transport_failure(
                         false,
@@ -169,7 +182,10 @@ async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> R
                 }
                 Ok(HttpResponse {
                     status: if index < 300 {
-                        429
+                        match self.failure {
+                            acyclic_harness_core::ModelTransportFailure::Status(status) => status,
+                            _ => unreachable!(),
+                        }
                     } else if self.mixed && index == 300 {
                         503
                     } else {
@@ -192,71 +208,86 @@ async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> R
         }
     }
     for (adapter, success) in fixtures() {
-        for (mixed, count) in [(false, false), (true, false), (true, true)] {
-            let transport = Arc::new(RateLimited {
-                success: if count {
-                    r#"{"input_tokens":7}"#
+        for failure in [
+            acyclic_harness_core::ModelTransportFailure::Status(429),
+            acyclic_harness_core::ModelTransportFailure::Status(503),
+            acyclic_harness_core::ModelTransportFailure::Status(408),
+            acyclic_harness_core::ModelTransportFailure::Connect,
+            acyclic_harness_core::ModelTransportFailure::Interrupted,
+            acyclic_harness_core::ModelTransportFailure::Timeout,
+            acyclic_harness_core::ModelTransportFailure::Tls,
+        ] {
+            for (mixed, count) in [(false, false), (true, false), (true, true)] {
+                let transport = Arc::new(RateLimited {
+                    success: if count {
+                        r#"{"input_tokens":7}"#
+                    } else {
+                        success
+                    },
+                    mixed,
+                    count,
+                    failure,
+                    sent: Mutex::new(Vec::new()),
+                    waits: Mutex::new(Vec::new()),
+                });
+                let provider =
+                    provider_with(adapter, "https://recorded.invalid/v1", transport.clone());
+                let (request, mut dispatch) = request(&provider)?;
+                dispatch.operation_id = acyclic_harness_core::OperationId::from_bytes([31; 16]);
+                let events = if count {
+                    assert_eq!(provider.count_tokens(&request, 0).await?.input_tokens, 7);
+                    Vec::new()
                 } else {
-                    success
-                },
-                mixed,
-                count,
-                sent: Mutex::new(Vec::new()),
-                waits: Mutex::new(Vec::new()),
-            });
-            let mut provider =
-                provider_with(adapter, "https://recorded.invalid/v1", transport.clone());
-            Arc::make_mut(&mut provider.config).retry.attempts = if mixed { 3 } else { 0 };
-            let (request, mut dispatch) = request(&provider)?;
-            dispatch.operation_id = acyclic_harness_core::OperationId::from_bytes([31; 16]);
-            let events = if count {
-                assert_eq!(provider.count_tokens(&request, 0).await?.input_tokens, 7);
-                Vec::new()
-            } else {
-                provider
-                    .generate(&request, dispatch)
-                    .try_collect::<Vec<_>>()
-                    .await?
-            };
-            let exchanges = if mixed {
-                if count { 304 } else { 303 }
-            } else {
-                301
-            };
-            let sent = transport.sent.lock().unwrap();
-            assert_eq!(sent.len(), exchanges);
-            for request in sent.iter().skip(1) {
-                assert_eq!(request.url, sent[0].url);
-                assert_eq!(request.headers, sent[0].headers);
-                assert_eq!(request.body, sent[0].body);
-            }
-            let waits = transport.waits.lock().unwrap();
-            assert_eq!(waits.len(), exchanges - 1);
-            assert_eq!(waits[0], Duration::from_secs(60));
-            assert_eq!(waits[299], Duration::from_secs(60));
-            assert!(
-                waits[1..299]
+                    provider
+                        .generate(&request, dispatch)
+                        .try_collect::<Vec<_>>()
+                        .await?
+                };
+                let exchanges = if mixed {
+                    if count { 304 } else { 303 }
+                } else {
+                    301
+                };
+                let sent = transport.sent.lock().unwrap();
+                assert_eq!(sent.len(), exchanges);
+                for request in sent.iter().skip(1) {
+                    assert_eq!(request.url, sent[0].url);
+                    assert_eq!(request.headers, sent[0].headers);
+                    assert_eq!(request.body, sent[0].body);
+                }
+                let waits = transport.waits.lock().unwrap();
+                assert_eq!(waits.len(), exchanges - 1);
+                if matches!(
+                    failure,
+                    acyclic_harness_core::ModelTransportFailure::Status(_)
+                ) {
+                    assert_eq!(waits[0], Duration::from_secs(60));
+                    assert_eq!(waits[299], Duration::from_secs(60));
+                }
+                assert!(
+                    waits[1..299]
+                        .iter()
+                        .all(|wait| !wait.is_zero() && *wait <= Duration::from_secs(8))
+                );
+                let calls: Vec<_> = events
                     .iter()
-                    .all(|wait| !wait.is_zero() && *wait <= Duration::from_secs(8))
-            );
-            let calls: Vec<_> = events
-                .iter()
-                .filter_map(|event| match event {
-                    ModelEvent::ToolCall(call) => Some(call),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(calls.len(), usize::from(!count));
-            if let Some(call) = calls.first() {
-                assert_eq!(call.call_id, dispatch.tool_call_id(0));
+                    .filter_map(|event| match event {
+                        ModelEvent::ToolCall(call) => Some(call),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(calls.len(), usize::from(!count));
+                if let Some(call) = calls.first() {
+                    assert_eq!(call.call_id, dispatch.tool_call_id(0));
+                }
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| matches!(event, ModelEvent::Completed { .. }))
+                        .count(),
+                    usize::from(!count)
+                );
             }
-            assert_eq!(
-                events
-                    .iter()
-                    .filter(|event| matches!(event, ModelEvent::Completed { .. }))
-                    .count(),
-                usize::from(!count)
-            );
         }
     }
     Ok(())
@@ -265,8 +296,8 @@ async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> R
 #[tokio::test]
 async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_excerpt() -> Result<()>
 {
-    for (adapter, body) in fixtures() {
-        for status in [401, 403, 408, 500, 502, 503, 400, 404] {
+    for (adapter, _) in fixtures() {
+        for status in [401, 403, 400, 404] {
             let (provider, script) = provider(adapter, status);
             let (prepared, dispatch) = request(&provider)?;
             let error = provider
@@ -282,25 +313,6 @@ async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_exce
                 .map_err(|_| invalid("fixture lock"))?
                 .len();
             match status {
-                408 | 500..=599 => {
-                    // Redelivered within the default budget, then a typed refusal.
-                    assert_eq!(sent, 1 + usize::from(crate::RetrySpec::DEFAULT.attempts));
-                    let Error::ModelUnavailable {
-                        failure: acyclic_harness_core::ModelTransportFailure::Status(found),
-                        excerpt,
-                    } = &error
-                    else {
-                        panic!("{adapter:?}: {error}");
-                    };
-                    assert_eq!(*found, status);
-                    assert!(excerpt.len() <= crate::EXCERPT_BYTES && !excerpt.is_empty());
-                    assert!(!excerpt.chars().any(char::is_control));
-                    let flat: String = body
-                        .chars()
-                        .map(|c| if c.is_control() { ' ' } else { c })
-                        .collect();
-                    assert!(flat.trim().starts_with(excerpt.as_str()));
-                }
                 // Status-only failures never consume the response body.
                 401 | 403 => {
                     assert!(matches!(

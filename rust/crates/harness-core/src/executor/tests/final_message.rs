@@ -940,3 +940,43 @@ fn text_parts_keep_interim_text_and_the_final_native_parts() -> Result<()> {
     ));
     Ok(())
 }
+
+#[test]
+fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() -> Result<()> {
+    let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Content {
+            delta: "abandoned".into(),
+        }),
+        ScriptedEvent::Event(ModelEvent::Restarted),
+        ScriptedEvent::Event(ModelEvent::Content {
+            delta: "answer".into(),
+        }),
+        ScriptedEvent::Event(ModelEvent::TextPart {
+            text: "answer".into(),
+            native: None,
+        }),
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: Value::Null,
+        }),
+    ])]));
+    let executor = uncompacted_executor(
+        Model::new("fixture".into(), "restart".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let journal = Journal::default();
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("hello".into()),
+        selected_context: None,
+        max_steps: None,
+    };
+    let output = futures::executor::block_on(executor.execute(input.clone(), &journal))?;
+    assert_eq!(output.text, "answer");
+    assert_eq!(output.steps, 1);
+    let replay = futures::executor::block_on(executor.execute(input, &journal))?;
+    assert_eq!(replay, output);
+    assert_eq!(provider.requests().len(), 1);
+    Ok(())
+}

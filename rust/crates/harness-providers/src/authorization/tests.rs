@@ -141,7 +141,6 @@ fn specification(origin: &str, authentication: Authentication) -> crate::Provide
     spec.adapter = crate::Adapter::Chat;
     spec.base_url = format!("{origin}/v1");
     spec.authentication = authentication;
-    spec.retry.attempts = 1;
     spec.retry.base_delay_ms = 0;
     spec.retry.max_delay_ms = 0;
     spec.token_counter = Some(crate::TokenCounterSpec {

@@ -282,7 +282,7 @@ async fn read_count(
 }
 
 /// A count has no caller-visible output until its whole body is validated. All retryable
-/// failures, including a cut or stalled successful body, consume this one attempt budget.
+/// failures, including a cut or stalled successful body, wait through the shared recovery owner.
 async fn exchange_count(
     provider: &ResolvedModel,
     exchange: HttpRequest,

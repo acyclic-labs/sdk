@@ -52,7 +52,7 @@ impl HttpTransport for Counted {
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
-        self.inner.delay_with_native_work(wait, work)
+        crate::fixtures::native_delay(wait, work)
     }
 }
 
@@ -154,48 +154,12 @@ fn failure(error: &Error) -> Option<ModelTransportFailure> {
     }
 }
 
-const ATTEMPTS: usize = 1 + crate::RetrySpec::DEFAULT.attempts as usize;
-
-#[tokio::test]
-async fn unreachable_host_is_a_typed_connect_failure_after_bounded_redelivery() -> Result<()> {
-    // Port zero cannot name a listener. Releasing an ephemeral port races a
-    // different binder and triggers Windows' delayed connection refusal.
-    // The live-server cases below are the control for a reachable destination.
-    let (provider, transport) = model("http://127.0.0.1:0/v1")?;
-    let error = generate(&provider)
-        .await
-        .expect_err("impossible destination port");
-    assert_eq!(
-        failure(&error),
-        Some(ModelTransportFailure::Connect),
-        "{error}"
-    );
-    assert_eq!(
-        error.code(),
-        acyclic_harness_core::wire::ErrorCode::Unavailable
-    );
-    assert!(!error.to_string().contains("127.0.0.1"), "{error}");
-    assert!(!error.to_string().contains("scripted-key"));
-    assert_eq!(transport.sent.load(Ordering::SeqCst), ATTEMPTS);
-    // The token count shares the class and the budget.
-    let (prepared, _) = super::request(&provider)?;
-    let error = provider
-        .count_tokens(&prepared, 0)
-        .await
-        .expect_err("impossible destination port");
-    assert_eq!(
-        failure(&error),
-        Some(ModelTransportFailure::Connect),
-        "{error}"
-    );
-    assert_eq!(transport.sent.load(Ordering::SeqCst), 2 * ATTEMPTS);
-    Ok(())
-}
-
 #[tokio::test]
 async fn refusal_then_success_redelivers_exactly_once() -> Result<()> {
     for native in [false, true] {
         for first in [
+            Reply::Lost,
+            Reply::Full(429, "rate limited"),
             Reply::Full(503, "busy"),
             Reply::Cut(503, CHAT, 0),
             Reply::Cut(503, CHAT, 12),
@@ -243,6 +207,72 @@ async fn refusal_then_success_redelivers_exactly_once() -> Result<()> {
 }
 
 #[tokio::test]
+async fn interrupted_accepted_responses_restart_without_duplicate_output() -> Result<()> {
+    let first = CHAT.find("\n\n").unwrap() + 2;
+    for native in [false, true] {
+        for cut in [0, 12, first + 8] {
+            let (port, accepted) =
+                serve(vec![Reply::Cut(200, CHAT, cut), Reply::Full(200, CHAT)]).await?;
+            let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+            let (request, dispatch) = super::request(&provider)?;
+            let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+            let baseline = work.live_allocation_bytes();
+            let mut events = Vec::new();
+            let mut restarts = 0;
+            if native {
+                let mut stream = provider
+                    .generate_with_native_work(&request, dispatch, &work)?
+                    .await?;
+                while let Some(event) = stream.next().await {
+                    let (event, custody) = event?;
+                    assert_eq!(custody.bytes(), event.logical_owned_bytes()?);
+                    if matches!(event, ModelEvent::Restarted) {
+                        restarts += 1;
+                        events.clear();
+                    } else {
+                        events.push(event);
+                    }
+                    drop(custody);
+                }
+            } else {
+                let mut stream = provider.generate(&request, dispatch);
+                while let Some(event) = stream.next().await {
+                    let event = event?;
+                    if matches!(event, ModelEvent::Restarted) {
+                        restarts += 1;
+                        events.clear();
+                    } else {
+                        events.push(event);
+                    }
+                }
+            }
+            assert_eq!(restarts, 1);
+            let text: String = events
+                .iter()
+                .filter_map(|event| match event {
+                    ModelEvent::Content { delta } => Some(delta.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(text, "hé");
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, ModelEvent::ToolCall(_)))
+                    .count(),
+                1
+            );
+            assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
+            assert_eq!(transport.sent.load(Ordering::SeqCst), 2);
+            assert_eq!(accepted.load(Ordering::SeqCst), 2);
+            drop(events);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn response_status_keeps_its_original_interruption_before_and_after_output() -> Result<()> {
     // Reuse the existing shared Chat response, cutting before any bytes,
     // inside its first event and after one event. Also lose all response headers
@@ -254,12 +284,6 @@ async fn response_status_keeps_its_original_interruption_before_and_after_output
         // the original cut response; a final refusal must retain that boundary
         // even when its body ends with the same transport interruption.
         for (status, cut) in [
-            (200, None),
-            (200, Some(0)),
-            (200, Some(12)),
-            (200, Some(first + 8)),
-            (201, Some(0)),
-            (202, Some(first + 8)),
             (400, Some(0)),
             (400, Some(12)),
             (413, Some(0)),
@@ -355,12 +379,25 @@ async fn response_status_keeps_its_original_interruption_before_and_after_output
 }
 
 #[tokio::test]
-async fn tls_failure_is_typed_and_never_redelivered() -> Result<()> {
+async fn tls_failure_is_typed_for_shared_recovery() -> Result<()> {
     let (port, accepted) = serve(vec![Reply::Garbage, Reply::Garbage]).await?;
     let (provider, transport) = model(&format!("https://127.0.0.1:{port}/v1"))?;
-    let error = generate(&provider).await.expect_err("not TLS");
+    let error = transport
+        .inner
+        .send(HttpRequest {
+            method: http::Method::POST,
+            url: provider.config.base_url.clone(),
+            headers: std::collections::BTreeMap::new(),
+            body: Bytes::new(),
+        })
+        .await
+        .err()
+        .expect("not TLS");
     assert_eq!(failure(&error), Some(ModelTransportFailure::Tls), "{error}");
-    assert_eq!(error.code(), acyclic_harness_core::wire::ErrorCode::Invalid);
+    assert_eq!(
+        error.code(),
+        acyclic_harness_core::wire::ErrorCode::Unavailable
+    );
     assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
     Ok(())

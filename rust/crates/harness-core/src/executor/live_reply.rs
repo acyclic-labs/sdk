@@ -93,6 +93,10 @@ impl Staged {
 impl LiveText<'_> {
     pub(super) fn observe(&mut self, event: &ModelEvent) {
         match event {
+            ModelEvent::Restarted => {
+                self.answer.pending.clear();
+                self.reasoning.pending.clear();
+            }
             ModelEvent::Content { delta } => self.answer.pending.push_str(delta),
             ModelEvent::Reasoning { delta } => self.reasoning.pending.push_str(delta),
             _ => {}

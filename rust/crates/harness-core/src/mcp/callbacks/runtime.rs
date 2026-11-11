@@ -166,7 +166,8 @@ impl McpRuntimeCallbacks {
                         "MCP sampling tools require host-selected tool projection".into(),
                     ));
                 }
-                ModelEvent::Content { .. }
+                ModelEvent::Restarted
+                | ModelEvent::Content { .. }
                 | ModelEvent::TextPart { .. }
                 | ModelEvent::Reasoning { .. }
                 | ModelEvent::ReasoningBlock { .. }

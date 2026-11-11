@@ -95,8 +95,6 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
     for (status, code) in [
         (401, acyclic_harness_core::wire::ErrorCode::Unauthorized),
         (403, acyclic_harness_core::wire::ErrorCode::Unauthorized),
-        (408, acyclic_harness_core::wire::ErrorCode::Unavailable),
-        (503, acyclic_harness_core::wire::ErrorCode::Unavailable),
         (400, acyclic_harness_core::wire::ErrorCode::Invalid),
     ] {
         let (mut provider, _) = provider(Adapter::Responses, 200);
@@ -165,8 +163,8 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(64))]
     #[test]
-    fn count_body_failures_share_the_exchange_attempt_budget(
-        failures in 0..6usize, budget in 0..5u8, timeout in proptest::prelude::any::<bool>(),
+    fn count_body_failures_recover_until_success_or_a_permanent_error(
+        failures in 0..6usize, timeout in proptest::prelude::any::<bool>(),
         partial in proptest::prelude::any::<bool>(), definitive in proptest::prelude::any::<bool>(),
         status in proptest::sample::select(vec![200u16, 201, 202, 400, 413, 408, 429, 503]),
     ) {
@@ -201,7 +199,6 @@ proptest::proptest! {
             }
         }
         let (mut provider, _) = provider(Adapter::Responses, 200);
-        Arc::make_mut(&mut provider.config).retry.attempts = budget;
         let transport = Arc::new(CountBody {
             sent: std::sync::atomic::AtomicUsize::new(0), failures, timeout, partial, definitive, status,
         });
@@ -209,9 +206,9 @@ proptest::proptest! {
         let (request, _) = request(&provider).unwrap();
         let result = futures::executor::block_on(provider.count_tokens(&request, 0));
         let final_failure = definitive || matches!(status, 400 | 413);
-        let expected = if final_failure && failures > 0 { 1 } else if status == 429 { failures + 1 } else { (failures + 1).min(usize::from(budget) + 1) };
+        let expected = if final_failure && failures > 0 { 1 } else { failures + 1 };
         proptest::prop_assert_eq!(transport.sent.load(std::sync::atomic::Ordering::SeqCst), expected);
-        proptest::prop_assert_eq!(result.is_ok(), failures == 0 || (!final_failure && (status == 429 || failures <= usize::from(budget))));
+        proptest::prop_assert_eq!(result.is_ok(), failures == 0 || !final_failure);
         if let Ok(count) = result {
             proptest::prop_assert_eq!(count.input_tokens, 7);
             proptest::prop_assert_eq!(count.request_digest, request.request_digest());

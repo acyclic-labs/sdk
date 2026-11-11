@@ -79,7 +79,7 @@ export function modelRefusalFixture(data, status, code) {
         } else if (code) {
           controller.error(Object.assign(new Error('private diagnostic'), {code}));
         } else controller.close();
-      }}, {highWaterMark:0}), {status: !code && status === 429 && state.calls % 3 !== 1 ? 503 : status}));
+      }}, {highWaterMark:0}), {status: !code && state.calls % 2 === 0 ? 401 : status}));
     }});
   return state;
 }
@@ -208,27 +208,21 @@ async fn refusal_body_failures_keep_their_class_without_generation_or_count_retr
                 "models":{"model":{"capacity":{"context_tokens":4096,"output_tokens":512}}},
                 "token_counter":{"path":"count_tokens","adapter":"chat","response_field":"input_tokens","framing_tokens":0},
                 "max_event_bytes":4096,
-                "retry":{"attempts":1,"base_delay_ms":0,"max_delay_ms":0}
+                "retry":{"base_delay_ms":0,"max_delay_ms":0}
             }))?)?;
             let provider = registry.resolve("fixture/model", None)?;
             let prepared = provider.prepare(request(&provider, None)?).await?;
             let failure = JsFuture::from(collect_model(prepared.generate(dispatch()?)?))
                 .await
                 .unwrap_err();
-            let expected = code.unwrap_or(ErrorCode::Unavailable) as i32;
+            let expected = code.unwrap_or(ErrorCode::Unauthorized) as i32;
             assert_eq!(field(&failure, "code")?.as_f64(), Some(f64::from(expected)));
             assert!(
                 !js_sys::Error::from(failure)
                     .message()
                     .includes("private diagnostic", 0)
             );
-            let attempts = if code.is_some() {
-                1.0
-            } else if status == 429 {
-                3.0
-            } else {
-                2.0
-            };
+            let attempts = if code.is_some() { 1.0 } else { 2.0 };
             assert_eq!(field(&fixture, "calls")?.as_f64(), Some(attempts));
             let failure = prepared.count_tokens().await.unwrap_err();
             assert_eq!(field(&failure, "code")?.as_f64(), Some(f64::from(expected)));

@@ -295,7 +295,9 @@ impl StockExecution<'_> {
                         io,
                     )?;
                 }
-                event @ (ModelEvent::Content { .. } | ModelEvent::Reasoning { .. }) => {
+                event @ (ModelEvent::Restarted
+                | ModelEvent::Content { .. }
+                | ModelEvent::Reasoning { .. }) => {
                     stock_retire_event(event, io)?;
                 }
             }

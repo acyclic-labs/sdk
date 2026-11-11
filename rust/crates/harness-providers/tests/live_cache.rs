@@ -292,7 +292,6 @@ async fn real_provider_cache_reads_match_recorded_usage() -> ProbeResult {
             spec.base_url = format!("{}/{provider}", relay.trim_end_matches('/'));
         }
         spec.authentication = Authentication::ApiKey;
-        spec.retry.attempts = 0;
         registry
             .register(provider.into(), spec)
             .map_err(|_| "live API-key selection failed")?;
