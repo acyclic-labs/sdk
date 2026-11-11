@@ -21,7 +21,7 @@ impl FileTool {
             ));
         }
         if input.0.range.is_some_and(|range| range.end < range.start) {
-            return Err(invalid("read range is reversed"));
+            return Err(invalid("read range is reversed; use start <= end"));
         }
         if input.0.wait {
             context.wait_tool_path(&input.0.path, io).await?;
@@ -98,7 +98,7 @@ impl FileTool {
             .range
             .map(|range| range.end.checked_sub(range.start))
             .unwrap_or(Some(u64::MAX))
-            .ok_or_else(|| invalid("read range is reversed"))?;
+            .ok_or_else(|| invalid("read range is reversed; use start <= end"))?;
         let window = context
             .effective_scope()
             .limits()
@@ -119,12 +119,10 @@ impl FileTool {
         )
         .await?;
         let bytes = &window.bytes;
-        let end = input
-            .range
-            .map_or(window.source.byte_length(), |range| range.end);
-        if end > window.source.byte_length() {
-            return Err(invalid("read result belongs to another selection"));
-        }
+        let start = start.min(window.source.byte_length());
+        let end = input.range.map_or(window.source.byte_length(), |range| {
+            range.end.min(window.source.byte_length())
+        });
         if input.range.is_none() && input.selection.is_none() {
             let media = crate::model::image_media_type(&bytes)
                 .map(|_| ReadSelection::Image {
@@ -213,6 +211,15 @@ fn text_result(
     let _version_hold;
     let (version, version_hold) = super::version::encode_source(&file, work)?;
     _version_hold = version_hold;
+    let total = file.byte_length();
+    let page = |end| ReadPage {
+        start,
+        end,
+        next: (end < total).then_some(end),
+        total,
+        eof: end == total,
+        offset: 0,
+    };
     let complete = source.len() as u64 == end - start
         && crate::executor::with_history_io(io, |history| {
             crate::executor::json::json_byte_length(
@@ -220,7 +227,7 @@ fn text_result(
                     path,
                     version: &version,
                     text: Some(source),
-                    page: None,
+                    page: Some(&page(end)),
                 },
                 None,
                 history,
@@ -245,12 +252,7 @@ fn text_result(
         &Read {
             file,
             text: shown,
-            page: (shown_end < end).then_some(ReadPage {
-                start,
-                end: shown_end,
-                next: Some(shown_end),
-                offset: 0,
-            }),
+            page: Some(page(shown_end)),
         },
         u64::MAX,
         work,
@@ -273,6 +275,8 @@ pub(super) fn encoded_text_budget(
             start: u64::MAX,
             end: u64::MAX,
             next: Some(u64::MAX),
+            total: u64::MAX,
+            eof: false,
             offset: u64::MAX,
         }),
     };
@@ -332,7 +336,11 @@ mod checks {
                 let shown = value["value"]["text"].as_str().unwrap();
                 prop_assert!(source[cursor..].starts_with(shown));
                 assembled.push_str(shown);
-                if result.value.get("page").is_none() { break; }
+                prop_assert_eq!(result.value["page"]["total"].as_u64(), Some(source.len() as u64));
+                if result.value["page"]["eof"] == true {
+                    prop_assert!(result.value["page"].get("next").is_none());
+                    break;
+                }
                 let next = result.value["page"]["next"].as_u64().unwrap() as usize;
                 prop_assert!(next > cursor, "page failed to advance");
                 prop_assert_eq!(next, cursor + shown.len());
@@ -342,11 +350,12 @@ mod checks {
             let tiny: String = source.chars().take(40).collect();
             let file = crate::tool::tests::file(tiny.as_bytes()).unwrap();
             let version = serde_json::to_string(&file).unwrap();
-            let exact = serde_json::json!({"kind":"json","value":{"path":file.path(),"version":version,"text":tiny}});
+            let exact = serde_json::json!({"kind":"json","value":{"path":file.path(),"version":version,"text":tiny,
+                "page":{"start":0,"end":tiny.len(),"offset":0,"total":tiny.len(),"eof":true}}});
             let credit = serde_json::to_vec(&exact).unwrap().len() as u64;
             let (result, _hold) = text_result(FileReadSource::Content(file.clone()), &tiny, file.path(), (0,tiny.len() as u64), credit, None, None).unwrap();
             prop_assert_eq!(result.value["text"].as_str().unwrap(), tiny.as_str());
-            prop_assert!(result.value.get("page").is_none());
+            prop_assert_eq!(&result.value["page"], &exact["value"]["page"]);
         }
     }
 }

@@ -113,7 +113,7 @@ async fn create(provider: &MemoryStream, agent: AgentId) -> Result<AgentPath> {
 }
 
 #[test]
-fn layout_round_trips_beyond_the_former_depth_cap() -> Result {
+fn layout_round_trips_beyond_old_depth_and_refuses_nonchild_segments() -> Result {
     let root = AgentPath::root(&id(1));
     let child = root.child(&id(2))?;
     assert_eq!(child.parent().as_ref(), Some(&root));
@@ -125,9 +125,12 @@ fn layout_round_trips_beyond_the_former_depth_cap() -> Result {
     for _ in 0..128 {
         deep = deep.child(&id(3))?;
     }
-    let child = deep.child(&id(3))?;
-    assert_eq!(child.depth(), 129);
-    assert_eq!(AgentPath::try_from(child.as_str().to_owned())?, child);
+    let deeper = deep.child(&id(3))?;
+    assert_eq!(
+        AgentPath::try_from(format!("{deep}/children/{}", id(3)))?,
+        deeper
+    );
+    assert_eq!(deeper.depth(), 129);
     Ok(())
 }
 
@@ -978,6 +981,7 @@ async fn populated_parent(count: usize) -> Result<(AgentPath, AgentState)> {
             .insert(&root.child(&AgentId::from_bytes(bytes))?)
             .await?;
     }
+    state.spawned_children.clone_from(&state.open_children);
     Ok((root, state))
 }
 
@@ -986,6 +990,7 @@ fn spawn_request(sequence: u64) -> Wake {
         sequence,
         record: InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                topology: None,
                 model: None,
                 continuation: None,
                 context: acyclic_harness_core::agent::SpawnContext::Fork,

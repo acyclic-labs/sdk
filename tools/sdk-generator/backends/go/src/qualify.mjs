@@ -50,7 +50,7 @@ export function qualify(args, command = spawnSync) {
   const entries = verifyArchive(archive, args.sha256, receipt);
   const env = { ...process.env, GOMAXPROCS: "1", GOTOOLCHAIN: "local", GOPROXY: "off", GOSUMDB: "off",
     GOWORK: "off", GOENV: "off", GOFLAGS: "" };
-  const execute = arguments_ => command(go, arguments_, { env, encoding: "utf8", timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
+  const execute = arguments_ => command(go, arguments_, { env, encoding: "utf8", timeout: 180_000, maxBuffer: Infinity });
   const version = execute(["version"]);
   if (version.error || version.status !== 0 || version.stdout.trim().split(/\s+/)[2] !== receipt.go_version) {
     throw new Error("Go toolchain differs from generation receipt");

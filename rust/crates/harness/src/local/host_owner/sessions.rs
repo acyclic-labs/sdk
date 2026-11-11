@@ -352,35 +352,39 @@ impl HostWorkspaceOwner {
         Ok(value)
     }
 
-    /// The open children, enumerated through their persistent membership pages.
-    pub(super) async fn sessions(&self, parent: &AgentPath) -> Result<Value> {
-        let (state, _) = self.native.session(parent).await?;
-        let mut references = Vec::new();
-        let mut after = None;
-        loop {
-            let children = state
-                .open_children
-                .page(after.as_ref(), 256)
-                .await
-                .map_err(storage)?;
-            if children.is_empty() {
-                break;
-            }
-            after = children.last().cloned();
-            for id in children {
-                let child = state.path.child(&id).map_err(storage)?;
-                let (_, session) = self.native.session(&child).await?;
-                let reference = session.reference.ok_or_else(|| {
-                    Error::Conflict("native child has no committed session reference".into())
-                })?;
-                if agents::child(&state.path, &reference)? != child {
-                    return Err(Error::Conflict(
-                        "native session reference names a different child".into(),
-                    ));
-                }
-                references.push(reference);
-            }
+    /// One visible page, exclusively seeking within the current committed membership.
+    pub(super) async fn sessions(
+        &self,
+        parent: &AgentPath,
+        after: Option<&crate::agent::AgentId>,
+        limit: u32,
+    ) -> Result<Value> {
+        if limit == 0 {
+            return Err(Error::Invalid("session page size must be positive".into()));
         }
-        Ok(json!({ "references": references }))
+        let (state, _) = self.native.session(parent).await?;
+        let children = state
+            .open_children
+            .page(after, limit as usize)
+            .await
+            .map_err(storage)?;
+        let next = (children.len() == limit as usize)
+            .then(|| children.last().cloned())
+            .flatten();
+        let mut references = Vec::with_capacity(children.len());
+        for id in children {
+            let child = state.path.child(&id).map_err(storage)?;
+            let (_, session) = self.native.session(&child).await?;
+            let reference = session.reference.ok_or_else(|| {
+                Error::Conflict("native child has no committed session reference".into())
+            })?;
+            if agents::child(&state.path, &reference)? != child {
+                return Err(Error::Conflict(
+                    "native session reference names a different child".into(),
+                ));
+            }
+            references.push(reference);
+        }
+        Ok(json!({ "references": references, "next": next }))
     }
 }

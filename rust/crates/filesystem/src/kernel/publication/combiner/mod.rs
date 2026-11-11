@@ -189,7 +189,7 @@ impl Ticket {
         let result = prepare_delta(
             objects,
             request,
-            &base.value,
+            (&base.value, preconditions.base),
             (limits.decode, preconditions.config),
             accounting,
             cancellation,
@@ -522,7 +522,7 @@ struct PreparedDelta {
 async fn prepare_delta<O: crate::AsyncObjectStore>(
     objects: &O,
     request: PublishGenerationRequest,
-    base: &crate::kernel::GenerationRoot,
+    (base, base_id): (&crate::kernel::GenerationRoot, ObjectId),
     admission: (crate::kernel::DecodeLimits, crate::VolumeConfig),
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -564,7 +564,7 @@ async fn prepare_delta<O: crate::AsyncObjectStore>(
         }
         let changes = crate::PublicationChanges::proposed(
             objects,
-            base,
+            (base, base_id),
             &root.value,
             request,
             config,

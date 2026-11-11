@@ -18,12 +18,7 @@ async fn pause_active_delivery(producer_lost: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-finish", &[b"emit", b"emit"]).await?;
-    let handler = Arc::new(Gated {
-        package: Package::new()?,
-        active: AtomicUsize::new(0),
-        peak: AtomicUsize::new(0),
-        gate: tokio::sync::Semaphore::new(0),
-    });
+    let handler = Arc::new(Gated::new()?);
     let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
     runtime.track(address.clone())?;
     let mut delivery = Box::pin(runtime.drain_actor(&address));
@@ -96,12 +91,7 @@ async fn pause_retained_delivery(committed: bool, settlement_lost: bool) -> Test
     let provider = Arc::new(Provider::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-retained", &[b"emit", b"emit"]).await?;
-    let handler = Arc::new(Gated {
-        package: Package::new()?,
-        active: AtomicUsize::new(0),
-        peak: AtomicUsize::new(0),
-        gate: tokio::sync::Semaphore::new(0),
-    });
+    let handler = Arc::new(Gated::new()?);
     let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
     runtime.track(address.clone())?;
     let mut delivery = Box::pin(runtime.drain_actor(&address));
@@ -326,12 +316,7 @@ async fn failed_pause_reports_before_held_delivery() -> TestResult {
     let provider = Arc::new(Provider::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-error-delivery", &[b"emit"]).await?;
-    let handler = Arc::new(Gated {
-        package: Package::new()?,
-        active: AtomicUsize::new(0),
-        peak: AtomicUsize::new(0),
-        gate: tokio::sync::Semaphore::new(0),
-    });
+    let handler = Arc::new(Gated::new()?);
     let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
     runtime.track(address.clone())?;
     let (entered, release) = provider.arm(Fault::Load);
@@ -438,12 +423,7 @@ async fn active_cleanup_and_queued_controls(
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-owner", &[b"emit"]).await?;
     let unrelated = spawn_with(&store, "pause-unrelated", &[b"emit"]).await?;
-    let handler = Arc::new(Gated {
-        package: Package::new()?,
-        active: AtomicUsize::new(0),
-        peak: AtomicUsize::new(0),
-        gate: tokio::sync::Semaphore::new(0),
-    });
+    let handler = Arc::new(Gated::new()?);
     let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
     runtime.track(address.clone())?;
     runtime.track(unrelated.clone())?;

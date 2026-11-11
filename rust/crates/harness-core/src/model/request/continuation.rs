@@ -56,6 +56,8 @@ impl RequestContinuation {
             ModelRequest::validate_messages(
                 &mut self.suffix,
                 &self.prepared.request.tools,
+                self.prepared.request.compose_tools,
+                true,
                 limits,
                 io,
                 // Only the suffix is mutable; these declarations belong to the

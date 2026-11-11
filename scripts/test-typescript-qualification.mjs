@@ -40,7 +40,7 @@ test("native tar admission visits one member at a time and rejects late corrupti
     const names = Array.from({ length: 128 }, (_, index) => `member-${index}`);
     for (const name of names) writeFileSync(join(source, name), `original ${name}`);
     // Capture the platform's actual tar output; no hand-written archive fixture.
-    const packed = spawnSync("tar", ["--format=ustar", "-cf", "original.tar", "-C", "source", ...names], { cwd: work, encoding: "utf8" });
+    const packed = spawnSync("tar", ["--format=ustar", "-cf", "original.tar", "-C", "source", ...names], { maxBuffer: Infinity, cwd: work, encoding: "utf8" });
     assert.equal(packed.status, 0, `step=capture tar fixture; recovery=cd ${JSON.stringify(work)} && tar --format=ustar -cf original.tar -C source ${names.join(" ")}; ${packed.stderr}`);
     const bytes = readFileSync(archive), subarray = bytes.subarray.bind(bytes);
     let headers = 0;
@@ -105,7 +105,7 @@ test("native tar consumers retain admitted Go files and select the exact Hex env
       // The platform tar produces both original archives. These bytes qualify
       // archive admission, not a Go compiler or an installed Hex package.
       const args = ["--format=ustar", "-cf", output, "-C", directory, ...names];
-      const result = spawnSync("tar", args, { cwd: work, encoding: "utf8" });
+      const result = spawnSync("tar", args, { maxBuffer: Infinity, cwd: work, encoding: "utf8" });
       assert.equal(result.status, 0, `step=capture consumer archive; recovery=tar ${args.join(" ")}; ${result.stderr}`);
       return readFileSync(join(work, output));
     };
@@ -154,7 +154,7 @@ for (const command of ["create", "verify"]) {
       writeFileSync(receipt, "");
       truncateSync(receipt, command === "create" ? 16_777_217 : 1_048_577);
       const args = command === "create" ? [command, work, "a".repeat(40), receipt] : [command, receipt, "a".repeat(40), "absent.tgz", join(work, "absent.tgz")];
-      const result = spawnSync(process.execPath, [qualification, ...args], { encoding: "utf8" });
+      const result = spawnSync(process.execPath, [qualification, ...args], { maxBuffer: Infinity, encoding: "utf8" });
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /receipt must be a regular file within its size bound/);
       assert.equal(existsSync(join(work, "QUALIFICATION.json")), false);
@@ -167,7 +167,7 @@ for (const command of ["create", "consumer"]) {
     const work = mkdtempSync(join(tmpdir(), "acyclic-required-compiler-receipt-"));
     try {
       const args = command === "create" ? [command, work, "a".repeat(40)] : [command, join(work, "must-not-run")];
-      const result = spawnSync(process.execPath, [qualification, ...args], { encoding: "utf8" });
+      const result = spawnSync(process.execPath, [qualification, ...args], { maxBuffer: Infinity, encoding: "utf8" });
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /usage:.*BUILD_RECEIPT/);
       assert.equal(existsSync(join(work, "QUALIFICATION.json")), false);
@@ -179,7 +179,7 @@ test("failed consumer build cannot emit a compiled-source receipt", () => {
   const work = mkdtempSync(join(tmpdir(), "acyclic-build-receipt-failure-"));
   try {
     const receipt = join(work, "BUILD.json");
-    const result = spawnSync(process.execPath, [qualification, "consumer", join(work, "absent-bun"), receipt], { encoding: "utf8" });
+    const result = spawnSync(process.execPath, [qualification, "consumer", join(work, "absent-bun"), receipt], { maxBuffer: Infinity, encoding: "utf8" });
     assert.notEqual(result.status, 0);
     assert.equal(JSON.parse(result.stdout).passed, false);
     assert.equal(existsSync(receipt), false);
@@ -191,7 +191,7 @@ test("consumer build refuses to overwrite an existing source receipt", () => {
   try {
     const receipt = join(work, "BUILD.json");
     writeFileSync(receipt, "original receipt\n");
-    const result = spawnSync(process.execPath, [qualification, "consumer", join(work, "must-not-run"), receipt], { encoding: "utf8" });
+    const result = spawnSync(process.execPath, [qualification, "consumer", join(work, "must-not-run"), receipt], { maxBuffer: Infinity, encoding: "utf8" });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /build receipt already exists/);
     assert.equal(readFileSync(receipt, "utf8"), "original receipt\n");
@@ -209,7 +209,7 @@ for (const mutation of ["source", "baseline", "stale-dist"]) {
       writeFileSync(join(stage, "typescript/packages/demo/src/index.ts"), "export const value = 1;\n");
       writeFileSync(join(stage, "compatibility/native-families/demo.json"), "{}\n");
       const git = args => {
-        const result = spawnSync("git", args, { cwd: stage, encoding: "utf8" });
+        const result = spawnSync("git", args, { maxBuffer: Infinity, cwd: stage, encoding: "utf8" });
         assert.equal(result.status, 0, result.stderr);
       };
       git(["init", "--quiet"]);
@@ -231,7 +231,7 @@ for (const mutation of ["source", "baseline", "stale-dist"]) {
       writeFileSync(fakeBun, `#!/bin/sh\ncase " $* " in *" --version "*) printf 'Version 7.0.2\\n';; *" -b "*)\n${action}\n;; esac\nexit 0\n`);
       chmodSync(fakeBun, 0o700);
       const receipt = join(stage, "target/BUILD.json");
-      const result = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "consumer", fakeBun, receipt], { encoding: "utf8" });
+      const result = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "consumer", fakeBun, receipt], { maxBuffer: Infinity, encoding: "utf8" });
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, mutation !== "stale-dist" ? /compiler source changed|compiler source is not a clean captured checkout/ : /dist inventory differs from files emitted/);
       assert.equal(existsSync(receipt), false);
@@ -261,7 +261,7 @@ function writeArchiveFixture(stage, item) {
   writeFileSync(join(packageDirectory, "generated/wasm/runtime.wasm"), "fixture runtime bytes");
   const archiveRoot = join(stage, "archive-inputs", item.asset.slice(0, -4));
   cpSync(packageDirectory, join(archiveRoot, "package"), { recursive: true });
-  const result = spawnSync("tar", ["-czf", join(output, item.asset), "-C", archiveRoot, "package"], {
+  const result = spawnSync("tar", ["-czf", join(output, item.asset), "-C", archiveRoot, "package"], { maxBuffer: Infinity,
     encoding: "utf8",
   });
   assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
@@ -280,7 +280,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
       writeFileSync(join(stage, ".gitignore"), "/target/\n/archives/\n/archive-inputs/\n/typescript/packages/*/dist/\n/typescript/packages/*/generated/wasm/\n");
       for (const item of entries) writeArchiveFixture(stage, item);
       const git = args => {
-        const result = spawnSync("git", args, { cwd: stage, encoding: "utf8" });
+        const result = spawnSync("git", args, { maxBuffer: Infinity, cwd: stage, encoding: "utf8" });
         assert.equal(result.status, 0, result.stderr);
         return result.stdout;
       };
@@ -315,13 +315,13 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
       if (mutation === "archive-dist") {
         const input = join(stage, "archive-inputs", entries[0].asset.slice(0, -4));
         writeFileSync(join(input, "package/dist/index.js"), "export const stale = true;\n");
-        const packed = spawnSync("tar", ["-czf", join(stage, "archives", entries[0].asset), "-C", input, "package"], { encoding: "utf8" });
+        const packed = spawnSync("tar", ["-czf", join(stage, "archives", entries[0].asset), "-C", input, "package"], { maxBuffer: Infinity, encoding: "utf8" });
         assert.equal(packed.status, 0, packed.stderr);
       }
       const buildPath = join(stage, "target/BUILD.json");
       writeFileSync(buildPath, JSON.stringify(build));
       const receiptPath = join(stage, "archives/QUALIFICATION.json");
-      let result = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "create", join(stage, "archives"), sourceCommit, buildPath], { encoding: "utf8" });
+      let result = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "create", join(stage, "archives"), sourceCommit, buildPath], { maxBuffer: Infinity, encoding: "utf8" });
       const retainedCase = mutation === "reassemble" || mutation.startsWith("retained-");
       if (retainedCase) {
         assert.equal(result.status, 0, result.stderr);
@@ -335,7 +335,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
         if (mutation === "retained-new-dist") {
           const input = join(stage, "archive-inputs", entries[0].asset.slice(0, -4));
           writeFileSync(join(input, "package/dist/index.js"), "export const stale = true;\n");
-          const packed = spawnSync("tar", ["-czf", join(stage, "archives", entries[0].asset), "-C", input, "package"], { encoding: "utf8" });
+          const packed = spawnSync("tar", ["-czf", join(stage, "archives", entries[0].asset), "-C", input, "package"], { maxBuffer: Infinity, encoding: "utf8" });
           assert.equal(packed.status, 0, packed.stderr);
         }
         if (mutation === "retained-archive") writeFileSync(join(original, entries[0].asset), "tampered");
@@ -350,7 +350,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
           retainedReceipt.compiler_build_receipt_sha256 = `sha256:${createHash("sha256").update(readFileSync(buildPath)).digest("hex")}`;
           writeFileSync(retainedReceiptPath, JSON.stringify(retainedReceipt));
         }
-        result = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "reassemble", join(stage, "archives"), sourceCommit, buildPath, original], { encoding: "utf8" });
+        result = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "reassemble", join(stage, "archives"), sourceCommit, buildPath, original], { maxBuffer: Infinity, encoding: "utf8" });
       }
       if (mutation === "none" || mutation === "reassemble") {
         assert.equal(result.status, 0, result.stderr);
@@ -359,7 +359,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
         assert.equal(receipt.source_sha256, sourceDigest);
         assert.equal(receipt.rust_producers_qualified, false);
         for (const item of entries) {
-          const verified = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "verify", receiptPath, sourceCommit, item.asset, join(stage, "archives", item.asset)], { encoding: "utf8" });
+          const verified = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "verify", receiptPath, sourceCommit, item.asset, join(stage, "archives", item.asset)], { maxBuffer: Infinity, encoding: "utf8" });
           assert.equal(verified.status, 0, verified.stderr);
         }
       } else {
@@ -378,14 +378,14 @@ test("qualification rejects a valid archive with the wrong manifest identity", (
     const archive = writeArchiveFixture(stage, selected);
     const unpacked = mkdtempSync(join(tmpdir(), "acyclic-qualification-unpack-"));
     try {
-      const extract = spawnSync("tar", ["-xzf", archive, "-C", unpacked], { encoding: "utf8" });
+      const extract = spawnSync("tar", ["-xzf", archive, "-C", unpacked], { maxBuffer: Infinity, encoding: "utf8" });
       assert.equal(extract.status, 0, `${extract.stderr}\n${extract.stdout}`);
       const manifestPath = join(unpacked, "package/package.json");
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
       manifest.name = "@acyclic-labs/not-stream";
       writeFileSync(manifestPath, JSON.stringify(manifest));
       const invalidArchive = join(stage, "invalid.tgz");
-      const repack = spawnSync("tar", ["-czf", invalidArchive, "-C", unpacked, "package"], { encoding: "utf8" });
+      const repack = spawnSync("tar", ["-czf", invalidArchive, "-C", unpacked, "package"], { maxBuffer: Infinity, encoding: "utf8" });
       assert.equal(repack.status, 0, `${repack.stderr}\n${repack.stdout}`);
       const validation = spawnSync(process.execPath, [
         join(root, "scripts/validate-npm-package.mjs"),
@@ -393,7 +393,7 @@ test("qualification rejects a valid archive with the wrong manifest identity", (
         selected.name,
         selected.version,
         `typescript/packages/${selected.directory}`,
-      ], { encoding: "utf8" });
+      ], { maxBuffer: Infinity, encoding: "utf8" });
       assert.notEqual(validation.status, 0);
       assert.match(`${validation.stderr}\n${validation.stdout}`, /manifest does not match/);
     } finally {
@@ -440,7 +440,7 @@ test("verify-only publication staging runs with only the copied qualification sc
       sourceCommit,
       selected.asset,
       archive,
-    ], { cwd: stage, encoding: "utf8" });
+    ], { maxBuffer: Infinity, cwd: stage, encoding: "utf8" });
     assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
   } finally {
     rmSync(stage, { recursive: true, force: true });

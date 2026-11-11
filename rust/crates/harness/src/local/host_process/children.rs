@@ -253,19 +253,28 @@ impl NativeChildren {
             _ownership: ownership,
             _root: root,
         };
-        let open = host_files::request(
-            &children.cwd,
-            HostAction::Sessions {
-                parent: children.parent.clone(),
-            },
-        )?;
-        let references: Vec<String> =
-            serde_json::from_value(open.get("references").cloned().unwrap_or_default())
-                .map_err(storage)?;
-        for reference in references {
-            // Settles the orphaned claim, then carries the next input.
-            let mut recovered = children.request(&reference, SessionAction::Recover {}, true)?;
-            children.launch(&reference, &mut recovered)?;
+        let mut after = None;
+        loop {
+            let page = host_files::request(
+                &children.cwd,
+                HostAction::Sessions {
+                    parent: children.parent.clone(),
+                    after,
+                    limit: 256,
+                },
+            )?;
+            let references: Vec<String> =
+                serde_json::from_value(page["references"].clone()).map_err(storage)?;
+            for reference in references {
+                // Settles the orphaned claim, then carries the next input.
+                let mut recovered =
+                    children.request(&reference, SessionAction::Recover {}, true)?;
+                children.launch(&reference, &mut recovered)?;
+            }
+            after = serde_json::from_value(page["next"].clone()).map_err(storage)?;
+            if after.is_none() {
+                break;
+            }
         }
         Ok(children)
     }

@@ -6,8 +6,8 @@
 //! their StreamProvider and immutable object store through the same boundary.
 
 use super::{
-    Authorities, BrowserHandler, Error, HISTORY_TURNS, TURN_BACKSTOP_MS, WasmAgentAuthority,
-    WasmAgentRegistry, WasmBrowserAgentOptions, agent_error, from_js, js_error, stream_error,
+    Authorities, BrowserHandler, Error, HISTORY_TURNS, WasmAgentAuthority, WasmAgentRegistry,
+    WasmBrowserAgentOptions, agent_error, from_js, js_error, stream_error,
 };
 use crate::{
     agent::{AgentHandler, ExecutorDriver, actor_store},
@@ -173,7 +173,7 @@ impl Providers {
             actor_store(&self.stream).map_err(agent_error)?,
             ExecutorDriver::new(turns),
             ActorLimits::new(
-                options.handler_timeout_ms.unwrap_or(TURN_BACKSTOP_MS),
+                options.handler_timeout_ms.unwrap_or_default(),
                 1 << 20,
                 1 << 16,
             )

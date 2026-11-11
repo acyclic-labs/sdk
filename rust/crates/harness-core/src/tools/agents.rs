@@ -113,6 +113,8 @@ pub struct WaitAgentInput {
 
 /// What one turn's agent tools act for.
 struct Turn {
+    spawned_children: u64,
+    spawning: futures::lock::Mutex<()>,
     agent: AgentPath,
     parent: Option<AgentPath>,
     children: crate::agent::Children,
@@ -171,6 +173,11 @@ impl AgentTool {
         }
         let key = call_key(&invocation, context.as_ref());
         let operation = crate::agent::operation_key(invocation.operation_id);
+        let _spawning = if self.name == "spawn" {
+            Some(turn.spawning.lock().await)
+        } else {
+            None
+        };
         let effect = match self.name {
             "spawn" => {
                 let input: SpawnAgentInput = match decode(invocation.arguments) {
@@ -190,6 +197,25 @@ impl AgentTool {
                         "this agent has no creation template to spawn from".into(),
                     )));
                 };
+                if let Some(limit) = parent
+                    .topology
+                    .as_ref()
+                    .and_then(|topology| topology.spawn_limit(turn.parent.is_none()))
+                {
+                    let mut pending = BTreeSet::new();
+                    for effect in turn.effects.recorded().await? {
+                        if let TurnEffect::Spawn { intent, .. } = effect {
+                            pending.insert(intent);
+                        }
+                    }
+                    if !pending.contains(&intent)
+                        && turn.spawned_children.saturating_add(pending.len() as u64) >= limit
+                    {
+                        return Ok(ToolResult {
+                            value: json!({"error": format!("tool execution failed: forced topology permits at most {limit} total spawns")}),
+                        });
+                    }
+                }
                 let peers = match peer_grants(&turn.agent, input.peers) {
                     Ok(peers) => peers,
                     Err(rejected) => return Ok(rejected),
@@ -790,6 +816,8 @@ pub fn bind_agent_tools(
     (names, templates): (&[String], Option<Arc<dyn SpawnTemplates>>),
 ) -> Result<()> {
     let turn = Arc::new(Turn {
+        spawned_children: agent.spawned_children.len() as u64,
+        spawning: futures::lock::Mutex::new(()),
         agent: agent.path.clone(),
         parent: agent.parent.clone(),
         children: agent.open_children.clone(),

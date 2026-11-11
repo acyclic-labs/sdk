@@ -65,7 +65,7 @@ impl ProposalCore {
         }
         let mut quote = self.quote.clone();
         quote.expected = anchor.head;
-        quote.commit.publication = Some(self.changes(anchor.head, self.request.generation_root)?);
+        quote.commit.publication = Some(self.changes(anchor, self.request.generation_root)?);
         let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let cost = authority
             .quote_group_append(&quote, self.growth, &mut work)
@@ -81,7 +81,7 @@ impl ProposalCore {
 
     fn changes(
         &self,
-        expected: Head,
+        anchor: Anchor,
         root: ObjectId,
     ) -> Result<crate::PublicationChanges, crate::FsError> {
         self.quote
@@ -89,7 +89,7 @@ impl ProposalCore {
             .publication
             .as_ref()
             .ok_or(crate::FsError::InvalidDiff)?
-            .composed(self.request.expected, expected, root)
+            .composed(self.request.expected, (anchor.head, anchor.base), root)
     }
 }
 
@@ -100,6 +100,6 @@ impl Ticket {
     ) -> Result<crate::PublicationChanges, crate::FsError> {
         self.proposal
             .core
-            .changes(self.proposal.admission()?.anchor.head, root)
+            .changes(self.proposal.admission()?.anchor, root)
     }
 }

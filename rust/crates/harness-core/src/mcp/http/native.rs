@@ -29,21 +29,21 @@ impl McpHttpProvider for NativeMcpHttpProvider {
         request: McpHttpRequest,
     ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
         Box::pin(async move {
-            if request.timeout_ms == 0 || request.maximum_response_bytes == 0 {
+            if request.timeout_ms == Some(0) || request.maximum_response_bytes == 0 {
                 return Err(Error::Invalid("HTTP exchange needs finite bounds".into()));
             }
             let method = reqwest::Method::from_bytes(request.method.as_bytes())
                 .map_err(|e| Error::Invalid(e.to_string()))?;
             let streaming = request.method == "GET";
             let mut builder = self.0.request(method, &request.endpoint).body(request.body);
-            if !streaming {
-                builder = builder.timeout(Duration::from_millis(u64::from(request.timeout_ms)));
+            if !streaming && let Some(timeout) = request.timeout_ms {
+                builder = builder.timeout(Duration::from_millis(timeout));
             }
             for (key, value) in request.headers {
                 builder = builder.header(key, value);
             }
-            let response = tokio::time::timeout(
-                Duration::from_millis(u64::from(request.timeout_ms)),
+            let response = super::super::deadline::until(
+                super::super::deadline::after(request.timeout_ms.map(Duration::from_millis))?,
                 builder.send(),
             )
             .await

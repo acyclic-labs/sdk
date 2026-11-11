@@ -38,6 +38,30 @@ fn exchange(error: impl std::fmt::Display) -> Error {
 }
 
 impl Connection {
+    /// Refuses an existing owner or selected session whose immutable policy
+    /// differs from the run requested by this client, before any model work.
+    pub async fn require_topology(&self, expected: &crate::topology::Topology) -> Result<()> {
+        match self
+            .execute(&AgentCommand::Settlement {
+                agent: self.root.clone(),
+                wait: false,
+            })
+            .await?
+        {
+            AgentReply::Settlement {
+                topology: Some(actual),
+                ..
+            } if &actual == expected => Ok(()),
+            AgentReply::Settlement { .. } => Err(Error::Invalid(
+                "selected agent has another topology; start with a fresh --host-state-directory"
+                    .into(),
+            )),
+            _ => Err(Error::Storage(
+                "topology query returned another reply".into(),
+            )),
+        }
+    }
+
     /// An `unavailable` reply names no cause: the in-process owner adds the
     /// one it retained, its stream's poison or else the Actors runtime failure
     /// that closed the session's lifetime.

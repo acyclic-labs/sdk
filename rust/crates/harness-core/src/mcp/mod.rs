@@ -8,6 +8,11 @@ mod catalog;
 pub(crate) mod config;
 #[cfg(all(
     not(target_arch = "wasm32"),
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
+mod deadline;
+#[cfg(all(
+    not(target_arch = "wasm32"),
     any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
 ))]
 pub use config::{McpConfig, McpServer, McpTransport};

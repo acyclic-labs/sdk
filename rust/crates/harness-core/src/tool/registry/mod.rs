@@ -190,6 +190,8 @@ impl ToolRegistry {
     }
 
     /// Resolve the current live selection, retaining its executor through a call.
+    /// An explicit revision must still be selected; retained revisions remain
+    /// available through `get` and recovery without authorizing fresh calls.
     pub fn resolve(
         &self,
         name: &str,
@@ -202,7 +204,17 @@ impl ToolRegistry {
                 return Ok(Some(tool));
             }
         }
-        Ok(self.get_shared(name, None, io)?.cloned())
+        Ok(self
+            .get_shared(name, None, io)?
+            .filter(|tool| {
+                matches!(
+                    self.data.selected.get(&tool.definition.name),
+                    Some(ModelSelection::Revision(revision)
+                        | ModelSelection::Native { revision: Some(revision), .. })
+                        if revision == &tool.definition.revision
+                )
+            })
+            .cloned())
     }
 
     pub(crate) fn has_sources(&self) -> bool {

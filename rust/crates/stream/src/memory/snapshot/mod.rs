@@ -348,6 +348,14 @@ fn reconstruct(
             .paths(
                 &state,
                 envelope.mutations.iter().map(crate::request::fact_path),
+                |prefix| {
+                    envelope
+                        .mutations
+                        .binary_search_by(|mutation| {
+                            crate::request::fact_path(mutation).as_str().cmp(prefix)
+                        })
+                        .is_ok()
+                },
             )
             .ok()?;
         let namespace = stage_namespace(

@@ -537,7 +537,7 @@ pub(super) fn filter(network: &ExecutionNetwork) -> io::Result<&'static [Instruc
         static TCP: [Instruction; TCP_LEN] =
             compile_filter::<TCP_LEN>(FilterNetwork::Tcp).instructions;
         let code: &'static [Instruction] = match network {
-            ExecutionNetwork::Off => &OFF,
+            ExecutionNetwork::Off | ExecutionNetwork::Isolated => &OFF,
             ExecutionNetwork::On => &ON,
             ExecutionNetwork::TcpPorts(ports) if ports.is_empty() => &OFF,
             ExecutionNetwork::TcpPorts(_) => &TCP,

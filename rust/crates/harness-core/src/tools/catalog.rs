@@ -152,8 +152,8 @@ static FS: ToolSpec = ToolSpec {
 
 pub(crate) static READ: ToolSpec = ToolSpec {
     name: "read",
-    revision: "portable-12",
-    description: "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
+    revision: "portable-13",
+    description: "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
     hook_names: &["Read"],
     binding: ToolBinding::Volume,
     input: schema::input::<ReadFileInput>,

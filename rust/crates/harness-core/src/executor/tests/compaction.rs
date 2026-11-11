@@ -964,3 +964,100 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
     ));
     Ok(())
 }
+
+/// A completion-backed counter can refuse the original input before returning
+/// usage. The saved refusal must compact once and admit only the reduced input.
+#[tokio::test]
+async fn counting_context_refusal_compacts_and_replays_without_recounting() -> Result<()> {
+    for irreducible in [false, true] {
+        let counted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = counted.clone();
+        let provider = Arc::new(
+            ScriptedModelProvider::new([])
+                .with_context_capacity(crate::context::ModelContextCapacity {
+                    context_tokens: 65_536,
+                    output_tokens: Some(4096),
+                })
+                .with_token_counter(move |request| {
+                    seen.lock().unwrap().push(request.request_digest());
+                    if request.bytes().len() > 5_000 {
+                        return Err(Error::ModelContextOverflow);
+                    }
+                    fixture_token_count(request)
+                }),
+        );
+        let executor = StockExecutor::new(
+            Model::new("fixture".into(), "reported-usage".into(), "1".into())?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_compaction_policy(crate::context::CompactionPolicy::Capacity(
+            crate::context::CapacityCompaction::default(),
+        ));
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            max_steps: None,
+            input: ModelContent::Text(if irreducible {
+                "protected".repeat(2_000)
+            } else {
+                "question".into()
+            }),
+            selected_context: None,
+        };
+        let prior = vec![
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("old".repeat(10_000)),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("old answer".repeat(2_000)),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("recent answer".into()),
+            },
+        ];
+        let execution = StockExecution::ordinary(&executor);
+        execution.ensure_started(&journal, &input).await?;
+        let result = execution
+            .prepared_response(&journal, &input, 1, &prior, None)
+            .await;
+        if irreducible {
+            assert!(matches!(result, Err(Error::ModelContextOverflow)));
+            assert_eq!(
+                counted.lock().unwrap().len(),
+                2,
+                "an irreducible input must stop at the mandatory subset"
+            );
+        } else {
+            let prepared = result?;
+            assert!(prepared.bytes().len() < 5_000);
+            let before = counted.lock().unwrap().clone();
+            assert!(
+                before.len() >= 3,
+                "original refusal, mandatory proof, and reduced admission"
+            );
+            assert!(
+                before.iter().skip(1).all(|digest| *digest != before[0]),
+                "never retry the refused input"
+            );
+            let reopened = StockExecution::ordinary(&executor)
+                .prepared_response(&journal, &input, 1, &prior, None)
+                .await?;
+            assert_eq!(reopened.request_digest(), prepared.request_digest());
+            assert_eq!(
+                *counted.lock().unwrap(),
+                before,
+                "replay uses the retained verified count"
+            );
+        }
+        assert!(
+            provider.requests().is_empty(),
+            "admission never generates before a verified count"
+        );
+    }
+    Ok(())
+}

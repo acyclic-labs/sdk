@@ -1,0 +1,92 @@
+{
+  "id": "topology-single",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "prices.jsonl": "{\"version\":1,\"revision\":\"topology-e2e-v1\",\"provider\":\"e2e\",\"model\":\"tiny\",\"effective_at\":0,\"currency\":\"USD\",\"input_nano_units_per_million\":1000000000,\"output_nano_units_per_million\":2000000000,\"cached\":{\"kind\":\"included\"},\"cache_write\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"}}\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "SINGLE_TASK"
+        },
+        "tools": [
+          {
+            "id": "write-single",
+            "arguments": {
+              "path": "single.txt",
+              "content": "SINGLE_ARTIFACT\n"
+            },
+            "name": "write"
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "version",
+          "user": "SINGLE_TASK"
+        },
+        "text": [
+          "SINGLE_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "SINGLE_TASK",
+      "answer": "SINGLE_DONE",
+      "extra_args": [
+        "--topology",
+        "single",
+        "--transcripts",
+        "{{workspace}}/../native-traces",
+        "--usage-jsonl",
+        "{{workspace}}/../usage.jsonl",
+        "--prices",
+        "{{workspace}}/prices.jsonl"
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "model_tools": [
+      {
+        "step": 0,
+        "absent": [
+          "spawn"
+        ],
+        "present": [
+          "write"
+        ]
+      },
+      {
+        "absent": [
+          "spawn"
+        ],
+        "step": 1
+      }
+    ],
+    "model_contains": [
+      "Forced topology: single."
+    ],
+    "trace": {
+      "topology": {
+        "version": 1,
+        "mode": "single"
+      },
+      "usage": "../usage.jsonl",
+      "directory": "../native-traces",
+      "agents": 1,
+      "price_revision": "topology-e2e-v1"
+    },
+    "files": {
+      "single.txt": "SINGLE_ARTIFACT\n"
+    }
+  },
+  "physical": true,
+  "adapter": "responses"
+}

@@ -127,9 +127,8 @@ nextest() {
   return "$status"
 }
 
-# Independent builds run beside the main test build in their own target
-# directories so Cargo's build lock never serializes them; the shared compiler
-# cache still deduplicates identical crates across them.
+# Run independent commands concurrently. Cargo serializes builds that share
+# the configured target directory; finish joins each child and reports its log.
 background() {
   local name="$1"
   shift
@@ -153,16 +152,15 @@ finish() {
   return "$result"
 }
 native_binding() {
-  CARGO_TARGET_DIR="$target_dir-napi" cargo build -p acyclic-fs-napi --locked
-  CARGO_TARGET_DIR="$target_dir-napi" \
-    bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
+  cargo build -p acyclic-fs-napi --locked
+  bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
 }
 stream_binding() {
   local target directory="$SDK_ARTIFACT_DIR/packages/stream-native"
   target="$(rustc --version --verbose | sed -n 's/^host: //p')"
   node scripts/build-stream-native.mjs build --target "$target" \
-    --output "$directory/bundle" --target-dir "$target_dir-stream-native"
-  cp "$target_dir-stream-native/stream-native-build-inputs.receipt.json" "$directory/producer-receipt.json"
+    --output "$directory/bundle" --target-dir "$target_dir"
+  cp "$target_dir/stream-native-build-inputs.receipt.json" "$directory/producer-receipt.json"
 }
 client_bindings() {
   local target family bundle
@@ -170,8 +168,8 @@ client_bindings() {
   for family in actors; do
     bundle="$SDK_ARTIFACT_DIR/packages/$family-native/bundle"
     node "scripts/build-$family-native.mjs" build --target "$target" \
-      --output "$bundle" --target-dir "$target_dir-$family-native"
-    cp "$target_dir-$family-native/$family-native-build-inputs.receipt.json" "$(dirname "$bundle")/producer-receipt.json"
+      --output "$bundle" --target-dir "$target_dir"
+    cp "$target_dir/$family-native-build-inputs.receipt.json" "$(dirname "$bundle")/producer-receipt.json"
     node "scripts/build-$family-native.mjs" stage --bundle "$bundle"
   done
   # The live TLS fixture invokes this helper inside Bun's short test deadline.
@@ -626,7 +624,7 @@ case "$lane" in
     }
     CARGO_BUILD_JOBS=2 background napi native_binding
     CARGO_BUILD_JOBS=1 background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
-      --target x86_64-apple-darwin --locked --target-dir "$target_dir-x86_64"
+      --target x86_64-apple-darwin --locked --target-dir "$target_dir"
     trap 'status=$?; finish_macos "$status" || status=$?; exit "$status"' EXIT
     CARGO_BUILD_JOBS=8 sdk_workspace nextest --all-features --locked
     CARGO_BUILD_JOBS=8 sdk_workspace cargo test --all-features --locked --doc

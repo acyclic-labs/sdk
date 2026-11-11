@@ -34,10 +34,10 @@ function scan(t, files, untracked = {}) {
   };
   write({ "scripts/check-boundaries.mjs": checker,
     "scripts/wasm-source-policy.mjs": readFileSync(join(root, "scripts/wasm-source-policy.mjs")), ...files });
-  execFileSync("git", ["init", "--quiet", directory]);
-  execFileSync("git", ["add", "."], { cwd: directory });
+  execFileSync("git", ["init", "--quiet", directory], { maxBuffer: Infinity });
+  execFileSync("git", ["add", "."], { maxBuffer: Infinity, cwd: directory });
   write(untracked);
-  return spawnSync(process.execPath, ["scripts/check-boundaries.mjs"], { cwd: directory, encoding: "utf8" });
+  return spawnSync(process.execPath, ["scripts/check-boundaries.mjs"], { maxBuffer: Infinity, cwd: directory, encoding: "utf8" });
 }
 
 test("tracked public types and recorded fake-server fixtures pass on LF and CRLF checkouts", t => {

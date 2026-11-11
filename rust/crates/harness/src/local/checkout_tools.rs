@@ -159,6 +159,32 @@ impl CheckoutTools {
             })
         })
     }
+
+    /// Publishes a freshly imported source's baseline before any command, so
+    /// the source is readable from the first turn, not only after the first
+    /// shell. Every later capture finds the baseline already recorded.
+    pub(super) async fn publish_baseline(&self) -> Result<()> {
+        if !(self.workspace.fresh && self.workspace.import_source) {
+            return Ok(());
+        }
+        serialized(&self.state, async |mut state| {
+            let State {
+                active, watcher, ..
+            } = &mut *state;
+            let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+            // A certified import commits under the baseline's own operation;
+            // an uncertified one is an ordinary capture, retried by the next.
+            self.capture(
+                (&self.workspace, view),
+                watcher,
+                crate::OperationId::new(),
+                0,
+                PublicationPermit::Unrestricted,
+            )?
+            .await
+        })
+        .await
+    }
 }
 
 struct PreparedCommand {

@@ -9,6 +9,11 @@ mod continuation;
 mod encoding;
 pub use encoding::InputAnchor;
 
+struct BoundTool<'a> {
+    definition: &'a crate::tool::ToolDefinition,
+    native: bool,
+}
+
 /// Complete immutable provider-neutral model request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -98,15 +103,23 @@ impl ModelRequest {
         }
         let mut remaining = limits.render_bytes;
         reserve_instruction_bodies(&self.messages, &mut remaining, io)?;
-        Self::validate_messages(&mut self.messages, &self.tools, limits, io, |tool| {
-            with_history_io(io, |work| tool.validate(work))
-        })?;
+        Self::validate_messages(
+            &mut self.messages,
+            &self.tools,
+            self.compose_tools,
+            false,
+            limits,
+            io,
+            |tool| with_history_io(io, |work| tool.validate(work)),
+        )?;
         Ok(remaining)
     }
 
     fn validate_messages(
         messages: &mut [ModelMessage],
         definitions: &[crate::tool::ToolDefinition],
+        compose_tools: bool,
+        retained_environment: bool,
         limits: Limits,
         io: Option<&PreparationIo>,
         validate_declaration: impl Fn(&crate::tool::ToolDefinition) -> Result<()>,
@@ -121,7 +134,7 @@ impl ModelRequest {
                     .ok_or_else(|| Error::Invalid("model validation slot count overflow".into()))?;
             }
             let bytes = (definitions.len() as u64)
-                .checked_mul(size_of::<(&str, &crate::tool::ToolDefinition)>() as u64)
+                .checked_mul(size_of::<(&str, BoundTool<'_>)>() as u64)
                 .and_then(|tools| {
                     calls
                         .checked_mul(size_of::<(&String, PendingCall<'_>)>() as u64)
@@ -136,7 +149,17 @@ impl ModelRequest {
         for tool in definitions {
             charge_items(io, 1)?;
             validate_declaration(tool)?;
-            if tools.insert(tool.name.as_str(), tool).is_some() {
+            if tools
+                .insert(
+                    tool.name.as_str(),
+                    BoundTool {
+                        definition: tool,
+                        native: !compose_tools
+                            || crate::tools::catalog::is_native_declaration(&tool.name),
+                    },
+                )
+                .is_some()
+            {
                 return Err(Error::Invalid("model tool definition is repeated".into()));
             }
         }
@@ -144,20 +167,36 @@ impl ModelRequest {
         // Each notice table supplies the schemas in force at its original
         // position. Revoking a tool cannot invalidate its earlier results.
         let mut tables = Vec::new();
-        let mut fragments = String::new();
+        let mut native_fragments = String::new();
+        let mut dynamic_fragments = String::new();
+        let mut native_open = false;
+        let mut dynamic_open = false;
         for (index, message) in messages.iter().enumerate() {
             if let Some((notices, _)) = message.content.notice_parts() {
-                for notice in notices
-                    .iter()
-                    .filter(|notice| notice.kind == "tools.changed" && notice.source == "tools")
-                {
+                for notice in notices.iter().filter(|notice| {
+                    matches!(notice.kind.as_str(), "tools.changed" | "tools.bound")
+                        && notice.source == "tools"
+                }) {
+                    let (fragments, open) = if notice.kind == "tools.bound" {
+                        (&mut native_fragments, &mut native_open)
+                    } else {
+                        (&mut dynamic_fragments, &mut dynamic_open)
+                    };
                     let offset = notice
                         .body
                         .get("offset")
                         .and_then(Value::as_u64)
                         .ok_or_else(|| Error::Invalid("tool notice lacks offset".into()))?;
                     if offset == 0 {
+                        if *open {
+                            return Err(Error::Invalid("tool notice table is incomplete".into()));
+                        }
                         fragments.clear();
+                        *open = true;
+                    } else if !*open {
+                        return Err(Error::Invalid(
+                            "tool notice continuation has no start".into(),
+                        ));
                     }
                     if offset != fragments.len() as u64 {
                         return Err(Error::Invalid(
@@ -170,13 +209,14 @@ impl ModelRequest {
                         .and_then(Value::as_str)
                         .ok_or_else(|| Error::Invalid("tool notice lacks schemas".into()))?;
                     crate::executor::stock_string_push(
-                        &mut fragments,
+                        fragments,
                         fragment,
                         u64::MAX,
                         "tool notice schema size overflows",
                         io,
                     )?;
                     if notice.body.get("complete").and_then(Value::as_bool) == Some(true) {
+                        *open = false;
                         #[cfg(feature = "filesystem")]
                         let funded = io
                             .map(|io| {
@@ -200,21 +240,74 @@ impl ModelRequest {
                                 let _ = hold;
                                 table
                             }
-                            None => serde_json::from_str(&fragments).map_err(|_| {
+                            None => serde_json::from_str(fragments).map_err(|_| {
                                 Error::Invalid("tool notice schemas are invalid".into())
                             })?,
                         };
-                        crate::executor::stock_vec_push(&mut tables, (index, table), io)?;
+                        crate::executor::stock_vec_push(
+                            &mut tables,
+                            (index, notice.kind == "tools.bound", table),
+                            io,
+                        )?;
                     }
                 }
             }
         }
+        if native_open || dynamic_open {
+            return Err(Error::Invalid("tool notice table is incomplete".into()));
+        }
+        #[cfg(feature = "filesystem")]
+        let _historical_bindings = if let Some(io) = io {
+            // A parent's header can contain more bindings than this worker's.
+            // Fund the largest pair of retained tables, not their history sum.
+            let native = tables
+                .iter()
+                .filter(|(_, native, _)| *native)
+                .map(|(_, _, table)| table.len())
+                .max()
+                .unwrap_or(0);
+            let dynamic = tables
+                .iter()
+                .filter(|(_, native, _)| !*native)
+                .map(|(_, _, table)| table.len())
+                .max()
+                .unwrap_or(0);
+            let additional = native
+                .saturating_add(dynamic)
+                .saturating_sub(definitions.len());
+            let bytes = (additional as u64)
+                .checked_mul(size_of::<(&str, BoundTool<'_>)>() as u64)
+                .ok_or_else(|| {
+                    Error::Invalid("historical tool binding ownership overflow".into())
+                })?;
+            Some(io.reserve_decode(bytes)?)
+        } else {
+            None
+        };
+        let mut original = true;
+        let mut dynamic_announced = retained_environment;
         for (index, message) in messages.iter_mut().enumerate() {
-            if let Some((_, table)) = tables.iter().find(|(at, _)| *at == index) {
-                tools.retain(|name, _| crate::tools::catalog::is_native_declaration(name));
+            for (_, native, table) in tables.iter().filter(|(at, _, _)| *at == index) {
+                if *native {
+                    if original && !dynamic_announced {
+                        tools.clear();
+                    } else {
+                        tools.retain(|_, binding| !binding.native);
+                    }
+                    original = false;
+                } else {
+                    dynamic_announced = true;
+                    tools.retain(|_, binding| binding.native);
+                }
                 for tool in table {
                     validate_declaration(tool)?;
-                    tools.insert(tool.name.as_str(), tool);
+                    tools.insert(
+                        tool.name.as_str(),
+                        BoundTool {
+                            definition: tool,
+                            native: *native,
+                        },
+                    );
                 }
             }
             charge_items(io, 1)?;
@@ -298,21 +391,21 @@ impl ModelRequest {
     }
     fn bound_tool<'a>(
         name: &str,
-        tools: &BTreeMap<&str, &'a crate::tool::ToolDefinition>,
+        tools: &BTreeMap<&str, BoundTool<'a>>,
     ) -> Option<&'a crate::tool::ToolDefinition> {
         match name.rsplit_once('@') {
             Some((name, revision)) => tools
                 .get(name)
-                .copied()
+                .map(|binding| binding.definition)
                 .filter(|tool| tool.revision == revision),
-            None => tools.get(name).copied(),
+            None => tools.get(name).map(|binding| binding.definition),
         }
     }
     fn validate_part<'a>(
         role: ModelRole,
         part: &'a mut ModelContentPart,
         standalone: bool,
-        tools: &BTreeMap<&str, &crate::tool::ToolDefinition>,
+        tools: &BTreeMap<&str, BoundTool<'_>>,
         pending: &mut BTreeMap<&'a String, PendingCall<'a>>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {

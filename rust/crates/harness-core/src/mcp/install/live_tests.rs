@@ -2,7 +2,7 @@ use super::tests::{advertised, server};
 use super::*;
 use crate::{
     context::{CompactionPolicy, ContextPipeline, ModelTokenCount},
-    executor::{Executor as _, StockExecutor, TurnInput},
+    executor::{ExecutionJournal, Executor as _, StockExecutor, TurnInput},
     model::{Model, ModelContent, ModelContentPart, ModelEvent, ModelRole, ToolCall},
     runtime::{RuntimeScope, ToolPolicyDecision},
     test_support::{FixedToolPolicy, ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
@@ -224,14 +224,30 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
         RuntimeScope::new(grants.clone(), crate::conversation::Limits::default())?,
         Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
     )?;
-    let journal = crate::executor::tests::Journal::default();
+    let journal = Arc::new(crate::executor::tests::Journal::default());
+    let manifest = crate::context::ContextManifest {
+        tools: tools.definitions(None)?,
+        ..Default::default()
+    };
+    let bytes = manifest.encode(Default::default())?;
+    let manifest = journal
+        .stage(
+            crate::OperationId::new(),
+            "epoch-manifest",
+            &bytes,
+            "application/json",
+            None,
+        )?
+        .await?;
+    let epoch = crate::context::ContextEpoch::from_manifest(manifest);
+    let executor = executor.with_context_epoch(&epoch, journal.clone()).await?;
     let input = TurnInput {
         max_steps: None,
         operation_id: crate::OperationId::new(),
         input: ModelContent::Text("go".into()),
         selected_context: None,
     };
-    let output = executor.execute(input.clone(), &journal).await?;
+    let output = executor.execute(input.clone(), journal.as_ref()).await?;
     let requests = model.requests();
     assert_eq!(requests.len(), 3);
     let prefix = |request: &crate::model::ModelRequest| {
@@ -298,7 +314,10 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
     let mut old_next = requests[1].clone();
     old_next.compose_tools = false;
     assert_ne!(prefix(&old_first), prefix(&old_next));
-    assert_eq!(executor.execute(input.clone(), &journal).await?, output);
+    assert_eq!(
+        executor.execute(input.clone(), journal.as_ref()).await?,
+        output
+    );
     let mut detached = tools.clone();
     detached.retain_sources(|_| false);
     let detached = StockExecutor::new(
@@ -311,9 +330,11 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
     .with_tool_authority(
         RuntimeScope::new(grants.clone(), crate::conversation::Limits::default())?,
         Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
-    )?;
+    )?
+    .with_context_epoch(&epoch, journal.clone())
+    .await?;
     assert_eq!(
-        detached.execute(input.clone(), &journal).await?,
+        detached.execute(input.clone(), journal.as_ref()).await?,
         output,
         "uninstalling a source cannot invalidate its committed results"
     );
@@ -336,7 +357,9 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
     .with_tool_authority(
         RuntimeScope::new(grants, crate::conversation::Limits::default())?,
         Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
-    )?;
+    )?
+    .with_context_epoch(&epoch, journal.clone())
+    .await?;
     recovery.execute(input, &pending).await?;
     assert_eq!(
         remote.reconciles.load(Ordering::SeqCst),
@@ -505,7 +528,7 @@ async fn live_refresh_deadline_retains_optional_catalog_and_releases_the_refresh
             json!({"command":"fake","required":required}),
             super::super::config::Dialect::Codex,
         )?;
-        config.startup_timeout_ms = 1;
+        config.startup_timeout_ms = Some(1);
         let (tools, _) = live::LiveCatalog::new(
             "deadline".into(),
             config,

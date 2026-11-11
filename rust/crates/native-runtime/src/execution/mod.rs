@@ -12,14 +12,13 @@ use std::{
     sync::Arc,
 };
 
+mod defaults;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
 pub(crate) mod windows;
-#[cfg(windows)]
-pub use windows::ambient_read_roots;
 
 /// Filesystem authority of an execution, including all its descendants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +35,10 @@ pub enum ExecutionAccess {
 pub enum ExecutionNetwork {
     /// No sockets, including local IPC sockets, can be created or connected.
     Off,
+    /// No network traffic may cross the execution boundary. Communication
+    /// between confined descendants may remain available. Unlike `Off`, this
+    /// does not promise to prohibit socket creation inside that boundary.
+    Isolated,
     /// Ordinary networking, subject to inherited host restrictions.
     On,
     /// Outbound TCP connections to these destination ports only. No listening,
@@ -47,6 +50,8 @@ impl ExecutionNetwork {
     fn permits(&self, requested: &Self) -> bool {
         match (self, requested) {
             (Self::On, _) | (_, Self::Off) => true,
+            (Self::Isolated, Self::Isolated) => true,
+            (Self::Isolated, Self::TcpPorts(ports)) => ports.is_empty(),
             (Self::Off, Self::TcpPorts(ports)) => ports.is_empty(),
             (Self::TcpPorts(ceiling), Self::TcpPorts(ports)) => ports.is_subset(ceiling),
             _ => false,
@@ -94,12 +99,44 @@ struct Grant {
     workspace_write: bool,
     write: acyclic_collections::CompiledPrefixIndex<BoundPath, ()>,
     read: acyclic_collections::CompiledPrefixIndex<BoundPath, ()>,
+    #[cfg(target_os = "macos")]
+    navigation: BTreeSet<PathBuf>,
+    #[cfg(target_os = "macos")]
+    lookup_metadata: BTreeSet<PathBuf>,
     network: ExecutionNetwork,
     #[cfg(target_os = "linux")]
     filter: &'static [linux::Instruction],
 }
 
 impl Grant {
+    #[cfg(target_os = "macos")]
+    fn permits_lookup_metadata(
+        &self,
+        path: &Path,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<bool> {
+        if let Some(meter) = meter {
+            meter.examine(1, 0)?;
+        }
+        if self.navigation.contains(path) || self.lookup_metadata.contains(path) {
+            return Ok(true);
+        }
+        if path.starts_with(&self.workspace.path) {
+            drop(self.workspace.bind_controlled(meter)?);
+            return Ok(true);
+        }
+        for index in [&self.write, &self.read] {
+            let roots = Self::roots(index, path, meter)?;
+            if let Some(root) = roots.exact.or(roots.shortest)
+                && (root.entry.is_dir || root.entry.path == path)
+            {
+                drop(root.entry.bind_controlled(meter)?);
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn contains(
         &self,
         requested: &BoundPath,
@@ -220,6 +257,9 @@ impl acyclic_collections::IndexWork for RootIndexBuild {
 #[derive(Debug)]
 struct BoundPath {
     path: PathBuf,
+    // Lookup aliases are metadata authority, not additional content roots.
+    #[cfg(target_os = "macos")]
+    aliases: Vec<PathBuf>,
     is_dir: bool,
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     identity: crate::FileIdentity,
@@ -233,7 +273,22 @@ impl BoundPath {
         if !path.is_absolute() {
             return Err(refused("execution grant paths must be absolute"));
         }
-        let path = std::fs::canonicalize(path).map_err(failure)?;
+        let canonical = std::fs::canonicalize(path).map_err(failure)?;
+        #[cfg(target_os = "macos")]
+        if path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+        {
+            return Err(refused(
+                "execution lookup paths must not contain parent components",
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        let aliases = (path != canonical.as_path())
+            .then(|| path.to_path_buf())
+            .into_iter()
+            .collect();
+        let path = canonical;
         let object = Self::open_path(&path)?;
         let metadata = object.metadata().map_err(failure)?;
         #[cfg(any(target_os = "linux", target_vendor = "apple"))]
@@ -242,6 +297,8 @@ impl BoundPath {
         let identity = crate::file_identity(&object).map_err(failure)?;
         Ok(Self {
             path,
+            #[cfg(target_os = "macos")]
+            aliases,
             is_dir: metadata.is_dir(),
             #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
             identity,
@@ -370,7 +427,14 @@ fn bind_roots(
     roots.sort_unstable_by(|left, right| {
         AsRef::<[u8]>::as_ref(left).cmp(AsRef::<[u8]>::as_ref(right))
     });
-    roots.dedup_by(|left, right| left.path == right.path);
+    roots.dedup_by(|left, right| {
+        if left.path != right.path {
+            return false;
+        }
+        #[cfg(target_os = "macos")]
+        right.aliases.append(&mut left.aliases);
+        true
+    });
     acyclic_collections::CompiledPrefixIndex::from_sorted(roots, &mut RootIndexBuild).map_err(
         |error| {
             use acyclic_collections::CompiledPrefixError;
@@ -388,6 +452,25 @@ fn bind_roots(
 }
 
 impl ExecutionGrant {
+    /// The default workspace boundary: only the composed paths and native
+    /// runtime dependencies are readable, and network traffic cannot cross
+    /// the execution boundary. Explicit authenticated grants can select
+    /// additional filesystem or network authority through `composed`.
+    pub fn workspace_default(
+        workspace: &Path,
+        access: ExecutionAccess,
+        write: impl IntoIterator<Item = PathBuf>,
+        read: impl IntoIterator<Item = PathBuf>,
+    ) -> io::Result<Self> {
+        Self::composed(
+            workspace,
+            access,
+            write,
+            defaults::runtime_read_roots()?.into_iter().chain(read),
+            ExecutionNetwork::Isolated,
+        )
+    }
+
     /// Binds existing, absolute workspace and read-only roots. Symlinks are
     /// resolved here; the adapter binds native objects again at active launch.
     /// No ambient home, temporary directory or filesystem root is added.
@@ -429,6 +512,26 @@ impl ExecutionGrant {
         }
         let write = bind_roots(write)?;
         let read = bind_roots(read)?;
+        #[cfg(target_os = "macos")]
+        let roots = || {
+            std::iter::once(&workspace)
+                .chain(write.entries())
+                .chain(read.entries())
+        };
+        // Exact directory objects support dyld's openat bootstrap. Alias
+        // metadata supports lookup only; neither set grants sibling contents.
+        // Derive both here so native lowering and attenuation share one policy.
+        #[cfg(target_os = "macos")]
+        let navigation = roots()
+            .flat_map(|root| root.path.ancestors().skip(1))
+            .map(Path::to_path_buf)
+            .collect();
+        #[cfg(target_os = "macos")]
+        let lookup_metadata = roots()
+            .flat_map(|root| &root.aliases)
+            .flat_map(|alias| alias.ancestors())
+            .map(Path::to_path_buf)
+            .collect();
         let workspace_write = access == ExecutionAccess::WorkspaceWrite;
         let access = if workspace_write || !write.entries().is_empty() {
             ExecutionAccess::WorkspaceWrite
@@ -443,6 +546,10 @@ impl ExecutionGrant {
                 workspace_write,
                 write,
                 read,
+                #[cfg(target_os = "macos")]
+                navigation,
+                #[cfg(target_os = "macos")]
+                lookup_metadata,
                 network,
                 #[cfg(target_os = "linux")]
                 filter,
@@ -625,6 +732,14 @@ impl ExecutionGrant {
                 if !self.policy.contains(path, writable, meter)? {
                     return Err(refused("execution grant exceeds its authority ceiling"));
                 }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        for path in &requested.policy.lookup_metadata {
+            if !self.policy.permits_lookup_metadata(path, meter)? {
+                return Err(refused(
+                    "execution grant exceeds its lookup metadata ceiling",
+                ));
             }
         }
         Ok(())

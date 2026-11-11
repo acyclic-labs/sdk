@@ -43,7 +43,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
     GIT_CONFIG_KEY_1: "protocol.http.allow", GIT_CONFIG_VALUE_1: "never",
     GIT_CONFIG_KEY_2: "protocol.https.allow", GIT_CONFIG_VALUE_2: "never",
   });
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 45 * 60_000, maxBuffer: 16 * 1024 * 1024 });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 45 * 60_000, maxBuffer: Infinity });
   const git = (root, argv) => {
     const result = execute(inputs.git, ["-C", root, ...argv], directory);
     if (result.error || result.status !== 0) throw new Error("Git source verification failed: " + (result.stderr ?? ""));

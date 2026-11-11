@@ -740,9 +740,21 @@ where
                     }
                 }
                 let state = agents.state(agent).await?;
+                let profile = state.profile.as_ref();
                 Ok(AgentReply::Settlement {
                     settled: state.conversation_tail,
                     statuses: state.status_tail,
+                    role: profile
+                        .and_then(|profile| match &profile.template {
+                            None => Some("orchestrator"),
+                            Some(file) => file
+                                .path()
+                                .strip_prefix("templates/")
+                                .and_then(|path| path.strip_suffix("/AGENT.md")),
+                        })
+                        .map(str::to_owned),
+                    model: profile.and_then(|profile| profile.model.clone()),
+                    topology: profile.and_then(|profile| profile.topology.clone()),
                     phase: state.phase,
                 })
             }

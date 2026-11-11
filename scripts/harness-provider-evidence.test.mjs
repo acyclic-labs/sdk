@@ -200,7 +200,7 @@ test("runner rejects stale source and substituted package inputs before qualific
   const root = mkdtempSync(join(tmpdir(), "sdk-conformance-provenance-"));
   try {
     const git = (args, cwd = root) => {
-      const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+      const result = spawnSync("git", args, { maxBuffer: Infinity, cwd, encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr);
       return result.stdout.trim();
     };
@@ -237,7 +237,7 @@ test("runner rejects stale source and substituted package inputs before qualific
     const report = join(directory, "runner-report.json");
     const receipt = join(directory, "qualification-receipt.json");
     const reject = pattern => {
-      const result = spawnSync(process.execPath, [join(root, "scripts/run-harness-conformance.mjs"), directory, report, receipt], { cwd: launcher, encoding: "utf8" });
+      const result = spawnSync(process.execPath, [join(root, "scripts/run-harness-conformance.mjs"), directory, report, receipt], { maxBuffer: Infinity, cwd: launcher, encoding: "utf8" });
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, pattern);
       assert.equal(existsSync(report), false);

@@ -56,7 +56,7 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
     .await?;
     let publication = crate::PublicationChanges::proposed(
         fs.objects(),
-        &retained_root.0,
+        (&retained_root.0, generation.object_id()),
         &retained_root.0,
         crate::kernel::PublishGenerationRequest {
             authority_id: authority,
@@ -87,7 +87,7 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
         if history != 0 {
             let mut work = AuthorityWork::new(BUDGET, &cancel);
             let mut publication = publication.clone();
-            publication.compose_base(original_head, head)?;
+            publication.compose_base(original_head, (head, generation.object_id()))?;
             let outcome = store
                 .compare_and_append(
                     crate::GuardedAppend {

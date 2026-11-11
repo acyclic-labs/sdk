@@ -275,6 +275,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             .archive_pending
             .bind(Arc::clone(self.store.provider()));
         observed.awaiting.bind(Arc::clone(self.store.provider()));
+        observed
+            .topology_refusals
+            .bind(Arc::clone(self.store.provider()));
+        observed
+            .spawned_children
+            .bind(Arc::clone(self.store.provider()));
         Ok((observed, cursor))
     }
 
@@ -396,6 +402,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 .bind(Arc::clone(self.agents.store.provider()));
             state
                 .awaiting
+                .bind(Arc::clone(self.agents.store.provider()));
+            state
+                .topology_refusals
+                .bind(Arc::clone(self.agents.store.provider()));
+            state
+                .spawned_children
                 .bind(Arc::clone(self.agents.store.provider()));
         }
         let mut prepared = if let Some(failure) = failure {

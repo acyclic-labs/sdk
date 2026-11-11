@@ -97,9 +97,21 @@ impl StockExecution<'_> {
     ) -> Result<ContextAccounting> {
         let capacity = self.model_capacity()?;
         let ceiling = self.input_ceiling(capacity)?;
-        let count =
-            stock_count_tokens(self.stock.provider.as_ref(), prepared, ceiling, self.io).await?;
-        with_history_io(self.io, |work| count.validate(prepared, work))?;
+        let count = match stock_count_tokens(
+            self.stock.provider.as_ref(),
+            prepared,
+            ceiling,
+            self.io,
+        )
+        .await
+        {
+            Ok(count) => {
+                with_history_io(self.io, |work| count.validate(prepared, work))?;
+                Some(count)
+            }
+            Err(Error::ModelContextOverflow) if !self.single_request => None,
+            Err(error) => return Err(error),
+        };
         Ok(ContextAccounting { capacity, count })
     }
 

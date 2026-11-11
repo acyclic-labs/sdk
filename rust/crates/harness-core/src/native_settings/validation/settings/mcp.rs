@@ -71,7 +71,7 @@ pub(super) fn check(bytes: &[u8]) {
             let (_, server) = snapshot.mcp.servers().next().unwrap();
             assert_eq!(
                 (server.startup_timeout_ms, server.tool_timeout_ms),
-                (1500, 2000)
+                (Some(1500), Some(2000))
             );
             assert_eq!(
                 server.enabled_tools.as_deref(),
@@ -113,7 +113,7 @@ pub(super) fn check(bytes: &[u8]) {
                 let (_, server) = snapshot.mcp.servers().next().unwrap();
                 assert_eq!(
                     (server.startup_timeout_ms, server.tool_timeout_ms),
-                    (10_000, 60_000)
+                    (None, None)
                 );
                 let McpTransport::Http {
                     url,

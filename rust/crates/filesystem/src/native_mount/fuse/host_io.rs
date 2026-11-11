@@ -15,7 +15,9 @@ pub(super) struct Connection(File);
 impl Connection {
     /// Acquires abort authority after INIT has been answered. DONT_SYNC alone
     /// does not make a pre-INIT lookup safe in container mount adapters.
-    pub(super) fn of(mountpoint: &std::path::Path) -> Result<Self, super::NativeMountError> {
+    pub(super) fn of(
+        mountpoint: &std::path::Path,
+    ) -> Result<Option<Self>, super::NativeMountError> {
         let metadata = rustix::fs::statx(
             rustix::fs::CWD,
             mountpoint,
@@ -29,18 +31,29 @@ impl Connection {
                 error.into(),
             )
         })?;
-        // Acquire teardown authority before accepting the mount. Retaining the
-        // control also survives fusectl becoming inaccessible during service.
+        // fusectl is an optional cleanup aid: containers can admit FUSE mounts
+        // without exposing its control filesystem. Retain it when available.
         let device = (u64::from(metadata.stx_dev_major) << 20) | u64::from(metadata.stx_dev_minor);
         let path = std::path::PathBuf::from(format!("/sys/fs/fuse/connections/{device}/abort"));
-        Ok(Self(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(&path)
-                .map_err(|error| {
-                    super::NativeMountError::host_operation("open FUSE abort control", &path, error)
-                })?,
-        ))
+        match std::fs::OpenOptions::new().write(true).open(&path) {
+            Ok(control) => Ok(Some(Self(control))),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::PermissionDenied
+                        | io::ErrorKind::ReadOnlyFilesystem
+                ) =>
+            {
+                tracing::debug!(%error, path = %path.display(), "FUSE abort control unavailable; device closure owns disconnect");
+                Ok(None)
+            }
+            Err(error) => Err(super::NativeMountError::host_operation(
+                "open FUSE abort control",
+                &path,
+                error,
+            )),
+        }
     }
 
     /// Fails every pending and later request on the connection. Calls into a

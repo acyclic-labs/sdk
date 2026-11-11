@@ -609,6 +609,7 @@ impl Conversation {
                 settled,
                 statuses,
                 phase,
+                ..
             } => Ok((settled, statuses, phase)),
             _ => Err(unexpected()),
         }

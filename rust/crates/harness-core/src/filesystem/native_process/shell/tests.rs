@@ -121,8 +121,8 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
             crate::tools::ShellCommand::Source(
                 r#"printf inside > inside; printf volume > .volumes/data/written;
              printf temp > "$TMPDIR/tempfile";
-             test "$(/bin/cat "$OUTSIDE")" = original || exit 13;
-             /bin/cat /proc/self/environ >/dev/null 2>&1 || exit 14;
+             /bin/cat "$OUTSIDE" >/dev/null 2>&1 && exit 13;
+             /bin/cat /proc/self/environ >/dev/null 2>&1 && exit 14;
              (printf escaped > escape) 2>/dev/null && exit 10;
              /bin/sh -c 'printf escaped > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11;
              /bin/cat "/proc/$OWNER/environ" >/dev/null 2>&1 && exit 12;
@@ -295,8 +295,8 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     use proptest::prelude::*;
     use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
     const CHILD: &str = "ACYCLIC_TEST_BASH_HOST_ENVIRONMENT";
-    let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     if crate::native_environment::variable(CHILD).is_none() {
+        let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let bin = temp.path().join("bin");
         let home = temp.path().join("home");
         std::fs::create_dir(&bin).map_err(|error| Error::Storage(error.to_string()))?;
@@ -371,10 +371,13 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     }
     let home = crate::native_environment::variable(CHILD).expect("fixture-owned child home");
     let home = home.to_str().expect("UTF-8 fixture path");
-    std::fs::create_dir_all(temp.path().join(".volumes/data"))
+    // The PATH-only fixture tool is part of this fixture's workspace, rather
+    // than an unrelated directory whose readability the default must deny.
+    let workspace = Path::new(home).parent().expect("fixture home has a parent");
+    std::fs::create_dir_all(workspace.join(".volumes/data"))
         .map_err(|error| Error::Storage(error.to_string()))?;
     let mounts = table(
-        temp.path()
+        workspace
             .canonicalize()
             .map_err(|error| Error::Storage(error.to_string()))?,
     )?;

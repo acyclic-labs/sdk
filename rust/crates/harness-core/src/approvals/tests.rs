@@ -60,13 +60,20 @@ fn approval_rules_bind_exact_arguments_and_policy_order() -> Result<()> {
 
 #[test]
 fn approval_data_never_bypasses_the_interaction_gate() -> Result<()> {
+    let principal = "configured".repeat(64);
     let policy = ApprovalPolicy {
         approvers: vec![Approver::Rules {
-            principal: "configured".into(),
+            principal: principal.clone(),
             rules: vec![],
             fallback: RuleVerdict::Allow,
         }],
     };
+    // Identity length is not a capacity policy. The shared canonical path
+    // check still refuses aliases, independently of the payload byte policy.
+    ApprovalRequest::new(&"request-".repeat(64), b"{}", 2)?;
+    for id in ["", ".", "..", "../request", "request/child", "request\0"] {
+        assert!(ApprovalRequest::new(id, b"{}", 2).is_err());
+    }
     let gate = policy.bind()?;
     let invocation = ToolInvocation {
         operation_id: crate::OperationId::new(),
@@ -84,9 +91,7 @@ fn approval_data_never_bypasses_the_interaction_gate() -> Result<()> {
         ToolPolicyDecision::RequireApproval { .. }
     ));
     let mut invalid = policy;
-    invalid.approvers.push(Approver::Human {
-        principal: "configured".into(),
-    });
+    invalid.approvers.push(Approver::Human { principal });
     assert!(invalid.bind().is_err());
     invalid.approvers = vec![Approver::Human {
         principal: "parent:forged".into(),

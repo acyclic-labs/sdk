@@ -108,9 +108,9 @@ impl StockExecutor {
         Ok(self)
     }
 
-    /// Binds request assembly and tool selection to one frozen context epoch:
-    /// every request of this executor renders exactly its manifest as the
-    /// prefix, whatever its sources hold now.
+    /// Binds request assembly and fixed tool selection to one frozen context
+    /// epoch. Its manifest remains the prefix; live tool sources retain their
+    /// own generations and announce changes through the ordinary tool notices.
     pub async fn with_context_epoch(
         mut self,
         epoch: &crate::context::ContextEpoch,
@@ -122,12 +122,7 @@ impl StockExecutor {
                 "executor already has a context manifest".into(),
             ));
         }
-        let bytes = reader
-            .read(&reference, self.limits.render_bytes, None, None)?
-            .await?;
-        let manifest = crate::context::ContextManifest::decode(&bytes, self.limits)?;
-        self.epoch_tools = Some(Arc::new(manifest.tools));
-        let (tools, stage) = crate::context::ContextManifest::bind_observed(
+        let (tools, stage, baseline) = crate::context::ContextManifest::bind_observed(
             reference,
             reader.as_ref(),
             self.tools,
@@ -136,6 +131,7 @@ impl StockExecutor {
             false,
         )
         .await?;
+        self.epoch_tools = Some(Arc::new(baseline));
         self.tools = tools;
         self.with_context_stage(stage)
     }

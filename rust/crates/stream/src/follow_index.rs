@@ -39,7 +39,7 @@ impl FollowIndex {
         let id = state.next.checked_add(1).ok_or(StreamError::Capacity)?;
         let (changed, receiver) = watch::channel(tail);
         if let Some(ranges) = filter.ranges() {
-            for (ordinal, range) in ranges.iter().enumerate() {
+            for (ordinal, range) in ranges.enumerate() {
                 let key = (range.start.clone(), id, ordinal);
                 state.ranges = Node::insert(state.ranges.take(), key, range.end.clone());
             }
@@ -152,7 +152,7 @@ impl FollowIndex {
     fn remove(&mut self, id: u64) -> Option<Entry> {
         let entry = self.entries.remove(&id)?;
         if let Some(ranges) = entry.filter.ranges() {
-            for (ordinal, range) in ranges.iter().enumerate() {
+            for (ordinal, range) in ranges.enumerate() {
                 self.ranges = Node::remove(self.ranges.take(), &(range.start.clone(), id, ordinal));
             }
         } else if let Some(attribute) = entry.filter.attribute() {

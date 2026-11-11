@@ -178,6 +178,7 @@ fn assert_offered(offered: &[String], expected: &[&str]) {
 
 #[tokio::test]
 async fn anthropic_native_calls_run_their_capabilities() -> Result<()> {
+    let hidden = format!("read@{}", crate::tools::catalog::READ.revision);
     let (offered, invocations, results) = run(
         NativeToolProfile::Anthropic,
         vec![
@@ -199,6 +200,7 @@ async fn anthropic_native_calls_run_their_capabilities() -> Result<()> {
             ),
             native_call("toolu_5", "read", json!({"path":"src/lib.rs"})),
             native_call("toolu_6", "Bash", json!({"command":"ls"})),
+            native_call("toolu_7", &hidden, json!({"path":"src/lib.rs"})),
         ],
     )
     .await?;
@@ -239,6 +241,10 @@ async fn anthropic_native_calls_run_their_capabilities() -> Result<()> {
     ]) {
         assert!(matches!(result, ToolResultContent::Error { message } if message.contains(reason)));
     }
+    assert!(
+        matches!(results.last(), Some(ToolResultContent::Error { message })
+        if message.contains("is not available"))
+    );
     Ok(())
 }
 

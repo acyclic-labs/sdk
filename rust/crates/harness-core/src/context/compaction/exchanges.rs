@@ -36,19 +36,20 @@ impl Message for ModelMessage {
                     .into_iter()
                     .flat_map(|(notices, _)| notices.iter())
                     .filter_map(|notice| {
-                        (notice.source == "tools" && notice.kind == "tools.changed").then(|| {
-                            Part::Declarations {
-                                start: notice
-                                    .body
-                                    .get("offset")
-                                    .and_then(serde_json::Value::as_u64)
-                                    == Some(0),
-                                complete: notice
-                                    .body
-                                    .get("complete")
-                                    .and_then(serde_json::Value::as_bool)
-                                    == Some(true),
-                            }
+                        (notice.source == "tools"
+                            && matches!(notice.kind.as_str(), "tools.changed" | "tools.bound"))
+                        .then(|| Part::Declarations {
+                            native: notice.kind == "tools.bound",
+                            start: notice
+                                .body
+                                .get("offset")
+                                .and_then(serde_json::Value::as_u64)
+                                == Some(0),
+                            complete: notice
+                                .body
+                                .get("complete")
+                                .and_then(serde_json::Value::as_bool)
+                                == Some(true),
                         })
                     }),
             )

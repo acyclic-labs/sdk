@@ -1,5 +1,23 @@
 # acyclic-harness
 
+GraphCoder accepts `--topology single|team:N|swarm` (default `swarm`). The
+shared harness pins this policy at agent creation. `single` omits the spawn
+tool; `team:N` admits N total workers over the run, even across settled turns,
+and workers cannot spawn. The root's tool declarations remain fixed when its
+reservation is exhausted. An excess spawn returns
+`tool execution failed: forced topology permits at most N total spawns`.
+`swarm` has no implicit child count, depth, active-delivery or run deadline.
+User reservations and the selected model's native capacity still apply.
+
+`--transcripts DIR` writes the original `topology` (version 1, `mode`, and
+`workers` for team), `role` and `model` alongside each agent's `id`,
+`agent_path` and `parent` in `DIR/agents.jsonl`. Its per-agent journals and
+`--usage-jsonl FILE` retain input/output/cache tokens and price-based cost
+estimates; unknown provider counters or prices remain null. The original
+policy also lives in each agent's immutable adoption record. Reopening with
+a different forced policy refuses; start a fresh state directory for each
+study arm. No preset or units file is required.
+
 Rust-first, provider-neutral agent runtime. Harness owns typed conversation, task, effect, interaction, and fork semantics; providers own byte storage, history, execution checkpoints, and model-specific projection. A Rust future is not automatically a durable operation.
 
 Declared instructions and skill frontmatter use the ordinary context pipeline.

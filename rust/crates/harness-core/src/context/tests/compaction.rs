@@ -483,5 +483,68 @@ fn compaction_keeps_fragmented_schemas_only_for_retained_exchanges() -> Result<(
         unbounded_retained_schema,
         "unbounded planning must retain the original table across its summary cut"
     );
+    // Independent, interleaved native and dynamic snapshots. The native table
+    // becomes active last; it must neither replace the dynamic schema nor
+    // allow compaction to retain only one environment or one fragment.
+    let mut native_definition = definition("native", "integer");
+    native_definition.name = "native.compaction.live".into();
+    let mut native = fragments(&[native_definition])?;
+    for message in &mut native {
+        let ModelContent::Part(ModelContentPart::Notices { notices }) = &mut message.content else {
+            unreachable!()
+        };
+        notices[0].kind = "tools.bound".into();
+    }
+    let mut native_call = exchange("native", serde_json::json!(7));
+    for message in &mut native_call {
+        match &mut message.content {
+            ModelContent::Part(ModelContentPart::ToolCall(call)) => {
+                call.name = "native.compaction.live".into()
+            }
+            ModelContent::Part(ModelContentPart::ToolResult { name, .. }) => {
+                *name = "native.compaction.live".into()
+            }
+            _ => unreachable!(),
+        }
+    }
+    let mut mixed = vec![
+        first[0].clone(),
+        native[0].clone(),
+        first[1].clone(),
+        native[1].clone(),
+    ];
+    mixed.extend(native_call);
+    mixed.extend(exchange("dynamic", serde_json::json!("old")));
+    mixed.push(text(ModelRole::User, "current"));
+    let current = mixed.len() as u32 - 1;
+    let mixed = context(mixed, Some(current));
+    prepare(mixed.messages.clone(), Vec::new())?;
+    let mut retained_one_call = false;
+    for maximum in 2..=mixed.messages.len() {
+        let (retained, proof) = compact(&mixed, maximum, mixed.messages.len())?;
+        validate_compaction(&proof, &mixed, &retained, None)?;
+        prepare(retained.messages.clone(), Vec::new())?;
+        if has_call(&retained, "native") || has_call(&retained, "dynamic") {
+            retained_one_call |= has_call(&retained, "native") != has_call(&retained, "dynamic");
+            for fragment in first.iter().chain(&native) {
+                assert!(retained.messages.contains(fragment));
+                let mut broken = retained.messages.clone();
+                broken.remove(
+                    broken
+                        .iter()
+                        .position(|message| message == fragment)
+                        .unwrap(),
+                );
+                assert!(
+                    prepare(broken, Vec::new()).is_err(),
+                    "a partial table was admitted"
+                );
+            }
+        }
+    }
+    assert!(
+        retained_one_call,
+        "two tables must not pin every exchange together"
+    );
     Ok(())
 }

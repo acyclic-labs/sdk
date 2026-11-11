@@ -217,7 +217,6 @@ impl ApprovalPolicy {
                 Approver::Parent => "parent",
             };
             if principal.is_empty()
-                || principal.len() > 255
                 || principal.starts_with("parent:")
                 || principal.starts_with("model-start:")
                 || principal == "policy:exhausted"

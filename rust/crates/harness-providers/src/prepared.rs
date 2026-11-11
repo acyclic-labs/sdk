@@ -33,7 +33,7 @@ impl PreparedInput {
         let body =
             projection::body_named(&provider, request.request(), &names, &origin, &mut files)?;
         let encoded = projection::cache::encode(&body, &provider, &origin)?;
-        let count = counting::wire::body(body, &provider.model.name, spec.adapter)?.into();
+        let count = counting::wire::body(body, &provider.model.name, spec)?.into();
         drop(auth);
         drop(names);
         Ok(Self {

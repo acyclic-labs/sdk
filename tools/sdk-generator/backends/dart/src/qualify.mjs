@@ -101,7 +101,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   Object.assign(env, { HOME: join(output, "home"), USERPROFILE: join(output, "home"),
     APPDATA: join(output, "home/appdata"), LOCALAPPDATA: join(output, "home/local"), XDG_CONFIG_HOME: join(output, "home/config"),
     PUB_CACHE: join(output, "cache"), DART_SUPPRESS_ANALYTICS: "true", SDK_QUALIFIED_PACKAGE: join(output, "sdk") });
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: Infinity });
   const runtimeVersion = execute(dart, ["--version"], directory), versionText = (runtimeVersion.stdout ?? "") + (runtimeVersion.stderr ?? "");
   if (runtimeVersion.error || runtimeVersion.status !== 0 || !versionText.startsWith(`Dart SDK version: ${toolchain.dart_sdk_version} (stable)`) || !versionText.includes('"windows_x64"')) throw new Error("Dart runtime version differs from pin");
   const tarVersion = execute(archiver, ["--version"], directory);

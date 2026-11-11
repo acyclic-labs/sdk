@@ -1422,9 +1422,9 @@ impl ToolContext {
                 || expected_generation.is_some_and(|generation| generation != &selected.generation)
                 || selected
                     .byte_length
-                    .checked_sub(range.offset)
-                    .map(|remaining| remaining.min(range.length))
-                    != Some(bytes.len() as u64)
+                    .saturating_sub(range.offset)
+                    .min(range.length)
+                    != bytes.len() as u64
             {
                 return Err(crate::store::guarded_boundary(
                     history,

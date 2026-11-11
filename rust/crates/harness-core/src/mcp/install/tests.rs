@@ -254,7 +254,7 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         task::Poll,
     };
 
-    for release_worker in [true, false] {
+    for (release_worker, finite) in [(true, true), (false, true), (true, false)] {
         let caller = std::thread::current().id();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         let (started, worker) = tokio::sync::oneshot::channel();
@@ -263,7 +263,7 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         let worker_active = active.clone();
         let connection = Arc::new(Remote::default());
         let worker_connection = connection.clone();
-        let registration = register_before(deadline, move |check| {
+        let registration = register_before(finite.then_some(deadline), move |check| {
             let _connection = worker_connection;
             worker_active.fetch_add(1, Ordering::SeqCst);
             let _ = started.send(std::thread::current().id());
@@ -288,7 +288,7 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         poll_fn(|cx| {
             assert!(
                 registration.as_mut().poll(cx).is_pending(),
-                "timeout must await worker retirement"
+                "registration must retain its original worker until retirement"
             );
             Poll::Ready(())
         })
@@ -300,10 +300,15 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         } else {
             drop(release);
         }
-        assert!(matches!(
-            registration.await,
-            Err(Error::Process(crate::ProcessError::Timeout { .. }))
-        ));
+        let result = registration.await;
+        if finite {
+            assert!(matches!(
+                result,
+                Err(Error::Process(crate::ProcessError::Timeout { .. }))
+            ));
+        } else {
+            result?;
+        }
         assert_eq!(active.load(Ordering::SeqCst), 0);
         assert_eq!(Arc::strong_count(&connection), 1);
         tokio::time::resume();
@@ -349,7 +354,7 @@ async fn initialization_is_concurrent_and_optional_diagnostics_keep_config_order
 }
 
 #[tokio::test]
-async fn no_selected_tools_grant_no_authority_and_invalid_limits_never_connect() -> Result<()> {
+async fn filtered_tools_stay_unavailable_and_invalid_limits_never_connect() -> Result<()> {
     let configuration = || {
         Ok::<_, Error>(McpConfig {
             servers: BTreeMap::from([(
@@ -374,7 +379,18 @@ async fn no_selected_tools_grant_no_authority_and_invalid_limits_never_connect()
         })
         .await?;
     assert!(installed.tools.definitions(None)?.is_empty());
-    assert!(installed.capabilities.iter().next().is_none());
+    assert!(
+        installed
+            .tools
+            .resolve("mcp.configured.read", None)?
+            .is_none()
+    );
+    // A configured live source can discover newly allowed tools later. Its
+    // scoped server grant cannot make the filtered executor resolvable.
+    assert_eq!(
+        installed.capabilities.iter().collect::<Vec<_>>(),
+        ["mcp:call:configured"]
+    );
     assert!(installed.diagnostics.is_empty());
     for field in 0..2 {
         let mut limits = McpClientLimits::default();

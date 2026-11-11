@@ -907,6 +907,7 @@ mod tests {
                 agent: agent.clone(),
                 parent: None,
                 profile: Some(agent::CreationConfig {
+                    topology: None,
                     model: None,
                     continuation: None,
                     context: agent::SpawnContext::TopLevel,

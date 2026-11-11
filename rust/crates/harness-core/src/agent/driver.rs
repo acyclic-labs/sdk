@@ -843,6 +843,30 @@ async fn settle_effects(
     Ok(step)
 }
 
+// A paused executor has already promised these successful tool spawns, but
+// their effects publish when the turn resumes. Retain one scalar reservation
+// in the actor checkpoint so independent client inputs cannot consume it.
+async fn pending_spawns(agent: &AgentState, open: &OpenTurn) -> Result<Vec<Out>, Error> {
+    if agent
+        .profile
+        .as_ref()
+        .and_then(|profile| profile.topology.as_ref())
+        .and_then(|topology| topology.spawn_limit(agent.parent.is_none()))
+        .is_none()
+    {
+        return Ok(Vec::new());
+    }
+    let mut reserved = std::collections::BTreeSet::new();
+    if let Some(effects) = &open.effects {
+        for effect in effects.recorded().await.map_err(host_error)? {
+            if let super::TurnEffect::Spawn { intent, .. } = effect {
+                reserved.insert(intent);
+            }
+        }
+    }
+    Ok(vec![Out::PendingSpawns(reserved.len() as u64)])
+}
+
 impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
     fn step<'a>(
         &'a self,
@@ -1080,13 +1104,14 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     // which replies this request already read. Publish that
                     // frontier with the park so a subsequent input wait cannot
                     // release itself on the same retained reply.
-                    let outs = open
+                    let mut outs = open
                         .journal
                         .steering_snapshot(turn)
                         .await
                         .map_err(host_error)?
                         .map(|snapshot| vec![Out::Steered(snapshot.through)])
                         .unwrap_or_default();
+                    outs.extend(pending_spawns(agent, &open).await?);
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
                             inbox,
@@ -1117,7 +1142,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     };
                     let id = IntentId::try_from(id)?;
                     // A parent stage asks the parent in the same commit as the pause.
-                    let outs = match &agent.parent {
+                    let mut outs = match &agent.parent {
                         Some(to) if parent => vec![Out::Send {
                             to: to.clone(),
                             record: InboxRecord::ApprovalRequested(ApprovalRequested {
@@ -1127,6 +1152,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         }],
                         _ => Vec::new(),
                     };
+                    // The paused turn's recorded spawns keep their slots.
+                    outs.extend(pending_spawns(agent, &open).await?);
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
                             inbox,

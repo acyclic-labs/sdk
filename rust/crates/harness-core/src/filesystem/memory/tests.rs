@@ -10,6 +10,8 @@ mod content;
 mod projections;
 mod publication_cost;
 mod publication_evidence;
+#[cfg(not(target_arch = "wasm32"))]
+mod read_replay;
 mod ui;
 
 async fn run_admitted_file_case<F, Fut>(
@@ -55,7 +57,8 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
             "one.txt",
         )
         .await?;
-    let expected_projection = json!({"kind":"json","value":{"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"text":"pinned text"}});
+    let expected_projection = json!({"kind":"json","value":{"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"text":"pinned text",
+        "page":{"start":0,"end":11,"offset":0,"total":11,"eof":true}}});
     let render_bytes = serde_json::to_vec(&expected_projection)
         .map_err(|error| Error::Invalid(error.to_string()))?
         .len() as u64;

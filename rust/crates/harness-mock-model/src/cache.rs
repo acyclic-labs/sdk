@@ -34,6 +34,7 @@ pub struct Cached {
 #[derive(Debug, Default)]
 pub struct PromptCache {
     written: BTreeSet<u64>,
+    implicit_chat: bool,
 }
 
 /// One cacheable position: its prefix identity and token length.
@@ -102,6 +103,13 @@ fn boundaries(scope: &str, head: &Value, items: &[Value], width: u64) -> Vec<Bou
 }
 
 impl PromptCache {
+    /// Emulate an endpoint with automatic Chat prefix caching, such as Fireworks.
+    /// Other endpoints retain their explicit key contract.
+    pub fn with_implicit_chat(mut self) -> Self {
+        self.implicit_chat = true;
+        self
+    }
+
     /// Observes one generation request and records what it writes.
     pub fn observe(&mut self, path: &str, body: &Value, width: u64) -> Cached {
         self.observe_if(path, body, width, Some).unwrap_or_default()
@@ -152,11 +160,10 @@ impl PromptCache {
                 }
                 "responses" | "chat/completions" => {
                     // OpenAI refuses longer keys; the request is never cached.
-                    let Some(key) = body["prompt_cache_key"]
-                        .as_str()
-                        .filter(|key| key.len() <= MAX_KEY)
-                    else {
-                        return accept(Cached::default());
+                    let key = match body.get("prompt_cache_key") {
+                        Some(Value::String(key)) if key.len() <= MAX_KEY => key.as_str(),
+                        None if path == "chat/completions" && self.implicit_chat => path,
+                        _ => return accept(Cached::default()),
                     };
                     let (name, head) = if path == "responses" {
                         (

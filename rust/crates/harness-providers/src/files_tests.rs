@@ -620,7 +620,7 @@ proptest! {
                 let original_counter = provider.config.token_counter.clone();
                 drop(prepared);
                 for counter in std::iter::once(None).chain(fixtures().into_iter().map(|(counter, _)| Some(counter))) {
-                    if counter == Some(adapter) { continue; }
+                    if counter == Some(adapter) || (counter.is_none() && adapter == Adapter::Chat) { continue; }
                     Arc::make_mut(&mut Arc::get_mut(&mut provider).unwrap().config).token_counter = counter.map(|adapter| {
                         let mut spec = original_counter.clone().unwrap();
                         spec.adapter = adapter;

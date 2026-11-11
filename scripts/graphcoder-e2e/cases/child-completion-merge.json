@@ -1,0 +1,110 @@
+{
+  "id": "child-completion-merge",
+  "workspace": {
+    "kind": "git",
+    "files": {
+      "root.txt": "ROOT_KEPT\n",
+      ".acyclic-sdk/control": "SDK_STATE\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "COMPLETION_PARENT"
+        },
+        "tools": [
+          {
+            "id": "spawn",
+            "name": "spawn",
+            "arguments": {
+              "name": "worker",
+              "task": "COMPLETION_CHILD",
+              "role": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPLETION_PARENT",
+          "tool_result": "agent"
+        },
+        "tools": [
+          {
+            "id": "join",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPLETION_CHILD"
+        },
+        "tools": [
+          {
+            "id": "write-child",
+            "name": "code",
+            "arguments": {
+              "code": "const result = await tools.shell({command:['node','-e',\"require('fs').writeFileSync('child.txt','CHILD_COMPLETION_CONTENT\\n')\"]}); if (!result.success || result.exit_code !== 0) throw Error('child write failed: '+JSON.stringify(result)); ({written:'CHILD_WRITE_OK'})"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPLETION_CHILD",
+          "tool_result": "CHILD_WRITE_OK"
+        },
+        "text": [
+          "CHILD_COMPLETED"
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPLETION_PARENT",
+          "tool_result": "CHILD_COMPLETED"
+        },
+        "tools": [
+          {
+            "id": "verify-parent",
+            "name": "code",
+            "arguments": {
+              "code": "const result = await tools.shell({command:['node','-e',\"const fs=require('fs');if(fs.readFileSync('child.txt','utf8')!=='CHILD_COMPLETION_CONTENT\\n'||fs.readFileSync('root.txt','utf8')!=='ROOT_KEPT\\n')process.exit(1);for(const path of ['.acyclic-sdk/control','.volumes/agents/probe']){const ignored=require('child_process').spawnSync('git',['check-ignore','--no-index','--quiet',path]);if(ignored.status!==0)throw Error('SDK state was not excluded: '+path)};console.log('PARENT_HAS_CHILD_WORK')\"]}); if (!result.success || result.exit_code !== 0 || !result.text.includes('PARENT_HAS_CHILD_WORK')) throw Error('child completion did not publish into parent: '+JSON.stringify(result)); ({verified:'PARENT_HAS_CHILD_WORK'})"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPLETION_PARENT",
+          "tool_result": "PARENT_HAS_CHILD_WORK"
+        },
+        "text": [
+          "COMPLETION_MERGED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "COMPLETION_PARENT",
+      "answer": "COMPLETION_MERGED"
+    }
+  ],
+  "assert": {
+    "requests": 6,
+    "files": {
+      "child.txt": "CHILD_COMPLETION_CONTENT\n",
+      "root.txt": "ROOT_KEPT\n"
+    }
+  },
+  "physical": true,
+  "adapter": "responses"
+}

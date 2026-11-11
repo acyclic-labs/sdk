@@ -93,6 +93,18 @@ impl<T> Signal<T> {
         drop(previous);
         Ok((value, buffered))
     }
+    pub(crate) fn wake(&self) -> Result<(), StreamError> {
+        let wake = self
+            .state
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .1
+            .take();
+        if let Some(wake) = wake {
+            wake.wake();
+        }
+        Ok(())
+    }
     #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
     pub(crate) fn pending(&self) -> usize {
         self.state.lock().unwrap().0.len()

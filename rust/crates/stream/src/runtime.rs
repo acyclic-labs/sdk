@@ -4,7 +4,7 @@ use crate::{BoxProviderFuture, ProviderPlatform};
 pub(crate) mod signal;
 pub(crate) mod sources;
 pub(crate) mod sync;
-pub use sources::ReadySources;
+pub use sources::{ReadySources, SourceReader, SourceWake};
 
 /// Gives other host tasks one turn without spawning detached work.
 ///

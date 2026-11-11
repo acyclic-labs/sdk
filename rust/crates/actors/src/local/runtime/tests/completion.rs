@@ -80,12 +80,7 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
     for (stop_before_poll, stopped) in [(true, false), (false, false), (false, true)] {
         let provider = Arc::new(Counted::new(MemoryStream::default()));
         let store = Store::new(Arc::clone(&provider), root()?);
-        let handler = Arc::new(Gated {
-            package: Package::new()?,
-            active: AtomicUsize::new(0),
-            peak: AtomicUsize::new(0),
-            gate: tokio::sync::Semaphore::new(0),
-        });
+        let handler = Arc::new(Gated::new()?);
         let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock))
             .with_limits(RuntimeLimits::new(1, 1)?);
         let before = provider.requests();

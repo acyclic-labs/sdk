@@ -152,6 +152,7 @@ pub fn assert_stream_invariants(input: &[u8]) {
     if kind == b'K' {
         use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
         for field in [
+            TokenCountField::PromptTokens,
             TokenCountField::InputTokens,
             TokenCountField::TotalTokens,
             TokenCountField::Count,
@@ -164,6 +165,9 @@ pub fn assert_stream_invariants(input: &[u8]) {
             };
             if let Ok(count) = response(input, &spec) {
                 let encoded = match field {
+                    TokenCountField::PromptTokens => {
+                        serde_json::json!({"usage":{"prompt_tokens":count}})
+                    }
                     TokenCountField::InputTokens => serde_json::json!({"input_tokens":count}),
                     TokenCountField::TotalTokens => serde_json::json!({"totalTokens":count}),
                     TokenCountField::Count => serde_json::json!({"count":count}),
@@ -612,16 +616,18 @@ pub(crate) fn response_sequence_violation(
     }
 }
 
-/// Independent reference, deliberately not `ResponseItem`: each reasoning item
-/// is immediately followed by a function call or an assistant message.
+/// Independent reference, deliberately not `ResponseItem`: a reasoning run
+/// ends with a function call or an assistant message, without an interruption.
 fn unanswered_reasoning(items: &[serde_json::Value]) -> usize {
     (0..items.len())
         .filter(|&index| {
             items[index]["type"] == "reasoning"
                 && !items.get(index + 1).is_some_and(|next| {
-                    next["type"] == "function_call"
-                        || (next["type"].as_str().unwrap_or("message") == "message"
-                            && next["role"] == "assistant")
+                    matches!(
+                        next["type"].as_str(),
+                        Some("reasoning" | "function_call" | "custom_tool_call")
+                    ) || (next["type"].as_str().unwrap_or("message") == "message"
+                        && next["role"] == "assistant")
                 })
         })
         .count()

@@ -49,7 +49,7 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 21 retains child completion facts and pending wake ranges.
 /// Version 22 indexes admitted replies across queued independent turns.
 /// Version 23 combines those facts with input selection on actor waits.
-pub const RECORD_VERSION: u32 = 23;
+pub const RECORD_VERSION: u32 = 24;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -244,6 +244,9 @@ pub enum SpawnContext {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreationConfig {
+    /// Forced run policy pinned at creation and inherited by every child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology: Option<crate::topology::Topology>,
     /// Present only on an explicitly continued decider, never inherited by spawns.
     pub continuation: Option<Box<super::Continuation>>,
     /// Conversation selected at creation, independent of a template name.
@@ -264,6 +267,11 @@ pub struct CreationConfig {
 
 /// A host's original template reader, shared by direct and model spawns.
 pub trait SpawnTemplates: acyclic_stream::ProviderPlatform {
+    /// The run-start policy pinned to roots by this template selector.
+    fn topology(&self) -> Option<&crate::topology::Topology> {
+        None
+    }
+
     /// Reads one child template using the parent's original authority.
     fn child<'a>(
         &'a self,
@@ -901,6 +909,11 @@ impl AgentRecord for InboxRecord {
 }
 
 fn check_model(profile: Option<&CreationConfig>) -> Result<(), Error> {
+    if let Some(topology) = profile.and_then(|profile| profile.topology.as_ref()) {
+        topology
+            .validate()
+            .map_err(|_| Error::Record("invalid forced topology"))?;
+    }
     if let Some(model) = profile.and_then(|profile| profile.model.as_deref()) {
         crate::model::selection::validate(model)
             .map_err(|_| Error::Record("invalid model selection"))?;

@@ -41,6 +41,8 @@ pub const OVERSIZED_OUTCOME: &str = "agent outcome exceeds MAX_OUTCOME_BYTES";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpawnRefusal {
+    /// Refused by the forced run topology.
+    Topology,
     /// The agent is archived.
     Archived,
     /// The host runs no children, so it creates none to wait forever.
@@ -69,6 +71,12 @@ pub enum SpawnOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentState {
+    /// Every admitted worker, including settled children; replays count once.
+    pub spawned_children: super::Children,
+    /// Successful tool spawns retained by a paused turn, not yet published.
+    pub reserved_spawns: u64,
+    /// Original topology refusals, retained after later input and archival.
+    pub topology_refusals: super::Children,
     /// First original completion fact in the status stream for this wait.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_settlements: Option<u64>,
@@ -233,6 +241,9 @@ impl AgentState {
             .transpose()
             .map_err(|error| Error::Turn(Box::new(error)))?;
         Ok(Self {
+            spawned_children: super::Children::new(),
+            reserved_spawns: 0,
+            topology_refusals: super::Children::new(),
             child_settlements: None,
             path,
             parent: adopted.parent.clone(),
@@ -259,7 +270,18 @@ impl AgentState {
             awaited: false,
             archive_pending: super::Children::new(),
             archive_refused: false,
-            queued: VecDeque::new(),
+            queued: adopted
+                .brief
+                .iter()
+                .cloned()
+                .map(|brief| Queued {
+                    steering: false,
+                    inbox: adopted.forked_at,
+                    input: TurnInput::Brief {
+                        brief: Box::new(brief),
+                    },
+                })
+                .collect(),
             overflow: None,
             taken: BTreeSet::new(),
             closed: false,
@@ -289,15 +311,21 @@ impl AgentState {
     }
 
     /// The outcome of the spawn named `intent`, read from the state committed
-    /// by the step that applied it. Its child is derived from the intent, and
-    /// that step either opened it, found it open, or refused it for exactly
-    /// one reason; no later input of the same step closes a child. So the
-    /// outcome is a function of that state, and no state records outcomes.
+    /// by the step that applied it. Persistent admission and refusal membership
+    /// preserve that decision after the child settles or the parent archives.
     #[must_use]
     pub async fn spawn_outcome(&self, intent: &IntentId) -> Result<SpawnOutcome, Error> {
-        let child = self.spawned(intent).expect("canonical child path");
-        Ok(if self.open_children.contains(&child).await? {
+        let child = self.spawned(intent)?;
+        Ok(if self.spawned_children.contains(&child).await? {
             SpawnOutcome::Spawned { child }
+        } else if self.topology_refusals.contains(&child).await? {
+            SpawnOutcome::Refused {
+                reason: SpawnRefusal::Topology,
+            }
+        } else if self.closed {
+            SpawnOutcome::Refused {
+                reason: SpawnRefusal::Archived,
+            }
         } else {
             return Err(Error::Record("spawn outcome precedes its applying step"));
         })
@@ -387,6 +415,8 @@ impl AgentState {
 /// An effect of one step, lowered into the step's single commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Out {
+    /// Retain the paused turn's successful, unpublished spawn admissions.
+    PendingSpawns(u64),
     /// Inbox inputs before this exclusive cursor already reached the model.
     Steered(u64),
     /// Append to this agent's conversation.
@@ -618,9 +648,13 @@ impl PreparedStep {
     ) -> Result<(), Error> {
         self.step.state.open_children.bind(provider.clone());
         self.step.state.archive_pending.bind(provider.clone());
+        self.step.state.topology_refusals.bind(provider.clone());
+        self.step.state.spawned_children.bind(provider.clone());
         self.step.state.awaiting.bind(provider);
         self.step.state.open_children.persist().await?;
         self.step.state.archive_pending.persist().await?;
+        self.step.state.topology_refusals.persist().await?;
+        self.step.state.spawned_children.persist().await?;
         self.step.state.awaiting.persist().await
     }
 
@@ -706,15 +740,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             if adopted.agent != path.id() {
                 return Err(Error::Record("ForkAdopted names another agent"));
             }
-            let mut state = AgentState::adopted(path.clone(), &adopted)?;
-            state.queued.extend(adopted.brief.map(|brief| Queued {
-                steering: false,
-                inbox: adopted.forked_at,
-                input: TurnInput::Brief {
-                    brief: Box::new(brief),
-                },
-            }));
-            state
+            AgentState::adopted(path.clone(), &adopted)?
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         (Some(state), Wake::Alarm) => state,
@@ -955,6 +981,7 @@ fn finalize_step(
             Out::Roster(digest) => state.roster = Some(*digest),
             Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Send { .. }
+            | Out::PendingSpawns(_)
             | Out::Steered(_)
             | Out::Archive { .. }
             | Out::Spawn { .. }
@@ -1062,6 +1089,7 @@ async fn admit(
     if !admitted.control.turn {
         state.child_settlements = None;
         state.turn = None;
+        state.reserved_spawns = 0;
         state.awaiting.clear();
         state.need = 0;
     }
@@ -1152,7 +1180,7 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
 /// Whether a driver's effect fits the record that carries it.
 fn admissible(out: &Out) -> bool {
     match out {
-        Out::Steered(_) => true,
+        Out::Steered(_) | Out::PendingSpawns(_) => true,
         Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(
@@ -1257,6 +1285,15 @@ async fn run<T: TurnDriver + ?Sized>(
     if let Some(end) = turn.drops {
         state.drop_before(end);
     }
+    state.reserved_spawns = turn
+        .outs
+        .iter()
+        .rev()
+        .find_map(|out| match out {
+            Out::PendingSpawns(count) => Some(*count),
+            _ => None,
+        })
+        .unwrap_or(0);
     let spawned = outs.len();
     outs.extend(turn.outs);
     let wait = match turn.wait {
@@ -1380,6 +1417,7 @@ fn bounded(outcome: AgentOutcome) -> AgentOutcome {
 fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
     state.drop_queue();
     state.turn = None;
+    state.reserved_spawns = 0;
     if matches!(state.phase, Phase::Done { .. }) && state.archive_pending.is_empty() {
         return;
     }
@@ -1469,11 +1507,31 @@ async fn apply_spawns(
             continue;
         };
         let opened = match state.spawned(intent) {
-            Ok(child) if !state.closed => {
+            Ok(child)
+                if !state.closed
+                    && (state.spawned_children.contains(&child).await?
+                        || state
+                            .profile
+                            .as_ref()
+                            .and_then(|profile| profile.topology.as_ref())
+                            .and_then(|topology| topology.spawn_limit(state.parent.is_none()))
+                            .is_none_or(|limit| {
+                                (state.spawned_children.len() as u64)
+                                    .saturating_add(state.reserved_spawns)
+                                    < limit
+                            })) =>
+            {
+                state.spawned_children.insert(&child).await?;
                 state.open_children.insert(&child).await?;
                 true
             }
-            Ok(child) => state.open_children.contains(&child).await?,
+            Ok(child) => {
+                let opened = state.open_children.contains(&child).await?;
+                if !opened && !state.closed {
+                    state.topology_refusals.insert(&child).await?;
+                }
+                opened
+            }
             _ => false,
         };
         if opened {

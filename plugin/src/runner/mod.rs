@@ -232,6 +232,9 @@ fn configure(
         Template::Graphcoder => registry.graphcoder(&args.workspace, args.model.clone())?,
     }
     .working_directory(&std::env::current_dir()?)?;
+    config = config.topology(acyclic_harness::topology::Topology::select(
+        args.topology.as_deref().unwrap_or("swarm"),
+    )?)?;
     if args.no_compaction {
         config = config.compaction(acyclic_harness::context::CompactionPolicy::Disabled);
     }
@@ -467,6 +470,7 @@ fn service_arguments(args: &Args) -> Vec<std::ffi::OsString> {
     for (flag, value) in [
         ("--model", args.model.as_ref()),
         ("--directory", args.directory.as_ref()),
+        ("--topology", args.topology.as_ref()),
     ] {
         if let Some(value) = value {
             arguments.extend([flag.into(), value.into()]);
@@ -615,6 +619,13 @@ async fn connected(
     } else {
         connection
     };
+    if args.endpoint.is_none() {
+        connection
+            .require_topology(&acyclic_harness::topology::Topology::select(
+                args.topology.as_deref().unwrap_or("swarm"),
+            )?)
+            .await?;
+    }
     if let Some(Command::History(page)) = &args.command {
         let page = acyclic_harness::client::AgentPageRequest::new(
             page.page_size,

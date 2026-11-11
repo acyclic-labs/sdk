@@ -11,7 +11,6 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 const ROOT: &str = include_str!("seed/templates/orchestrator/AGENT.md");
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Creation {
@@ -71,11 +70,18 @@ pub(crate) fn name_component(name: &str) -> Result<()> {
 
 /// The default root's creation context. The root's model remains host-selected.
 pub fn root() -> Result<CreationConfig> {
+    root_with_topology(None)
+}
+
+pub(crate) fn root_with_topology(
+    topology: Option<&crate::topology::Topology>,
+) -> Result<CreationConfig> {
     let root = parse(ROOT.as_bytes())?;
     if root.context != SpawnContext::TopLevel {
         return Err(Error::Invalid("the root default must be top_level".into()));
     }
     Ok(CreationConfig {
+        topology: topology.cloned(),
         model: root.model,
         continuation: None,
         context: root.context,
@@ -171,6 +177,7 @@ pub(crate) async fn select(
         ));
     }
     Ok(CreationConfig {
+        topology: None,
         model: creation.model,
         continuation: None,
         context: creation.context,
@@ -183,6 +190,7 @@ pub(crate) async fn select(
 /// creation record contains a reference, so prose is never copied into actor
 /// checkpoints and later template edits cannot reinterpret an existing child.
 pub(crate) struct Directive {
+    pub digest: String,
     pub context: Arc<Context>,
     pub allowed_tools: Option<Vec<String>>,
 }
@@ -202,11 +210,23 @@ pub(crate) async fn directive(
         None => ROOT.as_bytes(),
     };
     let capabilities = parse(source)?;
+    let mut digest = blake3::Hasher::new();
+    digest.update(source);
+    if let Some(topology) = &creation.topology {
+        digest.update(
+            &serde_json::to_vec(topology).map_err(|error| Error::Invalid(error.to_string()))?,
+        );
+    }
     let (_, _, body) = crate::context::frontmatter_end(source)?;
     let text = std::str::from_utf8(&source[body..])
         .map_err(|_| Error::Invalid("template directive is not UTF-8".into()))?
         .trim();
+    let text = match &creation.topology {
+        Some(topology) => format!("{text}\n\n{}", topology.instruction()),
+        None => text.to_owned(),
+    };
     Ok(Directive {
+        digest: digest.finalize().to_hex().to_string(),
         allowed_tools: capabilities.allowed_tools,
         context: Arc::new(Context {
             messages: (!text.is_empty())

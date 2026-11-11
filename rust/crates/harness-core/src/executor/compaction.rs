@@ -303,7 +303,12 @@ impl StockExecution<'_> {
         };
         let ceiling = policy.input_ceiling(capacity, self.output_tokens())?;
         let count =
-            stock_count_tokens(self.stock.provider.as_ref(), request, ceiling, self.io).await?;
+            match stock_count_tokens(self.stock.provider.as_ref(), request, ceiling, self.io).await
+            {
+                Ok(count) => count,
+                Err(Error::ModelContextOverflow) => return Ok(false),
+                Err(error) => return Err(error),
+            };
         let final_count = with_history_io(self.io, |work| count.validate(request, work))?;
         if policy.needs_compaction(capacity, final_count, self.output_tokens())? {
             return Ok(false);
@@ -318,7 +323,10 @@ impl StockExecution<'_> {
             step,
             (compacted, request),
             compaction,
-            &ContextAccounting { capacity, count },
+            &ContextAccounting {
+                capacity,
+                count: Some(count),
+            },
         )
         .await?;
         Ok(true)
