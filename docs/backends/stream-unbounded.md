@@ -911,3 +911,48 @@ effect-cursor interruption guard; the ordinal mutation follows the shared codec.
 This source needs remote compile and controls. Metadata object packing and native
 original-work admission remain required before production cutover; this is not
 the 100k-effect atomic-write conformance or any final-publication proof.
+
+At exact2d7c024fdc6391f8a530676e26850016125e3ee7, Linux Stream all-target
+checking passed in17.41s; all ten selected index/directory controls passed in
+0.12s. Three simultaneous mutations each failed at the intended retention,
+cancellation or ordinal assertion (0 passed,3 failed,0.03s), reversed and git diff
+verified clean. Terminal EFFECT_CONTROLS_PASS_THREE_MUTANTS_REJECTED_SOURCE_RESTORED;
+evidence Q:/scratch/stream-unbounded/effects-2d7c-linux.log. No public-write or
+atomicity claim follows from these descriptor-preparation results.
+
+Native exact65b98b5d0f982c5ab664129f266287b27bcb54bb also completed: scoped
+Stream/collections all-target check and test-binary build passed; 23 Stream
+controls passed in0.55s and two collections controls in0.01s. All13 mutations
+failed at their intended assertions in0.28s and reversed. Terminal
+INDEX_CONTROLS_PASS_THIRTEEN_MUTANTS_REJECTED_SOURCE_RESTORED is recorded in
+Q:/scratch/stream-unbounded/ivar-65b9-tests.log. Independent SSH subsequently
+verified both staged and unstaged diffs clean at that exact source. No native job
+remains. These results cover the earlier mutation-only directory, not the newer
+effect/condition implementation.
+
+### Packed effect metadata contract (before implementation)
+
+The effect directory must not create a private metadata object for every small
+effect. Replace its ordered effect Index and per-effect metadata objects with
+one fixed-width metadata stream built by the existing content-tree Writer.
+A row stores soft flag, condition count, original Bookmark and condition
+checkpoint; original effect ordinal is its stream position. Root length and the
+fixed row width bound/derive the count without allocating an effect vector.
+The stream header starts at effects-v1. The enclosing directory changes to v2;
+remove its v1 decoder and the per-effect object codec, without migration code.
+The enclosing root still retains exactly the body, mutation checkpoint and
+new effect-stream root. The effect-stream writer explicitly retains condition
+checkpoints. Cache the canonical empty condition checkpoint once per build and
+declare its dependency once; empty effects must not issue one repeated upload
+or read per effect. Nonempty condition indexes still use the single shared Index.
+
+The effect cursor reuses staged decode::Cursor for fixed-width bounded reading
+and its current interruption latch. Sequential effects share physical metadata
+pages. Empty conditions use the empty Index without IO; nonempty conditions open
+their checkpoint lazily and verify the stored count. No Stream authority state is
+sampled or changed. A cancellation control can use a nonempty condition index to
+suspend after a row has been consumed. The existing 100k-effect ingestion control
+should also build/reopen this Directory and walk effects without request-sized
+allocation. It remains preparation coverage, not the required atomic-write
+conformance. The condition dependency mutation must follow the new stream writer
+and retain the same graph-control failure. This packing change is not coded yet.
