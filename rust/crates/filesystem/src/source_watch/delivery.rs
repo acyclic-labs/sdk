@@ -203,14 +203,19 @@ impl Delivery {
         if changes.is_empty() {
             return Ok(());
         }
-        if let Some(mut native) = work.native_source_work().cloned() {
-            return self.callback(|| {
+        let result = if let Some(mut native) = work.native_source_work().cloned() {
+            self.callback(|| {
                 self.sink
                     .host_changed_with_native_work(changes, &mut native)
-            });
-        }
-        work.with_ordinary_work(|work| self.callback(|| self.sink.host_changed(changes, work)))
-            .unwrap_or(Err(DemandError::NativeWorkUnavailable))
+            })
+        } else {
+            work.with_ordinary_work(|work| self.callback(|| self.sink.host_changed(changes, work)))
+                .unwrap_or(Err(DemandError::NativeWorkUnavailable))
+        };
+        // Reentrant observers may borrow the original ledger. Both the batch
+        // callback and its work scope must have returned before waking them.
+        self.callback(|| self.sink.delivery_finished());
+        result
     }
 
     #[cfg(target_os = "linux")]
@@ -261,14 +266,19 @@ impl Delivery {
         if changes.is_empty() {
             return Ok(());
         }
-        if let Some(mut native) = work.native_source_work().cloned() {
-            return self.callback(|| {
+        let result = if let Some(mut native) = work.native_source_work().cloned() {
+            self.callback(|| {
                 self.sink
                     .host_changed_wide_with_native_work(changes, &mut native)
-            });
-        }
-        work.with_ordinary_work(|work| self.callback(|| self.sink.host_changed_wide(changes, work)))
+            })
+        } else {
+            work.with_ordinary_work(|work| {
+                self.callback(|| self.sink.host_changed_wide(changes, work))
+            })
             .unwrap_or(Err(DemandError::NativeWorkUnavailable))
+        };
+        self.callback(|| self.sink.delivery_finished());
+        result
     }
 
     /// The host stopped reporting changes exactly: report everything once, after which the watch is inexact for good.

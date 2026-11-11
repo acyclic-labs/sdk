@@ -779,6 +779,7 @@ pub(crate) async fn capture_subtrees_with_native_work<
         let (canonical, source_root, observed) = result?;
         collect_captured_checkout_roots(checkout, canonical, limits, policy, &mut paths, meter)
             .await?;
+        capture_order_entries(&mut paths, maximum, meter)?;
         let ordered = order_host_checkout_union(observed, paths, maximum, meter)?;
         capture_observed_paths_from_root(
             checkout,
@@ -928,6 +929,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let root = NamespacePath::new(Vec::new(), limits).map_err(CaptureError::from)?;
         collect_checkout_subtree_paths(&mut candidate, limits, root, policy, &mut paths, meter)
             .await?;
+        capture_order_entries(&mut paths, maximum, meter)?;
         let ordered = order_host_checkout_union(observed, paths, maximum, meter)?;
         capture_observed_paths_from_root(
             &mut candidate,
