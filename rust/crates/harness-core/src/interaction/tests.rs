@@ -290,13 +290,14 @@ proptest::proptest! {
         let decision = ApprovalDecisionFile::new(&principal, &sha, version, approved, reason)
             .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
         let bytes = serde_json::to_vec(&decision).unwrap();
-        let decoded = ApprovalDecisionFile::decode(&bytes, bytes.len() as u64).unwrap();
+        let decoded = ApprovalDecisionFile::decode(&bytes, Some(bytes.len() as u64)).unwrap();
+        proptest::prop_assert_eq!(ApprovalDecisionFile::decode(&bytes, None).unwrap(), decoded.clone());
         proptest::prop_assert_eq!(&decoded, &decision);
         proptest::prop_assert_eq!(decoded.approved(), approved);
         proptest::prop_assert!(decoded.binds(&sha, version));
         proptest::prop_assert!(!decoded.binds(&sha, version - 1));
         proptest::prop_assert_eq!(decoded.binds(&other, version), other == sha);
-        proptest::prop_assert!(ApprovalDecisionFile::decode(&bytes, bytes.len() as u64 - 1).is_err());
+        proptest::prop_assert!(ApprovalDecisionFile::decode(&bytes, Some(bytes.len() as u64 - 1)).is_err());
         let file = ApprovalDecisionFile::principal_file(&principal);
         proptest::prop_assert_eq!(file.len(), 32);
         proptest::prop_assert!(file.bytes().all(|byte| byte.is_ascii_alphanumeric()));
@@ -311,7 +312,7 @@ fn decision_file_rejects_unbound_bodies() {
             r#"{{"principal":"{principal}","request_sha256":"{sha}","expected_version":{version},"verdict":"approve","reason":null}}"#
         )
     };
-    assert!(ApprovalDecisionFile::decode(body("human", &sha, 1).as_bytes(), 4096).is_ok());
+    assert!(ApprovalDecisionFile::decode(body("human", &sha, 1).as_bytes(), Some(4096)).is_ok());
     for invalid in [
         body("", &sha, 1),
         body("human", &sha, 0),
@@ -322,7 +323,7 @@ fn decision_file_rejects_unbound_bodies() {
         body("human", &sha, 1).replace("null}", r#"null,"extra":1}"#),
     ] {
         assert!(
-            ApprovalDecisionFile::decode(invalid.as_bytes(), 4096).is_err(),
+            ApprovalDecisionFile::decode(invalid.as_bytes(), Some(4096)).is_err(),
             "{invalid}"
         );
     }

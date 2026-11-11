@@ -18,7 +18,8 @@ fuzz_target!(|bytes: &[u8]| {
             "interaction round trip failed: original={request:?}; decoded={decoded:?}"
         );
     }
-    let _ = acyclic_harness::interaction::ApprovalDecisionFile::decode(bytes, bytes.len() as u64);
+    let _ =
+        acyclic_harness::interaction::ApprovalDecisionFile::decode(bytes, Some(bytes.len() as u64));
     if let Ok(request) = wire::CommitRequest::decode(bytes)
         && let Ok(request) = wire_codec::commit_from_wire(request)
     {
