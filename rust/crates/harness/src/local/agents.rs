@@ -212,10 +212,8 @@ impl TurnContext for LocalContext {
                 .0
                 .upgrade()
                 .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
-            #[cfg(any(test, feature = "native-execution"))]
+
             local.merge_completed_workspace(agent, turn).await?;
-            #[cfg(not(any(test, feature = "native-execution")))]
-            let _ = (local, agent, turn);
             Ok(())
         })
     }
@@ -306,7 +304,7 @@ impl LocalHarness {
     /// Publish a child's fork before its terminal turn becomes observable.
     /// The shared workspace command engine owns capture, merge, conflict
     /// projection and physical/native reconciliation under the parent's lock.
-    #[cfg(any(test, feature = "native-execution"))]
+
     async fn merge_completed_workspace(&self, agent: &AgentState, turn: OperationId) -> Result<()> {
         let (Some(parent), Some(root)) = (&agent.parent, &self.workspace) else {
             return Ok(());

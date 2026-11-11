@@ -66,7 +66,7 @@ impl PublicationDelta {
 
     /// Applies the original query to one expanded full path, with the record's
     /// original attributes and the volume's original key encoding.
-    #[cfg(feature = "session")]
+
     pub fn selects(
         self,
         (volume, authorization): (VolumeId, &acyclic_stream::session::ResourceAuthorization),
