@@ -103,6 +103,8 @@ name is reserved. The materialization primitive reopens the operation through
 the held checkout and refuses edits to that operation's own directory.
 Exclusive creation, original allocation, journal and cleanup identity checks
 protect the recovery bytes without reclassifying ordinary user paths.
+Materialization journals use version 5 for this binding. Earlier versions are
+refused before publication; finish their operations with the original runtime.
 
 `ToolPolicy::execution_grant` selects an optional, already authorized physical
 grant after the exact invocation's policy and approval allow it, before its

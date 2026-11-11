@@ -407,7 +407,7 @@ fn plan(edits: Vec<MaterializationEdit>) -> MaterializationPlan {
 
 #[tokio::test]
 async fn obsolete_journals_and_forward_rollback_are_rejected() {
-    for version in [0, 2, 3, u32::MAX, JOURNAL_VERSION] {
+    for version in [0, 1, 2, 3, 4, u32::MAX, JOURNAL_VERSION] {
         let backend = Crashing::default();
         let store = &backend.journals;
         let materializer = JournaledMaterializer::new(&backend, &backend);
