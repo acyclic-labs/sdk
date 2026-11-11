@@ -235,18 +235,52 @@ pub async fn upload(
 pub struct Reader<'a, S> {
     storage: &'a S,
     pending: Vec<Root>,
+    skip: u64,
+    remaining: u64,
+    empty: bool,
     interrupted: bool,
 }
 
 impl<'a, S: Storage> Reader<'a, S> {
     /// Pins a root whose pages the enclosing read/stage owner keeps alive.
     pub fn new(storage: &'a S, root: Root) -> Result<Self, StreamError> {
+        Self::open(storage, root, 0, root.part.length, true)
+    }
+
+    /// Pins a byte interval without reading its prefix or unselected subtrees.
+    /// Empty intervals perform no IO. Each returned slice retains its original
+    /// page owner; the enclosing read/stage keeps the root alive.
+    pub fn range(
+        storage: &'a S,
+        root: Root,
+        offset: u64,
+        length: u64,
+    ) -> Result<Self, StreamError> {
+        Self::open(storage, root, offset, length, false)
+    }
+
+    fn open(
+        storage: &'a S,
+        root: Root,
+        offset: u64,
+        length: u64,
+        whole: bool,
+    ) -> Result<Self, StreamError> {
         if root.height > MAX_HEIGHT {
             return Err(StreamError::InvalidResponse);
+        }
+        if offset
+            .checked_add(length)
+            .is_none_or(|end| end > root.part.length)
+        {
+            return Err(StreamError::InvalidArgument);
         }
         Ok(Self {
             storage,
             pending: vec![root],
+            skip: offset,
+            remaining: length,
+            empty: whole && root.part.length == 0,
             interrupted: false,
         })
     }
@@ -267,7 +301,15 @@ impl<'a, S: Storage> Reader<'a, S> {
         result
     }
     async fn next_page(&mut self) -> Result<Option<OwnedBytes>, StreamError> {
+        if self.remaining == 0 && !self.empty {
+            self.pending.clear();
+            return Ok(None);
+        }
         while let Some(root) = self.pending.pop() {
+            if root.part.length != 0 && self.skip >= root.part.length {
+                self.skip -= root.part.length;
+                continue;
+            }
             let page = self.storage.get(root.part.digest).await?;
             if page.bytes.len() > PAGE_BYTES {
                 return Err(StreamError::InvalidResponse);
@@ -280,8 +322,18 @@ impl<'a, S: Storage> Reader<'a, S> {
                 {
                     return Err(StreamError::InvalidResponse);
                 }
+                let start = usize::try_from(self.skip).map_err(|_| StreamError::InvalidResponse)?;
+                let length = usize::try_from(self.remaining.min(root.part.length - self.skip))
+                    .map_err(|_| StreamError::InvalidResponse)?;
+                self.skip = 0;
+                self.remaining -= length as u64;
+                self.empty = false;
+                if self.remaining == 0 {
+                    self.pending.clear();
+                }
                 crate::runtime::yield_now().await?;
-                return Ok(Some(page.bytes.slice(BLOB_MAGIC.len()..)));
+                let start = BLOB_MAGIC.len() + start;
+                return Ok(Some(page.bytes.slice(start..start + length)));
             }
             if page.kind != Kind::Manifest {
                 return Err(StreamError::InvalidResponse);

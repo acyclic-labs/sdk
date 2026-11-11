@@ -139,6 +139,61 @@ async fn content_identity_ignores_fragments_and_blob_bytes_cannot_alias_manifest
 }
 
 #[tokio::test]
+async fn content_ranges_seek_without_fetching_unselected_pages()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let disk = Disk::open(directory.path());
+    let length = 3 * LEAF_BYTES + 17;
+    let root = upload(&disk, input(length, 997)).await?;
+    let before = disk.reads.load(Ordering::Relaxed);
+    let offset = LEAF_BYTES - 7;
+    let selected = LEAF_BYTES + 23;
+    let mut reader = Reader::range(&disk, root, offset as u64, selected as u64)?;
+    let mut position = offset;
+    while let Some(bytes) = reader.next().await? {
+        assert!(!bytes.is_empty());
+        assert!(
+            bytes
+                .as_slice()
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| { *byte == pattern(position + index) })
+        );
+        position += bytes.len();
+    }
+    assert_eq!(position, offset + selected);
+    assert_eq!(disk.reads.load(Ordering::Relaxed) - before, 4);
+
+    let before = disk.reads.load(Ordering::Relaxed);
+    let mut suffix = Reader::range(&disk, root, (length - 17) as u64, 17)?;
+    let bytes = suffix.next().await?.ok_or("missing selected suffix")?;
+    assert_eq!(bytes.len(), 17);
+    assert!(
+        bytes
+            .as_slice()
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| { *byte == pattern(length - 17 + index) })
+    );
+    assert!(suffix.next().await?.is_none());
+    assert_eq!(disk.reads.load(Ordering::Relaxed) - before, 2);
+
+    let before = disk.reads.load(Ordering::Relaxed);
+    let mut empty = Reader::range(&disk, root, length as u64, 0)?;
+    assert!(empty.next().await?.is_none());
+    assert_eq!(disk.reads.load(Ordering::Relaxed), before);
+    assert!(matches!(
+        Reader::range(&disk, root, length as u64, 1),
+        Err(StreamError::InvalidArgument)
+    ));
+    assert!(matches!(
+        Reader::range(&disk, root, u64::MAX, 1),
+        Err(StreamError::InvalidArgument)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn content_tree_carries_across_manifest_pages_and_refuses_corruption()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -163,6 +218,21 @@ async fn content_tree_carries_across_manifest_pages_and_refuses_corruption()
         );
     }
     assert!(reader.next().await?.is_none());
+    // Seek across two manifest subtrees without fetching preceding leaves.
+    let before = disk.reads.load(Ordering::Relaxed);
+    let mut selected = Reader::range(&disk, root, FANOUT as u64 - 1, 2)?;
+    for index in FANOUT - 1..=FANOUT {
+        assert_eq!(
+            selected
+                .next()
+                .await?
+                .ok_or("missing selected leaf")?
+                .as_slice(),
+            &[index as u8]
+        );
+    }
+    assert!(selected.next().await?.is_none());
+    assert_eq!(disk.reads.load(Ordering::Relaxed) - before, 5);
     let root_path = disk.key(root.part.digest);
     let mut stored = std::fs::read(&root_path)?;
     *stored.last_mut().ok_or("empty manifest")? ^= 1;

@@ -422,6 +422,16 @@ must be integrated before the conformance/proof completion audit can pass.
 
 ## Streaming ingress refinement (before implementation)
 
+The shared content reader also needs `range(storage, root, offset, length)`.
+It validates the requested interval against the root's logical length, skips
+unselected manifest subtrees without fetching them, verifies selected pages,
+and returns only the requested bytes in original order. Its working set remains
+bounded by physical pages and tree height. An empty interval performs no IO;
+the existing whole-content reader retains its empty-content behavior. The same
+interruption guard retires a canceled range cursor. This supports reopening
+staged sections and seeking large record content without prefix materialization;
+it does not itself publish or authorize a stage.
+
 Add stage_tokens(Submission, Stream<Token>) as the bounded-memory entrypoint.
 Submission binds commit id, retry key, original family, deadline, effect count
 and output projection. Owned stage(WriteRequest) remains a convenience adapter;
@@ -468,8 +478,10 @@ Native macOS `cargo +1.98.1 check --locked --all-targets -p acyclic-stream
 `51c07fd8384e7550364b412ed269ac808467c115`. It used the already installed
 toolchain, `CARGO_INCREMENTAL=0` and the shared target
 `/Users/var/foreman/target/lanes`. Log:
-`Q:/scratch/stream-unbounded/ivar-51c-check.log`. The subsequent commits only
-extend this design/inventory; they do not change the checked Rust source.
+`Q:/scratch/stream-unbounded/ivar-51c-check.log`. The design/inventory commits
+through `e948030667c` do not change that checked Rust source. The subsequent
+range-reader extension requires its own compile and focused tests; results at
+`51c07fd8384` cannot validate that extension.
 
 The macOS focused run is now live at that same source: six `staged::tests::`
 cases and four `content::tree::tests::` cases, followed by paired guard-removal
