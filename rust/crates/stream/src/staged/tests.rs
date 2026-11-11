@@ -11,6 +11,125 @@ fn inline(field: Field) -> Result<OwnedBytes, Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
+async fn staged_paths_validate_grammar_across_pages_without_size_limits()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn tokens(role: usize, path: Field) -> Vec<Result<Token, StreamError>> {
+        let ordinary = || Field::Inline(OwnedBytes::from_static(b"ordinary"));
+        let exclusion = (role == 5).then(|| path.clone());
+        let mut tokens = vec![Ok(Token::Effect {
+            soft: false,
+            conditions: u64::from(role < 2),
+            mutations: u64::from(role >= 2),
+        })];
+        tokens.push(Ok(match role {
+            0 => Token::Presence {
+                path,
+                present: true,
+            },
+            1 => Token::Tail {
+                path,
+                expected: 0,
+                commit_id: None,
+            },
+            2 => Token::Append { path, records: 1 },
+            3 => Token::Fork {
+                source: path,
+                destination: ordinary(),
+                at_tail: Some(0),
+                exclusions: 0,
+                records: 0,
+            },
+            4 => Token::Fork {
+                source: ordinary(),
+                destination: path,
+                at_tail: Some(0),
+                exclusions: 0,
+                records: 0,
+            },
+            _ => Token::Fork {
+                source: ordinary(),
+                destination: ordinary(),
+                at_tail: Some(0),
+                exclusions: 1,
+                records: 0,
+            },
+        }));
+        if role == 2 {
+            tokens.push(Ok(Token::Record {
+                value: Field::Inline(OwnedBytes::new()),
+                keys: 0,
+                attributes: 0,
+            }));
+        } else if let Some(path) = exclusion {
+            tokens.push(Ok(Token::Exclusion(path)));
+        }
+        tokens
+    }
+    let directory = tempfile::tempdir()?;
+    let storage = Disk::open(directory.path());
+    let submission = Submission {
+        commit_id: CommitId::from_bytes([17; 32]),
+        idempotency_key: IdempotencyKey::new("paged-path-grammar")?,
+        family: Family::Commit,
+        deadline_unix_millis: None,
+        effects: 1,
+        accepted: false,
+    };
+    let path = OwnedBytes::from(format!("{}end", "a/".repeat(tree::PAGE_BYTES)));
+    assert!(path.len() > crate::MAX_PATH_BYTES);
+    let mut content = tree::Writer::new(&storage)?;
+    content.write(path.as_slice()).await?;
+    let root = content.finish().await?;
+    let mut pages = tree::Reader::new(&storage, root)?;
+    let first_page = pages.next().await?.ok_or("missing path page")?.len();
+    for role in 0..6 {
+        for field in [Field::Inline(path.clone()), Field::Content(root)] {
+            let staged = stage_tokens(
+                &storage,
+                submission.clone(),
+                futures::stream::iter(tokens(role, field)),
+            )
+            .await?;
+            let mut reader = Reader::open(&storage, &staged).await?;
+            while reader.next().await?.is_some() {}
+        }
+        for path in [
+            "", "/a", "a/", "a//b", ".", "..", "a/./b", "a/../b", "a\\b", "a b", "é",
+        ] {
+            let result = stage_tokens(
+                &storage,
+                submission.clone(),
+                futures::stream::iter(tokens(role, Field::Inline(OwnedBytes::from(path)))),
+            )
+            .await;
+            assert!(
+                matches!(result, Err(StreamError::InvalidPath)),
+                "staged path grammar accepted malformed input: role={role} path={path:?} result={result:?}"
+            );
+        }
+        for boundary in [tree::PAGE_BYTES, first_page] {
+            let path = OwnedBytes::from(format!("{}/../b", "a".repeat(boundary - 2)));
+            let mut content = tree::Writer::new(&storage)?;
+            content.write(path.as_slice()).await?;
+            let root = content.finish().await?;
+            for field in [Field::Inline(path.clone()), Field::Content(root)] {
+                let result = stage_tokens(
+                    &storage,
+                    submission.clone(),
+                    futures::stream::iter(tokens(role, field)),
+                )
+                .await;
+                assert!(
+                    matches!(result, Err(StreamError::InvalidPath)),
+                    "staged path grammar accepted a dot segment across pages: role={role} boundary={boundary} result={result:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn staged_100k_effects_keep_counts_and_caller_record_order()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

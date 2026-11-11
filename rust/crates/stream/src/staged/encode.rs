@@ -91,6 +91,27 @@ impl<'a, S: Storage> Encoder<'a, S> {
             Field::Content(root) => self.root(*root).await,
         }
     }
+    async fn path_field<B: AsRef<[u8]>>(&mut self, field: &Field<B>) -> Result<(), StreamError> {
+        let mut grammar = crate::path::PathGrammar::default();
+        match field {
+            Field::Inline(bytes) => {
+                for page in bytes.as_ref().chunks(tree::PAGE_BYTES) {
+                    grammar.push(page)?;
+                    if page.len() == tree::PAGE_BYTES {
+                        crate::runtime::yield_now().await?;
+                    }
+                }
+            }
+            Field::Content(root) => {
+                let mut reader = tree::Reader::new(self.storage, *root)?;
+                while let Some(page) = reader.next().await? {
+                    grammar.push(page.as_slice())?;
+                }
+            }
+        }
+        grammar.finish()?;
+        self.field(field).await
+    }
     async fn token<B: AsRef<[u8]>>(&mut self, token: &Token<B>) -> Result<(), StreamError> {
         self.shape
             .accept(token)
@@ -108,7 +129,7 @@ impl<'a, S: Storage> Encoder<'a, S> {
             }
             Token::Presence { path, present } => {
                 self.byte(2).await?;
-                self.field(path).await?;
+                self.path_field(path).await?;
                 self.byte(u8::from(*present)).await
             }
             Token::Tail {
@@ -117,7 +138,7 @@ impl<'a, S: Storage> Encoder<'a, S> {
                 commit_id,
             } => {
                 self.byte(3).await?;
-                self.field(path).await?;
+                self.path_field(path).await?;
                 self.number(*expected).await?;
                 self.byte(u8::from(commit_id.is_some())).await?;
                 if let Some(commit_id) = commit_id {
@@ -127,7 +148,7 @@ impl<'a, S: Storage> Encoder<'a, S> {
             }
             Token::Append { path, records } => {
                 self.byte(4).await?;
-                self.field(path).await?;
+                self.path_field(path).await?;
                 self.number(*records).await
             }
             Token::Fork {
@@ -138,15 +159,15 @@ impl<'a, S: Storage> Encoder<'a, S> {
                 records,
             } => {
                 self.byte(5).await?;
-                self.field(source).await?;
-                self.field(destination).await?;
+                self.path_field(source).await?;
+                self.path_field(destination).await?;
                 self.optional(*at_tail).await?;
                 self.number(*exclusions).await?;
                 self.number(*records).await
             }
             Token::Exclusion(path) => {
                 self.byte(6).await?;
-                self.field(path).await
+                self.path_field(path).await
             }
             Token::Record {
                 value,

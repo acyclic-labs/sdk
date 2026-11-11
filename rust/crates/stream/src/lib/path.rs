@@ -1,6 +1,50 @@
 use crate::{MAX_ITEMS, MAX_PATH_BYTES, StreamError};
 use std::{fmt, sync::Arc};
 
+// A path segment is invalid only when empty, exactly '.', or exactly '..'.
+// Keep that distinction across input pages without retaining the segment.
+#[derive(Default)]
+enum SegmentClass {
+    #[default]
+    Empty,
+    Dot,
+    DotDot,
+    Ordinary,
+}
+
+#[derive(Default)]
+pub(crate) struct PathGrammar(SegmentClass);
+
+impl PathGrammar {
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Result<(), StreamError> {
+        for &byte in bytes {
+            if !byte.is_ascii()
+                || byte.is_ascii_control()
+                || byte.is_ascii_whitespace()
+                || byte == b'\\'
+            {
+                return Err(StreamError::InvalidPath);
+            }
+            self.0 = match (&self.0, byte) {
+                (SegmentClass::Ordinary, b'/') => SegmentClass::Empty,
+                (_, b'/') => return Err(StreamError::InvalidPath),
+                (SegmentClass::Empty, b'.') => SegmentClass::Dot,
+                (SegmentClass::Dot, b'.') => SegmentClass::DotDot,
+                _ => SegmentClass::Ordinary,
+            };
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> Result<(), StreamError> {
+        if matches!(self.0, SegmentClass::Ordinary) {
+            Ok(())
+        } else {
+            Err(StreamError::InvalidPath)
+        }
+    }
+}
+
 /// Permanent account-relative slash-separated ASCII path.
 pub struct StreamPath {
     text: PathText,
@@ -72,29 +116,13 @@ impl StreamPath {
     /// # Errors
     /// Returns an invalid-path error for a noncanonical or oversized path.
     pub fn validate(path: &str) -> Result<(), StreamError> {
-        if path.is_empty()
-            || path.len() > MAX_PATH_BYTES
-            || !path.is_ascii()
-            || path.starts_with('/')
-            || path.ends_with('/')
-        {
+        if path.len() > MAX_PATH_BYTES {
             return Err(StreamError::InvalidPath);
         }
-        let mut count = 0_usize;
-        for segment in path.split('/') {
-            count = count.checked_add(1).ok_or(StreamError::LimitExceeded)?;
-            if segment.is_empty()
-                || segment == "."
-                || segment == ".."
-                || segment
-                    .bytes()
-                    .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
-                || segment.as_bytes().contains(&b'\\')
-            {
-                return Err(StreamError::InvalidPath);
-            }
-        }
-        if count > MAX_ITEMS {
+        let mut grammar = PathGrammar::default();
+        grammar.push(path.as_bytes())?;
+        grammar.finish()?;
+        if path.split('/').count() > MAX_ITEMS {
             return Err(StreamError::LimitExceeded);
         }
         Ok(())

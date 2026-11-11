@@ -569,3 +569,22 @@ The same live script proceeds to 13 positive cases and four exact mutations.
 At this checkpoint its test command is waiting for the shared target lock;
 no positive or mutation result at this source has yet been observed. Continue
 observing that existing process rather than launching a duplicate validation.
+
+### Unbounded staged path grammar
+
+Before canonical planning, every staged condition, append destination, fork
+source/destination and exclusion must pass the existing ASCII segment grammar.
+Use one incremental grammar state shared with StreamPath::validate; it retains
+only the current segment class (empty, dot, dot-dot, ordinary), with no byte or
+segment-count ceiling. Both inline input and content roots are checked in
+physical-page steps; the latter is read through the shared verified reader.
+Reject malformed paths before sealing, including a dot segment or separator
+split across pages. Opaque values and header bytes are not path grammar input.
+
+The owned StreamPath adapter keeps its existing request bounds until namespace,
+transport and publication cutover is complete; extracting grammar alone is not
+permission to expose deep paths to the current recursive namespace. Staged
+path validation does not observe Stream state, reserve destinations, settle
+conditions, assign positions or provide any of the outstanding publication
+proofs. Its conformance control must include paths larger than the old byte and
+segment ceilings and malformed segments crossing physical page boundaries.

@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/staged/encode.rs b/rust/crates/stream/src/staged/encode.rs
+--- a/rust/crates/stream/src/staged/encode.rs
++++ b/rust/crates/stream/src/staged/encode.rs
+@@ -126,7 +126,6 @@ impl<'a, S: Storage> Encoder<'a, S> {
+                 }
+             }
+         }
+-        grammar.finish()?;
+         self.field(field).await
+     }
+     async fn token<B: AsRef<[u8]>>(&mut self, token: &Token<B>) -> Result<(), StreamError> {
