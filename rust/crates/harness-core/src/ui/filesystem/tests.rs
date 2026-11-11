@@ -7,7 +7,8 @@ use acyclic_fs::{
     VolumeLimits, WorkBudget,
 };
 use acyclic_stream::{
-    AppendRequest, ChildrenPageRequest, MemoryStream, ReadRequest, StreamPath, StreamProvider,
+    AppendRequest, ChildrenPageRequest, MemoryStream, ReadRequest, StreamPath,
+    StreamProviderExt as _,
 };
 use futures::StreamExt;
 use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
@@ -60,7 +61,7 @@ impl ViewProvider for Frozen {
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SourceReference, DemandError> {
-        ctx.check()?;
+        ctx.admit(WorkCounters::UNCHARGED)?;
         Ok(SourceReference::new(self.identity(), 1))
     }
     fn cut(
@@ -82,7 +83,7 @@ impl ViewProvider for Frozen {
         _: ViewQuery<'_>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Snapshot, DemandError> {
-        ctx.check()?;
+        ctx.admit(WorkCounters::UNCHARGED)?;
         Ok(self.0.clone())
     }
     fn watch(
@@ -330,7 +331,14 @@ async fn computed_ui_defaults_overlay_and_fork_use_the_real_filesystem() -> Test
     ));
     let fs = Fs::memory();
     let cancel = CancellationToken::new();
-    let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+    let mut allocations = AllocationLedger::default();
+    let mut spent = WorkCounters::UNCHARGED;
+    let mut ctx = KernelAccounting::borrowed_standalone(
+        &mut allocations,
+        &mut spent,
+        WorkBudget::UNBOUNDED,
+        &cancel,
+    );
     let (root, _) = LazyWorkspace::attach(
         &fs,
         "ui-root",

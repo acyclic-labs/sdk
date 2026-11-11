@@ -239,7 +239,10 @@ impl Write for Count<'_, '_> {
         if self.failure.is_none() {
             let result = self
                 .ctx
-                .charge_items(1)
+                .charge(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })
                 .map_err(DemandError::from)
                 .and_then(|()| {
                     self.length = self

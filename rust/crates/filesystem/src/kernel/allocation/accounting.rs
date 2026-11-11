@@ -1,7 +1,8 @@
 use super::*;
 
 impl<'a> KernelAccounting<'a> {
-    pub(crate) fn cancellation(&self) -> &'a crate::CancellationToken {
+    /// Original caller cancellation, shared by nested kernel operations.
+    pub fn cancellation(&self) -> &'a crate::CancellationToken {
         match self {
             Self::Standalone { cancellation, .. }
             | Self::BorrowedStandalone { cancellation, .. } => cancellation,
