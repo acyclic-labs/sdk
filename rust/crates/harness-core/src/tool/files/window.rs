@@ -25,7 +25,7 @@ impl Window {
     /// Transfers the original selection owner while retiring its range bytes.
     pub fn into_source(self) -> super::source::ReadSource {
         super::source::ReadSource {
-            source: Some(self.source),
+            source: Some(self.source.into()),
             custody: self._hold,
         }
     }
