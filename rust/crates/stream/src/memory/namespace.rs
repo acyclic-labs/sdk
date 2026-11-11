@@ -94,6 +94,7 @@ impl MemoryStream {
         let blank = || PathState {
             history: None,
             ranges: HistoryRanges::default(),
+            keys: KeyTree::default(),
             prefix: [None, None],
             tail: 0,
         };

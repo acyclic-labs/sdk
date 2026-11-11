@@ -31,6 +31,7 @@ type HistoryRanges = acyclic_collections::PersistentIndex<Arc<RecordBatch>, Allo
 struct PreparedHistory {
     history: Arc<History>,
     ranges: HistoryRanges,
+    keys: KeyTree,
 }
 
 struct HistoryIndexWork<'a>(&'a MemoryStream);
@@ -81,13 +82,11 @@ impl<E, F: FnMut(u64) -> Result<(), E>> acyclic_collections::IndexReadWork for H
 enum History {
     Batch {
         parent: Option<Arc<Self>>,
-        keys: KeyTree,
         records: Arc<RecordBatch>,
         _allocation: Allocation,
     },
     Prefix {
         source: Option<Arc<Self>>,
-        keys: KeyTree,
         #[cfg(any(test, not(target_arch = "wasm32")))]
         tail: u64,
         _allocation: Allocation,
@@ -95,12 +94,6 @@ enum History {
 }
 
 impl History {
-    fn keys(&self) -> &KeyTree {
-        match self {
-            Self::Batch { keys, .. } | Self::Prefix { keys, .. } => keys,
-        }
-    }
-
     #[cfg(all(test, not(target_arch = "wasm32")))]
     fn parent(&self) -> Option<&Arc<Self>> {
         match self {
