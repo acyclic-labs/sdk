@@ -51,6 +51,7 @@ struct Staged {
     directory: String,
     pending: String,
     sequence: u64,
+    announce: bool,
 }
 
 impl Staged {
@@ -59,11 +60,12 @@ impl Staged {
             directory,
             pending: String::new(),
             sequence: 0,
+            announce: false,
         }
     }
 
     async fn flush(&mut self, publisher: &dyn ContentPublisher) -> Result<()> {
-        if self.pending.is_empty() {
+        if self.pending.is_empty() && !self.announce {
             return Ok(());
         }
         let path = format!("{}/{:016x}", self.directory, self.sequence);
@@ -85,6 +87,7 @@ impl Staged {
             )?
             .await?;
         self.pending.clear();
+        self.announce = false;
         self.sequence += 1;
         Ok(())
     }
@@ -94,8 +97,8 @@ impl LiveText<'_> {
     pub(super) fn observe(&mut self, event: &ModelEvent) {
         match event {
             ModelEvent::Restarted => {
-                self.answer.pending.clear();
-                self.reasoning.pending.clear();
+                *self = self.reply.dispatch();
+                self.answer.announce = true;
             }
             ModelEvent::Content { delta } => self.answer.pending.push_str(delta),
             ModelEvent::Reasoning { delta } => self.reasoning.pending.push_str(delta),

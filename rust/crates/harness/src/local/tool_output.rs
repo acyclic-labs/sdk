@@ -350,6 +350,21 @@ mod tests {
     }
 
     #[test]
+    fn a_restarted_dispatch_replaces_published_text_before_its_next_delta() {
+        let mut tail = OutputTail::default();
+        let old = (0, paths(&["tools/t/attempt-a/reply/0000000000000000"]));
+        absorb(&mut tail, vec![old], 1, 1, &[b"abandoned"]).unwrap();
+        assert_eq!(tail.text(), "abandoned");
+        // LiveReply announces the new owner with an empty answer chunk.
+        let restarted = (1, paths(&["tools/t/attempt-b/reply/0000000000000000"]));
+        absorb(&mut tail, vec![restarted], 2, 2, &[b""]).unwrap();
+        assert_eq!((tail.kind(), tail.text()), (LiveKind::Answer, ""));
+        let answer = (2, paths(&["tools/t/attempt-b/reply/0000000000000001"]));
+        absorb(&mut tail, vec![answer], 3, 3, &[b"answer"]).unwrap();
+        assert_eq!(tail.text(), "answer");
+    }
+
+    #[test]
     fn a_dispatch_shows_its_reasoning_then_only_its_answer() {
         let mut tail = OutputTail::default();
         let reasoning = (0, paths(&["tools/t/d/reasoning/0"]));

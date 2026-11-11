@@ -244,10 +244,12 @@ pub(crate) fn generate<'a>(
                         }
                     }
                     let Some(error) = failure else {break;};
+                    if error.code() == acyclic_harness_core::wire::ErrorCode::Unavailable {
+                        let event = ModelEvent::Restarted;
+                        let custody = work.claim(event.logical_owned_bytes()?, 1, WorkCounters::UNCHARGED)?;
+                        yield (event, custody);
+                    }
                     attempt.recover(provider, &mut auth, error, None, Some(&mut auth_custody), Some(work)).await?;
-                    let event = ModelEvent::Restarted;
-                    let custody = work.claim(event.logical_owned_bytes()?, 1, WorkCounters::UNCHARGED)?;
-                    yield (event, custody);
                     response = dispatch::send(provider, body.clone(), dispatch_id, auth.0.as_deref(), auth.1.as_deref(), Some(work)).await;
                     }
                 }

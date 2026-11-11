@@ -66,9 +66,9 @@ pub(crate) fn generate_encoded<'a>(
                 }
             }
             let Some(error) = failure else {break;};
+            if error.code() == acyclic_harness_core::wire::ErrorCode::Unavailable { yield ModelEvent::Restarted; }
             attempt.recover(provider, &mut auth, error, None,
                 #[cfg(not(target_arch = "wasm32"))] None, None).await?;
-            yield ModelEvent::Restarted;
             response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None).await;
         }
     }

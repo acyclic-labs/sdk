@@ -16,6 +16,13 @@ pub(super) struct Fixture {
 }
 
 impl Fixture {
+    fn reply(&self, attempt: usize) -> Bytes {
+        if attempt > 0 {
+            self.recovered.as_ref().unwrap_or(&self.response).clone()
+        } else {
+            self.response.clone()
+        }
+    }
     pub(super) fn new(response: &'static str) -> Self {
         Self {
             response: Bytes::from_static(response.as_bytes()),
@@ -67,11 +74,7 @@ impl HttpTransport for Fixture {
                 request_id: None,
                 retry_after: None,
                 status: self.status,
-                body: Box::pin(futures::stream::iter([Ok(if attempt > 0 {
-                    self.recovered.as_ref().unwrap_or(&self.response).clone()
-                } else {
-                    self.response.clone()
-                })])),
+                body: Box::pin(futures::stream::iter([Ok(self.reply(attempt))])),
             })
         })
     }
@@ -118,7 +121,7 @@ impl HttpTransport for Fixture {
             }
             HttpResponse::with_native_body(
                 self.status,
-                futures::stream::iter([Ok(self.response.clone())]),
+                futures::stream::iter([Ok(self.reply(attempt))]),
                 work,
             )
         })

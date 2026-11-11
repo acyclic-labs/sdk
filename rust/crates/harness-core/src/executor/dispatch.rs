@@ -666,6 +666,9 @@ impl StockExecution<'_> {
                 }
                 if let Some(text) = text.as_mut() {
                     text.observe(event);
+                    if matches!(event, ModelEvent::Restarted) {
+                        text.flush().await?;
+                    }
                 }
                 let usage = match event {
                     ModelEvent::Completed { metadata } => {
