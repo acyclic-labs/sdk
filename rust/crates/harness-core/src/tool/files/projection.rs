@@ -102,8 +102,8 @@ impl Serialize for MediaText<'_> {
         match self {
             Self::Version(version) => serializer.serialize_str(version),
             Self::Notebook { path, version, page, text } => serializer.collect_str(&format_args!(
-                "{version}\nFile {path}; cells from {}; source bytes {}..{}; next byte {:?}\n{text}",
-                page.offset, page.start, page.end, page.next,
+                "{version}\nFile {path}; cells from {}; source bytes {}..{} of {}; eof {}; next byte {:?}\n{text}",
+                page.offset, page.start, page.end, page.total, page.eof, page.next,
             )),
         }
     }
@@ -150,6 +150,8 @@ pub(super) fn notebook_text_budget(
         start: u64::MAX,
         end: u64::MAX,
         next: Some(u64::MAX),
+        total: u64::MAX,
+        eof: false,
         offset: u64::MAX,
     };
     let empty = ReadProjection::Parts {
@@ -273,13 +275,15 @@ impl ToolProjection for FileProjection {
                     }
                     if page.end.checked_sub(page.start) != Some(text.len() as u64)
                         || page.end > file.byte_length()
+                        || page.total != file.byte_length()
+                        || page.eof != page.next.is_none()
                         || page
                             .next
                             .is_some_and(|next| next != page.end || next > file.byte_length())
-                        || input
-                            .0
-                            .range
-                            .is_some_and(|range| page.start != range.start || page.end > range.end)
+                        || input.0.range.is_some_and(|range| {
+                            page.start != range.start.min(page.total)
+                                || page.end > range.end.min(page.total)
+                        })
                         || match input.0.selection {
                             Some(
                                 ReadSelection::Lines { offset, .. }
@@ -302,6 +306,14 @@ impl ToolProjection for FileProjection {
                             work,
                             "text page differs from source interval",
                         ));
+                    }
+                    if page.start == 0
+                        && page.end == file.byte_length()
+                        && let FileReadSource::Content(file) = file
+                    {
+                        crate::executor::with_history_io(io, |history| {
+                            file.descriptor().verify(text.as_bytes(), history)
+                        })?;
                     }
                 } else if result.0.media.is_some() {
                     if !text.is_empty() {
@@ -455,7 +467,7 @@ impl ToolProjection for FileProjection {
                         work,
                     );
                 }
-                let FileReadSource::Content(file) = file else {
+                if result.0.media.is_none() {
                     let version = super::version::encode_source(file, work)?;
                     return schema::project_json(
                         &FileView {
@@ -466,21 +478,13 @@ impl ToolProjection for FileProjection {
                         },
                         work,
                     );
-                };
-                if let Some(range) = input.0.range {
-                    return schema::summary_reference(
-                        file,
-                        400,
-                        format_args!(
-                            "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
-                            range.start,
-                            range.end,
-                            range.start,
-                            file.descriptor().byte_length() - range.end,
-                        ),
-                        work,
-                    );
                 }
+                let FileReadSource::Content(file) = file else {
+                    return Err(super::executor::rejection(
+                        work,
+                        "native media requires a complete content descriptor",
+                    ));
+                };
                 schema::summary_reference(
                     file,
                     160,

@@ -131,25 +131,10 @@ impl FileTool {
                         "byte ranges and projections are mutually exclusive",
                     ));
                 }
-                let length = match input.0.range {
-                    Some(range)
-                        if source
-                            .0
-                            .as_ref()
-                            .is_none_or(|file| range.end <= file.descriptor().byte_length()) =>
-                    {
-                        range.end.checked_sub(range.start)
-                    }
-                    Some(_) => None,
-                    None => source
-                        .0
-                        .as_ref()
-                        .map_or(Some(0), |file| Some(file.descriptor().byte_length())),
-                };
-                if length.is_none() {
+                if input.0.range.is_some_and(|range| range.end < range.start) {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
-                        "file selection exceeds source bounds",
+                        "read range is reversed; use start <= end",
                     ));
                 }
                 return Ok(source);

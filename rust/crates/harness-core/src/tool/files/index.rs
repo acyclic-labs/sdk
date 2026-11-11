@@ -116,9 +116,6 @@ fn cursor(
         previous = Some(position);
     }
     let relative = ordinal.checked_sub(first).ok_or_else(invalid)?;
-    if terminal && relative >= count as u64 {
-        return Err(executor::rejection(work, "ordinal offset exceeds source"));
-    }
     if terminal && previous != Some(source_length) {
         return Err(invalid());
     }
@@ -479,7 +476,8 @@ mod checks {
             prop_assert_eq!(cursor(page.encoded(), first, first + selected as u64, source_length, None).unwrap(),
                 (first + selected as u64, positions[selected]));
             prop_assert!(cursor(page.encoded(), first + ENTRIES, first + selected as u64, source_length, None).is_err());
-            prop_assert!(cursor(page.encoded(), first, first + positions.len() as u64, source_length, None).is_err());
+            prop_assert_eq!(cursor(page.encoded(), first, first + positions.len() as u64, source_length, None).unwrap(),
+                (first + positions.len() as u64 - 1, source_length));
             prop_assert!(cursor(page.encoded(), first, first, source_length - 1, None).is_err());
             page.bytes[HEADER + 8..HEADER + 16].copy_from_slice(&0u64.to_le_bytes());
             prop_assert!(cursor(page.encoded(), first, first, source_length, None).is_err());

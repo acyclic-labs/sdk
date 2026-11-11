@@ -32,7 +32,7 @@ impl Window {
     ) -> Result<Self> {
         let original = match original.source {
             Some(super::version::SelectedVersion::Content(file)) => {
-                let range = content_range(&file, range, work)?;
+                let range = content_range(&file, range);
                 let bytes = context.read_file_range(&file, range, io).await?;
                 return Ok(Self {
                     source: FileReadSource::Content(file),
@@ -83,7 +83,7 @@ impl Window {
         match &self.source {
             FileReadSource::Content(file) => {
                 context
-                    .read_file_range(file, content_range(file, range, work)?, io)
+                    .read_file_range(file, content_range(file, range), io)
                     .await
             }
             FileReadSource::Authored(original) => {
@@ -104,18 +104,11 @@ impl Window {
     }
 }
 
-fn content_range(
-    file: &FileRef,
-    range: acyclic_fs::ByteRange,
-    work: crate::NativeWork<'_>,
-) -> Result<acyclic_fs::ByteRange> {
-    let remaining = file
-        .descriptor()
-        .byte_length()
-        .checked_sub(range.offset)
-        .ok_or_else(|| executor::rejection(work, "range exceeds source"))?;
-    Ok(acyclic_fs::ByteRange {
+fn content_range(file: &FileRef, range: acyclic_fs::ByteRange) -> acyclic_fs::ByteRange {
+    let offset = range.offset.min(file.descriptor().byte_length());
+    let remaining = file.descriptor().byte_length() - offset;
+    acyclic_fs::ByteRange {
+        offset,
         length: range.length.min(remaining),
-        ..range
-    })
+    }
 }

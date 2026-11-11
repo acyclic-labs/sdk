@@ -466,19 +466,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .tool_input());
             }
         };
-        let remaining = length.checked_sub(range.offset).ok_or_else(|| {
-            stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Invalid,
-                "read offset is past the file's end",
-            )
-            .tool_input()
-        })?;
+        let offset = range.offset.min(length);
+        let remaining = length - offset;
         let chunk = io.sdk(
             generation
                 .read_range(
                     &requested,
-                    range.offset,
+                    offset,
                     remaining.min(range.length),
                     io,
                     io.cancellation(),
