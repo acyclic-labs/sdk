@@ -10,6 +10,64 @@ use std::os::windows::io::AsHandle;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
+fn busy_completion_packet_cannot_finish_another_read_owners_batch() -> TestResult {
+    struct Finished {
+        completed: std::sync::mpsc::Sender<()>,
+    }
+    impl HostChangeSink for Finished {
+        fn logical_owned_bytes(&self) -> u64 {
+            0
+        }
+        fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> {
+            work.check()
+        }
+        fn host_changed_wide(
+            &self,
+            _: &[HostChangeWide<'_>],
+            work: &mut DemandWork,
+        ) -> Result<(), DemandError> {
+            work.check()
+        }
+        fn delivery_finished(&self) {
+            self.completed.send(()).unwrap();
+        }
+    }
+    let (_root, held) = held()?;
+    let cancellation = CancellationToken::new();
+    let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let (completed, observed) = std::sync::mpsc::channel();
+    let sink = Arc::new(Finished { completed });
+    let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
+    let watch = NativeSourceWatch::open_watch(
+        held.as_handle(),
+        delivery,
+        false,
+        Some(true),
+        false,
+        &mut work,
+    )?;
+    let mut completion = watch.shared.delivery.wide_delivery_batch();
+    let reads = watch.shared.lock_reads();
+    completion.deliver(&[HostChangeWide::Everything], &mut work)?;
+    // This real collector entry fails try_lock_reads while a fence owns the
+    // pending callback. Its empty batch must not consume the fence's wake.
+    Arc::clone(&watch.shared).serve();
+    assert!(matches!(
+        observed.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    drop(reads);
+    drop(completion);
+    observed.recv()?;
+    assert!(matches!(
+        observed.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    watch.stop_with_work(&mut work)?;
+    Ok(())
+}
+
+#[test]
 fn completion_thread_loss_wakes_active_and_late_waiters_without_retiring_pending_storage()
 -> TestResult {
     const CHILD: &str = "ACYCLIC_TEST_SOURCE_WATCH_HUB_END";

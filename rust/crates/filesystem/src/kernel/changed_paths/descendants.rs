@@ -56,8 +56,7 @@ impl Descendants {
             record.file_id.into_bytes(),
             accounting,
             |accounting| {
-                frames
-                    .ensure_for_push(usize::from(config.limits.maximum_path_depth), accounting)?;
+                frames.ensure_for_push(usize::MAX, accounting)?;
                 prepared = Some(Values::new(
                     entries,
                     DecodeLimits::for_volume(config),

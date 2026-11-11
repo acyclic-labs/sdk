@@ -662,7 +662,7 @@ impl crate::NativeStreamProvider for MemoryStream {
     fn native_prepare_commit(
         &self,
         request: CommitRequest,
-        maximum_record_bytes: usize,
+        capacity: crate::PreparedRecordCapacity,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
         Work::start(
@@ -673,9 +673,8 @@ impl crate::NativeStreamProvider for MemoryStream {
                     async move {
                         let provider = self.with_context(Arc::clone(&work));
                         let result = async {
-                            let (plan, recovery) =
-                                provider.prepare(request, maximum_record_bytes).await?;
-                            work.reserve_write(maximum_record_bytes)?;
+                            let (plan, recovery) = provider.prepare(request, capacity).await?;
+                            work.reserve_write(capacity.payload_bytes)?;
                             let slot = work
                                 .record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
                             let ingress = Arc::clone(&slot);
@@ -693,12 +692,7 @@ impl crate::NativeStreamProvider for MemoryStream {
                                 |result| crate::native::outcome(result, StreamError::code),
                             ))?;
                             Ok((
-                                crate::PreparedNativeCommit::new(
-                                    future,
-                                    recovery,
-                                    slot,
-                                    maximum_record_bytes,
-                                ),
+                                crate::PreparedNativeCommit::new(future, recovery, slot, capacity),
                                 None,
                             ))
                         }

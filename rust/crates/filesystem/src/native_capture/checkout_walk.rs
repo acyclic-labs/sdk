@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn order_host_checkout_union(
     observed: Vec<(NamespacePath, Option<HostStat>)>,
     checkout_paths: Vec<(NamespacePath, ())>,
-    maximum: usize,
+    maximum: Option<usize>,
     meter: &NativeMaterializationWork,
 ) -> Result<(Vec<Option<HostStat>>, Vec<NamespacePath>), CaptureError> {
     meter.clone().check().map_err(capture_demand_error)?;
@@ -28,7 +28,7 @@ pub(super) fn order_host_checkout_union(
                 crate::materializer::NativeResourceCredit::Items.delta(1),
             )?;
             count = count.checked_add(1).ok_or(WorkError::Overflow)?;
-            if count > maximum {
+            if maximum.is_some_and(|maximum| count > maximum) {
                 return Err(CaptureError::InvalidOptions);
             }
             Ok(())
@@ -86,11 +86,11 @@ mod union_properties;
 pub(super) fn combined_path_count_exceeds(
     observed: usize,
     checkout_only: usize,
-    maximum: usize,
+    maximum: Option<usize>,
 ) -> bool {
     observed
         .checked_add(checkout_only)
-        .is_none_or(|combined| combined > maximum)
+        .is_none_or(|combined| maximum.is_some_and(|maximum| combined > maximum))
 }
 
 pub(super) async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -161,7 +161,6 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
     limits: crate::model::VolumeLimits,
     root: NamespacePath,
     policy: &CapturePolicy,
-    maximum: usize,
     paths: &mut Vec<(NamespacePath, ())>,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
@@ -184,10 +183,10 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
         let move_leaf = move_leaf && !super::leaf_path_tests::clone_leaves();
         if move_leaf {
             meter.clone().check().map_err(capture_demand_error)?;
-            return append_scanned_path(paths, child, maximum, meter);
+            return capture_push_entry(paths, child, (), meter);
         }
         let scanned = clone_capture_path(&child, meter)?;
-        append_scanned_path(paths, scanned, maximum, meter)?;
+        capture_push_entry(paths, scanned, (), meter)?;
         if entry.record.kind == FileKind::Directory {
             capture_reserve(pending, 1, meter)?;
             pending.push(child);
@@ -199,35 +198,15 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
     .await
 }
 
-pub(super) fn append_scanned_path(
-    paths: &mut Vec<(NamespacePath, ())>,
-    path: NamespacePath,
-    maximum: usize,
-    meter: &NativeMaterializationWork,
-) -> Result<(), CaptureError> {
-    let Err(index) = capture_position(paths, &path, meter)? else {
-        return capture_drop_path(path, meter);
-    };
-    if paths.len() >= maximum {
-        return Err(CaptureError::InvalidOptions);
-    }
-    capture_charge(
-        meter,
-        WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        },
-    )?;
-    capture_insert_at(paths, index, path, (), meter)
-}
-
 pub(super) fn validate_path_count(
     paths: &[NamespacePath],
     options: &CaptureOptions,
 ) -> Result<(), CaptureError> {
-    if options.maximum_paths == 0
-        || options.maximum_extent_spans == 0
-        || paths.len() > usize::try_from(options.maximum_paths).unwrap_or(usize::MAX)
+    if options.maximum_paths == Some(0)
+        || options.maximum_extent_spans == Some(0)
+        || options
+            .maximum_paths
+            .is_some_and(|maximum| paths.len() as u64 > u64::from(maximum))
     {
         return Err(CaptureError::InvalidOptions);
     }

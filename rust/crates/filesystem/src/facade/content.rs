@@ -13,11 +13,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             accounting.check()?;
-            if let ContentChange::Write { bytes, .. } = &change
-                && bytes.len() as u64 > self.volume.config.limits.maximum_read_bytes
-            {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 self.validate_native_work(original)?;
@@ -200,9 +195,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
             let mutation = match change {
                 ContentChange::Write { bytes, .. } if bytes.is_empty() => None,
                 ContentChange::Write { offset, bytes } => {
-                    if bytes.len() as u64 > self.volume.config.limits.maximum_read_bytes {
-                        return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-                    }
                     let mut source = std::io::Cursor::new(bytes.as_ref());
                     let content = stage_content_for_volume_with_accounting(
                         &self.volume,

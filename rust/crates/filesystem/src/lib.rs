@@ -382,7 +382,7 @@ pub use s3_http::{
 };
 pub use simulation::{
     ScheduledSimulationFault, SimulatedStore, Simulation, SimulationError, SimulationFault,
-    SimulationOperation, SimulationOptions, SimulationTrace,
+    SimulationOperation, SimulationTrace,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use source::{ReconcileOutcome, Source, SourceError, SourceMode, SourceOptions, SourceState};

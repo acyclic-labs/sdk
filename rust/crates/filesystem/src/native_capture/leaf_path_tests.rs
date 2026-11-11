@@ -30,6 +30,64 @@ fn work(budget: WorkBudget) -> NativeMaterializationWork {
     NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap()
 }
 
+#[test]
+fn repeated_capture_counts_nested_checkout_union_once() -> Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let source = tempfile::tempdir()?;
+    std::fs::create_dir(source.path().join("a"))?;
+    std::fs::write(source.path().join("a/x"), b"nested")?;
+    std::fs::write(source.path().join("z"), b"sibling")?;
+    let setup = work(WorkBudget::UNBOUNDED);
+    let mut checkout = runtime.block_on(super::capture_policy_tests::native_checkout(&setup))?;
+    let options = CaptureOptions {
+        source_namespace: None,
+        source_root: source.path().to_owned(),
+        expected_root_identity: capture_root_identity(source.path())?,
+        maximum_paths: Some(3),
+        maximum_extent_spans: Some(8),
+    };
+    let policy = CapturePolicy::default();
+    let subtree_options = CaptureOptions {
+        // Subtree capture includes its selected root; baseline captures only
+        // the three descendants. Both allowances equal the exact unique count.
+        maximum_paths: Some(4),
+        ..options.clone()
+    };
+    // Once populated, checkout traversal is a,z,a/x while the host is a,a/x,z.
+    // Exercise both public capture entry points with the exact union allowance.
+    for _ in 0..2 {
+        runtime.block_on(capture_subtree(
+            &mut checkout,
+            path("/"),
+            &subtree_options,
+            WorkBudget::UNBOUNDED,
+            setup.cancellation(),
+        ))?;
+        runtime.block_on(crate::seal_checkout(
+            &mut checkout,
+            crate::OperationId::new(),
+            WorkBudget::UNBOUNDED,
+            setup.cancellation(),
+        ))?;
+        runtime.block_on(capture_baseline(
+            &mut checkout,
+            &options,
+            &policy,
+            WorkBudget::UNBOUNDED,
+            setup.cancellation(),
+        ))?;
+        runtime.block_on(crate::seal_checkout(
+            &mut checkout,
+            crate::OperationId::new(),
+            WorkBudget::UNBOUNDED,
+            setup.cancellation(),
+        ))?;
+    }
+    Ok(())
+}
+
 // A leaf needs exactly one owned path in the output. Copying it first creates
 // one component vector plus one byte vector per component, all immediately freed.
 fn redundant_copy(paths: &[(NamespacePath, bool)]) -> (u64, u64, u64) {
@@ -75,8 +133,8 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
         source_namespace: None,
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
-        maximum_paths: 8,
-        maximum_extent_spans: 8,
+        maximum_paths: Some(8),
+        maximum_extent_spans: Some(8),
     };
     let policy = CapturePolicy::default();
     runtime.block_on(capture_subtrees_with_native_work(
@@ -96,7 +154,6 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
         limits,
         path("/"),
         &policy,
-        8,
         &mut warmed,
         &warm.native,
     ))?;
@@ -125,7 +182,7 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
                         start,
                         &policy,
                         &scope.native,
-                        |p, _, meter| append_scanned_path(&mut paths, p, 8, meter),
+                        |p, _, meter| capture_push_entry(&mut paths, p, (), meter),
                     )
                 } else {
                     runtime.block_on(collect_checkout_subtree_paths(
@@ -133,13 +190,13 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
                         limits,
                         start,
                         &policy,
-                        8,
                         &mut paths,
                         &scope.native,
                     ))
                 });
             });
             result.unwrap().unwrap();
+            capture_order_entries(&mut paths, Some(8), &scope.native).unwrap();
             assert_eq!(paths.len(), 6);
             assert_eq!(paths, expected_paths);
             drop(paths);
@@ -196,8 +253,8 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
         source_namespace: None,
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
-        maximum_paths: 32,
-        maximum_extent_spans: 8,
+        maximum_paths: Some(32),
+        maximum_extent_spans: Some(8),
     };
     runtime.block_on(capture_subtrees_with_native_work(
         &mut checkout,
@@ -223,7 +280,6 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
         limits,
         path("/"),
         &CapturePolicy::default(),
-        32,
         &mut warmed,
         &warm.native,
     ))?;
@@ -285,7 +341,7 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
                                             test_host_stat(&root, &namespace_to_host_path(&p)?)
                                                 .unwrap();
                                         ensure_same_host_node(&expected, &stat)?;
-                                        append_scanned_path(&mut paths, p, maximum, meter)
+                                        capture_push_entry(&mut paths, p, (), meter)
                                     },
                                 )
                             } else {
@@ -294,7 +350,6 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
                                     limits,
                                     start,
                                     &policy,
-                                    maximum,
                                     &mut paths,
                                     &scope.native,
                                 )
@@ -303,6 +358,13 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
                             if let Err(error) = result {
                                 failure = Some(error.to_string());
                                 break;
+                            }
+                        }
+                        if failure.is_none() {
+                            if let Err(error) =
+                                capture_order_entries(&mut paths, Some(maximum), &scope.native)
+                            {
+                                failure = Some(error.to_string());
                             }
                         }
                         let mut receipt = meter.receipt();

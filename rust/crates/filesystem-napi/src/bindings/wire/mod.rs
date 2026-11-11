@@ -62,7 +62,7 @@ pub(in crate::bindings) fn work_json(work: &acyclic_fs::WorkCounters) -> Result<
     acyclic_fs::binding_contract::work_counters_json(work).map_err(napi_error)
 }
 
-/// Exact hard limits for the process-local immutable-object accelerator.
+/// Residency policy for the disposable immutable-object accelerator.
 #[napi(object)]
 pub struct NativeObjectCacheOptions {
     pub maximum_entries: NapiU32,

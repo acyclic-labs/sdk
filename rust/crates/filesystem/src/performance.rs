@@ -33,7 +33,7 @@ pub const fn work_budget(units: u64, bytes: u64) -> WorkBudget {
     }
 }
 
-/// Default budget for filesystem binding operations.
+/// An explicitly selected finite budget for embedding qualification.
 pub const BOUNDARY_BUDGET: WorkBudget = work_budget(1_000_000, 256 * 1024 * 1024);
 
 /// One successful measured operation.

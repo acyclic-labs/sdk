@@ -423,14 +423,12 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         &self,
         generation: GenerationId,
         regions: Vec<DependencyRegion>,
-        maximum_regions: u32,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<Vec<Dependency>>, ProbeFailure> {
         cancellation
             .check()
             .map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::UNCHARGED))?;
-        validate_capture_batch(regions.len(), maximum_regions)?;
         for region in &regions {
             self.validate_region_shape(region)
                 .map_err(|error| failed(error, WorkCounters::UNCHARGED))?;
@@ -438,13 +436,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         let input_bytes = capture_input_bytes(&regions, |region| region)?;
         let mut accounting = self.standalone_accounting(budget, cancellation, input_bytes)?;
         let result = self
-            .capture_many_with_accounting(
-                generation,
-                regions,
-                maximum_regions,
-                &mut accounting,
-                cancellation,
-            )
+            .capture_many_with_accounting(generation, regions, &mut accounting, cancellation)
             .await;
         let work = accounting.spent();
         result
@@ -456,13 +448,11 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         &self,
         generation: GenerationId,
         regions: Vec<DependencyRegion>,
-        maximum_regions: u32,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(Vec<Dependency>, KernelOwnedAllocation), crate::FsError> {
         cancellation.check()?;
         accounting.check()?;
-        validate_capture_batch_error(regions.len(), maximum_regions)?;
         for region in &regions {
             self.validate_region_error(region)?;
         }
@@ -500,14 +490,12 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
     pub async fn capture_records_many_async(
         &self,
         regions: Vec<(Option<FileRecord>, DependencyRegion)>,
-        maximum_regions: u32,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<Vec<Dependency>>, ProbeFailure> {
         cancellation
             .check()
             .map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::UNCHARGED))?;
-        validate_capture_batch(regions.len(), maximum_regions)?;
         for (record, region) in &regions {
             self.validate_record(*record, region)?;
         }
@@ -516,7 +504,6 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         let result = self
             .capture_records_many_with_accounting(
                 regions,
-                maximum_regions,
                 &mut accounting,
                 cancellation,
                 self.data_custody,
@@ -531,14 +518,12 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
     pub(crate) async fn capture_records_many_with_accounting(
         &self,
         regions: Vec<(Option<FileRecord>, DependencyRegion)>,
-        maximum_regions: u32,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
         custody: Option<&super::ProofDataCustody>,
     ) -> Result<(Vec<Dependency>, KernelOwnedAllocation), crate::FsError> {
         cancellation.check()?;
         accounting.check()?;
-        validate_capture_batch_error(regions.len(), maximum_regions)?;
         for (record, region) in &regions {
             self.validate_record_error(*record, region)?;
         }
@@ -1149,7 +1134,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                         offset: next,
                         length: (end - next).min(1024 * 1024),
                     },
-                    maximum_spans: self.limits.maximum_extent_spans,
+                    maximum_spans: Some(self.limits.maximum_extent_spans),
                     limits: self.limits.decode,
                     budget: WorkBudget::UNCHARGED,
                 },
@@ -1401,21 +1386,6 @@ fn failed(error: AuthenticatedProbeError, work: WorkCounters) -> ProbeFailure {
     OperationFailure::new(error, work)
 }
 
-fn validate_capture_batch(count: usize, maximum: u32) -> Result<(), ProbeFailure> {
-    validate_capture_batch_error(count, maximum)
-        .map_err(|error| failed(project_probe_error(error), WorkCounters::UNCHARGED))
-}
-
-fn validate_capture_batch_error(count: usize, maximum: u32) -> Result<(), crate::FsError> {
-    if maximum == 0 {
-        return Err(AuthenticatedProbeError::ZeroBatchLimit.into());
-    }
-    if u32::try_from(count).unwrap_or(u32::MAX) > maximum {
-        return Err(AuthenticatedProbeError::TooManyRegions { maximum }.into());
-    }
-    Ok(())
-}
-
 /// Whether `region` is a content range that extends past the end of the
 /// regular file `record`.
 fn range_past_end(record: Option<FileRecord>, region: &DependencyRegion) -> bool {
@@ -1607,15 +1577,6 @@ pub enum AuthenticatedProbeError {
     /// Cache or extent-output limits are zero.
     #[error("authenticated probe limits are invalid")]
     InvalidLimits,
-    /// A dependency-capture batch requires a positive region bound.
-    #[error("authenticated dependency batch limit must be positive")]
-    ZeroBatchLimit,
-    /// A dependency-capture batch exceeds its admitted region count.
-    #[error("authenticated dependency batch exceeds maximum {maximum}")]
-    TooManyRegions {
-        /// Admitted maximum region count.
-        maximum: u32,
-    },
     /// Bounded dependency output allocation failed or overflowed.
     #[error("authenticated dependency batch allocation failed")]
     AllocationFailed,

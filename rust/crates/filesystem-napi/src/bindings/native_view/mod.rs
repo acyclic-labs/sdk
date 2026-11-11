@@ -5,7 +5,7 @@ use super::*;
 pub struct NativeMaterializeOptions {
     pub destination: String,
     pub maximum_directory_entries: NapiU32,
-    pub maximum_extent_spans: NapiU32,
+    pub maximum_extent_spans: Option<NapiU32>,
     pub transfer_bytes: BigInt,
 }
 
@@ -149,10 +149,10 @@ impl NativeCheckout {
                         destination: options.destination.into(),
                         expected_root_identity: None,
                         maximum_directory_entries: options.maximum_directory_entries.into_inner(),
-                        maximum_extent_spans: options.maximum_extent_spans.into_inner(),
+                        maximum_extent_spans: options.maximum_extent_spans.map(NapiU32::into_inner),
                         transfer_bytes: bigint_u64(&options.transfer_bytes, "transferBytes")?,
                     },
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
                     &cancellation,
                 ))
                 .await
@@ -177,11 +177,11 @@ impl NativeCheckout {
         &self,
         source_root: String,
         paths: Vec<String>,
-        maximum_paths: NapiU32,
-        maximum_extent_spans: NapiU32,
+        maximum_paths: Option<NapiU32>,
+        maximum_extent_spans: Option<NapiU32>,
     ) -> Result<NativeCaptureResult> {
-        let maximum_paths = maximum_paths.into_inner();
-        let maximum_extent_spans = maximum_extent_spans.into_inner();
+        let maximum_paths = maximum_paths.map(NapiU32::into_inner);
+        let maximum_extent_spans = maximum_extent_spans.map(NapiU32::into_inner);
 
         let source_root = PathBuf::from(source_root);
         let expected_root_identity = capture_root_identity(&source_root).map_err(napi_error)?;
@@ -201,7 +201,7 @@ impl NativeCheckout {
                 maximum_paths,
                 maximum_extent_spans,
             },
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await
@@ -213,11 +213,11 @@ impl NativeCheckout {
     pub async fn capture_baseline(
         &self,
         source_root: String,
-        maximum_paths: NapiU32,
-        maximum_extent_spans: NapiU32,
+        maximum_paths: Option<NapiU32>,
+        maximum_extent_spans: Option<NapiU32>,
     ) -> Result<NativeCaptureResult> {
-        let maximum_paths = maximum_paths.into_inner();
-        let maximum_extent_spans = maximum_extent_spans.into_inner();
+        let maximum_paths = maximum_paths.map(NapiU32::into_inner);
+        let maximum_extent_spans = maximum_extent_spans.map(NapiU32::into_inner);
 
         let source_root = PathBuf::from(source_root);
         let expected_root_identity = capture_root_identity(&source_root).map_err(napi_error)?;
@@ -233,7 +233,7 @@ impl NativeCheckout {
                 maximum_extent_spans,
             },
             &acyclic_fs::CapturePolicy::default(),
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await
@@ -242,21 +242,13 @@ impl NativeCheckout {
     }
 
     #[napi]
-    pub fn watch(
-        &self,
-        source_root: String,
-        maximum_queued_changes: NapiU32,
-        recursive: bool,
-    ) -> Result<NativeWatcher> {
-        let maximum_queued_changes = maximum_queued_changes.into_inner();
-
+    pub fn watch(&self, source_root: String, recursive: bool) -> Result<NativeWatcher> {
         let source_root = PathBuf::from(source_root);
         let watcher = FsNativeWatch::open_with_profile(
             &source_root,
             self.config.profile,
             NativeWatchOptions {
                 limits: self.config.limits,
-                maximum_queued_changes,
                 recursive,
             },
         )
@@ -288,8 +280,8 @@ impl NativeWatcher {
 
     async fn capture_reconcile_baseline(
         &self,
-        maximum_paths: u32,
-        maximum_extent_spans: u32,
+        maximum_paths: Option<u32>,
+        maximum_extent_spans: Option<u32>,
     ) -> Result<PendingReconcileScan> {
         let operation_id = OperationId::new();
         let mut checkout = Box::pin(self.checkout.lock()).await;
@@ -312,7 +304,7 @@ impl NativeWatcher {
                 maximum_extent_spans,
             },
             &acyclic_fs::CapturePolicy::default(),
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await;
@@ -346,11 +338,11 @@ impl NativeWatcher {
     #[napi]
     pub async fn reconcile(
         &self,
-        maximum_paths: NapiU32,
-        maximum_extent_spans: NapiU32,
+        maximum_paths: Option<NapiU32>,
+        maximum_extent_spans: Option<NapiU32>,
     ) -> Result<NativeWatchReconcileResult> {
-        let maximum_paths = maximum_paths.into_inner();
-        let maximum_extent_spans = maximum_extent_spans.into_inner();
+        let maximum_paths = maximum_paths.map(NapiU32::into_inner);
+        let maximum_extent_spans = maximum_extent_spans.map(NapiU32::into_inner);
 
         let _operation = self.operation.lock().await;
         ensure_no_pending_interval(&self.pending)?;
@@ -376,7 +368,7 @@ impl NativeWatcher {
             seal_checkout(
                 &mut checkout,
                 pending.operation_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -407,12 +399,12 @@ impl NativeWatcher {
     pub async fn poll_capture(
         &self,
         maximum_changes: NapiU32,
-        maximum_paths: NapiU32,
-        maximum_extent_spans: NapiU32,
+        maximum_paths: Option<NapiU32>,
+        maximum_extent_spans: Option<NapiU32>,
     ) -> Result<NativeWatchCaptureResult> {
         let maximum_changes = maximum_changes.into_inner();
-        let maximum_paths = maximum_paths.into_inner();
-        let maximum_extent_spans = maximum_extent_spans.into_inner();
+        let maximum_paths = maximum_paths.map(NapiU32::into_inner);
+        let maximum_extent_spans = maximum_extent_spans.map(NapiU32::into_inner);
 
         let _operation = self.operation.lock().await;
         self.verify_capture_root()?;
@@ -426,7 +418,7 @@ impl NativeWatcher {
             let receipt = lock_state(&self.inner, "native watcher state")?
                 .poll(
                     maximum_changes,
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
                     &self.cancellation,
                 )
                 .map_err(napi_error)?;
@@ -462,7 +454,7 @@ impl NativeWatcher {
                     maximum_extent_spans,
                 },
                 &acyclic_fs::CapturePolicy::default(),
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             ))
             .await
@@ -480,7 +472,7 @@ impl NativeWatcher {
             seal_checkout(
                 &mut checkout,
                 pending.operation_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await

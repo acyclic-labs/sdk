@@ -233,7 +233,6 @@ pub use fs::MemoryAuthorityBackend;
 pub(crate) use fs::MemoryCheckout;
 pub use fs::MemoryFs;
 pub use fs::MemoryObjectBackend;
-use generation::MAXIMUM_VOLUME_EVENT_BYTES;
 pub use generation::Volume;
 use generation::generation_from_record;
 pub(crate) use generation::read_generation_root;

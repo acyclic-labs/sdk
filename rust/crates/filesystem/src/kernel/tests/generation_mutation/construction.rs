@@ -12,14 +12,12 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
     let second_id = FileId::from_bytes([102; 16]);
     let first = regular(first_id, metadata)?;
     let second = regular(second_id, metadata)?;
-    let limits = config().limits;
 
     let one = MutationPlan::compile(
         vec![Mutation::Create {
             path: path(&["one"])?,
             record: first,
         }],
-        limits,
         WorkBudget::UNBOUNDED,
     )?;
     fn fixture_state(
@@ -68,7 +66,6 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
                 path: path(&["same"])?,
             },
         ],
-        limits,
         WorkBudget::UNBOUNDED,
     )?;
     let failure = fixture_state(
@@ -113,7 +110,6 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
                 record: first,
             },
         ],
-        limits,
         WorkBudget::UNBOUNDED,
     )?;
     let absent = PathBatchEntry {
@@ -150,7 +146,6 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
                 path: path(&["right"])?,
             },
         ],
-        limits,
         WorkBudget::UNBOUNDED,
     )?;
     let conflicting_first = FileRecord {

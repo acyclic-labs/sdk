@@ -6,7 +6,7 @@ pub(crate) fn encode(
     workspace_id: WorkspaceId,
     lease_id: OperationLeaseId,
     expires_at_millis: u64,
-    text: &mut [u8; acyclic_stream::MAX_PATH_BYTES],
+    text: &mut [u8; 65_535],
     mut work: Option<&mut crate::AuthorityWork<'_>>,
 ) -> Result<usize, crate::AuthorityStoreError> {
     const PREFIX: &[u8] = b"fs/operation-windows-v1/";

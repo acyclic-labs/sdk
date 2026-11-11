@@ -381,19 +381,43 @@ pub fn write_all_at(
     write_bounded_in_place(file, offset, bytes, meter)
 }
 
-/// Completes one device request on a held handle, optionally admitting its operation kind.
+/// One terminal device-control result, preserving partial query output for paging.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeControlCompletion {
+    /// The request completed with this many initialized output bytes.
+    Complete(usize),
+    /// This many output bytes completed; the caller must query the next page.
+    MoreData(usize),
+}
+
+#[cfg(windows)]
+impl NativeControlCompletion {
+    /// Requires complete output, retaining the original Windows partial-result error.
+    pub fn into_complete(self) -> io::Result<usize> {
+        match self {
+            Self::Complete(bytes) => Ok(bytes),
+            Self::MoreData(_) => Err(io::Error::from_raw_os_error(
+                windows_sys::Win32::Foundation::ERROR_MORE_DATA as i32,
+            )),
+        }
+    }
+}
+
+/// Completes one device request on a held handle under its original operation kind.
 #[cfg(windows)]
 pub fn device_control_in_place(
     file: &impl std::os::windows::io::AsRawHandle,
     code: u32,
     input: &[u8],
     output: &mut [u8],
-    meter: Option<(&dyn NativeReadMeter, NativeOperationKind)>,
-) -> io::Result<usize> {
-    if let Some((meter, _)) = meter {
+    kind: NativeOperationKind,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<NativeControlCompletion> {
+    if let Some(meter) = meter {
         meter.check()?;
     }
-    windows::control_in_place(file, code, input, output, meter)
+    windows::control_in_place(file, code, input, output, meter.map(|meter| (meter, kind)))
 }
 
 /// One owned positional write whose buffer remains live through completion.

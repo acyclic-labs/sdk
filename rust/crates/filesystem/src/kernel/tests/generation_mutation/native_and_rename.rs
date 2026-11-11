@@ -1,4 +1,5 @@
 use super::*;
+use crate::foundation::GenerationId;
 
 #[cfg(not(target_arch = "wasm32"))]
 struct NoGenerationCalls;

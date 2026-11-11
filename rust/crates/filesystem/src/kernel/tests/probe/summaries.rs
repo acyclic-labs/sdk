@@ -31,7 +31,7 @@ async fn immutable_summaries_are_cached_without_becoming_authority()
             generation,
             &DependencyRegion::DirectoryName {
                 directory_id: file_id,
-                name: LogicalName::new(NameEncoding::Utf8, b"absent".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"absent".to_vec())?,
             },
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -152,7 +152,6 @@ async fn inserted_directory_entry_conflicts_with_an_observed_empty_page()
             expected: captured.value,
         }],
         [],
-        1,
     )?;
     let decision = classify_rebase_async(
         &probe,
@@ -238,7 +237,7 @@ async fn non_regular_dependency_regions_use_authenticated_record_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, file_ids) = non_regular_fixture(&store).await?;
-    let name = LogicalName::new(NameEncoding::Utf8, b"not-a-directory-entry".to_vec(), 255)?;
+    let name = LogicalName::new(NameEncoding::Utf8, b"not-a-directory-entry".to_vec())?;
     for file_id in file_ids {
         let baseline_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
         let baseline = baseline_probe

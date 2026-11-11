@@ -91,7 +91,7 @@ async fn shared_views_serve_their_own_sources_and_retire_without_trace()
     );
     one_session.stop()?;
     assert!(matches!(
-        retired_projector.settle(),
+        retired_projector.settle(&work),
         Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotConnected
     ));
     assert!(matches!(

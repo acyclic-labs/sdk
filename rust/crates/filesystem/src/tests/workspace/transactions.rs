@@ -377,7 +377,7 @@ proptest::proptest! {
                     if observe_directory {
                         let limits = pending.checkout.volume_config().limits;
                         let path = crate::kernel::NamespacePath::new(components.iter().map(|component| crate::kernel::LogicalName::new(
-                            crate::kernel::NameEncoding::Utf8, component.to_vec(), limits.maximum_component_bytes,
+                            crate::kernel::NameEncoding::Utf8, component.to_vec(),
                         )).collect::<Result<_, _>>()?, limits)?;
                         unbounded!(pending.checkout, lookup_no_follow(&path))?;
                     }

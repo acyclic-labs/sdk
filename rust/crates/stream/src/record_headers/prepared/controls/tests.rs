@@ -101,14 +101,23 @@ fn prepared_page_ranges_preserve_the_ordinary_header_contract_without_late_alloc
     for case in cases() {
         let expected = expected(&bytes, &case);
         let meter = Arc::new(Meter::default());
-        let prepared = PreparedHeaderControls::new(&meter.original(), case.maximum)?;
+        let prepared = PreparedHeaderControls::new_shape(
+            &meter.original(),
+            case.maximum,
+            case.keys.len(),
+            case.attributes.len(),
+        )?;
         let bytes = bytes.clone();
         meter.cancelled.store(true, Ordering::SeqCst);
         meter.deny_allocation.store(true, Ordering::SeqCst);
         meter.deny_codec.store(true, Ordering::SeqCst);
         let mut result = None;
         let allocation = acyclic_test_support::measure(|| {
-            result = Some(prepared.finish(bytes, &case.keys, &case.attributes));
+            result = Some(prepared.finish(
+                bytes,
+                case.keys.iter().cloned(),
+                case.attributes.iter().cloned(),
+            ));
         });
         assert_eq!(
             allocation.count_max, 0,

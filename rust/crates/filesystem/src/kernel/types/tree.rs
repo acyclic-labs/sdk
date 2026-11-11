@@ -145,9 +145,9 @@ pub enum TreePageError {
     /// Logical names cannot be empty.
     #[error("logical name is empty")]
     EmptyName,
-    /// Name exceeds the configured encoded-byte bound.
-    #[error("logical name exceeds its byte bound")]
-    NameTooLarge,
+    /// Name length cannot be represented by the canonical u32 encoding.
+    #[error("logical name length cannot be encoded")]
+    NameLengthOverflow,
     /// Name bytes are malformed or contain a forbidden separator/component.
     #[error("logical name is invalid for its declared encoding")]
     InvalidName,

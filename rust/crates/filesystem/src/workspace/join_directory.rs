@@ -357,16 +357,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
         {
             return Err(DrivenJoinError::StaleCandidate);
         }
-        let conflict = kernel_conflict(
-            key,
-            self.preview
-                .plan()
-                .target()
-                .volume
-                .config
-                .limits
-                .maximum_component_bytes,
-        )?;
+        let conflict = kernel_conflict(key)?;
         let rendered = self.preview.describe_conflict_file(conflict).await?;
         let view = &rendered.value;
         if &view.key != key {
@@ -384,7 +375,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             &generation.workspace,
             GenerationSelector::Exact(generation.id),
             &path,
-            self.staging.volume.config.limits.maximum_read_bytes,
+            None,
             &mut scope,
             &cancellation,
         )

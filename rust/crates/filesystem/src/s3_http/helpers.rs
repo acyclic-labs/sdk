@@ -134,7 +134,7 @@ fn request_operation<T>(request: &S3Request<T>) -> S3Result<IdempotencyKey> {
         .ok_or_else(|| s3s::s3_error!(InvalidRequest))?
         .to_str()
         .map_err(|_| s3s::s3_error!(InvalidRequest))?;
-    if supplied.is_empty() || supplied.len() > 1_024 {
+    if supplied.is_empty() {
         return Err(s3s::s3_error!(InvalidRequest));
     }
     let mut hasher = blake3::Hasher::new();
@@ -226,7 +226,7 @@ fn s3_error(error: &S3Error) -> s3s::S3Error {
         }
         S3Error::NotFound => s3s::s3_error!(NoSuchKey),
         S3Error::NotRegularFile => s3s::s3_error!(InvalidObjectState),
-        S3Error::ListLimit | S3Error::MultipartLimit | S3Error::WriteConflict => {
+        S3Error::MultipartLimit | S3Error::WriteConflict => {
             s3s::s3_error!(SlowDown)
         }
         S3Error::MissingPart(_) => s3s::s3_error!(InvalidPart),

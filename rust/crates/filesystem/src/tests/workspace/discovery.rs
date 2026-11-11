@@ -114,7 +114,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
     let refused = generation
         .paths_for_file_ids(
             [id],
-            16,
+            Some(16),
             WorkBudget {
                 backend_read_operations: 0,
                 ..budget
@@ -136,7 +136,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
         "reverse paths ignored caller read admission"
     );
     let complete = generation
-        .paths_for_file_ids([id], 16, budget, &cancellation)
+        .paths_for_file_ids([id], Some(16), budget, &cancellation)
         .await?
         .value;
     assert_eq!(
@@ -145,7 +145,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
     );
     assert!(complete.is_complete());
     let bounded = generation
-        .paths_for_file_ids([id], 1, budget, &cancellation)
+        .paths_for_file_ids([id], Some(1), budget, &cancellation)
         .await?
         .value;
     assert_eq!(bounded.entries()[0].1.len(), 1);
@@ -159,7 +159,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
             held: std::sync::Mutex::new(None),
         };
         let (result, spent, live, baseline) = generation
-            .paths_for_file_ids([id, id], 16, &source, &cancellation)
+            .paths_for_file_ids([id, id], Some(16), &source, &cancellation)
             .await;
         spent.verify(source.budget)?;
         if admitted_reads == 0 {
@@ -186,7 +186,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
         )?;
         let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
         let returned = generation
-            .paths_for_file_ids_with_accounting([id], 16, &mut accounting, &cancellation)
+            .paths_for_file_ids_with_accounting([id], Some(16), &mut accounting, &cancellation)
             .await?;
         assert_eq!(returned.entries(), complete.entries());
         assert!(accounting.standalone_parts().unwrap().0.live_bytes() > baseline);
@@ -203,7 +203,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
     cancelled.cancel();
     assert!(matches!(
         generation
-            .paths_for_file_ids([id], 16, budget, &cancelled)
+            .paths_for_file_ids([id], Some(16), budget, &cancelled)
             .await,
         Err(crate::OperationFailure {
             error: WorkspaceError::Cancelled(_),
@@ -214,7 +214,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
         generation
             .paths_for_file_ids(
                 [id],
-                16,
+                Some(16),
                 WorkBudget {
                     output_bytes: 0,
                     ..budget
@@ -233,7 +233,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
         let independent = crate::kernel::Owned::<Vec<u8>>::allocate(73, &mut work.accounting())?;
         let baseline = original.live_allocation_bytes();
         let returned = generation
-            .paths_for_file_ids([id], 16, &original, &cancellation)
+            .paths_for_file_ids([id], Some(16), &original, &cancellation)
             .await?;
         assert_eq!(returned.entries(), complete.entries());
         assert!(original.live_allocation_bytes() > baseline);

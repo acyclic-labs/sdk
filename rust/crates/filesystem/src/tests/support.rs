@@ -175,6 +175,7 @@ fn ordinary(context: &crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> 
 }
 
 /// All physical-cut adapters share the same dedicated supervisors and bound.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn finish_physical_cuts<F: FnOnce() -> usize + Send>(jobs: Vec<F>) -> Vec<usize> {
     acyclic_test_support::physical_cuts::run(jobs, acyclic_native_runtime::InlineBlocking::enter)
 }

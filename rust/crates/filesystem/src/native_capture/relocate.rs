@@ -293,7 +293,7 @@ async fn vacant_sibling<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         crate::native_host::NativeHostWork::record(&mut meter.clone(), copied)
             .map_err(capture_demand_error)?;
         let allocated = bytes.capacity() as u64;
-        let name = match LogicalName::new(encoding, bytes, limits.maximum_component_bytes) {
+        let name = match LogicalName::new(encoding, bytes) {
             Ok(name) => name,
             Err(crate::kernel::TreePageError::InvalidName) => {
                 meter

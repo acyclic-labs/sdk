@@ -1,4 +1,5 @@
 use super::*;
+use crate::{Digest, ObjectKind};
 include!("access_tests.rs");
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -359,7 +360,7 @@ async fn browser_form_uploads_are_explicitly_unsupported() -> S3Result {
 #[tokio::test]
 async fn adapter_uses_one_workspace_and_generation_stable_pagination() -> S3Result {
     let adapter = adapter(true).await?;
-    for (operation, key) in [("one", "a"), ("two", "b")] {
+    for (operation, key) in [("one".repeat(1024), "a"), ("two".repeat(1024), "b")] {
         let mut request = request(PutObjectInput {
             body: Some(body(Bytes::copy_from_slice(key.as_bytes()))),
             bucket: "bucket".to_owned(),
@@ -369,7 +370,7 @@ async fn adapter_uses_one_workspace_and_generation_stable_pagination() -> S3Resu
         });
         request.headers.insert(
             IDEMPOTENCY_HEADER,
-            HeaderValue::from_str(operation).map_err(|_| s3s::s3_error!(InternalError))?,
+            HeaderValue::from_str(&operation).map_err(|_| s3s::s3_error!(InternalError))?,
         );
         S3::put_object(&adapter, request).await?;
     }
@@ -442,7 +443,7 @@ async fn get_streams_bounded_chunks_from_one_immutable_generation() -> S3Result 
     let adapter = adapter_with_limits(
         true,
         FilesystemS3Limits {
-            maximum_request_bytes: 16,
+            maximum_request_bytes: Some(16),
             response_chunk_bytes: 2,
             ..FilesystemS3Limits::default()
         },
@@ -659,7 +660,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
             restarted.resolver.principal.workspace.volume.fs.objects(),
             FilesystemS3Limits::default(),
             S3MultipartRetentionLimits {
-                maximum_uploads: 1,
+                maximum_uploads: Some(1),
                 ..S3MultipartRetentionLimits::default()
             },
             crate::WorkBudget::UNBOUNDED,
@@ -674,7 +675,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
             restarted.resolver.principal.workspace.volume.fs.objects(),
             FilesystemS3Limits::default(),
             S3MultipartRetentionLimits {
-                maximum_object_bytes: 1,
+                maximum_object_bytes: Some(1),
                 ..S3MultipartRetentionLimits::default()
             },
             crate::WorkBudget::UNBOUNDED,
@@ -878,7 +879,7 @@ fn multipart_records_preserve_sealed_parts_and_completed_generations() -> S3Resu
     });
     let etag = format!("\"{}\"", hex::encode([5; 32]));
     let records = vec![
-        encode_multipart_created("key", 2, 8, 0)?.into(),
+        encode_multipart_created("key", Some(2), Some(8), 0)?.into(),
         encode_multipart_part(
             1,
             StagedContent::from_canonical_parts(part, 4),
@@ -902,5 +903,113 @@ fn multipart_records_preserve_sealed_parts_and_completed_generations() -> S3Resu
     assert!(
         matches!(snapshot.terminal, Some(MultipartTerminal::Completed(value)) if value == generation)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = acyclic_stream::MemoryStream::default();
+    let path = acyclic_stream::StreamPath::new("multipart/long-history")?;
+    let limits = FilesystemS3Limits::default();
+    let staged = StagedContent::from_canonical_parts(
+        ObjectId {
+            kind: ObjectKind::Blob,
+            digest: Digest::from_bytes([7; 32]),
+            storage: None,
+        },
+        6,
+    );
+    let etag = format!("\"{}\"", hex::encode([7; 32]));
+    let updates = 20_004_u64;
+    let mut tail = 0_u64;
+    for start in (0..=updates).step_by(128) {
+        let records = (start..(start + 128).min(updates + 1))
+            .map(|index| {
+                if index == 0 {
+                    encode_multipart_created("large/object", Some(2), Some(8), 1).map(Into::into)
+                } else {
+                    Ok(encode_multipart_part(
+                        1,
+                        staged,
+                        IdempotencyKey::from_bytes(u128::from(index).to_le_bytes()),
+                        &etag,
+                    )
+                    .into())
+                }
+            })
+            .collect::<S3Result<Vec<_>>>()?;
+        let result = provider
+            .append(acyclic_stream::AppendRequest {
+                path: path.clone(),
+                records,
+                if_tail: Some(tail),
+                idempotency_key: acyclic_stream::IdempotencyKey::new(start.to_le_bytes().to_vec())?,
+            })
+            .await?;
+        let acyclic_stream::AppendOutcome::Committed(receipt) = result else {
+            return Err("unexpected history append conflict".into());
+        };
+        tail = receipt.tail;
+    }
+    let snapshot = read_multipart_snapshot(&provider, path.clone(), limits).await?;
+    assert_eq!(snapshot.tail, updates + 1);
+    assert_eq!(snapshot.parts.len(), 1);
+    assert_eq!(
+        snapshot.parts.get(&1).ok_or("missing current part")?.staged,
+        staged
+    );
+    assert_eq!(snapshot.operations.len(), usize::try_from(updates)?);
+    assert_eq!(snapshot.work.authority_records_read, tail);
+    assert!(snapshot.work.backend_read_operations > 2);
+    for index in 1..=updates {
+        assert_eq!(
+            snapshot.operations.get(&u128::from(index).to_le_bytes()),
+            Some(&(1, etag.clone()))
+        );
+    }
+    // A conflicting reuse of the oldest identity must still fail after every
+    // page, even though its old payload no longer lives in a replay vector.
+    let conflict = encode_multipart_part(
+        2,
+        staged,
+        IdempotencyKey::from_bytes(1_u128.to_le_bytes()),
+        &etag,
+    );
+    assert!(matches!(
+        provider
+            .append(acyclic_stream::AppendRequest {
+                path: path.clone(),
+                records: vec![conflict.into()],
+                if_tail: Some(tail),
+                idempotency_key: acyclic_stream::IdempotencyKey::new(
+                    b"conflicting-old-identity".as_slice()
+                )?,
+            })
+            .await?,
+        acyclic_stream::AppendOutcome::Committed(_)
+    ));
+    assert!(
+        read_multipart_snapshot(&provider, path, limits)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_retry_returns_the_existing_upload_validation_error() -> S3Result {
+    let mut adapter = adapter(true).await?;
+    let input = || CreateMultipartUploadInput {
+        bucket: "bucket".to_owned(),
+        key: "retry/object".to_owned(),
+        ..CreateMultipartUploadInput::default()
+    };
+    S3::create_multipart_upload(&adapter, request(input())).await?;
+    adapter.limits.maximum_multipart_parts = Some(1);
+    let error = S3::create_multipart_upload(&adapter, request(input()))
+        .await
+        .expect_err("the persisted upload exceeds the explicit replacement policy");
+    assert_eq!(error.code(), &s3s::S3ErrorCode::InvalidRequest);
     Ok(())
 }

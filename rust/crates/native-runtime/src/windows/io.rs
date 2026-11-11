@@ -1,8 +1,8 @@
 //! Positional I/O on a held Windows handle.
 use crate::file::ReadDestination;
 use crate::{
-    NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
-    OwnedRead, OwnedWrite,
+    NativeByteReservation, NativeControlCompletion, NativeOperationKind,
+    NativeOperationReservation, NativeReadMeter, OwnedRead, OwnedWrite,
 };
 use bytes::Bytes;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -14,8 +14,8 @@ use windows_sys::{
     },
     Win32::{
         Foundation::{
-            ERROR_HANDLE_EOF, ERROR_IO_PENDING, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
-            RtlNtStatusToDosError,
+            ERROR_HANDLE_EOF, ERROR_IO_PENDING, ERROR_MORE_DATA, GetLastError, HANDLE,
+            INVALID_HANDLE_VALUE, RtlNtStatusToDosError,
         },
         Storage::FileSystem::{
             FILE_END_OF_FILE_INFO, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
@@ -49,7 +49,7 @@ fn transfer_in_place(
     offset: u64,
     issue: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32,
     meter: Option<(&dyn NativeReadMeter, NativeOperationKind, Option<usize>)>,
-) -> io::Result<usize> {
+) -> io::Result<NativeControlCompletion> {
     let mut operations = meter
         .map(|(meter, kind, _)| NativeOperationReservation::new(meter, kind, 2))
         .transpose()?;
@@ -90,10 +90,10 @@ fn transfer_in_place(
             None => (issue(), Ok(())),
         };
         match error {
-            Some(ERROR_IO_PENDING) | None => {}
+            Some(ERROR_IO_PENDING | ERROR_MORE_DATA) | None => {}
             Some(ERROR_HANDLE_EOF) => {
                 issue_charge?;
-                return Ok(0);
+                return Ok(NativeControlCompletion::Complete(0));
             }
             Some(code) => {
                 issue_charge?;
@@ -127,10 +127,16 @@ fn transfer_in_place(
         issue_charge?;
         completion_charge?;
         match completed {
+            Err(error) if error.raw_os_error() == i32::try_from(ERROR_MORE_DATA).ok() => {
+                Ok(NativeControlCompletion::MoreData(transferred as usize))
+            }
+            Ok(()) if error == Some(ERROR_MORE_DATA) => {
+                Ok(NativeControlCompletion::MoreData(transferred as usize))
+            }
             Err(error) if error.raw_os_error() != i32::try_from(ERROR_HANDLE_EOF).ok() => {
                 Err(error)
             }
-            _ => Ok(transferred as usize),
+            _ => Ok(NativeControlCompletion::Complete(transferred as usize)),
         }
     })
 }
@@ -141,7 +147,7 @@ pub(crate) fn control_in_place(
     input: &[u8],
     output: &mut [u8],
     meter: Option<(&dyn NativeReadMeter, NativeOperationKind)>,
-) -> io::Result<usize> {
+) -> io::Result<NativeControlCompletion> {
     let input_length = u32::try_from(input.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
     let output_length = u32::try_from(output.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
     transfer_in_place(
@@ -263,7 +269,8 @@ fn read_once(
             unsafe { ReadFile(handle, pointer, length, std::ptr::null_mut(), overlapped) }
         },
         meter.map(|meter| (meter, NativeOperationKind::Read, Some(length as usize))),
-    )?;
+    )?
+    .into_complete()?;
     if count > maximum {
         return Err(io::Error::other("read completion exceeded buffer"));
     }
@@ -345,6 +352,7 @@ pub(crate) fn read_batch_in_place(file: &File, reads: &[OwnedRead]) -> io::Resul
                 },
                 None,
             )?
+            .into_complete()?
         };
         if count > read.length {
             return Err(io::Error::other("read completion exceeded buffer"));
@@ -384,7 +392,8 @@ pub(crate) fn write_at_known_overlapped(
             }
         },
         meter.map(|meter| (meter, NativeOperationKind::Write, Some(bytes.len()))),
-    )
+    )?
+    .into_complete()
 }
 
 pub(crate) fn write_batch_in_place(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {

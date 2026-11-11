@@ -252,7 +252,11 @@ where
             .map_err(|failure| failure.error)?
             .value
             .0
-            .changed_paths(u32::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .changed_paths(
+                Some(u32::MAX),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
             .map_err(|failure| failure.error)?
             .value

@@ -127,13 +127,11 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
                             crate::kernel::NameEncoding::PosixBytes => b"entry-\xff".to_vec(),
                             crate::kernel::NameEncoding::Utf8 => b"entry".to_vec(),
                         };
-                        let name =
-                            LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
-                                .map_err(|error| {
-                                    crate::FsError::from(CanonicalDecodeError::Invariant(
-                                        CanonicalInvariant::Name(error),
-                                    ))
-                                })?;
+                        let name = LogicalName::new(encoding, bytes).map_err(|error| {
+                            crate::FsError::from(CanonicalDecodeError::Invariant(
+                                CanonicalInvariant::Name(error),
+                            ))
+                        })?;
                         let (name, mut backing) =
                             name.clone_with_accounting(&mut ctx, work.cancellation())?;
                         allocation.absorb(&mut backing)?;
