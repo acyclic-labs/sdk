@@ -159,8 +159,8 @@ fn call_key(invocation: &ToolInvocation, context: Option<&ToolContext>) -> Strin
 /// # Errors
 /// When `name` is not a valid spawn name or the child would exceed the depth.
 pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
-    let intent = spawn_intent(name, 0).map_err(agent)?;
-    TurnEffect::child(parent, &intent).map_err(agent)
+    let intent = spawn_intent(name, 0).map_err(Error::from)?;
+    TurnEffect::child(parent, &intent).map_err(Error::from)
 }
 
 /// Resolves the child operand of diff, merge or discard exactly once. File
@@ -182,7 +182,7 @@ pub fn resolve_child_branch(
     let child = if let Some(name) = branch.strip_prefix("agents/") {
         resolve(parent, name)?
     } else if branch.starts_with("harness/agents/") {
-        AgentPath::try_from(branch.clone()).map_err(agent)?
+        AgentPath::try_from(branch.clone()).map_err(Error::from)?
     } else {
         return Ok(None);
     };

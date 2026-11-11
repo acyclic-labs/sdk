@@ -609,7 +609,7 @@ where
                 .observation_credential(
                     &authority,
                     &state.path,
-                    &authority.private.volume,
+                    authority.private.volume()?,
                     &clock,
                     None,
                     None,

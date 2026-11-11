@@ -162,7 +162,7 @@ mod tests {
     const FIXTURE_VOLUMES: usize = 8;
     use crate::agent::{
         AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
-        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
+        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_MESSAGE_BYTES, MAX_NAME_BYTES,
         MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, Message, NoticePayload, Phase, Sender, SpawnRequest,
         StatusRecord, TurnInput, WorkspaceEntry,
     };
