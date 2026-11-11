@@ -122,7 +122,7 @@ fn work(tools: Vec<ToolCard>, answer: String) -> impl Iterator<Item = (BlockKind
                 BlockKind::Tool {
                     failed: card.failed,
                 },
-                card.line(),
+                card.text(),
             )
         })
         .chain((!answer.is_empty()).then_some((BlockKind::Answer, answer)))
@@ -895,6 +895,8 @@ async fn run_current(
         .apply(&mut input, &profile)
         .map_err(|errors| format!("UI configuration: {errors:?}"))?;
     view.transcript.set_theme(input.theme);
+    view.transcript
+        .set_tool_details(input.editor.settings().tool_details);
     view.pending_dirty = true;
     view.tail_dirty = true;
     // The open panel's title and rows; Esc closes it.
@@ -1271,7 +1273,7 @@ async fn run_current(
                 } else {
                     Style::default()
                 };
-                output_rows = if kind == LiveKind::Answer { "" } else { live }
+                output_rows = if kind == LiveKind::Answer || (kind == LiveKind::Reasoning && !input.editor.settings().reasoning) { "" } else { live }
                     .lines().rev().take(OUTPUT_ROWS)
                     .map(|line| Line::styled(line.to_owned(), style))
                     .collect();
@@ -1542,7 +1544,7 @@ async fn run_current(
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
                                         return view.exit().map(|()| Next::Exit);
                                     }
-                                    Ok(Some(resolution @ CommandResolution::Submit { request: CommandRequest::Theme { .. } })) => {
+                                    Ok(Some(resolution @ (CommandResolution::Submit { request: CommandRequest::Theme { .. } } | CommandResolution::Select { query: CommandQuery::Details | CommandQuery::Reasoning }))) => {
                                         match ui.submit(&conversation, &resolution).await {
                                             Ok(()) => files_changed = true,
                                             Err(error) => view.notice = Some(error.to_string()),
@@ -1657,6 +1659,12 @@ async fn run_current(
                             InputEffect::Host(Action::App(AppAction::Find)) => {
                                 view.find(input.editor.text(), usize::from(areas.transcript.height));
                             }
+                            InputEffect::Host(Action::App(AppAction::Details)) => {
+                                match ui.submit(&conversation, &CommandResolution::Select { query: CommandQuery::Details }).await {
+                                    Ok(()) => files_changed = true,
+                                    Err(error) => view.notice = Some(error.to_string()),
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -1685,6 +1693,8 @@ async fn run_current(
                 .apply(&mut input, &profile)
                 .map_err(|errors| format!("UI configuration: {errors:?}"))?;
             view.transcript.set_theme(input.theme);
+            view.transcript
+                .set_tool_details(input.editor.settings().tool_details);
             view.pending_dirty = true;
             view.tail_dirty = true;
             if overlay.as_ref().is_some_and(|(title, _)| *title == "Help") {

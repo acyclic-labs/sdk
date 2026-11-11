@@ -47,14 +47,23 @@ impl Block {
         width: usize,
         theme: &ThemeStyles,
         cache: &acyclic_markdown::CodeCache,
+        tool_details: bool,
     ) -> Wrapped {
-        if self.kind == BlockKind::Answer {
+        let details = matches!(self.kind, BlockKind::Tool { .. }) && tool_details;
+        let source = if details {
+            self.text.split_once('\n').map(|(_, body)| body)
+        } else if self.kind == BlockKind::Answer {
+            Some(self.text.as_str())
+        } else {
+            None
+        };
+        if let Some(source) = source {
             if self.parsed.is_none() {
                 let mut parser = acyclic_markdown::Markdown::with_deferred_code_in(
                     u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
                     cache.clone(),
                 );
-                parser.push(&self.text);
+                parser.push(source);
                 self.parsed = Some((width, parser));
             }
             if let Some((columns, parser)) = &mut self.parsed {
@@ -70,12 +79,20 @@ impl Block {
                 .as_ref()
                 .map(|(_, parser)| parser.lines())
                 .unwrap_or_default();
-            return wrap_rendered(
+            let mut body = wrap_rendered(
                 self.kind,
                 crate::markdown::render_lines(parsed, theme),
                 width,
                 theme,
             );
+            if details {
+                let mut header = wrap(self.kind, &self.text, width, theme);
+                header.lines.append(&mut body.lines);
+                header.links.append(&mut body.links);
+                header.code.append(&mut body.code);
+                return header;
+            }
+            return body;
         }
         wrap(self.kind, &self.text, width, theme)
     }
@@ -97,6 +114,7 @@ pub struct TranscriptRows {
     tail_rows: usize,
     tail_parser: Option<(usize, acyclic_markdown::Markdown)>,
     code_cache: acyclic_markdown::CodeCache,
+    tool_details: bool,
 }
 
 impl Default for TranscriptRows {
@@ -112,6 +130,7 @@ impl Default for TranscriptRows {
             tail_rows: 0,
             tail_parser: None,
             code_cache: acyclic_markdown::CodeCache::default(),
+            tool_details: false,
         }
     }
 }
@@ -130,7 +149,12 @@ impl TranscriptRows {
             text,
             parsed: None,
         };
-        let wrapped = block.wrap(self.width.max(1), &self.theme, &self.code_cache);
+        let wrapped = block.wrap(
+            self.width.max(1),
+            &self.theme,
+            &self.code_cache,
+            self.tool_details,
+        );
         self.lines.extend(wrapped.lines);
         self.links.extend(wrapped.links);
         self.code.extend(wrapped.code);
@@ -153,7 +177,7 @@ impl TranscriptRows {
                 text,
                 parsed: None,
             };
-            let wrapped = block.wrap(width, &self.theme, &self.code_cache);
+            let wrapped = block.wrap(width, &self.theme, &self.code_cache, self.tool_details);
             rows.extend(wrapped.lines);
             links.extend(wrapped.links);
             code.extend(wrapped.code);
@@ -191,6 +215,15 @@ impl TranscriptRows {
         }
     }
 
+    /// Fold or expand the original tool results. Only changing the setting
+    /// reflows settled rows; ordinary frames and token deltas keep their cache.
+    pub fn set_tool_details(&mut self, expanded: bool) {
+        if self.tool_details != expanded {
+            self.tool_details = expanded;
+            self.rewrap();
+        }
+    }
+
     /// The already laid out rows and their link metadata, borrowed together.
     /// Call `rows` first when changing width; no rendering or I/O happens here.
     pub fn presentation(
@@ -222,7 +255,12 @@ impl TranscriptRows {
         self.links.clear();
         self.code.clear();
         for block in &mut self.blocks {
-            let wrapped = block.wrap(self.width.max(1), &self.theme, &self.code_cache);
+            let wrapped = block.wrap(
+                self.width.max(1),
+                &self.theme,
+                &self.code_cache,
+                self.tool_details,
+            );
             self.lines.extend(wrapped.lines);
             self.links.extend(wrapped.links);
             self.code.extend(wrapped.code);
@@ -699,6 +737,32 @@ mod tests {
         // Negative control: a narrow card is clipped, never wrapped.
         let narrow = text(transcript.rows(24));
         assert!(narrow[0].contains('\u{2026}') && !narrow[0].contains("--all-features"));
+        transcript.set_tool_details(true);
+        assert!(
+            text(transcript.rows(80))
+                .iter()
+                .any(|line| line.contains("second line"))
+        );
+        let parsed = transcript.blocks[0]
+            .parsed
+            .as_ref()
+            .unwrap()
+            .1
+            .lines()
+            .as_ptr();
+        transcript.set_tool_details(false);
+        assert_eq!(text(transcript.rows(80)).len(), 2);
+        transcript.set_tool_details(true);
+        assert_eq!(
+            transcript.blocks[0]
+                .parsed
+                .as_ref()
+                .unwrap()
+                .1
+                .lines()
+                .as_ptr(),
+            parsed
+        );
     }
 
     #[test]

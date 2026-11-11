@@ -932,6 +932,15 @@ impl Reader {
                 tail,
                 witness,
             } => {
+                // A live listing must learn its witness before declaring the
+                // page fresh. In particular, an empty page has no child heads
+                // to discover it indirectly; without this head no follow can
+                // be opened and the first child would remain invisible.
+                if let Some(witness) = witness
+                    && self.cache.tail(witness).is_none()
+                {
+                    return Some((OpKey::Head(witness.clone()), Paging::default()));
+                }
                 let projection = ListingProjection {
                     tail: tail.clone(),
                     witness: witness.clone(),

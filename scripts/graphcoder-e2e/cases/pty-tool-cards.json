@@ -1,18 +1,110 @@
 {
   "id": "pty-tool-cards",
-  "workspace": {"kind": "plain", "files": {}},
-  "model": {"steps": [
-    {"when": {"user": "run CARD_PROMPT"}, "tools": [
-      {"id": "missing", "name": "read", "arguments": {"path": "CARD_MISSING.txt"}},
-      {"id": "ok", "name": "shell", "arguments": {"command": "node -e \"process.stdout.write('CARD_SHELL_OK')\""}}
-    ]},
-    {"when": {"tool_result": "CARD_SHELL_OK"}, "text": ["CARDS_DONE"]}
-  ]},
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "run CARD_PROMPT"
+        },
+        "tools": [
+          {
+            "id": "missing",
+            "name": "read",
+            "arguments": {
+              "path": "CARD_MISSING.txt"
+            }
+          },
+          {
+            "id": "ok",
+            "name": "shell",
+            "arguments": {
+              "command": "node -p \"['CARD','SHELL_OK'].join('_')\""
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "CARD_SHELL_OK"
+        },
+        "text": [
+          "CARDS_DONE"
+        ]
+      }
+    ]
+  },
   "inputs": [
-    {"mode": "pty", "actions": [
-      {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "run CARD_PROMPT"},
-      {"when": {"contains": ["⏺ shell  node -e", "CARD_SHELL_OK')\" ✓", "⏺ read  CARD_MISSING.txt ✗", "CARDS_DONE", "○"]}, "send": "\u0004\u0004"}
-    ], "settled_contains": ["run CARD_PROMPT", "⏺ shell", "⏺ read  CARD_MISSING.txt ✗", "CARDS_DONE"]}
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "run CARD_PROMPT"
+        },
+        {
+          "when": {
+            "contains": [
+              "⏺ shell  node -p",
+              "⏺ read  CARD_MISSING.txt ✗",
+              "CARDS_DONE",
+              "○"
+            ],
+            "absent": [
+              "Exit code: 0"
+            ]
+          },
+          "send": "\u000f"
+        },
+        {
+          "when": {
+            "contains": [
+              "Exit code: 0",
+              "CARD_SHELL_OK",
+              "tool execution failed: tool rejected: selected file does not exist",
+              "CARDS_DONE",
+              "○"
+            ]
+          },
+          "send": "\u000f"
+        },
+        {
+          "when": {
+            "contains": [
+              "CARDS_DONE",
+              "○"
+            ],
+            "absent": [
+              "Exit code: 0",
+              "CARD_SHELL_OK"
+            ]
+          },
+          "send": "\u0004\u0004"
+        }
+      ],
+      "settled_contains": [
+        "run CARD_PROMPT",
+        "⏺ shell",
+        "⏺ read  CARD_MISSING.txt ✗",
+        "CARDS_DONE"
+      ]
+    }
   ],
-  "assert": {"requests": 2, "tool_contains": ["CARD_SHELL_OK"], "tool_errors": ["tool execution failed: tool rejected: selected file does not exist"]}
+  "assert": {
+    "requests": 2,
+    "tool_contains": [
+      "CARD_SHELL_OK"
+    ],
+    "tool_errors": [
+      "tool execution failed: tool rejected: selected file does not exist"
+    ]
+  }
 }

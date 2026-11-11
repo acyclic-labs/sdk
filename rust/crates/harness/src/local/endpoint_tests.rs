@@ -14,8 +14,13 @@ struct Cut(AtomicBool);
 async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     let directory = tempfile::tempdir().map_err(exchange)?;
     let project = volume(directory.path()).await?;
-    let harness =
-        Arc::new(LocalHarness::open(volume_config(directory.path(), project, text())?).await?);
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, text())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
     let connection = harness.connect().await?;
     let mut observer = Observer::open(&connection, 0, 0)?;
     loop {
@@ -71,11 +76,6 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         AgentReply::Spawned { agent, .. } => agent.clone(),
         _ => return Err(Error::Conflict("spawn returned no child".into())),
     };
-    conversation
-        .select(child.clone())
-        .await?
-        .wait_current_input()
-        .await?;
     let populated = reader
         .children_page(acyclic_stream::ChildrenPageRequest {
             parent: Some(connection.root.children().map_err(exchange)?),

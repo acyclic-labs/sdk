@@ -6,6 +6,77 @@ use std::{
 };
 
 struct Server(std::process::Child);
+
+#[tokio::test]
+async fn acknowledged_chunk_gaps_release_the_original_stream_without_model_requests() {
+    let directory = tempfile::tempdir().unwrap();
+    let script = directory.path().join("script.json");
+    let record = directory.path().join("requests.jsonl");
+    std::fs::write(
+        &script,
+        json!({"cases":{"paint":{"steps":[{
+            "text":["PAINT_FIRST", "PAINT_SECOND"], "pause_after":["PAINT_FIRST"]
+        }]}}})
+        .to_string(),
+    )
+    .unwrap();
+    let mut server = Server(
+        Command::new(acyclic_test_support::cargo_binary!("harness-mock-model"))
+            .args([
+                "--script",
+                script.to_str().unwrap(),
+                "--record",
+                record.to_str().unwrap(),
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut lines = BufReader::new(server.0.stdout.take().unwrap()).lines();
+    let ready: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    let base = format!("http://127.0.0.1:{}/paint/v1", ready["port"]);
+    let client = reqwest::Client::new();
+    let mut reply = client
+        .post(format!("{base}/responses"))
+        .json(&json!({"input":"paint", "stream":true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reply.status(), 200);
+    let mut painted = Vec::new();
+    while !String::from_utf8_lossy(&painted).contains("PAINT_FIRST") {
+        painted.extend_from_slice(
+            &reply
+                .chunk()
+                .await
+                .unwrap()
+                .expect("stream ended before the first chunk"),
+        );
+    }
+    assert!(!String::from_utf8_lossy(&painted).contains("PAINT_SECOND"));
+    assert_eq!(
+        client
+            .post(format!("{base}/ack"))
+            .json(&json!({"chunk":"PAINT_FIRST"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert!(reply.text().await.unwrap().contains("PAINT_SECOND"));
+    assert_eq!(
+        client
+            .post(format!("{base}/ack"))
+            .json(&json!({"chunk":"PAINT_FIRST"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+    assert_eq!(std::fs::read_to_string(record).unwrap().lines().count(), 1);
+}
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.0.kill();
