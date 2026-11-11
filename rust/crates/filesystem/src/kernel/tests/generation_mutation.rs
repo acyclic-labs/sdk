@@ -533,3 +533,6 @@ mod mutations;
 mod native_and_rename;
 #[path = "generation_mutation/preconditions.rs"]
 mod preconditions;
+
+#[path = "generation_mutation/deep_paths.rs"]
+mod deep_paths;

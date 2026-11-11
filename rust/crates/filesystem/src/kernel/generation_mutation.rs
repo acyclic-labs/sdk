@@ -1118,10 +1118,10 @@ impl TransactionState {
                     binding,
                     base_parent: entry.parent.map(|record| record.file_id),
                     base_parent_exact: (entry.record.is_some()
-                        && usize::from(entry.resolved_components) == path.depth())
+                        && entry.resolved_components == usize_to_u64(path.depth()))
                         || (entry.record.is_none()
-                            && usize::from(entry.resolved_components).saturating_add(1)
-                                == path.depth()),
+                            && entry.resolved_components.saturating_add(1)
+                                == usize_to_u64(path.depth())),
                     parent_state: None,
                 });
                 previous = Some(path);

@@ -93,7 +93,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .await
                 .map(Some);
         }
-        if source || usize::from(lookup.resolved_components) >= path.depth().saturating_sub(1) {
+        if source
+            || lookup.resolved_components
+                >= crate::foundation::usize_to_u64(path.depth().saturating_sub(1))
+        {
             return Ok(None);
         }
         let (parent, name) = path.split_last().ok_or(FsError::InvalidDiff)?;

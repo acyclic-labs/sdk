@@ -190,7 +190,7 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                         lookup: PathLookup {
                             record: found.then_some(current),
                             parent,
-                            resolved_components: u16::try_from(resolved).unwrap_or(u16::MAX),
+                            resolved_components: usize_to_u64(resolved),
                             work: WorkCounters::UNCHARGED,
                         },
                         dependencies,

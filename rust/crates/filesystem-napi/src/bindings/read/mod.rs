@@ -6,7 +6,7 @@ pub struct NativeLookup {
     pub exists: bool,
     pub file_id: Option<Buffer>,
     pub file_kind: Option<FileKind>,
-    pub resolved_components: u32,
+    pub resolved_components: BigInt,
     pub work_json: String,
 }
 
@@ -16,7 +16,7 @@ pub struct NativeBatchLookupEntry {
     pub exists: bool,
     pub file_id: Option<Buffer>,
     pub file_kind: Option<FileKind>,
-    pub resolved_components: u32,
+    pub resolved_components: BigInt,
 }
 
 /// One bounded shared-frontier path lookup receipt.
@@ -46,7 +46,7 @@ impl NativeCheckout {
             exists: record.is_some(),
             file_id: record.map(|value| Buffer::from(value.file_id.into_bytes().to_vec())),
             file_kind: record.map(|value| value.kind),
-            resolved_components: u32::from(receipt.value.resolved_components),
+            resolved_components: BigInt::from(receipt.value.resolved_components),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -72,7 +72,7 @@ impl NativeCheckout {
                     exists: record.is_some(),
                     file_id: record.map(|value| Buffer::from(value.file_id.into_bytes().to_vec())),
                     file_kind: record.map(|value| value.kind),
-                    resolved_components: u32::from(entry.resolved_components),
+                    resolved_components: BigInt::from(entry.resolved_components),
                 }
             })
             .collect();

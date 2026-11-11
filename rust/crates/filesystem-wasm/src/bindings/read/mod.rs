@@ -16,18 +16,19 @@ pub struct BrowserLookupResult {
     #[tsify(type = "Uint8Array | undefined")]
     pub(in crate::bindings) file_id: Option<serde_bytes::ByteBuf>,
     pub(in crate::bindings) file_kind: Option<FileKind>,
-    pub(in crate::bindings) resolved_components: u16,
+    pub(in crate::bindings) resolved_components: u64,
     pub(in crate::bindings) work: BrowserWorkCounters,
 }
 
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+#[tsify(large_number_types_as_bigints)]
 pub struct BrowserBatchLookupEntryResult {
     pub(in crate::bindings) exists: bool,
     #[tsify(type = "Uint8Array | undefined")]
     pub(in crate::bindings) file_id: Option<serde_bytes::ByteBuf>,
     pub(in crate::bindings) file_kind: Option<FileKind>,
-    pub(in crate::bindings) resolved_components: u16,
+    pub(in crate::bindings) resolved_components: u64,
 }
 
 #[derive(Serialize, Tsify)]

@@ -48,7 +48,7 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
     assert!(selected.entries[0].parent.is_none());
     assert_eq!(
         selected.entries[0].resolved_components,
-        u16::try_from(main.depth())?
+        usize_to_u64(main.depth())
     );
     assert_eq!(selected.entries[0], selected.entries[3]);
     assert_eq!(

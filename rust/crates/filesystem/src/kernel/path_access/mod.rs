@@ -33,7 +33,7 @@ pub struct PathLookup {
     /// Immediate parent directory record for a non-root terminal result.
     pub parent: Option<FileRecord>,
     /// Number of requested components resolved before terminal absence.
-    pub resolved_components: u16,
+    pub resolved_components: u64,
     /// Exact file-table, namespace-page, backend, copy, and allocation work.
     pub work: WorkCounters,
 }
@@ -64,7 +64,7 @@ pub struct PathBatchEntry {
     /// Immediate parent directory record for a non-root terminal result.
     pub parent: Option<FileRecord>,
     /// Number of requested components resolved before terminal absence.
-    pub resolved_components: u16,
+    pub resolved_components: u64,
 }
 
 /// Original-order results and one non-duplicated operation receipt.

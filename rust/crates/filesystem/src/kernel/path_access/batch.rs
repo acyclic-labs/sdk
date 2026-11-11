@@ -200,7 +200,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 entries.value[index] = PathBatchEntry {
                                     record: None,
                                     parent: None,
-                                    resolved_components: u16::try_from(depth).unwrap_or(u16::MAX),
+                                    resolved_components: usize_to_u64(depth),
                                 };
                                 done.value[index] = 1;
                                 continue;
@@ -312,7 +312,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 entries.value[*index] = PathBatchEntry {
                                     record: None,
                                     parent: current.value[*index],
-                                    resolved_components: u16::try_from(depth).unwrap_or(u16::MAX),
+                                    resolved_components: usize_to_u64(depth),
                                 };
                                 done.value[*index] = 1;
                             }
@@ -368,7 +368,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                             entries.value[binding.path_index] = PathBatchEntry {
                                 record: Some(record),
                                 parent: current.value[binding.path_index],
-                                resolved_components: u16::try_from(next_depth).unwrap_or(u16::MAX),
+                                resolved_components: usize_to_u64(next_depth),
                             };
                             done.value[binding.path_index] = 1;
                             current.value[binding.path_index] = None;
