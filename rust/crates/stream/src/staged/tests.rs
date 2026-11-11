@@ -728,3 +728,149 @@ async fn streamed_ingress_refuses_missing_extra_and_wrong_family_tokens()
     assert!(reader.next().await?.is_none());
     Ok(())
 }
+
+#[tokio::test]
+async fn staged_destination_directory_reopens_original_ordinals_and_records()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Disk::open(directory.path());
+    let submission = Submission {
+        commit_id: CommitId::from_bytes([63; 32]),
+        idempotency_key: IdempotencyKey::new("destination-directory")?,
+        family: Family::Commit,
+        deadline_unix_millis: Some(72),
+        effects: 257,
+        accepted: false,
+    };
+    let tokens = futures::stream::iter((0..514_u64).flat_map(|ordinal| {
+        let mut tokens = Vec::new();
+        if ordinal % 2 == 0 {
+            tokens.push(Ok(Token::Effect {
+                soft: false,
+                conditions: 0,
+                mutations: 2,
+            }));
+        }
+        tokens.push(Ok(Token::Append {
+            path: Field::Inline(OwnedBytes::from(format!(
+                "directory/{:04}",
+                ordinal * 259 % 514
+            ))),
+            records: 2,
+        }));
+        for record in [ordinal * 2, ordinal * 2 + 1] {
+            tokens.push(Ok(Token::Record {
+                value: Field::Inline(OwnedBytes::from(record.to_le_bytes().to_vec())),
+                keys: 0,
+                attributes: 0,
+            }));
+        }
+        tokens
+    }));
+    let staged = stage_tokens(&storage, submission.clone(), tokens).await?;
+    let indexed = MutationDirectory::build(&storage, &staged).await?;
+    let root = indexed.root();
+    drop(indexed);
+    drop(storage);
+    let storage = Disk::open(directory.path());
+    let indexed = MutationDirectory::open(&storage, &staged, root).await?;
+    let model: std::collections::BTreeMap<_, _> = (0..514_u64)
+        .map(|ordinal| (format!("directory/{:04}", ordinal * 259 % 514), ordinal))
+        .collect();
+    let mut cursor = indexed.scan(&storage).await?;
+    for (path, ordinal) in model {
+        let (key, location) = cursor.next().await?.ok_or("missing directory entry")?;
+        assert_eq!(inline(key)?.as_slice(), path.as_bytes());
+        assert_eq!(
+            (location.effect, location.mutation),
+            (ordinal / 2, ordinal % 2),
+            "directory lost original mutation ordinals"
+        );
+        let found = indexed
+            .get(&storage, Field::Inline(OwnedBytes::from(path.clone())))
+            .await?
+            .ok_or("missing point lookup")?;
+        assert_eq!(
+            (found.effect, found.mutation),
+            (location.effect, location.mutation)
+        );
+        let mut reader = found.reader(&storage, &staged)?;
+        assert_eq!(reader.deadline_unix_millis(), Some(72));
+        assert_eq!(
+            reader.next().await?,
+            Some(Token::Append {
+                path: Field::Inline(OwnedBytes::from(path)),
+                records: 2,
+            })
+        );
+        for record in [ordinal * 2, ordinal * 2 + 1] {
+            assert_eq!(
+                reader.next().await?,
+                Some(Token::Record {
+                    value: Field::Inline(OwnedBytes::from(record.to_le_bytes().to_vec())),
+                    keys: 0,
+                    attributes: 0,
+                }),
+                "directory reordered original records"
+            );
+        }
+    }
+    assert!(cursor.next().await?.is_none());
+    assert!(
+        indexed
+            .get(&storage, Field::Inline(OwnedBytes::from_static(b"missing")))
+            .await?
+            .is_none()
+    );
+    let mut wrong = staged.clone();
+    wrong.commit_id = CommitId::from_bytes([64; 32]);
+    assert!(
+        MutationDirectory::open(&storage, &wrong, root)
+            .await
+            .is_err()
+    );
+    wrong = staged.clone();
+    wrong.body.part.length += 1;
+    assert!(
+        MutationDirectory::open(&storage, &wrong, root)
+            .await
+            .is_err()
+    );
+    let mut projected = staged.clone();
+    projected.accepted = true;
+    MutationDirectory::open(&storage, &projected, root).await?;
+    let duplicate = stage_tokens(
+        &storage,
+        Submission {
+            effects: 2,
+            ..submission
+        },
+        futures::stream::iter((0..2).flat_map(|_| {
+            [
+                Ok(Token::<OwnedBytes>::Effect {
+                    soft: false,
+                    conditions: 0,
+                    mutations: 1,
+                }),
+                Ok(Token::Append {
+                    path: Field::Inline(OwnedBytes::from_static(b"duplicate")),
+                    records: 1,
+                }),
+                Ok(Token::Record {
+                    value: Field::Inline(OwnedBytes::new()),
+                    keys: 0,
+                    attributes: 0,
+                }),
+            ]
+        })),
+    )
+    .await?;
+    assert!(
+        matches!(
+            MutationDirectory::build(&storage, &duplicate).await,
+            Err(StreamError::InvalidArgument)
+        ),
+        "directory accepted duplicate destinations across effects"
+    );
+    Ok(())
+}

@@ -296,6 +296,78 @@ pub struct Bookmark {
     shape: Shape,
 }
 
+pub(super) const BOOKMARK_BYTES: usize = 1 + 8 + 1 + 8 + 7 * 8;
+
+impl Bookmark {
+    pub(super) fn encode(&self) -> [u8; BOOKMARK_BYTES] {
+        let mut bytes = [0; BOOKMARK_BYTES];
+        bytes[0] = 1;
+        bytes[1..9].copy_from_slice(&self.position.to_le_bytes());
+        bytes[9] = u8::from(self.deadline.is_some());
+        let numbers = [
+            self.deadline.unwrap_or(0),
+            self.shape.effects,
+            self.shape.conditions,
+            self.shape.mutations,
+            self.shape.exclusions,
+            self.shape.records,
+            self.shape.keys,
+            self.shape.attributes,
+        ];
+        for (slot, number) in bytes[10..].chunks_exact_mut(8).zip(numbers) {
+            slot.copy_from_slice(&number.to_le_bytes());
+        }
+        bytes
+    }
+
+    // Only the authenticated directory decoder may restore this boundary.
+    pub(super) fn decode(binding: &StagedWrite, bytes: &[u8]) -> Result<Self, StreamError> {
+        let bytes: &[u8; BOOKMARK_BYTES] =
+            bytes.try_into().map_err(|_| StreamError::InvalidResponse)?;
+        if bytes[0] != 1 || bytes[9] > 1 {
+            return Err(StreamError::InvalidResponse);
+        }
+        let mut numbers = [0; 8];
+        for (number, slot) in numbers.iter_mut().zip(bytes[10..].chunks_exact(8)) {
+            *number =
+                u64::from_le_bytes(slot.try_into().map_err(|_| StreamError::InvalidResponse)?);
+        }
+        let [
+            deadline,
+            effects,
+            conditions,
+            mutations,
+            exclusions,
+            records,
+            keys,
+            attributes,
+        ] = numbers;
+        let position = u64::from_le_bytes(
+            bytes[1..9]
+                .try_into()
+                .map_err(|_| StreamError::InvalidResponse)?,
+        );
+        if position >= binding.body.part.length || (bytes[9] == 0 && deadline != 0) {
+            return Err(StreamError::InvalidResponse);
+        }
+        Ok(Self {
+            binding: binding.clone(),
+            position,
+            deadline: (bytes[9] == 1).then_some(deadline),
+            shape: Shape {
+                family: Some(binding.family),
+                effects,
+                conditions,
+                mutations,
+                exclusions,
+                records,
+                keys,
+                attributes,
+            },
+        })
+    }
+}
+
 impl<'a, S: Storage> Reader<'a, S> {
     /// Verifies the immutable stage binding before exposing any request token.
     pub async fn open(storage: &'a S, staged: &StagedWrite) -> Result<Self, StreamError> {

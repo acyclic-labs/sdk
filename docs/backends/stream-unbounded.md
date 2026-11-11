@@ -803,3 +803,48 @@ scales with total input count. Original-work admission remains an integration
 obligation, and this is not the production atomicity proof. The large-key control
 also witnesses release of a 1MiB original owner while its 8-byte slice is buffered.
 The new sorting/retention source needs its own remote check and controls.
+
+### Staged destination directory contract (before implementation)
+
+The next integration is a private MutationDirectory built from one sealed
+StagedWrite. It is not a prepared authority decision. Its byte-ordered unique
+keys are mutation destinations; values carry original effect and mutation
+ordinals plus a verified decoder bookmark immediately before that mutation.
+Building it reads the original token body once, retaining only the current token,
+constant counters and the shared external Sorter's bounded working pages.
+Duplicate destinations anywhere in the request are InvalidArgument, matching the
+existing cross-effect mutation shape rule. Sorting descriptors never rewrites the
+body: records, keys and attributes retain caller order across physical boundaries.
+
+Bookmarks stored in directory values have a fixed versioned encoding of the
+logical byte position, optional deadline and decoder counters. The body root,
+commit id, family and retry key come exclusively from the enclosing StagedWrite;
+they cannot be rebound by a value. Only authenticated directory roots may be
+opened: this is not an untrusted seek credential or proof that arbitrary supplied
+bytes are a token boundary. The private directory root retains both the original
+body and the ordered-index checkpoint, binds the exact body descriptor in its
+versioned bytes, and is never a namespace, retry, sequence or follower root.
+Lookup resumes the original body at the saved boundary without scanning its
+prefix. Reopening requires the same original staged binding; accepted-envelope
+projection may change as for existing Reader bookmarks. Failure or cancellation
+returns no directory; its successful page writes remain owned by the enclosing
+stage and require event-driven retirement at the eventual registry integration.
+
+A real-file conformance control must compare directory iteration with an
+independent path ordering while lookup returns original ordinals and records;
+reopen must preserve that result, a different stage must be refused, and duplicate
+destinations across effects must be refused. This control proves descriptor
+integration only. Canonical condition/header/exclusion ordering, namespace COW,
+final publication, original-work admission, event GC, crash/loom proofs and every
+backend's production conformance remain separate outstanding obligations.
+
+The destination directory is now wired to Reader bookmarks and the shared
+Sorter. Its real-file control covers 514 shuffled destinations over 257 effects,
+a close/reopen, full independent ordered-map comparison, point lookups, original
+record order, stage/body rebinding refusal, accepted-output projection and a
+cross-effect duplicate. A mutation increments every stored effect ordinal; the
+control must fail with the original-ordinals assertion. This new source is not
+yet remotely compiled or executed. The earlier c278 ten-negative run remains
+live, waiting for the shared native target lock; its restoration must finish
+before a newer source is checked out there. Production writes still enforce the
+original public limits; no atomic-apply or backend conformance result is claimed.
