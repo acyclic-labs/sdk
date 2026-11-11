@@ -41,6 +41,7 @@ pub struct HostWorkspace {
     mount_root: Arc<HeldRoot>,
     project: VolumeRef,
     signed: Scope,
+    verifier: crate::core::AuthorityVerifier,
     scope: crate::runtime::RuntimeScope,
     _native_volumes: Vec<workspace::projection::Entered>,
 }
@@ -53,6 +54,7 @@ impl HostWorkspace {
         workspace: Arc<LocalWorkspace>,
         agent: AgentPath,
         signed: &Scope,
+        verifier: &crate::core::AuthorityVerifier,
         admitted_mount_root: HeldRoot,
     ) -> Result<Self> {
         if agent.depth() != 0 {
@@ -89,6 +91,7 @@ impl HostWorkspace {
                 Default::default(),
             )?,
             signed: signed.copy(&mut None)?,
+            verifier: verifier.clone(),
             mount_root: Arc::new(admitted_mount_root),
             project,
             _native_volumes: Vec::new(),
@@ -197,6 +200,7 @@ impl HostWorkspace {
         let commands = workspace::git::Commands {
             workspace: &self.workspace,
             signed: &self.signed,
+            verifier: &self.verifier,
             clock: &acyclic_stream::SystemUnixMillisClock,
             capture_options: &configuration.0,
             capture_policy: &configuration.1,
@@ -309,6 +313,7 @@ impl HostWorkspace {
                 Default::default(),
             )?,
             signed,
+            verifier: self.verifier.clone(),
             _native_volumes: Vec::new(),
         };
         result.verify().await?;

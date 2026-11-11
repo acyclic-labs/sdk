@@ -25,6 +25,7 @@ mod tests;
 pub(super) struct CheckoutTools {
     workspace: Arc<LocalWorkspace>,
     signed: Scope,
+    verifier: AuthorityVerifier,
     read_grant: String,
     write_grant: String,
     capture_options: acyclic_fs::CaptureOptions,
@@ -146,6 +147,7 @@ impl CheckoutTools {
             }
             Ok(Self {
                 signed: signed.clone(),
+                verifier: verifier.clone(),
                 read_grant: project.capability(VolumeOperation::Read, &mut None)?,
                 write_grant: project.capability(VolumeOperation::Write, &mut None)?,
                 capture_options,

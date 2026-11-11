@@ -156,6 +156,7 @@ impl LocalHarness {
         let commands = super::workspace::git::Commands {
             workspace,
             signed,
+            verifier: &self.verifier,
             clock: self.clock.as_ref(),
             capture_options: &configuration.0,
             capture_policy: &configuration.1,
