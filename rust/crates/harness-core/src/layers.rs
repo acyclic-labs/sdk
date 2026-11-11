@@ -33,6 +33,8 @@ pub const HOME_PATH: &str = ".volumes/home/";
 /// Read-only tool path of the calling agent's original private output volume.
 /// This is a model read route; it creates no guest mount or per-agent work.
 pub const OUTPUT_PATH: &str = ".volumes/output/";
+/// Tool address of agent-authored private UI files; never a guest mount.
+pub const PRIVATE_PATH: &str = ".volumes/private/";
 /// Tool path of the seed volume.
 pub const SEED_PATH: &str = ".volumes/seed/";
 /// Tool path of host-published system files.

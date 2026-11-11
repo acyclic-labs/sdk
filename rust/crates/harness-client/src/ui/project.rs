@@ -180,13 +180,13 @@ impl View {
                 parent: agent.children()?,
                 index: u32::try_from(cursor >> 32).map_err(|_| Error::Invalid("child cursor"))?,
                 tail: None,
-                witness: Some(agent.status()?),
+                witness: Some(agent.membership()?),
             }),
             path if path.starts_with("children/pages/") => wants.push(Want::Listing {
                 parent: agent.children()?,
                 index: page_number(path, "children/pages/")?,
                 tail: None,
-                witness: Some(agent.status()?),
+                witness: Some(agent.membership()?),
             }),
             path if path.starts_with("turns/") => {
                 let page: u64 = page_number(path, "turns/")?;

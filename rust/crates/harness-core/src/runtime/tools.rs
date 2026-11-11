@@ -968,6 +968,9 @@ impl ToolContext {
                 std::borrow::Cow::Borrowed(relative),
             ));
         }
+        if let Some((binding, relative)) = self.task().private_content_path(path, io)? {
+            return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
+        }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let work = io.and_then(crate::executor::PreparationIo::original_native_work);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]

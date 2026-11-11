@@ -14,9 +14,10 @@ struct Cut(AtomicBool);
 async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     let directory = tempfile::tempdir().map_err(exchange)?;
     let project = volume(directory.path()).await?;
+    let provider = text();
     let harness = Arc::new(
         LocalHarness::open(
-            volume_config(directory.path(), project, text())?
+            volume_config(directory.path(), project, provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled)
                 .workspace_mounting(crate::local::WorkspaceMounting::Physical),
         )
@@ -106,6 +107,69 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         futures::future::poll_fn(|cx| tree.poll_changed(0, cx)).await;
     }
     eprintln!("tree reader: first child discovered through the live source");
+    // A real agent authors the same private files the visible-row query reads.
+    // Neither native mounting nor a project directory named .volumes is needed.
+    let selected = conversation.select(child.clone()).await?;
+    selected.wait_current_input().await?;
+    use crate::{
+        model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent},
+        test_support::{ScriptedEvent, ScriptedTurn},
+    };
+    let calls = [
+        ("ui-title", ".volumes/private/ui/title", "Authored title"),
+        (
+            "managed-output",
+            ".volumes/private/tools/forged.json",
+            "forged",
+        ),
+        (
+            "escape-output",
+            ".volumes/private/ui/../tools/forged.json",
+            "forged",
+        ),
+    ]
+    .into_iter()
+    .map(|(id, path, content)| {
+        ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+            id.into(),
+            "write".into(),
+            serde_json::json!({"path":path,"content":content}),
+        )))
+    })
+    .chain(std::iter::once(ScriptedEvent::Event(
+        ModelEvent::Completed {
+            metadata: serde_json::json!({}),
+        },
+    )))
+    .collect();
+    provider.extend([
+        ScriptedTurn::Events(calls),
+        ScriptedTurn::Text("ui authored".into()),
+    ]);
+    let before = selected
+        .agent_file_previews(vec!["ui/title".into()], None, 64)
+        .await?;
+    assert_eq!(before.files["ui/title"], None);
+    let mut events = selected.observe(None).await?;
+    let publish = async {
+        let inbox = selected.send("author-ui", "author the private UI").await?;
+        selected.settle("author-ui", inbox, &mut events).await?;
+        Result::Ok(())
+    };
+    let (changed, ()) = futures::try_join!(
+        selected.agent_file_previews(vec!["ui/title".into()], Some(before.generation), 64),
+        publish,
+    )?;
+    assert_eq!(changed.files["ui/title"].as_deref(), Some("Authored title"));
+    let request = provider
+        .last_request()
+        .ok_or_else(|| Error::Conflict("no tool result request".into()))?;
+    for id in ["managed-output", "escape-output"] {
+        assert!(request.messages.iter().flat_map(|message| message.content.parts()).any(|part|
+            matches!(part, ModelContentPart::ToolResult {call_id, content: ToolResultContent::Error {..}, ..} if call_id == id)),
+            "private managed output accepted {id}");
+    }
+    eprintln!("tree reader: authored private UI followed; managed outputs refused");
     let outside = AgentPath::root(&crate::agent::AgentId::from_bytes([0; 16]));
     assert_eq!(
         reader.head(outside.status().map_err(exchange)?).await,
