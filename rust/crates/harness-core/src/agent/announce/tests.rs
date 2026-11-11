@@ -156,3 +156,37 @@ fn workspace_announcements_admit_only_actual_target_exposures() {
     let value: serde_json::Value = serde_json::from_slice(offline.canonical().0).unwrap();
     assert!(value["workspaces"][0]["paths"]["box"].is_null());
 }
+
+#[test]
+fn internal_workspace_has_neither_an_announcement_nor_a_target_exposure() {
+    let (table, roster) = fixture();
+    let visible = table.entries()[0].clone();
+    let mut internal = visible.clone();
+    internal.id = EntryId::from_bytes([3; 16]);
+    internal.role = WorkspaceRole::Internal;
+    internal.name = "not-a-reserved-name".into();
+    internal.inherit = WorkspaceInherit::Own;
+    let table = WorkspaceTable::new(vec![visible.clone(), internal.clone()]).unwrap();
+    let exposure = || WorkspaceExposure {
+        entry: visible.id,
+        paths: [("home".into(), Some("/sdk".into()))].into(),
+    };
+    let announced = WorkspaceAnnouncement::new(&table, &roster, vec![exposure()]).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(announced.canonical().0).unwrap();
+    assert_eq!(document["workspaces"].as_array().unwrap().len(), 1);
+    assert_eq!(document["workspaces"][0]["name"], visible.name);
+    assert!(
+        WorkspaceAnnouncement::new(
+            &table,
+            &roster,
+            vec![
+                exposure(),
+                WorkspaceExposure {
+                    entry: internal.id,
+                    paths: [("home".into(), Some("/hidden".into()))].into(),
+                }
+            ]
+        )
+        .is_err()
+    );
+}
