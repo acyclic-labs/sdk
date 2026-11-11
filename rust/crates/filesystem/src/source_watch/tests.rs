@@ -9,6 +9,72 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn delivery_completion_wakes_after_original_ledger_scope() -> TestResult {
+    struct Finished {
+        original: crate::NativeMaterializationWork,
+        completed: std::sync::mpsc::Sender<()>,
+    }
+    impl HostChangeSink for Finished {
+        fn logical_owned_bytes(&self) -> u64 {
+            0
+        }
+        fn host_changed(
+            &self,
+            _: &[HostChange],
+            work: &mut crate::demand::DemandWork,
+        ) -> Result<(), DemandError> {
+            work.check()
+        }
+        fn host_changed_with_native_work(
+            &self,
+            _: &[HostChange],
+            work: &mut crate::NativeMaterializationWork,
+        ) -> Result<(), DemandError> {
+            work.with_original_leaf(|ledger| ledger.check())
+        }
+        fn delivery_finished(&self) {
+            // A real observer can immediately re-enter the original ledger.
+            self.original
+                .with_original_leaf(|ledger| ledger.check())
+                .unwrap();
+            self.completed.send(()).unwrap();
+        }
+        #[cfg(windows)]
+        fn host_changed_wide(
+            &self,
+            _: &[HostChangeWide<'_>],
+            work: &mut crate::demand::DemandWork,
+        ) -> Result<(), DemandError> {
+            work.check()
+        }
+        #[cfg(windows)]
+        fn host_changed_wide_with_native_work(
+            &self,
+            _: &[HostChangeWide<'_>],
+            work: &mut crate::NativeMaterializationWork,
+        ) -> Result<(), DemandError> {
+            work.with_original_leaf(|ledger| ledger.check())
+        }
+    }
+    let root = tempfile::tempdir()?;
+    let cancellation = crate::CancellationToken::new();
+    let mut original =
+        crate::NativeMaterializationWork::new(original_watch_budget()?, &cancellation)
+            .map_err(|(error, _)| error)?;
+    let held = HostRoot::open(root.path(), &mut original)?;
+    let (completed, observed) = std::sync::mpsc::channel();
+    let sink = Arc::new(Finished {
+        original: original.clone(),
+        completed,
+    });
+    let watch = NativeSourceWatch::start(&held, sink, &mut original)?;
+    std::fs::write(root.path().join("wake"), b"changed")?;
+    observed.recv()?;
+    watch.stop_with_cleanup_wait(&crate::CancellationToken::new())?;
+    Ok(())
+}
+
 /// Retains a real callback refusal after joining only its physical driver.
 #[cfg(all(target_os = "linux", feature = "native-mount"))]
 pub(crate) fn terminal_failure_watch(

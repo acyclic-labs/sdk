@@ -30,6 +30,60 @@ fn work(budget: WorkBudget) -> NativeMaterializationWork {
     NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap()
 }
 
+#[test]
+fn repeated_capture_counts_nested_checkout_union_once() -> Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let source = tempfile::tempdir()?;
+    std::fs::create_dir(source.path().join("a"))?;
+    std::fs::write(source.path().join("a/x"), b"nested")?;
+    std::fs::write(source.path().join("z"), b"sibling")?;
+    let setup = work(WorkBudget::UNBOUNDED);
+    let mut checkout = runtime.block_on(super::capture_policy_tests::native_checkout(&setup))?;
+    let options = CaptureOptions {
+        source_namespace: None,
+        source_root: source.path().to_owned(),
+        expected_root_identity: capture_root_identity(source.path())?,
+        maximum_paths: Some(3),
+        maximum_extent_spans: Some(8),
+    };
+    let policy = CapturePolicy::default();
+    // Once populated, checkout traversal is a,z,a/x while the host is a,a/x,z.
+    // Exercise both public capture entry points with the exact union allowance.
+    for _ in 0..2 {
+        runtime.block_on(capture_subtrees_with_native_work(
+            &mut checkout,
+            &[path("/")],
+            &options,
+            &policy,
+            setup.cancellation(),
+            None,
+            &setup,
+        ))?;
+        runtime.block_on(crate::seal_checkout(
+            &mut checkout,
+            crate::OperationId::new(),
+            WorkBudget::UNBOUNDED,
+            setup.cancellation(),
+        ))?;
+        runtime.block_on(capture_baseline(
+            &mut checkout,
+            &options,
+            &policy,
+            WorkBudget::UNBOUNDED,
+            setup.cancellation(),
+        ))?;
+        runtime.block_on(crate::seal_checkout(
+            &mut checkout,
+            crate::OperationId::new(),
+            WorkBudget::UNBOUNDED,
+            setup.cancellation(),
+        ))?;
+    }
+    Ok(())
+}
+
 // A leaf needs exactly one owned path in the output. Copying it first creates
 // one component vector plus one byte vector per component, all immediately freed.
 fn redundant_copy(paths: &[(NamespacePath, bool)]) -> (u64, u64, u64) {
