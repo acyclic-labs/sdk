@@ -112,6 +112,9 @@ impl FileProjectionPolicy {
         limits: Limits,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
+        if matches!(self, Self::Reference) {
+            return limits.validate_file_metadata(file, work);
+        }
         if let Self::Native(policy) = self {
             return policy.validate(file, limits, work);
         }
