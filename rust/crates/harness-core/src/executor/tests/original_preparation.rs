@@ -159,79 +159,85 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<crate::model::PreparedModelRequest> {
-        let (tail, records) = self
-            .model_records(journal, input.operation_id, step, ModelPurpose::Response)
-            .await?;
-        let mut retained = records.iter().filter_map(|record| match &record.event {
-            ExecutionEvent::ContextPrepared {
-                step: recorded,
-                projection,
-                ..
-            } if *recorded == step => Some(projection),
-            _ => None,
-        });
-        let first = retained.next();
-        if retained.next().is_some() {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Storage,
-                "response projection was prepared more than once",
-            ));
-        }
-        let (mut projection, accounting) = match first {
-            None => {
-                if self.stock.reconciliation_only {
-                    return Err(Error::Indeterminate(input.operation_id));
+        // Both factories retain the current admitted future owner. The
+        // reference keeps its independent preparation algorithm, not the
+        // pre-ownership frame layout that could overflow its caller.
+        crate::conversation::BoundedContentFuture::new(self.io, || async {
+            let (tail, records) = self
+                .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+                .await?;
+            let mut retained = records.iter().filter_map(|record| match &record.event {
+                ExecutionEvent::ContextPrepared {
+                    step: recorded,
+                    projection,
+                    ..
+                } if *recorded == step => Some(projection),
+                _ => None,
+            });
+            let first = retained.next();
+            if retained.next().is_some() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "response projection was prepared more than once",
+                ));
+            }
+            let (mut projection, accounting) = match first {
+                None => {
+                    if self.stock.reconciliation_only {
+                        return Err(Error::Indeterminate(input.operation_id));
+                    }
+                    self.capture_response_original(journal, input, step, prior_messages, tail)
+                        .await?
                 }
-                self.capture_response_original(journal, input, step, prior_messages, tail)
-                    .await?
-            }
-            Some(reference) => {
-                let mut projection = retain_preparation(
-                    load_response_projection(journal, reference, self.stock.limits, self.io)
-                        .await?,
-                )?;
-                let accounting = projection.accounting.take();
-                (projection, accounting)
-            }
-        };
-        crate::context::validate_projected_context(
-            &projection.context,
-            self.stock.limits,
-            self.io,
-        )?;
-        if projection.checkpoint.is_some() {
-            return Err(stock_boundary(
+                Some(reference) => {
+                    let mut projection = retain_preparation(
+                        load_response_projection(journal, reference, self.stock.limits, self.io)
+                            .await?,
+                    )?;
+                    let accounting = projection.accounting.take();
+                    (projection, accounting)
+                }
+            };
+            crate::context::validate_projected_context(
+                &projection.context,
+                self.stock.limits,
                 self.io,
-                crate::wire::ErrorCode::Storage,
-                "prepared context contains a later checkpoint",
-            ));
-        }
-        if projection.context.current_input_index.is_none() {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Storage,
-                "prepared response projection differs from its request",
-            ));
-        }
-        let request = if matches!(
-            self.compaction_policy()?,
-            crate::context::CompactionPolicy::Disabled
-        ) {
-            self.request_taking_context(&mut projection.context)?
-        } else {
-            self.request_from_context(&projection.context)?
-        };
-        let prepared =
-            crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
-        self.resolve_response_accounting_original(
-            journal,
-            (input, step),
-            projection,
-            accounting,
-            prepared,
-            &records,
-        )
+            )?;
+            if projection.checkpoint.is_some() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "prepared context contains a later checkpoint",
+                ));
+            }
+            if projection.context.current_input_index.is_none() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "prepared response projection differs from its request",
+                ));
+            }
+            let request = if matches!(
+                self.compaction_policy()?,
+                crate::context::CompactionPolicy::Disabled
+            ) {
+                self.request_taking_context(&mut projection.context)?
+            } else {
+                self.request_from_context(&projection.context)?
+            };
+            let prepared =
+                crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
+            self.resolve_response_accounting_original(
+                journal,
+                (input, step),
+                projection,
+                accounting,
+                prepared,
+                &records,
+            )
+            .await
+        })?
         .await
     }
 
