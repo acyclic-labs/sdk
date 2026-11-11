@@ -657,3 +657,46 @@ with an existing pinned Index handle is not a crash/restart proof. The staged
 canonical planner, original-work admission integration, authority publication,
 terminal receipts, event GC, all six production proofs and backend/caller cutover
 remain outstanding. No backend write is routed through the new index yet.
+
+### Ordered index cursor
+
+Add scan(lower-bound) over one immutable index root. The cursor descends through
+the same Search continuation as point lookup and retains at most one bounded
+page per fixed-width level. Once positioned it advances through that root's
+children, without re-seeking from the root or reading skipped subtrees. Returned
+keys and values remain bounded inline fields or content references. Point get
+uses this same descent/cursor mechanism, avoiding a second tree reader.
+
+A cancelled next operation permanently refuses cursor reuse; it cannot skip a
+child already removed from its frame before IO. A fresh cursor may reopen the
+same retained root. The caller's enclosing stage/published pin owns page lifetime;
+this index cursor neither creates a Stream position nor substitutes for the
+required authority/batch retention capability. Extend the multilevel real-file
+control with complete ordered traversal and lower-bound seeks, and gate a real
+child read to prove interruption refuses reuse. A guard-removal mutation must
+fail that cursor assertion. This is index traversal, not the final follower or
+crash-at-publication proof.
+
+The index cursor implementation now shares descent with point lookup. A scan
+retains its bounded spine; point get discards parent frames and carries the
+search's exact-match result, avoiding extra leaf reads and repeated large-key
+comparisons. The multilevel control traverses every entry and seeks across page
+boundaries. A second read gate on the same real-file fixture cancels a child
+fetch and requires refusal rather than skipping it; a ninth mutation removes
+that guard. These cursor changes are not remotely compiled yet.
+
+The `6268291c8ffb6a373c9757e6c416174a5f9f4e6a` check did execute and stopped
+before tests with E0308 in filesystem allocation/writer.rs:46. The compiler
+reported an Option<&str> base in filesystem-base admitted::merge at line 780,
+but the exact checked-out file AND git show HEAD both define &str at line 765.
+The unchanged caller correctly supplies &str. No Some(base) SDK change was made.
+This is evidence of incompatible reused dependency metadata in the shared
+native target, not evidence that the checked-in API needs adapting.
+
+The next focused filesystem check must refresh only that dependency file's
+mtime in this checkout, verify its bytes still match its committed object,
+and compile the failing package first. It must not delete or alter the shared
+target or another checkout. Then check Stream/collections at the new source
+before targeted controls. Record the source SHA and any freshness evidence;
+if the same source/metadata mismatch remains, do not repeat it unchanged.
+All original publication, crash, loom, GC and backend obligations remain due.

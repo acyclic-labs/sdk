@@ -9,8 +9,10 @@ use acyclic_collections::page::{self, Child, Page, PageRef};
 
 mod build;
 mod codec;
+mod cursor;
 mod key;
 pub use build::Builder;
+pub use cursor::Cursor;
 use key::Key;
 
 const MAGIC: &[u8] = b"acyclic-ordered-index-v1\0";
@@ -56,41 +58,42 @@ impl Index {
     pub const fn root(&self) -> Option<Root> {
         self.root
     }
-    /// Reads one value without assembling its large bytes or any other page.
+    /// Looks up one field while loading only the bounded search path.
     pub async fn get(
         &self,
         storage: &impl Storage,
         key: Field,
     ) -> Result<Option<Field>, StreamError> {
-        let Some(mut root) = self.root else {
+        if self.root.is_none() {
             return Ok(None);
-        };
-        let key = Key::new(storage, key).await?;
-        let mut height = self.height;
-        loop {
-            match codec::read(storage, root, height).await? {
-                Page::Leaf(entries) => {
-                    return Ok(
-                        match search(storage, &entries, &key, |entry| &entry.key).await? {
-                            Ok(index) => Some(entries[index].value.clone()),
-                            Err(_) => None,
-                        },
-                    );
-                }
-                Page::Internal(children) => {
-                    let selected =
-                        match search(storage, &children, &key, |child| &child.first).await? {
-                            Ok(index) => index,
-                            Err(index) => index.saturating_sub(1),
-                        };
-                    root = children
-                        .get(selected)
-                        .ok_or(StreamError::InvalidResponse)?
-                        .page;
-                    height = height.checked_sub(1).ok_or(StreamError::InvalidResponse)?;
-                }
-            }
         }
+        let key = Key::new(storage, key).await?;
+        let mut cursor = Cursor::open(storage, self, Some(&key), false).await?;
+        if cursor.matched() {
+            let entry = cursor
+                .next_entry()
+                .await?
+                .ok_or(StreamError::InvalidResponse)?;
+            Ok(Some(entry.value))
+        } else {
+            Ok(None)
+        }
+    }
+    /// Opens ordered iteration at an inclusive byte-key lower bound. Its root
+    /// remains fixed while later indexes or authority decisions are built.
+    pub async fn scan<'a, S: Storage>(
+        &self,
+        storage: &'a S,
+        lower: Option<Field>,
+    ) -> Result<Cursor<'a, S>, StreamError> {
+        if self.root.is_none() {
+            return Cursor::open(storage, self, None, true).await;
+        }
+        let lower = match lower {
+            Some(field) => Some(Key::new(storage, field).await?),
+            None => None,
+        };
+        Cursor::open(storage, self, lower.as_ref(), true).await
     }
 }
 

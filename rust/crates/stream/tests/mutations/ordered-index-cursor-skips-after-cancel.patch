@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/content/index/cursor.rs b/rust/crates/stream/src/content/index/cursor.rs
+--- a/rust/crates/stream/src/content/index/cursor.rs
++++ b/rust/crates/stream/src/content/index/cursor.rs
+@@ -104,8 +104,4 @@ impl<'a, S: Storage> Cursor<'a, S> {
+     pub(super) async fn next_entry(&mut self) -> Result<Option<Entry>, StreamError> {
+-        if self.interrupted {
+-            return Err(StreamError::Unavailable);
+-        }
+-        self.interrupted = true;
+         let result = self.advance().await;
+         if result.is_ok() {
+             self.interrupted = false;
