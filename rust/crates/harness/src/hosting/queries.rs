@@ -128,13 +128,13 @@ fn input_frames(
     Box::pin(async_stream::try_stream! {
         while let Some(step) = source.next().await {
             match step? {
-                crate::agent::InputPreviewStep::Progress => yield diff::frame(4, Bytes::new(), &page)?,
-                crate::agent::InputPreviewStep::Selected(None) => yield diff::frame(7, Bytes::new(), &page)?,
+                crate::agent::InputPreviewStep::Progress => yield diff::frame(4, Vec::new(), &page)?,
+                crate::agent::InputPreviewStep::Selected(None) => yield diff::frame(7, Vec::new(), &page)?,
                 crate::agent::InputPreviewStep::Selected(Some(preview)) => {
                     let mut body = Vec::with_capacity(8 + preview.text.len());
                     body.extend_from_slice(&preview.bytes.to_le_bytes());
                     body.extend_from_slice(preview.text.as_bytes());
-                    yield diff::frame(6, body.into(), &page)?;
+                    yield diff::frame(6, body, &page)?;
                 }
             }
         }

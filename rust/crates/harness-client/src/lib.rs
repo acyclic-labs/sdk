@@ -23,11 +23,15 @@ pub use control::{
 
 #[cfg(any(feature = "agents", feature = "wasm"))]
 mod diff_query;
+#[cfg(any(feature = "agents", feature = "wasm"))]
 mod query;
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use query::QueryProjection;
+#[cfg(any(feature = "agents", feature = "wasm"))]
 mod input_query;
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub use diff_query::{DiffProjection, DiffQuery, DiffQueryEvent, DiffSnapshot, DiffSummary};
+#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use input_query::{InputPreview, InputPreviewStep, InputQuery};
 
 #[cfg(any(feature = "agents", feature = "wasm"))]

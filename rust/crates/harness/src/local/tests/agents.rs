@@ -3832,6 +3832,15 @@ async fn tool_free_checkout_sessions_read_their_own_logical_context_without_moun
 #[tokio::test]
 async fn historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_steering_cut()
 -> Result<()> {
+    historical_input_preview_case(false).await
+}
+
+#[tokio::test]
+async fn historical_input_previews_retain_newer_steering_across_later_hook_turns() -> Result<()> {
+    historical_input_preview_case(true).await
+}
+
+async fn historical_input_preview_case(later_hook: bool) -> Result<()> {
     use crate::{
         agent::{Delivered, InboxRecord, InputPreviewStep, IntentId, Message, Sender},
         model::{ModelEvent, ToolCall},
@@ -3878,17 +3887,26 @@ async fn historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_ste
     };
     let mut sequences = Vec::new();
     let mut reserved = None;
-    for (name, text, follow_up) in [
-        ("first", "INITIAL_INPUT", false),
-        ("steer", "ADMITTED_STEERING_INPUT", false),
-        ("reserved", "UNADMITTED_FOLLOW_UP", true),
-    ] {
+    let inputs = if later_hook {
+        [
+            ("first", "INITIAL_INPUT", 0),
+            ("hook", "HOOK_INPUT", 2),
+            ("steer", "ADMITTED_STEERING_INPUT", 0),
+        ]
+    } else {
+        [
+            ("first", "INITIAL_INPUT", 0),
+            ("steer", "ADMITTED_STEERING_INPUT", 0),
+            ("reserved", "UNADMITTED_FOLLOW_UP", 1),
+        ]
+    };
+    for (name, text, kind) in inputs {
         let id = IntentId::try_from(name).map_err(agent)?;
         let body = bound
             .stage_text(root, "message", &by, &id, (text, text))
             .await
             .map_err(agent)?;
-        if follow_up {
+        if kind == 1 {
             reserved = Some(body.clone());
         }
         let message = Message {
@@ -3897,10 +3915,14 @@ async fn historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_ste
             body: Box::new(body),
             attachments: None,
         };
-        let input = if follow_up {
-            InboxRecord::FollowUp(message)
-        } else {
-            InboxRecord::Message(message)
+        let input = match kind {
+            1 => InboxRecord::FollowUp(message),
+            2 => InboxRecord::Hook(crate::agent::Hook {
+                host: "preview-cut".into(),
+                id: message.id,
+                event: message.body,
+            }),
+            _ => InboxRecord::Message(message),
         };
         let Delivered::Committed { inbox } = agents.send(root, &by, &input).await.map_err(agent)?
         else {
@@ -3917,9 +3939,37 @@ async fn historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_ste
             .is_some_and(|cut| cut.through > sequences[2]),
         "the selected prefix must include the reserved gap for this control to prove admission"
     );
-    let branch =
-        crate::local::sessions::fork(&connection, root.clone(), 0, "preview-historical-cut")
-            .await?;
+    if later_hook {
+        observed.conversation.wait_current_input().await?;
+        let mut entries = agents
+            .provider()
+            .read(ReadRequest {
+                key: None,
+                path: root.conversation().map_err(agent)?,
+                from: 1,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(agent)?;
+        let record = entries.try_next().await.map_err(agent)?.ok_or_else(|| {
+            Error::Invalid("the settled hook published no conversation entry".into())
+        })?;
+        let hook = ConversationEntry::decode(&record.value).map_err(agent)?;
+        assert_eq!(hook.inbox, sequences[1]);
+        assert!(matches!(hook.input, TurnInput::Hook { .. }));
+        assert!(
+            hook.steering.is_none() && hook.observed_through > sequences[2],
+            "the hook must retain the earlier admission cursor without its own steering proof"
+        );
+    }
+    let branch = crate::local::sessions::fork(
+        &connection,
+        root.clone(),
+        u64::from(later_hook),
+        "preview-historical-cut",
+    )
+    .await?;
     let branch = Conversation::open(branch);
     let mut query = branch
         .input_query(crate::client::AgentPageRequest::new(1, 128, None).map_err(agent)?)
@@ -3939,21 +3989,32 @@ async fn historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_ste
     assert_eq!(
         preview.as_ref().map(|value| value.text.as_str()),
         Some("ADMITTED_STEERING_INPUT"),
-        "an inherited preview must not disclose an unadmitted follow-up"
+        if later_hook {
+            "a later hook must retain the newest admitted steering message"
+        } else {
+            "an inherited preview must not disclose an unadmitted follow-up"
+        }
     );
-    assert!(
-        branch
-            .text(&reserved.ok_or_else(|| Error::Invalid("missing reserved body".into()))?)
-            .await
-            .is_err()
-    );
+    if !later_hook {
+        assert!(
+            branch
+                .text(&reserved.ok_or_else(|| Error::Invalid("missing reserved body".into()))?)
+                .await
+                .is_err()
+        );
+    }
     let mut own = observed
         .conversation
         .input_query(crate::client::AgentPageRequest::new(1, 128, None).map_err(agent)?)
         .await
         .map_err(agent)?;
+    let expected = if later_hook {
+        "ADMITTED_STEERING_INPUT"
+    } else {
+        "UNADMITTED_FOLLOW_UP"
+    };
     assert!(
-        matches!(own.next().await.map_err(agent)?, Some(InputPreviewStep::Selected(Some(preview))) if preview.text == "UNADMITTED_FOLLOW_UP"),
+        matches!(own.next().await.map_err(agent)?, Some(InputPreviewStep::Selected(Some(preview))) if preview.text == expected),
         "the originating session still owns its accepted follow-up"
     );
     Ok(())

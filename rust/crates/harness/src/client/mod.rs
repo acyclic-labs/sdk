@@ -5,7 +5,8 @@
 #[cfg(any(feature = "hosting", feature = "wasm"))]
 pub use acyclic_harness_client::{
     AgentCommand, AgentPageRequest, AgentReply, ApprovalVerdict, DiffProjection, DiffQuery,
-    DiffQueryEvent, DiffSnapshot, DiffSummary, EventCursor, ExecutionPosition, MAX_READ_BYTES,
+    DiffQueryEvent, DiffSnapshot, DiffSummary, EventCursor, ExecutionPosition, InputPreview,
+    InputPreviewStep, InputQuery, MAX_READ_BYTES,
 };
 pub use acyclic_harness_core::preset::Preset;
 

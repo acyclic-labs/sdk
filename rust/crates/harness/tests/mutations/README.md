@@ -171,3 +171,12 @@ must preview the admitted steering message; the originating session can still
 preview its own accepted follow-up. The mutation must fail `an inherited
 preview must not disclose an unadmitted follow-up`. A compilation or setup
 failure does not qualify. Reverse the patch and rerun the same control.
+
+`input-preview-lost-overlap.patch` discards a newer ordinary message when the
+latest hook turn has no proof for it, losing the earlier turn's steering
+admission. Run the same command above with the exact control
+`local::tests::agents::historical_input_previews_retain_newer_steering_across_later_hook_turns`.
+It must fail `a later hook must retain the newest admitted steering message`.
+The original source record must survive across those overlapping turn proofs;
+each inbox record is read once rather than replaying every overlapping range.
+Reverse the patch and rerun that control.

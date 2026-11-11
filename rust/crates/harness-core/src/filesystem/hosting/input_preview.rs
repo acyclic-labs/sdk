@@ -35,10 +35,14 @@ where
             let mut selected = inbox;
             let mut end = tail;
             let mut lower = floor;
-            let mut conversation = state.conversation_tail;
+            // No accepted message exists in the owned inbox after this walk,
+            // so own settled turns cannot add a message. Start at adoption's
+            // inherited cut instead of visiting own control-only history.
+            let mut conversation = state.conversation_base;
             let mut admitted = None::<ConversationEntry>;
+            let mut deferred = None::<(u64, InboxRecord)>;
             loop {
-                while end > lower {
+                while deferred.is_none() && end > lower {
                     end -= 1;
                     let record = input_record(provider, &selected, end).await?;
                     let input = InboxRecord::decode(&record.value)?;
@@ -55,13 +59,26 @@ where
                             yield InputPreviewStep::Selected(Some(preview));
                             return;
                         }
-                        _ => yield InputPreviewStep::Progress,
+                        _ => {
+                            // An ordinary message may have passed an earlier
+                            // turn's steering boundary, before this hook's own
+                            // turn. Keep its one original record until that
+                            // entry's proof arrives; do not replay overlapping
+                            // inbox ranges or silently discard the candidate.
+                            if matches!(&input, InboxRecord::Message(_)) {
+                                deferred = Some((end, input));
+                            }
+                            yield InputPreviewStep::Progress;
+                        }
                     }
                 }
                 // A fork's private inbox starts fresh. Its context retains the
                 // original appending stream on every inherited record, so no
                 // parent lookup or grant on an entire parent volume is needed.
                 let Some(sequence) = conversation.checked_sub(1) else {
+                    if deferred.is_some() {
+                        Err(Error::Record("message has no committed admission proof"))?;
+                    }
                     yield InputPreviewStep::Selected(None);
                     return;
                 };
@@ -73,6 +90,9 @@ where
                 let source = AgentPath::try_from(source.to_owned())?;
                 let source_inbox = source.inbox()?;
                 if source_inbox != selected {
+                    if deferred.is_some() {
+                        Err(Error::Record("message admission crosses its original inbox"))?;
+                    }
                     let floor = input_floor(provider, &source).await?;
                     if entry.inbox < floor {
                         Err(Error::Record("conversation input precedes adoption"))?;
@@ -85,9 +105,16 @@ where
                 if entry.observed_through <= entry.inbox {
                     Err(Error::Record("conversation input has no admitted prefix"))?;
                 }
+                if let Some((inbox, input)) = &deferred
+                    && let Some(message) = entry.admitted_message(*inbox, input)
+                {
+                    let preview = bound.input_prefix(&state, &message.body, maximum).await?;
+                    yield InputPreviewStep::Selected(Some(preview));
+                    return;
+                }
                 // Only this turn's exact input and ordinary admitted steering
                 // can disclose a file. Older entries retain their own proof;
-                // overlapping ranges already consumed need not be reread.
+                // overlapping work is retained in the one deferred message.
                 lower = entry.inbox;
                 admitted = Some(entry);
                 yield InputPreviewStep::Progress;
