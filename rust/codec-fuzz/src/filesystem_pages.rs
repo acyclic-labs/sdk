@@ -415,3 +415,15 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
     seeds.extend(historical::seeds()?);
     Ok(seeds)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn current_writer_records_preserve_mixed_layout_versions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (_, bytes) in super::seeds()? {
+            super::check(&bytes);
+        }
+        Ok(())
+    }
+}
