@@ -131,11 +131,11 @@ impl PreparationIo {
     pub fn encode<T: Serialize>(
         &self,
         value: &T,
-        maximum: u64,
+        maximum: Option<u64>,
         canonical: bool,
     ) -> Result<acyclic_stream::OwnedBytes> {
         let remaining = self.remaining()?;
-        if maximum != 0 {
+        if maximum != Some(0) {
             self.preflight(WorkCounters {
                 bytes_encoded: 1,
                 items_examined: 1,
@@ -143,7 +143,11 @@ impl PreparationIo {
             })?;
         }
         let bounds = JsonBounds {
-            maximum_bytes: Some(maximum.min(remaining.bytes_encoded)),
+            // Policy absence introduces no ceiling. The original work credit
+            // remains authoritative and is charged before physical growth.
+            maximum_bytes: Some(maximum.map_or(remaining.bytes_encoded, |maximum| {
+                maximum.min(remaining.bytes_encoded)
+            })),
             maximum_items: Some(remaining.items_examined),
             maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
@@ -388,7 +392,7 @@ impl PreparationIo {
     ) -> Result<(T, DecodeReservation<'_>)> {
         #[cfg(target_arch = "wasm32")]
         {
-            let bytes = self.encode(value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+            let bytes = self.encode(value, Some(acyclic_stream::MAX_RECORD_BYTES as u64), false)?;
             let _bytes = self.guard_bytes(&bytes)?;
             self.decode(std::marker::PhantomData::<T>, &bytes, code)
         }

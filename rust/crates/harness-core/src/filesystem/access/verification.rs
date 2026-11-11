@@ -21,7 +21,7 @@ fn roundtrip<T: PreparationRecord + serde::Serialize + std::fmt::Debug + Partial
     assert_eq!(expected, decoded.0);
     let encoded = io.encode(
         &decoded.0,
-        acyclic_fs::access::MAXIMUM_POLICY_RECORD_BYTES,
+        Some(acyclic_fs::access::MAXIMUM_POLICY_RECORD_BYTES),
         false,
     )?;
     let hold = io.guard_bytes(&encoded)?;

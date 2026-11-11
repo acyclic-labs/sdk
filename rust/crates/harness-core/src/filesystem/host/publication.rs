@@ -287,7 +287,7 @@ pub(in crate::filesystem) fn content_metadata_matches(
         return Ok(true);
     }
     let legacy = match io {
-        Some(io) => io.encode(file, UPLOAD_RECORD_BYTES, false)?,
+        Some(io) => io.encode(file, Some(UPLOAD_RECORD_BYTES), false)?,
         None => acyclic_stream::OwnedBytes::from(
             serde_json::to_vec(file).map_err(|error| Error::Invalid(error.to_string()))?,
         ),
@@ -301,7 +301,7 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     receipt: &acyclic_stream::OwnedBytes,
     io: &PreparationIo,
 ) -> Result<()> {
-    let canonical = io.encode(&(&recorded.0, &recorded.1), UPLOAD_RECORD_BYTES, true)?;
+    let canonical = io.encode(&(&recorded.0, &recorded.1), Some(UPLOAD_RECORD_BYTES), true)?;
     let hold = io.guard_bytes(&canonical)?;
     let canonical = (canonical, hold);
     if canonical.0.as_ref() != receipt.as_ref() {

@@ -294,7 +294,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             // Versioned as a fresh public contract; the key uses the original
             // workspace operation index and the receipt commits with all files.
-            let receipt = io.encode(&(2_u8, &records), io.remaining()?.bytes_encoded, true)?;
+            let receipt =
+                io.encode(&(2_u8, &records), Some(io.remaining()?.bytes_encoded), true)?;
             let receipt_path =
                 content_receipt_path_io(volume, key.as_str(), false, true, Some(io))?;
             let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
@@ -512,7 +513,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     if let Some(file) = record.file() {
                         let bytes = io.encode(
                             &(file, Option::<&GenerationRef>::None),
-                            io.remaining()?.bytes_encoded,
+                            Some(io.remaining()?.bytes_encoded),
                             true,
                         )?;
                         io.sdk(

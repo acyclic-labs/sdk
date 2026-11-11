@@ -121,7 +121,7 @@ impl StockExecution<'_> {
             #[cfg(feature = "filesystem")]
             let funded = self
                 .io
-                .map(|io| io.encode(&table_tools, u64::MAX, false))
+                .map(|io| io.encode(&table_tools, None, false))
                 .transpose()?;
             #[cfg(not(feature = "filesystem"))]
             let funded: Option<acyclic_stream::OwnedBytes> = None;
@@ -287,7 +287,7 @@ impl StockExecution<'_> {
             #[cfg(feature = "filesystem")]
             let funded = self
                 .io
-                .map(|io| io.encode(&notice, u64::MAX, false))
+                .map(|io| io.encode(&notice, None, false))
                 .transpose()?;
             #[cfg(not(feature = "filesystem"))]
             let funded: Option<acyclic_stream::OwnedBytes> = None;

@@ -225,7 +225,7 @@ pub fn decode_attachment_manifest(
         let encoded_hold;
         let encoded = io.encode(
             &(ManifestVersion::V1, &decoded.0),
-            io.remaining()?.bytes_encoded,
+            Some(io.remaining()?.bytes_encoded),
             false,
         )?;
         encoded_hold = io.guard_bytes(&encoded)?;
