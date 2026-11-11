@@ -26,6 +26,25 @@ impl ToolRegistry {
         definitions: &[ToolDefinition],
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
+        self.pin_definitions(definitions, io, false)
+    }
+
+    /// Epochs pin registered capabilities while live sources retain their
+    /// event-driven catalog generations and announce changes after the prefix.
+    pub(crate) fn pin_epoch_definitions(
+        &mut self,
+        definitions: &[ToolDefinition],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        self.pin_definitions(definitions, io, true)
+    }
+
+    fn pin_definitions(
+        &mut self,
+        definitions: &[ToolDefinition],
+        io: Option<&crate::executor::PreparationIo>,
+        fixed_only: bool,
+    ) -> Result<()> {
         use crate::{executor::stock_boundary, wire::ErrorCode};
         // A manifest pins canonical revisions; native declarations bind to
         // what it pins, so they are bound after it and never pinned.
@@ -44,6 +63,9 @@ impl ToolRegistry {
             let mut selected =
                 crate::core::reserve_copy_vector::<(&str, &str)>(definitions.len(), &mut quota)?;
             for definition in definitions {
+                if fixed_only && !self.data.selected.contains_key(&definition.name) {
+                    continue;
+                }
                 let tool = lookup::get(&self.data.versions, &definition.name, &definition.revision)
                     .ok_or_else(|| {
                         stock_boundary(

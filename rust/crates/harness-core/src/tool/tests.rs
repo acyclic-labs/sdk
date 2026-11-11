@@ -81,6 +81,8 @@ fn pinned_tool_revisions_require_explicit_model_selection() -> Result<()> {
     assert!(tools.get("example.echo", Some("1"), None)?.is_some());
     tools.select_model_version("example.echo", "2")?;
     assert_eq!(tools.definitions(None)?[0].revision, "2");
+    assert!(tools.resolve("example.echo@1", None)?.is_none());
+    assert!(tools.resolve("example.echo@2", None)?.is_some());
     assert_eq!(
         tools
             .get("example.echo", None, None)?
@@ -89,6 +91,7 @@ fn pinned_tool_revisions_require_explicit_model_selection() -> Result<()> {
     );
     tools.remove_from_model("example.echo")?;
     assert!(tools.definitions(None)?.is_empty());
+    assert!(tools.resolve("example.echo@2", None)?.is_none());
     assert!(tools.get("example.echo", None, None)?.is_none());
     assert!(tools.get("example.echo", Some("1"), None)?.is_some());
     assert!(tools.get("example.echo", Some("2"), None)?.is_some());
