@@ -19,8 +19,8 @@ fn view_capacity_depends_only_on_distinct_interest() {
                 let expanded = indices[..split]
                     .iter()
                     .fold(0_u8, |mask, index| mask | (1 << index));
-                for selected in [1, 2, 3] {
-                    for pages in [1, 2, 3] {
+                for selected in [None, Some(1), Some(2), Some(3), Some(512)] {
+                    for pages in [None, Some(1), Some(2), Some(3), Some(512)] {
                         let result = ViewDemand::new(
                             DemandPolicy::new(selected, pages).unwrap(),
                             indices[..split].iter().map(|index| keys[*index].clone()),
@@ -30,9 +30,13 @@ fn view_capacity_depends_only_on_distinct_interest() {
                                 .rev()
                                 .map(|index| keys[*index].clone()),
                         );
-                        let expected = if usize::try_from(full.count_ones()).unwrap() > selected {
+                        let expected = if selected.is_some_and(|limit| {
+                            usize::try_from(full.count_ones()).unwrap() > limit
+                        }) {
                             Err(DemandError::SelectedCapacity)
-                        } else if usize::try_from(expanded.count_ones()).unwrap() > pages {
+                        } else if pages.is_some_and(|limit| {
+                            usize::try_from(expanded.count_ones()).unwrap() > limit
+                        }) {
                             Err(DemandError::ExpandedCapacity)
                         } else {
                             Ok(())
@@ -61,4 +65,11 @@ fn view_capacity_depends_only_on_distinct_interest() {
             }
         }
     }
+    // The same constructor admits actual distinct interest beyond both former
+    // hard ceilings when the caller leaves its view capacity unreserved.
+    let keys = (0..513).map(|index| StreamPath::new(format!("view/{index}")).unwrap());
+    let demand =
+        ViewDemand::new(DemandPolicy::default(), keys.clone(), keys.clone(), keys).unwrap();
+    assert_eq!(demand.full().count(), 513);
+    assert_eq!(demand.expanded().count(), 513);
 }

@@ -200,7 +200,7 @@ fn restricted_filter() -> Option<wire::SessionFilter> {
 #[tokio::test]
 async fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
     let (mut admission, admission_scheduler) = client();
-    admission.policy = DemandPolicy::new(1, 1).unwrap();
+    admission.policy = DemandPolicy::new(Some(1), Some(1)).unwrap();
     let request = follow("fs:/volume/admission".into());
     admission.begin_resource(request.clone()).unwrap();
     for (request, expected) in [
