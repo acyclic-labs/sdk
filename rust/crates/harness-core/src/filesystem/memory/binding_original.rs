@@ -3,13 +3,13 @@ use super::*;
 pub(super) async fn content(
     key: String,
     agent: AgentId,
-    maximum_file_bytes: u64,
+    maximum_file_bytes: Option<u64>,
     filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
 ) -> Result<(
     Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     VolumeRef,
 )> {
-    if maximum_file_bytes == 0 {
+    if maximum_file_bytes == Some(0) {
         return Err(Error::Invalid(
             "memory Harness file limit must be positive".into(),
         ));

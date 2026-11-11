@@ -121,7 +121,8 @@ pub(super) async fn read_pinned(
 pub(super) fn saved_frame_bytes(host: &Host, reference: &FileRef, maximum_bytes: u64) -> u64 {
     let original = ORIGINAL_FRAME_BYTES.get();
     assert!(original > 0, "original factory layout was not captured");
-    let candidate = host.read_pinned_unmetered(reference, maximum_bytes, pinned_read::bytes_only);
+    let candidate =
+        host.read_pinned_unmetered(reference, Some(maximum_bytes), pinned_read::bytes_only);
     original
         .checked_sub(std::mem::size_of_val(&candidate))
         .expect("the byte-only factory is smaller than the original shared factory") as u64

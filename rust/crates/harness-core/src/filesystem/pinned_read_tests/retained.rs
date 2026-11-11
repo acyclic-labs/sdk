@@ -512,7 +512,7 @@ proptest! {
                 let generation_ref = host.file_generation(&file, None).unwrap();
                 let generation = runtime.block_on(host.generation(&opened, &generation_ref, None)).unwrap();
                 with_reopen(old, || {
-                    let read = |io: Option<&PreparationIo>| runtime.block_on(async { host.read_retained_file(&generation, &file, maximum, io)?.await })
+                    let read = |io: Option<&PreparationIo>| runtime.block_on(async { host.read_retained_file(&generation, &file, Some(maximum), io)?.await })
                         .map(|bytes| bytes.as_ref().to_vec()).map_err(|e| format!("{e:?}"));
                     match mode {
                         None => read(None),
@@ -557,7 +557,7 @@ fn retained_native_bytes_keep_original_funding_until_the_last_owner_drops() -> R
         let io = PreparationIo::from_native_work(&work)?;
         let bytes = with_reopen(old, || {
             runtime.block_on(async {
-                host.read_retained_file(&generation, &file, 4096, Some(&io))?
+                host.read_retained_file(&generation, &file, Some(4096), Some(&io))?
                     .await
             })
         })?;
