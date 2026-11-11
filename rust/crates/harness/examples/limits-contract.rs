@@ -28,15 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "max_path_bytes": MAX_PATH_BYTES,
                 "max_label_bytes": MAX_LABEL_BYTES,
             },
-            "projection": {
-                "default_max_resolved_bytes": MAX_EXACT_JS_INTEGER,
-                "default_max_manifest_bytes": MAX_EXACT_JS_INTEGER,
-                "default_max_attachments": MAX_PORTABLE_COUNT,
-                "default_max_messages": MAX_PORTABLE_COUNT,
-                "default_max_render_bytes": MAX_EXACT_JS_INTEGER,
-                "max_projected_attachments": acyclic_harness::conversation::MAX_PORTABLE_COUNT,
-                "max_json_bytes": MAX_EXACT_JS_INTEGER,
-            },
+
         })
     );
     Ok(())

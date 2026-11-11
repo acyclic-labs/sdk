@@ -306,7 +306,7 @@ fn publication_children_retain_only_owned_polling_handles() {
     );
     let retained_read = retained_operation_bytes(
         |(host, generation, file): (&'static Host, &'static Generation, &'static FileRef)| {
-            host.read_retained_file(generation, file, 64, None)
+            host.read_retained_file(generation, file, Some(64), None)
         },
     );
     let begin = retained_operation_bytes(

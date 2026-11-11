@@ -75,7 +75,7 @@ async fn read(
     if old {
         legacy::read_pinned(host, file, maximum, io).await
     } else {
-        host.read_pinned_io(file, maximum, io).await
+        host.read_pinned_io(file, Some(maximum), io).await
     }
 }
 
@@ -128,7 +128,7 @@ proptest! {
                 result = Some(read.map(|bytes| bytes.as_ref().to_vec()).map_err(|e| e.to_string()));
             });
             let frame = if old { std::mem::size_of_val(&legacy::read_pinned(&host, &file, maximum, None)) }
-                else { std::mem::size_of_val(&host.read_pinned_io(&file, maximum, None)) };
+                else { std::mem::size_of_val(&host.read_pinned_io(&file, Some(maximum), None)) };
             (result.unwrap(), allocation, frame)
         };
         let [before, after] = differential::pair::<_, _, (&'static str, u64)>(initialize,

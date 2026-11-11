@@ -287,11 +287,11 @@ async fn authenticated_receipts_retain_the_original_generation_after_head_advanc
     let fixture = Fixture::new(b"original").await?;
     let first = fixture
         .host
-        .read_pinned_receipt_io(&fixture.file, 4096, None)
+        .read_pinned_receipt_io(&fixture.file, Some(4096), None)
         .await?;
     let second = fixture
         .host
-        .read_pinned_receipt_io(&fixture.file, 4096, None)
+        .read_pinned_receipt_io(&fixture.file, Some(4096), None)
         .await?;
     fixture.assert_unretained().await;
     fixture
@@ -336,7 +336,7 @@ async fn published_reads_reuse_authenticated_history_without_a_pin() -> TestResu
         fixture.assert_unretained().await;
         let first = fixture
             .host
-            .read_pinned_receipt_io(&fixture.file, 4096, None)
+            .read_pinned_receipt_io(&fixture.file, Some(4096), None)
             .await?;
         fixture.workspace.write_text("/payload", "advanced").await?;
         assert_eq!(first.retain().await?.as_ref(), bytes);

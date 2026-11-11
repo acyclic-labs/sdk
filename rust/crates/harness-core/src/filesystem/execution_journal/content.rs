@@ -218,7 +218,7 @@ where
         }
         let bytes = self
             .host
-            .read_pinned_receipt_io(reference, super::MAXIMUM_PAYLOAD_BYTES, io)
+            .read_pinned_receipt_io(reference, Some(super::MAXIMUM_PAYLOAD_BYTES), io)
             .await?
             .retain()
             .await?;
@@ -505,7 +505,7 @@ where
             let _bytes_hold;
             let bytes = self
                 .host
-                .read_pinned_io(reference, super::MAXIMUM_PAYLOAD_BYTES, Some(io))
+                .read_pinned_io(reference, Some(super::MAXIMUM_PAYLOAD_BYTES), Some(io))
                 .await?;
             _bytes_hold = io.guard_owned(io.owned_since(before)?)?;
             drop(bytes);

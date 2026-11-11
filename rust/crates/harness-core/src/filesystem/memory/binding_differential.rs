@@ -37,14 +37,14 @@ fn scoped<F: std::future::Future>(
 async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> State {
     let agent = AgentId::from_bytes([7; 16]);
     let (mut host, volume) = if old {
-        original::content(KEY.to_owned(), agent, 4096, Fs::memory())
+        original::content(KEY.to_owned(), agent, Some(4096), Fs::memory())
             .await
             .unwrap()
     } else {
         MEMORY_VOLUME_KEY.set(Some(KEY));
         let filesystem = Fs::memory();
         let changes = filesystem.stream_provider();
-        new_memory_content(agent, 4096, filesystem, changes)
+        new_memory_content(agent, Some(4096), filesystem, changes)
             .await
             .unwrap()
     };
