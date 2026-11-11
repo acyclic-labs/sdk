@@ -141,7 +141,11 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
         JsonBounds {
             maximum_bytes: maximum,
             maximum_items: u64::MAX,
-            maximum_depth: maximum_depth.min(if native_code.is_some() { 256 } else { u32::MAX }),
+            maximum_depth: maximum_depth.min(if native_code.is_some() {
+                RECORD_MAXIMUM_DEPTH
+            } else {
+                u32::MAX
+            }),
         },
         native_code,
         &mut |charge| observer.codec_charge(charge),
@@ -193,7 +197,7 @@ pub fn canonical_json_digest<T: Serialize + ?Sized>(
         JsonBounds {
             maximum_bytes,
             maximum_items: maximum_bytes.saturating_add(1),
-            maximum_depth: 256,
+            maximum_depth: RECORD_MAXIMUM_DEPTH,
         },
         code,
         observer,
@@ -224,7 +228,7 @@ pub(crate) fn borrowed_json_digest<T: Serialize + ?Sized>(
         JsonBounds {
             maximum_bytes,
             maximum_items: maximum_bytes.saturating_add(1),
-            maximum_depth: 256,
+            maximum_depth: RECORD_MAXIMUM_DEPTH,
         },
         code,
         observer,

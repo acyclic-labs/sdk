@@ -68,8 +68,8 @@ pub use identity::{
     canonical_json_digest, json_byte_length, json_byte_length_at_depth, serialized_json_digest,
 };
 
-/// Nesting accepted by saved preparation-record readers.
-pub(crate) const RECORD_MAXIMUM_DEPTH: u32 = 128;
+/// The existing producer depth contract, also used by saved-record readers.
+pub(crate) const RECORD_MAXIMUM_DEPTH: u32 = 256;
 mod diagnostics;
 pub(crate) use diagnostics::audited_serde_diagnostic_bytes;
 #[cfg(feature = "filesystem")]

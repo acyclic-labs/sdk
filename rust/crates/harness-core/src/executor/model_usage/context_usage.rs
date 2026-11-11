@@ -167,6 +167,111 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
+    async fn usage_reads_the_original_projection_with_deep_tool_schemas() -> Result<()> {
+        use crate::{
+            context::{Context, ModelContextCapacity, ModelTokenCount},
+            executor::{ContextAccounting, ResponseProjection, transcript},
+            model::{
+                Model, ModelContent, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest,
+            },
+        };
+        let storage =
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 131_072).await?;
+        let journal = storage.journal();
+        let maximum_depth = crate::executor::json::RECORD_MAXIMUM_DEPTH;
+        // Record, header, tool list, tool, schema and properties precede the
+        // nested schema's zero-based depth in the production projection.
+        let boundary_depth = maximum_depth - 6;
+        for depth in [160, boundary_depth, maximum_depth] {
+            let mut schema = serde_json::json!({});
+            for _ in 0..depth {
+                schema = serde_json::json!({"items": schema});
+            }
+            let mut tool = crate::tools::catalog()
+                .find(|tool| tool.name == "read")
+                .expect("stock read capability")
+                .definition()?;
+            tool.input_schema = serde_json::json!({
+                "type": "object", "properties": {"nested": schema},
+            });
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let io = PreparationIo::from_budget(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)?;
+            let prepared = PreparedModelRequest::prepare(
+                ModelRequest {
+                    summary: false,
+                    compose_tools: false,
+                    model: Model::new("test".into(), "deep-schema".into(), "1".into())?,
+                    messages: vec![ModelMessage {
+                        role: ModelRole::User,
+                        content: ModelContent::Text("input".into()),
+                    }],
+                    tools: vec![tool],
+                    sampling: Default::default(),
+                    max_output_tokens: None,
+                },
+                Limits::default(),
+                Some(&io),
+            );
+            if depth == maximum_depth {
+                assert!(
+                    prepared.is_err(),
+                    "the producer still refuses excessive nesting"
+                );
+                continue;
+            }
+            let prepared = prepared?;
+            let context = Context {
+                messages: prepared.request().messages.clone(),
+                metadata: Default::default(),
+                current_input_index: Some(0),
+            };
+            let accounting = ContextAccounting {
+                capacity: ModelContextCapacity {
+                    context_tokens: 65_536,
+                    output_tokens: None,
+                },
+                count: ModelTokenCount::from_upper_bounds(prepared.request_digest(), 7, vec![1]),
+            };
+            let reference = transcript::stage_projection(
+                journal.as_ref(),
+                crate::OperationId::new(),
+                "deep-projection",
+                &ResponseProjection {
+                    context,
+                    steering: None,
+                    canonical: None,
+                    checkpoint: None,
+                    working: None,
+                    accounting: None,
+                },
+                &prepared,
+                Some(&accounting),
+                Some(&io),
+            )
+            .await?;
+            assert_eq!(
+                read(journal.as_ref(), &reference).await?,
+                ContextUsage::Counted {
+                    input_tokens: 8,
+                    capacity_tokens: 65_536,
+                }
+            );
+            // The same original record remains recoverable through the saved
+            // projection reader, rather than only through the usage projection.
+            let (retained, _) = transcript::load_projection(
+                journal.as_ref(),
+                &reference,
+                Limits::default(),
+                Some(&io),
+            )
+            .await?;
+            assert_eq!(retained.context.messages, prepared.request().messages);
+        }
+        Ok(())
+    }
+
     proptest! {
         #[test]
         fn accounting_header_is_independent_of_the_unread_context(
