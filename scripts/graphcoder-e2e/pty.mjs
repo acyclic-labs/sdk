@@ -101,6 +101,12 @@ export async function pty(processes, binary, fixture, input, capture) {
         }
         if (action.send !== undefined) running.child.stdin.write(action.send);
         if (action.signal !== undefined) fixture.signal(action.signal);
+        if (action.acknowledge !== undefined) {
+          fetch(`${fixture.url}/ack`, { method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ chunk: action.acknowledge }) })
+            .then(reply => { if (!reply.ok) throw new Error(`chunk acknowledgment refused: ${reply.status}`); })
+            .catch(error => { failure = error; running.killExecutable(); });
+        }
         if (action.kill) running.killExecutable();
       } catch (error) { failure = error; running.killExecutable(); }
     }
