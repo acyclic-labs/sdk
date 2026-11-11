@@ -66,6 +66,20 @@ pub(in crate::executor) fn stock_retire_event(
     stock_retire(event, bytes, io)
 }
 
+/// Keep only the active attempt while the journal retains its complete history.
+pub(crate) fn stock_push_model_event(
+    events: &mut Vec<ModelEvent>,
+    event: ModelEvent,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    if matches!(event, ModelEvent::Restarted) {
+        for old in events.drain(..) {
+            stock_retire_event(old, io)?;
+        }
+    }
+    stock_vec_push(events, event, io)
+}
+
 pub(crate) fn stock_vec_push<T>(
     values: &mut Vec<T>,
     value: T,

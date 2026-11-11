@@ -6,6 +6,9 @@ use acyclic_stream::{BoxProviderFuture as BoxFuture, BoxProviderStream as BoxStr
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelEvent {
+    /// Abandon the incomplete output of this dispatch and begin its next transport attempt.
+    /// Consumers discard all earlier events in this step; request and tool identities stay fixed.
+    Restarted,
     /// User-visible fragment.
     Content {
         /// Incremental content.
@@ -224,6 +227,7 @@ mod tests;
 impl ModelEvent {
     pub(crate) fn retained_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
+            Self::Restarted => 0,
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
             Self::MessageCompleted { text } => text.capacity() as u64,
             Self::TextPart { text, native } => add(

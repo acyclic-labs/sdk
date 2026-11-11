@@ -120,11 +120,196 @@ async fn responses_content_filter_and_unknown_incomplete_reasons_are_invalid() {
     }
 }
 
+/// Replay the live swarm's refusal through every protocol, beyond both the old
+/// retry limit and the schedule counter's range, then finish the original turn.
+#[tokio::test]
+async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> Result<()> {
+    use std::time::Duration;
+    struct RateLimited {
+        success: &'static str,
+        mixed: bool,
+        count: bool,
+        failure: acyclic_harness_core::ModelTransportFailure,
+        sent: Mutex<Vec<HttpRequest>>,
+        waits: Mutex<Vec<Duration>>,
+    }
+    impl HttpTransport for RateLimited {
+        fn now(&self) -> Duration {
+            crate::fixtures::now()
+        }
+        fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
+            self.waits.lock().unwrap().push(wait);
+            crate::fixtures::delay(wait)
+        }
+        fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+            Box::pin(async move {
+                let index = {
+                    let mut sent = self.sent.lock().unwrap();
+                    let index = sent.len();
+                    sent.push(request);
+                    index
+                };
+                if index < 300
+                    && !matches!(
+                        self.failure,
+                        acyclic_harness_core::ModelTransportFailure::Status(_)
+                    )
+                {
+                    return Err(crate::transport_failure(
+                        false,
+                        self.failure,
+                        "recorded transport failure",
+                    ));
+                }
+                if self.mixed && index == 301 {
+                    return Err(crate::transport_failure(
+                        false,
+                        acyclic_harness_core::ModelTransportFailure::Connect,
+                        "fixture",
+                    ));
+                }
+                if self.mixed && self.count && index == 302 {
+                    return Ok(HttpResponse {
+                        status: 200,
+                        request_id: None,
+                        retry_after: None,
+                        body: Box::pin(futures::stream::iter([Err(crate::transport_failure(
+                            false,
+                            acyclic_harness_core::ModelTransportFailure::Interrupted,
+                            "fixture",
+                        ))])),
+                    });
+                }
+                Ok(HttpResponse {
+                    status: if index < 300 {
+                        match self.failure {
+                            acyclic_harness_core::ModelTransportFailure::Status(status) => status,
+                            _ => unreachable!(),
+                        }
+                    } else if self.mixed && index == 300 {
+                        503
+                    } else {
+                        200
+                    },
+                    request_id: None,
+                    // No hint in the recorded failure. Also cover a provider wait
+                    // longer than max_delay_ms, before and after the former cap.
+                    retry_after: matches!(index, 0 | 299).then_some(Duration::from_secs(60)),
+                    body: if index == 0 {
+                        Box::pin(futures::stream::pending())
+                    } else {
+                        chunks(
+                            if index < 300 {
+                                r#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#
+                            } else {
+                                self.success
+                            },
+                            7,
+                        )
+                    },
+                })
+            })
+        }
+    }
+    for (adapter, success) in fixtures() {
+        for failure in [
+            acyclic_harness_core::ModelTransportFailure::Status(429),
+            acyclic_harness_core::ModelTransportFailure::Status(503),
+            acyclic_harness_core::ModelTransportFailure::Status(408),
+            acyclic_harness_core::ModelTransportFailure::Connect,
+            acyclic_harness_core::ModelTransportFailure::Interrupted,
+            acyclic_harness_core::ModelTransportFailure::Timeout,
+            acyclic_harness_core::ModelTransportFailure::Tls,
+        ] {
+            for (mixed, count) in [(false, false), (true, false), (true, true)] {
+                let transport = Arc::new(RateLimited {
+                    success: if count {
+                        r#"{"input_tokens":7}"#
+                    } else {
+                        success
+                    },
+                    mixed,
+                    count,
+                    failure,
+                    sent: Mutex::new(Vec::new()),
+                    waits: Mutex::new(Vec::new()),
+                });
+                let provider =
+                    provider_with(adapter, "https://recorded.invalid/v1", transport.clone());
+                let (request, mut dispatch) = request(&provider)?;
+                dispatch.operation_id = acyclic_harness_core::OperationId::from_bytes([31; 16]);
+                let events = if count {
+                    assert_eq!(
+                        provider
+                            .count_tokens(&request, 0)
+                            .now_or_never()
+                            .expect("count refusal body must not be polled")?
+                            .input_tokens,
+                        7
+                    );
+                    Vec::new()
+                } else {
+                    provider
+                        .generate(&request, dispatch)
+                        .try_collect::<Vec<_>>()
+                        .now_or_never()
+                        .expect("transient refusal must not wait for its diagnostic body")?
+                };
+                let exchanges = if mixed {
+                    if count { 304 } else { 303 }
+                } else {
+                    301
+                };
+                let sent = transport.sent.lock().unwrap();
+                assert_eq!(sent.len(), exchanges);
+                for request in sent.iter().skip(1) {
+                    assert_eq!(request.url, sent[0].url);
+                    assert_eq!(request.headers, sent[0].headers);
+                    assert_eq!(request.body, sent[0].body);
+                }
+                let waits = transport.waits.lock().unwrap();
+                assert_eq!(waits.len(), exchanges - 1);
+                if matches!(
+                    failure,
+                    acyclic_harness_core::ModelTransportFailure::Status(_)
+                ) {
+                    assert_eq!(waits[0], Duration::from_secs(60));
+                    assert_eq!(waits[299], Duration::from_secs(60));
+                }
+                assert!(
+                    waits[1..299]
+                        .iter()
+                        .all(|wait| !wait.is_zero() && *wait <= Duration::from_secs(8))
+                );
+                let calls: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        ModelEvent::ToolCall(call) => Some(call),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(calls.len(), usize::from(!count));
+                if let Some(call) = calls.first() {
+                    assert_eq!(call.call_id, dispatch.tool_call_id(0));
+                }
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| matches!(event, ModelEvent::Completed { .. }))
+                        .count(),
+                    usize::from(!count)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_excerpt() -> Result<()>
 {
-    for (adapter, body) in fixtures() {
-        for status in [401, 403, 408, 429, 500, 502, 503, 400, 404] {
+    for (adapter, _) in fixtures() {
+        for status in [401, 403, 400, 404] {
             let (provider, script) = provider(adapter, status);
             let (prepared, dispatch) = request(&provider)?;
             let error = provider
@@ -140,25 +325,6 @@ async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_exce
                 .map_err(|_| invalid("fixture lock"))?
                 .len();
             match status {
-                408 | 429 | 500..=599 => {
-                    // Redelivered within the default budget, then a typed refusal.
-                    assert_eq!(sent, 1 + usize::from(crate::RetrySpec::DEFAULT.attempts));
-                    let Error::ModelUnavailable {
-                        failure: acyclic_harness_core::ModelTransportFailure::Status(found),
-                        excerpt,
-                    } = &error
-                    else {
-                        panic!("{adapter:?}: {error}");
-                    };
-                    assert_eq!(*found, status);
-                    assert!(excerpt.len() <= crate::EXCERPT_BYTES && !excerpt.is_empty());
-                    assert!(!excerpt.chars().any(char::is_control));
-                    let flat: String = body
-                        .chars()
-                        .map(|c| if c.is_control() { ' ' } else { c })
-                        .collect();
-                    assert!(flat.trim().starts_with(excerpt.as_str()));
-                }
                 // Status-only failures never consume the response body.
                 401 | 403 => {
                     assert!(matches!(

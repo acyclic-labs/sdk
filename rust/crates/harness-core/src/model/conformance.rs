@@ -3,7 +3,7 @@
 //! know no provider names, wire protocols, retry policies or credentials.
 
 use crate::{
-    Error, ModelTransportFailure, Result,
+    Error, Result,
     conversation::Limits,
     model::{
         ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelMessage, ModelProvider,
@@ -39,7 +39,7 @@ pub enum Scenario {
     Text,
     /// A tool call followed by its paired result.
     Tools,
-    /// A real rate refusal.
+    /// A real rate refusal followed by successful admission.
     RateLimit,
     /// A real context-capacity refusal.
     ContextOverflow,
@@ -102,8 +102,16 @@ pub async fn verify(backend: &dyn Backend) -> Result<Vec<&'static str>> {
     )
     .await?;
     budget(&session, 2)?;
+    let session = backend.session(Scenario::RateLimit)?;
+    streaming(
+        session.provider.as_ref(),
+        &session.request,
+        session.dispatch,
+        backend.usage(),
+    )
+    .await?;
+    budget(&session, 1)?;
     for (scenario, expected) in [
-        (Scenario::RateLimit, Refusal::RateLimit),
         (Scenario::ContextOverflow, Refusal::ContextOverflow),
         (Scenario::Authentication, Refusal::Authentication),
     ] {
@@ -258,6 +266,10 @@ pub async fn streaming(
         let event = event?;
         require(!completed, "inference emitted after completion")?;
         match &event {
+            ModelEvent::Restarted => {
+                text.clear();
+                events.clear();
+            }
             ModelEvent::Content { delta } => text.push_str(delta),
             ModelEvent::Completed { metadata } => {
                 usage(metadata, expected)?;
@@ -319,8 +331,6 @@ pub async fn deterministic_replay(
 /// Public inference refusal categories; unknown and malformed requests cannot qualify.
 #[derive(Clone, Copy, Debug)]
 pub enum Refusal {
-    /// A provider rate limit, after its configured bounded redelivery.
-    RateLimit,
     /// Input exceeding the model's context window.
     ContextOverflow,
     /// Missing or rejected endpoint credentials.
@@ -342,13 +352,7 @@ pub async fn refusal(
     };
     let matches = matches!(
         (expected, &error),
-        (
-            Refusal::RateLimit,
-            Error::ModelUnavailable {
-                failure: ModelTransportFailure::Status(429),
-                ..
-            }
-        ) | (Refusal::ContextOverflow, Error::ModelContextOverflow)
+        (Refusal::ContextOverflow, Error::ModelContextOverflow)
             | (Refusal::Authentication, Error::Unauthorized(_))
             | (
                 Refusal::Authentication,

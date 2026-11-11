@@ -184,7 +184,8 @@ impl StockExecution<'_> {
                         "summary requested a tool operation",
                     ));
                 }
-                event @ (ModelEvent::Content { .. }
+                event @ (ModelEvent::Restarted
+                | ModelEvent::Content { .. }
                 | ModelEvent::TextPart { .. }
                 | ModelEvent::Reasoning { .. }
                 | ModelEvent::ReasoningBlock { .. }

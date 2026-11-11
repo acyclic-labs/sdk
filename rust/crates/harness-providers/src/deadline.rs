@@ -86,6 +86,10 @@ impl HttpTransport for Bounded {
         self.inner.now()
     }
 
+    fn unix_ms(&self) -> Result<u64> {
+        self.inner.unix_ms()
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn delay_with_native_work(
         &self,

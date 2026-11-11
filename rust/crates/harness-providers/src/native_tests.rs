@@ -7,6 +7,7 @@ pub(crate) mod stock;
 pub(super) struct Fixture {
     pub(super) response: Bytes,
     pub(super) sent: AtomicUsize,
+    recovered: Option<Bytes>,
     status: u16,
     cancel: Option<CancellationToken>,
     pending_body: bool,
@@ -14,10 +15,18 @@ pub(super) struct Fixture {
 }
 
 impl Fixture {
+    fn reply(&self, attempt: usize) -> Bytes {
+        if attempt > 0 {
+            self.recovered.as_ref().unwrap_or(&self.response).clone()
+        } else {
+            self.response.clone()
+        }
+    }
     pub(super) fn new(response: &'static str) -> Self {
         Self {
             response: Bytes::from_static(response.as_bytes()),
             sent: AtomicUsize::new(0),
+            recovered: None,
             status: 200,
             cancel: None,
             pending_body: false,
@@ -56,7 +65,7 @@ impl HttpTransport for Fixture {
             if let Some(response) = fixture_count(&request) {
                 return Ok(response);
             }
-            self.sent.fetch_add(1, Ordering::SeqCst);
+            let attempt = self.sent.fetch_add(1, Ordering::SeqCst);
             assert!(
                 request.headers.contains_key("authorization")
                     || request.headers.contains_key("x-api-key")
@@ -66,7 +75,7 @@ impl HttpTransport for Fixture {
                 request_id: None,
                 retry_after: None,
                 status: self.status,
-                body: Box::pin(futures::stream::iter([Ok(self.response.clone())])),
+                body: Box::pin(futures::stream::iter([Ok(self.reply(attempt))])),
             })
         })
     }
@@ -83,7 +92,7 @@ impl HttpTransport for Fixture {
             if let Some(response) = fixture_count(&request) {
                 return HttpResponse::with_native_body(response.status, response.body, work);
             }
-            self.sent.fetch_add(1, Ordering::SeqCst);
+            let attempt = self.sent.fetch_add(1, Ordering::SeqCst);
             assert!(
                 request.headers.contains_key("authorization")
                     || request.headers.contains_key("x-api-key")
@@ -113,7 +122,7 @@ impl HttpTransport for Fixture {
             }
             HttpResponse::with_native_body(
                 self.status,
-                futures::stream::iter([Ok(self.response.clone())]),
+                futures::stream::iter([Ok(self.reply(attempt))]),
                 work,
             )
         })
@@ -215,13 +224,15 @@ async fn freeform_input_uses_original_native_stream_and_releases_custody() -> Re
     };
     for interrupted in [false, true] {
         let mut frames = harness_mock_model::events("responses", &step).unwrap();
+        let recovered = Bytes::from(frames.concat());
         if interrupted {
             // The terminal producer is the only event that releases executable
-            // calls. Dropping it must settle with one typed interruption.
+            // calls. Dropping it must restart before any executable call escapes.
             frames.retain(|frame| !frame.contains("response.completed"));
         }
         let fixture = Arc::new(Fixture {
             response: Bytes::from(frames.concat()),
+            recovered: interrupted.then_some(recovered),
             ..Fixture::new("")
         });
         let (mut provider, _) = provider(crate::Adapter::Responses, 200);
@@ -232,7 +243,7 @@ async fn freeform_input_uses_original_native_stream_and_releases_custody() -> Re
         let before = work.live_allocation_bytes();
         let mut calls = 0;
         let mut completed = 0;
-        let mut errors = 0;
+        let mut restarts = 0;
         {
             let mut stream = provider
                 .generate_with_native_work(&request, dispatch, &work)?
@@ -250,25 +261,22 @@ async fn freeform_input_uses_original_native_stream_and_releases_custody() -> Re
                                 assert_eq!(call.call_id, dispatch.tool_call_id(0));
                             }
                             ModelEvent::Completed { .. } => completed += 1,
+                            ModelEvent::Restarted => restarts += 1,
                             _ => {}
                         }
-                    }
-                    Err(Error::ModelUnavailable {
-                        failure: acyclic_harness_core::ModelTransportFailure::Interrupted,
-                        excerpt,
-                    }) if interrupted => {
-                        assert!(excerpt.is_empty(), "native EOF must not render a cause");
-                        errors += 1;
                     }
                     Err(error) => return Err(error),
                 }
             }
         }
         assert_eq!(
-            (calls, completed, errors),
-            if interrupted { (0, 0, 1) } else { (1, 1, 0) }
+            (calls, completed, restarts),
+            (1, 1, usize::from(interrupted))
         );
-        assert_eq!(fixture.sent.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            fixture.sent.load(Ordering::SeqCst),
+            1 + usize::from(interrupted)
+        );
         assert_eq!(work.live_allocation_bytes(), before);
     }
     Ok(())
@@ -286,8 +294,6 @@ async fn native_cancellation_wakes_pending_headers_and_success_or_refusal_bodies
         ),
         (400, true, None),
         (413, true, None),
-        (429, true, None),
-        (503, true, None),
     ] {
         let (mut provider, _) = provider(Adapter::Chat, 200);
         let cancel = CancellationToken::new();

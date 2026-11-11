@@ -25,7 +25,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
     time::Duration,
@@ -118,11 +118,18 @@ impl Drop for TrackedBody {
 }
 struct TrackedTransport {
     inner: acyclic_harness_providers::ReqwestTransport,
+    first_route: Option<(String, String)>,
+    sent: AtomicBool,
     active: Arc<AtomicUsize>,
 }
 impl HttpTransport for TrackedTransport {
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+    fn send(&self, mut request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
+            if !self.sent.swap(true, Ordering::SeqCst)
+                && let Some((base, first)) = &self.first_route
+            {
+                request.url = request.url.replacen(base, first, 1);
+            }
             let mut response = self.inner.send(request).await?;
             self.active.fetch_add(1, Ordering::SeqCst);
             response.body = Box::pin(TrackedBody {
@@ -196,7 +203,7 @@ impl HttpTransport for Replay {
         })
     }
     fn delay(&self, _: Duration) -> BoxProviderFuture<'static, Result<()>> {
-        Box::pin(futures::future::pending())
+        Box::pin(async { Ok(()) })
     }
     fn now(&self) -> Duration {
         Duration::ZERO
@@ -289,12 +296,11 @@ fn provider(
         )])),
         transport.clone(),
     );
-    let mut config = manifest.endpoint.clone();
+    let config = manifest.endpoint.clone();
     require(
         config.adapter == manifest.adapter,
         "capture endpoint dialect mismatch",
     )?;
-    config.retry.attempts = 0;
     registry.register(manifest.provider_id.clone(), config)?;
     let provider = registry.resolve(&format!("{}/{}", manifest.provider_id, manifest.model))?;
     Ok((provider, transport))
@@ -343,7 +349,7 @@ impl Backend for Captured {
         let names: &[&str] = match scenario {
             Scenario::Text | Scenario::Replay => &["text"],
             Scenario::Tools => &["tool", "result"],
-            Scenario::RateLimit => &["rate"],
+            Scenario::RateLimit => &["rate", "text"],
             Scenario::ContextOverflow => &["context"],
             Scenario::Authentication => &["auth"],
         };
@@ -395,6 +401,9 @@ impl Backend for Local {
         let active = Arc::new(AtomicUsize::new(0));
         let transport = Arc::new(TrackedTransport {
             inner: acyclic_harness_providers::ReqwestTransport::new()?,
+            first_route: matches!(scenario, Scenario::RateLimit)
+                .then(|| (self.base_url.clone(), self.rate_url.clone())),
+            sent: AtomicBool::new(false),
             active: active.clone(),
         });
         let keys = if matches!(scenario, Scenario::Authentication) {
@@ -403,13 +412,8 @@ impl Backend for Local {
             BTreeMap::from([("local".into(), "conformance-public-test-key".into())])
         };
         let mut registry = Registry::with_transport(Credentials::explicit(keys), transport);
-        let url = if matches!(scenario, Scenario::RateLimit) {
-            &self.rate_url
-        } else {
-            &self.base_url
-        };
+        let url = &self.base_url;
         let mut spec = acyclic_harness_providers::endpoints::local(url)?;
-        spec.retry.attempts = 0;
         let manifest = &self.captured.manifest;
         spec.models.insert(
             manifest.model.clone(),

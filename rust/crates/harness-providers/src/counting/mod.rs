@@ -282,7 +282,7 @@ async fn read_count(
 }
 
 /// A count has no caller-visible output until its whole body is validated. All retryable
-/// failures, including a cut or stalled successful body, consume this one attempt budget.
+/// failures, including a cut or stalled successful body, wait through the shared recovery owner.
 async fn exchange_count(
     provider: &ResolvedModel,
     exchange: HttpRequest,
@@ -326,7 +326,7 @@ async fn exchange_count(
             Ok(response) => {
                 let retry_after = response.retry_after;
                 let failure =
-                    crate::http_failure(response, provider.config.max_event_bytes, work).await;
+                    crate::recovery_failure(response, provider.config.max_event_bytes, work).await;
                 (failure, retry_after)
             }
             Err(failure) => (failure, None),
@@ -334,7 +334,6 @@ async fn exchange_count(
         let Some(wait) = recovery.next(&failure, retry_after) else {
             return Err(failure);
         };
-        drop(failure);
-        crate::deadline::timer(provider.transport.as_ref(), wait, work)?.await?;
+        crate::retry::wait(provider.transport.as_ref(), failure, wait, work).await?;
     }
 }

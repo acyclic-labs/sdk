@@ -25,6 +25,9 @@ struct RetryTransport {
     native: AtomicUsize,
     timer_allocations: AtomicU64,
     failures: usize,
+    backpressure: bool,
+    hinted: bool,
+    body: Mutex<Option<Bytes>>,
     reject_timer: bool,
     count: bool,
 }
@@ -69,11 +72,29 @@ impl HttpTransport for RetryTransport {
 
     fn send_with_native_work<'a>(
         &'a self,
-        _: HttpRequest,
+        request: HttpRequest,
         work: &'a NativeMaterializationWork,
     ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
         acyclic_fs::NativeFutureBundle::new(work, || async move {
             let attempt = self.sent.fetch_add(1, Ordering::SeqCst);
+            {
+                let mut original = self.body.lock().unwrap();
+                if let Some(original) = original.as_ref() {
+                    assert_eq!(
+                        original, &request.body,
+                        "same prepared turn on every exchange"
+                    );
+                } else {
+                    *original = Some(request.body);
+                }
+            }
+            if attempt < self.failures && self.backpressure {
+                // GC-31/32/33/34/51/63: original refusal, without a live provider.
+                let mut response = HttpResponse::with_native_body(429,
+                    futures::stream::iter([Ok(Bytes::from_static(br#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#))]), work)?;
+                response.retry_after = self.hinted.then_some(Duration::from_secs(60));
+                return Ok(response);
+            }
             if attempt < self.failures {
                 return Err(crate::transport_failure(
                     true,
@@ -99,7 +120,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn native_retry_timers_use_original_ledger_for_every_exchange(
-        failures in 0..5usize, attempts in 0..4u8,
+        failures in 0..7usize,
+        backpressure in any::<bool>(), hinted in any::<bool>(),
         count in any::<bool>(), reject_timer in any::<bool>(),
         cancel_backoff in any::<bool>(),
     ) {
@@ -108,20 +130,20 @@ proptest! {
         runtime.block_on(async {
             let (mut provider, _) = provider(Adapter::Chat, 200);
             Arc::make_mut(&mut provider.config).retry = RetrySpec {
-                attempts, base_delay_ms: 2, max_delay_ms: 2,
+                base_delay_ms: 2, max_delay_ms: 2,
             };
             let transport = Arc::new(RetryTransport {
                 platform: ReqwestTransport::new().unwrap(), sent: AtomicUsize::new(0),
                 portable: AtomicUsize::new(0), native: AtomicUsize::new(0),
                 timer_allocations: AtomicU64::new(0),
-                failures, reject_timer, count,
+                failures, backpressure, hinted, body: Mutex::new(None), reject_timer, count,
             });
             provider.transport = crate::deadline::Bounded::new(transport.clone(), TimeoutSpec::DEFAULT);
             let (request, dispatch) = request(&provider).unwrap();
             let cancel = CancellationToken::new();
             let work = super::native_tests::work(&cancel).unwrap();
             let baseline = work.live_allocation_bytes();
-            let cancelled = cancel_backoff && failures > 0 && attempts > 0 && !reject_timer;
+            let cancelled = cancel_backoff && failures > 0 && !reject_timer;
             let result = {
                 let exchange = async {
                     if count {
@@ -155,7 +177,7 @@ proptest! {
                     exchange.await
                 }
             };
-            let retries = failures.min(usize::from(attempts));
+            let retries = failures;
             assert_eq!(transport.portable.load(Ordering::SeqCst), 0);
             assert_eq!(transport.native.load(Ordering::SeqCst), if cancelled || reject_timer { retries.min(1) } else { retries });
             assert_eq!(transport.sent.load(Ordering::SeqCst), if cancelled || (reject_timer && retries > 0) { 1 } else { retries + 1 });
@@ -165,7 +187,7 @@ proptest! {
                     ..
                 })));
             } else {
-                assert_eq!(result.is_ok(), failures == 0 || (!reject_timer && failures <= usize::from(attempts)));
+                assert_eq!(result.is_ok(), failures == 0 || !reject_timer);
             }
             drop(result);
             assert_eq!(work.live_allocation_bytes(), baseline);

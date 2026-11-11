@@ -43,24 +43,34 @@ pub(crate) fn generate_encoded<'a>(
         let input_bytes = body.len();
         let mut auth = auth;
         let mut attempt = GenerationAttempt::new(provider.config.retry, dispatch);
-        let response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None).await;
-        let response = attempt.exchange(provider, &body, dispatch, &mut auth, response,
-            #[cfg(not(target_arch = "wasm32"))] None, None).await?;
-        let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let cache = cache.map(|cache| acyclic_harness_core::executor::ModelCacheObservation {
-            credential_scope: origin.credential_scope,
-            ..cache
-        });
-        let events = crate::stream::events_named(provider.config.adapter, response.body,
-            provider.config.max_event_bytes, dispatch, Some(&names), Some(origin), response.request_id);
-        let mut events = core::pin::pin!(events);
-        while let Some(event) = events.next().await {
-            let mut event = event.map_err(crate::diagnostic::rejection)?;
-            if let ModelEvent::Completed { metadata } = &mut event {
-                projection::cache::attach(metadata, cache)?;
-                provider.observe(request, input_bytes, metadata)?;
+        let mut response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None).await;
+        loop {
+            let response_body = attempt.exchange(provider, &body, dispatch, &mut auth, response,
+                #[cfg(not(target_arch = "wasm32"))] None, None).await?;
+            let retry_after = response_body.retry_after;
+            let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
+            let cache = cache.map(|cache| acyclic_harness_core::executor::ModelCacheObservation {
+                credential_scope: origin.credential_scope, ..cache
+            });
+            let mut failure = None;
+            {
+                let events = crate::stream::events_named(provider.config.adapter, response_body.body,
+                    provider.config.max_event_bytes, dispatch, Some(&names), Some(origin), response_body.request_id);
+                let mut events = core::pin::pin!(events);
+                while let Some(event) = events.next().await {
+                    let mut event = match event { Ok(event) => event, Err(error) => { failure = Some(crate::diagnostic::rejection(error)); break; } };
+                    if let ModelEvent::Completed { metadata } = &mut event {
+                        projection::cache::attach(metadata, cache)?;
+                        provider.observe(request, input_bytes, metadata)?;
+                    }
+                    yield event;
+                }
             }
-            yield event;
+            let Some(error) = failure else {break;};
+            if error.code() == acyclic_harness_core::wire::ErrorCode::Unavailable { yield ModelEvent::Restarted; }
+            attempt.recover(provider, &mut auth, error, retry_after,
+                #[cfg(not(target_arch = "wasm32"))] None, None).await?;
+            response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None).await;
         }
     }
 }
@@ -222,8 +232,7 @@ pub(crate) fn headers(
     headers
 }
 
-/// One generation's recovery budget. Successful HTTP admission is final even
-/// before the first event: a lost body cannot prove the model did not execute.
+/// One generation's recovery owner, retained across every transport attempt.
 pub(crate) struct GenerationAttempt {
     attempt: crate::retry::Attempt,
 }
@@ -258,7 +267,8 @@ impl GenerationAttempt {
                     self.attempt.observe(response.status);
                     let retry_after = response.retry_after;
                     let error =
-                        crate::http_failure(response, provider.config.max_event_bytes, work).await;
+                        crate::recovery_failure(response, provider.config.max_event_bytes, work)
+                            .await;
                     (crate::diagnostic::rejection(error), retry_after)
                 }
                 Err(error) => (error, None),
@@ -291,7 +301,7 @@ impl GenerationAttempt {
 
     /// Complete recovery before the caller may send another model request.
     /// Refresh and timer failures are final causes, never model retry inputs.
-    async fn recover(
+    pub(crate) async fn recover(
         &mut self,
         provider: &ResolvedModel,
         auth: &mut (Option<Cow<'_, str>>, Option<String>),
@@ -313,9 +323,7 @@ impl GenerationAttempt {
         }
         let _ = auth;
         if let Some(wait) = self.attempt.next(&error, retry_after) {
-            drop(error);
-            crate::deadline::timer(provider.transport.as_ref(), wait, work)?.await?;
-            return Ok(());
+            return crate::retry::wait(provider.transport.as_ref(), error, wait, work).await;
         }
         Err(error)
     }

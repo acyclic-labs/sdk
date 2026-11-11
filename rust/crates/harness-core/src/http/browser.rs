@@ -84,12 +84,19 @@ impl HttpTransport for BrowserTransport {
                 .dyn_into::<Response>()
                 .map_err(|_| invalid("fetch did not return a Response"))?;
             let status = response.status();
-            let retry_after = response
-                .headers()
-                .get("retry-after")
-                .ok()
-                .flatten()
-                .and_then(|value| super::retry_after(&value));
+            let headers = response.headers();
+            let retry_after = super::response_retry_after(
+                js_sys::try_iter(headers.as_ref())
+                    .ok()
+                    .flatten()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|entry| {
+                        let pair = entry.ok()?.dyn_into::<js_sys::Array>().ok()?;
+                        Some((pair.get(0).as_string()?, pair.get(1).as_string()?))
+                    }),
+                std::time::UNIX_EPOCH + std::time::Duration::from_millis(self.unix_ms()?),
+            );
             let request_id = if crate::model::RESEARCH_CAPTURE_ENABLED {
                 response
                     .headers()

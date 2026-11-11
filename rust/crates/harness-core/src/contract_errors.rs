@@ -35,11 +35,13 @@ pub enum ModelTransportFailure {
 }
 
 impl ModelTransportFailure {
-    /// Whether redelivery may clear the failure. TLS failures are not retryable: a retry meets
-    /// the same peer and configuration.
+    /// Whether waiting and redelivery may clear this transport failure.
     #[must_use]
     pub const fn retryable(self) -> bool {
-        !matches!(self, Self::Tls)
+        match self {
+            Self::Status(status) => matches!(status, 408 | 429 | 500..=599),
+            _ => true,
+        }
     }
 }
 

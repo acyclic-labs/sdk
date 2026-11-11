@@ -638,11 +638,11 @@ impl StockExecution<'_> {
                 let completed_at = matches!(event, ModelEvent::Completed { .. })
                     .then(|| clock.completed_at())
                     .flatten();
-                let index = observed.len();
+                let index = admission.count;
                 let key = with_history_io(io, |work| {
                     preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
                 })?;
-                stock_vec_push(&mut observed, event, io)?;
+                stock_push_model_event(&mut observed, event, io)?;
                 let event = observed.last().ok_or_else(|| {
                     stock_boundary(
                         io,
@@ -662,6 +662,9 @@ impl StockExecution<'_> {
                 }
                 if let Some(text) = text.as_mut() {
                     text.observe(event);
+                    if matches!(event, ModelEvent::Restarted) {
+                        text.flush().await?;
+                    }
                 }
                 let usage = match event {
                     ModelEvent::Completed { metadata } => {
