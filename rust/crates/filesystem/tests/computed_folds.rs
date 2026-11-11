@@ -10,6 +10,10 @@ use acyclic_fs::{
 };
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct Total {
@@ -130,5 +134,140 @@ async fn checkpoint_refuses_wrong_prefix_length_and_cancelled_original() -> Resu
             .await
             .is_err()
     );
+    Ok(())
+}
+
+struct CountedSum(Arc<AtomicUsize>);
+impl Fold for CountedSum {
+    type State = u64;
+    type Record = acyclic_stream::Record;
+    fn identity(&self) -> [u8; 32] {
+        [17; 32]
+    }
+    fn apply(
+        &self,
+        state: &mut u64,
+        _: u64,
+        record: &Self::Record,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> std::result::Result<(), DemandError> {
+        ctx.check()?;
+        let value = u64::from_le_bytes(
+            record
+                .value
+                .as_slice()
+                .try_into()
+                .map_err(|_| DemandError::InvalidRequest)?,
+        );
+        *state = state
+            .checked_add(value)
+            .ok_or(acyclic_fs::WorkError::Overflow)?;
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn checkpoint_catalog_reopens_nearest_prefix_and_reads_only_new_events() -> Result {
+    use acyclic_fs::demand::{FoldCache, FoldCacheIdentity};
+    use acyclic_stream::{
+        AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, StreamPath,
+        StreamProviderExt as _,
+    };
+    let cancellation = CancellationToken::new();
+    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut ctx = KernelAccounting::NativeOriginal {
+        work: &original,
+        cancellation: &cancellation,
+    };
+    let streams = Arc::new(MemoryStream::default());
+    let objects = Arc::new(MemoryObjectStore::default());
+    let path = StreamPath::new("usage/first")?;
+    let mut cuts = Vec::new();
+    for batch in 0..3u64 {
+        let outcome = streams
+            .append(AppendRequest {
+                path: path.clone(),
+                records: (batch * 4 + 1..=batch * 4 + 4)
+                    .map(|value| value.to_le_bytes().to_vec().into())
+                    .collect(),
+                if_tail: Some(batch * 4),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        let AppendOutcome::Committed(receipt) = outcome else {
+            return Err("fixture append refused".into());
+        };
+        cuts.push(receipt.revision);
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let identity = |generation, chunk| FoldCacheIdentity {
+        input: path.clone(),
+        authority: cuts[0].clone(),
+        view: [17; 32],
+        generation,
+        chunk: NonZeroU64::new(chunk).unwrap(),
+    };
+    let seed = |generation| {
+        serde_json::to_vec(&FoldCheckpoint {
+            version: 1,
+            view: [17; 32],
+            sequence: 0,
+            generation,
+            state: 0u64,
+        })
+    };
+    let encoded_seed = seed([4; 32])?;
+    // Reconstruct the cache adapter for every read: no process-local index or
+    // folded state survives. Historical selection must use an indexed ordinal.
+    for (cut, expected, applied) in [(1, 36, 8), (2, 78, 4), (0, 10, 0), (2, 78, 0)] {
+        calls.store(0, Ordering::Relaxed);
+        let cache = FoldCache::new(
+            Arc::clone(&streams),
+            Arc::clone(&objects),
+            identity([4; 32], 2),
+            &mut ctx,
+        )?;
+        let state = cache
+            .fold_at(
+                CountedSum(Arc::clone(&calls)),
+                cuts[cut].clone(),
+                |ctx| {
+                    ctx.decode_json(&encoded_seed)
+                        .map_err(FoldObjectError::from)
+                },
+                &mut ctx,
+            )
+            .await?;
+        assert_eq!(state.state, expected);
+        assert_eq!(calls.load(Ordering::Relaxed), applied);
+    }
+    // Both authored generation and checkpoint frequency are namespace inputs.
+    // Their deterministic publication keys must not collide in one authority.
+    for (generation, chunk) in [([5; 32], 2), ([4; 32], 3)] {
+        calls.store(0, Ordering::Relaxed);
+        let encoded_seed = seed(generation)?;
+        let cache = FoldCache::new(
+            Arc::clone(&streams),
+            Arc::clone(&objects),
+            identity(generation, chunk),
+            &mut ctx,
+        )?;
+        let state = cache
+            .fold_at(
+                CountedSum(Arc::clone(&calls)),
+                cuts[2].clone(),
+                |ctx| {
+                    ctx.decode_json(&encoded_seed)
+                        .map_err(FoldObjectError::from)
+                },
+                &mut ctx,
+            )
+            .await?;
+        assert_eq!(state.state, 78);
+        assert_eq!(calls.load(Ordering::Relaxed), 12);
+    }
+    ctx.check()?;
     Ok(())
 }

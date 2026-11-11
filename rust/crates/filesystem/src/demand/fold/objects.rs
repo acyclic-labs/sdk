@@ -9,6 +9,12 @@ use serde::de::DeserializeOwned;
 /// A cache failure never substitutes a different stream cut or authored state.
 #[derive(Debug, thiserror::Error)]
 pub enum FoldObjectError {
+    /// A stream lookup, finite read or conditional publication failed.
+    #[error(transparent)]
+    Stream(#[from] acyclic_stream::StreamError),
+    /// The fold refused an input record.
+    #[error(transparent)]
+    Fold(#[from] DemandError),
     /// The cache descriptor and decoded checkpoint do not name the same prefix.
     #[error("fold checkpoint does not match its cache descriptor")]
     Mismatch,
@@ -64,12 +70,13 @@ impl FoldCheckpointObject {
                 &native.work,
                 cancellation,
             )?;
+            let mut work = AuthorityWork::native(&native.work, cancellation);
+            let object = store.prepare_hashed(object, &mut work).await?;
             let descriptor = Self {
                 key,
                 object: object.object_id(),
                 bytes: object.length(),
             };
-            let mut work = AuthorityWork::native(&native.work, cancellation);
             store.put_hashed(object, &mut work).await?;
             Ok(descriptor)
         }

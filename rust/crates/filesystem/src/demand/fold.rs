@@ -124,6 +124,10 @@ impl<F: Fold> FoldCursor<F> {
 mod objects;
 #[cfg(not(target_arch = "wasm32"))]
 pub use objects::*;
+#[cfg(not(target_arch = "wasm32"))]
+mod stream;
+#[cfg(not(target_arch = "wasm32"))]
+pub use stream::*;
 
 #[cfg(test)]
 mod tests {
