@@ -419,3 +419,32 @@ This checkpoint is not completion of public-limit removal or any backend's
 atomic staged publication. The native original-work claims, stage lifecycle
 retirement, final-apply cursor planner, transport methods and batch-follow frames
 must be integrated before the conformance/proof completion audit can pass.
+
+## Streaming ingress refinement (before implementation)
+
+Add stage_tokens(Submission, Stream<Token>) as the bounded-memory entrypoint.
+Submission binds commit id, retry key, original family, deadline, effect count
+and output projection. Owned stage(WriteRequest) remains a convenience adapter;
+both MUST use one token encoder and one shape validator. Generic token fields
+borrow owned-request bytes without copying, while a streamed token may carry
+an already staged content root. Small addressed fields are valid too: the
+staging root is a transport identity, not the canonical logical retry digest.
+
+The content writer cooperates with the runtime after each completed physical
+page. This is scheduler credit, not a readiness probe, timer or sleep. Native
+original-work admission remains an integration obligation. The 100k-effect
+control will generate its input lazily, and the 64 MiB control will build its
+value root from bounded fragments instead of allocating one whole record.
+The old validation client was asked to cancel after its target was proved
+terminated; do not create a second live validation submission while it remains.
+
+The streamed entrypoint and owned adapter now share the same generic token
+encoder and fixed-counter shape validator. Borrowed fields avoid copying owned
+request paths/values; streamed fields may reference existing content of any
+length. Request-family structural mismatches, missing tokens and extra tokens
+are refused before seal. The 100k-effect producer retains one effect's tokens,
+and the 64 MiB value is built from 64 KiB fragments, without a whole-record
+allocation in either ingestion control. Page cooperation reuses runtime::yield_now,
+including its existing browser task-event adapter; no second scheduler is added.
+These source changes are pending remote validation. Neither earlier unrun
+ingestion controls nor these new controls are claimed as passed.

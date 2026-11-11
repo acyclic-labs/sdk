@@ -91,7 +91,7 @@ impl<'a, S: Storage> Cursor<'a, S> {
                 let digest = self.exact().await?;
                 let length = self.number().await?;
                 let height = self.byte().await?;
-                if length <= INLINE_BYTES as u64 || height > u64::BITS as u8 {
+                if height > u64::BITS as u8 {
                     return Err(StreamError::InvalidResponse);
                 }
                 Ok(Field::Content(Root {
@@ -126,7 +126,8 @@ enum Phase {
 }
 
 #[derive(Default)]
-struct Shape {
+pub(super) struct Shape {
+    family: Option<Family>,
     effects: u64,
     conditions: u64,
     mutations: u64,
@@ -137,6 +138,16 @@ struct Shape {
 }
 
 impl Shape {
+    pub(super) fn new(family: Family, effects: u64) -> Self {
+        Self {
+            family: Some(family),
+            effects,
+            ..Self::default()
+        }
+    }
+    pub(super) fn complete(&self) -> bool {
+        self.next() == Phase::End
+    }
     fn next(&self) -> Phase {
         if self.keys != 0 {
             Phase::Key
@@ -156,7 +167,46 @@ impl Shape {
             Phase::End
         }
     }
-    fn accept(&mut self, token: &Token) -> Result<(), StreamError> {
+    pub(super) fn accept<B>(&mut self, token: &Token<B>) -> Result<(), StreamError> {
+        match (self.family, self.next(), token) {
+            (
+                Some(Family::Append | Family::Fork),
+                Phase::Effect,
+                Token::Effect {
+                    soft,
+                    conditions,
+                    mutations,
+                },
+            ) => {
+                let allowed = if self.family == Some(Family::Append) {
+                    1
+                } else {
+                    0
+                };
+                if *soft || *conditions > allowed || *mutations != 1 {
+                    return Err(StreamError::InvalidResponse);
+                }
+            }
+            (
+                Some(Family::Append),
+                Phase::Condition,
+                Token::Tail {
+                    commit_id: None, ..
+                },
+            ) => {}
+            (Some(Family::Append), Phase::Condition, _) => {
+                return Err(StreamError::InvalidResponse);
+            }
+            (Some(Family::Append), Phase::Mutation, Token::Append { .. }) => {}
+            (Some(Family::Fork), Phase::Mutation, Token::Fork { records: 0, .. }) => {}
+            (Some(Family::Append | Family::Fork), Phase::Mutation, _) => {
+                return Err(StreamError::InvalidResponse);
+            }
+            (Some(Family::Commit), Phase::Mutation, Token::Fork { at_tail: None, .. }) => {
+                return Err(StreamError::InvalidResponse);
+            }
+            _ => {}
+        }
         match (self.next(), token) {
             (
                 Phase::Effect,
@@ -253,10 +303,7 @@ impl<'a, S: Storage> Reader<'a, S> {
         Ok(Self {
             cursor,
             deadline,
-            shape: Shape {
-                effects,
-                ..Shape::default()
-            },
+            shape: Shape::new(family, effects),
             interrupted: false,
         })
     }

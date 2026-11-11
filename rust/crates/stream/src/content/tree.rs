@@ -191,6 +191,8 @@ impl<'a, S: Storage> Writer<'a, S> {
                 )
                 .await?;
                 self.builder.push(0, part).await?;
+                // Return to the shared native/browser scheduler once per physical page.
+                crate::runtime::yield_now().await?;
                 self.buffer
                     .try_reserve_exact(PAGE_BYTES)
                     .map_err(|_| StreamError::Capacity)?;

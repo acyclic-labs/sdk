@@ -15,30 +15,49 @@ async fn staged_100k_effects_keep_counts_and_caller_record_order()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let storage = Disk::open(directory.path());
-    let mut effects = Vec::new();
-    for index in 0..100_000_u64 {
-        let path = StreamPath::new(format!("files/{index:06}"))?;
-        effects.push(CommitEffect::hard(
-            vec![CommitCondition::Tail {
-                path: path.clone(),
+    // The producer retains one effect at a time, never a 100k-effect request.
+    let tokens = futures::stream::iter((0..100_000_u64).flat_map(|index| {
+        let path = OwnedBytes::from(format!("files/{index:06}"));
+        [
+            Ok(Token::Effect {
+                soft: false,
+                conditions: 1,
+                mutations: 1,
+            }),
+            Ok(Token::Tail {
+                path: Field::Inline(path.clone()),
                 expected: index,
-            }],
-            vec![CommitMutation::Append {
-                path,
-                records: vec![
-                    AppendRecord::from(index.to_le_bytes().to_vec()),
-                    AppendRecord::from((!index).to_le_bytes().to_vec()),
-                ],
-            }],
-        ));
-    }
-    let request = WriteRequest::Commit(CommitRequest {
-        idempotency_key: IdempotencyKey::new("staged-100k")?,
-        // Staging must not settle a condition, deadline, sequence or revision.
-        deadline_unix_millis: Some(1),
-        effects,
-    });
-    let staged = stage(&storage, CommitId::from_bytes([1; 32]), &request).await?;
+                commit_id: None,
+            }),
+            Ok(Token::Append {
+                path: Field::Inline(path),
+                records: 2,
+            }),
+            Ok(Token::Record {
+                value: Field::Inline(OwnedBytes::from(index.to_le_bytes().to_vec())),
+                keys: 0,
+                attributes: 0,
+            }),
+            Ok(Token::Record {
+                value: Field::Inline(OwnedBytes::from((!index).to_le_bytes().to_vec())),
+                keys: 0,
+                attributes: 0,
+            }),
+        ]
+    }));
+    let staged = stage_tokens(
+        &storage,
+        Submission {
+            commit_id: CommitId::from_bytes([1; 32]),
+            idempotency_key: IdempotencyKey::new("staged-100k")?,
+            family: Family::Commit,
+            effects: 100_000,
+            deadline_unix_millis: Some(1),
+            accepted: false,
+        },
+        tokens,
+    )
+    .await?;
     assert!(staged.body().part.length > crate::MAX_COMMAND_BYTES as u64);
     let mut reader = Reader::open(&storage, &staged).await?;
     assert_eq!(reader.deadline_unix_millis(), Some(1));
@@ -91,24 +110,58 @@ async fn staged_large_record_is_a_content_reference_and_projection_keeps_identit
     let directory = tempfile::tempdir()?;
     let storage = Disk::open(directory.path());
     let size = 64 * 1024 * 1024;
-    let request = CommitRequest {
-        idempotency_key: IdempotencyKey::new("staged-large")?,
-        deadline_unix_millis: None,
-        effects: vec![CommitEffect::hard(
-            Vec::new(),
-            vec![CommitMutation::Append {
-                path: StreamPath::new("values")?,
-                records: vec![
-                    OwnedBytes::from_static(b"before").into(),
-                    OwnedBytes::from(vec![0xa5; size]).into(),
-                    OwnedBytes::from_static(b"after").into(),
-                ],
-            }],
-        )],
+    let mut value = tree::Writer::new(&storage)?;
+    let fragment = vec![0xa5; tree::PAGE_BYTES];
+    for _ in 0..size / fragment.len() {
+        value.write(&fragment).await?;
+    }
+    let root = value.finish().await?;
+    let tokens = || {
+        futures::stream::iter([
+            Ok(Token::Effect {
+                soft: false,
+                conditions: 0,
+                mutations: 1,
+            }),
+            Ok(Token::Append {
+                path: Field::Inline(b"values".as_slice()),
+                records: 3,
+            }),
+            Ok(Token::Record {
+                value: Field::Inline(b"before".as_slice()),
+                keys: 0,
+                attributes: 0,
+            }),
+            Ok(Token::Record {
+                value: Field::Content(root),
+                keys: 0,
+                attributes: 0,
+            }),
+            Ok(Token::Record {
+                value: Field::Inline(b"after".as_slice()),
+                keys: 0,
+                attributes: 0,
+            }),
+        ])
     };
-    let commit_id = CommitId::from_bytes([2; 32]);
-    let staged = stage(&storage, commit_id, &WriteRequest::Commit(request.clone())).await?;
-    let selected = stage(&storage, commit_id, &WriteRequest::CommitAccepted(request)).await?;
+    let submission = Submission {
+        commit_id: CommitId::from_bytes([2; 32]),
+        idempotency_key: IdempotencyKey::new("staged-large")?,
+        family: Family::Commit,
+        effects: 1,
+        deadline_unix_millis: None,
+        accepted: false,
+    };
+    let staged = stage_tokens(&storage, submission.clone(), tokens()).await?;
+    let selected = stage_tokens(
+        &storage,
+        Submission {
+            accepted: true,
+            ..submission
+        },
+        tokens(),
+    )
+    .await?;
     assert_eq!(staged.body(), selected.body());
     assert!(!staged.accepted());
     assert!(selected.accepted());
@@ -362,6 +415,89 @@ async fn staged_fork_exclusions_and_headers_keep_typed_token_order()
     };
     assert_eq!(inline(name)?.as_slice(), b"attention");
     assert_eq!(inline(value)?.as_slice(), b"true");
+    assert!(reader.next().await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn streamed_ingress_refuses_missing_extra_and_wrong_family_tokens()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Disk::open(directory.path());
+    let submission = Submission {
+        commit_id: CommitId::from_bytes([7; 32]),
+        idempotency_key: IdempotencyKey::new("shape")?,
+        family: Family::Append,
+        effects: 1,
+        deadline_unix_millis: None,
+        accepted: false,
+    };
+    let effect = Token::<&[u8]>::Effect {
+        soft: false,
+        conditions: 0,
+        mutations: 1,
+    };
+    let append = Token::Append {
+        path: Field::Inline(b"a".as_slice()),
+        records: 1,
+    };
+    let record = Token::Record {
+        value: Field::Inline(b"body".as_slice()),
+        keys: 0,
+        attributes: 0,
+    };
+    let wrong = Token::Fork {
+        source: Field::Inline(b"a".as_slice()),
+        destination: Field::Inline(b"b".as_slice()),
+        at_tail: None,
+        exclusions: 0,
+        records: 0,
+    };
+    for tokens in [
+        vec![effect.clone(), append.clone()],
+        vec![
+            effect.clone(),
+            append.clone(),
+            record.clone(),
+            record.clone(),
+        ],
+        vec![effect.clone(), wrong],
+    ] {
+        assert!(matches!(
+            stage_tokens(
+                &storage,
+                submission.clone(),
+                futures::stream::iter(tokens.into_iter().map(Ok))
+            )
+            .await,
+            Err(StreamError::InvalidArgument)
+        ));
+    }
+    // Addressed values need no minimum size. A pre-staged small object is a
+    // legitimate field, rather than a hidden inline-only API restriction.
+    let mut value = tree::Writer::new(&storage)?;
+    value.write(b"body").await?;
+    let root = value.finish().await?;
+    let addressed = stage_tokens(
+        &storage,
+        submission,
+        futures::stream::iter([
+            Ok(effect),
+            Ok(append),
+            Ok(Token::<&[u8]>::Record {
+                value: Field::Content(root),
+                keys: 0,
+                attributes: 0,
+            }),
+        ]),
+    )
+    .await?;
+    let mut reader = Reader::open(&storage, &addressed).await?;
+    reader.next().await?.ok_or("missing effect")?;
+    reader.next().await?.ok_or("missing append")?;
+    assert!(
+        matches!(reader.next().await?, Some(Token::Record { value: Field::Content(value), .. }) if value == root)
+    );
     assert!(reader.next().await?.is_none());
     Ok(())
 }

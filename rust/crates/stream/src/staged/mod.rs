@@ -30,9 +30,10 @@ pub enum Family {
 
 /// A field's immutable bytes, inline in a page or addressed by content root.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Field {
-    /// Small bytes retained only for the current decoded token.
-    Inline(OwnedBytes),
+pub enum Field<B = OwnedBytes> {
+    /// Inline bytes. Encoding promotes large fields to content roots;
+    /// decoding retains only a bounded field for the current token.
+    Inline(B),
     /// Arbitrarily large bytes, read through the shared content-tree reader.
     Content(Root),
 }
@@ -40,7 +41,7 @@ pub enum Field {
 /// One bounded decoded token. Wide counts describe subsequent ordered tokens;
 /// they do not allocate result vectors or change Stream authority state.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Token {
+pub enum Token<B = OwnedBytes> {
     /// Begins an effect. All its conditions precede its mutations.
     Effect {
         /// Whether a failed condition skips this effect.
@@ -53,14 +54,14 @@ pub enum Token {
     /// Requires existence or absence without sampling either during staging.
     Presence {
         /// Destination whose presence is checked at final apply.
-        path: Field,
+        path: Field<B>,
         /// True for present, false for absent.
         present: bool,
     },
     /// Requires the exact tail, optionally bound to its preceding commit.
     Tail {
         /// Destination checked at final apply.
-        path: Field,
+        path: Field<B>,
         /// Required exclusive tail.
         expected: u64,
         /// Required preceding commit for a Head condition.
@@ -69,16 +70,16 @@ pub enum Token {
     /// Ordered append records follow, including each record's header tokens.
     Append {
         /// Append destination.
-        path: Field,
+        path: Field<B>,
         /// Number of subsequent record descriptors.
         records: u64,
     },
     /// Exclusions then optional appended records follow this fork descriptor.
     Fork {
         /// Source whose cut is selected at final apply.
-        source: Field,
+        source: Field<B>,
         /// Fork destination.
-        destination: Field,
+        destination: Field<B>,
         /// Explicit source cut, or the current tail at final apply.
         at_tail: Option<u64>,
         /// Number of subsequent exclusion tokens.
@@ -87,28 +88,57 @@ pub enum Token {
         records: u64,
     },
     /// A segment-prefix exclusion, preserving the caller's fork semantics.
-    Exclusion(Field),
+    Exclusion(Field<B>),
     /// One value, then ordered key and attribute tokens. Values remain ordered
     /// across all physical page and large-content boundaries.
     Record {
         /// Original value or its content root.
-        value: Field,
+        value: Field<B>,
         /// Number of subsequent key tokens.
         keys: u64,
         /// Number of subsequent attribute tokens.
         attributes: u64,
     },
     /// One canonical indexed key.
-    Key(Field),
+    Key(Field<B>),
     /// One canonical named attribute.
     Attribute {
         /// Canonical attribute name.
-        name: Field,
+        name: Field<B>,
         /// Opaque attribute value.
-        value: Field,
+        value: Field<B>,
     },
 }
 
+/// Original submission metadata, independent of how its tokens are produced.
+/// None of these fields assigns a Stream position or settles a condition.
+#[derive(Clone, Debug)]
+pub struct Submission {
+    /// Identity permanently bound inside the staged bytes.
+    pub commit_id: CommitId,
+    /// Original caller-owned retry identity.
+    pub idempotency_key: IdempotencyKey,
+    /// Genuine append, fork or coordinated-commit family.
+    pub family: Family,
+    /// Authority deadline; staging never checks it against a clock.
+    pub deadline_unix_millis: Option<u64>,
+    /// Number of effect tokens, without allocating an effect vector.
+    pub effects: u64,
+    /// Select the accepted-envelope result of a coordinated commit.
+    pub accepted: bool,
+}
+
+/// Stages a lazily produced token stream through the same encoder as [`stage`].
+/// Byte fields can be borrowed, owned, or already addressed by content root.
+/// The storage owner must retain supplied roots through publication/retirement.
+/// This API never constructs a request-sized vector or materializes a value root.
+pub async fn stage_tokens<B: AsRef<[u8]>>(
+    storage: &impl Storage,
+    submission: Submission,
+    tokens: impl futures::Stream<Item = Result<Token<B>, StreamError>>,
+) -> Result<StagedWrite, StreamError> {
+    encode::stage_tokens(storage, submission, tokens).await
+}
 /// A complete sealed submission bound to one commit id and original retry key.
 /// Private fields prevent rebinding; storage adapters must additionally enforce
 /// account/owner authority and retain pages until final apply or retirement.
