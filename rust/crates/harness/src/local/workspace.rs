@@ -32,7 +32,7 @@ pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
     pub(super) destination: PathBuf,
-    pub(super) options: acyclic_fs::MountOptions,
+    pub(super) options: Option<acyclic_fs::MountOptions>,
     pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
     /// Native execution scopes currently using `native`.
@@ -223,17 +223,16 @@ impl LocalWorkspace {
                         }),
                 ),
         )?;
-        if native {
-            volumes::attach(
-                &self.filesystem,
-                &self.store,
-                &root,
-                &mut mounts,
-                authority,
-                &self.task_view_admission,
-            )
-            .await?;
-        }
+        volumes::attach(
+            &self.filesystem,
+            &self.store,
+            &root,
+            &mut mounts,
+            Some(authority),
+            &self.task_view_admission,
+            native,
+        )
+        .await?;
         Ok(Arc::new(mounts))
     }
 
@@ -410,6 +409,7 @@ pub(super) async fn open(
         }
     }
     volumes::seed::adopt_home(filesystem, scratch, &root).await?;
+    let binding_root = root.try_clone().map_err(storage)?;
     let (view, fresh) = lazy_view(filesystem, attach, root, existing, &store).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     acyclic_fs::WorkspaceGraph::new(store.clone())
@@ -434,18 +434,17 @@ pub(super) async fn open(
         .authority
         .map(|(issuer, agent)| crate::filesystem::NativeMountAuthority::new(issuer, agent))
         .transpose()?;
+    volumes::attach(
+        filesystem,
+        &store,
+        &binding_root,
+        &mut mounts,
+        mount_authority.as_ref(),
+        &task_view_admission,
+        native_mounts,
+    )
+    .await?;
     if let Some(setup) = &setup {
-        volumes::attach(
-            filesystem,
-            &store,
-            setup,
-            &mut mounts,
-            mount_authority
-                .as_ref()
-                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
-            &task_view_admission,
-        )
-        .await?;
         Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
     }
     let context_line = mounts.context_line();

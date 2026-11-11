@@ -127,10 +127,14 @@ impl MountedVolume {
         relative: &str,
         read_only: bool,
     ) -> Result<Entered> {
+        let options = self
+            .options
+            .clone()
+            .ok_or_else(|| Error::Invalid("logical volume has no native projection".into()))?;
         let options = if read_only {
-            self.options.clone().restrict_to_read_only()
+            options.restrict_to_read_only()
         } else {
-            self.options.clone()
+            options
         };
         self.enter_with_options(root, relative, options).await
     }

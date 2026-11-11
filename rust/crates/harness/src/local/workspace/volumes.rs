@@ -115,8 +115,9 @@ pub(super) async fn attach(
     store: &acyclic_fs::LocalCoreStateStore,
     root: &acyclic_fs::HeldRoot,
     mounts: &mut Mounts,
-    authority: &crate::filesystem::NativeMountAuthority,
+    authority: Option<&crate::filesystem::NativeMountAuthority>,
     admission: &Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
+    native: bool,
 ) -> Result<()> {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -138,20 +139,29 @@ pub(super) async fn attach(
         // Bind the namespace before the initial source/watch cut. Creating its
         // parent during the first shell command would author a project change
         // even when that command only reads. The projection itself stays absent.
-        if let Some(parent) = Path::new(relative).parent() {
+        if native && let Some(parent) = Path::new(relative).parent() {
             held_directories(root, parent)?;
         }
-        let options = authority
-            .mount_options(
-                &source,
-                Some(&mount.view.volume),
-                !mount.mode.read_only(),
-                &work,
+        let options = if native {
+            Some(
+                authority
+                    .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
+                    .mount_options(
+                        &source,
+                        Some(&mount.view.volume),
+                        !mount.mode.read_only(),
+                        &work,
+                    )
+                    .await?
+                    .publication(MountPublication::Manual),
             )
-            .await?
-            .publication(MountPublication::Manual);
+        } else {
+            None
+        };
         #[cfg(windows)]
-        recover_volume_after_crash(root.path(), Path::new(relative), source.id().volume_id())?;
+        if native {
+            recover_volume_after_crash(root.path(), Path::new(relative), source.id().volume_id())?;
+        }
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source, &work, &cancellation)
             .await?;
@@ -250,7 +260,9 @@ pub(in crate::local) async fn native_scope<T>(
     };
     let mut projected = Ok(());
     for (relative, mount) in ordered_mounts(mounts)? {
-        if let Some(source) = &mount.view.source {
+        if let Some(source) = &mount.view.source
+            && source.options.is_some()
+        {
             // The projection's counted claims retain the mount across every
             // overlapping command. Its native owner serializes publication;
             // a command lifetime must not exclude other admitted commands.

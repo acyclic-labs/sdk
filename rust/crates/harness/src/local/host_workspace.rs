@@ -375,11 +375,14 @@ impl HostWorkspace {
             let Some(source) = &mount.view.source else {
                 continue;
             };
+            let Some(options) = source.options.clone() else {
+                continue;
+            };
             self.verify().await?;
             source.prepare_command().await?;
             let root = workspace::volumes::projection_root(&source.destination, relative)?;
             let options = volume_guard::options(
-                source.options.clone(),
+                options,
                 Arc::clone(&self.owner),
                 Arc::clone(&self.mount_root),
                 mount.mode.read_only(),
@@ -396,6 +399,9 @@ impl HostWorkspace {
             let Some(source) = &mount.view.source else {
                 continue;
             };
+            if source.options.is_none() {
+                continue;
+            }
             let native = source.native().await;
             let native = native
                 .as_ref()
