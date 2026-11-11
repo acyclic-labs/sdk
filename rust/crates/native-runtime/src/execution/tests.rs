@@ -68,8 +68,8 @@ fn sandbox_policy() {
                 )
                 .current_dir(grant.workspace())
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
             #[cfg(windows)]
             command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
             let mut tree = if confined {
@@ -78,10 +78,23 @@ fn sandbox_policy() {
             } else {
                 ProcessTree::spawn(&mut command).unwrap()
             };
+            let output = tree
+                .wait_with_output(
+                    crate::CaptureSchedule::Unbounded,
+                    1 << 20,
+                    None,
+                    || Ok(()),
+                    |_| Ok(Default::default()),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
             assert!(
-                tree.wait(crate::CaptureSchedule::Unbounded)
-                    .unwrap()
-                    .success()
+                output.status.success(),
+                "confined={confined}, access={access:?}, volume_write={volume_write}, custody={custodied}: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
             );
             if confined {
                 assert_eq!(
