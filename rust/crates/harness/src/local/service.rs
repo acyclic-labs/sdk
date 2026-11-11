@@ -564,7 +564,7 @@ mod tests {
 
                 projects.push(crate::filesystem::workspace_ref(
                     binding.volume()?.provider().clone(),
-                    binding.volume()?()?.storage_name(&mut None)?,
+                    binding.volume()?.storage_name(&mut None)?,
                 )?);
                 let binding = state
                     .volumes
@@ -573,7 +573,7 @@ mod tests {
                     .ok_or_else(|| Error::Invalid("missing shared binding".into()))?;
                 shared.push(crate::filesystem::workspace_ref(
                     binding.volume()?.provider().clone(),
-                    binding.volume()?()?.storage_name(&mut None)?,
+                    binding.volume()?.storage_name(&mut None)?,
                 )?);
             }
             for (index, text) in [(0, "first board"), (1, "second board")] {
