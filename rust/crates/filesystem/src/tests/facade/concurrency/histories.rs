@@ -54,7 +54,7 @@ async fn propose(
         &volume.fs.inner.objects,
         checkout.base_root.file_table,
         checkout.root.file_table,
-        128,
+        Some(128),
         DecodeLimits::for_volume(volume.config),
         accounting,
         cancel,

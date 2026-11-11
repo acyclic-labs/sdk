@@ -45,9 +45,6 @@ fn parse_record(value: &Value, owner: &StreamPath) -> Result<Record, StreamError
     let attributes = field(value, "attributes")?
         .as_array()
         .ok_or(StreamError::Unavailable)?;
-    if keys.len() > crate::MAX_RECORD_KEYS || attributes.len() > crate::MAX_RECORD_ATTRIBUTES {
-        return Err(StreamError::Unavailable);
-    }
     let headers = crate::changes::record_headers(
         &bytes,
         keys.iter()
@@ -127,9 +124,6 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
     let mutations = value["mutations"]
         .as_array()
         .ok_or(StreamError::Unavailable)?;
-    if mutations.len() > MAX_ITEMS {
-        return Err(StreamError::Unavailable);
-    }
     let mutations = mutations
         .iter()
         .map(|value| {
@@ -144,9 +138,6 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
                 .map(|records| parse_records(records, &owner))
                 .transpose()?
                 .unwrap_or_default();
-            if records.len() > MAX_ITEMS {
-                return Err(StreamError::Unavailable);
-            }
             match kind {
                 "append" => Ok(CommittedMutation::Append(CommittedAppend {
                     path: owner,

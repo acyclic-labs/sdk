@@ -618,9 +618,7 @@ impl MergeDriver for DefaultTextMergeDriver {
             Some(theirs.as_bytes()),
             "ours",
             "theirs",
-            ByteMergeLimits {
-                max_bytes: u64::MAX,
-            },
+            ByteMergeLimits { max_bytes: None },
         )
         .map_err(|_| DriverError::Unsupported)?
         {

@@ -137,7 +137,7 @@ export function createFilesystemAdapter(extensions: {
         const value = await raw.prepareMerge(theirs, maximumChanges, maximumConflicts);
         return parseMergePreparation({ ...value, work: copyWork(value.work) });
       },
-      async lookupNoFollow(path) { const value = await raw.lookupNoFollow(path); return { ...value, fileId: copyOptionalBytes(value.fileId), fileKind: value.fileKind === undefined ? undefined : projectFileKind(value.fileKind), work: copyWork(value.work) }; },
+      async lookupNoFollow(path) { const value = await raw.lookupNoFollow(path); return { ...value, resolvedComponents: BigInt(value.resolvedComponents), fileId: copyOptionalBytes(value.fileId), fileKind: value.fileKind === undefined ? undefined : projectFileKind(value.fileKind), work: copyWork(value.work) }; },
       async lookupBatchNoFollow(paths) { const value = await raw.lookupBatchNoFollow(Array.from(paths)); return { entries: copyBatchLookupEntries(value.entries), retainedAllocationBytes: BigInt(value.retainedAllocationBytes), work: copyWork(value.work) }; },
       async statNoFollow(path) { const value = await raw.statNoFollow(path); return copyStatResult(value, copyWork(value.work)); },
       async readFileRecordById(fileId) { const value = await raw.readFileRecordById(fileId); return { record: copyFileRecord(value.record), work: copyWork(value.work) }; },
@@ -305,7 +305,7 @@ export function createFilesystemAdapter(extensions: {
         return adaptTransaction(await raw.beginTransaction(idempotencyKey));
       },
       async diff(from, to, maximumChanges): Promise<FsChangeSet> {
-        if (!Number.isSafeInteger(maximumChanges) || maximumChanges <= 0) {
+        if (maximumChanges !== undefined && (!Number.isSafeInteger(maximumChanges) || maximumChanges <= 0)) {
           throw new RangeError("maximum changes must be a positive safe integer");
         }
         return adaptChangeSet(

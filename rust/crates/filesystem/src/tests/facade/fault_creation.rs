@@ -174,7 +174,7 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
                     FsError::PendingLiveMutation
                 ));
                 assert!(matches!(
-                    live.rebase_head(16, B, &cancellation)
+                    live.rebase_head(Some(16), B, &cancellation)
                         .await
                         .unwrap_err()
                         .error,

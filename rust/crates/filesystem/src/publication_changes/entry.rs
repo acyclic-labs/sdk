@@ -20,7 +20,7 @@ use std::fmt::Write;
 /// Only the first 1 KiB is indexed. A bounded [start,end) containing this prefix
 /// contains all its extensions: projection cannot widen any representable range.
 pub(crate) struct PathKey {
-    bytes: [u8; acyclic_stream::MAX_RECORD_KEY_BYTES],
+    bytes: [u8; acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES],
     len: usize,
     #[cfg(test)]
     components: usize,
@@ -47,7 +47,7 @@ impl Write for PathKey {
 /// The indexed key of `path`.
 pub(crate) fn key(path: &NamespacePath, config: VolumeConfig) -> PathKey {
     let mut key = PathKey {
-        bytes: [0; acyclic_stream::MAX_RECORD_KEY_BYTES],
+        bytes: [0; acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES],
         len: 0,
         #[cfg(test)]
         components: 0,
@@ -203,7 +203,7 @@ fn names_from_key(path: &NamespacePath, config: VolumeConfig) -> Option<NameEnco
         }
         joined += text_len(name)?;
     }
-    (joined < acyclic_stream::MAX_RECORD_KEY_BYTES).then_some(first)
+    (joined < acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES).then_some(first)
 }
 
 fn names_len(path: &NamespacePath, config: VolumeConfig) -> usize {
@@ -419,12 +419,8 @@ mod read {
         reader: &mut Reader<'_>,
         config: VolumeConfig,
     ) -> Result<Vec<LogicalName>, Malformed> {
-        let maximum = config.limits.maximum_component_bytes;
         let name = |encoding: NameEncoding, bytes: &[u8]| {
-            if bytes.len() > maximum as usize {
-                return Err(Malformed);
-            }
-            LogicalName::new(encoding, bytes.to_vec(), maximum).map_err(|_| Malformed)
+            LogicalName::new(encoding, bytes.to_vec()).map_err(|_| Malformed)
         };
         let mut components = Vec::new();
         match reader.number()? {
@@ -433,8 +429,7 @@ mod read {
                 let text = std::str::from_utf8(key).map_err(|_| Malformed)?;
                 if config.case_sensitivity == CaseSensitivity::ProfileFolded
                     || key.is_empty()
-                    || key.len() >= acyclic_stream::MAX_RECORD_KEY_BYTES
-                    || text.split('/').count() > config.limits.maximum_path_depth as usize
+                    || key.len() >= acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES
                 {
                     return Err(Malformed);
                 }
@@ -444,7 +439,7 @@ mod read {
             }
             depth => {
                 let depth = depth - 1;
-                if depth > config.limits.maximum_path_depth as usize || depth > reader.0.len() / 2 {
+                if depth > reader.0.len() / 2 {
                     return Err(Malformed);
                 }
                 for _ in 0..depth {

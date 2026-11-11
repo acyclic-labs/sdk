@@ -1,4 +1,5 @@
 use crate::*;
+pub use wait::wait_native_future;
 pub(crate) use wait::{
     PreparedWake, allocate_blocking_wait_wake, measured_completion_meter, wait_measured_completion,
 };

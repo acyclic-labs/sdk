@@ -5,53 +5,66 @@
 //! recognized as such.
 
 pub(super) const MAGIC: &[u8] = b"acyclic-claim-v2\0";
-const CHECKSUM_BYTES: usize = 8;
-/// A record is a few short fields; anything longer is not one.
-pub(crate) const RECORD_LIMIT: usize = 4096;
+pub(super) const CHECKSUM_BYTES: usize = 8;
+pub(super) const CHECKSUM_INITIAL: u64 = 0xcbf2_9ce4_8422_2325;
 
 /// The process that owns a claim, as other processes find it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Process {
+pub(super) struct Process<B = Vec<u8>> {
     pub(super) pid: u32,
     /// The process's start identity, empty where the platform has none.
-    pub(super) start: Vec<u8>,
+    pub(super) start: B,
     /// The process lock's path, in the platform's own encoding.
-    pub(super) lock: Vec<u8>,
+    pub(super) lock: B,
     /// The process lock's file identity, so a different file at that path is
     /// never mistaken for it.
-    pub(super) lock_identity: Vec<u8>,
+    pub(super) lock_identity: B,
+}
+
+impl<B: AsRef<[u8]>> Process<B> {
+    pub(super) fn borrowed(&self) -> Process<&[u8]> {
+        Process {
+            pid: self.pid,
+            start: self.start.as_ref(),
+            lock: self.lock.as_ref(),
+            lock_identity: self.lock_identity.as_ref(),
+        }
+    }
 }
 
 /// One claim: its owning process and that claim's token, unique within it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Record {
-    pub(super) process: Process,
+pub(super) struct Record<B = Vec<u8>> {
+    pub(super) process: Process<B>,
     pub(super) token: u64,
 }
 
 /// What a claim file holds.
 #[derive(Debug, Eq, PartialEq)]
-pub(super) enum Contents {
+pub(super) enum Contents<'a> {
     /// No owner was ever recorded, or the last one released.
     Empty,
     /// Bytes that are not a whole record. Records are written only under the
     /// claim file's lock, and a writer whose write fails never owns, so these
     /// come only from a writer that died mid-write: no owner.
     Torn,
-    /// More bytes than any record: read only in part, so never decoded.
-    Oversized,
-    Record(Record),
+    /// Intact framing or an incompatible header contradicts a claim record.
+    Malformed,
+    Record(Record<&'a [u8]>),
 }
 
 /// FNV-1a: stable across builds, which a record must be, and enough to tell a
 /// torn record from a whole one.
 pub(super) fn checksum(bytes: &[u8]) -> [u8; CHECKSUM_BYTES] {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    checksum_chunk(CHECKSUM_INITIAL, bytes).to_le_bytes()
+}
+
+pub(super) fn checksum_chunk(mut hash: u64, bytes: &[u8]) -> u64 {
     for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    hash.to_le_bytes()
+    hash
 }
 
 fn field(out: &mut Vec<u8>, bytes: &[u8]) {
@@ -59,13 +72,13 @@ fn field(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
-impl Record {
+impl<B: AsRef<[u8]>> Record<B> {
     pub(super) fn encode(&self) -> Vec<u8> {
         let mut out = MAGIC.to_vec();
         field(&mut out, &self.process.pid.to_le_bytes());
-        field(&mut out, &self.process.start);
-        field(&mut out, &self.process.lock);
-        field(&mut out, &self.process.lock_identity);
+        field(&mut out, self.process.start.as_ref());
+        field(&mut out, self.process.lock.as_ref());
+        field(&mut out, self.process.lock_identity.as_ref());
         field(&mut out, &self.token.to_le_bytes());
         let sum = checksum(&out);
         out.extend_from_slice(&sum);
@@ -89,21 +102,34 @@ impl<'a> Fields<'a> {
     }
 }
 
-impl Contents {
-    pub(super) fn decode(bytes: &[u8]) -> Self {
+impl<'a> Contents<'a> {
+    pub(super) fn decode(bytes: &'a [u8]) -> Self {
+        Self::decode_inner(bytes, true)
+    }
+
+    pub(super) fn decode_inner(bytes: &'a [u8], verify_checksum: bool) -> Self {
         if bytes.is_empty() {
             return Self::Empty;
         }
-        if bytes.len() > RECORD_LIMIT {
-            return Self::Oversized;
+        if bytes.len() >= MAGIC.len() && !bytes.starts_with(MAGIC) {
+            return Self::Malformed;
         }
-        Self::record(bytes).map_or(Self::Torn, Self::Record)
+        // Trailing bytes after complete declared fields cannot be a partial
+        // write. Preserve fail-closed handling without a whole-record ceiling.
+        let mut framing = Fields(bytes);
+        if framing.take(MAGIC.len()).is_some()
+            && (0..5).all(|_| framing.field().is_some())
+            && framing.0.len() > CHECKSUM_BYTES
+        {
+            return Self::Malformed;
+        }
+        Self::record(bytes, verify_checksum).map_or(Self::Torn, Self::Record)
     }
 
-    fn record(bytes: &[u8]) -> Option<Record> {
+    fn record(bytes: &'a [u8], verify_checksum: bool) -> Option<Record<&'a [u8]>> {
         let body = bytes.len().checked_sub(CHECKSUM_BYTES)?;
         let (body, sum) = bytes.split_at_checked(body)?;
-        if checksum(body) != sum {
+        if verify_checksum && checksum(body) != sum {
             return None;
         }
         let mut fields = Fields(body);
@@ -111,9 +137,9 @@ impl Contents {
             return None;
         }
         let pid = u32::from_le_bytes(fields.field()?.try_into().ok()?);
-        let start = fields.field()?.to_vec();
-        let lock = fields.field()?.to_vec();
-        let lock_identity = fields.field()?.to_vec();
+        let start = fields.field()?;
+        let lock = fields.field()?;
+        let lock_identity = fields.field()?;
         let token = u64::from_le_bytes(fields.field()?.try_into().ok()?);
         fields.0.is_empty().then_some(Record {
             process: Process {

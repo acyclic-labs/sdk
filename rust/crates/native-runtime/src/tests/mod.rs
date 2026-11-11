@@ -11,6 +11,8 @@ mod admission;
 mod claim;
 mod completion;
 mod custody;
+#[cfg(windows)]
+mod device_control;
 mod namespace;
 mod native_allocation;
 mod positional;

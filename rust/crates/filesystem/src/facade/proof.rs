@@ -139,7 +139,6 @@ impl DependencyLedger {
         &self,
         dependencies: Vec<Dependency>,
         staged: &mut KernelOwnedAllocation,
-        maximum: u32,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
@@ -148,9 +147,7 @@ impl DependencyLedger {
         if proof.publication {
             return Err(FsError::Rebase(RebaseError::DependenciesChanged));
         }
-        let extension = proof
-            .dependencies
-            .prepare_observations(dependencies, maximum)?;
+        let extension = proof.dependencies.prepare_observations(dependencies)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
             let KernelOwnedAllocation::NativeOriginal(staged) = staged else {

@@ -63,7 +63,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     pub async fn paths_for_file_ids<W: crate::facade::FsWork>(
         &self,
         file_ids: impl IntoIterator<Item = FileId>,
-        maximum_entries: u32,
+        maximum_entries: Option<u32>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<FileIdentityPaths, WorkspaceError> {
@@ -82,7 +82,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     pub(super) async fn paths_for_file_ids_with_accounting(
         &self,
         file_ids: impl IntoIterator<Item = FileId>,
-        maximum_entries: u32,
+        maximum_entries: Option<u32>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileIdentityPaths, WorkspaceError> {
@@ -150,12 +150,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     pub(super) async fn namespace_records_with_accounting(
         &self,
         ids: &[FileId],
-        maximum_entries: u32,
+        maximum_entries: Option<u32>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,
     ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), WorkspaceError> {
         accounting.check()?;
-        if ids.is_empty() || maximum_entries == 0 {
+        if ids.is_empty() || maximum_entries == Some(0) {
             return Ok((
                 NamespaceRecordSearch {
                     records: NamespaceRecords::default(),

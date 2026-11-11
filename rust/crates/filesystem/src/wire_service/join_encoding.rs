@@ -3,9 +3,9 @@ fn join_plan_id(
     target: &wire::GenerationRef,
     base: &wire::GenerationRef,
     history: JoinHistory,
-    maximum_generations: u32,
-    maximum_changes: u32,
-    maximum_conflicts: u32,
+    maximum_generations: Option<u32>,
+    maximum_changes: Option<u32>,
+    maximum_conflicts: Option<u32>,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-fs-wire-join-plan-v2\0");
@@ -23,9 +23,12 @@ fn join_plan_id(
         hasher.update(&reference.generation_id);
     }
     hasher.update(&[join_history_code(history)]);
-    hasher.update(&maximum_generations.to_le_bytes());
-    hasher.update(&maximum_changes.to_le_bytes());
-    hasher.update(&maximum_conflicts.to_le_bytes());
+    for maximum in [maximum_generations, maximum_changes, maximum_conflicts] {
+        hasher.update(&[u8::from(maximum.is_some())]);
+        if let Some(maximum) = maximum {
+            hasher.update(&maximum.to_le_bytes());
+        }
+    }
     *hasher.finalize().as_bytes()
 }
 

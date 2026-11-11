@@ -146,10 +146,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         &self,
         from: &Generation<A, O>,
         to: &Generation<A, O>,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<ChangeSet<A, O>>, WorkspaceError> {
+        let maximum_changes = maximum_changes.into();
+
         if from.workspace.id != self.id
             || to.workspace.id != self.id
             || !self.volume.fs.same_deployment(&from.workspace.volume.fs)
@@ -175,9 +177,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             target: target.clone(),
             history: JoinHistory::Merge,
             git_metadata: false,
-            maximum_generations: 4_096,
-            maximum_changes: self.volume.config().limits.maximum_paths_per_batch,
-            maximum_conflicts: 1_024,
+            maximum_generations: None,
+            maximum_changes: None,
+            maximum_conflicts: None,
         }
     }
 
@@ -186,9 +188,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     pub async fn live_rebase<W: crate::facade::FsWork>(
         &self,
         idempotency_key: IdempotencyKey,
-        maximum_generations: u32,
-        maximum_changes: u32,
-        maximum_conflicts: u32,
+        maximum_generations: Option<u32>,
+        maximum_changes: Option<u32>,
+        maximum_conflicts: Option<u32>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<WorkspaceRebase<A, O>, WorkspaceError> {

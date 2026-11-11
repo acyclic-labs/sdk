@@ -7,7 +7,7 @@ async fn probe_limits_reject_oversized_dependencies_before_backend_work()
     let probe = AuthenticatedGenerationProbe::new(
         &store,
         ProbeLimits {
-            maximum_content_payload_bytes: 8,
+            maximum_content_payload_bytes: Some(8),
             maximum_directory_entries: 2,
             ..ProbeLimits::default()
         },
@@ -130,11 +130,11 @@ fn every_zero_probe_bound_is_rejected_before_cache_or_backend_access() {
             ..defaults
         },
         ProbeLimits {
-            maximum_extent_spans: 0,
+            maximum_extent_spans: Some(0),
             ..defaults
         },
         ProbeLimits {
-            maximum_content_payload_bytes: 0,
+            maximum_content_payload_bytes: Some(0),
             ..defaults
         },
         ProbeLimits {
@@ -171,7 +171,6 @@ async fn bounded_batch_capture_reuses_generation_and_record_frontiers()
     let captured = (probe.capture_many_async(
         generation,
         regions.clone(),
-        3,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ))
@@ -189,22 +188,6 @@ async fn bounded_batch_capture_reuses_generation_and_record_frontiers()
     assert!(captured.work.items_returned >= 3);
     assert!(captured.work.bytes_copied >= 3 * usize_to_u64(size_of::<Dependency>()));
 
-    let rejected_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let rejected = (rejected_probe.capture_many_async(
-        generation,
-        regions,
-        2,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .await
-    .err()
-    .ok_or("excessive batch unexpectedly succeeded")?;
-    assert!(matches!(
-        rejected.error,
-        AuthenticatedProbeError::TooManyRegions { maximum: 2 }
-    ));
-    assert_eq!(*rejected.work, WorkCounters::UNCHARGED);
     Ok(())
 }
 
@@ -231,7 +214,6 @@ async fn authenticated_batch_admits_dependency_copy_before_output_push()
     ] {
         let failure = (probe.capture_records_many_async(
             vec![(record, DependencyRegion::Metadata(file_id))],
-            1,
             budget,
             &cancellation,
         ))
@@ -250,7 +232,6 @@ async fn authenticated_batch_admits_dependency_copy_before_output_push()
     let copied = usize_to_u64(size_of::<Dependency>());
     let receipt = (probe.capture_records_many_async(
         vec![(record, DependencyRegion::Metadata(file_id))],
-        1,
         WorkBudget {
             bytes_copied: copied,
             items_returned: 1,
@@ -508,7 +489,6 @@ async fn original_probe_generation_caches_preserve_dependency_conflicts()
             expected,
         }],
         [],
-        1,
     )?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)

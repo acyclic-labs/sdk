@@ -58,7 +58,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await,
         )?;
         let (changed, _changed) =
-            io.sdk(changes.changed_paths(u32::MAX, io, io.cancellation()).await)?;
+            io.sdk(changes.changed_paths(None, io, io.cancellation()).await)?;
         let mut paths = vec![Vec::new(); roots.len()];
         let now = super::super::access::access_now()?;
         for change in changed {

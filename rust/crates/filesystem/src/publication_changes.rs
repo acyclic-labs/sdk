@@ -338,9 +338,8 @@ impl PublicationChanges {
         let origin = base.map_or(DeltaOrigin::Empty, |(_, root)| {
             DeltaOrigin::Generation(crate::GenerationId::from_root(root))
         });
-        let maximum = u32::try_from(accounting.remaining()?.items_examined).unwrap_or(u32::MAX);
         let paths =
-            crate::workspace::complete_changed_paths(endpoints, maximum, accounting, cancellation)
+            crate::workspace::complete_changed_paths(endpoints, None, accounting, cancellation)
                 .await
                 .map_err(change_error)?;
         let paths = Retained::from_owned(paths, accounting)?;

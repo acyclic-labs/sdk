@@ -37,9 +37,7 @@ pub struct ExtentCloneRequest {
     /// Inclusive destination start offset.
     pub destination_offset: u64,
     /// Maximum source sparse spans admitted in the clone plan.
-    pub maximum_spans: u32,
-    /// Maximum destination interval mutations admitted.
-    pub maximum_mutations: u32,
+    pub maximum_spans: Option<u32>,
 }
 
 /// Clones one logical sparse range without reading or copying content bytes.
@@ -88,10 +86,7 @@ pub(super) fn validate_request(
             .is_none()
     {
         Some(ExtentCloneError::RangeOverflow)
-    } else if request.maximum_spans == 0
-        || request.maximum_mutations < request.maximum_spans
-        || !limits.page_limits_valid(2)
-    {
+    } else if request.maximum_spans == Some(0) || !limits.page_limits_valid(2) {
         Some(ExtentCloneError::InvalidLimits)
     } else {
         None
