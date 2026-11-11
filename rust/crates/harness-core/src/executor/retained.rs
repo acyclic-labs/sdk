@@ -84,9 +84,9 @@ pub(crate) async fn retained_model_step<'a>(
     Option<crate::conversation::ContentHold<'a>>,
 )> {
     validate_journal(journal, io)?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         io.retain_owned(std::mem::size_of::<RetainedModelStep>() as u64)?;
     }
@@ -96,7 +96,6 @@ pub(crate) async fn retained_model_step<'a>(
     #[cfg(feature = "research")]
     let mut journal_cut = None;
     for record in records {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.charge(acyclic_fs::WorkCounters {
                 items_examined: 1,
@@ -182,18 +181,18 @@ pub(crate) async fn retained_model_step<'a>(
         admission,
         events,
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let hold = if stock_is_native(io) {
         super::payload::preparation_output(io, before, retained.logical_owned_bytes()?)?
     } else {
         None
     };
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let hold = None;
     Ok((retained, hold))
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl RetainedModelStep {
     fn logical_owned_bytes(&self) -> Result<u64> {
         use std::mem::size_of;

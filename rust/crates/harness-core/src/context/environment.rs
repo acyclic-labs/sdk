@@ -163,7 +163,7 @@ fn json_string_bytes(text: &str) -> u64 {
         .sum()
 }
 
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl From<crate::native_environment::CheckoutFacts> for EnvironmentFacts {
     fn from(facts: crate::native_environment::CheckoutFacts) -> Self {
         Self {

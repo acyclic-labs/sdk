@@ -1,6 +1,6 @@
 //! Typed resource and prompt operations over the same admitted protocol boundary.
 use super::{charge, error, rpc::check};
-use crate::{NativeWork, Result, wire::ErrorCode};
+use crate::{Result, wire::ErrorCode};
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
@@ -19,7 +19,11 @@ pub(crate) fn tool_result(value: Value) -> Result<rmcp::model::CallToolResult> {
 }
 
 /// Validates service input on the supplied work ledger.
-pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Result<()> {
+pub fn validate_params(
+    method: &str,
+    params: &Value,
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<()> {
     charge(work, 1, 0, 0)?;
     if !params.is_object() {
         return Err(error(
@@ -46,7 +50,10 @@ pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Re
     }
 }
 
-pub(crate) fn reject_tool_continuation(params: &Value, work: NativeWork<'_>) -> Result<()> {
+pub(crate) fn reject_tool_continuation(
+    params: &Value,
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<()> {
     for key in [
         "task",
         "requestState",
@@ -67,7 +74,11 @@ pub(crate) fn reject_tool_continuation(params: &Value, work: NativeWork<'_>) -> 
 }
 
 /// Validates protocol results using the maintained protocol library.
-pub fn validate_result(method: &str, value: Value, work: NativeWork<'_>) -> Result<Value> {
+pub fn validate_result(
+    method: &str,
+    value: Value,
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<Value> {
     match method {
         "resources/list" => check::<rmcp::model::ListResourcesResult>(&value, work),
         "resources/templates/list" => {

@@ -325,7 +325,7 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
     }
     let grants = crate::Capabilities::new([read, write, shell]);
     let scope = issuer.bootstrap_scope("full", &grants, None, &mut None)?;
-    #[cfg(feature = "native-execution")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let mut native = admitted.clone();

@@ -241,15 +241,15 @@ pub(super) fn demand_code(error: &crate::DemandError) -> Code {
         E::OriginalWorkPoisoned => Code::Internal,
         E::Work(_) | E::Allocation(_) => Code::ResourceExhausted,
         E::Io(error) => io_code(error),
-        #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         E::SourceWatchStartup(error) => super::native::startup_code(error),
-        #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         E::Observation(error) => super::native::watch_code(error),
-        #[cfg(feature = "native-mount")]
+        #[cfg(not(target_arch = "wasm32"))]
         E::Mount(error) => super::native::mount_code(error),
         #[cfg(all(
             any(target_os = "linux", target_os = "macos", windows),
-            any(feature = "native-mount", test)
+            any(not(target_arch = "wasm32"), test)
         ))]
         E::NativeMetadata(_) => Code::InvalidArgument,
     }

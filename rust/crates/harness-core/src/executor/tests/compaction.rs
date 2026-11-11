@@ -80,17 +80,10 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
             allowed()?,
         )?
         .with_max_output_tokens(1024)?;
-        #[cfg(feature = "filesystem")]
         let storage =
             crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
-        #[cfg(feature = "filesystem")]
         let journal = storage.journal();
-        #[cfg(feature = "filesystem")]
         let journal = journal.as_ref();
-        #[cfg(not(feature = "filesystem"))]
-        let journal = Journal::default();
-        #[cfg(not(feature = "filesystem"))]
-        let journal = &journal;
         let operation = OperationId::new();
         let source = crate::context::Context {
             messages: vec![ModelMessage {
@@ -142,19 +135,12 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
     for output_capacity in [Some(4096), None] {
-        #[cfg(feature = "filesystem")]
         let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
             crate::AgentId::new(),
             65_536,
         ))?;
-        #[cfg(feature = "filesystem")]
         let journal = storage.journal();
-        #[cfg(feature = "filesystem")]
         let journal = journal.as_ref();
-        #[cfg(not(feature = "filesystem"))]
-        let journal = Journal::default();
-        #[cfg(not(feature = "filesystem"))]
-        let journal = &journal;
         let (provider, _accounting_calls) =
             counted_model(65_536, None, [ScriptedTurn::Text("answer".into())], []);
         let provider = Arc::new(
@@ -260,7 +246,7 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
             requests[0].messages.last().map(|message| &message.content),
             Some(&ModelContent::Text("c".repeat(5_000)))
         );
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         assert_eq!(
             _trace
                 .iter()
@@ -280,19 +266,12 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
     for source in ["projected", "selected", "working"] {
-        #[cfg(feature = "filesystem")]
         let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
             AgentId::new(),
             65_536,
         ))?;
-        #[cfg(feature = "filesystem")]
         let journal = storage.journal();
-        #[cfg(feature = "filesystem")]
         let journal = journal.as_ref();
-        #[cfg(not(feature = "filesystem"))]
-        let journal = Journal::default();
-        #[cfg(not(feature = "filesystem"))]
-        let journal = &journal;
         let (provider, accounting_calls) = counted_model(32_768, None, [], []);
         let history = vec![
             ModelMessage {
@@ -393,7 +372,7 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
                 ..
             }
         )));
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         assert_eq!(
             _trace
                 .iter()
@@ -619,19 +598,11 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
             ..Limits::default()
         };
         let executor = base.clone().with_limits(limits);
-        #[cfg(feature = "filesystem")]
         let storage =
             crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
-        #[cfg(feature = "filesystem")]
         let (generation, _) = storage.list_private_directory("", None, None, 1).await?;
-        #[cfg(feature = "filesystem")]
         let journal = storage.journal();
-        #[cfg(feature = "filesystem")]
         let journal = journal.as_ref();
-        #[cfg(not(feature = "filesystem"))]
-        let journal = Journal::default();
-        #[cfg(not(feature = "filesystem"))]
-        let journal = &journal;
         let operation = OperationId::new();
         assert!(matches!(
             executor
@@ -648,13 +619,10 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
             Err(Error::Invalid(_))
         ));
         assert!(journal.replay(operation, 0, 1, None)?.await?.is_empty());
-        #[cfg(feature = "filesystem")]
         assert_eq!(
             storage.list_private_directory("", None, None, 1).await?.0,
             generation,
         );
-        #[cfg(not(feature = "filesystem"))]
-        assert!(journal.1.lock().unwrap().is_empty());
     }
     assert_eq!(accounting_calls.load(Ordering::SeqCst), 0);
     assert!(provider.requests().is_empty());
@@ -713,19 +681,12 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
         ToolRegistry::default(),
     )
     .with_max_output_tokens(1_024)?;
-    #[cfg(feature = "filesystem")]
     let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
         crate::AgentId::new(),
         65_536,
     ))?;
-    #[cfg(feature = "filesystem")]
     let journal = storage.journal();
-    #[cfg(feature = "filesystem")]
     let journal = journal.as_ref();
-    #[cfg(not(feature = "filesystem"))]
-    let journal = Journal::default();
-    #[cfg(not(feature = "filesystem"))]
-    let journal = &journal;
     let source = crate::context::Context {
         messages: vec![ModelMessage {
             role: ModelRole::User,
@@ -748,7 +709,7 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
             },
         );
     let summary = summary?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     assert_eq!(
         _preparations
             .iter()
@@ -788,17 +749,10 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
         ToolRegistry::default(),
     )
     .with_max_output_tokens(1024)?;
-    #[cfg(feature = "filesystem")]
     let storage =
         crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
-    #[cfg(feature = "filesystem")]
     let journal = storage.journal();
-    #[cfg(feature = "filesystem")]
     let journal = journal.as_ref();
-    #[cfg(not(feature = "filesystem"))]
-    let journal = Journal::default();
-    #[cfg(not(feature = "filesystem"))]
-    let journal = &journal;
     let operation = OperationId::new();
     let source = crate::context::Context {
         messages: vec![ModelMessage {

@@ -119,7 +119,6 @@ impl RequestContinuation {
         }
         let old_count = self.prepared.request.messages.len();
         let mut projection_nodes = self.prepared.projection_nodes.load(Ordering::Relaxed);
-        #[cfg(feature = "filesystem")]
         let old_inventory = (
             self.prepared.resident_payload,
             self.prepared.request.messages.capacity(),
@@ -133,7 +132,6 @@ impl RequestContinuation {
         if !same_limits {
             return PreparedModelRequest::encode_validated(request, limits, remaining, io);
         }
-        #[cfg(feature = "filesystem")]
         let resident_payload = Some(match old_inventory {
             (Some(bytes), capacity) => {
                 let added_slots = request
@@ -174,7 +172,6 @@ impl RequestContinuation {
             encoding,
             input,
             content_admission,
-            #[cfg(feature = "filesystem")]
             resident_payload,
         })
     }

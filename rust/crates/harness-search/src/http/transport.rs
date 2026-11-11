@@ -1,5 +1,5 @@
 use super::{MAXIMUM_RESPONSE_BYTES, transport_error};
-use crate::{NativeCustody, NativeWork, Result};
+use crate::Result;
 use http_body_util::{BodyExt as _, Full};
 use hyper_util::rt::TokioIo;
 use reqwest::{Url, header::HeaderValue};
@@ -10,7 +10,10 @@ pub(crate) mod socket;
 pub(crate) const HTTP_BUFFER_BYTES: usize = 32_768;
 
 /// Funds the bounded HTTP parser buffer and request/header copies before connecting.
-pub(crate) fn request_scratch(endpoint: &Url, work: NativeWork<'_>) -> Result<NativeCustody> {
+pub(crate) fn request_scratch(
+    endpoint: &Url,
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<acyclic_fs::NativeCustody> {
     let copies = endpoint
         .as_str()
         .len()
@@ -20,7 +23,7 @@ pub(crate) fn request_scratch(endpoint: &Url, work: NativeWork<'_>) -> Result<Na
         .checked_add(HTTP_BUFFER_BYTES + 1024)
         .ok_or_else(|| super::super::error(work, "HTTP request ownership overflow"))?;
     let held = crate::tool::edit::allocation(work, bytes)?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 8,
@@ -53,9 +56,9 @@ pub(super) async fn send(
     key: &HeaderValue,
     body: bytes::Bytes,
     tls: Option<&Arc<rustls::ClientConfig>>,
-    work: NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     failure: &mut Option<crate::Error>,
-) -> Result<(Vec<u8>, NativeCustody)> {
+) -> Result<(Vec<u8>, acyclic_fs::NativeCustody)> {
     let host = endpoint
         .host_str()
         .ok_or_else(|| super::super::error(work, "invalid search host"))?;
@@ -102,8 +105,8 @@ pub(super) async fn send(
 async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
     socket: I,
     request: http::Request<Full<bytes::Bytes>>,
-    work: NativeWork<'_>,
-) -> Result<(Vec<u8>, NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(Vec<u8>, acyclic_fs::NativeCustody)> {
     let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
         .max_buf_size(HTTP_BUFFER_BYTES)
         .handshake(TokioIo::new(socket))

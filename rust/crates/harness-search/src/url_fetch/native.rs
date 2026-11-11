@@ -48,7 +48,7 @@ impl UploadRecord for FetchResponse {
     }
 }
 
-#[cfg(feature = "search-http")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn response_bytes(response: &FetchResponse) -> Result<u64> {
     response
         .logical_owned_bytes()?

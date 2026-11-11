@@ -20,13 +20,10 @@ pub async fn load_canonical_checkpoint(
     let envelope =
         load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
     envelope.0.validate(limits, io)?;
-    #[cfg(feature = "filesystem")]
     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-    #[cfg(feature = "filesystem")]
     let _publication_hold;
     let publication =
         canonical_checkpoint_for_operation(journal, envelope.0.operation_id, limits, io).await?;
-    #[cfg(feature = "filesystem")]
     {
         _publication_hold = io
             .map(|io| io.guard_owned(io.owned_bytes()? - before))

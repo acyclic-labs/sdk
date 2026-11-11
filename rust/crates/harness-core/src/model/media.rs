@@ -159,11 +159,8 @@ impl NativeConfigurationBinding {
         runtime: Option<&crate::extension::ExtensionRuntime>,
         io: Option<&PreparationIo>,
     ) -> Result<(&'a crate::core::SchemaRegistry, [u8; 32])> {
-        #[cfg(feature = "filesystem")]
         let _hold;
-        #[cfg(feature = "filesystem")]
         let _bytes;
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             _bytes = io.encode(self, io.remaining()?.bytes_encoded, false)?;
             _hold = io.guard_owned(_bytes.len() as u64)?;
@@ -172,7 +169,6 @@ impl NativeConfigurationBinding {
         let admission = admission.ok_or_else(|| {
             Error::Unsupported("original task extension admission is unavailable".into())
         })?;
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             let _hold;
             let bytes = io.encode(

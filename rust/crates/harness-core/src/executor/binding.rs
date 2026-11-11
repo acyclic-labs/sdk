@@ -3,7 +3,7 @@ use super::*;
 impl StockExecution<'_> {
     pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
         self.verify_summary_destination()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if self.native_work().is_some()
             && let Some((context, expected_operation)) = self.context
         {
@@ -80,7 +80,7 @@ impl StockExecution<'_> {
             limits: Limits,
             tool_scope: (&'a crate::Capabilities, Limits),
             policy: Option<&'a ComponentIdentity>,
-            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             #[serde(skip_serializing_if = "Option::is_none")]
             tool_hooks: Option<(&'static str, &'a [u8; 32])>,
             inherited_prefix: Option<&'a FileRef>,
@@ -92,15 +92,15 @@ impl StockExecution<'_> {
         // Contracts and tool definitions are temporary digest inputs. Keep
         // their native custody on the original work, with a scope that also
         // releases partial preparation when a stage or encoder rejects.
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let temporary_io = self
             .io
             .and_then(PreparationIo::original_native_work)
             .map(PreparationIo::from_native_work)
             .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = temporary_io.as_ref().or(self.io);
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let io = self.io;
         let contracts = self.context_pipeline().contracts(io)?;
         // Live catalogs are turn inputs. Their original schemas and producer
@@ -136,11 +136,7 @@ impl StockExecution<'_> {
                     self.stock.tool_scope.limits(),
                 ),
                 policy: self.stock.policy_identity.as_ref(),
-                #[cfg(all(
-                    feature = "hooks",
-                    feature = "filesystem",
-                    not(target_arch = "wasm32")
-                ))]
+                #[cfg(not(target_arch = "wasm32"))]
                 tool_hooks: self
                     .stock
                     .hooks
@@ -167,9 +163,9 @@ impl StockExecution<'_> {
     ) -> Result<()> {
         self.verify_task_context_binding(input.operation_id)?;
 
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let _records_hold;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let records_before = self
             .io
             .map(PreparationIo::owned_bytes)
@@ -180,7 +176,7 @@ impl StockExecution<'_> {
                 matches!(event, ExecutionEvent::Started { .. })
             })
             .await?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             _records_hold = if let Some(io) = self.io.filter(|_| stock_is_native(self.io)) {
                 let bytes = io

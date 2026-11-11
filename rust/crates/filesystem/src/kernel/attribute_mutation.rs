@@ -423,6 +423,5 @@ pub enum AttributeMutationError {
 }
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "tests/attribute_mutation.rs"]
 mod tests;

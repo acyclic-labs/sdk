@@ -109,7 +109,6 @@ pub(super) fn check_preview(
         return Ok(());
     };
     let seed = crate::executor::json::JsonObject(std::marker::PhantomData::<SpillPreview<'_>>);
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let decoded = io.decode_seed(
             seed,
@@ -195,10 +194,8 @@ fn with_media<R>(
     io: Option<&crate::executor::PreparationIo>,
     emit: impl FnOnce(&MediaView<'_>) -> Result<R>,
 ) -> Result<R> {
-    #[cfg(feature = "filesystem")]
     let _hold;
     let bytes;
-    #[cfg(feature = "filesystem")]
     {
         bytes = if let Some(io) = io {
             io.encode(view, io.remaining()?.bytes_encoded, false)?
@@ -208,11 +205,6 @@ fn with_media<R>(
                 .into()
         };
         _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
-    }
-    #[cfg(not(feature = "filesystem"))]
-    {
-        let _ = io;
-        bytes = serde_json::to_vec(view).map_err(|error| Error::Invalid(error.to_string()))?;
     }
     let preview = std::str::from_utf8(&bytes)
         .map_err(|_| Error::tool_rejected("output preview encoding is not UTF-8"))?;
@@ -228,11 +220,9 @@ pub(crate) async fn spill(
     operation: OperationId,
     maximum: u64,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(Value, crate::NativeCustody)> {
-    #[cfg(feature = "filesystem")]
+) -> Result<(Value, acyclic_fs::NativeCustody)> {
     let _bytes_hold;
     let bytes;
-    #[cfg(feature = "filesystem")]
     let encoded = if let Some(io) = io {
         bytes = io.encode(projection, io.remaining()?.bytes_encoded, false)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
@@ -244,35 +234,27 @@ pub(crate) async fn spill(
         _bytes_hold = None;
         bytes.as_ref()
     };
-    #[cfg(not(feature = "filesystem"))]
-    let encoded = {
-        bytes =
-            serde_json::to_vec(projection).map_err(|error| Error::Invalid(error.to_string()))?;
-        bytes.as_slice()
-    };
-    #[cfg(feature = "filesystem")]
     let _path_hold;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let _file_hold;
     let (file, path, retained) = context.spill_tool_output(operation, encoded, io).await?;
-    #[cfg(feature = "filesystem")]
     {
         _path_hold = io
             .map(|io| io.guard_owned(path.capacity() as u64))
             .transpose()?;
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         _file_hold = io
             .filter(|io| io.original_native_work().is_some())
             .map(|io| io.take_native_custody(retained))
             .transpose()?;
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let _ = retained;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let work = io.and_then(crate::executor::PreparationIo::original_native_work);
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let work = None;
     let _version_hold;
     let (version, version_hold) = super::files::encode_version(&file, work)?;
@@ -296,8 +278,8 @@ fn render(
     source: SpillRef<'_>,
     maximum: u64,
     io: Option<&crate::executor::PreparationIo>,
-    work: crate::NativeWork<'_>,
-) -> Result<(Value, crate::NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(Value, acyclic_fs::NativeCustody)> {
     let text = std::str::from_utf8(encoded)
         .map_err(|_| Error::tool_rejected("tool projection is not UTF-8 JSON"))?;
     let empty = SpillView {
@@ -442,7 +424,7 @@ mod checks {
         }
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn spill_preview_keeps_original_credit_and_cancellation() -> Result<()> {
         let value = serde_json::json!({"kind":"parts","parts":[{

@@ -54,7 +54,7 @@ pub enum ToolPreparation {
 
 /// One admitted preparation future and its retained native result ownership.
 pub type ToolPreparationFuture<'a> =
-    crate::conversation::BoundedContentFuture<'a, (ToolPreparation, crate::NativeCustody)>;
+    crate::conversation::BoundedContentFuture<'a, (ToolPreparation, acyclic_fs::NativeCustody)>;
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
@@ -106,7 +106,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     fn canonical(
         &self,
         _invocation: &ToolInvocation,
-        _work: crate::NativeWork<'_>,
+        _work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Option<CanonicalInvocation>> {
         Ok(None)
     }
@@ -117,12 +117,12 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &'a self,
         _path: &'a str,
         _kind: ReadPathKind,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,
     )> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
@@ -133,7 +133,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         Err(Error::Unsupported("workspace read-path resolution is unavailable; recovery: bind the original workspace path resolver".into()))
     }
     /// Runs configured hooks inside this executor's selected, owner-fenced workspace.
-    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn run_hooks<'a>(
         &'a self,
         _configuration: (&'a crate::hooks::Hooks, [u8; 32]),
@@ -158,9 +158,9 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         _scope: Option<&crate::runtime::RuntimeScope>,
         _context: Option<&crate::runtime::ToolContext>,
         _invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
@@ -185,11 +185,10 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         _invocation: &'a ToolInvocation,
         _context: &'a crate::runtime::ToolContext,
         _grant: &'a acyclic_native_runtime::execution::ExecutionGrant,
-        work: crate::NativeWork<'a>,
+        work: acyclic_fs::NativeWork<'a>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let reason = "selected tool executor cannot enforce a physical grant; recovery: bind an executor that forwards the grant to its native launch";
-            #[cfg(feature = "filesystem")]
             if work.is_some() {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unsupported,
@@ -210,7 +209,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &'a self,
         _context: Option<&'a crate::runtime::ToolContext>,
         _invocation: &'a ToolInvocation,
-        _work: crate::NativeWork<'a>,
+        _work: acyclic_fs::NativeWork<'a>,
     ) -> Option<BoxFuture<'a, Result<()>>> {
         None
     }
@@ -223,7 +222,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &self,
         _invocation: &ToolInvocation,
         _context: Option<&crate::runtime::ToolContext>,
-        _work: crate::NativeWork<'_>,
+        _work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Option<Dispatch>> {
         Ok(None)
     }
@@ -249,7 +248,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &self,
         _invocation: &ToolInvocation,
         _context: Option<&crate::runtime::ToolContext>,
-        _work: crate::NativeWork<'_>,
+        _work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Option<BoxFuture<'static, Result<()>>>> {
         Ok(None)
     }
@@ -276,7 +275,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<Option<ToolResult>>>;
 
     /// Rejects an unaudited implementation before the caller constructs native invocation metadata or a future.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(
         &self,
         _work: &acyclic_fs::NativeMaterializationWork,
@@ -288,13 +287,19 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     }
 
     /// Executes the exact borrowed invocation on its original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_context<'a>(
         &'a self,
         _context: &'a crate::runtime::ToolContext,
         _invocation: &'a ToolInvocation,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (ToolResult, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "tool executor has no native execution producer",
@@ -304,14 +309,19 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// Observes the already-dispatched effect; never calls ordinary execution.
     /// The caller authenticates the complete invocation against its start record,
     /// as for portable reconciliation.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_context<'a>(
         &'a self,
         _context: &'a crate::runtime::ToolContext,
         _invocation: &'a ToolInvocation,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
-    {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (Option<ToolResult>, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "tool executor has no native reconciliation producer",

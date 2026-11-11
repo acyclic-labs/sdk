@@ -4,11 +4,11 @@ use super::{AtomicU64, Ordering, fence};
 pub(crate) struct NativeAllocationAccounting {
     pub(super) retired: AtomicU64,
     pub(super) non_native: AtomicU64,
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) view_completed: AtomicU64,
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) view_unused: AtomicU64,
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) view_failed: crate::sync::atomic::AtomicBool,
 }
 impl NativeAllocationAccounting {

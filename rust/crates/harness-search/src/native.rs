@@ -61,7 +61,7 @@ impl UploadRecord for SearchResponse {
     }
 }
 
-#[cfg(any(test, feature = "test-support", feature = "search-http"))]
+#[cfg(any(test, feature = "test-support", not(target_arch = "wasm32")))]
 pub(crate) fn response_bytes(response: &SearchResponse) -> Result<u64> {
     response
         .logical_owned_bytes()?

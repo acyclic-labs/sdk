@@ -39,14 +39,14 @@ mod generation_mutation;
 mod historical_evidence;
 mod list;
 mod live;
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod mark;
 mod merge;
 mod metadata;
 pub(crate) use metadata::read_file_metadata_with_accounting;
 mod references;
 pub(crate) use references::visit_object_references;
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use references::visit_record_references;
 mod mutation;
 mod namespace_path;
@@ -75,7 +75,7 @@ pub(crate) mod sort;
     test,
     feature = "test-support",
     feature = "fuzzing",
-    all(feature = "native-watch", not(target_arch = "wasm32"))
+    not(target_arch = "wasm32")
 ))]
 mod source_state;
 mod transfer;
@@ -103,7 +103,7 @@ pub(crate) use merge::{
     ContentMerge, MergeGenerationBorrowedRequest, merge_generation_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
 };
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
 pub(crate) use persistent_batch::{IndexedKey, sort_by_with_accounting, sort_indexed};
 pub(crate) use persistent_diff::{
@@ -137,7 +137,7 @@ pub use blob::{
     blob_page_id, build_blob, decode_blob_page, encode_blob_page, read_blob_range,
 };
 pub use checkpoint::{CheckpointError, CheckpointFailure, CheckpointRequest, build_checkpoint};
-#[cfg(feature = "s3-http")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use closure::prove_blob_closure_async;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
@@ -203,9 +203,9 @@ pub use historical_evidence::{
 };
 pub use list::{DirectoryPage, DirectoryReadError, DirectoryReadFailure, list_tree_entries};
 pub use live::{LiveMutationOutcome, LivePublicationObservation};
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use mark::MarkError;
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use mark::Marker;
 pub use merge::{
     MergeConflict, MergeConflictResolution, MergeConflictSide, MergeGenerationError,
@@ -229,7 +229,6 @@ pub(crate) use persistent_point::retire_allocation;
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes,
 };
-#[cfg(any(test, feature = "distributed"))]
 pub(crate) use publication::AuthorityActor;
 pub(crate) use publication::authority_actor;
 #[cfg(feature = "test-support")]
@@ -274,15 +273,11 @@ pub use retention::{
     RetentionCreated, RetentionCreatedError, RetentionKind, decode_retention_created,
     decode_workspace_deleted, encode_workspace_deleted, retention_authority_id,
 };
-#[cfg(all(
-    any(test, feature = "local"),
-    feature = "native-watch",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use source_state::decode_source_volume;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use source_state::source_authority_id;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use source_state::{
     DurableSourceMode, DurableSourceState, SourceFact, SourceInvalidation, decode_source_fact,
     encode_source_fact,

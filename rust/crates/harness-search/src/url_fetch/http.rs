@@ -3,12 +3,12 @@ use super::{
 };
 use crate::http::transport_error;
 use crate::tool::edit::{allocation, charge, reserve_string};
-use crate::{Error, NativeCustody, NativeWork, Result};
+use crate::{Error, Result};
 use acyclic_stream::BoxProviderFuture;
 use reqwest::Url;
 use std::sync::Arc;
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
 mod native_tests;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -39,16 +39,16 @@ impl HttpFetch {
     async fn run(
         &self,
         request: &FetchRequest,
-        work: NativeWork<'_>,
-    ) -> Result<(FetchResponse, NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(FetchResponse, acyclic_fs::NativeCustody)> {
         await_io(self.retrieve(request, work), work).await?
     }
 
     async fn retrieve(
         &self,
         request: &FetchRequest,
-        work: NativeWork<'_>,
-    ) -> Result<(FetchResponse, NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(FetchResponse, acyclic_fs::NativeCustody)> {
         let (mut endpoint, mut endpoint_held) = parse_url(&request.url, work)?;
         let original_origin = endpoint.origin();
         let explicitly_local = endpoint.host_str().is_some_and(|host| {
@@ -58,7 +58,7 @@ impl HttpFetch {
                 || host.eq_ignore_ascii_case("localhost")
         });
         for redirects in 0..=MAXIMUM_REDIRECTS {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = work {
                 work.admit(acyclic_fs::WorkCounters {
                     source_bytes_read: 1,
@@ -126,7 +126,7 @@ impl HttpFetch {
                         content_type,
                         content,
                     };
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     if let (Some(output), Some(input)) = (&mut output_held, &mut held) {
                         output.absorb(input)?;
                         output.resize(super::response_bytes(&response)?)?;
@@ -140,7 +140,7 @@ impl HttpFetch {
     }
 }
 
-fn copy_text(text: &str, held: &mut NativeCustody) -> Result<String> {
+fn copy_text(text: &str, held: &mut acyclic_fs::NativeCustody) -> Result<String> {
     let mut output = String::new();
     reserve_string(held, &mut output, text.len())?;
     charge(held, text.len() as u64, 1)?;
@@ -148,10 +148,13 @@ fn copy_text(text: &str, held: &mut NativeCustody) -> Result<String> {
     Ok(output)
 }
 
-fn url_allocation(length: usize, work: NativeWork<'_>) -> Result<NativeCustody> {
+fn url_allocation(
+    length: usize,
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<acyclic_fs::NativeCustody> {
     // Fund the URL serializer's old/replacement text and host representation while parsing.
     let held = allocation(work, length * 4 + std::mem::size_of::<Url>() + 128)?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: u64::from(usize::BITS - length.leading_zeros()) + 2,
@@ -161,8 +164,11 @@ fn url_allocation(length: usize, work: NativeWork<'_>) -> Result<NativeCustody> 
     Ok(held)
 }
 
-fn parse_url(text: &str, work: NativeWork<'_>) -> Result<(Url, NativeCustody)> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn parse_url(
+    text: &str,
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(Url, acyclic_fs::NativeCustody)> {
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
             items_examined: text.len() as u64,
@@ -177,11 +183,11 @@ fn parse_url(text: &str, work: NativeWork<'_>) -> Result<(Url, NativeCustody)> {
     Ok((endpoint, held))
 }
 
-pub(super) fn validate_url(text: &str, work: NativeWork<'_>) -> Result<()> {
+pub(super) fn validate_url(text: &str, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
     parse_url(text, work).map(|_| ())
 }
 
-fn validate_endpoint(endpoint: &Url, work: NativeWork<'_>) -> Result<()> {
+fn validate_endpoint(endpoint: &Url, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
     validate_url_text(endpoint.as_str(), work)?;
     if !matches!(endpoint.scheme(), "http" | "https")
         || endpoint.host_str().is_none()
@@ -199,7 +205,7 @@ fn validate_endpoint(endpoint: &Url, work: NativeWork<'_>) -> Result<()> {
 // A URL explicitly supplied by the caller may name a local service. Redirects
 // within that origin retain the same authority; redirects must not introduce a
 // different local service. Resolved addresses are checked again before connect.
-fn validate_redirect_host(endpoint: &Url, work: NativeWork<'_>) -> Result<()> {
+fn validate_redirect_host(endpoint: &Url, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
     let unsafe_host = match endpoint.host_str() {
         Some(host) => {
             if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
@@ -252,8 +258,8 @@ fn public_address(ip: std::net::IpAddr) -> bool {
     }
 }
 
-async fn await_io<F: Future>(future: F, work: NativeWork<'_>) -> Result<F::Output> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+async fn await_io<F: Future>(future: F, work: acyclic_fs::NativeWork<'_>) -> Result<F::Output> {
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         work.remaining()?;
         return tokio::select! {
@@ -274,19 +280,25 @@ impl FetchProvider for HttpFetch {
         Box::pin(async move { self.run(request, None).await.map(|result| result.0) })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_fetch(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;
         Ok(true)
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn fetch_with_native_work<'a>(
         &'a self,
         request: &'a FetchRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (FetchResponse, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (FetchResponse, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let (response, held) = self.run(request, Some(work)).await?;
             Ok((
                 response,

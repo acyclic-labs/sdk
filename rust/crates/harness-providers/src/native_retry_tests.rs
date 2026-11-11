@@ -1,7 +1,6 @@
 //! Every native retry, for generation and counting, funds its timer on the issued ledger.
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-use acyclic_harness_core::NativeFutureBundle;
 use proptest::prelude::*;
 use std::{
     future::Future as _,
@@ -51,7 +50,7 @@ impl HttpTransport for RetryTransport {
         &self,
         wait: Duration,
         work: &NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'static, ()>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
         self.native.fetch_add(1, Ordering::SeqCst);
         if self.reject_timer {
             return Err(Error::NativeBoundary {
@@ -75,8 +74,8 @@ impl HttpTransport for RetryTransport {
         &'a self,
         request: HttpRequest,
         work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
-        NativeFutureBundle::new(work, || async move {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let attempt = self.sent.fetch_add(1, Ordering::SeqCst);
             {
                 let mut original = self.body.lock().unwrap();

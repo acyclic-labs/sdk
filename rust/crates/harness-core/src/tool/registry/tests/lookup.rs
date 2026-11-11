@@ -17,8 +17,7 @@ proptest! {
         }
     }
 
-    #[cfg(feature = "filesystem")]
-    #[test]
+        #[test]
     fn funded_resolution_preserves_limits_and_charges(
         name in "[a-z]{1,32}", revision in "[a-z]{1,32}",
         form in 0u8..3, missing in any::<bool>(), allowance in 0u64..128,
@@ -90,7 +89,6 @@ fn resolution_with_tracing() -> Result<()> {
     resolution_needs_no_temporary_key(1)
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn resolution_with_accounting() -> Result<()> {
     resolution_needs_no_temporary_key(2)
@@ -128,20 +126,15 @@ fn resolution_needs_no_temporary_key(mode: u8) -> Result<()> {
             // Observe both the first lookup and its warmed repeat. Allocation
             // counts are exact; repeating a timing benchmark adds no coverage.
             for _ in 0..2 {
-                #[cfg(feature = "filesystem")]
                 let cancellation = acyclic_fs::CancellationToken::new();
-                #[cfg(feature = "filesystem")]
                 let work = acyclic_fs::NativeMaterializationWork::new(
                     acyclic_fs::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
                 .map_err(|(cause, _)| cause)?;
-                #[cfg(feature = "filesystem")]
                 let io = (mode == 2)
                     .then(|| crate::filesystem::PreparationIo::from_native_work(&work))
                     .transpose()?;
-                #[cfg(not(feature = "filesystem"))]
-                let io = None;
                 let mut error = None;
                 let allocation = acyclic_test_support::measure(|| {
                     match registry.get(std::hint::black_box(name), revision, io.as_ref()) {

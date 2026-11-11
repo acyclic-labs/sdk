@@ -4,9 +4,7 @@
 use super::*;
 
 pub(crate) struct Volume {
-    #[cfg(any(test, feature = "distributed"))]
     pub(crate) journal: tokio::sync::Mutex<crate::distributed::actor::Journal>,
-    #[cfg(any(test, feature = "distributed"))]
     pub(crate) revision: std::sync::atomic::AtomicU64,
     state: Mutex<VolumeState>,
     pub(super) registration: std::sync::OnceLock<registry::Registration>,
@@ -59,18 +57,12 @@ impl Volume {
         &self,
         request: PublishGenerationRequest,
     ) -> Option<(Head, ObjectId)> {
-        #[cfg(any(test, feature = "distributed"))]
         {
             self.journal
                 .try_lock()
                 .ok()?
                 .writable()?
                 .publication_root(request)
-        }
-        #[cfg(not(any(test, feature = "distributed")))]
-        {
-            let _ = request;
-            None
         }
     }
 
@@ -79,9 +71,7 @@ impl Volume {
     ) -> Result<RetainedArc<Self>, crate::FsError> {
         RetainedArc::new(
             Self {
-                #[cfg(any(test, feature = "distributed"))]
                 journal: tokio::sync::Mutex::new(crate::distributed::actor::Journal::Vacant),
-                #[cfg(any(test, feature = "distributed"))]
                 revision: std::sync::atomic::AtomicU64::new(0),
                 state: Mutex::new(VolumeState {
                     active: RetainedWeak::default(),

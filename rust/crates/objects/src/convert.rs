@@ -1,11 +1,11 @@
 //! Exact conversions between the public Rust types and their wire messages.
-#[cfg(objects_server)]
+
 use crate::Part;
 use crate::blob::invalid;
 use crate::{
     ByteRange, Collection, Delete, Digest, Error, Head, Kind, Manifest, Page, Put, Verified, wire,
 };
-#[cfg(objects_client)]
+
 use crate::{Retained, Usage};
 
 impl From<Digest> for wire::Digest {
@@ -28,7 +28,6 @@ pub(crate) fn wire_digests(values: &[Digest]) -> Vec<wire::Digest> {
     values.iter().copied().map(Into::into).collect()
 }
 
-#[cfg(objects_client)]
 pub(crate) fn range(range: ByteRange) -> wire::ByteRange {
     wire::ByteRange {
         start: range.start,
@@ -36,7 +35,6 @@ pub(crate) fn range(range: ByteRange) -> wire::ByteRange {
     }
 }
 
-#[cfg(objects_server)]
 pub(crate) fn from_range(range: Option<&wire::ByteRange>) -> ByteRange {
     range.map_or(ByteRange::FULL, |range| ByteRange {
         start: range.start,
@@ -44,7 +42,6 @@ pub(crate) fn from_range(range: Option<&wire::ByteRange>) -> ByteRange {
     })
 }
 
-#[cfg(objects_client)]
 pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {
     wire::Manifest {
         parts: manifest
@@ -59,7 +56,6 @@ pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {
     }
 }
 
-#[cfg(objects_server)]
 pub(crate) fn from_manifest(manifest: Option<&wire::Manifest>) -> Result<Manifest, Error> {
     let manifest = manifest.ok_or_else(invalid)?;
     Ok(Manifest {
@@ -108,7 +104,6 @@ pub(crate) fn put(value: &wire::PutResponse) -> Result<Put, Error> {
     }
 }
 
-#[cfg(objects_server)]
 pub(crate) fn wire_put(value: &Put) -> wire::PutResponse {
     use wire::put_response::Outcome;
     wire::PutResponse {
@@ -134,7 +129,6 @@ pub(crate) fn head(value: &wire::BlobInfo) -> Result<Head, Error> {
     })
 }
 
-#[cfg(objects_server)]
 pub(crate) fn wire_head(value: &Head) -> wire::BlobInfo {
     wire::BlobInfo {
         digest: Some(value.digest.into()),
@@ -164,7 +158,6 @@ pub(crate) fn delete(value: &wire::DeleteBlobResponse) -> Result<crate::Deletion
     })
 }
 
-#[cfg(objects_server)]
 pub(crate) fn wire_delete(value: crate::Deletion) -> wire::DeleteBlobResponse {
     wire::DeleteBlobResponse {
         status: match value.outcome {
@@ -196,7 +189,6 @@ pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
     Ok(page)
 }
 
-#[cfg(objects_server)]
 pub(crate) fn wire_page(value: &Page) -> wire::ListBlobsResponse {
     wire::ListBlobsResponse {
         digests: wire_digests(&value.digests),
@@ -204,7 +196,6 @@ pub(crate) fn wire_page(value: &Page) -> wire::ListBlobsResponse {
     }
 }
 
-#[cfg(objects_client)]
 pub(crate) fn retained(value: &wire::RetainResponse) -> Retained {
     Retained {
         references: value.references,
@@ -212,7 +203,6 @@ pub(crate) fn retained(value: &wire::RetainResponse) -> Retained {
     }
 }
 
-#[cfg(objects_client)]
 pub(crate) fn collection(value: &wire::CollectResponse) -> Collection {
     Collection {
         epoch: value.epoch,
@@ -223,7 +213,6 @@ pub(crate) fn collection(value: &wire::CollectResponse) -> Collection {
     }
 }
 
-#[cfg(objects_server)]
 pub(crate) fn wire_collection(value: &Collection) -> wire::CollectResponse {
     wire::CollectResponse {
         epoch: value.epoch,
@@ -233,7 +222,6 @@ pub(crate) fn wire_collection(value: &Collection) -> wire::CollectResponse {
     }
 }
 
-#[cfg(objects_client)]
 pub(crate) fn usage(value: &wire::UsageResponse) -> Usage {
     Usage {
         blobs: value.blobs,
@@ -281,7 +269,7 @@ pub(crate) fn verified_put(
 }
 
 /// One put batch's request, and the acknowledgement each member must carry.
-#[cfg(objects_client)]
+
 pub(crate) fn put_blobs(
     requests: Vec<(crate::Sealed, Vec<Digest>)>,
 ) -> (wire::PutBlobsRequest, Vec<(Digest, u64)>) {

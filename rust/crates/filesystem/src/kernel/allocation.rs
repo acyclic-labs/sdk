@@ -894,5 +894,5 @@ impl AllocationError {
 #[path = "tests/allocation.rs"]
 mod tests;
 
-#[cfg(all(test, feature = "memory", not(loom)))]
+#[cfg(all(test, not(loom)))]
 mod snapshot_tests;

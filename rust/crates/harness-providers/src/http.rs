@@ -15,7 +15,7 @@ mod refusal_tests;
 pub(crate) fn send<'a>(
     transport: &'a dyn HttpTransport,
     request: HttpRequest,
-    work: acyclic_harness_core::NativeWork<'a>,
+    work: acyclic_fs::NativeWork<'a>,
 ) -> Result<
     impl std::future::Future<Output = Result<HttpResponse>> + acyclic_stream::ProviderTask + 'a,
 > {
@@ -193,8 +193,8 @@ impl HttpTransport for ReqwestTransport {
         &self,
         duration: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
-        acyclic_harness_core::NativeFutureBundle::new(work, move || async move {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, move || async move {
             tokio::time::sleep(duration).await;
             Ok(())
         })
@@ -211,7 +211,7 @@ impl HttpTransport for ReqwestTransport {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
-        acyclic_harness_core::NativeFutureBundle::new(work, || self.exchange(request, Some(work)))
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || self.exchange(request, Some(work)))
     }
 }

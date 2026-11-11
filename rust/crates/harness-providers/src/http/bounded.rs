@@ -1,15 +1,15 @@
 //! One admitted body reader for bounded JSON exchanges.
-use acyclic_harness_core::{Error, NativeWork, Result};
+use acyclic_harness_core::{Error, Result};
 use futures::StreamExt as _;
 use zeroize::Zeroizing;
 
 pub(crate) struct Body {
     pub bytes: Zeroizing<Vec<u8>>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub custody: acyclic_harness_core::NativeCustody,
+    pub custody: acyclic_fs::NativeCustody,
 }
 
-fn boundary(work: NativeWork<'_>, reason: &'static str) -> Error {
+fn boundary(work: acyclic_fs::NativeWork<'_>, reason: &'static str) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     if work.is_some() {
         return Error::NativeBoundary {
@@ -24,7 +24,7 @@ fn boundary(work: NativeWork<'_>, reason: &'static str) -> Error {
 pub(crate) async fn read(
     mut body: acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes>>,
     maximum: impl Into<Option<usize>>,
-    work: NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<Body> {
     let maximum = maximum.into();
     #[cfg(not(target_arch = "wasm32"))]

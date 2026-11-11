@@ -364,8 +364,8 @@ impl crate::tool::ToolApprovalVerifier for PublicationDecision {
         operation: crate::OperationId,
         digest: [u8; 32],
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
+    ) -> crate::Result<acyclic_fs::NativeFutureBundle<'a, (), crate::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             if self.approved
                 && id == self.id
                 && operation == self.operation

@@ -5,16 +5,16 @@ pub(super) struct Window {
     pub source: FileReadSource,
     pub bytes: acyclic_stream::OwnedBytes,
     // The source must be dropped before the credit that owns it.
-    _hold: crate::NativeCustody,
+    _hold: acyclic_fs::NativeCustody,
 }
 
 pub(super) fn custody(
     io: Option<&crate::executor::PreparationIo>,
     retained: u64,
-) -> Result<crate::NativeCustody> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+) -> Result<acyclic_fs::NativeCustody> {
+    #[cfg(not(target_arch = "wasm32"))]
     return io.map(|io| io.take_native_custody(retained)).transpose();
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     {
         let _ = (io, retained);
         Ok(None)
@@ -27,7 +27,7 @@ impl Window {
         input: &ReadFileInput,
         original: super::source::ReadSource,
         range: acyclic_fs::ByteRange,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
         let original = match original.source {
@@ -77,7 +77,7 @@ impl Window {
         context: &ToolContext,
         path: &str,
         range: acyclic_fs::ByteRange,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         match &self.source {

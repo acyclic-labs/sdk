@@ -157,7 +157,7 @@ async fn recovery_failure(
 async fn http_failure(
     response: HttpResponse,
     maximum: impl Into<Option<usize>>,
-    work: acyclic_harness_core::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     let mut custody = match work
@@ -184,7 +184,7 @@ async fn http_failure(
 async fn read_http_failure(
     response: HttpResponse,
     maximum: impl Into<Option<usize>>,
-    work: acyclic_harness_core::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Error {
     use futures::StreamExt as _;
     let HttpResponse {

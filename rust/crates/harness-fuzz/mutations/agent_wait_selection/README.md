@@ -9,7 +9,7 @@ shared primitive calls; it does not model them or bound hash-table collision pro
 Run the retained property with:
 
 ```sh
-cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib tools::agents::selection_checks::tests::recorded_waits_and_derived_selections_preserve_identity_order_and_work -- --exact
+cargo test --locked -p acyclic-harness-core --features test-support --lib tools::agents::selection_checks::tests::recorded_waits_and_derived_selections_preserve_identity_order_and_work -- --exact
 ```
 
 Apply each patch separately, run that command, then reverse the patch:

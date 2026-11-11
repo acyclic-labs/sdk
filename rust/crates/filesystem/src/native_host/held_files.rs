@@ -2,9 +2,9 @@
 //! to a held directory handle, so replacing the root's path never redirects
 //! one.
 use super::*;
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use std::io::Write as _;
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use std::path::PathBuf;
 
 /// The completion guarantee for a held-root namespace operation.
@@ -21,13 +21,13 @@ pub enum NativeDurability {
 }
 
 /// Two immutable records returned after their shared namespace barrier.
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub type PublishedPair<const A: usize, const B: usize> = ([u8; A], [u8; B]);
 
 #[cfg(test)]
 #[cfg(all(target_os = "linux", loom))]
 pub(crate) mod models;
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod record;
 
 impl HostRoot {
@@ -35,7 +35,7 @@ impl HostRoot {
     /// before either record escapes. Publishers flush each file before its
     /// rename, so one directory barrier settles both names, including names
     /// left by a publisher that died immediately after renaming.
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn read_published_pair<const A: usize, const B: usize, W>(
         &self,
         first: &Path,
@@ -68,7 +68,7 @@ impl HostRoot {
         Ok(Some(records))
     }
 
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn remove_record_file<W: NativeHostWork>(
         &self,
         leaf: &Path,
@@ -84,7 +84,7 @@ impl HostRoot {
 
     /// Publishes variable-length immutable bytes using the same held-directory
     /// transaction as incarnation records. Existing bytes must agree exactly.
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn publish_immutable<W: NativeHostWork<Error = DemandError>>(
         &self,
         leaf: &Path,
@@ -162,7 +162,7 @@ impl HostRoot {
         Ok(Self::from_parts(directory, identity))
     }
 
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn open_record_file<W: NativeHostWork>(
         &self,
         leaf: &Path,
@@ -276,7 +276,7 @@ impl HostRoot {
     /// a unique temporary leaf, syncs it, renames it into place without replacement
     /// and syncs the directory: a kill at any step leaves no record or the
     /// complete one, and concurrent publishers all return the one that won.
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn read_or_publish<const N: usize, W: NativeHostWork<Error = DemandError>>(
         &self,
         leaf: &Path,
@@ -322,7 +322,7 @@ impl HostRoot {
 #[cfg(test)]
 mod pair_tests;
 
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn read_record<const N: usize, W: NativeHostWork<Error = DemandError>>(
     directory: &Dir,
     leaf: &Path,
@@ -336,7 +336,7 @@ fn read_record<const N: usize, W: NativeHostWork<Error = DemandError>>(
     record::read(&mut file).map_err(Into::into)
 }
 
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn publish_record<W: NativeHostWork<Error = DemandError>>(
     root: &HostRoot,
     temporary: &Path,
@@ -397,7 +397,7 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
     result
 }
 
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn rename_no_replace<W: NativeHostWork>(
     directory: &Dir,
     from: &Path,
@@ -505,7 +505,7 @@ pub(crate) mod publish_probe {
     /// Run one synchronous original publication with thread-local probes.
     #[cfg(all(
         feature = "test-support",
-        feature = "native-mount",
+        not(target_arch = "wasm32"),
         target_os = "linux"
     ))]
     pub(super) fn scoped<R>(
@@ -550,7 +550,7 @@ pub(crate) mod publish_probe {
 /// Scoped access to the original held-root publication fault hooks.
 #[cfg(all(
     feature = "test-support",
-    feature = "native-mount",
+    not(target_arch = "wasm32"),
     target_os = "linux"
 ))]
 pub mod publication_test_support {

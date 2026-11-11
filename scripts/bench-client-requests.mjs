@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 
 export const cargoArgs = [
   "test", "--locked", "-p", "acyclic-objects", "-p", "acyclic-stream",
-  "--lib", "--features", "acyclic-objects/http,acyclic-stream/http",
+  "--lib",
   "request_path_measure", "--", "--ignored", "--nocapture", "--test-threads=1",
 ];
 

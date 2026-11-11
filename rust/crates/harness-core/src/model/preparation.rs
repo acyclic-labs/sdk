@@ -5,16 +5,13 @@ use crate::{
     wire_codec::CodecQuota,
 };
 
-#[cfg(feature = "filesystem")]
 pub(crate) const MODEL_DIAGNOSTIC_LABEL_BYTES: u64 =
     crate::executor::json::preparation_serde_diagnostic_label_bytes() + 84;
-#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ModelPrefix {
     fn diagnostic_label_bytes() -> u64 {
         MODEL_DIAGNOSTIC_LABEL_BYTES
     }
 }
-#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolResultContent {
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         self.logical_owned_bytes().map(Some)
@@ -26,7 +23,6 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
         crate::executor::json::JsonValueSchema::ToolResultContent
     }
 }
-#[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 {
         MODEL_DIAGNOSTIC_LABEL_BYTES
@@ -42,7 +38,6 @@ impl crate::filesystem::UploadRecord for ToolResultContent {
 pub(crate) fn vec_with_capacity<T>(capacity: usize, io: Option<&PreparationIo>) -> Result<Vec<T>> {
     let mut values = Vec::new();
     let bytes = slots(capacity, std::mem::size_of::<T>())?;
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = io.original_native_work() {
@@ -61,7 +56,6 @@ pub(crate) fn vec_with_capacity<T>(capacity: usize, io: Option<&PreparationIo>) 
     values
         .try_reserve_exact(capacity)
         .map_err(Error::Allocation)?;
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.retain_owned(
             slots(values.capacity(), std::mem::size_of::<T>())?
@@ -73,7 +67,6 @@ pub(crate) fn vec_with_capacity<T>(capacity: usize, io: Option<&PreparationIo>) 
 }
 
 pub(crate) fn charge_items(io: Option<&PreparationIo>, items: u64) -> Result<()> {
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let charge = acyclic_fs::WorkCounters {
             items_examined: items,
@@ -92,7 +85,7 @@ pub(super) fn history_step(work: &mut Option<&mut dyn HistoryIo>, items: u64) ->
     Ok(())
 }
 pub(super) fn invalid(work: &mut Option<&mut dyn HistoryIo>, reason: &'static str) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if work
         .as_deref()
         .is_some_and(|work| work.original_native_work().is_some())
@@ -112,10 +105,7 @@ pub(super) fn invalid(work: &mut Option<&mut dyn HistoryIo>, reason: &'static st
 }
 fn inspect_value(value: &Value, maximum: u64, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
     if let Some(observer) = work.as_deref_mut() {
-        #[cfg(feature = "filesystem")]
         let maximum_items = observer.remaining()?.items_examined;
-        #[cfg(not(feature = "filesystem"))]
-        let maximum_items = u64::MAX;
         crate::executor::json::json_owned_value_shape_bounded(
             value,
             crate::executor::json::JsonBounds {
@@ -177,17 +167,14 @@ pub(super) fn result_bound(
 pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&PreparationIo>) -> Result<[u8; 32]> {
     #[cfg(not(target_arch = "wasm32"))]
     let _span = tracing::debug_span!("acyclic.harness.request.hash", bytes = bytes.len()).entered();
-    #[cfg(feature = "filesystem")]
     let charge = acyclic_fs::WorkCounters {
         bytes_hashed: bytes.len() as u64,
         ..Default::default()
     };
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.preflight(charge)?;
     }
     let digest = *blake3::hash(bytes).as_bytes();
-    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.charge(charge)?;
     }
@@ -393,11 +380,7 @@ pub(crate) fn clone_messages(
     messages: &[ModelMessage],
     io: Option<&PreparationIo>,
 ) -> Result<Vec<ModelMessage>> {
-    #[cfg(all(
-        any(test, feature = "test-support"),
-        feature = "filesystem",
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
     acyclic_differential::record(("clone request messages", messages.len() as u64));
     #[cfg(not(target_arch = "wasm32"))]
     let _span = tracing::debug_span!("acyclic.harness.context.clone_messages").entered();
