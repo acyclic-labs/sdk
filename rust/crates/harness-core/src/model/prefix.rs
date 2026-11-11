@@ -169,14 +169,9 @@ impl PreparedModelRequest {
                 ));
             }
 
-            let (bytes, hold) = crate::conversation::verified_content_bytes(
-                verifier,
-                &reference,
-                reference.descriptor().byte_length(),
-                None,
-                io,
-            )
-            .await?;
+            let (bytes, hold) =
+                crate::conversation::verified_content_bytes(verifier, &reference, None, None, io)
+                    .await?;
             let _bytes_hold = hold;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
