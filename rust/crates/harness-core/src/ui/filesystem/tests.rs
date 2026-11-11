@@ -1,13 +1,14 @@
 use super::*;
 use crate::agent::{AgentId, AgentPath, AgentRecord, Phase, StatusRecord};
 use crate::ui::{Children, Result as UiResult};
+use acyclic_fs::kernel::allocation::AllocationLedger;
 use acyclic_fs::{
     CancellationToken, Fs, IdempotencyKey, LazyWorkspace, Lifecycle, MemoryLazyWorkspaceStore,
     NativeMaterializationWork, OperationId, PublicationPermit, VolumeConfig, VolumeInitialization,
     VolumeLimits, WorkBudget,
 };
 use acyclic_stream::{
-    AppendRequest, ChildrenPageRequest, MemoryStream, ReadRequest, StreamPath,
+    AppendRequest, ChildrenPageRequest, MemoryStream, ReadRequest, StreamPath, StreamProvider,
     StreamProviderExt as _,
 };
 use futures::StreamExt;
