@@ -30,7 +30,7 @@ impl Shared {
     }
     fn serve_packet(&self) {
         // Declared before read/work guards: completion wakes may re-enter them.
-        let _completion = self.delivery.wide_delivery_batch();
+        let mut completion = self.delivery.wide_delivery_batch();
         // A stale packet for a watch with no retirement left to resume.
         if self.stopping.load(Ordering::Acquire) && !self.resumes_retirement() {
             return;
@@ -62,7 +62,7 @@ impl Shared {
             return;
         }
         let mut work = self.delivery.callback_work();
-        if let Err(error) = self.drain(&mut reads, false, &mut work) {
+        if let Err(error) = self.drain(&mut reads, false, &mut work, &mut completion) {
             reads.blocked = true;
             self.delivery.failed_with_work(error, &mut work);
         }
@@ -181,6 +181,7 @@ impl Shared {
         reads: &mut Reads,
         fence: bool,
         work: &mut W,
+        completion: &mut super::super::delivery::WideDeliveryBatch<'_>,
     ) -> Result<bool, DemandError> {
         loop {
             work.check()?;
@@ -193,8 +194,7 @@ impl Shared {
                 if !reads.pending && self.grow(reads, work)? {
                     self.reissue(reads, work)?;
                 }
-                self.delivery
-                    .deliver_wide(&[HostChangeWide::Everything], work)?;
+                completion.deliver(&[HostChangeWide::Everything], work)?;
                 reads.loss = false;
             }
             while reads.cursor < reads.filled {
@@ -214,8 +214,7 @@ impl Shared {
                     .get(reads.cursor..)
                     .and_then(|record| notification(record, self.extended.load(Ordering::Acquire)))
                 else {
-                    self.delivery
-                        .deliver_wide(&[HostChangeWide::Everything], work)?;
+                    completion.deliver(&[HostChangeWide::Everything], work)?;
                     reads.cursor = reads.filled;
                     break;
                 };
@@ -238,10 +237,9 @@ impl Shared {
                             file,
                         },
                     ];
-                    self.delivery.deliver_wide(&pair, work)?;
+                    completion.deliver(&pair, work)?;
                 } else {
-                    self.delivery
-                        .deliver_wide(&[HostChangeWide::Path { action, path, file }], work)?;
+                    completion.deliver(&[HostChangeWide::Path { action, path, file }], work)?;
                 }
                 let consumed = paired.map_or(
                     next,
@@ -396,7 +394,7 @@ impl NativeSourceWatch {
         &self,
         work: &mut W,
     ) -> Result<bool, DemandError> {
-        let _completion = self.shared.delivery.wide_delivery_batch();
+        let mut completion = self.shared.delivery.wide_delivery_batch();
         work.check()?;
         if self.shared.stopping.load(Ordering::Acquire) {
             return Err(io::Error::from(io::ErrorKind::BrokenPipe).into());
@@ -405,27 +403,21 @@ impl NativeSourceWatch {
         // The hub collects every completion, so it cannot wait for one; a
         // fence from its callbacks reports everything instead.
         if hub::serving() {
-            self.shared
-                .delivery
-                .deliver_wide(&[HostChangeWide::Everything], work)?;
+            completion.deliver(&[HostChangeWide::Everything], work)?;
             return Ok(false);
         }
         let mut reads = self.shared.lock_reads();
         let result = self
             .shared
             .collect(&mut reads, work)
-            .and_then(|()| self.shared.drain(&mut reads, true, work));
+            .and_then(|()| self.shared.drain(&mut reads, true, work, &mut completion));
         reads.blocked = !matches!(result, Ok(true));
         drop(reads);
         if matches!(result, Ok(false)) {
-            self.shared
-                .delivery
-                .deliver_wide(&[HostChangeWide::Everything], work)?;
+            completion.deliver(&[HostChangeWide::Everything], work)?;
         }
         if matches!(result, Ok(true)) && !self.shared.complete.load(Ordering::Acquire) {
-            self.shared
-                .delivery
-                .deliver_wide(&[HostChangeWide::Unconfirmed], work)?;
+            completion.deliver(&[HostChangeWide::Unconfirmed], work)?;
             return Ok(false);
         }
         result
