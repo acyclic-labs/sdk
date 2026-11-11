@@ -6,6 +6,8 @@
 //! and commits each step (checkpoint, conversation, status and every outgoing
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
+mod announce;
+pub use announce::{Announcement, AnnouncementDocument, WorkspaceAnnouncement, WorkspaceExposure};
 mod checkpoint;
 mod children;
 pub use children::Children;
