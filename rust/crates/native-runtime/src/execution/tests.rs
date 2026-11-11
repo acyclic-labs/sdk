@@ -114,6 +114,14 @@ fn sandbox_policy() {
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[test]
 fn sandbox_policy_probe() {
+    #[cfg(target_os = "macos")]
+    if let Some(path) = std::env::var_os("ACYCLIC_POLICY_LOOKUP_METADATA") {
+        assert_eq!(
+            std::fs::symlink_metadata(path).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        return;
+    }
     let Some(outside) = std::env::var_os("ACYCLIC_POLICY_OUTSIDE") else {
         return;
     };
@@ -163,6 +171,84 @@ fn sandbox_policy_probe() {
         std::net::TcpStream::connect(std::env::var("ACYCLIC_POLICY_DESTINATION").unwrap())
             .map(|_| ()),
         !confined,
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn alias_lookup_metadata_cannot_exceed_parent() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let outside = root.path().join("outside");
+    let alias = outside.join("alias");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&workspace, &alias).unwrap();
+    std::fs::symlink_metadata(&outside).unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let grant = |path: &Path, read: Vec<PathBuf>| {
+        ExecutionGrant::workspace_default(path, ExecutionAccess::ReadOnly, [], read).unwrap()
+    };
+    let parent = grant(&workspace, vec![executable.clone()]);
+    parent
+        .check_attenuation(&grant(&workspace, vec![executable.clone()]))
+        .unwrap();
+    parent
+        .attenuate(
+            parent.workspace(),
+            ExecutionAccess::ReadOnly,
+            [executable.clone()],
+            ExecutionNetwork::Isolated,
+        )
+        .unwrap();
+    let child = grant(&alias, vec![executable.clone()]);
+    assert_eq!(
+        parent.check_attenuation(&child).unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    parent
+        .attenuate(
+            &alias,
+            ExecutionAccess::ReadOnly,
+            [executable.clone()],
+            ExecutionNetwork::Isolated,
+        )
+        .unwrap_err();
+    // Auth can explicitly admit this lookup path; attenuation cannot mint it.
+    grant(&workspace, vec![executable.clone(), alias])
+        .check_attenuation(&child)
+        .unwrap();
+    let mut command = Command::new(executable);
+    command
+        .args([
+            "--exact",
+            "execution::tests::sandbox_policy_probe",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("ACYCLIC_POLICY_LOOKUP_METADATA", &outside)
+        .current_dir(parent.workspace())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = ProcessTree::spawn_granted(command, &parent, None)
+        .unwrap()
+        .wait_with_output(
+            crate::CaptureSchedule::Unbounded,
+            1 << 20,
+            None,
+            || Ok(()),
+            |_| Ok(Default::default()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "status={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

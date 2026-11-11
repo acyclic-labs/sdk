@@ -52,6 +52,11 @@ require an explicit authenticated grant; command arguments cannot add authority.
 On macOS, each bound root also permits reading its ancestor directory objects
 so dyld can resolve its bootstrap paths with `openat`. This includes the root
 directory object, without read access to ungranted sibling files or subtrees.
+Bindings retain the caller's alias path for lookup metadata (for example,
+`/var` leading to `/private/var`); file contents still require a canonical grant.
+Lookup paths use normalized absolute components. The shared policy records
+these metadata permissions and checks them against the parent's ceiling during
+attenuation, so an outside alias cannot add access to its own directory metadata.
 The command still receives only the host's ordinary environment, excluding secret
 variables and startup hooks. The default TMPDIR names the primary workspace, so standard temporary-file APIs
 remain inside the writable view without a separate mount or directory.

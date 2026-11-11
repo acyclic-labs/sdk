@@ -165,6 +165,12 @@ impl Prepared {
             drop(root.bind_controlled(meter)?);
             rule(&mut profile, "file-read* file-map-executable", root)?;
         }
+        for path in &grant.navigation {
+            path_rule(&mut profile, "file-read*", "literal", path)?;
+        }
+        for path in &grant.lookup_metadata {
+            path_rule(&mut profile, "file-read-metadata", "literal", path)?;
+        }
         if access == ExecutionAccess::WorkspaceWrite {
             for root in grant
                 .workspace_write
@@ -362,8 +368,19 @@ fn status(code: libc::c_int) -> io::Result<()> {
 }
 
 fn rule(profile: &mut String, operations: &str, root: &super::BoundPath) -> io::Result<()> {
-    let path = root
-        .path
+    let filter = if root.is_dir { "subpath" } else { "literal" };
+    path_rule(profile, operations, filter, &root.path)
+}
+
+fn path_rule(profile: &mut String, operations: &str, filter: &str, path: &Path) -> io::Result<()> {
+    let path = profile_path(path)?;
+    use std::fmt::Write;
+    write!(profile, "(allow {operations} ({filter} \"{path}\"))").expect("writing to String");
+    Ok(())
+}
+
+fn profile_path(path: &Path) -> io::Result<String> {
+    let path = path
         .to_str()
         .ok_or_else(|| refused("Seatbelt path is not UTF-8"))?;
     // Escape every Scheme string delimiter; reject control bytes rather than
@@ -371,15 +388,7 @@ fn rule(profile: &mut String, operations: &str, root: &super::BoundPath) -> io::
     if path.chars().any(char::is_control) {
         return Err(refused("Seatbelt path contains a control character"));
     }
-    let path = path.replace('\\', "\\\\").replace('"', "\\\"");
-    let filter = if root.is_dir { "subpath" } else { "literal" };
-    use std::fmt::Write;
-    write!(profile, "(allow {operations} ({filter} \"{path}\"))").expect("writing to String");
-    // libignition opens "/" as an openat root and reads/stats intermediate
-    // directories. Derive that navigation authority from each bound grant:
-    // path-ancestors grants directory objects, never their sibling subtrees.
-    write!(profile, "(allow file-read* (path-ancestors \"{path}\"))").expect("writing to String");
-    Ok(())
+    Ok(path.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 pub(super) fn open_beneath(
