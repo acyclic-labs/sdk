@@ -118,6 +118,7 @@
         "session-remote-attach",
         "session-explicit-root-latest",
         "session-list-filter",
+        "session-resume-picker",
         "session-concurrent-same-repo"
       ]
     },

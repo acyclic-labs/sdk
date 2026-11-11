@@ -22,6 +22,7 @@ fn previews(
     connection: Connection,
     agent: acyclic_harness::agent::AgentPath,
     bytes: u32,
+    prices: Option<Arc<acyclic_harness::executor::ModelPrices>>,
 ) -> LocalBoxStream<'static, Update> {
     async_stream::stream! {
         let selected = match connection.select(agent).await {
@@ -71,6 +72,7 @@ fn previews(
             // Read only the explicitly admitted UI-session price file. An
             // absent file leaves usage unpriced; no currency is guessed.
             let prices = async {
+                if let Some(prices) = prices { return Ok::<_, Failure>(prices); }
                 let files = selected.client_files(selected.client_session(), vec!["prices.jsonl".into()], None).await?;
                 let prices = files.files.get("prices.jsonl").and_then(Option::as_ref)
                     .map(|file| acyclic_harness::executor::ModelPrices::from_jsonl(file.text.as_bytes()))
@@ -110,6 +112,7 @@ pub(super) async fn choose(
     connection: Connection,
     agents: Vec<acyclic_harness::agent::AgentPath>,
     choices: Vec<String>,
+    prices: Option<Arc<acyclic_harness::executor::ModelPrices>>,
 ) -> Result<(Tty, usize), Failure> {
     tty.negotiate(&Environment::capture())?;
     tty.setup(ScreenMode::Alternate)?;
@@ -143,6 +146,7 @@ pub(super) async fn choose(
                     connection.clone(),
                     agent.clone(),
                     u32::from(size()?.width).saturating_mul(4).saturating_add(9),
+                    prices.clone(),
                 ),
                 None => Box::pin(futures::stream::empty()),
             };

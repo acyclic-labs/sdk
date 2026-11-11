@@ -49,7 +49,14 @@ async fn select_inner(
         if let Some(name) = resume {
             return Ok((sessions::select(&connection, name).await?, terminal));
         }
-        return choose(connection, terminal, None).await;
+        let prices = args
+            .prices
+            .as_deref()
+            .map(acyclic_harness::local::read_regular_file)
+            .transpose()?
+            .map(String::from_utf8)
+            .transpose()?;
+        return choose(connection, terminal, None, prices).await;
     }
     if args.continue_session
         || matches!(
@@ -88,8 +95,9 @@ pub async fn picker(
     connection: Connection,
     terminal: Option<Tty>,
     filter: Option<&str>,
+    prices: Option<String>,
 ) -> Result<(Connection, Option<Tty>), Failure> {
-    let (selected, terminal) = choose(connection, terminal, filter).await?;
+    let (selected, terminal) = choose(connection, terminal, filter, prices).await?;
     sessions::selected(&selected, &OperationId::new().to_string()).await?;
     Ok((selected, terminal))
 }
@@ -98,7 +106,13 @@ async fn choose(
     connection: Connection,
     terminal: Option<Tty>,
     filter: Option<&str>,
+    prices: Option<String>,
 ) -> Result<(Connection, Option<Tty>), Failure> {
+    let prices = prices
+        .as_deref()
+        .map(|text| acyclic_harness::executor::ModelPrices::from_jsonl(text.as_bytes()))
+        .transpose()?
+        .map(std::sync::Arc::new);
     let mut terminal = match terminal {
         Some(terminal) => terminal,
         None => Tty::open()?,
@@ -164,6 +178,7 @@ async fn choose(
             connection.clone(),
             visible.iter().map(|row| row.agent.clone()).collect(),
             choices,
+            prices.clone(),
         )
         .await?;
         terminal = owned;

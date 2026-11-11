@@ -782,8 +782,13 @@ pub async fn run(
                 resume = false;
             }
             Next::Picker => {
-                let (connection, owned) =
-                    super::sessions::picker(conversation.connection().clone(), None, None).await?;
+                let (connection, owned) = super::sessions::picker(
+                    conversation.connection().clone(),
+                    None,
+                    None,
+                    price_file.clone(),
+                )
+                .await?;
                 conversation = Conversation::open(connection);
                 terminal = owned;
                 resume = true;
