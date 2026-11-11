@@ -122,8 +122,6 @@ impl StockExecution<'_> {
                 .io
                 .map(|io| io.encode(&table_tools, u64::MAX, false))
                 .transpose()?;
-            #[cfg(target_arch = "wasm32")]
-            let funded: Option<acyclic_stream::OwnedBytes> = None;
             Some(match funded {
                 Some(bytes) => bytes,
                 None => serde_json::to_vec(&table_tools)

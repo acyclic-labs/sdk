@@ -225,11 +225,6 @@ impl ModelRequest {
                                 )
                             })
                             .transpose()?;
-                        #[cfg(target_arch = "wasm32")]
-                        let funded: Option<(
-                            Vec<crate::tool::ToolDefinition>,
-                            crate::conversation::ContentHold<'_>,
-                        )> = None;
                         let table = match funded {
                             Some((table, hold)) => {
                                 hold.into_retained()?;
