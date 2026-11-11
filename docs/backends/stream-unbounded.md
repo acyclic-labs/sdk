@@ -1060,3 +1060,23 @@ The sibling-drop mutation follows the exact replaced-child range. Source is not
 remotely compiled yet. Original-work accounting, streaming batch/range rewrite
 summaries, namespace planning and authority publication remain integration work.
 COW physical root shape is not the canonical logical retry digest.
+
+At exact0215f05f0bb7a27718cd229ae3413260a8952379, Linux Stream all-target
+checking passed in17.51s. All22 selected content-index/staged controls passed in
+0.88s, including COW map/pinned-root/reopen/read-bound and cancelled-write cases.
+The sibling-drop mutation failed at the intended model assertion (0 passed,
+1 failed,0.06s), reversed and git diff verified clean. Terminal marker:
+COW_CONTROLS_PASS_SIBLING_MUTANT_REJECTED_SOURCE_RESTORED.
+Evidence Q:/scratch/stream-unbounded/cow-0215-linux.log; session31592 terminal0.
+No validation job remains active. The existing node/checkpoint format remains v1;
+COW uses the same codec and does not treat its physical root as retry identity.
+
+This is single-key immutable-index COW, not the complete namespace/commit planner.
+A batched/range rewrite must keep child summaries paged when a single old leaf
+expands into arbitrarily many pages; a request-sized output Vec is not allowed.
+Likewise, namespace path depth cannot become an unbounded RAM ancestor stack.
+Original-work accounting and stage ownership must cover successful puts, including
+cancelled IO and superseded private roots, before public-provider cutover. Actual
+final apply, registry/retirement events, production crash simulation/loom and all
+backend/transport conformance remain outstanding. Public providers still have the
+original size/count caps; no SDK main landing or Cloud PR exists yet.
