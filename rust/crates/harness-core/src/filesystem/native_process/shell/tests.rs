@@ -76,10 +76,10 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
             approvals: 0,
         },
         volume("project")?,
-        [volume("data")?, volume("logical")?],
+        [volume("data")?, volume("shared")?],
     )?;
     for (relative, mount) in mounts.mounts_mut() {
-        if relative == ".volumes/logical" {
+        if relative == ".volumes/shared" {
             mount.native_root = crate::workspace::NativeRoot::Logical;
         }
     }
@@ -101,6 +101,92 @@ fn invocation(root: &Path) -> Invocation {
     }
 }
 
+// GC-66's retained call failed during admission, before any command executed.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn recon_shell_admission_does_not_require_a_logical_volume_path() -> Result<()> {
+    let temp = tempfile::tempdir().map_err(Error::process_io)?;
+    let root = temp.path().canonicalize().map_err(Error::process_io)?;
+    std::fs::create_dir_all(root.join(".volumes/data")).map_err(Error::process_io)?;
+    for args in [
+        vec!["init", "--quiet"],
+        vec![
+            "-c",
+            "user.name=Regression",
+            "-c",
+            "user.email=regression@example.invalid",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .status()
+            .map_err(Error::process_io)?;
+        assert!(status.success());
+    }
+    let mut mounts = table(root.clone())?;
+    let missing = root.join(".volumes/shared");
+    assert!(!missing.try_exists().map_err(Error::process_io)?);
+    const SAVED_COMMAND: &str = "pwd && git rev-parse HEAD && git status --short && ls -la && if [ -f RECON-COVERAGE.json ]; then cat RECON-COVERAGE.json; fi";
+    let input = || ShellInput {
+        command: crate::tools::ShellCommand::Source(SAVED_COMMAND.into()),
+        cwd: Some(".".into()),
+        timeout_ms: Some(20000),
+        background: false,
+        target: None,
+    };
+    // A claimed physical binding must fail with its real filesystem class;
+    // omitting absent roots by existence would silently weaken authority.
+    for (relative, mount) in mounts.mounts_mut() {
+        if relative == ".volumes/shared" {
+            mount.native_root = crate::workspace::NativeRoot::Composed;
+        }
+    }
+    let error = match prepare(input(), &mounts, invocation(&root), 1) {
+        Err(error) => error,
+        Ok(_) => panic!("missing physical root admitted"),
+    };
+    assert!(
+        matches!(&error, Error::Process(crate::ProcessError::NotFound { .. })),
+        "{error:?}"
+    );
+    assert_eq!(
+        crate::executor::ToolErrorClass::of(&error),
+        crate::executor::ToolErrorClass::NotFound
+    );
+    assert!(
+        error
+            .to_string()
+            .contains(missing.to_str().expect("fixture path")),
+        "{error}"
+    );
+    for (relative, mount) in mounts.mounts_mut() {
+        if relative == ".volumes/shared" {
+            mount.native_root = crate::workspace::NativeRoot::Logical;
+        }
+    }
+    let mut native = invocation(&root);
+    native
+        .environment
+        .insert("PATH".into(), std::env::var("PATH").expect("test PATH"));
+    let output = run(input(), &mounts, native, 1, None, || Ok(()))
+        .await?
+        .expect("completed call");
+    assert!(output.success, "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(".git"),
+        "{output:?}"
+    );
+    assert!(!missing.try_exists().map_err(Error::process_io)?);
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases() -> Result<()> {
@@ -119,10 +205,10 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
             mount.native_root = crate::workspace::NativeRoot::Path(volume.clone());
         }
     }
-    assert!(!mounts.environment()?.contains_key("ACYCLIC_VOLUME_LOGICAL"));
+    assert!(!mounts.environment()?.contains_key("ACYCLIC_VOLUME_SHARED"));
     let logical = prepare(
         crate::tools::ShellInput {
-            cwd: Some(".volumes/logical".into()),
+            cwd: Some(".volumes/shared".into()),
             command: crate::tools::ShellCommand::Source("true".into()),
             timeout_ms: None,
             background: false,
@@ -584,7 +670,7 @@ fn missing_shell_inputs_are_preflight_results_with_paths() -> Result<()> {
     let mounts = table(root)?;
     for (cwd, command) in [
         (
-            Some(".volumes/shared".into()),
+            Some(".volumes/data".into()),
             crate::tools::ShellCommand::Source("pwd".into()),
         ),
         (

@@ -367,10 +367,9 @@ impl ProcessCommand {
     #[cfg(any(unix, test))]
     pub(crate) fn to_std(&self) -> std::io::Result<std::process::Command> {
         if self.boundary.is_some() {
-            return Err(crate::execution::failure(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
+            return Err(crate::execution::refused(
                 "native command conversion cannot discard its execution boundary",
-            )));
+            ));
         }
         let mut command = std::process::Command::new(&self.program);
         for argument in &self.args {

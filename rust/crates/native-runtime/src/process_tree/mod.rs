@@ -304,20 +304,16 @@ impl ProcessTree {
         meter: Option<&dyn crate::NativeReadMeter>,
         retained: &mut Option<Self>,
     ) -> io::Result<()> {
-        command.boundary = Some(
-            (|| {
-                if retained.is_some() {
-                    return Err(io::ErrorKind::AlreadyExists.into());
-                }
-                if let Some(meter) = meter {
-                    meter.check()?;
-                }
-                let cwd =
-                    grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
-                grant.prepare_launch(Some(cwd), meter)
-            })()
-            .map_err(crate::execution::failure)?,
-        );
+        command.boundary = Some((|| {
+            if retained.is_some() {
+                return Err(io::ErrorKind::AlreadyExists.into());
+            }
+            if let Some(meter) = meter {
+                meter.check()?;
+            }
+            let cwd = grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
+            grant.prepare_launch(Some(cwd), meter)
+        })()?);
         match custody {
             Some(custody) => {
                 Self::spawn_in_custody_controlled(&mut command, custody, meter, retained)

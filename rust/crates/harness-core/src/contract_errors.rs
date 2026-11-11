@@ -745,6 +745,10 @@ impl Error {
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
+            Self::Process(crate::ProcessError::NotFound { .. }) => ErrorCode::NotFound,
+            Self::Process(
+                crate::ProcessError::Io { .. } | crate::ProcessError::PermissionDenied { .. },
+            ) => ErrorCode::Storage,
             Self::Process(_) => ErrorCode::Invalid,
             Self::Indeterminate(_)
             | Self::CommandIndeterminate { .. }
@@ -856,7 +860,9 @@ impl Error {
             return failure.classification.outcome_uncertain;
         }
         use crate::wire::ErrorCode;
-        !matches!(self, Self::TaskFailed { .. })
+        // Settled process failures remain ordinary tool feedback. Their wire
+        // class describes the native cause, not unresolved operation custody.
+        !matches!(self, Self::TaskFailed { .. } | Self::Process(_))
             && matches!(
                 self.code(),
                 ErrorCode::Storage | ErrorCode::Indeterminate | ErrorCode::Cancelled
@@ -879,7 +885,7 @@ impl Error {
             return failure.classification.uncertain;
         }
         use crate::wire::ErrorCode;
-        !matches!(self, Self::TaskFailed { .. })
+        !matches!(self, Self::TaskFailed { .. } | Self::Process(_))
             && matches!(
                 self.code(),
                 ErrorCode::Storage

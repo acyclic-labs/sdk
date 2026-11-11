@@ -276,10 +276,10 @@ impl BoundPath {
             return Err(refused("execution grant paths must be absolute"));
         }
         let canonical = std::fs::canonicalize(path).map_err(|error| {
-            failure(io::Error::new(
+            io::Error::new(
                 error.kind(),
                 format!("cannot bind execution root {}: {error}", path.display()),
-            ))
+            )
         })?;
         #[cfg(target_os = "macos")]
         if path
@@ -297,11 +297,11 @@ impl BoundPath {
             .collect();
         let path = canonical;
         let object = Self::open_path(&path)?;
-        let metadata = object.metadata().map_err(failure)?;
+        let metadata = object.metadata()?;
         #[cfg(any(target_os = "linux", target_vendor = "apple"))]
         let identity = crate::file::file_identity_from_metadata(&metadata);
         #[cfg(windows)]
-        let identity = crate::file_identity(&object).map_err(failure)?;
+        let identity = crate::file_identity(&object)?;
         Ok(Self {
             path,
             #[cfg(target_os = "macos")]
@@ -339,7 +339,7 @@ impl BoundPath {
                         | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
                 );
         }
-        options.open(path).map_err(failure)
+        options.open(path)
     }
 
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -355,7 +355,7 @@ impl BoundPath {
 
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn verify(&self, file: &std::fs::File) -> io::Result<()> {
-        if crate::file_identity(file).map_err(failure)? != self.identity {
+        if crate::file_identity(file)? != self.identity {
             return Err(refused("execution grant root was replaced"));
         }
         Ok(())
@@ -451,7 +451,7 @@ fn bind_roots(
                 CompiledPrefixError::Capacity => {
                     refused("execution root index exceeds address space")
                 }
-                CompiledPrefixError::Allocation(error) => failure(io::Error::other(error)),
+                CompiledPrefixError::Allocation(error) => io::Error::other(error),
                 CompiledPrefixError::Invariant => refused("execution root index invariant changed"),
             }
         },
@@ -665,15 +665,15 @@ impl ExecutionGrant {
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<()> {
         self.check_authority(requested.access, &requested.policy.network)?;
-        self.check_roots(requested, meter).map_err(failure)
+        self.check_roots(requested, meter)
     }
 
     /// Verifies the same pinned roots on the shared native workers, without
     /// blocking the caller's executor. The task owns both grants and the
     /// original meter until its terminal producer retires the proof. Dropping
     /// the wait never attaches a grant or starts a guest.
-    /// Task admission failures are execution refusals; cancellation retains
-    /// its original `Interrupted` error kind.
+    /// Native failures, including task admission and cancellation, retain
+    /// their original error kind.
     pub async fn check_attenuation_async(
         &self,
         requested: &Self,
@@ -684,17 +684,11 @@ impl ExecutionGrant {
         let requested = requested.clone();
         let proof_meter = meter.clone();
         crate::run_blocking_io(
-            move || {
-                ceiling
-                    .check_roots(&requested, proof_meter.as_deref())
-                    .map_err(failure)
-            },
+            move || ceiling.check_roots(&requested, proof_meter.as_deref()),
             meter.map(|meter| (meter, false)),
-        )
-        .map_err(failure)?
+        )?
         .offloaded()
-        .await
-        .map_err(failure)?
+        .await?
     }
 
     fn check_authority(
@@ -794,10 +788,10 @@ impl ExecutionGrant {
         Ok(cwd)
     }
 
-    /// Prepares OS objects without starting untrusted code. A failure is a
-    /// refusal, never an instruction to retry without confinement.
+    /// Prepares OS objects without starting untrusted code. An error prevents
+    /// launch; it never instructs a retry without confinement.
     pub fn prepare(&self) -> io::Result<PreparedExecution> {
-        self.prepare_launch(None, None).map_err(failure)
+        self.prepare_launch(None, None)
     }
 
     pub(crate) fn prepare_launch(
@@ -874,7 +868,7 @@ impl PreparedExecution {
     }
     #[cfg(target_os = "macos")]
     pub(crate) fn validate_command(&self, command: &crate::ProcessCommand) -> io::Result<()> {
-        macos::validate_stdio(command.sandbox_stdio()).map_err(failure)
+        macos::validate_stdio(command.sandbox_stdio())
     }
     #[cfg(target_os = "linux")]
     pub(crate) fn working_directory(&self) -> &std::fs::File {
@@ -907,18 +901,7 @@ impl PreparedExecution {
     }
 }
 
-pub(crate) fn failure(error: io::Error) -> io::Error {
-    if error.kind() == io::ErrorKind::Interrupted
-        || error
-            .get_ref()
-            .is_some_and(|cause| cause.is::<ExecutionRefusal>())
-    {
-        return error;
-    }
-    refused(error)
-}
-
-fn refused(reason: impl std::fmt::Display) -> io::Error {
+pub(crate) fn refused(reason: impl std::fmt::Display) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
         ExecutionRefusal(reason.to_string()),

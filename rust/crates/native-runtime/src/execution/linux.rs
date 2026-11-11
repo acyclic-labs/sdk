@@ -8,8 +8,7 @@
 )]
 
 use super::{
-    BoundPath, ExecutionAccess, ExecutionGrant, ExecutionNetwork, Grant, failure, refused,
-    unavailable,
+    BoundPath, ExecutionAccess, ExecutionGrant, ExecutionNetwork, Grant, refused, unavailable,
 };
 use crate::{
     NativeOperationKind::{Read, Write},
@@ -127,7 +126,7 @@ fn open_beneath_with_flags(
             return Err(if error.raw_os_error() == Some(libc::ENOSYS) {
                 unavailable("rooted execution path resolution requires openat2")
             } else {
-                failure(error)
+                error
             });
         }
         let descriptor =
@@ -170,7 +169,7 @@ fn computation_device(
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<File> {
     let root = native_control_attempt(meter, Read, || BoundPath::open_path(path))?;
-    let metadata = native_control_attempt(meter, Read, || root.metadata().map_err(failure))?;
+    let metadata = native_control_attempt(meter, Read, || root.metadata())?;
     if !entry::character_device(metadata.mode(), metadata.rdev(), device) {
         return Err(refused("execution computation device was replaced"));
     }
@@ -451,7 +450,7 @@ impl Prepared {
 fn syscall(call: impl FnOnce() -> libc::c_long) -> io::Result<libc::c_long> {
     let result = call();
     if result < 0 {
-        Err(failure(io::Error::last_os_error()))
+        Err(io::Error::last_os_error())
     } else {
         Ok(result)
     }
