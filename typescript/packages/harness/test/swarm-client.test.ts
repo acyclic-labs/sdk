@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { AgentClient, WasmStream, initializeClientQueries } from "../src/client.js";
+import { AgentClient, WasmStream, WireSession, initializeClientQueries } from "../src/client.js";
 import { exerciseAgents, root } from "./swarm-client.scenario.js";
 import { bindLocalSession } from "./session-authority.js";
 import { appendRecord, conversation, receiveUntil, statusPath } from "./actor-records.fixture.js";
@@ -12,19 +12,43 @@ test("native and browser agent views use the same bounded Rust session", async (
   finally { stream.free(); }
 });
 
-test("agent view admission refuses oversized and malformed input atomically", async () => {
+test("agent view admission shares duplicate interest and refuses malformed input atomically", async () => {
   await initializeClientQueries();
   const stream = new WasmStream();
   await bindLocalSession(stream);
+  await appendRecord(stream, `${root}/conversation`, conversation("retained", 0n));
+  await appendRecord(stream, statusPath, '{"phase":"idle","cursor":1}');
   const client = new AgentClient(stream, root, 0n, 0n, 0);
   try {
-    for (const agents of [[], Array(9).fill(root), ["outside/agent"]]) {
+    await receiveUntil(client, () => client.agentWindow(root).recordCount === 1n && client.agentStatus(root) !== null);
+    const before = client.agentWindow(root);
+    const repeated = Array<string>(257).fill(root);
+    client.setView(repeated, new BigUint64Array(repeated.length), new BigUint64Array(repeated.length));
+    expect(client.selectedAgents()).toEqual([root]);
+    expect(client.agentWindow(root)).toEqual(before);
+    for (const agents of [[], ["outside/agent"]]) {
       expect(() => client.setView(agents, new BigUint64Array(agents.length), new BigUint64Array(agents.length))).toThrow();
       expect(client.selectedAgents()).toEqual([root]);
     }
     expect(() => client.setView([root], new BigUint64Array(0), new BigUint64Array(1))).toThrow();
     expect(client.selectedAgents()).toEqual([root]);
   } finally { client.close(); client.free(); stream.free(); }
+});
+
+test("explicit view reservations count distinct stream paths", async () => {
+  await initializeClientQueries();
+  const stream = new WasmStream();
+  await bindLocalSession(stream);
+  const path = `${root}/conversation`;
+  await appendRecord(stream, path, conversation("original", 0n));
+  const session = new WireSession(stream, 1, 1);
+  try {
+    session.setView([path, path], [], []);
+    await session.openStream(path, 0n);
+    expect(session.followedAgents()).toBe(1);
+    expect(() => session.setView([path, `${root}/another`], [], [])).toThrow();
+    expect(session.followedAgents()).toBe(1);
+  } finally { session.free(); stream.free(); }
 });
 
 test("failed selected streams report once while healthy agents keep delivering", async () => {

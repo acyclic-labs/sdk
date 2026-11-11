@@ -94,11 +94,8 @@ fn path(value: JsString) -> Result<StreamPath, JsValue> {
     StreamPath::new(value).map_err(stream_error)
 }
 
-fn paths(input: &Array, maximum: Option<usize>) -> Result<Vec<StreamPath>, JsValue> {
+fn paths(input: &Array) -> Result<Vec<StreamPath>, JsValue> {
     let length = input.length();
-    if maximum.is_some_and(|maximum| length as usize > maximum) {
-        return Err(error("CLIENT_DEMAND_CAPACITY"));
-    }
     (0..length)
         .map(|index| input.get(index))
         .map(|value| {
@@ -157,9 +154,9 @@ impl WasmWireSession {
     pub fn set_view(&self, visible: Array, focused: Array, expanded: Array) -> Result<(), JsValue> {
         let demand = ViewDemand::new(
             self.policy,
-            paths(&visible, self.policy.selected_capacity())?,
-            paths(&focused, self.policy.selected_capacity())?,
-            paths(&expanded, self.policy.expanded_capacity())?,
+            paths(&visible)?,
+            paths(&focused)?,
+            paths(&expanded)?,
         )
         .map_err(|cause| session_error(WireSessionError::Demand(cause)))?;
         self.session

@@ -256,7 +256,8 @@ async fn verify_observation(
     if client.conversation().next_sequence() != cursor
         || client.selected_agents().count() != 1
         || client.agent() != &fixture.agent
-        || client.session().revision() != composition
+        || client.conversation().revision() != revision
+        || client.conversation().records().len() != 1
     {
         return Err(failure(
             "retain_repeated_selection",
