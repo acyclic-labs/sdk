@@ -235,6 +235,7 @@ pub async fn upload(
 pub struct Reader<'a, S> {
     storage: &'a S,
     pending: Vec<Root>,
+    interrupted: bool,
 }
 
 impl<'a, S: Storage> Reader<'a, S> {
@@ -246,19 +247,25 @@ impl<'a, S: Storage> Reader<'a, S> {
         Ok(Self {
             storage,
             pending: vec![root],
+            interrupted: false,
         })
     }
 
     /// Returns the next leaf with its original custody, verifying each page
     /// before interpretation. No full-record allocation or speculative IO.
     pub async fn next(&mut self) -> Result<Option<OwnedBytes>, StreamError> {
+        if self.interrupted {
+            return Err(StreamError::Unavailable);
+        }
+        self.interrupted = true;
         let result = self.next_page().await;
-        if result.is_err() {
+        if result.is_ok() {
+            self.interrupted = false;
+        } else {
             self.pending.clear();
         }
         result
     }
-
     async fn next_page(&mut self) -> Result<Option<OwnedBytes>, StreamError> {
         while let Some(root) = self.pending.pop() {
             let page = self.storage.get(root.part.digest).await?;
@@ -273,6 +280,7 @@ impl<'a, S: Storage> Reader<'a, S> {
                 {
                     return Err(StreamError::InvalidResponse);
                 }
+                crate::runtime::yield_now().await?;
                 return Ok(Some(page.bytes.slice(BLOB_MAGIC.len()..)));
             }
             if page.kind != Kind::Manifest {

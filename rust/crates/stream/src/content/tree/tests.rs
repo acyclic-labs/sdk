@@ -173,3 +173,63 @@ async fn content_tree_carries_across_manifest_pages_and_refuses_corruption()
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn cancelled_content_read_cannot_skip_the_consumed_page()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct DelayedRead {
+        disk: Disk,
+        gate: std::sync::Mutex<
+            Option<(
+                tokio::sync::oneshot::Sender<()>,
+                tokio::sync::oneshot::Receiver<()>,
+            )>,
+        >,
+    }
+    #[async_trait::async_trait]
+    impl Storage for DelayedRead {
+        async fn put(&self, digest: [u8; 32], page: Page) -> Result<(), StreamError> {
+            self.disk.put(digest, page).await
+        }
+        async fn get(&self, digest: [u8; 32]) -> Result<Page, StreamError> {
+            let page = self.disk.get(digest).await?;
+            let gate = if page.kind == Kind::Blob {
+                self.gate
+                    .lock()
+                    .map_err(|_| StreamError::Unavailable)?
+                    .take()
+            } else {
+                None
+            };
+            if let Some((fetched, resume)) = gate {
+                fetched.send(()).map_err(|_| StreamError::Unavailable)?;
+                resume.await.map_err(|_| StreamError::Unavailable)?;
+            }
+            Ok(page)
+        }
+    }
+    let directory = tempfile::tempdir()?;
+    let disk = Disk::open(directory.path());
+    let root = upload(&disk, input(2 * LEAF_BYTES + 1, LEAF_BYTES)).await?;
+    let (fetched, event) = tokio::sync::oneshot::channel();
+    let (_resume, wait) = tokio::sync::oneshot::channel();
+    let delayed = DelayedRead {
+        disk,
+        gate: std::sync::Mutex::new(Some((fetched, wait))),
+    };
+    let mut reader = Reader::new(&delayed, root)?;
+    {
+        let reading = reader.next();
+        tokio::pin!(reading);
+        tokio::select! {
+            result = &mut reading => return Err(format!("read completed before its fetched-page event: {result:?}").into()),
+            result = event => result?,
+        }
+    }
+    assert_eq!(
+        reader.next().await,
+        Err(StreamError::Unavailable),
+        "cancelled content reader skipped the consumed page"
+    );
+    Ok(())
+}

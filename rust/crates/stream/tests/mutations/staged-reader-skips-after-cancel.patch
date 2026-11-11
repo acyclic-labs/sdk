@@ -1,0 +1,14 @@
+diff --git a/rust/crates/stream/src/content/tree.rs b/rust/crates/stream/src/content/tree.rs
+index f8774e245d0..3173f507e57 100644
+--- a/rust/crates/stream/src/content/tree.rs
++++ b/rust/crates/stream/src/content/tree.rs
+@@ -254,9 +254,6 @@ impl<'a, S: Storage> Reader<'a, S> {
+     /// Returns the next leaf with its original custody, verifying each page
+     /// before interpretation. No full-record allocation or speculative IO.
+     pub async fn next(&mut self) -> Result<Option<OwnedBytes>, StreamError> {
+-        if self.interrupted {
+-            return Err(StreamError::Unavailable);
+-        }
+         self.interrupted = true;
+         let result = self.next_page().await;
+         if result.is_ok() {

@@ -448,3 +448,11 @@ allocation in either ingestion control. Page cooperation reuses runtime::yield_n
 including its existing browser task-event adapter; no second scheduler is added.
 These source changes are pending remote validation. Neither earlier unrun
 ingestion controls nor these new controls are claimed as passed.
+
+Content-reader cancellation must also retire the cursor: a dropped get future
+has already removed its pending root and cannot be resumed by skipping that
+page. Add the same explicit interrupted-state guard at the shared content reader
+and cooperate at leaf delivery through the existing runtime scheduler. A real
+file read gated by a channel event must demonstrate that cancellation refuses
+reuse. This is a content-transfer guarantee, not the still-outstanding atomic
+publication/crash proof.
