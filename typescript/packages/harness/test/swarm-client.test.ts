@@ -23,17 +23,22 @@ test("agent view admission shares duplicate interest and refuses malformed input
   const client = new AgentClient(stream, root, 0n, 0n, 0);
   try {
     await receiveUntil(client, () => client.agentWindow(root).recordCount === 1n && client.agentStatus(root) !== null);
-    const before = client.agentWindow(root);
+    const { revision: beforeRevision, ...before } = client.agentWindow(root);
     const repeated = Array<string>(257).fill(root);
     client.setView(repeated, new BigUint64Array(repeated.length), new BigUint64Array(repeated.length));
     expect(client.selectedAgents()).toEqual([root]);
-    expect(client.agentWindow(root)).toEqual(before);
+    const selected = client.agentWindow(root);
+    const { revision, ...retained } = selected;
+    expect(retained).toEqual(before);
+    expect(revision).toBeGreaterThan(beforeRevision);
     for (const agents of [[], ["outside/agent"]]) {
       expect(() => client.setView(agents, new BigUint64Array(agents.length), new BigUint64Array(agents.length))).toThrow();
       expect(client.selectedAgents()).toEqual([root]);
+      expect(client.agentWindow(root)).toEqual(selected);
     }
     expect(() => client.setView([root], new BigUint64Array(0), new BigUint64Array(1))).toThrow();
     expect(client.selectedAgents()).toEqual([root]);
+    expect(client.agentWindow(root)).toEqual(selected);
   } finally { client.close(); client.free(); stream.free(); }
 });
 
@@ -67,7 +72,10 @@ test("explicit view reservations count distinct stream paths", async () => {
 test("failed selected streams report once while healthy agents keep delivering", async () => {
   await initializeClientQueries();
   const stream = new WasmStream();
-  await bindLocalSession(stream);
+  await bindLocalSession(stream, [
+    { name: `streams:/${root}/conversation`, prefix: false, actions: ["streams/follow"] },
+    { name: `streams:/${statusPath}`, prefix: false, actions: ["streams/follow"] },
+  ]);
   await appendRecord(stream, `${root}/conversation`, conversation("before", 0n));
   await appendRecord(stream, statusPath, '{"phase":"idle","cursor":1}');
   const absent = `harness/agents/${"03".repeat(16)}`;
