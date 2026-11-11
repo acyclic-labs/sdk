@@ -15,9 +15,9 @@ pub enum FileProjectionPolicy {
     Native(Box<NativeMediaPolicy>),
 }
 impl FileProjectionPolicy {
-    /// Validates projection support and optional caller credit, returning source
-    /// bytes including instruction framing. `None` leaves caller credit unbounded;
-    /// explicit native policy bounds still apply. Planning never reads the file.
+    /// Plans projected bytes under optional caller and native source-byte credit,
+    /// including instruction framing. `None` adds no caller ceiling. Native work
+    /// units and supported media belong to the consuming adapter. No file is read.
     pub fn projected_bytes(&self, file: &FileRef, maximum: Option<u64>) -> Result<u64> {
         let policy = self;
         match policy {
@@ -29,23 +29,7 @@ impl FileProjectionPolicy {
                     ));
                 }
             }
-            FileProjectionPolicy::Native(policy) => {
-                let supported = match policy.intent {
-                    NativeMediaIntent::Image { .. } => matches!(
-                        file.descriptor().media_type(),
-                        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-                    ),
-                    NativeMediaIntent::Document { .. } => {
-                        file.descriptor().media_type() == "application/pdf"
-                    }
-                    _ => false,
-                };
-                if !supported || policy.configuration.is_some() {
-                    return Err(Error::Unsupported(
-                        "unsupported native model media policy".into(),
-                    ));
-                }
-            }
+            FileProjectionPolicy::Native(_) => {}
         }
         let bytes = match policy {
             Self::ProjectInstructions(source) => {
@@ -58,11 +42,6 @@ impl FileProjectionPolicy {
             byte_limit = Some(maximum.map_or(native.maximum_bytes, |maximum| {
                 maximum.min(native.maximum_bytes)
             }));
-            if bytes > native.maximum_work {
-                return Err(Error::Invalid(
-                    "model files exceed projection work limit".into(),
-                ));
-            }
         }
         if byte_limit.is_some_and(|maximum| bytes > maximum) {
             return Err(Error::Invalid(
@@ -70,6 +49,24 @@ impl FileProjectionPolicy {
             ));
         }
         Ok(bytes)
+    }
+
+    /// Native source bytes can be spliced directly only for these original
+    /// formats, without a configured transform. Other valid native policies
+    /// remain available to adapters that implement their own media processing.
+    pub(crate) fn supports_byte_projection(&self, file: &FileRef) -> bool {
+        let Self::Native(policy) = self else {
+            return true;
+        };
+        policy.configuration.is_none()
+            && match policy.intent {
+                NativeMediaIntent::Image { .. } => matches!(
+                    file.descriptor().media_type(),
+                    "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+                ),
+                NativeMediaIntent::Document => file.descriptor().media_type() == "application/pdf",
+                NativeMediaIntent::Audio { .. } | NativeMediaIntent::Video { .. } => false,
+            }
     }
 
     /// Whether a file of `media_type` projects as bounded text

@@ -11,10 +11,17 @@ pub struct InputAnchor {
     bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ByteProjectionRefusal {
+    Adapter,
+    Work,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct InputStats {
     extra: u64,
     native: bool,
+    byte_projection_refusal: Option<ByteProjectionRefusal>,
     expanding: bool,
 }
 
@@ -37,7 +44,17 @@ impl InputStats {
             for (file, policy) in message.content.file_parts() {
                 charge_items(io, 1)?;
                 let bytes = policy.projected_bytes(file, None)?;
-                self.native |= matches!(policy, FileProjectionPolicy::Native(_));
+                if let FileProjectionPolicy::Native(native) = policy {
+                    self.native = true;
+                    let refusal = if !policy.supports_byte_projection(file) {
+                        Some(ByteProjectionRefusal::Adapter)
+                    } else if bytes > native.maximum_work {
+                        Some(ByteProjectionRefusal::Work)
+                    } else {
+                        None
+                    };
+                    self.byte_projection_refusal = self.byte_projection_refusal.or(refusal);
+                }
                 if !matches!(policy, FileProjectionPolicy::Reference) {
                     self.extra = bytes
                         .checked_mul(6)
@@ -102,6 +119,21 @@ impl PreparedModelRequest {
             ));
         }
         Ok(bytes)
+    }
+
+    /// Admits direct image/PDF byte projection before an adapter reads files.
+    /// Custom media processing must instead enforce its own work units and
+    /// supported formats. Uses the original cached plan without another scan.
+    pub fn validate_byte_projection(&self) -> Result<()> {
+        match self.input.stats(&self.request)?.byte_projection_refusal {
+            Some(ByteProjectionRefusal::Adapter) => Err(Error::Unsupported(
+                "unsupported native model media policy".into(),
+            )),
+            Some(ByteProjectionRefusal::Work) => {
+                Err(invalid(None, "model files exceed projection work limit"))
+            }
+            None => Ok(()),
+        }
     }
 
     /// Canonical input plus a conservative JSON expansion of pinned bodies.

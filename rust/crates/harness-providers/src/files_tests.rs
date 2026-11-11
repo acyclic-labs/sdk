@@ -127,6 +127,149 @@ fn with_parts(
 }
 
 #[tokio::test]
+async fn custom_media_keeps_generic_credit_and_requires_its_own_projection_adapter() -> Result<()> {
+    use acyclic_harness_core::model::{ImageDetail, NativeMediaIntent, NativeMediaPolicy};
+    use acyclic_harness_core::wire::ErrorCode;
+    let (mut provider, script) = provider(Adapter::Chat, 200);
+    let reader = Arc::new(Reader {
+        data: b"ok".to_vec(),
+        reads: AtomicUsize::new(0),
+    });
+    provider.files = crate::files::Files {
+        reader: Some(reader.clone()),
+        maximum_bytes: None,
+    };
+    for (media, intent, refusal) in [
+        (
+            "audio/wav",
+            NativeMediaIntent::Audio {
+                maximum_duration_ms: 1,
+            },
+            ErrorCode::Unsupported,
+        ),
+        (
+            "video/mp4",
+            NativeMediaIntent::Video {
+                maximum_duration_ms: 1,
+                maximum_frames: 1,
+            },
+            ErrorCode::Unsupported,
+        ),
+        (
+            "image/gif",
+            NativeMediaIntent::Image {
+                detail: ImageDetail::Auto,
+            },
+            ErrorCode::Invalid,
+        ),
+    ] {
+        let prepared = with_parts(
+            &provider,
+            vec![ModelContentPart::File {
+                file: file(b"ok", media)?,
+                policy: FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
+                    intent,
+                    maximum_bytes: 2,
+                    maximum_work: 1,
+                    configuration: None,
+                })),
+            }],
+        )?;
+        // Custom providers own their work units; a generic byte plan must not
+        // treat audio/video work as source bytes or impose an HTTP media list.
+        assert_eq!(prepared.projected_file_bytes(None)?, 2);
+        assert_eq!(prepared.projected_file_bytes(Some(2))?, 2);
+        assert!(prepared.projected_file_bytes(Some(1)).is_err());
+        let anchor = prepared.observe_input()?;
+        assert_eq!(prepared.input_since(anchor)?, Some(0));
+        assert!(prepared.input_has_native_media()?);
+        assert!(!prepared.input_has_byte_bound()?);
+        // The byte-preserving HTTP adapter retains its stricter support/work
+        // admission on the same original cached plan, before any source read.
+        assert_eq!(
+            prepared.validate_byte_projection().unwrap_err().code(),
+            refusal
+        );
+        assert_eq!(
+            crate::files::resolve(&provider.files, &prepared, None)
+                .await
+                .err()
+                .unwrap()
+                .code(),
+            refusal
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+        assert!(script.sent.lock().unwrap().is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unbounded_aggregate_credit_does_not_restore_the_former_default() -> Result<()> {
+    let (provider, script) = provider(Adapter::Chat, 200);
+    let former = acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER;
+    let source = file(b"metadata only", "text/plain")?;
+    // These are real admitted descriptors, not materialized source bodies.
+    // Each file fits the request's per-file/per-part bound; their aggregate
+    // exceeds the provider's former implicit credit. No huge allocation occurs.
+    let large = FileRef::new(
+        source.volume().clone(),
+        "large.txt".into(),
+        "1".into(),
+        FileDescriptor::new([0; 32], former, "text/plain".into())?,
+        "large.txt".into(),
+        &mut None,
+    )?;
+    let prepared = with_parts(
+        &provider,
+        vec![
+            ModelContentPart::File {
+                file: large.clone(),
+                policy: FileProjectionPolicy::BoundedFull,
+            },
+            ModelContentPart::File {
+                file: large,
+                policy: FileProjectionPolicy::BoundedFull,
+            },
+        ],
+    )?;
+    assert_eq!(prepared.projected_file_bytes(None)?, former * 2);
+    assert!(prepared.projected_file_bytes(Some(former)).is_err());
+    let reader = Arc::new(Reader {
+        data: Vec::new(),
+        reads: AtomicUsize::new(0),
+    });
+    let dispatch = ModelDispatch {
+        operation_id: acyclic_harness_core::OperationId::new(),
+        step: 0,
+        request_digest: prepared.request_digest(),
+    };
+    let bounded = provider.bind_content(reader.clone(), Some(former)).unwrap();
+    assert!(
+        bounded
+            .generate(&prepared, dispatch)
+            .try_collect::<Vec<_>>()
+            .await
+            .is_err()
+    );
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+    // None passes the actual public binding and cached credit admission. The
+    // original verifier then refuses the deliberately absent body after one
+    // empty read, before HTTP; the symbolic extents are never allocated/read.
+    let unbounded = provider.bind_content(reader.clone(), None).unwrap();
+    assert!(
+        unbounded
+            .generate(&prepared, dispatch)
+            .try_collect::<Vec<_>>()
+            .await
+            .is_err()
+    );
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    assert!(script.sent.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn summary_files_keep_source_then_instruction_resolution_order() -> Result<()> {
     struct SummaryFiles {
         source: FileRef,

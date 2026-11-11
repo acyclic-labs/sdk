@@ -80,6 +80,7 @@ pub(crate) async fn resolve(
     io: Option<&acyclic_harness_core::conversation::ContentIo>,
 ) -> Result<FileText> {
     // Reject the entire unsupported request before invoking any owner reader.
+    request.validate_byte_projection()?;
     request.projected_file_bytes(files.maximum_bytes)?;
     let mut text = Vec::new();
     for message in &request.request().messages {

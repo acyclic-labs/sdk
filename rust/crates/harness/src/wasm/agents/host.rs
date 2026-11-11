@@ -111,15 +111,17 @@ impl HostModel {
     /// Verified bytes of every non-reference file part, in request order.
     async fn files(&self, request: &PreparedModelRequest) -> Result<js_sys::Array> {
         let files = js_sys::Array::new();
+        if let Some((_, maximum)) = &self.content {
+            request.projected_file_bytes(*maximum)?;
+        }
         for message in &request.request().messages {
             for (file, policy) in message.content.file_parts() {
                 if matches!(policy, FileProjectionPolicy::Reference) {
                     continue;
                 }
-                let (reader, maximum) = self.content.as_ref().ok_or_else(|| {
+                let (reader, _) = self.content.as_ref().ok_or_else(|| {
                     Error::Unsupported("model file byte resolution is unavailable".into())
                 })?;
-                policy.projected_bytes(file, *maximum)?;
                 let (bytes, _hold) = verified_content_bytes(
                     reader.as_ref(),
                     file,
