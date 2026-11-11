@@ -30,6 +30,9 @@ pub(super) fn operands(name: &str, arguments: &Value, (render, path): (u64, usiz
 /// Other results proceed intact to the shared model projection and spill path.
 pub(super) fn result(name: &str, result: ToolResult, maximum: u64) -> Result<ToolResult> {
     if name == super::shell::PLATFORM.name {
+        // The complete presentation, including its retained-log footer, fits
+        // the shared window so it never needs a second output spill.
+        let maximum = maximum.min(crate::tool::output::VIEW_BYTES);
         if let Value::Object(fields) = result.value {
             if let Some(text) = fields.get("text").and_then(Value::as_str)
                 && text_projection_len(text) as u64 <= maximum
@@ -69,7 +72,6 @@ fn shell(mut fields: Map<String, Value>, maximum: usize) -> Result<Value> {
         .ok_or_else(|| bound_too_small(super::shell::PLATFORM.name))?;
     let error = escaped_len(&stderr);
     // Output keeps what stderr leaves, and at least half the budget.
-    let budget = budget.min(crate::tool::output::VIEW_BYTES as usize);
     let output = suffix(&stdout, budget.saturating_sub(error).max(budget / 2));
     let error = suffix(&stderr, budget - escaped_len(output));
     let omitted =
@@ -165,17 +167,20 @@ mod tests {
     // once the projection wraps it.
     #[test]
     fn a_result_filling_the_bound_fits_its_projection() {
-        let flooded = ToolResult {
-            value: json!({"success": true, "exit_code": 0, "stop": null,
-                "stdout": "o".repeat(4096), "stderr": ""}),
-        };
-        let bounded = result(super::super::shell::PLATFORM.name, flooded, BOUND).unwrap();
-        assert!(
-            projected_len(&bounded) <= BOUND,
-            "{}",
-            projected_len(&bounded)
-        );
-        assert!(projected_len(&bounded) > BOUND - 24);
+        for maximum in [BOUND, crate::tool::output::VIEW_BYTES * 2] {
+            let flooded = ToolResult {
+                value: json!({"success": true, "exit_code": 0, "stop": null,
+                    "stdout": "o".repeat(32_768), "stderr": "", "spill":"shell-output.log"}),
+            };
+            let bounded = result(super::super::shell::PLATFORM.name, flooded, maximum).unwrap();
+            let window = maximum.min(crate::tool::output::VIEW_BYTES);
+            assert!(
+                projected_len(&bounded) <= window,
+                "{}",
+                projected_len(&bounded)
+            );
+            assert!(projected_len(&bounded) > window - 24);
+        }
     }
 
     // A shell that floods both streams still returns its exit status, within
