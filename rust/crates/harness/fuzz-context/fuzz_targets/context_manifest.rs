@@ -16,13 +16,16 @@ fn round_trip<T: serde::de::DeserializeOwned + serde::Serialize + PartialEq>(inp
 }
 
 fuzz_target!(|input: &[u8]| {
-    for instruction_bytes in [0, 1, 16, 4096] {
+    for instruction_bytes in [None, Some(0), Some(1), Some(16), Some(4096)] {
         let bounds = ContextDiscoveryLimits {
             instruction_bytes,
             ..Default::default()
         };
         if bounds.validate_instruction(input).is_ok() {
-            assert!(instruction_bytes > 0 && input.len() as u64 <= instruction_bytes);
+            assert!(
+                instruction_bytes != Some(0)
+                    && instruction_bytes.is_none_or(|maximum| input.len() as u64 <= maximum)
+            );
             assert!(!input.contains(&0));
             assert!(std::str::from_utf8(input).is_ok());
         }

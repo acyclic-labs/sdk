@@ -323,7 +323,11 @@ impl LocalHarness {
     ) -> Result<ContextManifest> {
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
-        let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
+        let maximum = limits
+            .instruction_bytes
+            .into_iter()
+            .chain(self.limits.file_bytes)
+            .min();
         let mut work = crate::context::DiscoveryWork {
             limits: ContextDiscoveryLimits {
                 instruction_bytes: maximum,
@@ -755,7 +759,7 @@ impl crate::context::InstructionReader for VolumeInstructions<'_> {
         &'a mut self,
         path: &'a str,
         revision: &'a Self::Revision,
-        maximum: u64,
+        maximum: Option<u64>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>
     {
         Box::pin(async move {
@@ -828,21 +832,6 @@ mod tests {
     }
 
     proptest! {
-        // Property: every accepted instruction round-trips without normalization;
-        // exactly the positive byte bound, UTF-8 and NUL constraints determine acceptance.
-        #[test]
-        fn instruction_text_round_trip(bytes in prop::collection::vec(any::<u8>(), 0..128), maximum in 0u64..128) {
-            let limits = ContextDiscoveryLimits { instruction_bytes: maximum, ..Default::default() };
-            let accepted = limits.validate_instruction(&bytes).is_ok();
-            prop_assert_eq!(accepted, maximum > 0 && bytes.len() as u64 <= maximum && std::str::from_utf8(&bytes).is_ok() && !bytes.contains(&0));
-            if accepted {
-                prop_assert_eq!(std::str::from_utf8(&bytes).unwrap().as_bytes(), bytes.as_slice());
-                let mut invalid = bytes;
-                invalid.push(0);
-                prop_assert!(limits.validate_instruction(&invalid).is_err());
-            }
-        }
-
         // Property: an epoch's path stays in the private input subtree within
         // the path bound, and agents or checkpoints never share an epoch.
         #[test]

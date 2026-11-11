@@ -153,7 +153,7 @@ fn cached_discovery_cannot_bypass_invalid_limits() {
             ..Default::default()
         },
         ContextDiscoveryLimits {
-            instruction_bytes: 0,
+            instruction_bytes: Some(0),
             ..Default::default()
         },
     ] {

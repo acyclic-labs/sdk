@@ -84,7 +84,7 @@ pub trait InstructionReader: DiscoverySource {
         &'a mut self,
         path: &'a str,
         revision: &'a Self::Revision,
-        maximum: u64,
+        maximum: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>;
 }
 
@@ -663,7 +663,7 @@ impl InstructionReader for VolumeDiscovery<'_> {
         &'a mut self,
         path: &'a str,
         revision: &'a GenerationRef,
-        maximum: u64,
+        maximum: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>> {
         Box::pin(async move {
             let source = PinnedContextPath {
