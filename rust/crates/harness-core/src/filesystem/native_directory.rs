@@ -42,7 +42,9 @@ impl NativeDirectory<'_> {
         let digest = blake3::hash(text.as_bytes());
         work.spent(hashing)?;
         drop(lossy);
-        const PREFIX: &[u8] = b".volumes/publication-v1/";
+        // `agents` is reserved by the mount table. A caller-chosen volume
+        // alias must never select or conceal this recovery namespace.
+        const PREFIX: &[u8] = b".volumes/agents/.publication-v1/";
         let encoding = acyclic_fs::WorkCounters {
             bytes_encoded: 44,
             bytes_copied: (PREFIX.len() + 56) as u64,

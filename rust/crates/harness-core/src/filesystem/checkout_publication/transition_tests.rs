@@ -354,6 +354,12 @@ async fn publication_needs_no_write_authority_in_the_checkout_parent() -> TestRe
         let fixture = Fixture::new().await?;
         let parent = fixture.root.parent().unwrap();
         std::fs::create_dir_all(parent.join("core"))?;
+        let volume = parent.join("named-volume");
+        std::fs::create_dir(&volume)?;
+        std::fs::write(volume.join("owned"), "volume-owned")?;
+        // Named volume aliases are legitimate siblings of the reserved agent
+        // namespace. The former staging location collides with this binding.
+        std::os::unix::fs::symlink(&volume, fixture.root.join(".volumes/publication-v1"))?;
         let original = std::fs::metadata(parent)?.permissions();
         std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o500))?;
         let forbidden = std::fs::create_dir(parent.join("forbidden-sibling"));
@@ -374,6 +380,20 @@ async fn publication_needs_no_write_authority_in_the_checkout_parent() -> TestRe
         assert_eq!(
             std::fs::read_to_string(fixture.root.join(".volumes/host-owned"))?,
             "host-owned"
+        );
+        assert_eq!(
+            std::fs::read_to_string(volume.join("owned"))?,
+            "volume-owned"
+        );
+        assert_eq!(std::fs::read_dir(&volume)?.count(), 1);
+        assert!(
+            acyclic_fs::validate_native_preparation_location(
+                &fixture.root,
+                &fixture.root.join(".volumes/publication-v1/old-operation"),
+                EXCLUDED_NAMES,
+                &fixture.work,
+            )
+            .is_err()
         );
     }
     Ok(())
