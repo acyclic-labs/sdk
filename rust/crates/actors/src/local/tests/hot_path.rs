@@ -262,6 +262,7 @@ async fn publication_and_reopen() -> TestResult {
         // Guest metadata has no address for the host-owned balance. Even the
         // former balance key is ordinary metadata and cannot reset spending.
         binding.apply(crate::guest::ActorStateCommit {
+            deletions: Vec::new(),
             writes: vec![crate::guest::ActorMetadataWrite {
                 key: "acyclic.actors.escrow.v1".into(),
                 value: crate::escrow::Escrow::new(None).encode(),
@@ -972,6 +973,7 @@ fn projected_positions<P: StreamProvider>(
     for invalid in ["", "+1", "01", "1 ", "-1", "18446744073709551616", "１"] {
         for bad_position in [false, true] {
             let packet = ActorStateCommit {
+                deletions: Vec::new(),
                 writes: vec![ActorMetadataWrite {
                     key: "key-000000".into(),
                     value: Bytes::from_static(b"refused"),
@@ -996,6 +998,7 @@ fn projected_positions<P: StreamProvider>(
     // is still a conflict. Refuse both before touching the supplied payload.
     for (position, deadline, conflict) in [("0", "0", false), ("1", "42", true)] {
         let packet = ActorStateCommit {
+            deletions: Vec::new(),
             writes: vec![ActorMetadataWrite {
                 key: "key-000000".into(),
                 value: Bytes::from_static(b"refused"),
@@ -1025,6 +1028,7 @@ fn projected_positions<P: StreamProvider>(
     })?;
     for deadline in ["1", "42", "18446744073709551615"] {
         let packet = ActorStateCommit {
+            deletions: Vec::new(),
             writes: Vec::new(),
             journal_from: "0".into(),
             journal: Vec::new(),
