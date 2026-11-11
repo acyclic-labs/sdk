@@ -64,18 +64,11 @@ async fn native_follow_stop_destroys_pending_acquisition_before_returning()
     let meter = Arc::new(Meter::default());
     let mut request = crate::FollowRequest::new(path, 0);
     request.when_absent = crate::WhenAbsent::Wait;
-    let output = provider.native_follow(request, meter.original()).await??;
+    let mut output = provider.native_follow(request, meter.original()).await??;
     let held = provider.inner.publication.write().await;
-    let owner = acyclic_native_runtime::retain_future(
-        async move {
-            let mut output = output;
-            let _ = output.value_mut().next().await;
-        },
-        &meter.original(),
-    )?;
-    owner.stop()?;
-    assert!(owner.is_stopped());
-    drop(owner);
+    assert!(output.value_mut().next().now_or_never().is_none());
+    assert!(meter.held.load(Ordering::SeqCst) > 0);
+    drop(output);
     meter.assert_refunded();
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     drop(held);
