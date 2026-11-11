@@ -323,7 +323,9 @@ impl View {
                     outcome: acyclic_harness_core::agent::AgentOutcome::Succeeded { .. },
                 } => "✓",
                 Phase::Done {
-                    outcome: acyclic_harness_core::agent::AgentOutcome::Failed { .. },
+                    outcome:
+                        acyclic_harness_core::agent::AgentOutcome::Failed { .. }
+                        | acyclic_harness_core::agent::AgentOutcome::FailedDiagnostic { .. },
                 } => "✗",
                 Phase::Done { .. } => "■",
             }
