@@ -4,6 +4,38 @@ use super::*;
 mod compaction_source;
 
 impl StockExecution<'_> {
+    async fn prepare_response_context(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+    ) -> Result<(ResponseProjection, crate::model::PreparedModelRequest)> {
+        if let Some(continued) = self
+            .continue_response_request(journal, input, step, prior_messages)
+            .await?
+        {
+            return Ok(continued);
+        }
+        let (context_input, base, working) = self
+            .response_base(journal, input, step, prior_messages)
+            .await?;
+        let (context, prepared) = self
+            .prepare_transformed_request(&context_input, base)
+            .await?;
+        Ok((
+            ResponseProjection {
+                context,
+                steering: None,
+                canonical: None,
+                checkpoint: None,
+                working,
+                accounting: None,
+            },
+            prepared,
+        ))
+    }
+
     pub(super) async fn capture_response(
         &self,
         journal: &dyn ExecutionJournal,
@@ -17,30 +49,9 @@ impl StockExecution<'_> {
         Option<ContextAccounting>,
         crate::model::PreparedModelRequest,
     )> {
-        let (mut projection, prepared) = if let Some(continued) = self
-            .continue_response_request(journal, input, step, prior_messages)
-            .await?
-        {
-            continued
-        } else {
-            let (context_input, base, working) = self
-                .response_base(journal, input, step, prior_messages)
-                .await?;
-            let (context, prepared) = self
-                .prepare_transformed_request(&context_input, base)
-                .await?;
-            (
-                ResponseProjection {
-                    context,
-                    steering: None,
-                    canonical: None,
-                    checkpoint: None,
-                    working,
-                    accounting: None,
-                },
-                prepared,
-            )
-        };
+        let (mut projection, prepared) = self
+            .prepare_response_context(journal, input, step, prior_messages)
+            .await?;
         let accounting = if self.unchecked()? {
             None
         } else {
