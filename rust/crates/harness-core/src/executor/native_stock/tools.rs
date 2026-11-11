@@ -156,7 +156,7 @@ pub(in crate::executor) async fn stock_project_tool(
         limits.render_bytes.min(crate::tool::output::VIEW_BYTES)
     });
     let length = with_history_io(io, |history| {
-        crate::executor::json::json_byte_length(&value, u64::MAX, history)
+        crate::executor::json::json_byte_length(&value, None, history)
     })?;
     let value = if length > maximum {
         let context = context.ok_or_else(|| {

@@ -216,7 +216,7 @@ fn register(
             limits.tool_bytes,
             &catalog,
         ),
-        u64::MAX,
+        None,
         &mut None,
     )?)
     .to_hex()
@@ -263,7 +263,7 @@ fn recovery_binding(
                 &server.enabled_tools,
                 &server.disabled_tools,
             ),
-            u64::MAX,
+            None,
             &mut None,
         )?)
         .to_hex()

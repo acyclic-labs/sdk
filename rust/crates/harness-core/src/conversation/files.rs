@@ -248,7 +248,7 @@ impl FileRef {
     ) -> Result<[u8; 32]> {
         crate::executor::json::borrowed_json_digest(
             &canonical::Canonical(self),
-            maximum_bytes,
+            Some(maximum_bytes),
             work,
         )
     }

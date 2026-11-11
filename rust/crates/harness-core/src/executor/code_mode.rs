@@ -108,7 +108,7 @@ impl ProgramLogs {
             }
         }
         let cost = with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(line.as_str(), u64::MAX, work)
+            crate::executor::json::json_byte_length(line.as_str(), None, work)
         })? as usize
             + 1;
         if self.bytes + cost + Self::FIELDS > maximum {
@@ -165,7 +165,7 @@ impl ProgramLogs {
             return Ok(());
         }
         let result = with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&*output, u64::MAX, work)
+            crate::executor::json::json_byte_length(&*output, None, work)
         })? as usize;
         let Some(available) = maximum.checked_sub(result.saturating_add(Self::FIELDS)) else {
             return Ok(());
@@ -393,7 +393,7 @@ impl StockExecution<'_> {
                                 self.native_work(),
                             )?
                         } else { None };
-                        let output_bytes = with_history_io(self.io, |work| crate::executor::json::json_byte_length(&value, u64::MAX, work))?;
+                        let output_bytes = with_history_io(self.io, |work| crate::executor::json::json_byte_length(&value, None, work))?;
                         let entry = CallLog { kind: "code.call", call_id: &parent.call_id, ordinal, tool: &call.name.value, ok, input_bytes, output_bytes };
                         let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:{ordinal}:result", parent.operation_id), work))?;
                         #[cfg(feature = "filesystem")]
@@ -460,7 +460,7 @@ impl StockExecution<'_> {
                     let mut value = serde_json::json!({"error": ""});
                     // Reserve the exact wrapper before fitting escaped text.
                     let overhead = with_history_io(self.io, |work| {
-                        crate::executor::json::json_byte_length(&value, maximum as u64, work)
+                        crate::executor::json::json_byte_length(&value, Some(maximum as u64), work)
                     })?;
                     let budget =
                         maximum.saturating_sub(usize::try_from(overhead).unwrap_or(usize::MAX));

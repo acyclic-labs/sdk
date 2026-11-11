@@ -283,7 +283,7 @@ fn tool_key(
     let digest = crate::executor::with_history_io(io, |work| {
         crate::executor::json::borrowed_json_digest(
             &("recorded-tool-v1", call_id),
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             work,
         )
     })?;

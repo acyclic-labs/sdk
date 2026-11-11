@@ -1152,7 +1152,7 @@ impl NoticeBlocks {
                     &crate::model::ModelContentPart::Notices {
                         notices: Vec::new(),
                     },
-                    maximum,
+                    Some(maximum),
                     &mut None,
                 )?;
                 self.bytes = self.envelope;
@@ -1160,7 +1160,7 @@ impl NoticeBlocks {
             // Count the original event once, without a temporary JSON buffer.
             let bytes = crate::executor::json::json_byte_length_at_depth(
                 &notice,
-                maximum - self.envelope,
+                Some(maximum - self.envelope),
                 256,
                 &mut None,
             )?;

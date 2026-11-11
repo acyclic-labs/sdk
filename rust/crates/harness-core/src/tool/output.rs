@@ -319,12 +319,12 @@ fn render(
     let overhead = if let Some(parts) = media {
         with_media(&empty, parts, io, |view| {
             crate::executor::with_history_io(io, |history| {
-                crate::executor::json::json_byte_length(view, u64::MAX, history)
+                crate::executor::json::json_byte_length(view, None, history)
             })
         })?
     } else {
         crate::executor::with_history_io(io, |history| {
-            crate::executor::json::json_byte_length(&empty, u64::MAX, history)
+            crate::executor::json::json_byte_length(&empty, None, history)
         })? + super::schema::json_envelope_bytes()? as u64
     };
     // Reference metadata is indivisible. The display quantum bounds text;

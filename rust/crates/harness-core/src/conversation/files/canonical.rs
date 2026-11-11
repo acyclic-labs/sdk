@@ -97,7 +97,7 @@ mod tests {
     ) -> Result<[u8; 32]> {
         crate::executor::json::canonical_json_digest(
             file,
-            crate::store::default_projection_read_limits().maximum_bytes,
+            Some(crate::store::default_projection_read_limits().maximum_bytes),
             work,
         )
     }

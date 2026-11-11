@@ -193,7 +193,7 @@ impl StockExecution<'_> {
         // Charge actual JSON escaping, with worst-case offset and completion
         // framing. A schema larger than one part is split without truncation.
         let overhead = with_history_io(self.io, |work| {
-            json::json_byte_length(&content("", usize::MAX, false, &[]), u64::MAX, work)
+            json::json_byte_length(&content("", usize::MAX, false, &[]), None, work)
         })?;
         let maximum = self
             .stock
@@ -211,7 +211,7 @@ impl StockExecution<'_> {
             let removed_start = removed_offset;
             while let Some(name) = removed.get(removed_offset) {
                 let size =
-                    with_history_io(self.io, |work| json::json_byte_length(name, u64::MAX, work))?
+                    with_history_io(self.io, |work| json::json_byte_length(name, None, work))?
                         + u64::from(removed_offset != removed_start);
                 if size > maximum - bytes {
                     break;

@@ -292,7 +292,7 @@ mod digest_properties {
             let expected = crate::contract::canonical_json_bytes(&value).unwrap();
             let mut digest = Ok([0; 32]);
             let measured = acyclic_test_support::measure(|| {
-                digest = canonical_json_digest(&value, 65_536, &mut Some(&mut work));
+                digest = canonical_json_digest(&value, Some(65_536), &mut Some(&mut work));
             });
             prop_assert_eq!(digest.unwrap(), *blake3::hash(&expected).as_bytes());
             prop_assert_eq!(work.receipt().bytes_hashed, expected.len() as u64);
@@ -516,7 +516,7 @@ fn assert_encoding_needs_no_heap(value: &Value) -> Result<()> {
     ));
     let mut digest = Ok([0; 32]);
     let encoding = acyclic_test_support::measure(|| {
-        digest = canonical_json_digest(value, u64::MAX, &mut None);
+        digest = canonical_json_digest(value, None, &mut None);
     });
     assert_eq!(digest?, expected);
     assert_eq!(encoding.count_total, conversion.count_total);
@@ -551,27 +551,29 @@ fn canonical_digest_preserves_hash_admission_and_charge() -> Result<()> {
     let value = serde_json::json!({"z": [0, 1, 255], "a": "\0\n\"é"});
     let bytes = crate::contract::canonical_json_bytes(&value)?;
     let length = bytes.len() as u64;
-    for allowance in [length, 0] {
-        let io = crate::filesystem::PreparationIo::from_budget(
-            acyclic_fs::WorkBudget {
-                allocation_operations: 1_000_000,
-                peak_allocation_bytes: 64 * 1024 * 1024,
-                bytes_copied: 64 * 1024 * 1024,
-                bytes_encoded: 64 * 1024 * 1024,
-                bytes_hashed: allowance,
-                items_examined: 1_000_000,
-                ..Default::default()
-            },
-            &acyclic_fs::CancellationToken::default(),
-        )?;
-        let mut work = crate::store::HistoryWork::new(io);
-        let result = canonical_json_digest(&value, length, &mut Some(&mut work));
-        if allowance == 0 {
-            assert!(result.is_err());
-        } else {
-            assert_eq!(result?, *blake3::hash(&bytes).as_bytes());
-            assert_eq!(work.receipt().bytes_hashed, length);
-            println!("canonical digest charges: {:?}", work.receipt());
+    for maximum in [Some(length), None] {
+        for allowance in [length, 0] {
+            let io = crate::filesystem::PreparationIo::from_budget(
+                acyclic_fs::WorkBudget {
+                    allocation_operations: 1_000_000,
+                    peak_allocation_bytes: 64 * 1024 * 1024,
+                    bytes_copied: 64 * 1024 * 1024,
+                    bytes_encoded: 64 * 1024 * 1024,
+                    bytes_hashed: allowance,
+                    items_examined: 1_000_000,
+                    ..Default::default()
+                },
+                &acyclic_fs::CancellationToken::default(),
+            )?;
+            let mut work = crate::store::HistoryWork::new(io);
+            let result = canonical_json_digest(&value, maximum, &mut Some(&mut work));
+            if allowance == 0 {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result?, *blake3::hash(&bytes).as_bytes());
+                assert_eq!(work.receipt().bytes_hashed, length);
+                println!("canonical digest charges: {:?}", work.receipt());
+            }
         }
     }
     Ok(())
@@ -654,12 +656,26 @@ fn streamed_identity_matches_canonical_bytes() -> Result<()> {
                 text,
             };
             let bytes = crate::contract::canonical_json_bytes(&record)?;
-            let calls = std::cell::Cell::new(0);
-            assert_eq!(
-                canonical_json_digest(&Counted(&calls, &record), u64::MAX, &mut None)?,
-                *blake3::hash(&bytes).as_bytes(),
+            for maximum in [None, Some(bytes.len() as u64)] {
+                let calls = std::cell::Cell::new(0);
+                assert_eq!(
+                    canonical_json_digest(&Counted(&calls, &record), maximum, &mut None)?,
+                    *blake3::hash(&bytes).as_bytes(),
+                );
+                assert_eq!(calls.get(), 1);
+            }
+            assert!(
+                canonical_json_digest(&record, Some(bytes.len() as u64 - 1), &mut None).is_err()
             );
-            assert_eq!(calls.get(), 1);
+            let compact =
+                serde_json::to_vec(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+            for maximum in [None, Some(compact.len() as u64)] {
+                assert_eq!(
+                    json_byte_length(&record, maximum, &mut None)?,
+                    compact.len() as u64
+                );
+            }
+            assert!(json_byte_length(&record, Some(compact.len() as u64 - 1), &mut None).is_err());
         }
     }
     for encoded_length in [4095, 4096, 4097] {
@@ -667,11 +683,11 @@ fn streamed_identity_matches_canonical_bytes() -> Result<()> {
         let bytes = crate::contract::canonical_json_bytes(&text)?;
         assert_eq!(bytes.len(), encoded_length);
         assert_eq!(
-            canonical_json_digest(&text, u64::MAX, &mut None)?,
+            canonical_json_digest(&text, None, &mut None)?,
             *blake3::hash(&bytes).as_bytes(),
         );
     }
-    assert!(canonical_json_digest(&u128::MAX, u64::MAX, &mut None).is_err());
+    assert!(canonical_json_digest(&u128::MAX, None, &mut None).is_err());
     Ok(())
 }
 

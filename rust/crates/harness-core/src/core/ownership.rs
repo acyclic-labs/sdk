@@ -40,11 +40,11 @@ pub(crate) fn inspect_metadata<T: Serialize + ?Sized>(
     if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
         let io = crate::executor::PreparationIo::from_native_work(&native.recheck_admitted())?;
         return crate::executor::with_history_io(Some(&io), |work| {
-            crate::executor::json::json_byte_length(source, u64::MAX, work).map(|_| ())
+            crate::executor::json::json_byte_length(source, None, work).map(|_| ())
         });
     }
     if work.is_none() {
         return Ok(());
     }
-    crate::executor::json::json_byte_length(source, u64::MAX, work).map(|_| ())
+    crate::executor::json::json_byte_length(source, None, work).map(|_| ())
 }
