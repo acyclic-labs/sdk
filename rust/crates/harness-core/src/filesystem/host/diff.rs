@@ -34,13 +34,64 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     /// One comparison shared by every originally authorized root. Unrelated
     /// changes are traversed once, not once for each skill root, and are never
-    /// copied into a root's disclosed result.
+    /// copied into a root's disclosed result. Paths retain frontier order;
+    /// ordered renderers own their ordered projection, not this collector.
     pub(crate) async fn diff_private_publications(
         &self,
         roots: &[(&ContextRoot, &ContentGrant)],
         (base, current): (&GenerationRef, &GenerationRef),
         io: &PreparationIo,
     ) -> Result<Vec<DiffPublication>> {
+        use futures::TryStreamExt as _;
+        let steps = self.diff_private_steps(roots, (base, current), io, false);
+        futures::pin_mut!(steps);
+        let mut paths = vec![Vec::new(); roots.len()];
+        while let Some(step) = steps.try_next().await? {
+            for (index, path) in step {
+                paths[index].push(path);
+            }
+        }
+        Ok(paths
+            .into_iter()
+            .map(|paths| DiffPublication {
+                previous: base.clone(),
+                generation: current.clone(),
+                paths,
+            })
+            .collect())
+    }
+
+    /// Each step advances the original immutable changed-path frontier once.
+    /// An empty step is filtered work, not completion. Dropping the stream
+    /// releases its frontier and generation pins without visiting later rows.
+    pub fn diff_steps<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        grant: &'a ContentGrant,
+        base: &'a GenerationRef,
+        current: &'a GenerationRef,
+    ) -> impl futures::Stream<Item = Result<Option<DiffPath>>> + 'a {
+        async_stream::try_stream! {
+            use futures::TryStreamExt as _;
+            let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            let root = ContextRoot { volume: volume.clone(), directory: String::new() };
+            let roots = [(&root, grant)];
+            let steps = self.diff_private_steps(&roots, (base, current), &io, true);
+            futures::pin_mut!(steps);
+            while let Some(mut step) = steps.try_next().await? {
+                yield step.pop().map(|(_, path)| path);
+            }
+        }
+    }
+
+    fn diff_private_steps<'a>(
+        &'a self,
+        roots: &'a [(&'a ContextRoot, &'a ContentGrant)],
+        (base, current): (&'a GenerationRef, &'a GenerationRef),
+        io: &'a PreparationIo,
+        streaming: bool,
+    ) -> impl futures::Stream<Item = Result<Vec<(usize, DiffPath)>>> + 'a {
+        async_stream::try_stream! {
         let mut selections = Vec::new();
         for (root, grant) in roots {
             selections.push(
@@ -51,17 +102,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let (before, after) = selections
             .first()
             .ok_or_else(|| io.invalid("comparison has no authorized roots"))?;
-        let (changes, _changes) = io.sdk(
-            before
-                .generation
-                .diff_to(&after.generation, u32::MAX, io, io.cancellation())
-                .await,
+        let mut work = acyclic_fs::WorkCounters::default();
+        let mut changed = io.cursor_receipt(
+            before.generation.changed_paths_to(&after.generation, io, io.cancellation()).await,
+            &mut work,
         )?;
-        let (changed, _changed) =
-            io.sdk(changes.changed_paths(u32::MAX, io, io.cancellation()).await)?;
-        let mut paths = vec![Vec::new(); roots.len()];
-        let now = super::super::access::access_now()?;
-        for change in changed {
+        loop {
+            let next = io.cursor_receipt(changed.next().await, &mut work)?;
+            if streaming || next.is_none() {
+                for ((_, grant), (before, after)) in roots.iter().zip(&selections) {
+                    before.require_current(io).await?;
+                    after.require_current(io).await?;
+                    grant.recheck(Some(io))?;
+                }
+            }
+            let Some(entry) = next else {
+                break;
+            };
+            let change = entry.value();
+            let mut paths = Vec::new();
+            let now = super::super::access::access_now()?;
             let regular = |record: Option<FileRecord>| {
                 record.filter(|record| record.kind == acyclic_fs::kernel::FileKind::Regular)
             };
@@ -71,17 +131,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .zip(is)
                     .is_some_and(|(was, is)| was.payload == is.payload)
             {
+                yield paths;
                 continue;
             }
             let Some(path) = content_path(&change.path, io)? else {
+                yield paths;
                 continue;
             };
             if crate::conversation::is_internal_path(&path) {
+                yield paths;
                 continue;
             }
-            for (((root, _), (before, after)), paths) in
-                roots.iter().zip(&selections).zip(&mut paths)
-            {
+            for (index, ((root, _), (before, after))) in roots.iter().zip(&selections).enumerate() {
                 if !(root.directory.is_empty()
                     || path == root.directory
                     || path
@@ -97,7 +158,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     generation: generation.clone(),
                     path: path.clone(),
                 };
-                paths.push(DiffPath {
+                paths.push((index, DiffPath {
                     base: was.map(|_| pin(base)),
                     current: is.map(|_| pin(current)),
                     largest_file_bytes: was
@@ -107,22 +168,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .max(),
                     matches_base: false,
                     path: path.clone(),
-                });
+                }));
             }
+            yield paths;
         }
-        for ((_, grant), (before, after)) in roots.iter().zip(&selections) {
-            before.require_current(io).await?;
-            after.require_current(io).await?;
-            grant.recheck(Some(io))?;
+
         }
-        Ok(paths
-            .into_iter()
-            .map(|paths| DiffPublication {
-                previous: base.clone(),
-                generation: current.clone(),
-                paths,
-            })
-            .collect())
     }
 
     /// Whether `grant` and each owner's current policy still let the caller
@@ -207,3 +258,6 @@ fn root_listing<'a>(
         maximum_entries: 1,
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;

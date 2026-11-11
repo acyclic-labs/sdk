@@ -806,6 +806,29 @@ where
             .await
     }
 
+    /// Demand-driven exact fork changes under the original read authority.
+    /// Empty steps report filtered source work; only stream exhaustion means
+    /// completion. No hidden changed-path suffix is collected or replayed.
+    pub fn diff_steps<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        base: &'a GenerationRef,
+        current: &'a GenerationRef,
+    ) -> impl futures::Stream<Item = Result<Option<crate::context::DiffPath>>> + 'a {
+        async_stream::try_stream! {
+            use futures::TryStreamExt as _;
+            self.verify_exact_file(None, None)?;
+            let grant = ContentGrant::verify_directory_read(
+                self.authority.verifier(), self.authority.scope(), volume, "", &mut None,
+            )?;
+            let steps = self.host.diff_steps(volume, &grant, base, current);
+            futures::pin_mut!(steps);
+            while let Some(step) = steps.try_next().await? {
+                yield step;
+            }
+        }
+    }
+
     /// Whether this authority may still list each of `paths` of a
     /// [`Self::diff_publication`] it was given (see
     /// [`FilesystemHost::diff_disclosure`]).
