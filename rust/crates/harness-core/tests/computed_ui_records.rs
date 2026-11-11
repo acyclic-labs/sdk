@@ -87,7 +87,12 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
     )?;
     let agent = root.child;
     streams.commit(root.request).await?;
-    let storage = MemoryHarnessStorage::with_stream(agent.id(), 16_384, streams.clone()).await?;
+    let storage = MemoryHarnessStorage::with_stream(
+        acyclic_harness_core::AgentId::from_bytes(agent.id().to_bytes()),
+        16_384,
+        streams.clone(),
+    )
+    .await?;
     for (sequence, text) in [(0, "original é\nanswer"), (1, "later answer")] {
         let bytes = serde_json::to_vec(
             &serde_json::json!({"text": text, "transcript": [{"ignored": [1, 2, 3]}]}),
