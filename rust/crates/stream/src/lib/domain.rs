@@ -569,6 +569,19 @@ pub struct ChildrenPageRequest {
     pub limit: u32,
 }
 
+impl ChildrenPageRequest {
+    pub(crate) fn validate(&self) -> Result<(), StreamError> {
+        crate::memory::validate_limit(self.limit)?;
+        if self.after.as_ref().is_some_and(|after| {
+            after.as_str().rsplit_once('/').map(|(parent, _)| parent)
+                != self.parent.as_ref().map(StreamPath::as_str)
+        }) {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(())
+    }
+}
+
 /// One coherent hierarchy page and its continuation boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildrenPage {

@@ -120,11 +120,12 @@ impl MemoryStream {
         request: &crate::HeadsRequest,
         durable: bool,
     ) -> Result<crate::Heads, StreamError> {
+        let mut allocation = None;
         let mut view = self.empty_heads(request);
         view.heads
             .try_reserve_exact(request.paths.len())
             .map_err(|_| StreamError::Capacity)?;
-        self.capture_heads_into(request, durable, &mut view, None)
+        self.capture_heads_into(request, durable, &mut view, None, &mut allocation)
             .await?;
         Ok(view)
     }
@@ -146,6 +147,7 @@ impl MemoryStream {
         durable: bool,
         view: &mut crate::Heads,
         _work: CaptureWork<'_>,
+        allocation: &mut Allocation,
     ) -> Result<(), StreamError> {
         let state = self.state.read().await;
         view.retained = request
@@ -191,16 +193,15 @@ impl MemoryStream {
             let head = capture()?;
             view.heads.push(head);
         }
-        let mut children = request.children.clone();
-        if let Some(children) = &mut children {
-            children.limit = children
+        view.snapshot = self.revisions.at(state.decision);
+        view.children = if let Some(children) = &request.children {
+            let limit = children
                 .limit
                 .min(request.limit - request.selection_count()?);
-        }
-        view.snapshot = self.revisions.at(state.decision);
-        view.children = children
-            .map(|request| children_at(&state, request))
-            .transpose()?;
+            Some(children_at(&state, children, limit, _work, allocation)?)
+        } else {
+            None
+        };
         if !request.at_least.proven_by(Some(&view.snapshot)) {
             return Err(StreamError::InvalidResponse);
         }
@@ -241,20 +242,7 @@ fn head_at(
                     0
                 },
                 origin: if projection == crate::HeadProjection::History {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = _work {
-                        state.paths.origin_with(
-                            path,
-                            || work.record(work.meter.examine(1, 0)),
-                            |source, relative| {
-                                work.record(source.with_native_suffix(relative, &work.meter))?
-                            },
-                        )?
-                    } else {
-                        state.paths.origin(path)?
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    state.paths.origin(path)?
+                    capture_origin(&state.paths, path, _work)?
                 } else {
                     None
                 },
@@ -263,14 +251,36 @@ fn head_at(
         .transpose()
 }
 
-fn namespace_page(
-    index: &Index,
+fn capture_origin(
+    paths: &Namespace,
+    path: &StreamPath,
+    _work: CaptureWork<'_>,
+) -> Result<Option<crate::Provenance<StreamPath, crate::ForkCut>>, StreamError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = _work {
+        return paths.origin_with(
+            path,
+            || work.record(work.meter.examine(1, 0)),
+            |source, relative| work.record(source.with_native_suffix(relative, &work.meter))?,
+        );
+    }
+    paths.origin(path)
+}
+
+struct NamespacePage<'a> {
+    index: &'a Index,
+    start: u64,
+    length: usize,
+    has_more: bool,
+}
+
+fn namespace_page<'a>(
+    index: &'a Index,
     lower: Option<&str>,
     offset: u64,
     limit: usize,
     examine: &mut impl FnMut(&str) -> Result<(), StreamError>,
-    emit: &mut impl FnMut(&str) -> Result<(), StreamError>,
-) -> Result<(), StreamError> {
+) -> Result<NamespacePage<'a>, StreamError> {
     let mut start = 0u64;
     if let Some(lower) = lower {
         let mut cursor = index;
@@ -284,11 +294,26 @@ fn namespace_page(
             }
         }
     }
-    let mut skip = start.saturating_add(offset);
-    let mut remaining = limit;
-    namespace_rank_page(index, &mut skip, &mut remaining, examine, emit)
+    let start = start.saturating_add(offset);
+    let available = (width(index) as u64).saturating_sub(start);
+    Ok(NamespacePage {
+        index,
+        start,
+        length: available.min(limit as u64) as usize,
+        has_more: available > limit as u64,
+    })
 }
-
+impl NamespacePage<'_> {
+    fn visit(
+        &self,
+        examine: &mut impl FnMut(&str) -> Result<(), StreamError>,
+        emit: &mut impl FnMut(&str) -> Result<(), StreamError>,
+    ) -> Result<(), StreamError> {
+        let mut skip = self.start;
+        let mut remaining = self.length;
+        namespace_rank_page(self.index, &mut skip, &mut remaining, examine, emit)
+    }
+}
 fn namespace_rank_page(
     index: &Index,
     skip: &mut u64,
@@ -323,6 +348,7 @@ fn projected_tail(
     paths: &Namespace,
     path: &StreamPath,
     relative: Option<&StreamPath>,
+    _work: CaptureWork<'_>,
 ) -> Result<(Option<u64>, Option<Record>), StreamError> {
     let Some(relative) = relative else {
         return Ok((None, None));
@@ -332,15 +358,34 @@ fn projected_tail(
     if path.as_str().len() + 1 + relative.as_str().len() > crate::MAX_PATH_BYTES {
         return Ok((None, None));
     }
-    let target = StreamPath::new(format!("{}/{}", path.as_str(), relative.as_str()))?;
+    let target = capture_child_path(Some(path), relative.as_str(), _work)?;
     let Some(stream) = paths.get(&target) else {
         return Ok((None, None));
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    let record = if let Some(work) = _work {
+        native_last_record(stream, work)?
+    } else {
+        last_record(stream)
+    };
+    #[cfg(target_arch = "wasm32")]
     let record = last_record(stream);
     if stream.tail != 0 && record.is_none() {
         return Err(StreamError::PrefixNotRetained);
     }
     Ok((Some(stream.tail), record))
+}
+
+fn capture_child_path(
+    parent: Option<&StreamPath>,
+    name: &str,
+    _work: CaptureWork<'_>,
+) -> Result<StreamPath, StreamError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = _work {
+        return work.record(StreamPath::join_native(parent, name, &work.meter))?;
+    }
+    StreamPath::new(parent.map_or_else(|| name.to_owned(), |parent| format!("{parent}/{name}")))
 }
 
 fn last_record(stream: &PathState) -> Option<Record> {
@@ -400,16 +445,14 @@ fn native_last_record(stream: &PathState, work: &Work) -> Result<Option<Record>,
     ))
 }
 
-fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPage, StreamError> {
-    validate_limit(request.limit)?;
-    if request.after.as_ref().is_some_and(|after| {
-        !request.parent.as_ref().map_or_else(
-            || !after.as_str().contains('/'),
-            |parent| after.parent().as_ref() == Some(parent),
-        )
-    }) {
-        return Err(StreamError::InvalidArgument);
-    }
+fn children_at(
+    state: &State,
+    request: &ChildrenPageRequest,
+    limit: u32,
+    work: CaptureWork<'_>,
+    _allocation: &mut Allocation,
+) -> Result<ChildrenPage, StreamError> {
+    request.validate()?;
     if request
         .hierarchy_version
         .is_some_and(|version| version != state.hierarchy_version)
@@ -422,73 +465,98 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
         .map_or(Some(&state.paths.roots), |parent| {
             state.paths.node(parent).map(|node| &node.children)
         });
+    let empty = None;
+    let index = children.unwrap_or(&empty);
     let lower = request
         .after
         .as_ref()
         .map(|path| path.as_str().rsplit('/').next().unwrap_or_default());
-    let mut paths = Vec::new();
-    if let Some(children) = children {
-        namespace_page(
-            children,
-            lower,
-            request.offset,
-            request.limit as usize + 1,
-            &mut |_| Ok(()),
-            &mut |name| {
-                paths.push(StreamPath::new(request.parent.as_ref().map_or_else(
-                    || name.to_owned(),
-                    |parent| format!("{parent}/{name}"),
-                ))?);
-                Ok(())
-            },
-        )?;
-    }
-    let has_more = paths.len() > request.limit as usize;
-    paths.truncate(request.limit as usize);
-    let next_after = if has_more {
-        paths.last().cloned()
+    let mut examine = |_name: &str| {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            return work.record(work.meter.examine(1, 0));
+        }
+        Ok(())
+    };
+    let page = namespace_page(index, lower, request.offset, limit as usize, &mut examine)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut rows = if let Some(work) = work {
+        if page.length == 0 {
+            Vec::new()
+        } else {
+            let original = _allocation.get_or_insert_with(|| ReadAllocation::empty(&work.meter));
+            work.record(crate::native::vector(page.length, &work.meter, original))?
+        }
+    } else {
+        child_buffer(page.length)?
+    };
+    #[cfg(target_arch = "wasm32")]
+    let mut rows = child_buffer(page.length)?;
+    let mut page_bytes = 64usize;
+    page.visit(&mut examine, &mut |name| {
+        let path = capture_child_path(request.parent.as_ref(), name, work)?;
+        let (tail, tail_record) =
+            projected_tail(&state.paths, &path, request.tail_stream.as_ref(), work)?;
+        let origin = capture_origin(&state.paths, &path, work)?;
+        let child = Child {
+            path,
+            tail,
+            tail_record,
+            origin,
+        };
+        #[cfg(all(loom, feature = "local"))]
+        let size =
+            if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes) {
+                child.path.as_str().len()
+            } else {
+                crate::wire_codec::requests::child_len(&child)
+            };
+        #[cfg(not(all(loom, feature = "local")))]
+        let size = crate::wire_codec::requests::child_len(&child);
+        page_bytes = page_bytes.saturating_add(size).saturating_add(10);
+        if page_bytes > crate::MAX_COMMAND_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            work.record(
+                work.meter
+                    .admit_examination(1, std::mem::size_of::<Child>() as u64),
+            )?;
+        }
+        rows.push(child);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            work.record(
+                work.meter
+                    .record_examination(1, std::mem::size_of::<Child>() as u64),
+            )?;
+        }
+        Ok(())
+    })?;
+    let next_after = if page.has_more {
+        rows.last().map(|child| child.path.clone())
     } else {
         None
     };
-    let mut page_bytes =
-        64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
-    let children = paths
-        .into_iter()
-        .map(|path| {
-            let (tail, tail_record) =
-                projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
-            let origin = state.paths.origin(&path)?;
-            let child = Child {
-                path,
-                tail,
-                tail_record,
-                origin,
-            };
-            #[cfg(all(loom, feature = "local"))]
-            let size =
-                if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes)
-                {
-                    child.path.as_str().len()
-                } else {
-                    crate::wire_codec::requests::child_len(&child)
-                };
-            #[cfg(not(all(loom, feature = "local")))]
-            let size = crate::wire_codec::requests::child_len(&child);
-            page_bytes = page_bytes.saturating_add(size).saturating_add(10);
-            if page_bytes > crate::MAX_COMMAND_BYTES {
-                return Err(StreamError::LimitExceeded);
-            }
-            Ok(child)
-        })
-        .collect::<Result<Vec<_>, StreamError>>()?;
-    let result = ChildrenPage {
+    page_bytes =
+        page_bytes.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
+    if page_bytes > crate::MAX_COMMAND_BYTES {
+        return Err(StreamError::LimitExceeded);
+    }
+    Ok(ChildrenPage {
         hierarchy_version: state.hierarchy_version,
-        children,
+        children: rows,
         next_after,
-    };
-    Ok(result)
+    })
 }
 
+fn child_buffer(length: usize) -> Result<Vec<Child>, StreamError> {
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(length)
+        .map_err(|_| StreamError::Capacity)?;
+    Ok(rows)
+}
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl StreamProvider for MemoryStream {
@@ -911,7 +979,6 @@ impl MemoryStream {
             crate::HeadProjection::Tail | crate::HeadProjection::History
         ) || request.durable_through.is_some()
             || !request.retained.is_empty()
-            || request.children.is_some()
         {
             return Err(StreamError::Unsupported);
         }
@@ -925,6 +992,9 @@ impl MemoryStream {
         request: &crate::HeadsRequest,
         work: &Work,
     ) -> Result<(crate::Heads, Allocation), StreamError> {
+        // The value is declared last so refusal drops all page storage before
+        // the original child-vector credit, including during unwind.
+        let mut children_allocation = None;
         let mut output = crate::NativeStreamOutput::new(
             self.empty_heads(request),
             ReadAllocation::empty(&work.meter),
@@ -947,8 +1017,21 @@ impl MemoryStream {
             ))?;
         }
         work.record(work.meter.check())?;
-        self.capture_heads_into(request, false, &mut output.value, Some(work))
-            .await?;
+        self.capture_heads_into(
+            request,
+            false,
+            &mut output.value,
+            Some(work),
+            &mut children_allocation,
+        )
+        .await?;
+        if let Some(mut children) = children_allocation.take() {
+            if let Err(error) = output.allocation.absorb(&mut children) {
+                drop(output);
+                drop(children);
+                return work.record(Err(error));
+            }
+        }
         work.record(work.meter.check())?;
         let (view, allocation) = output.into_parts();
         Ok((view, Some(allocation)))

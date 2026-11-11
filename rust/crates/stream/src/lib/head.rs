@@ -79,6 +79,9 @@ pub struct HeadsRequest {
 
 impl HeadsRequest {
     pub(crate) fn validate(&self) -> Result<(), StreamError> {
+        if let Some(children) = &self.children {
+            children.validate()?;
+        }
         let named = self.selection_count()?;
         if self.limit == 0
             || named > self.limit

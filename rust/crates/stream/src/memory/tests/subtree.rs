@@ -28,6 +28,7 @@ proptest! {
             }
             provider.fork(ForkRequest {
                 source: StreamPath::new("rank")?, destination: StreamPath::new("forked")?,
+                exclude: Vec::new(),
                 at_tail: None, idempotency_key: IdempotencyKey::unique(),
             }).await?;
             for prefix in ["rank", "forked"] {
@@ -56,12 +57,14 @@ proptest! {
                 let children = &state.paths.node(&parent).ok_or(StreamError::NotFound)?.children;
                 let mut visited = 0usize;
                 let mut selected = Vec::new();
-                namespace_page(children, lower.as_deref(), offset, limit + 1,
-                    &mut |_| { visited += 1; Ok(()) }, &mut |name| {
+                let page = namespace_page(children, lower.as_deref(), offset, limit,
+                    &mut |_| { visited += 1; Ok(()) })?;
+                page.visit(&mut |_| { visited += 1; Ok(()) }, &mut |name| {
                         selected.push(StreamPath::new(format!("{prefix}/{name}"))?);
                         Ok(())
                     })?;
-                assert_eq!(selected, expected);
+                assert_eq!(selected, expected[..expected.len().min(limit)]);
+                assert_eq!(page.has_more, expected.len() > limit);
                 assert!(visited <= 4 * usize::from(height(children)) + 3 * (limit + 1),
                     "rank seek visited {visited} nodes instead of a height-plus-page bound");
             }

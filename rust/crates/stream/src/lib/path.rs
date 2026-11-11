@@ -123,17 +123,34 @@ impl StreamPath {
         if !suffix.starts_with('/') {
             return Ok(Err(StreamError::InvalidPath));
         }
-        if let Err(error) = Self::validate(&suffix[1..]) {
+        Self::join_native(Some(self), &suffix[1..], meter)
+    }
+
+    /// Joins borrowed canonical input without an unadmitted formatted string.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn join_native(
+        parent: Option<&Self>,
+        relative: &str,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        if let Err(error) = Self::validate(relative) {
             return Ok(Err(error));
         }
-        let length = self.as_str().len().checked_add(suffix.len());
+        let Some(parent) = parent else {
+            return Self::native_parts(&[relative], meter).map(Ok);
+        };
+        let length = parent
+            .as_str()
+            .len()
+            .checked_add(1)
+            .and_then(|n| n.checked_add(relative.len()));
         if length.is_none_or(|length| length > MAX_PATH_BYTES) {
             return Ok(Err(StreamError::InvalidPath));
         }
-        if self.as_str().split('/').count() + suffix[1..].split('/').count() > MAX_ITEMS {
+        if parent.as_str().split('/').count() + relative.split('/').count() > MAX_ITEMS {
             return Ok(Err(StreamError::LimitExceeded));
         }
-        Self::native_parts(&[self.as_str(), suffix], meter).map(Ok)
+        Self::native_parts(&[parent.as_str(), "/", relative], meter).map(Ok)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

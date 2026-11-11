@@ -60,7 +60,9 @@ pub trait NativeStreamProvider: StreamProvider {
     /// Coherent named heads and absence on the original ledger.
     ///
     /// Memory and Local support named `Tail` and `History` without durability
-    /// confirmation, retained-record or child selections. History shares original
+    /// confirmation or retained-record selections. Direct-child pages, including
+    /// indexed offsets and projected last records, share the same snapshot and
+    /// original allocation owner. History shares original
     /// record owners and funds reconstructed provenance on this same ledger.
     /// Its durable offset is zero, making no persistence claim. Other selections refuse with
     /// `Unsupported`; a native consumer must never fall back to ordinary work.
