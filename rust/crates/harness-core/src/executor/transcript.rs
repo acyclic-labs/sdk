@@ -372,6 +372,7 @@ fn admit_manifest(reference: &FileRef, bytes: &[u8], io: Option<&PreparationIo>)
         || unsupported_manifest(io),
         || unsupported_manifest(io),
     )
+    .map(|_| ())
 }
 
 fn unsupported_manifest(io: Option<&PreparationIo>) -> Error {
