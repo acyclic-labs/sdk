@@ -92,7 +92,8 @@ fn sandbox_policy() {
                 .unwrap();
             assert!(
                 output.status.success(),
-                "confined={confined}, access={access:?}, volume_write={volume_write}, custody={custodied}: stdout={} stderr={}",
+                "confined={confined}, access={access:?}, volume_write={volume_write}, custody={custodied}: status={} stdout={} stderr={}",
+                output.status,
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );

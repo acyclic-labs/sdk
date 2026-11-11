@@ -26,6 +26,13 @@ pub(super) fn runtime_read_roots() -> io::Result<Vec<PathBuf>> {
         "/bin",
         "/sbin",
         "/Library/Apple/System/Library",
+        // dyld's libignition bootstrap resolves shared caches through these
+        // graft points on snapshot and live-filesystem boots.
+        "/System/Volumes/Preboot/Cryptexes/App/System",
+        "/System/Volumes/Preboot/Cryptexes/Incoming/OS",
+        "/System/Volumes/Preboot/Cryptexes/OS",
+        "/System/Cryptexes/App",
+        "/System/Cryptexes/OS",
         "/dev/null",
     ]
     .into_iter()

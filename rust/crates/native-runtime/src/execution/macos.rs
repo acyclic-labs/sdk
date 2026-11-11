@@ -375,6 +375,10 @@ fn rule(profile: &mut String, operations: &str, root: &super::BoundPath) -> io::
     let filter = if root.is_dir { "subpath" } else { "literal" };
     use std::fmt::Write;
     write!(profile, "(allow {operations} ({filter} \"{path}\"))").expect("writing to String");
+    // libignition opens "/" as an openat root and reads/stats intermediate
+    // directories. Derive that navigation authority from each bound grant:
+    // path-ancestors grants directory objects, never their sibling subtrees.
+    write!(profile, "(allow file-read* (path-ancestors \"{path}\"))").expect("writing to String");
     Ok(())
 }
 
