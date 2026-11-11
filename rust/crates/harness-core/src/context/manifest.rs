@@ -148,7 +148,10 @@ impl ContextManifest {
                 .ok_or_else(|| {
                     stock_boundary(io, ErrorCode::Invalid, "manifest message count overflows")
                 })?;
-            if count > limits.context_messages {
+            if limits
+                .context_messages
+                .is_some_and(|maximum| count > maximum.get())
+            {
                 return Err(stock_boundary(
                     io,
                     ErrorCode::Invalid,

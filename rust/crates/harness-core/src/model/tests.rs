@@ -211,11 +211,19 @@ fn native_media_preserves_configuration_and_validates_bounds() -> Result<()> {
         },
     });
     result.validate_limits(Limits::default(), &mut None)?;
+    let mut repeated = result.clone();
+    if let ModelContent::Part(ModelContentPart::ToolResult {
+        content: ToolResultContent::Parts { parts },
+        ..
+    }) = &mut repeated
+    {
+        parts.push(parts[0].clone());
+    }
     assert!(
-        result
+        repeated
             .validate_limits(
                 Limits {
-                    attachments: 0,
+                    attachments: std::num::NonZeroUsize::new(1),
                     ..Limits::default()
                 },
                 &mut None
@@ -383,7 +391,7 @@ async fn prefix_depth_three_reopens_and_authenticates_history() -> Result<()> {
             &head,
             &reader,
             Limits {
-                context_messages: prepared.request().messages.len(),
+                context_messages: std::num::NonZeroUsize::new(prepared.request().messages.len()),
                 ..limits
             },
             None

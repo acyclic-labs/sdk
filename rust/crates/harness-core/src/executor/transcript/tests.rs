@@ -50,12 +50,13 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
     assert_eq!(file.descriptor().media_type(), REQUEST_MEDIA);
     let manifest_bytes = journal.load(&file, None)?.await?;
     let manifest_text = std::str::from_utf8(&manifest_bytes).unwrap();
-    assert!(manifest_text.starts_with("{\"$version\":1,"));
+    assert!(manifest_text.starts_with("{\"$version\":2,"));
     for (index, bytes) in [
-        manifest_text.replacen("{\"$version\":1,", "{", 1),
-        manifest_text.replacen("{\"$version\":1,", "{\"$version\":0,", 1),
-        manifest_text.replacen("{\"$version\":1,", "{\"$version\":2,", 1),
-        "{\"$version\":2,malformed body".into(),
+        manifest_text.replacen("{\"$version\":2,", "{", 1),
+        manifest_text.replacen("{\"$version\":2,", "{\"$version\":0,", 1),
+        manifest_text.replacen("{\"$version\":2,", "{\"$version\":1,", 1),
+        manifest_text.replacen("{\"$version\":2,", "{\"$version\":3,", 1),
+        "{\"$version\":3,malformed body".into(),
     ]
     .into_iter()
     .enumerate()
@@ -69,6 +70,14 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
                 None,
             )?
             .await?;
+        assert_eq!(
+            usage_request(journal, &reference)
+                .await
+                .err()
+                .unwrap()
+                .code(),
+            crate::wire::ErrorCode::Unsupported
+        );
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
@@ -98,6 +107,78 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
             assert_eq!(
                 work.live_allocation_bytes(),
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+            );
+        }
+    }
+    // A historically signed finite manifest still authenticates after its count
+    // fields become optional. Both journal append paths must admit the format
+    // before that cached proof can bypass complete request reconstruction.
+    let verifier = storage.verifier();
+    let current_version = load_manifest(journal, &file, None).await?.version;
+    for version in std::iter::once(current_version)
+        .chain(1..current_version)
+        .chain(std::iter::once(current_version + 1))
+    {
+        let mut signed = load_manifest(journal, &file, None).await?;
+        signed.version = version;
+        signed.admitted_limits = Limits {
+            file_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
+            path_bytes: crate::conversation::MAX_PATH_BYTES,
+            attachments: std::num::NonZeroUsize::new(8),
+            render_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
+            context_messages: std::num::NonZeroUsize::new(128),
+            ..Limits::default()
+        };
+        signed.proof = Some(signed.attestation(&verifier, None).await?);
+        assert!(signed.authenticates(
+            &verifier,
+            Limits::default(),
+            prepared.request_digest(),
+            None
+        )?);
+        let reference =
+            stage_manifest(journal, OperationId::new(), "signed-version", &signed, None).await?;
+        for conditional in [false, true] {
+            let operation = OperationId::new();
+            journal
+                .append(
+                    operation,
+                    "started",
+                    &ExecutionEvent::Started {
+                        request_digest: prepared.request_digest(),
+                    },
+                    None,
+                )?
+                .await?;
+            let event = ExecutionEvent::ModelStarted {
+                step: 0,
+                purpose: ModelPurpose::Summary,
+                request_digest: prepared.request_digest(),
+                request: reference.clone(),
+                context: None,
+            };
+            let result = if conditional {
+                match journal.append_if_tail(operation, 1, "signed-start", &event, None) {
+                    Ok(future) => future.await.map(|committed| assert!(committed)),
+                    Err(error) => Err(error),
+                }
+            } else {
+                match journal.append(operation, "signed-start", &event, None) {
+                    Ok(future) => future.await,
+                    Err(error) => Err(error),
+                }
+            };
+            if version == current_version {
+                result?;
+            } else {
+                assert_eq!(
+                    result.err().unwrap().code(),
+                    crate::wire::ErrorCode::Unsupported
+                );
+            }
+            assert_eq!(
+                journal.replay(operation, 0, 4, None)?.await?.len(),
+                if version == current_version { 2 } else { 1 },
             );
         }
     }
@@ -131,7 +212,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
             funded_journal
                 .load(&funded, None)?
                 .await?
-                .starts_with(b"{\"$version\":1,")
+                .starts_with(b"{\"$version\":2,")
         );
         assert_eq!(
             load_request(
@@ -330,7 +411,7 @@ fn assert_component_proofs(
     let header = serde_json::to_value(&manifest.header)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     for (path, replacement) in [
-        ("/$version", 2.into()),
+        ("/$version", 3.into()),
         ("/header", reference),
         ("/header_digest/0", (manifest.header_digest[0] ^ 1).into()),
         ("/messages/reference", header),

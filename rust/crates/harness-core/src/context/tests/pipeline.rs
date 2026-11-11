@@ -52,7 +52,7 @@ impl ContextStage for Transform {
 async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
     let input = input();
     let limits = Limits {
-        context_messages: 2,
+        context_messages: std::num::NonZeroUsize::new(2),
         render_bytes: 2048,
         ..payload_limits()
     };
@@ -72,7 +72,7 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
         let exact = "current".len() as u64;
         for rejected in [
             Limits {
-                context_messages: 1,
+                context_messages: std::num::NonZeroUsize::new(1),
                 ..limits
             },
             Limits {
@@ -125,7 +125,7 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
             .load(
                 &input,
                 Limits {
-                    context_messages: 1,
+                    context_messages: std::num::NonZeroUsize::new(1),
                     ..limits
                 },
                 None

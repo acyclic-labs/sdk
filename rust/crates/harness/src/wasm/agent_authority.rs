@@ -280,10 +280,16 @@ impl WasmAgentAuthority {
             .files
             .values()
             .try_fold(0_u64, |sum, bytes| sum.checked_add(bytes.len() as u64));
-        let maximum_files = limits
-            .context_messages
-            .saturating_mul(limits.attachments.saturating_add(2));
-        if total.is_none() || files.files.len() > maximum_files {
+        let maximum_files =
+            limits
+                .context_messages
+                .zip(limits.attachments)
+                .map(|(messages, attachments)| {
+                    messages
+                        .get()
+                        .saturating_mul(attachments.get().saturating_add(2))
+                });
+        if total.is_none() || maximum_files.is_some_and(|maximum| files.files.len() > maximum) {
             return Err(JsValue::from_str("captured prefix files exceed limits"));
         }
         let reader = WasmPrefixReader {

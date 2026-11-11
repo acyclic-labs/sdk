@@ -288,7 +288,7 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
     };
     for (message_limit, current_input_index) in [(2, 1), (3, 2)] {
         let limits = Limits {
-            context_messages: message_limit,
+            context_messages: std::num::NonZeroUsize::new(message_limit),
             ..Limits::default()
         };
         let run = pipeline.run(&input, limits, None).await?;

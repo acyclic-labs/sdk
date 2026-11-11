@@ -126,32 +126,44 @@ fn legacy_identity_override_replays_existing_user() -> Result<()> {
 
 #[test]
 fn manifest_count_uses_turn_attachment_limit() -> Result<()> {
-    let mut limits = limits();
-    limits.attachments = 1;
-    let Err(error) = prepare_turn(
-        &conversation()?,
-        OperationId::new(),
-        file("user.txt")?,
-        ReferencedAttachments::Manifest {
-            manifest: manifest_file("attachments.json")?,
-            item_count: 2,
-        },
-        limits,
-        None,
-        false,
-        true,
-        None,
-        None,
-    ) else {
-        return Err(Error::Invalid(
-            "manifest count above the turn limit was admitted".into(),
-        ));
-    };
-    assert!(
-        error
-            .to_string()
-            .contains("turn attachments exceed harness limits")
-    );
+    for maximum in [std::num::NonZeroUsize::new(1), None] {
+        let mut limits = limits();
+        limits.attachments = maximum;
+        let result = prepare_turn(
+            &conversation()?,
+            OperationId::new(),
+            file("user.txt")?,
+            ReferencedAttachments::Manifest {
+                manifest: manifest_file("attachments.json")?,
+                item_count: 2,
+            },
+            limits,
+            None,
+            false,
+            true,
+            None,
+            None,
+        );
+        if maximum.is_some() {
+            let error = result.err().ok_or_else(|| {
+                Error::Invalid("manifest count above the turn limit was admitted".into())
+            })?;
+            assert!(
+                error
+                    .to_string()
+                    .contains("turn attachments exceed harness limits")
+            );
+        } else {
+            let prepared = result?;
+            assert!(matches!(
+                prepared
+                    .user_message
+                    .as_ref()
+                    .map(|message| &message.attachments),
+                Some(ReferencedAttachments::Manifest { item_count: 2, .. })
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -317,7 +329,7 @@ fn default_turn_rejects_history_overflow_instead_of_selecting_a_suffix() -> Resu
     )?;
     let operation = OperationId::new();
     let mut bounded = limits();
-    bounded.context_messages = 2;
+    bounded.context_messages = std::num::NonZeroUsize::new(2);
     assert!(
         prepare_turn(
             &state,
@@ -333,7 +345,7 @@ fn default_turn_rejects_history_overflow_instead_of_selecting_a_suffix() -> Resu
         )
         .is_err()
     );
-    bounded.context_messages = 3;
+    bounded.context_messages = std::num::NonZeroUsize::new(3);
     let prepared = prepare_turn(
         &state,
         operation,
