@@ -529,13 +529,13 @@ impl<'a> IntoIterator for &'a Namespace {
 // Exact absolute-path subscriptions are never shared with a forked node.
 #[derive(Clone)]
 struct Signals {
-    changed: watch::Sender<u64>,
+    changed: crate::change::Change,
     follows: Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>,
 }
 impl Signals {
-    fn new(tail: u64) -> Self {
+    fn new() -> Self {
         Self {
-            changed: watch::channel(tail).0,
+            changed: crate::change::Change::new(),
             follows: Arc::new(crate::query_sync::SyncMutex::new(
                 crate::follow_index::FollowIndex::default(),
             )),

@@ -60,9 +60,7 @@ impl MemoryStream {
         let selection = follow_selection(snapshot.as_ref(), from, anchor, bootstrap_head, until)?;
         let (from, anchor) = (selection.from, selection.preceding);
         let tail = snapshot.as_ref().map_or(0, |path| path.tail);
-        let registration = state
-            .signals
-            .subscribe_with(path.clone(), || Signals::new(tail))?;
+        let registration = state.signals.subscribe_with(path.clone(), Signals::new)?;
         let signals = registration.value();
         let interest = crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)?;
         drop(state);

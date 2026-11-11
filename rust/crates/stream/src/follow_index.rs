@@ -1,7 +1,4 @@
-use crate::{
-    FollowFilter, Record, StreamError,
-    query_sync::{SyncMutex, watch},
-};
+use crate::{FollowFilter, Record, StreamError, query_sync::SyncMutex};
 use bytes::Bytes;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -19,14 +16,14 @@ pub(crate) struct FollowIndex {
 }
 struct Entry {
     filter: FollowFilter,
-    changed: watch::Sender<u64>,
+    changed: crate::change::Change,
     notified: u64,
 }
 
 pub(crate) struct FollowInterest {
     index: Weak<SyncMutex<FollowIndex>>,
     id: u64,
-    pub(crate) changed: watch::Receiver<u64>,
+    pub(crate) changed: crate::change::Subscription,
 }
 
 impl FollowIndex {
@@ -37,7 +34,8 @@ impl FollowIndex {
     ) -> Result<FollowInterest, StreamError> {
         let mut state = index.lock().map_err(|_| StreamError::Unavailable)?;
         let id = state.next.checked_add(1).ok_or(StreamError::Capacity)?;
-        let (changed, receiver) = watch::channel(tail);
+        let changed = crate::change::Change::new();
+        let receiver = changed.subscribe()?;
         if let Some(ranges) = filter.ranges() {
             for (ordinal, range) in ranges.iter().enumerate() {
                 let key = (range.start.clone(), id, ordinal);
@@ -76,7 +74,7 @@ impl FollowIndex {
     // A waker may synchronously drop another follow and remove its registration.
     fn notify(
         index: &SyncMutex<Self>,
-        select: impl FnOnce(&mut Self, &mut Vec<(watch::Sender<u64>, u64)>),
+        select: impl FnOnce(&mut Self, &mut Vec<crate::change::Change>),
     ) {
         let mut notifications = Vec::new();
         {
@@ -85,8 +83,8 @@ impl FollowIndex {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             select(&mut state, &mut notifications);
         }
-        for (changed, tail) in notifications {
-            changed.send_replace(tail);
+        for changed in notifications {
+            let _ = changed.notify();
         }
     }
 
@@ -99,7 +97,7 @@ impl FollowIndex {
                     && entry.filter.matches(&record.headers)
                 {
                     entry.notified = tail;
-                    notifications.push((entry.changed.clone(), tail));
+                    notifications.push(entry.changed.clone());
                 }
             };
             for record in records {
@@ -125,14 +123,9 @@ impl FollowIndex {
     }
 
     /// Creation may expose inherited history even without appended records.
-    pub(crate) fn created(index: &SyncMutex<Self>, tail: u64) {
+    pub(crate) fn created(index: &SyncMutex<Self>) {
         Self::notify(index, |state, notifications| {
-            notifications.extend(
-                state
-                    .entries
-                    .values()
-                    .map(|entry| (entry.changed.clone(), tail)),
-            );
+            notifications.extend(state.entries.values().map(|entry| entry.changed.clone()));
         });
     }
 
@@ -140,12 +133,7 @@ impl FollowIndex {
     #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
     pub(crate) fn invalidate(index: &SyncMutex<Self>) {
         Self::notify(index, |state, notifications| {
-            notifications.extend(
-                state
-                    .entries
-                    .values()
-                    .map(|entry| (entry.changed.clone(), entry.notified)),
-            );
+            notifications.extend(state.entries.values().map(|entry| entry.changed.clone()));
         });
     }
 
@@ -323,6 +311,7 @@ thread_local! { static VISITS: std::cell::Cell<usize> = const { std::cell::Cell:
 mod tests {
     use super::*;
     use crate::{CommitId, RecordHeaders, wire};
+    use futures::FutureExt as _;
     #[test]
     fn unrelated_publications_never_notify_filtered_interests() {
         let index = Arc::new(SyncMutex::new(FollowIndex::default()));
@@ -349,10 +338,12 @@ mod tests {
             origin: crate::StreamPath::new("origin").unwrap(),
         };
         FollowIndex::publish(&index, &[record("z", 0)], 1);
-        assert!(!followed.changed.has_changed().unwrap());
+        assert!(followed.changed.changed().now_or_never().is_none());
         FollowIndex::publish(&index, &[record("b", 1)], 2);
-        assert!(followed.changed.has_changed().unwrap());
-        assert_eq!(*followed.changed.borrow_and_update(), 2);
+        assert!(matches!(
+            followed.changed.changed().now_or_never(),
+            Some(Ok(()))
+        ));
         drop(followed);
         assert!(index.lock().unwrap().entries.is_empty());
         assert!(index.lock().unwrap().ranges.is_none());

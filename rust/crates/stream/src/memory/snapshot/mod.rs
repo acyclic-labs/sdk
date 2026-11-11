@@ -112,9 +112,8 @@ impl MemoryStream {
         // must wake every active path, including removed or reused histories.
         for path in interested {
             if let Some(signals) = state.signals.get(&path)? {
-                let tail = state.paths.get(&path).map_or(0, |path| path.tail);
-                signals.changed.send_replace(tail);
-                crate::follow_index::FollowIndex::created(&signals.follows, tail);
+                let _ = signals.changed.notify();
+                crate::follow_index::FollowIndex::created(&signals.follows);
             }
         }
         self.applied(&state);

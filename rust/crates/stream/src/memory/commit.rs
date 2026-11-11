@@ -901,9 +901,8 @@ fn install_namespace(
             }
             ancestor = path.parent();
             if let Some(signals) = state.signals.get(&path)? {
-                let tail = state.paths.get(&path).map_or(0, |path| path.tail);
-                signals.changed.send_replace(tail);
-                crate::follow_index::FollowIndex::created(&signals.follows, tail);
+                let _ = signals.changed.notify();
+                crate::follow_index::FollowIndex::created(&signals.follows);
             }
         }
         if matches!(fact, CommittedMutation::Fork(_)) {
@@ -914,13 +913,12 @@ fn install_namespace(
                 std::ops::Bound::Excluded(upper.as_str()),
             ))?;
             for path in created {
-                let Some(stream) = state.paths.get(&path) else {
+                if state.paths.get(&path).is_none() {
                     continue;
-                };
+                }
                 if let Some(signals) = state.signals.get(&path)? {
-                    let tail = stream.tail;
-                    signals.changed.send_replace(tail);
-                    crate::follow_index::FollowIndex::created(&signals.follows, tail);
+                    let _ = signals.changed.notify();
+                    crate::follow_index::FollowIndex::created(&signals.follows);
                 }
             }
         }
@@ -935,7 +933,7 @@ fn install_namespace(
         #[cfg(not(all(loom, feature = "local")))]
         let notify = true;
         if notify && let Some(signals) = state.signals.get(path)? {
-            signals.changed.send_replace(tail);
+            let _ = signals.changed.notify();
             crate::follow_index::FollowIndex::publish(&signals.follows, fact_records(fact), tail);
         }
         state.record_count += fact_records(fact).len();

@@ -74,7 +74,6 @@ mod browser;
 mod journal_provider;
 #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
 pub use journal_provider::{JournalStream, JournalStreamLimits};
-#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), loom))]
 mod change;
 #[cfg(any(
     all(feature = "http", not(target_arch = "wasm32")),

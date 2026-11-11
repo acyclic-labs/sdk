@@ -51,7 +51,7 @@ impl Drop for Dispatch {
             for key in &self.keys.keys {
                 let _ = self.provider.inner.publications.interests.notify(key);
             }
-            for (path, tail) in &self.keys.created {
+            for path in self.keys.created.keys() {
                 let index = self
                     .provider
                     .inner
@@ -61,7 +61,7 @@ impl Drop for Dispatch {
                     .ok()
                     .flatten();
                 if let Some(index) = index {
-                    crate::follow_index::FollowIndex::created(&index, *tail);
+                    crate::follow_index::FollowIndex::created(&index);
                 }
             }
             for (path, (records, tail)) in &self.keys.records {
