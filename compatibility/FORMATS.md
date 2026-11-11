@@ -164,10 +164,11 @@ version key sorts before all payload keys in both canonical encoding paths.
 The original reader verifies the immutable file descriptor, then admits this header before
 ordinary or funded payload decoding. Headerless and foreign-version manifests
 refuse with `Unsupported`, without migration. Version 3 is also bound into the
-existing manifest attestation. The committed descriptor records the earlier
-attachment/context-message presence change from the Rust-owned producer; its
-decoded and raw comparisons preserve every other field and unknown protobuf
-value. Path presence still requires a new canonical producer capture. Existing
+existing manifest attestation. The Rust-owned producer recaptured the committed
+descriptor with optional path presence, retaining the earlier attachment and
+context-message presence. Independent semantic and raw comparisons, including
+unknown fields, prove that only path presence, its synthetic oneof and the
+corresponding source token spans changed from the preceding capture. Existing
 protobuf writer captures and historical goldens remain unchanged.
 
 Fixed-width codecs do constant work. Variable payload codecs necessarily take
