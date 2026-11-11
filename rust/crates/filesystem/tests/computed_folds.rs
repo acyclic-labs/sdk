@@ -2,12 +2,11 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::{
-    CancellationToken, NativeMaterializationWork, WorkBudget,
+    CancellationToken, MemoryObjectBackend, NativeMaterializationWork, WorkBudget,
     demand::{
         DemandError, Fold, FoldCheckpoint, FoldCheckpointObject, FoldCursor, FoldObjectError,
     },
     kernel::{KernelAccounting, Retained},
-    memory::MemoryObjectStore,
 };
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
@@ -46,6 +45,10 @@ impl Fold for Sum {
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+fn objects() -> MemoryObjectBackend {
+    MemoryObjectBackend::new(Arc::new(acyclic_objects::MemoryObjects::memory()))
+}
+
 #[tokio::test]
 async fn objects_checkpoint_reopens_and_resumes_on_original_credit() -> Result {
     let cancellation = CancellationToken::new();
@@ -55,7 +58,7 @@ async fn objects_checkpoint_reopens_and_resumes_on_original_credit() -> Result {
         budget: WorkBudget::UNBOUNDED,
         cancellation: &cancellation,
     };
-    let store = MemoryObjectStore::default();
+    let store = objects();
     let seed: Retained<FoldCheckpoint<Total>> =
         ctx.decode_json(&serde_json::to_vec(&FoldCheckpoint {
             version: 1,
@@ -101,7 +104,7 @@ async fn checkpoint_refuses_wrong_prefix_length_and_cancelled_original() -> Resu
         work: &original,
         cancellation: &cancellation,
     };
-    let store = MemoryObjectStore::default();
+    let store = objects();
     let checkpoint = FoldCheckpoint {
         version: 1,
         view: Sum.identity(),
@@ -189,7 +192,7 @@ async fn checkpoint_catalog_reopens_nearest_prefix_and_reads_only_new_events() -
         cancellation: &cancellation,
     };
     let streams = Arc::new(MemoryStream::default());
-    let objects = Arc::new(MemoryObjectStore::default());
+    let objects = Arc::new(objects());
     let path = StreamPath::new("usage/first")?;
     let mut cuts = Vec::new();
     for batch in 0..3u64 {
@@ -277,4 +280,67 @@ async fn checkpoint_catalog_reopens_nearest_prefix_and_reads_only_new_events() -
     }
     ctx.remaining()?;
     Ok(())
+}
+
+mod equivalence {
+    use super::*;
+    use proptest::prelude::*;
+    struct Append;
+    impl Fold for Append {
+        type State = Vec<u8>;
+        type Record = u8;
+        fn identity(&self) -> [u8; 32] {
+            [1; 32]
+        }
+        fn apply(
+            &self,
+            state: &mut Vec<u8>,
+            _: u64,
+            record: &u8,
+            _: &mut KernelAccounting<'_>,
+        ) -> std::result::Result<(), DemandError> {
+            state.push(*record);
+            Ok(())
+        }
+    }
+    fn seed() -> FoldCheckpoint<Vec<u8>> {
+        FoldCheckpoint {
+            version: 1,
+            view: [1; 32],
+            sequence: 0,
+            generation: [0; 32],
+            state: Vec::new(),
+        }
+    }
+    fn retain(
+        checkpoint: &FoldCheckpoint<Vec<u8>>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Retained<FoldCheckpoint<Vec<u8>>> {
+        ctx.decode_json(&serde_json::to_vec(checkpoint).unwrap())
+            .unwrap()
+    }
+    proptest! {
+        #[test]
+        fn checkpoint_tail_matches_full_fold_at_every_cut(records in prop::collection::vec(any::<u8>(), 0..128), chunk in 1u64..32) {
+            let cancellation = CancellationToken::new();
+            let mut ctx = KernelAccounting::Standalone { allocations: Default::default(), work: Default::default(), budget: WorkBudget::UNBOUNDED, cancellation: &cancellation };
+            let chunk = NonZeroU64::new(chunk).unwrap();
+            let mut checkpoint = seed();
+            for cut in 0..=records.len() {
+                let start = checkpoint.sequence as usize;
+                let mut fold = FoldCursor::resume(Append, retain(&checkpoint, &mut ctx), chunk).unwrap();
+                for (index, record) in records.iter().enumerate().take(cut).skip(start) {
+                    fold = fold.advance(index as u64, record, &mut ctx).unwrap();
+                }
+                prop_assert_eq!(fold.checkpoint().state.as_slice(), &records[..cut]);
+                if cut > start {
+                    // Planted off-by-one tail start: no missing record may be
+                    // accepted, even when its value equals adjacent records.
+                    let bad = FoldCursor::resume(Append, retain(&checkpoint, &mut ctx), chunk).unwrap();
+                    prop_assert!(bad.advance(start as u64 + 1, &records[start], &mut ctx).is_err());
+                }
+                if fold.checkpoint_due() { checkpoint = fold.checkpoint().clone(); }
+            }
+        }
+    }
 }
