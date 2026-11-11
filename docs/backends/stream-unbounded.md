@@ -994,3 +994,23 @@ wrong flags, unsupported version, invalid counts/positions/heights and rebound
 submission count/deadline. A count-guard mutation must accept a whole-row prefix
 and fail that control. The existing condition dependency mutation now targets the
 packed stream writer. These new controls and source need remote validation.
+
+At exact77af51f3d5e7ad242387c269843546f4869875ec, Linux Stream all-target
+checking passed in17.70s. All13 staged controls passed in0.84s, including the
+original conditional 100k ingestion, new unconditional 100k Directory/page/read
+bound, 64MiB record, directory reopen/order/conditions, cancellation and all-byte
+packed-codec generator. All four selected mutations failed with their intended
+assertions (0 passed,4 failed,0.03s); the prefix control failed at byte35 (the
+header boundary). Patches reversed and git diff verified clean. Terminal:
+PACKED_CONTROLS_PASS_FOUR_MUTANTS_REJECTED_SOURCE_RESTORED.
+Evidence Q:/scratch/stream-unbounded/packed-77af-linux.log; session37420 is
+terminal rc0, with no active validation job. No main landing or PR is claimed.
+
+This proves bounded preparation/encoding behavior on this source, not public
+atomic commit publication. Remaining prerequisites include efficient namespace
+COW using the shared page machinery, original-work admission, canonical retry
+identity and final apply/stage lifecycle, event-driven retirement, actual crash
+simulation/loom proofs, provider/transport cutover, all-backend atomic conformance,
+caller workaround removal, SDK main landing and Cloud adoption. Nonempty small
+condition sets currently still have one index/checkpoint per effect; their
+packing/representation must be addressed before claiming production performance.
