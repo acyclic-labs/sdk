@@ -34,7 +34,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     /// One comparison shared by every originally authorized root. Unrelated
     /// changes are traversed once, not once for each skill root, and are never
-    /// copied into a root's disclosed result.
+    /// copied into a root's disclosed result. Paths retain frontier order;
+    /// ordered renderers own their ordered projection, not this collector.
     pub(crate) async fn diff_private_publications(
         &self,
         roots: &[(&ContextRoot, &ContentGrant)],
@@ -52,13 +53,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         Ok(paths
             .into_iter()
-            .map(|mut paths| {
-                paths.sort_by(|left, right| left.path.cmp(&right.path));
-                DiffPublication {
-                    previous: base.clone(),
-                    generation: current.clone(),
-                    paths,
-                }
+            .map(|paths| DiffPublication {
+                previous: base.clone(),
+                generation: current.clone(),
+                paths,
             })
             .collect())
     }
