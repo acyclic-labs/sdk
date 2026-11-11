@@ -22,7 +22,7 @@
             "id": "ok",
             "name": "shell",
             "arguments": {
-              "command": "echo CARD\"\"_SHELL_OK"
+              "command": "echo CARD\"\"_SHELL_OK\necho FIRST\"\"_LINE\necho **CARD\"\"_LITERAL**"
             }
           }
         ]
@@ -69,6 +69,8 @@
             "contains": [
               "Exit code: 0",
               "CARD_SHELL_OK",
+              "FIRST_LINE",
+              "**CARD_LITERAL**",
               "tool execution failed: tool rejected: selected file does not exist",
               "CARDS_DONE",
               "○"

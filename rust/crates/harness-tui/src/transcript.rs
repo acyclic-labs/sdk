@@ -49,10 +49,18 @@ impl Block {
         cache: &acyclic_markdown::CodeCache,
         tool_details: bool,
     ) -> Wrapped {
-        let details = matches!(self.kind, BlockKind::Tool { .. }) && tool_details;
-        let source = if details {
-            self.text.split_once('\n').map(|(_, body)| body)
-        } else if self.kind == BlockKind::Answer {
+        if matches!(self.kind, BlockKind::Tool { .. }) {
+            let mut header = wrap(self.kind, &self.text, width, theme);
+            if tool_details && let Some((_, source)) = self.text.split_once('\n') {
+                let mut body =
+                    wrap_rendered(self.kind, literal(source, Style::default()), width, theme);
+                header.lines.append(&mut body.lines);
+                header.links.append(&mut body.links);
+                header.code.append(&mut body.code);
+            }
+            return header;
+        }
+        let source = if self.kind == BlockKind::Answer {
             Some(self.text.as_str())
         } else {
             None
@@ -79,20 +87,12 @@ impl Block {
                 .as_ref()
                 .map(|(_, parser)| parser.lines())
                 .unwrap_or_default();
-            let mut body = wrap_rendered(
+            return wrap_rendered(
                 self.kind,
                 crate::markdown::render_lines(parsed, theme),
                 width,
                 theme,
             );
-            if details {
-                let mut header = wrap(self.kind, &self.text, width, theme);
-                header.lines.append(&mut body.lines);
-                header.links.append(&mut body.links);
-                header.code.append(&mut body.code);
-                return header;
-            }
-            return body;
         }
         wrap(self.kind, &self.text, width, theme)
     }
@@ -405,17 +405,21 @@ fn wrap(kind: BlockKind, text: &str, width: usize, theme: &ThemeStyles) -> Wrapp
     let marked = width > 1;
     let columns = if marked { width - 1 } else { width };
     let rendered = if prompt {
-        crate::markdown::Rendered {
-            text: text.to_owned(),
-            styles: vec![(0..text.len(), Style::default().add_modifier(Modifier::BOLD))],
-            links: Vec::new(),
-            bands: Vec::new(),
-            code: Vec::new(),
-        }
+        literal(text, Style::default().add_modifier(Modifier::BOLD))
     } else {
         crate::markdown::render(text, columns, theme)
     };
     wrap_rendered(kind, rendered, width, theme)
+}
+
+fn literal(text: &str, style: Style) -> crate::markdown::Rendered {
+    crate::markdown::Rendered {
+        text: text.to_owned(),
+        styles: vec![(0..text.len(), style)],
+        links: Vec::new(),
+        bands: Vec::new(),
+        code: Vec::new(),
+    }
 }
 
 fn wrap_rendered(
@@ -447,6 +451,8 @@ fn wrap_rendered(
             ""
         } else if prompt && index == 0 {
             "›"
+        } else if matches!(kind, BlockKind::Tool { .. }) {
+            " "
         } else if index == 0 {
             "●"
         } else {
@@ -721,7 +727,7 @@ mod tests {
     #[test]
     fn a_tool_card_is_one_row_whose_outcome_survives_clipping() {
         let mut transcript = TranscriptRows::default();
-        let call = "shell  cargo test -p foo --all-features\nsecond line";
+        let call = "shell  cargo test -p foo --all-features\nExit code: 0\nfirst\n**second**\n`code`\n> literal";
         transcript.push(BlockKind::Tool { failed: false }, call);
         transcript.push(BlockKind::Tool { failed: true }, "read  missing.txt");
         for width in [80, 24, 9] {
@@ -730,7 +736,7 @@ mod tests {
             assert!(rows.iter().all(|row| row.width() <= usize::from(width)));
             assert!(rows[0].starts_with('\u{23fa}') && rows[0].ends_with('\u{2713}'));
             assert!(rows[1].ends_with('\u{2717}'), "{rows:?}");
-            assert!(!rows[0].contains("second line"));
+            assert!(!rows[0].contains("**second**"));
         }
         let wide = text(transcript.rows(80));
         assert!(wide[0].contains("--all-features") && !wide[0].contains('\u{2026}'));
@@ -738,31 +744,21 @@ mod tests {
         let narrow = text(transcript.rows(24));
         assert!(narrow[0].contains('\u{2026}') && !narrow[0].contains("--all-features"));
         transcript.set_tool_details(true);
-        assert!(
-            text(transcript.rows(80))
-                .iter()
-                .any(|line| line.contains("second line"))
+        let expanded = text(transcript.rows(80));
+        assert_eq!(
+            &expanded[1..6],
+            [
+                " Exit code: 0",
+                " first",
+                " **second**",
+                " `code`",
+                " > literal"
+            ]
         );
-        let parsed = transcript.blocks[0]
-            .parsed
-            .as_ref()
-            .unwrap()
-            .1
-            .lines()
-            .as_ptr();
         transcript.set_tool_details(false);
         assert_eq!(text(transcript.rows(80)).len(), 2);
         transcript.set_tool_details(true);
-        assert_eq!(
-            transcript.blocks[0]
-                .parsed
-                .as_ref()
-                .unwrap()
-                .1
-                .lines()
-                .as_ptr(),
-            parsed
-        );
+        assert_eq!(text(transcript.rows(80)), expanded);
     }
 
     #[test]

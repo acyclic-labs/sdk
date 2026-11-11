@@ -20,13 +20,13 @@ pub struct ToolCard {
 }
 
 impl ToolCard {
-    /// The card's text: the name, then the summary.
+    /// The card's single-line label: the name, then the summary.
     #[must_use]
     pub fn line(&self) -> String {
         if self.summary.is_empty() {
             self.name.clone()
         } else {
-            format!("{}  {}", self.name, self.summary)
+            format!("{}  {}", self.name, self.summary.replace(['\r', '\n'], " "))
         }
     }
 
@@ -164,7 +164,7 @@ mod tests {
                 ModelContentPart::ToolCall(ToolCall::new(
                     "a".into(),
                     "shell".into(),
-                    json!({"command": "cargo test", "cwd": "x"}),
+                    json!({"command": "cargo test\n--locked", "cwd": "x"}),
                 )),
                 ModelContentPart::ToolCall(ToolCall::new(
                     "b".into(),
@@ -198,7 +198,7 @@ mod tests {
                 result(
                     "a",
                     ToolResultContent::Json {
-                        value: json!({"success": true, "exit_code": 0}),
+                        value: json!({"success": true, "exit_code": 0, "text": "Exit code: 0\nfirst\n**second**"}),
                     },
                 ),
                 result(
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "shell  cargo test",
+                "shell  cargo test --locked",
                 "read  missing.txt",
                 "plan",
                 r#"custom  {"n":1}"#
@@ -227,8 +227,11 @@ mod tests {
         );
         assert_eq!(cards[1].details, "tool execution failed: absent");
         assert_eq!(
-            serde_json::from_str::<Value>(&cards[0].details).unwrap()["exit_code"],
-            0
+            cards[0].text().split_once('\n'),
+            Some((
+                "shell  cargo test --locked",
+                "Exit code: 0\nfirst\n**second**"
+            ))
         );
         // Negative control: a turn without calls has no cards.
         let plain = TurnOutput {
