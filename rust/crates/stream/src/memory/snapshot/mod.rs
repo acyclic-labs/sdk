@@ -1,7 +1,7 @@
 //! Canonical snapshot of retained Stream facts.
 use super::{
-    History, MemoryStream, Namespace, Retained, RetainedFact, RetainedFactRef, State,
-    install_namespace, retain, stage_namespace,
+    History, MemoryStream, Namespace, RetainedFact, RetainedFactRef, State, install_namespace,
+    retain, stage_namespace,
 };
 use crate::wire_codec::{envelope_to_wire, observation_wire};
 use crate::{CommitId, CommittedMutation, IdempotencyKey, IdempotencyObservation, StreamError};
