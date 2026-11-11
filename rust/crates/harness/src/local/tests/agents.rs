@@ -1743,8 +1743,6 @@ async fn follow_tool_output(
 #[tokio::test]
 async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let directory = tempfile::tempdir().map_err(agent)?;
-    let peer = counting_server().await?;
-    let (port, calls) = (peer.port, &peer.calls);
     let home = directory.path().join("home");
     std::fs::create_dir_all(home.join(".claude")).map_err(agent)?;
     // The original workspace-write sandbox intentionally isolates networking.
