@@ -7,7 +7,21 @@ pub(super) async fn cost_fixture() -> Result<(
     crate::LocalHarness,
     CheckoutPublisher,
 )> {
+    seeded_cost_fixture(|_| Ok(())).await
+}
+
+/// A publisher over a checkout whose source `seed` writes before binding,
+/// so the bound baseline imports it.
+async fn seeded_cost_fixture(
+    seed: impl FnOnce(&std::path::Path) -> Result<()>,
+) -> Result<(
+    tempfile::TempDir,
+    tempfile::TempDir,
+    crate::LocalHarness,
+    CheckoutPublisher,
+)> {
     let directory = tempfile::tempdir().map_err(storage)?;
+    seed(directory.path())?;
     let state = tempfile::tempdir().map_err(storage)?;
     let model = crate::model::Model::new("scripted".into(), "publication".into(), "1".into())?;
     let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
@@ -236,9 +250,11 @@ async fn differing_captured_bytes_keep_the_original_publication_reference() -> R
 #[tokio::test]
 async fn first_publications_preserve_the_imported_baseline_and_external_edits() -> Result<()> {
     for once in [false, true] {
-        let (directory, _state, harness, publisher) = cost_fixture().await?;
-        std::fs::write(directory.path().join("seed.txt"), b"before\n").map_err(storage)?;
-        std::fs::write(directory.path().join("external.txt"), b"external\n").map_err(storage)?;
+        let (directory, _state, harness, publisher) = seeded_cost_fixture(|root| {
+            std::fs::write(root.join("seed.txt"), b"before\n").map_err(storage)?;
+            std::fs::write(root.join("external.txt"), b"external\n").map_err(storage)
+        })
+        .await?;
         let path = if once { "created.txt" } else { "seed.txt" };
         let operation = OperationId::new();
         let (file, _) = if once {

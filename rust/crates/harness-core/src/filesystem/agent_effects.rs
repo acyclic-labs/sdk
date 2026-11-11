@@ -239,6 +239,7 @@ mod tests {
                     &mut None,
                 )?),
                 profile: crate::agent::CreationConfig {
+                    topology: None,
                     model: None,
                     continuation: None,
                     context: crate::agent::SpawnContext::Fork,

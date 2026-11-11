@@ -215,7 +215,13 @@ async function ensureCargoTargetDirectory(targetDir) {
     if (error?.code !== "ENOENT") throw error;
   }
   if ((await readdir(targetDir)).length !== 0) {
-    throw new Error(`native target directory ${targetDir} is pre-existing without a valid CACHEDIR.TAG`);
+    // Generation can populate Cargo's configured target before a native
+    // producer reaches it. That target belongs to Cargo across processes;
+    // an unrelated populated directory still needs its cache identity.
+    const metadata = JSON.parse(commandOutput("cargo", ["metadata", "--locked", "--offline", "--no-deps", "--format-version", "1"]));
+    if (typeof metadata.target_directory !== "string" || resolve(metadata.target_directory) !== resolve(targetDir)) {
+      throw new Error(`native target directory ${targetDir} is pre-existing without a valid CACHEDIR.TAG and is not Cargo's configured target`);
+    }
   }
   await writeFile(tagPath, cargoCacheTag);
 }

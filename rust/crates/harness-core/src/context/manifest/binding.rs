@@ -16,7 +16,7 @@ impl ContextManifest {
         limits: Limits,
         io: Option<&PreparationIo>,
         pin_tools: bool,
-    ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
+    ) -> Result<(ToolRegistry, Arc<dyn ContextStage>, Vec<ToolDefinition>)> {
         crate::executor::with_history_io(io, |work| limits.validate_record(&reference, work))?;
         if reference.descriptor().media_type() != "application/json"
             || reference.descriptor().byte_length() > limits.render_bytes
@@ -52,6 +52,8 @@ impl ContextManifest {
         drop(bytes);
         if pin_tools {
             tools.pin_model_definitions(&manifest.tools, io)?;
+        } else {
+            tools.pin_epoch_definitions(&manifest.tools, io)?;
         }
         let mut messages = Vec::new();
         crate::executor::with_history_io(io, |work| {
@@ -143,6 +145,7 @@ impl ContextManifest {
                 context,
                 sources: manifest.sources,
             }),
+            manifest.tools,
         ))
     }
 }

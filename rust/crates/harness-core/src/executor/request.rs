@@ -181,12 +181,6 @@ impl StockExecution<'_> {
             .await?;
         let tools = self.request_tools()?;
         let compose_tools = self.code_composition(&tools)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        // Summaries retain the selected source, including its existing notices.
-        // Only the transient instruction is appended; tools cannot be invoked.
-        if self.summary.is_none() {
-            self.tools_notice(&mut context, &tools, false)?;
-        }
         let message_count = context.messages.len();
         let request =
             self.request_from_parts(std::mem::take(&mut context.messages), tools, compose_tools)?;
@@ -227,6 +221,12 @@ impl StockExecution<'_> {
             0
         };
         context.messages = std::mem::take(&mut request.messages);
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.summary.is_none() {
+            // Compare against the inherited table, preserving the shared
+            // prefix and announcing only an actual capability change.
+            self.tools_notice(&mut context, &request.tools)?;
+        }
         self.context_pipeline().project_optional(
             &mut context,
             prefix_count,
@@ -322,9 +322,10 @@ impl StockExecution<'_> {
         // result after removal. Fixed declarations must still match exactly.
         let historical = request.messages.iter().any(|message| {
             message.content.notice_parts().is_some_and(|(notices, _)| {
-                notices
-                    .iter()
-                    .any(|notice| notice.source == "tools" && notice.kind == "tools.changed")
+                notices.iter().any(|notice| {
+                    notice.source == "tools"
+                        && matches!(notice.kind.as_str(), "tools.changed" | "tools.bound")
+                })
             })
         });
         let definitions_match = request.compose_tools

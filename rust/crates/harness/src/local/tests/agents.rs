@@ -2728,6 +2728,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             settled,
             statuses,
             phase,
+            ..
         } = observed
         else {
             return Err(Error::Invalid("settlement returned another reply".into()));

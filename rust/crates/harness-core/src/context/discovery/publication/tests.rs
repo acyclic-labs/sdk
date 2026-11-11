@@ -134,20 +134,22 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         workspace.id().volume_id(),
         workspace.volume_config(),
         cursor,
+        Default::default(),
     )?;
+    let hidden_filter = acyclic_stream::FollowFilter::new(acyclic_stream::wire::SessionFilter {
+        attributes: vec![acyclic_stream::wire::AttributeMatch {
+            name: "unselected".into(),
+            any_of: vec![b"selected".as_slice().into()],
+        }],
+        ..Default::default()
+    })?;
     let hidden = host
         .change_provider(streams.clone())?
         .follow(ResourceFollowRequest {
             resource: resource.clone(),
             from: cursor.next,
             preceding: None,
-            filter: acyclic_stream::FollowFilter::new(acyclic_stream::wire::SessionFilter {
-                attributes: vec![acyclic_stream::wire::AttributeMatch {
-                    name: "unselected".into(),
-                    any_of: vec![b"selected".as_slice().into()],
-                }],
-                ..Default::default()
-            })?,
+            filter: hidden_filter.clone(),
             authorization: acyclic_stream::session::testing::resource_authorization(
                 &credential,
                 &resource,
@@ -162,6 +164,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         workspace.id().volume_id(),
         workspace.volume_config(),
         cursor,
+        hidden_filter,
     )?;
     let write = crate::conversation::ContentGrant::verify(
         &verifier,
@@ -308,6 +311,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         workspace.id().volume_id(),
         workspace.volume_config(),
         ready,
+        Default::default(),
     )?;
     assert!(matches!(
         denied

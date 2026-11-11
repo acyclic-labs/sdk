@@ -57,7 +57,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   Object.assign(env, { GEM_HOME: installedCache,
     GEM_PATH: [installedCache, join(rubyHome, "lib/ruby/gems", toolchain.ruby_api_version)].join(delimiter),
     HOME: join(output, "home"), USERPROFILE: join(output, "home"), SOURCE_DATE_EPOCH: toolchain.source_date_epoch });
-  const execute = (argv, cwd) => command(ruby, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+  const execute = (argv, cwd) => command(ruby, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: Infinity });
   const runtimeVersion = execute(["--version"], directory);
   const versionText = (runtimeVersion.stdout ?? "") + (runtimeVersion.stderr ?? "");
   if (runtimeVersion.error || runtimeVersion.status !== 0 || !versionText.startsWith(`ruby ${toolchain.ruby_version} `)

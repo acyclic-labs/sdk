@@ -1152,6 +1152,7 @@ async fn reply_waits_require_original_committed_requests() -> Result {
     }
     let request = InboxRecord::Spawn(SpawnRequest {
         profile: acyclic_harness_core::agent::CreationConfig {
+            topology: None,
             model: None,
             continuation: None,
             context: acyclic_harness_core::agent::SpawnContext::Fork,
@@ -1284,6 +1285,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                topology: None,
                 model: None,
                 continuation: None,
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
@@ -1320,6 +1322,108 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(host.state(&root).await?.open_children.len(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn topology_spawn_outcomes_remain_original_after_archival() -> Result {
+    struct Forced(acyclic_harness_core::topology::Topology);
+    impl SpawnTemplates for Forced {
+        fn topology(&self) -> Option<&acyclic_harness_core::topology::Topology> {
+            Some(&self.0)
+        }
+        fn child<'a>(
+            &'a self,
+            _: &'a CreationConfig,
+            _: &'a AgentPath,
+            _: &'a [VolumeBinding],
+            _: &'a str,
+            _: Option<&'a acyclic_harness_core::Capabilities>,
+        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<CreationConfig>>
+        {
+            Box::pin(async {
+                Err(acyclic_harness_core::Error::Unsupported(
+                    "no model-driven spawn in this schedule".into(),
+                ))
+            })
+        }
+    }
+    for mode in ["team:0", "team:1", "swarm"] {
+        let provider = Arc::new(MemoryStream::default());
+        let host = AgentHost::new(
+            provider,
+            Spawner(AtomicUsize::new(1)),
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?
+        .with_templates(Arc::new(Forced(
+            acyclic_harness_core::topology::Topology::select(mode)?,
+        )));
+        let root = host.create(&intent("create"), adopted(id(1))).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        let Wake::Inbox { mut record, .. } = super::spawn_request(1) else {
+            unreachable!()
+        };
+        // Caller-selected role data cannot weaken the pinned run policy.
+        let InboxRecord::Spawn(request) = &mut record else {
+            unreachable!()
+        };
+        request.profile.topology = Some(acyclic_harness_core::topology::Topology::select("swarm")?);
+        let Delivered::Committed { inbox } = host.send(&root, &user(), &record).await? else {
+            return Err("spawn not committed".into());
+        };
+        assert!(host.runtime().drain().await.is_empty());
+        let (spawn, child) = requested_child(&root, inbox)?;
+        let expected = if mode == "team:0" {
+            SpawnOutcome::Refused {
+                reason: SpawnRefusal::Topology,
+            }
+        } else {
+            SpawnOutcome::Spawned {
+                child: child.clone(),
+            }
+        };
+        assert_eq!(host.spawned(&root, inbox, &spawn).await?, expected);
+        if mode != "team:0" {
+            // This fixture drives only locally enrolled actors; it does not
+            // run the hosted activation dispatcher that discovers new actors.
+            host.host(&child)?;
+            assert_eq!(
+                host.state(&child)
+                    .await?
+                    .profile
+                    .and_then(|profile| profile.topology),
+                Some(acyclic_harness_core::topology::Topology::select(mode)?)
+            );
+            let Delivered::Committed { inbox: nested } =
+                host.send(&child, &user(), &record).await?
+            else {
+                return Err("nested spawn not committed".into());
+            };
+            assert!(host.runtime().drain().await.is_empty());
+            let (nested_intent, descendant) = requested_child(&child, nested)?;
+            let expected_nested = if mode == "team:1" {
+                SpawnOutcome::Refused {
+                    reason: SpawnRefusal::Topology,
+                }
+            } else {
+                SpawnOutcome::Spawned {
+                    child: descendant.clone(),
+                }
+            };
+            assert_eq!(
+                host.spawned(&child, nested, &nested_intent).await?,
+                expected_nested
+            );
+            if mode == "swarm" {
+                host.host(&descendant)?;
+            }
+        }
+        host.archive(&root, &user(), &intent("archive")).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(host.spawned(&root, inbox, &spawn).await?, expected);
+    }
     Ok(())
 }
 

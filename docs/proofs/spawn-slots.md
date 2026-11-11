@@ -1,13 +1,25 @@
 # Agent boundary proofs
 
-The former Kani slot arithmetic is retired: child count and depth are no longer
-admission conditions. Historical receipts remain available and do not qualify
-the new persistent membership index. Its production tests compare paged point
-updates and reopen against membership, with bounded node-read/write counters.
+The fixed 256-child slot arithmetic and its Kani crate are retired. Child
+admission no longer reserves or reclaims slots. Persistent membership roots
+and counts keep checkpoints independent of width; child-node IO is paged.
+The historical proof manifest retains the retired component's evidence and
+does not qualify the current uncapped mechanism.
 
-`agent-model::slot_schedules` retains serialized pause/client/resume schedules,
-response-loss replay, and child completion during approval pauses. The native
-reopen controls retain published membership roots and the driver's checkpoint.
+`agent-model::slot_schedules` executes the production serialized actor step:
+60 pause/client/resume schedules, client response-loss replay, and completion
+of an already-open recorded child during an approval pause. Production actor
+steps commit serially; this is a deterministic transition simulation rather
+than a model of different concurrency primitives. It does not qualify a
+provider's crash recovery or hosted endpoint.
+
+The completion burst control leaves the parent waiting after N-1 children,
+then resumes it on the final original completion. Wait telemetry retains a
+cursor into original status facts instead of a per-child checkpoint vector.
+The native Actors control admits 65 held deliveries under default scheduling
+and exactly 64 under explicit credit, then settles every original input.
+Forced team reservations separately count lifetime admissions; worker
+settlement never replenishes that user-selected reservation.
 
 The generated `ExplicitStreamProvider` removes defaults from the canonical
 provider declaration. Missing adapter implementations fail compilation,
@@ -19,18 +31,21 @@ an external `Attestor` must still satisfy its documented deterministic-function
 contract. The admitted-authority probe is not a deployed Cloud receipt.
 
 The record property includes every agent inbox/status/closed/conversation
-variant, maximal field lengths and collection cardinalities, the deepest
-paths, largest counters, every outcome, and maximal JSON escape expansion.
+variant, maximal bounded field lengths, representative long paths, largest
+counters, every outcome, and maximal JSON escape expansion.
 It checks canonical bytes before the bounded encoder's refusal. An oversized
 record refused by the encoder therefore fails the property. The settled
 checkpoint and actor envelope bound retain their separate maximum-size test.
 
-`rust/proofs/spawn-slots/proofs.json` declares actual production mutations. The producer changes one
+`rust/proofs/spawn-slots/proofs.json` retains historical production mutations. The historical producer changes one
 production file in a job-owned derivative and checks its complete tracked
 input manifest before compiling; the tests and proof harnesses stay unchanged.
 It records commands, toolchain, raw output hashes, timings, mutation hashes and Cargo-selected executable hashes.
 
-Install the pinned Rust toolchain and Kani. Run `python3 rust/proofs/spawn-slots/run.py MODE --evidence /path/to/new/output` from a clean checkout, selecting `rust`, `kani`, `mutants` or `finish`. Each invocation requires a fresh evidence directory. Configure Kani through its standard environment or PATH. `remaining` resumes only the compiler check and missing-method control after the captured successful doctests; it does not replay the positive properties.
+Current checks use `cargo test --locked -p acyclic-harness-core --test main agent_model::`
+and `node scripts/qualify-topology-modes.mjs GRAPHCODER MOCK_MODEL FRESH_OUTPUT`.
+The latter exercises the shipping binary beyond the retired width/depth caps
+and runs contrary-policy negative controls against the same assertions.
 
 Main's correlated-turn revision adds WaitingHost. Its host must satisfy the same
 1–128 byte, non-control name bound as inbox host names. The transition turns an

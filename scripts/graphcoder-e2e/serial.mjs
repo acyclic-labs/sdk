@@ -13,6 +13,21 @@ import { environment, scratchDirectory } from "./scratch.mjs";
 import { nativeHost } from "../../plugin/tests/hosts/native-host.mjs";
 import { sha256File } from "../file-digest.mjs";
 
+function primaryMounting(env) {
+  const mode = env.E2E_PRIMARY_MOUNTING ?? "native";
+  assert.ok(mode === "native" || mode === "auto", "E2E_PRIMARY_MOUNTING must be native or auto");
+  return mode;
+}
+
+// The same cases prove explicit native/physical selection and automatic
+// capability selection. Auto omits the flag, exercising the shipping default.
+export function mountingArguments(test, env = process.env) {
+  const primary = primaryMounting(env);
+  if (!test.physical) return [];
+  if (test.variant === "physical") return ["--workspace-mounting", "physical"];
+  return primary === "native" ? ["--workspace-mounting", "native"] : [];
+}
+
 // Each filesystem variant is its own suite, so each owns one whole envelope.
 export function variants(cases, platform) {
   return cases.flatMap(test => [{ ...test, variant: "primary" },
@@ -185,6 +200,7 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
   // Admission binds the installed transitive JS/native closure once, outside
   // every host turn. A lockfile alone cannot identify the installed bytes.
   return { binary: await executable(binary), mock: await executable(mock), source,executables,hosts,
+    primary_mounting: primaryMounting(env),
     cases: createHash("sha256").update(JSON.stringify(cases)).digest("hex") };
 }
 

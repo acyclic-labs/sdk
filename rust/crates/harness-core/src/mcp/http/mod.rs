@@ -37,8 +37,9 @@ pub struct McpHttpRequest {
     pub headers: BTreeMap<String, String>,
     /// UTF-8 JSON-RPC message, or empty GET/DELETE body.
     pub body: Vec<u8>,
-    /// Whole-exchange deadline.
-    pub timeout_ms: u32,
+    /// Optional whole-exchange deadline.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint | null"))]
+    pub timeout_ms: Option<u64>,
     /// Total response body allowance.
     pub maximum_response_bytes: u32,
 }
@@ -75,7 +76,7 @@ pub struct HttpMcpTransport {
     endpoint: String,
     session: Option<String>,
     maximum_bytes: u32,
-    timeout_ms: u32,
+    timeout_ms: Option<u64>,
     callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
     tools_generation: Arc<std::sync::atomic::AtomicU64>,
     #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
@@ -93,8 +94,13 @@ impl Drop for NotificationWatch {
 
 impl HttpMcpTransport {
     /// Selects independent tool-exchange bounds after catalog discovery.
-    pub fn with_tool_limits(mut self, maximum_bytes: u32, timeout_ms: u32) -> Result<Self> {
-        if maximum_bytes == 0 || timeout_ms == 0 {
+    pub fn with_tool_limits(
+        mut self,
+        maximum_bytes: u32,
+        timeout_ms: impl Into<Option<u64>>,
+    ) -> Result<Self> {
+        let timeout_ms = timeout_ms.into();
+        if maximum_bytes == 0 || timeout_ms == Some(0) {
             return Err(Error::Invalid(
                 "MCP request deadline must be positive".into(),
             ));
@@ -123,9 +129,10 @@ impl HttpMcpTransport {
         endpoint: String,
         session: Option<String>,
         maximum_bytes: u32,
-        timeout_ms: u32,
+        timeout_ms: impl Into<Option<u64>>,
         callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
     ) -> Result<Self> {
+        let timeout_ms = timeout_ms.into();
         let uri = endpoint
             .parse::<::http::Uri>()
             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -137,7 +144,7 @@ impl HttpMcpTransport {
                 || (authority.port().is_some() && authority.port_u16().is_none())
         }) || endpoint.contains('#')
             || maximum_bytes == 0
-            || timeout_ms == 0
+            || timeout_ms == Some(0)
             || session.as_ref().is_some_and(|value| !valid_session(value))
         {
             return Err(Error::Invalid(

@@ -17,7 +17,7 @@ export async function waitFor(promise, signal) {
 // the previous turn's committed reply.
 export async function conversation(processes, binary, fixture, input, capture, beforeTurn = async () => {}, afterTurn = async () => {}) {
   const active = await processes.startReported(binary, [...fixture.args, "--operation", input.operation,
-    "--input-format", "jsonl"], { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
+    "--input-format", "jsonl", ...(input.extra_args ?? [])], { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
   // One reply per turn, keyed by the turn's id: a repeated id fails the spool.
   const replies = new Spool(active.child.stdout, active.closed, { key: event => [event.id], unique: true });
   const lifetime = new AbortController();

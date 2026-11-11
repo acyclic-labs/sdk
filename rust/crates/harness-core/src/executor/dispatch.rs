@@ -140,16 +140,7 @@ impl StockExecution<'_> {
                         messages: std::mem::take(history),
                         ..Default::default()
                     };
-                    let retained_tables = retained.request.as_ref().is_some_and(|recorded| {
-                        recorded.request().messages.iter().any(|message| {
-                            message.content.notice_parts().is_some_and(|(notices, _)| {
-                                notices.iter().any(|notice| {
-                                    notice.source == "tools" && notice.kind == "tools.changed"
-                                })
-                            })
-                        })
-                    });
-                    let result = self.tools_notice(&mut context, tools, retained_tables);
+                    let result = self.tools_notice(&mut context, tools);
                     **history = context.messages;
                     result?;
                 }

@@ -148,6 +148,14 @@ export function requests(test, records) {
   const generations = records.filter(record => ["responses", "messages", "chat/completions"].includes(record.path)
     || /^models\/[^/]+:streamGenerateContent(?:\?alt=sse)?$/.test(record.path));
   assert.equal(generations.length, test.assert.requests, "generation count");
+  for (const expected of test.assert.model_tools ?? []) {
+    const request = generations.find(request => request.step === expected.step);
+    assert.ok(request, `missing model request for scripted step ${expected.step}`);
+    const names = new Set((request.body.tools ?? []).flatMap(tool =>
+      tool.functionDeclarations?.map(item => item.name) ?? [tool.function?.name ?? tool.name]));
+    for (const name of expected.present ?? []) assert.ok(names.has(name), `step ${expected.step} does not offer ${name}`);
+    for (const name of expected.absent ?? []) assert.ok(!names.has(name), `step ${expected.step} offers forbidden ${name}`);
+  }
   const expected = test.assert.steps ?? test.model.steps.map((_, index) => index);
   assert.deepEqual(records.filter(record => record.step !== null).map(record => record.step).sort((a,b) => a-b), [...expected].sort((a,b) => a-b), "each expected script step consumed exactly once");
   assert.ok(records.every(record => record.status !== 409), "unmatched model request");

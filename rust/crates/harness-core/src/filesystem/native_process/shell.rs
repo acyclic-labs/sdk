@@ -136,7 +136,7 @@ pub fn prepare<T>(
 /// Host-owned workspace boundary shared by shell and lifecycle hooks. Explicit
 /// execution grants retain their existing, separately authenticated authority.
 /// Native enforcement failures refuse launch, never retry unconfined. Linux
-/// and macOS implement this default; the Windows adapter remains pending.
+/// macOS and Windows consume the same default policy.
 #[doc(hidden)]
 pub fn workspace_grant<T>(
     mounts: &MountTable<T>,
@@ -144,16 +144,8 @@ pub fn workspace_grant<T>(
 ) -> Result<Option<acyclic_native_runtime::execution::ExecutionGrant>> {
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
-        use acyclic_native_runtime::execution::{
-            ExecutionAccess, ExecutionGrant, ExecutionNetwork,
-        };
-        // Workspace-write preserves host reads. Narrower explicit grants can
-        // restrict reads; this default boundary confines filesystem mutation.
-        #[cfg(unix)]
-        let mut read = vec![std::path::PathBuf::from("/")];
-        #[cfg(windows)]
-        let mut read =
-            acyclic_native_runtime::execution::ambient_read_roots().map_err(Error::process_io)?;
+        use acyclic_native_runtime::execution::{ExecutionAccess, ExecutionGrant};
+        let mut read = Vec::new();
         let mut write = Vec::new();
         let mut access = ExecutionAccess::ReadOnly;
         let io = Error::process_io;
@@ -194,7 +186,7 @@ pub fn workspace_grant<T>(
             environment.insert("TEMP".into(), temporary.clone());
             environment.insert("TMP".into(), temporary);
         }
-        ExecutionGrant::composed(&primary, access, write, read, ExecutionNetwork::On)
+        ExecutionGrant::workspace_default(&primary, access, write, read)
             .map(Some)
             .map_err(io)
     }

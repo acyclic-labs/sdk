@@ -99,7 +99,10 @@ pub fn workspace_action(
             for pair in page.chunks(2) {
                 match pair {
                     [flag, value] if flag == "--after" && after.is_none() => {
-                        after = Some(serde_json::from_value(json!(value))?)
+                        after = Some(
+                            acyclic_harness::agent::AgentId::try_from(value.clone())
+                                .map_err(InvalidWorkspaceCommand::Agent)?,
+                        )
                     }
                     [flag, value] if flag == "--limit" && limit.is_none() => {
                         let parsed = value

@@ -83,7 +83,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const php = realpathSync(join(runtime, "php.exe"));
   const phpArgs = ["-n", "-d", "memory_limit=256M", "-d", "display_errors=stderr", "-d", `extension=${join(runtime, "ext/php_zip.dll")}`,
     "-d", `extension=${join(runtime, "ext/php_openssl.dll")}`, "-d", `extension=${extension}`];
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: 48 * 1024 * 1024 });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: Infinity });
   const version = execute(php, [...phpArgs, "-r", 'echo json_encode([PHP_VERSION,PHP_INT_SIZE,phpversion("grpc")]);'], directory);
   if (version.error || version.status !== 0 || version.stderr || version.stdout !== JSON.stringify([toolchain.php_version, 8, toolchain.grpc_extension.version])) throw new Error("PHP runtime or extension version differs");
   const composerVersion = execute(php, [...phpArgs, composer, "--version", "--no-ansi"], directory);

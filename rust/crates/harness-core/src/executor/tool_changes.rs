@@ -1,4 +1,4 @@
-//! Shared dynamic tool announcements for every tool source.
+//! Original-position tool bindings for every tool source.
 use super::*;
 
 impl StockExecution<'_> {
@@ -6,44 +6,73 @@ impl StockExecution<'_> {
         &self,
         context: &mut crate::context::Context,
         tools: &[crate::tool::ToolDefinition],
-        retained_tables: bool,
     ) -> Result<()> {
-        if !retained_tables
-            && !self.stock.tools.has_sources()
-            && !self.code_composition(tools)?
-            && !context.messages.iter().any(|message| {
-                message.content.notice_parts().is_some_and(|(notices, _)| {
-                    notices
-                        .iter()
-                        .any(|notice| notice.source == "tools" && notice.kind == "tools.changed")
-                })
-            })
-        {
+        let compose = self.code_composition(tools)?;
+        let mut pending = self.tool_table_notice(context, tools, compose, true)?;
+        let dynamic = self.tool_table_notice(context, tools, compose, false)?;
+        for message in stock_into_iter(dynamic, self.io)? {
+            stock_vec_push(&mut pending, message, self.io)?;
+        }
+        if pending.is_empty() {
             return Ok(());
         }
+        // Both tables publish as one preparation, even when framing fails.
+        crate::context::ContextInsertion::insert_batch(
+            stock_into_iter(pending, self.io)?,
+            context.messages.len(),
+            context,
+            0,
+            self.io,
+        )
+    }
+
+    fn tool_table_notice(
+        &self,
+        context: &crate::context::Context,
+        tools: &[crate::tool::ToolDefinition],
+        compose: bool,
+        native: bool,
+    ) -> Result<Vec<ModelMessage>> {
         crate::model::charge_items(self.io, tools.len() as u64)?;
-        // Native declarations already expose these exact call schemas. Only
-        // dynamic tools use the appended surface for every tool source.
-        struct DynamicTools<'a>(&'a [crate::tool::ToolDefinition]);
-        impl Serialize for DynamicTools<'_> {
+        // Native bindings are private validation metadata, never another copy
+        // of the provider header in the prompt. Dynamic tables remain visible.
+        let kind = if native {
+            "tools.bound"
+        } else {
+            "tools.changed"
+        };
+        let selected = |tool: &&crate::tool::ToolDefinition| {
+            native == (!compose || crate::tools::catalog::is_native_declaration(&tool.name))
+        };
+        struct Table<'a> {
+            tools: &'a [crate::tool::ToolDefinition],
+            compose: bool,
+            native: bool,
+        }
+        impl Serialize for Table<'_> {
             fn serialize<S: serde::Serializer>(
                 &self,
                 serializer: S,
             ) -> std::result::Result<S::Ok, S::Error> {
                 use serde::ser::SerializeSeq;
                 let mut sequence = serializer.serialize_seq(None)?;
-                for tool in self.0 {
-                    if !crate::tools::catalog::is_native_declaration(&tool.name) {
+                for tool in self.tools {
+                    if self.native
+                        == (!self.compose
+                            || crate::tools::catalog::is_native_declaration(&tool.name))
+                    {
                         sequence.serialize_element(tool)?;
                     }
                 }
                 sequence.end()
             }
         }
-        let has_dynamic = tools
-            .iter()
-            .any(|tool| !crate::tools::catalog::is_native_declaration(&tool.name));
-        let tools = DynamicTools(tools);
+        let has_tools = tools.iter().any(|tool| selected(&tool));
+        let table_tools = Table {
+            tools,
+            compose,
+            native,
+        };
         #[derive(Serialize)]
         struct Body<'a> {
             offset: usize,
@@ -65,6 +94,7 @@ impl StockExecution<'_> {
             notices: [Notice<'a>; 1],
         }
         fn content<'a>(
+            kind: &'static str,
             json: &'a str,
             offset: usize,
             complete: bool,
@@ -74,7 +104,7 @@ impl StockExecution<'_> {
                 kind: "notices",
                 notices: [Notice {
                     source: "tools",
-                    kind: "tools.changed",
+                    kind,
                     body: Body {
                         offset,
                         json,
@@ -87,17 +117,17 @@ impl StockExecution<'_> {
             }
         }
         let invalid = |reason| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, reason);
-        let table = if has_dynamic {
+        let table = if has_tools {
             #[cfg(feature = "filesystem")]
             let funded = self
                 .io
-                .map(|io| io.encode(&tools, u64::MAX, false))
+                .map(|io| io.encode(&table_tools, u64::MAX, false))
                 .transpose()?;
             #[cfg(not(feature = "filesystem"))]
             let funded: Option<acyclic_stream::OwnedBytes> = None;
             Some(match funded {
                 Some(bytes) => bytes,
-                None => serde_json::to_vec(&tools)
+                None => serde_json::to_vec(&table_tools)
                     .map(Into::into)
                     .map_err(|_| invalid("tool table encoding failed"))?,
             })
@@ -110,8 +140,7 @@ impl StockExecution<'_> {
             .zip(table.as_ref())
             .map(|(io, table)| io.guard_bytes(table))
             .transpose()?;
-        // An empty update revokes the last dynamic table without inspecting
-        // history. Its borrowed bytes avoid encoding native definitions.
+        // An empty update revokes this table's historical bindings.
         let table = match table.as_deref() {
             Some(table) => {
                 std::str::from_utf8(table).map_err(|_| invalid("tool table is not UTF-8"))?
@@ -122,7 +151,7 @@ impl StockExecution<'_> {
         for message in &context.messages {
             if let Some((notices, _)) = message.content.notice_parts() {
                 for notice in notices {
-                    if notice.kind == "tools.changed" {
+                    if notice.source == "tools" && notice.kind == kind {
                         if notice.body.get("offset").and_then(Value::as_u64) == Some(0) {
                             previous.clear();
                         }
@@ -139,14 +168,18 @@ impl StockExecution<'_> {
                 }
             }
         }
-        // With no current, inherited or announced tools there is no table
-        // transition. Retain explicit empty updates when revoking a prior table.
-        if previous == table
-            || (tools.0.is_empty()
-                && previous.is_empty()
-                && self.stock.epoch_tools.as_deref().is_none_or(Vec::is_empty))
+        if previous == table {
+            return Ok(Vec::new());
+        }
+        if !has_tools
+            && previous.is_empty()
+            && self
+                .stock
+                .epoch_tools
+                .as_deref()
+                .is_none_or(|tools| !tools.iter().any(|tool| selected(&tool)))
         {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let decoded;
         let previous = if previous.is_empty() {
@@ -186,8 +219,12 @@ impl StockExecution<'_> {
             decoded.as_slice()
         };
         let mut removed = Vec::new();
-        for old in previous {
-            if !tools.0.iter().any(|tool| tool.name == old.name) {
+        for old in previous.iter().filter(selected) {
+            if !tools
+                .iter()
+                .filter(selected)
+                .any(|tool| tool.name == old.name)
+            {
                 stock_vec_push(
                     &mut removed,
                     stock_string_copy(&old.name, self.io)?,
@@ -199,7 +236,7 @@ impl StockExecution<'_> {
         // Charge actual JSON escaping, with worst-case offset and completion
         // framing. A schema larger than one part is split without truncation.
         let overhead = with_history_io(self.io, |work| {
-            json::json_byte_length(&content("", usize::MAX, false, &[]), u64::MAX, work)
+            json::json_byte_length(&content(kind, "", usize::MAX, false, &[]), u64::MAX, work)
         })?;
         let maximum = self
             .stock
@@ -207,7 +244,6 @@ impl StockExecution<'_> {
             .render_bytes
             .checked_sub(overhead)
             .ok_or_else(|| invalid("render allowance cannot frame a tool notice"))?;
-        let index = context.messages.len();
         let mut pending = Vec::new();
         let mut offset = 0;
         let mut removed_offset = 0;
@@ -242,6 +278,7 @@ impl StockExecution<'_> {
                 return Err(invalid("render allowance cannot advance a tool notice"));
             }
             let notice = content(
+                kind,
                 &remaining[..end],
                 offset,
                 offset + end == table.len() && removed_offset == removed.len(),
@@ -293,16 +330,6 @@ impl StockExecution<'_> {
             stock_vec_push(&mut pending, retain_preparation(decoded)?, self.io)?;
             offset += end;
         }
-        if pending.is_empty() {
-            return Ok(());
-        }
-        // Append one batch independently of part count.
-        crate::context::ContextInsertion::insert_batch(
-            stock_into_iter(pending, self.io)?,
-            index,
-            context,
-            0,
-            self.io,
-        )
+        Ok(pending)
     }
 }

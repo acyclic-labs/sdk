@@ -644,7 +644,7 @@ async fn doctor_selects_report_mode_from_each_original_terminal_stream() {
         (true, true, false),
     ] {
         let pty = rustix_openpty::openpty(None, None).unwrap();
-        let mut controller = File::from(pty.controller);
+        let mut controller = Some(File::from(pty.controller));
         let mut command = graphcoder_command(&fixture);
         command
             .arg("--settings-root")
@@ -669,17 +669,31 @@ async fn doctor_selects_report_mode_from_each_original_terminal_stream() {
             })
             .stderr(Stdio::piped());
         drop(pty.user);
+        // Drain the terminal while the child owns its slave. Darwin can discard
+        // unread terminal output when the final slave closes at process exit.
+        let terminal_output = output_tty.then(|| {
+            let mut controller = controller.take().unwrap();
+            tokio::task::spawn_blocking(move || {
+                let mut bytes = Vec::new();
+                if let Err(error) = controller.read_to_end(&mut bytes) {
+                    // Linux reports a closed PTY producer as EIO instead of EOF.
+                    assert_eq!(error.raw_os_error(), Some(5), "{error}");
+                }
+                String::from_utf8(bytes).unwrap()
+            })
+        });
         let result = capture_configured(command, (!input_tty).then_some("")).await;
-        let stdout = if output_tty {
-            let mut bytes = Vec::new();
-            if let Err(error) = controller.read_to_end(&mut bytes) {
-                // Linux reports a closed PTY producer as EIO instead of EOF.
-                assert_eq!(error.raw_os_error(), Some(5), "{error}");
-            }
-            String::from_utf8(bytes).unwrap()
-        } else {
-            String::from_utf8(result.stdout).unwrap()
+        // An input-only terminal keeps its live controller until capture ends.
+        drop(controller);
+        let stdout = match terminal_output {
+            Some(reader) => reader.await.unwrap(),
+            None => String::from_utf8(result.stdout).unwrap(),
         };
+        assert!(
+            !stdout.is_empty(),
+            "doctor output was lost: input_tty={input_tty}, output_tty={output_tty}, prompt={prompt}, stderr={}",
+            String::from_utf8_lossy(&result.stderr)
+        );
         if !input_tty || !output_tty {
             assert!(result.status.success(), "{stdout}");
             let report: Value = serde_json::from_str(&stdout).unwrap();

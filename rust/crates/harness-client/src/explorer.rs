@@ -360,6 +360,73 @@ mod tests {
     }
 
     #[test]
+    fn reverse_navigation_reaches_deep_expanded_descendants() {
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let root = AgentPath::root(&AgentId::from_bytes([1; 16]));
+            let sibling = AgentPath::root(&AgentId::from_bytes([3; 16]));
+            let mut agents = vec![root.clone()];
+            for _ in 0..129 {
+                agents.push(
+                    agents
+                        .last()
+                        .unwrap()
+                        .child(&AgentId::from_bytes([2; 16]))
+                        .unwrap(),
+                );
+            }
+            for (index, agent) in agents.iter().chain([&sibling]).enumerate() {
+                provider
+                    .append(AppendRequest {
+                        path: agent.conversation().unwrap(),
+                        records: vec![b"visible".to_vec().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::new(index.to_be_bytes().to_vec()).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let mut explorer = Explorer::new(ReaderPolicy::default()).unwrap();
+            for parent in std::iter::once(explorer.root.clone())
+                .chain(agents.iter().map(|agent| agent.children().unwrap()))
+            {
+                let page = provider
+                    .children_page(ChildrenPageRequest {
+                        parent: Some(parent.clone()),
+                        after: None,
+                        hierarchy_version: None,
+                        limit: 64,
+                        tail_stream: None,
+                    })
+                    .await
+                    .unwrap();
+                assert!(explorer.reader.cache_mut().insert_listing(
+                    &parent,
+                    0,
+                    Listing {
+                        after: None,
+                        children: page.children.into_iter().map(|child| child.path).collect(),
+                        next: page.next_after,
+                        fresh: true,
+                        projections: Default::default(),
+                        version: None,
+                    },
+                    None
+                ));
+            }
+            for agent in &agents {
+                explorer.expand(agent);
+            }
+            let from_sibling = explorer.locate(&sibling).unwrap();
+            let deepest = explorer.locate(agents.last().unwrap()).unwrap();
+            assert_eq!(explorer.prev(&from_sibling), Some(deepest));
+            // A collapsed branch is a real boundary, independent of its depth.
+            explorer.collapse(&agents[64]);
+            assert_eq!(explorer.prev(&from_sibling), explorer.locate(&agents[64]));
+        });
+    }
+
+    #[test]
     fn history_seeks_preserve_exclusive_ends_at_the_sequence_boundary() {
         futures::executor::block_on(async {
             let provider = MemoryStream::default();

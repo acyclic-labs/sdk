@@ -56,16 +56,17 @@ std::thread_local! { static PATH_LOOKUPS: std::cell::Cell<usize> = const { std::
 fn missing_paths<'a>(
     state: &'a State,
     destinations: impl Iterator<Item = &'a StreamPath> + Clone + 'a,
+    explicit: impl Fn(&str) -> bool + Copy + 'a,
 ) -> impl Iterator<Item = (&'a StreamPath, usize)> + 'a {
     let mut previous = "";
-    let all = destinations.clone();
     // Existing destinations imply indexed ancestors; no hierarchy work remains.
+    // The explicit lookup uses the same canonical slice as destinations, so an
+    // ancestor lookup never rescans the whole request or allocates another index.
     destinations
         .filter(|path| !contains_path(state, path.as_str()))
         .flat_map(move |destination| {
             let path = destination.as_str();
             let before = previous;
-            let all = all.clone();
             previous = path;
             path.match_indices('/')
                 .map(|(end, _)| end)
@@ -79,8 +80,7 @@ fn missing_paths<'a>(
                         && !before
                             .strip_prefix(prefix)
                             .is_some_and(|suffix| suffix.starts_with('/'))
-                        && (*end == path.len()
-                            || !all.clone().any(|other| other.as_str() == prefix))
+                        && (*end == path.len() || !explicit(prefix))
                 })
                 .map(move |end| (destination, end))
         })
@@ -91,10 +91,12 @@ fn reserve_paths(
     path: &StreamPath,
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
-    let (count, bytes) = missing_paths(state, std::iter::once(path))
-        .fold((0usize, 0usize), |(count, bytes), (_, end)| {
-            (count + 1, bytes.saturating_add(end))
-        });
+    let (count, bytes) = missing_paths(state, std::iter::once(path), |prefix| {
+        path.as_str() == prefix
+    })
+    .fold((0usize, 0usize), |(count, bytes), (_, end)| {
+        (count + 1, bytes.saturating_add(end))
+    });
     if limits
         .paths
         .is_some_and(|limit| state.paths.len().saturating_add(count) > limit)
@@ -118,6 +120,11 @@ fn reserve_coordinated(
     let (new_paths, path_bytes) = missing_paths(
         state,
         applied.iter().map(|m| crate::CommitMutation::path(m)),
+        |prefix| {
+            applied
+                .binary_search_by(|mutation| mutation.path().as_str().cmp(prefix))
+                .is_ok()
+        },
     )
     .fold((0usize, 0usize), |(count, bytes), (_, end)| {
         (count + 1, bytes.saturating_add(end))
@@ -195,7 +202,10 @@ fn reserve_fork(
         &request.destination,
         &request.exclude,
     )?;
-    let (count, bytes) = missing_paths(state, std::iter::once(&request.destination)).fold(
+    let (count, bytes) = missing_paths(state, std::iter::once(&request.destination), |prefix| {
+        request.destination.as_str() == prefix
+    })
+    .fold(
         (
             node.count() - 1,
             (node.count() - 1)

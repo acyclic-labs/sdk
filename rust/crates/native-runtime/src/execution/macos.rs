@@ -156,7 +156,7 @@ impl Prepared {
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<Self> {
         let mut profile = String::from(
-            "(version 1)(deny default)(allow process-exec process-fork sysctl-read file-read-metadata)(allow file-write-data (literal \"/dev/null\"))",
+            "(version 1)(deny default)(allow process-exec process-fork sysctl-read)(allow file-write-data (literal \"/dev/null\"))",
         );
         for root in std::iter::once(&grant.workspace)
             .chain(grant.write.entries())
@@ -164,6 +164,12 @@ impl Prepared {
         {
             drop(root.bind_controlled(meter)?);
             rule(&mut profile, "file-read* file-map-executable", root)?;
+        }
+        for path in &grant.navigation {
+            path_rule(&mut profile, "file-read*", "literal", path)?;
+        }
+        for path in &grant.lookup_metadata {
+            path_rule(&mut profile, "file-read-metadata", "literal", path)?;
         }
         if access == ExecutionAccess::WorkspaceWrite {
             for root in grant
@@ -177,7 +183,7 @@ impl Prepared {
         }
         match &grant.network {
             ExecutionNetwork::On => profile.push_str("(allow network*)"),
-            ExecutionNetwork::Off => {}
+            ExecutionNetwork::Off | ExecutionNetwork::Isolated => {}
             ExecutionNetwork::TcpPorts(ports) => {
                 use std::fmt::Write;
                 for port in ports {
@@ -362,8 +368,19 @@ fn status(code: libc::c_int) -> io::Result<()> {
 }
 
 fn rule(profile: &mut String, operations: &str, root: &super::BoundPath) -> io::Result<()> {
-    let path = root
-        .path
+    let filter = if root.is_dir { "subpath" } else { "literal" };
+    path_rule(profile, operations, filter, &root.path)
+}
+
+fn path_rule(profile: &mut String, operations: &str, filter: &str, path: &Path) -> io::Result<()> {
+    let path = profile_path(path)?;
+    use std::fmt::Write;
+    write!(profile, "(allow {operations} ({filter} \"{path}\"))").expect("writing to String");
+    Ok(())
+}
+
+fn profile_path(path: &Path) -> io::Result<String> {
+    let path = path
         .to_str()
         .ok_or_else(|| refused("Seatbelt path is not UTF-8"))?;
     // Escape every Scheme string delimiter; reject control bytes rather than
@@ -371,11 +388,7 @@ fn rule(profile: &mut String, operations: &str, root: &super::BoundPath) -> io::
     if path.chars().any(char::is_control) {
         return Err(refused("Seatbelt path contains a control character"));
     }
-    let path = path.replace('\\', "\\\\").replace('"', "\\\"");
-    let filter = if root.is_dir { "subpath" } else { "literal" };
-    use std::fmt::Write;
-    write!(profile, "(allow {operations} ({filter} \"{path}\"))").expect("writing to String");
-    Ok(())
+    Ok(path.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 pub(super) fn open_beneath(

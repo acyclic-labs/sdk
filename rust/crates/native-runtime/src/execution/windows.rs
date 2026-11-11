@@ -7,7 +7,7 @@ use std::{
     ffi::c_void,
     fs::File,
     io,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, OnceLock},
 };
 use windows_sys::Win32::Foundation::HANDLE;
@@ -77,7 +77,10 @@ impl Policy {
         // PSEC's egress filter does not prohibit intra-container loopback or
         // socket creation. Private-network capability also permits inbound
         // traffic. Neither restricted contract can be represented exactly.
-        if grant.network != ExecutionNetwork::On {
+        if !matches!(
+            grant.network,
+            ExecutionNetwork::On | ExecutionNetwork::Isolated
+        ) {
             return Err(unavailable(
                 "Windows PSEC cannot enforce socket-free or outbound-only TCP execution grants",
             ));
@@ -168,43 +171,6 @@ impl Prepared {
     }
 }
 
-/// Enumerates configured drive roots for the workspace-write read ceiling.
-/// This queries the OS drive map once; it never enumerates directory contents.
-pub fn ambient_read_roots() -> io::Result<Vec<PathBuf>> {
-    use std::os::windows::ffi::OsStringExt;
-    use windows_sys::Win32::Storage::FileSystem::GetLogicalDriveStringsW;
-    // SAFETY: the sizing call has no output buffer.
-    let required = unsafe { GetLogicalDriveStringsW(0, std::ptr::null_mut()) };
-    if required == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut buffer = vec![0u16; required as usize];
-    // SAFETY: sized writable buffer. A changing map refuses instead of retrying.
-    let written = unsafe { GetLogicalDriveStringsW(required, buffer.as_mut_ptr()) };
-    if written == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if written >= required {
-        return Err(refused("drive map changed during grant construction"));
-    }
-    Ok(available_read_roots(
-        buffer[..written as usize]
-            .split(|unit| *unit == 0)
-            .filter(|part| !part.is_empty())
-            .map(|part| PathBuf::from(std::ffi::OsString::from_wide(part))),
-    ))
-}
-
-fn available_read_roots(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
-    // Ambient drives are optional host reads, unlike explicit grant roots.
-    // Use the same native binding to omit unavailable/locked/media-less roots.
-    // Composition still strictly rebinds selected roots before granting them.
-    paths
-        .into_iter()
-        .filter_map(|path| BoundPath::new(&path).ok().map(|root| root.path))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,23 +193,6 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::Unsupported
-        );
-    }
-
-    #[test]
-    fn unavailable_ambient_roots_do_not_weaken_explicit_root_checks() {
-        let root = tempfile::tempdir().unwrap();
-        let missing = root.path().join("unavailable");
-        let available = available_read_roots([missing.clone(), root.path().to_path_buf()]);
-        assert_eq!(available, [root.path().canonicalize().unwrap()]);
-        assert!(
-            super::super::ExecutionGrant::new(
-                root.path(),
-                ExecutionAccess::WorkspaceWrite,
-                [missing],
-                ExecutionNetwork::On,
-            )
-            .is_err()
         );
     }
 }

@@ -1416,6 +1416,19 @@ struct Gated {
     active: std::sync::atomic::AtomicUsize,
     peak: std::sync::atomic::AtomicUsize,
     gate: tokio::sync::Semaphore,
+    entered: tokio::sync::watch::Sender<usize>,
+}
+impl Gated {
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let (entered, _) = tokio::sync::watch::channel(0);
+        Ok(Self {
+            package: Package::new()?,
+            active: std::sync::atomic::AtomicUsize::new(0),
+            peak: std::sync::atomic::AtomicUsize::new(0),
+            gate: tokio::sync::Semaphore::new(0),
+            entered,
+        })
+    }
 }
 impl Handler for Gated {
     fn manifest(&self) -> &Manifest {
@@ -1431,6 +1444,7 @@ impl Handler for Gated {
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             let _attempt = ActiveAttempt(&self.active);
             self.peak.fetch_max(active, Ordering::SeqCst);
+            self.entered.send_replace(active);
             self.gate
                 .acquire()
                 .await
@@ -1448,12 +1462,7 @@ impl Handler for Gated {
 async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
-    let handler = Arc::new(Gated {
-        package: Package::new()?,
-        active: std::sync::atomic::AtomicUsize::new(0),
-        peak: std::sync::atomic::AtomicUsize::new(0),
-        gate: tokio::sync::Semaphore::new(0),
-    });
+    let handler = Arc::new(Gated::new()?);
     let runtime = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
         handler.clone(),
@@ -1487,7 +1496,14 @@ async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
         })
         .await;
         assert_eq!(handler.peak.load(Ordering::SeqCst), 2);
-        assert_eq!(runtime.admission.available_permits(), 0);
+        assert_eq!(
+            runtime
+                .admission
+                .as_ref()
+                .expect("explicit concurrency reservation")
+                .available_permits(),
+            0
+        );
         for address in &actors {
             assert_eq!(
                 store
@@ -1502,7 +1518,14 @@ async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
         // Its claim may be durable; its input and effect must remain untouched.
     }
     assert_eq!(handler.active.load(Ordering::SeqCst), 0);
-    assert_eq!(runtime.admission.available_permits(), 2);
+    assert_eq!(
+        runtime
+            .admission
+            .as_ref()
+            .expect("explicit concurrency reservation")
+            .available_permits(),
+        2
+    );
     handler.gate.add_permits(actors.len());
     for address in &actors {
         runtime.wake(address);
@@ -1548,7 +1571,11 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
     }
     assert!(futures::poll!(duplicates.next()).is_pending());
     assert_eq!(
-        runtime.admission.available_permits(),
+        runtime
+            .admission
+            .as_ref()
+            .expect("explicit concurrency reservation")
+            .available_permits(),
         2,
         "queued duplicates cannot occupy active delivery permits"
     );
@@ -1565,7 +1592,14 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
         records(&*provider, "out/duplicate-hot").await?,
         vec![Bytes::from_static(b"r0")]
     );
-    assert_eq!(runtime.admission.available_permits(), 2);
+    assert_eq!(
+        runtime
+            .admission
+            .as_ref()
+            .expect("explicit concurrency reservation")
+            .available_permits(),
+        2
+    );
     Ok(())
 }
 
@@ -1701,7 +1735,11 @@ async fn event_batch_yield_retains_placement_until_completion_or_abort() -> Test
                 .is_pending()
         );
         assert_eq!(
-            runtime.admission.available_permits(),
+            runtime
+                .admission
+                .as_ref()
+                .expect("explicit concurrency reservation")
+                .available_permits(),
             1,
             "the next actor may enter during the yield"
         );
@@ -2047,6 +2085,10 @@ async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult 
     assert!(published.is_empty());
     // Control: the same package within its limits publishes.
     let (failures, published) = run_limited(Limited::new(10_000, 1 << 16, false)?).await?;
+    assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(published, vec![Bytes::from_static(b"r0")]);
+    // Zero means no deadline, rather than an immediate or fallback timeout.
+    let (failures, published) = run_limited(Limited::new(0, 1 << 16, false)?).await?;
     assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(published, vec![Bytes::from_static(b"r0")]);
     let (failures, published) = run_limited(Limited::new(10_000, 4, false)?).await?;

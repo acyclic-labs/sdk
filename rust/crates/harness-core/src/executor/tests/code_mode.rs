@@ -128,6 +128,14 @@ fn log_entries(journal: &Journal, kind: &str) -> Value {
 }
 
 fn tool_notice_table(request: &ModelRequest) -> Value {
+    notice_table(request, "tools.changed")
+}
+
+fn binding_notice_table(request: &ModelRequest) -> Value {
+    notice_table(request, "tools.bound")
+}
+
+fn notice_table(request: &ModelRequest, kind: &str) -> Value {
     let mut json = String::new();
     let mut complete = false;
     for message in &request.messages {
@@ -136,7 +144,7 @@ fn tool_notice_table(request: &ModelRequest) -> Value {
         };
         for notice in notices
             .iter()
-            .filter(|notice| notice.source == "tools" && notice.kind == "tools.changed")
+            .filter(|notice| notice.source == "tools" && notice.kind == kind)
         {
             if notice.body["offset"].as_u64() == Some(0) && complete {
                 json.clear();
@@ -147,6 +155,9 @@ fn tool_notice_table(request: &ModelRequest) -> Value {
             json.push_str(notice.body["json"].as_str().unwrap());
             complete = notice.body["complete"].as_bool().unwrap();
         }
+    }
+    if json.is_empty() {
+        return json!([]);
     }
     assert!(complete, "tool table did not finish");
     serde_json::from_str(&json).unwrap()
@@ -183,6 +194,10 @@ async fn custom_code_executor_preserves_other_native_declarations() -> Result<()
         ["code", "example.echo"],
     );
     assert_eq!(result(&model)["code"], "export default 42");
+    assert_eq!(
+        binding_notice_table(&requests[0]).as_array().unwrap().len(),
+        2
+    );
     assert_eq!(echo.0.load(Ordering::SeqCst), 1);
     let mut forged = requests[0].clone();
     forged.compose_tools = true;
@@ -277,7 +292,7 @@ async fn large_tool_tables_split_without_losing_schemas_or_changing_the_prefix()
     let mut context = crate::context::Context::default();
     assert!(
         StockExecution::ordinary(&executor)
-            .tools_notice(&mut context, &requests[0].tools, false)
+            .tools_notice(&mut context, &requests[0].tools)
             .is_err()
     );
     assert!(context.messages.is_empty());
@@ -332,6 +347,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         ["code"]
     );
     assert!(tool_notice_table(&before[0]).as_array().unwrap().is_empty());
+    assert_eq!(binding_notice_table(&before[0])[0]["name"], "code");
     #[cfg(feature = "filesystem")]
     for native in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -352,49 +368,36 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         let (notice, codec) =
             acyclic_test_support::differential::observe::<_, _, json::CodecOperation>(
                 || (),
-                |()| execution.tools_notice(&mut context, &before[0].tools, false),
+                |()| execution.tools_notice(&mut context, &before[0].tools),
             );
         notice?;
         use json::CodecOperation::{DecodeBytes, Serialize};
-        // Framing count, document encoding, then the typed notice decode.
-        let expected = [Serialize, Serialize, DecodeBytes];
+        // One schema encoding, framing count, notice encoding and typed decode.
+        let expected = [Serialize, Serialize, Serialize, DecodeBytes];
         assert_eq!(codec, expected);
         let remaining = io.remaining()?;
         assert_eq!(context.messages.len(), 1);
         let encoded = initial.bytes_encoded - remaining.bytes_encoded;
         let copied = initial.bytes_copied - remaining.bytes_copied;
-        let allocated = initial.allocation_operations - remaining.allocation_operations;
         let examined = initial.items_examined - remaining.items_examined;
         assert!(encoded > 0);
-        // Native schema growth cannot enlarge the constant empty update.
+        // Native schemas buy original-position validation after revocation.
+        // Growth is accounted for once, without another schema encoding.
         let mut larger = before[0].tools.clone();
         larger[0].description.push_str(&"schema".repeat(16_384));
         let mut larger_context = crate::context::Context::default();
         let (notice, larger_codec) =
             acyclic_test_support::differential::observe::<_, _, json::CodecOperation>(
                 || (),
-                |()| execution.tools_notice(&mut larger_context, &larger, false),
+                |()| execution.tools_notice(&mut larger_context, &larger),
             );
         notice?;
         assert_eq!(larger_codec, expected);
         let larger_remaining = io.remaining()?;
-        assert_eq!(
-            remaining.bytes_encoded - larger_remaining.bytes_encoded,
-            encoded
-        );
-        assert_eq!(
-            remaining.bytes_copied - larger_remaining.bytes_copied,
-            copied
-        );
-        assert_eq!(
-            remaining.allocation_operations - larger_remaining.allocation_operations,
-            allocated
-        );
-        assert_eq!(
-            remaining.items_examined - larger_remaining.items_examined,
-            examined
-        );
-        // Restoring even the first full-table encoding violates this oracle.
+        assert!(remaining.bytes_encoded - larger_remaining.bytes_encoded > encoded);
+        assert!(remaining.bytes_copied - larger_remaining.bytes_copied > copied);
+        assert!(remaining.items_examined - larger_remaining.items_examined > examined);
+        // A redundant full-table encoding violates this oracle.
         let (redundant, extra_codec) = acyclic_test_support::differential::observe::<
             _,
             _,
@@ -410,15 +413,20 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         cancellation.cancel();
         assert!(
             execution
-                .tools_notice(&mut context, &before[0].tools, false)
+                .tools_notice(&mut context, &before[0].tools)
                 .is_err()
         );
         assert_eq!(context.messages.len(), 1);
     }
     let changed = tool_notice_table(&after[0]);
     assert_eq!(changed.as_array().unwrap().len(), 2);
-    assert_eq!(changed[1]["name"], "late");
-    assert_eq!(changed[1]["input_schema"], json!({"type":"object"}));
+    let late = changed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "late")
+        .unwrap();
+    assert_eq!(late["input_schema"], json!({"type":"object"}));
     assert_eq!(
         after[0].messages,
         after[1].messages[..after[0].messages.len()]
@@ -435,14 +443,12 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
     revoked.tools.remove_from_model("example.echo")?;
     revoked.execute(input(), &Journal::default()).await?;
     assert_eq!(result(&revoked_model), "undefined");
-    assert!(
-        tool_notice_table(&revoked_model.requests()[0])
-            .as_array()
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        binding_notice_table(&revoked_model.requests()[0])[0]["name"],
+        "code"
     );
     // Carry the actual earlier table into the next input boundary: removing
-    // the last dynamic tool must publish an empty successor, not a stale table.
+    // the last dynamic tool must leave only the current native binding.
     let mut context = crate::context::Context {
         messages: after[1].messages.clone(),
         ..Default::default()
@@ -453,16 +459,38 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         content: ModelContent::Text("after revocation".into()),
     });
     context.current_input_index = Some(boundary as _);
-    StockExecution::ordinary(&revoked).tools_notice(
-        &mut context,
-        &revoked_model.requests()[0].tools,
-        false,
-    )?;
+    StockExecution::ordinary(&revoked)
+        .tools_notice(&mut context, &revoked_model.requests()[0].tools)?;
     assert_eq!(context.messages[..boundary], after[1].messages);
     assert_eq!(context.messages.len(), boundary + 2);
     let mut continued = revoked_model.requests()[0].clone();
     continued.messages = context.messages;
-    assert!(tool_notice_table(&continued).as_array().unwrap().is_empty());
+    assert_eq!(binding_notice_table(&continued)[0]["name"], "code");
+    // Revoking a native declaration must preserve its earlier successful
+    // exchange without offering it on the next request.
+    let mut context = crate::context::Context {
+        messages: continued.messages,
+        ..Default::default()
+    };
+    StockExecution::ordinary(&revoked).tools_notice(&mut context, &[])?;
+    continued.messages = context.messages;
+    continued.tools.clear();
+    assert_eq!(continued.model_tools().count(), 0);
+    assert!(
+        binding_notice_table(&continued)
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    crate::model::PreparedModelRequest::prepare(continued.clone(), revoked.limits, None)?;
+    // A later successful call cannot borrow the revoked historical binding.
+    let prior = after[1]
+        .messages
+        .iter()
+        .filter(|message| matches!(message.role, ModelRole::Assistant | ModelRole::Tool))
+        .cloned();
+    continued.messages.extend(prior);
+    assert!(crate::model::PreparedModelRequest::prepare(continued, revoked.limits, None).is_err());
     Ok(())
 }
 

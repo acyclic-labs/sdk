@@ -512,17 +512,22 @@ async fn change_chunks_preserve_every_entry_and_finish_filtered_members_within_o
                 metadata: vec![index],
             })
             .collect();
-        let encoded = encode_chunks(context, &entries, &mut work)?;
+        let encoded = encode_chunks(context, &entries, None, &mut work)?
+            .ok_or("unbounded encoding omitted its records")?;
         assert_eq!(encoded.len(), 3, "one entry per record adds write fan-out");
         let mut combined = encoded.clone();
-        combined.extend(encode_chunks(
-            crate::PublicationContext {
-                authority_sequence: Sequence::new(4),
-                ..context
-            },
-            &entries[..1],
-            &mut work,
-        )?);
+        combined.extend(
+            encode_chunks(
+                crate::PublicationContext {
+                    authority_sequence: Sequence::new(4),
+                    ..context
+                },
+                &entries[..1],
+                None,
+                &mut work,
+            )?
+            .ok_or("unbounded encoding omitted its records")?,
+        );
         let streams = MemoryStream::default();
         let path = StreamPath::new("publication-members")?;
         let acyclic_stream::AppendOutcome::Committed(receipt) = streams
@@ -646,7 +651,12 @@ async fn change_chunks_preserve_every_entry_and_finish_filtered_members_within_o
                 metadata: vec![1; 33_000],
             },
         ];
-        assert_eq!(encode_chunks(context, &large, &mut work)?.len(), 2);
+        assert_eq!(
+            encode_chunks(context, &large, None, &mut work)?
+                .ok_or("unbounded encoding omitted its records")?
+                .len(),
+            2
+        );
         let duplicate = [
             PreparedEntry {
                 key: Bytes::from_static(b"clipped"),
@@ -659,13 +669,18 @@ async fn change_chunks_preserve_every_entry_and_finish_filtered_members_within_o
                 metadata: vec![1],
             },
         ];
-        assert_eq!(encode_chunks(context, &duplicate, &mut work)?.len(), 2);
+        assert_eq!(
+            encode_chunks(context, &duplicate, None, &mut work)?
+                .ok_or("unbounded encoding omitted its records")?
+                .len(),
+            2
+        );
         let oversized = [PreparedEntry {
             key: Bytes::new(),
             operation: "update",
             metadata: vec![0; acyclic_stream::MAX_RECORD_BYTES],
         }];
-        assert!(encode_chunks(context, &oversized, &mut work).is_err());
+        assert!(encode_chunks(context, &oversized, None, &mut work).is_err());
     }
     Ok(())
 }
@@ -938,6 +953,160 @@ async fn an_unfiltered_fork_shares_its_source_changes_instead_of_listing_them() 
     assert!(
         few_listed.0 >= 4 && many_listed.0 >= 32,
         "{few_listed:?} {many_listed:?}"
+    );
+    Ok(())
+}
+
+/// Directories and files of a source tree under `root`, with paths as long
+/// as real ones: `count` of them list more change bytes than one command.
+fn source_tree(
+    root: &str,
+    count: usize,
+) -> (Vec<String>, Vec<(String, acyclic_stream::OwnedBytes)>) {
+    let module = format!("{root}/crates/publication-reference-delta-regression-module");
+    let mut directories = vec![root.to_owned(), format!("{root}/crates"), module.clone()];
+    directories.extend((0..16).map(|group| format!("{module}/generated-source-group-{group:02}")));
+    let files = (0..count)
+        .map(|index| {
+            (
+                format!(
+                    "{module}/generated-source-group-{:02}/a-source-file-with-a-descriptive-name-{index:05}.rs",
+                    index % 16
+                ),
+                acyclic_stream::OwnedBytes::copy_from_slice(b"fn main() {}"),
+            )
+        })
+        .collect();
+    (directories, files)
+}
+
+#[tokio::test]
+async fn a_delta_larger_than_one_command_is_published_by_reference_in_its_own_commit() -> TestResult
+{
+    crate::initialize_test_native_io();
+    let streams = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(streams.clone());
+    let fs = Fs::new(
+        store.clone(),
+        MemoryObjectStore::default(),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let cancellation = CancellationToken::new();
+    let workspace = fs
+        .create_workspace("source-import", WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|error| error.error)?
+        .value;
+    let authority = AuthorityId::from_bytes(workspace.id().into_bytes());
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let path = changes_path(
+        &AuthorityPlacement::default(),
+        workspace.id().volume_id(),
+        &mut work,
+    )?;
+    let (_, initial_root) = fixture_publication_root(&store, authority, &cancellation).await?;
+    // One source import whose listed changes alone exceed one command.
+    let (directories, files) = source_tree("/src", 6144);
+    let directories: Vec<_> = directories.iter().map(String::as_str).collect();
+    let files: Vec<_> = files
+        .iter()
+        .map(|(path, bytes)| (path.as_str(), bytes.clone()))
+        .collect();
+    let mut transaction = workspace
+        .begin_transaction(
+            crate::IdempotencyKey::new(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|error| error.error)?
+        .value;
+    transaction
+        .write_batch(&directories, &files, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|error| error.error)?;
+    let committed = transaction
+        .commit::<crate::WorkspaceError, _, _>(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| {
+                std::future::ready(Ok(crate::OperationReceipt {
+                    value: (),
+                    work: Default::default(),
+                }))
+            },
+        )
+        .await
+        .map_err(|error| error.error)?
+        .value;
+    assert!(matches!(committed, crate::TransactionCommit::Committed(_)));
+
+    // The commit carries one fixed-size reference, not one entry per path.
+    let mut read = streams
+        .read(ReadRequest {
+            key: None,
+            path,
+            from: 1,
+            limit: 64,
+            at_least: Default::default(),
+        })
+        .await?;
+    let record = read.next().await.ok_or("delta reference missing")??;
+    assert!(
+        read.next().await.is_none(),
+        "a large delta listed its paths"
+    );
+    assert!(
+        record.value.len() < 256,
+        "the reference grew with its delta"
+    );
+    let (head, root) = fixture_publication_root(&store, authority, &cancellation).await?;
+    let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
+    assert_eq!(
+        crate::PublicationContext::from_bytes(changes.context.as_ref())?,
+        crate::PublicationContext {
+            volume: workspace.id().volume_id(),
+            generation: GenerationId::from_root(root),
+            authority_sequence: head.sequence,
+            records_after: 0,
+        }
+    );
+    let [entry] = changes.entries.as_slice() else {
+        panic!("a delta by reference is one entry");
+    };
+    let facts = crate::PublicationEntry::from_parts(
+        &entry.key,
+        &entry.operation,
+        &entry.metadata,
+        workspace.volume_config(),
+    )
+    .map_err(|_| "malformed delta reference")?;
+    assert!(facts.path.is_root());
+    assert_eq!(
+        facts.delta.unwrap().origin_for(&Default::default())?,
+        crate::DeltaOrigin::Generation(GenerationId::from_root(initial_root))
+    );
+
+    // The reference resolves to the two generations the delta lies between.
+    let generation = workspace
+        .generation(
+            GenerationId::from_root(root),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|error| error.error)?
+        .value;
+    let (parents, _allocation) = generation
+        .parents(WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|error| error.error)?
+        .value;
+    assert_eq!(
+        parents.first(),
+        Some(&GenerationId::from_root(initial_root))
     );
     Ok(())
 }

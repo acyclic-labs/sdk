@@ -1,10 +1,11 @@
 //! Admission and cooperative work bounds, shared by continuous and event hosts.
 use super::*;
 
-/// Runtime scheduling bounds, independent of a package's resource policy.
+/// Runtime scheduling credit, independent of a package's resource policy.
+/// The default has no active-delivery ceiling; work batches remain chunked.
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimeLimits {
-    pub(super) active: usize,
+    pub(super) active: Option<usize>,
     pub(super) work: usize,
 }
 
@@ -17,14 +18,17 @@ impl RuntimeLimits {
                 "runtime bounds must be positive and representable",
             ));
         }
-        Ok(Self { active, work })
+        Ok(Self {
+            active: Some(active),
+            work,
+        })
     }
 }
 
 impl Default for RuntimeLimits {
     fn default() -> Self {
         Self {
-            active: 64,
+            active: None,
             work: 64,
         }
     }

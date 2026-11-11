@@ -1,6 +1,6 @@
 //! Filesystem metadata changes over ordinary credential-bound Streams follows.
 mod resource;
-pub use resource::resource;
+pub use resource::{namespace_resource, resource};
 
 /// Canonical change stream of a volume on this filesystem's authority owner.
 /// The path is an identity, not an authorization grant.

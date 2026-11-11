@@ -63,11 +63,12 @@ impl CapacityCompaction {
             if component.retained_through == position && !selected[group.root] {
                 mandatory -= component.size;
             }
-            if component.end == position
-                && let Some(source) = component.source
-            {
-                if groups[source].retained_through == position && !selected[source] {
-                    mandatory -= groups[source].size;
+            if component.end == position {
+                for source in component.sources() {
+                    compaction_step(&mut quota)?;
+                    if groups[source].retained_through == position && !selected[source] {
+                        mandatory -= groups[source].size;
+                    }
                 }
             }
             if end <= position && position + 1 >= through && mandatory < maximum_messages {
@@ -131,10 +132,11 @@ fn mandatory_selection(
     }
     for group in groups {
         compaction_step(quota)?;
-        if selected[group.root]
-            && let Some(source) = groups[group.root].source
-        {
-            selected[source] = true;
+        if selected[group.root] {
+            for source in groups[group.root].sources() {
+                compaction_step(quota)?;
+                selected[source] = true;
+            }
         }
     }
     for (position, group) in groups.iter().enumerate() {
@@ -217,11 +219,17 @@ pub(crate) fn compact_context(
         for group in groups.iter().rev() {
             compaction_step(&mut quota)?;
             let root = group.root;
-            let dependency = groups[root].source.filter(|source| !selected[*source]);
-            let size = groups[root].size + dependency.map_or(0, |source| groups[source].size);
+            let mut size = groups[root].size;
+            for source in groups[root].sources() {
+                compaction_step(&mut quota)?;
+                if !selected[source] {
+                    size += groups[source].size;
+                }
+            }
             if !selected[root] && size < maximum - count {
                 selected[root] = true;
-                if let Some(source) = dependency {
+                for source in groups[root].sources() {
+                    compaction_step(&mut quota)?;
                     selected[source] = true;
                 }
                 count += size;

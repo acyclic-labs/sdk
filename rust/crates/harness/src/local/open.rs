@@ -553,6 +553,7 @@ impl Opening {
             None => (None, None),
         };
         Ok(LocalHarness {
+            topology: self.config.topology,
             files,
             #[cfg(all(target_os = "linux", feature = "native-execution"))]
             volume_filesystem,

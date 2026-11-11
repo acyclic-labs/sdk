@@ -1556,6 +1556,7 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
         id: intent("spawn"),
         brief: Some(Box::new(brief)),
         profile: CreationConfig {
+            topology: None,
             model: None,
             continuation: None,
             context: SpawnContext::Fork,

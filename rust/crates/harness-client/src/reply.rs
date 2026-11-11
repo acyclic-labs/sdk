@@ -189,6 +189,16 @@ pub enum AgentReply {
         statuses: u64,
         /// The phase published with those exact tails.
         phase: Phase,
+        /// Immutable role selected at creation, when this host binds a role.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        /// Immutable provider/model selection, absent for an externally owned loop.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// Forced policy admitted at creation, when one was selected.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        topology: Option<acyclic_harness_core::topology::Topology>,
     },
     /// One visible file fragment from the authorized workspace query.
     Diff {

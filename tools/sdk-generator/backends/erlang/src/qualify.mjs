@@ -79,7 +79,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   const logNames = [];
   const run = (name, executable, argv) => {
     onProgress("Run " + name);
-    const result = command(executable, argv, { cwd: consumer, env, encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024 });
+    const result = command(executable, argv, { cwd: consumer, env, encoding: "utf8", timeout: 180_000, maxBuffer: Infinity });
     const text = (result.stdout ?? "") + (result.stderr ?? "");
     const log = "logs/" + name + ".log"; put(log, text); logNames.push(log);
     if (result.error || result.status !== 0) throw new Error("Erlang qualification command failed: " + name + "\n" + text);

@@ -268,14 +268,15 @@ impl Binding {
     }
 }
 
-/// Positive limits admitted by the canonical create/update validators.
+/// Resource reservations admitted by the canonical create/update validators.
+/// A zero handler timeout selects no execution deadline.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorLimits.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ActorLimits {
     #[wire(tag = 1, uint64)]
-    handler_timeout_millis: PositiveU64,
+    handler_timeout_millis: u64,
     #[wire(tag = 2, uint64)]
     memory_bytes: PositiveU64,
     #[wire(tag = 3, uint64)]
@@ -283,22 +284,23 @@ pub struct ActorLimits {
 }
 
 impl ActorLimits {
-    /// Constructs positive limits using the canonical admission predicate.
+    /// Constructs reservations. Zero timeout means no execution deadline;
+    /// memory and checkpoint reservations must remain positive.
     pub fn new(
         handler_timeout_millis: u64,
         memory_bytes: u64,
         checkpoint_bytes: u64,
     ) -> Result<Self, DomainError> {
         Ok(Self {
-            handler_timeout_millis: handler_timeout_millis.try_into()?,
+            handler_timeout_millis,
             memory_bytes: memory_bytes.try_into()?,
             checkpoint_bytes: checkpoint_bytes.try_into()?,
         })
     }
 
-    /// Returns the handler timeout in milliseconds.
+    /// Returns the handler timeout in milliseconds; zero means unbounded.
     pub fn handler_timeout_millis(&self) -> u64 {
-        self.handler_timeout_millis.get()
+        self.handler_timeout_millis
     }
 
     /// Returns the memory limit in bytes.

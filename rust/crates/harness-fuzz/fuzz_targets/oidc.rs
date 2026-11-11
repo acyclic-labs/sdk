@@ -54,6 +54,50 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(identity.issuer(), manifest["issuer"].as_str().unwrap());
         assert_eq!(identity.expires_at(), claims["exp"].as_u64().unwrap());
         assert!(verifier.verify(token, identity.expires_at()).is_err());
+        // Retain the captured signing key while exceeding the old key-count
+        // and identifier caps. Only the caller's explicit policy may refuse it.
+        let mut expanded: Value = serde_json::from_slice(JWKS).unwrap();
+        let original_key = expanded["keys"][0].clone();
+        let keys = expanded["keys"].as_array_mut().unwrap();
+        for index in 0..65 {
+            let mut key = original_key.clone();
+            key["kid"] = format!("{}:{index}", "key".repeat(100)).into();
+            keys.push(key);
+        }
+        let expanded = serde_json::to_vec(&expanded).unwrap();
+        let mut unbounded = oidc::Verifier::new(config(oidc::SigningAlgorithm::Rs256));
+        unbounded.refresh(&Source(&expanded), now).await.unwrap();
+        assert_eq!(
+            unbounded.verify(token, now).unwrap().subject(),
+            identity.subject()
+        );
+        for limits in [
+            oidc::Limits {
+                maximum_jwks_bytes: Some(expanded.len() - 1),
+                ..Default::default()
+            },
+            oidc::Limits {
+                maximum_keys: Some(1),
+                ..Default::default()
+            },
+        ] {
+            let mut bounded = oidc::Verifier::new(
+                config(oidc::SigningAlgorithm::Rs256)
+                    .with_limits(limits)
+                    .unwrap(),
+            );
+            assert!(bounded.refresh(&Source(&expanded), now).await.is_err());
+        }
+        let mut bounded_token = oidc::Verifier::new(
+            config(oidc::SigningAlgorithm::Rs256)
+                .with_limits(oidc::Limits {
+                    maximum_token_bytes: Some(token.len() - 1),
+                    ..Default::default()
+                })
+                .unwrap(),
+        );
+        bounded_token.refresh(&Source(JWKS), now).await.unwrap();
+        assert!(bounded_token.verify(token, now).is_err());
         // Corrupt the captured RSA modulus without changing its size. Ring
         // rejects even moduli; refresh must do so before replacing good keys.
         let mut invalid_rsa: Value = serde_json::from_slice(JWKS).unwrap();

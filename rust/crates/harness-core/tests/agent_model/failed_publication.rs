@@ -306,7 +306,7 @@ async fn a_refused_archive_keeps_unfinished_children_without_rearming_its_alarm(
         assert!(!open.closed);
         assert!(open.archive_pending.is_empty());
         assert_eq!(
-            open.open_children.page(None, children.len()).await?,
+            open.open_children.page(None, children.len() + 1).await?,
             children.iter().map(AgentPath::id).collect::<Vec<_>>()
         );
         assert!(matches!(
@@ -332,7 +332,7 @@ async fn a_refused_archive_keeps_unfinished_children_without_rearming_its_alarm(
             .cloned()
             .collect::<BTreeSet<_>>();
         assert_eq!(
-            state.archive_pending.page(None, pending.len()).await?,
+            state.archive_pending.page(None, pending.len() + 1).await?,
             pending.iter().map(AgentPath::id).collect::<Vec<_>>()
         );
         assert!(matches!(&state.phase,
@@ -345,8 +345,7 @@ async fn a_refused_archive_keeps_unfinished_children_without_rearming_its_alarm(
         );
         // The whole refused commit is atomic: retain every unfinished child,
         // including children whose writes shared the refused child's batch.
-        for id in state.archive_pending.page(None, pending.len()).await? {
-            let child = root.child(&id)?;
+        for child in &pending {
             assert!(values(provider.as_ref(), child.closed()?).await?.is_empty());
         }
         let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
