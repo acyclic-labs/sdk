@@ -71,7 +71,7 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
             crate::executor::preparation_format(format_args!("/{}", self.reference.path()), work)
         })?;
         let _path_hold = io.guard_owned(path.capacity() as u64)?;
-        let bytes = read_generation(&self.generation, &path, maximum_bytes, Some(io)).await?;
+        let bytes = read_generation(&self.generation, &path, Some(maximum_bytes), Some(io)).await?;
         self.reference
             .descriptor()
             .verify(&bytes, &mut Some(&mut io.history_io()))?;

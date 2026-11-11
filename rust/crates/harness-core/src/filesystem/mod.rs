@@ -434,12 +434,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let receipt_path = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
                 })?;
-                const RECORD_BYTES: u64 = 6
-                    * (crate::conversation::MAX_PATH_BYTES as u64
-                        + 32 * crate::conversation::MAX_LABEL_BYTES as u64
-                        + 1024);
-                let original_receipt =
-                    read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
+                let original_receipt = read_generation(&prior, &receipt_path, None, io).await?;
                 let original_receipt = if internal_class.is_some() {
                     recover_internal_upload_receipt(
                         &prior,
@@ -461,7 +456,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
                 drop(original_receipt);
                 let indexed =
-                    read_generation(&prior, &metadata_path, receipt_bytes.len() as u64, io).await?;
+                    read_generation(&prior, &metadata_path, Some(receipt_bytes.len() as u64), io)
+                        .await?;
                 if !content_metadata_matches(&indexed, &provisional, &receipt_bytes, io)? {
                     return Err(stock_boundary(
                         io,
@@ -612,7 +608,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
             acyclic_differential::record(("read", maximum_bytes));
-            let bytes = read_generation(generation, &path, maximum_bytes, io).await?;
+            let bytes = read_generation(generation, &path, Some(maximum_bytes), io).await?;
             crate::executor::with_history_io(io, |work| {
                 reference.descriptor().verify(&bytes, work)
             })?;

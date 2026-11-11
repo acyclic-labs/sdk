@@ -88,7 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let path = content_receipt_path_io(volume, key.as_str(), false, true, Some(io))?;
             let bytes =
-                read_generation(&generation, &path, maximum_receipt_bytes, Some(io)).await?;
+                read_generation(&generation, &path, Some(maximum_receipt_bytes), Some(io)).await?;
             let receipt: ChangeReceipt = io.decode_json(&bytes)?;
             if receipt.0 != 2 {
                 return Err(io.invalid("unsupported conditional publication receipt"));
@@ -354,7 +354,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             let generation = if let Some(prior) = prior {
                 let recorded =
-                    read_generation(&prior, &receipt_path, receipt.len() as u64, Some(io)).await?;
+                    read_generation(&prior, &receipt_path, Some(receipt.len() as u64), Some(io))
+                        .await?;
                 if recorded.as_ref() != receipt.as_ref() {
                     return Err(stock_boundary(
                         Some(io),
