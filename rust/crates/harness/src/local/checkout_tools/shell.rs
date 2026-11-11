@@ -165,12 +165,15 @@ impl CheckoutTools {
                 None => std::future::pending().await,
             }
         };
+        let mut control_error = None;
         let (output, (state, files, claims, retained)) = if let Some(cancellation) = cancellation {
             tokio::select! {
                 result = &mut completion => result?,
-                _ = async { tokio::select! { result = cancellation.wait() => result, result = closed => result, _ = shutdown.cancelled() => Ok(()) } } => {
+                stopped = async { tokio::select! { result = cancellation.wait() => result, result = closed => result, _ = shutdown.cancelled() => Ok(()) } } => {
                     control.stop();
-                    completion.await?
+                    let completed = completion.await?;
+                    control_error = stopped.err();
+                    completed
                 }
             }
         } else {
@@ -196,6 +199,10 @@ impl CheckoutTools {
                     maximum_output as u64,
                 )
             });
+        let result = match control_error {
+            Some(error) => Error::after_cleanup(Err(error), result.map(|_| ())),
+            None => result,
+        };
         Ok((result, state, files, claims))
     }
 }
