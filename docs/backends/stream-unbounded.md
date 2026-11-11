@@ -505,11 +505,22 @@ shared target and incremental setting above. Log:
 `Q:/scratch/stream-unbounded/ivar-e7ec-tests.log`; command:
 `Q:/scratch/stream-unbounded/ivar-e7ec-tests.sh`.
 
-That source's focused run is live: seven `staged::tests::` cases and five
-`content::tree::tests::` cases, followed by paired guard-removal negative
-controls. It advanced from its passed compilation to the first test command,
-which is waiting for the shared build target. No test result is claimed.
-The script requires each
-cancellation mutant to fail with its own invariant marker and restores the
-production source on exit. These are ingestion/content controls, not final-apply
-atomicity proofs. Linux and all-backend publication qualification remain due.
+That source's focused run completed successfully: seven `staged::tests::`
+cases passed in 0.23 seconds and five `content::tree::tests::` cases passed in
+0.45 seconds. This includes lazy 100k-effect ingestion with record order, a
+64 MiB addressed value, truncation/trailing rejection, request-family shape,
+fork/header token order, bound bookmarks, range seeks without unselected IO,
+reopen, corruption detection and writer/reader cancellation refusal.
+
+Both guard-removal negative controls failed at their intended assertions:
+`cancelled staging writer accepted replacement bytes` and
+`cancelled content reader skipped the consumed page`. The script checked both
+failure markers, reversed both mutations and verified `git diff --exit-code`.
+It emitted `POSITIVE_CONTROLS_PASS_NEGATIVES_REJECTED_SOURCE_RESTORED` with the
+exact `e7ec6d0a1b33acd2cae17932b84ad77dafffd355` source SHA. An independent
+native HEAD/diff/status check confirmed that same source and a clean checkout.
+
+These results validate ingestion/content behavior. They are not successful
+100k-effect or 64 MiB atomic write conformance, crash-at-publication simulation,
+the final-apply loom proof, owner-event collection or any backend's staged
+publication integration. Those obligations and Linux qualification remain due.
