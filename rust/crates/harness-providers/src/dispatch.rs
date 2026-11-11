@@ -266,7 +266,8 @@ impl GenerationAttempt {
                     self.attempt.observe(response.status);
                     let retry_after = response.retry_after;
                     let error =
-                        crate::http_failure(response, provider.config.max_event_bytes, work).await;
+                        crate::recovery_failure(response, provider.config.max_event_bytes, work)
+                            .await;
                     (crate::diagnostic::rejection(error), retry_after)
                 }
                 Err(error) => (error, None),

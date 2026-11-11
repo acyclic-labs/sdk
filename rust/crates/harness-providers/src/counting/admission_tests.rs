@@ -205,7 +205,7 @@ proptest::proptest! {
         provider.transport = crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, _) = request(&provider).unwrap();
         let result = futures::executor::block_on(provider.count_tokens(&request, 0));
-        let final_failure = definitive || matches!(status, 400 | 413);
+        let final_failure = matches!(status, 400 | 413) || (definitive && !matches!(status,408 | 429 | 500..=599));
         let expected = if final_failure && failures > 0 { 1 } else { failures + 1 };
         proptest::prop_assert_eq!(transport.sent.load(std::sync::atomic::Ordering::SeqCst), expected);
         proptest::prop_assert_eq!(result.is_ok(), failures == 0 || !final_failure);

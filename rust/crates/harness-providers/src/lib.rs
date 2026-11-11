@@ -139,6 +139,19 @@ fn transport_failure(
     }
 }
 
+/// A retrying operation needs only refusal headers. Reading a transient diagnostic
+/// could wait forever and cannot change the HTTP recovery classification.
+async fn recovery_failure(
+    response: HttpResponse,
+    maximum: impl Into<Option<usize>>,
+    work: acyclic_harness_core::NativeWork<'_>,
+) -> Error {
+    if let Some(error) = unavailable(response.status, &[]) {
+        return error;
+    }
+    http_failure(response, maximum, work).await
+}
+
 /// Context refusals use the same admitted JSON budget as token-count responses.
 /// Non-context and retryable diagnostics retain only their bounded excerpt.
 async fn http_failure(

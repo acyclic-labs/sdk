@@ -195,14 +195,18 @@ async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> R
                     // No hint in the recorded failure. Also cover a provider wait
                     // longer than max_delay_ms, before and after the former cap.
                     retry_after: matches!(index, 0 | 299).then_some(Duration::from_secs(60)),
-                    body: chunks(
-                        if index < 300 {
-                            r#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#
-                        } else {
-                            self.success
-                        },
-                        7,
-                    ),
+                    body: if index == 0 {
+                        Box::pin(futures::stream::pending())
+                    } else {
+                        chunks(
+                            if index < 300 {
+                                r#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#
+                            } else {
+                                self.success
+                            },
+                            7,
+                        )
+                    },
                 })
             })
         }
@@ -235,13 +239,21 @@ async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> R
                 let (request, mut dispatch) = request(&provider)?;
                 dispatch.operation_id = acyclic_harness_core::OperationId::from_bytes([31; 16]);
                 let events = if count {
-                    assert_eq!(provider.count_tokens(&request, 0).await?.input_tokens, 7);
+                    assert_eq!(
+                        provider
+                            .count_tokens(&request, 0)
+                            .now_or_never()
+                            .expect("count refusal body must not be polled")?
+                            .input_tokens,
+                        7
+                    );
                     Vec::new()
                 } else {
                     provider
                         .generate(&request, dispatch)
                         .try_collect::<Vec<_>>()
-                        .await?
+                        .now_or_never()
+                        .expect("transient refusal must not wait for its diagnostic body")?
                 };
                 let exchanges = if mixed {
                     if count { 304 } else { 303 }

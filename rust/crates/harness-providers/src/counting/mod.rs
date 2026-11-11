@@ -326,7 +326,7 @@ async fn exchange_count(
             Ok(response) => {
                 let retry_after = response.retry_after;
                 let failure =
-                    crate::http_failure(response, provider.config.max_event_bytes, work).await;
+                    crate::recovery_failure(response, provider.config.max_event_bytes, work).await;
                 (failure, retry_after)
             }
             Err(failure) => (failure, None),

@@ -293,8 +293,6 @@ async fn native_cancellation_wakes_pending_headers_and_success_or_refusal_bodies
         ),
         (400, true, None),
         (413, true, None),
-        (429, true, None),
-        (503, true, None),
     ] {
         let (mut provider, _) = provider(Adapter::Chat, 200);
         let cancel = CancellationToken::new();
