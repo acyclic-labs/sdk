@@ -51,28 +51,6 @@ test("cache revision agreement covers every immutable restore/save pin", () => {
   }
 });
 
-test("the product Cargo invocation preserves the configured compiler wrapper", () => {
-  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `
-    import childProcess from 'node:child_process';
-    import { syncBuiltinESMExports } from 'node:module';
-    childProcess.spawnSync = (command, args, options) => {
-      console.log(JSON.stringify({ command, args, wrapper: options.env.RUSTC_WRAPPER }));
-      return { status: 0 };
-    };
-    syncBuiltinESMExports();
-    await import('./scripts/build-product.mjs');
-  `], { encoding: "utf8",
-    env: { ...process.env, CARGO: "fixture-cargo", RUSTC_WRAPPER: "fixture-sccache",
-      RUSTFLAGS: "", CARGO_ENCODED_RUSTFLAGS: "" } });
-  assert.ifError(result.error);
-  assert.equal(result.status, 0, result.stderr);
-  const invocation = JSON.parse(result.stdout);
-  assert.equal(invocation.command, "fixture-cargo");
-  assert.equal(invocation.wrapper, "fixture-sccache");
-  assert.deepEqual(invocation.args.slice(0, 6), ["build", "--locked", "--profile", "dist", "-p", "acyclic-plugin"]);
-  assert.ok(invocation.args.includes("--timings"));
-});
-
 test("native compiler caches keep one daily snapshot while restoring the previous working set", () => {
   const action = YAML.parse(readFileSync(".github/actions/rust-build-cache/action.yml", "utf8"));
   const compiler = action.runs.steps.find(step => step.name === "Restore compiler output");

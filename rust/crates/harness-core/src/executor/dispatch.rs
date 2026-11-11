@@ -443,6 +443,9 @@ impl StockExecution<'_> {
                             "summary source or instruction differs from retained admission".into(),
                         ));
                     }
+                } else {
+                    self.restore_background(journal, input, step, prior_messages, &recorded)
+                        .await?;
                 }
                 recorded
             }
@@ -497,6 +500,7 @@ impl StockExecution<'_> {
         request: &crate::model::PreparedModelRequest,
         phase: &mut DispatchPhase,
     ) -> Result<phase::ProviderAttempt> {
+        let _writer = self.journal_writes.lock().await;
         let (step, scope, purpose_key) = turn;
         let purpose = scope.purpose;
         let io = self.io;
@@ -552,6 +556,7 @@ impl StockExecution<'_> {
                     purpose,
                     request_digest,
                     request: reference,
+                    context: request.context_window(),
                 },
                 io,
             )?
@@ -704,6 +709,7 @@ impl StockExecution<'_> {
                     }
                     _ => None,
                 };
+                let writer = self.journal_writes.lock().await;
                 let receipt = crate::obs::waiting(
                     "journal-commit",
                     operation_id,
@@ -718,6 +724,7 @@ impl StockExecution<'_> {
                     ),
                 )
                 .await?;
+                drop(writer);
                 #[cfg(feature = "research")]
                 if admission.completed && purpose == ModelPurpose::Response {
                     phase.1 = receipt.journal_cut;

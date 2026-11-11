@@ -8,9 +8,23 @@
     }
   },
   "model": {
-    "steps": []
+    "steps": [
+      {
+        "when": {
+          "user": "hello"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
   },
   "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "done"
+    },
     {
       "mode": "headless",
       "text": "/repeated",
@@ -40,6 +54,10 @@
     }
   ],
   "assert": {
-    "requests": 0
+    "requests": 1,
+    "model_contains": [
+      "First declaration",
+      "Second declaration"
+    ]
   }
 }

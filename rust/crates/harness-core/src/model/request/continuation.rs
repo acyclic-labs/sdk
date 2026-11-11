@@ -164,6 +164,7 @@ impl RequestContinuation {
             request,
             bytes,
             request_digest,
+            context_window: None,
             replay_key: std::sync::OnceLock::new(),
             projection_nodes: AtomicUsize::new(projection_nodes),
             admitted_limits: limits,

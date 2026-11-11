@@ -70,7 +70,7 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
 
 #[test]
 fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Result<()> {
-    use acyclic_harness_core::context::ThresholdCompaction;
+    use acyclic_harness_core::context::CapacityCompaction;
     for (adapter, _) in fixtures() {
         // A resumed process resolves a fresh model: no previous usage calibration.
         let (provider, script) = provider(adapter, 200);
@@ -80,10 +80,8 @@ fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Res
         let prepared = PreparedModelRequest::prepare(resumed, Limits::default(), None)?;
         let count = futures::executor::block_on(provider.count_tokens(&prepared, 0))?.input_tokens;
         let capacity = provider.context_capacity(&provider.model)?;
-        let policy = ThresholdCompaction {
+        let policy = CapacityCompaction {
             response_reserve_tokens: 1024,
-            recent_tokens: 1024,
-            ..ThresholdCompaction::default()
         };
         assert!(policy.needs_compaction(capacity, count, prepared.request().max_output_tokens)?);
         // No generation has started. A fresh process uses the verified count;

@@ -148,9 +148,8 @@ proptest! {
     ) {
         let (source, units) = transcript(&batches, &text);
         let cut = 1 + raw_cut % (source.messages.len() - 1);
-        let count = ModelTokenCount::from_upper_bounds([0; 32], 0, vec![1; source.messages.len()]);
-        let policy = ThresholdCompaction { recent_tokens: (source.messages.len() - cut) as u32, ..ThresholdCompaction::default() };
-        let (through, maximum) = policy.projection_budget(&source, &count, source.messages.len(), policy.recent_tokens, &mut None).unwrap();
+        let policy = CapacityCompaction::default();
+        let (through, maximum) = policy.projection_budget(&source, Some(source.messages.len()), cut, &mut None).unwrap();
         prop_assert!(units.iter().all(|&(first, last)| through <= first || through > last));
         let (retained, reference) = compact(&source, maximum, through).unwrap();
         prop_assert!(whole_units(&source, &retained, &units));
@@ -162,7 +161,7 @@ proptest! {
         let maximum = 2 + raw_maximum % (source.messages.len() - 1);
         let mut planned = None;
         let measured = acyclic_test_support::measure(|| {
-            planned = Some(policy.projection_budget(&source, &count, maximum, policy.recent_tokens, &mut None));
+            planned = Some(policy.projection_budget(&source, Some(maximum), cut, &mut None));
         });
         // One call vector, sort permutation, radix table, component vector and selection vector,
         // regardless of how many candidate boundaries the budget rejects.
@@ -172,7 +171,7 @@ proptest! {
         // Negative control: rebuilding dependencies for a candidate, as the old
         // planner did, violates the same scratch-allocation bound.
         let duplicated = acyclic_test_support::measure(|| {
-            std::hint::black_box(policy.projection_budget(&source, &count, maximum, policy.recent_tokens, &mut None).unwrap());
+            std::hint::black_box(policy.projection_budget(&source, Some(maximum), cut, &mut None).unwrap());
             std::hint::black_box(super::super::compaction::mandatory_messages(&source, through, &mut None).unwrap());
         });
         prop_assert!(duplicated.count_total > 5);
@@ -257,20 +256,11 @@ fn call_boundaries_keep_signed_protocols_and_tight_budgets_drop_whole_units() ->
 #[test]
 fn rejected_exchange_selection_releases_every_temporary_allocation() -> Result<()> {
     let (source, _) = transcript(&[(0, 2, false, true), (2, 1, true, false)], "opaque");
-    let count = ModelTokenCount::from_upper_bounds([0; 32], 0, vec![1; source.messages.len()]);
-    let policy = ThresholdCompaction {
-        recent_tokens: 3,
-        ..ThresholdCompaction::default()
-    };
+    let cut = source.messages.len() - 3;
+    let policy = CapacityCompaction::default();
     let plan = |io: &crate::executor::PreparationIo| {
         crate::executor::with_history_io(Some(io), |work| {
-            policy.projection_budget(
-                &source,
-                &count,
-                source.messages.len(),
-                policy.recent_tokens,
-                work,
-            )
+            policy.projection_budget(&source, Some(source.messages.len()), cut, work)
         })
     };
     let budget = owned_context_budget();

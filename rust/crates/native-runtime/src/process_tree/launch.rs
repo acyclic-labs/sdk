@@ -21,8 +21,8 @@ pub struct CaptureRequest {
     pub input: Option<OwnedCaptureInput>,
     /// Original lifetime; queueing and the worker never renew it.
     pub schedule: CaptureSchedule,
-    /// Shared stdout and stderr byte bound.
-    pub maximum_output_bytes: usize,
+    /// Optional shared stdout and stderr byte policy; None is unbounded.
+    pub maximum_output_bytes: Option<usize>,
 }
 
 /// Why a launch produced no capture. Admission and owner-control refusals
@@ -103,7 +103,7 @@ trait Owner<H>: Send + 'static {
         self,
         tree: ProcessTree,
         schedule: CaptureSchedule,
-        maximum: usize,
+        maximum: Option<usize>,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> Self::Output;
@@ -119,7 +119,7 @@ impl<H: CaptureHandler> Owner<H> for Collect {
         self,
         tree: ProcessTree,
         schedule: CaptureSchedule,
-        maximum: usize,
+        maximum: Option<usize>,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> Self::Output {
@@ -141,7 +141,7 @@ impl<H: CaptureHandler> Owner<H> for Stream {
         self,
         tree: ProcessTree,
         schedule: CaptureSchedule,
-        maximum: usize,
+        maximum: Option<usize>,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> Self::Output {

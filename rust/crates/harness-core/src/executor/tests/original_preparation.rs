@@ -82,7 +82,7 @@ impl StockExecution<'_> {
             .await?;
         let accounting = if matches!(
             self.compaction_policy()?,
-            crate::context::CompactionPolicy::Threshold(_)
+            crate::context::CompactionPolicy::Capacity(_)
         ) {
             let capacity = self.model_capacity()?;
             let prepared = crate::model::PreparedModelRequest::prepare(
@@ -247,7 +247,7 @@ impl StockExecution<'_> {
         let (input, step) = turn;
         match (self.compaction_policy()?, accounting) {
             (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
-            (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
+            (crate::context::CompactionPolicy::Capacity(policy), Some(accounting)) => {
                 if self.model_capacity()? != accounting.capacity {
                     return Err(stock_boundary(
                         self.io,
@@ -301,10 +301,7 @@ impl StockExecution<'_> {
                     return Ok(prepared);
                 }
                 let source = if projection.canonical.is_some() {
-                    CompactionSource::Base {
-                        context: source,
-                        count: None,
-                    }
+                    CompactionSource::Base { context: source }
                 } else {
                     CompactionSource::Projected
                 };

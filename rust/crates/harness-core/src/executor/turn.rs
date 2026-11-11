@@ -42,7 +42,13 @@ impl StockExecution<'_> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
         let mut phase = DispatchPhase::new();
-        let result = self.execute_turn(input, journal, &mut phase).await;
+        let result = self
+            .with_background(
+                journal,
+                input,
+                self.execute_turn(input, journal, &mut phase),
+            )
+            .await;
         phase
             .finish(result, journal, input.operation_id, self.io)
             .await

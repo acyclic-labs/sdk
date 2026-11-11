@@ -79,6 +79,7 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
         .await?
         .value;
     let options = CaptureOptions {
+        source_namespace: None,
         expected_root_identity: capture_root_identity(root.path())?,
         source_root: root.path().to_owned(),
         maximum_paths: 128,

@@ -37,11 +37,8 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
         )?,
         allowed()?,
     )?
-    .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
-        crate::context::ThresholdCompaction {
-            recent_tokens: 1,
-            ..Default::default()
-        },
+    .with_compaction_policy(crate::context::CompactionPolicy::Capacity(
+        crate::context::CapacityCompaction::default(),
     ));
     let input = TurnInput {
         max_steps: None,
@@ -117,11 +114,8 @@ async fn stock_driver_refuses_to_summarize_its_only_protected_exchange() -> Resu
         )?,
         allowed()?,
     )?
-    .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
-        crate::context::ThresholdCompaction {
-            recent_tokens: 1,
-            ..Default::default()
-        },
+    .with_compaction_policy(crate::context::CompactionPolicy::Capacity(
+        crate::context::CapacityCompaction::default(),
     ));
     let input = TurnInput {
         max_steps: None,

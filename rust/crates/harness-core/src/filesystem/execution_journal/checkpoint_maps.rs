@@ -270,7 +270,7 @@ where
             ExecutionEvent::ModelStarted { step, purpose, .. }
             | ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
-            | ExecutionEvent::ModelStopped { step, purpose } => {
+            | ExecutionEvent::ModelStopped { step, purpose, .. } => {
                 load(&mut summary.models, &reader, roots[2], (*step, *purpose)).await?;
             }
             ExecutionEvent::ToolStarted { step, call_id, .. }
@@ -331,7 +331,7 @@ where
             ExecutionEvent::ModelStarted { step, purpose, .. }
             | ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
-            | ExecutionEvent::ModelStopped { step, purpose } => {
+            | ExecutionEvent::ModelStopped { step, purpose, .. } => {
                 let key = (*step, *purpose);
                 let value = summary.models.get(&key, io)?.ok_or_else(|| corrupt(io))?;
                 roots[2] = Some(store(writer, roots[2], key.digest(io)?, value, io).await?);

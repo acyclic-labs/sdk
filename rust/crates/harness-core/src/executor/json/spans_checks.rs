@@ -51,6 +51,43 @@ fn documents() -> impl Strategy<Value = Value> {
     })
 }
 
+#[test]
+fn spans_accept_the_producer_depth_boundary_and_refuse_the_next_container() {
+    for empty in [Value::Array(Vec::new()), Value::Object(Default::default())] {
+        let mut value = empty;
+        for _ in 0..RECORD_MAXIMUM_DEPTH {
+            value = Value::Array(vec![value]);
+        }
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let length =
+            json_byte_length_at_depth(&value, u64::MAX, RECORD_MAXIMUM_DEPTH, &mut None).unwrap();
+        assert_eq!(length, bytes.len() as u64);
+        for chunk in [1, 127, bytes.len()] {
+            let events = scan(&bytes, chunk, RECORD_MAXIMUM_DEPTH).unwrap();
+            assert!(events.iter().any(|event| matches!(
+                event,
+                SpanEvent::Start {
+                    depth: RECORD_MAXIMUM_DEPTH,
+                    ..
+                }
+            )));
+        }
+        let excessive = Value::Array(vec![value]);
+        assert!(
+            json_byte_length_at_depth(&excessive, u64::MAX, RECORD_MAXIMUM_DEPTH, &mut None,)
+                .is_err()
+        );
+        assert!(
+            scan(
+                &serde_json::to_vec(&excessive).unwrap(),
+                1,
+                RECORD_MAXIMUM_DEPTH
+            )
+            .is_err()
+        );
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]

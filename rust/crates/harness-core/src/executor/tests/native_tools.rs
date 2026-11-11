@@ -168,6 +168,14 @@ fn ran(invocations: &[ToolInvocation]) -> Vec<(String, String, Value)> {
         .collect()
 }
 
+fn assert_offered(offered: &[String], expected: &[&str]) {
+    // The registry orders declarations by their model-visible names, rather
+    // than by the capabilities from which each family's names were derived.
+    let mut expected = expected.to_vec();
+    expected.sort_unstable();
+    assert_eq!(offered, expected);
+}
+
 #[tokio::test]
 async fn anthropic_native_calls_run_their_capabilities() -> Result<()> {
     let (offered, invocations, results) = run(
@@ -195,7 +203,10 @@ async fn anthropic_native_calls_run_their_capabilities() -> Result<()> {
     )
     .await?;
     // Grants name capabilities; each is offered as its family's declarations.
-    assert_eq!(offered, ["Edit", "NotebookEdit", "Read", "shell", "Write"]);
+    assert_offered(
+        &offered,
+        &["Edit", "NotebookEdit", "Read", "shell", "Write"],
+    );
     let inserted_id = invocations[1].operation_id.to_string();
     assert_eq!(
         ran(&invocations),
@@ -255,7 +266,7 @@ async fn google_native_calls_run_their_capabilities() -> Result<()> {
         ],
     )
     .await?;
-    assert_eq!(offered, ["replace", "read_file", "shell", "write_file"]);
+    assert_offered(&offered, &["replace", "read_file", "shell", "write_file"]);
     assert_eq!(
         ran(&invocations),
         [
@@ -307,7 +318,7 @@ async fn openai_native_calls_run_their_capabilities() -> Result<()> {
     )
     .await?;
     // The shell declaration shares its capability's name and replaces it.
-    assert_eq!(offered, ["apply_patch", "read", "shell", "write"]);
+    assert_offered(&offered, &["apply_patch", "read", "shell", "write"]);
     assert_eq!(
         ran(&invocations),
         [
@@ -366,9 +377,9 @@ fn native_declarations_run_the_revisions_a_manifest_pins() -> Result<()> {
     let mut whole = tools.clone();
     whole.pin_model_definitions(&manifest, None)?;
     native.bind(&mut whole)?;
-    assert_eq!(
-        offered(&whole)?,
-        ["Edit", "NotebookEdit", "Read", "shell", "Write"]
+    assert_offered(
+        &offered(&whole)?,
+        &["Edit", "NotebookEdit", "Read", "shell", "Write"],
     );
     assert_eq!(runs(&whole)?, Some(pinned));
     // A manifest naming one capability offers only its declarations.
@@ -382,7 +393,7 @@ fn native_declarations_run_the_revisions_a_manifest_pins() -> Result<()> {
         None,
     )?;
     native.bind(&mut read)?;
-    assert_eq!(offered(&read)?, ["Read"]);
+    assert_offered(&offered(&read)?, &["Read"]);
     // A bound registry is never pinned again.
     assert!(matches!(
         whole.pin_model_definitions(&manifest, None),

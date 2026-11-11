@@ -17,7 +17,6 @@ use futures::StreamExt as _;
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 use tokio::sync::Semaphore;
 
@@ -45,7 +44,6 @@ fn child(parent: &AgentPath) -> std::result::Result<AgentPath, Error> {
 
 fn step(checkpoint: &[u8], outs: Vec<Out>, wait: Wait) -> TurnStep {
     TurnStep {
-        reserved_children: 0,
         checkpoint: Some(checkpoint.to_vec()),
         outs,
         wait,
@@ -84,7 +82,6 @@ impl TurnDriver for Waiter {
     ) -> TurnFuture<'a> {
         Box::pin(async move {
             let settled = || TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: Vec::new(),
                 wait: Wait::Input,
@@ -138,9 +135,8 @@ impl TurnDriver for Waiter {
 }
 
 /// Runs every parent's wait under `active` admission: `None` once all
-/// completed, else why the schedule is stuck. Time is paused, so a deadline
-/// fires only once nothing else can progress: the runtime's handler deadline
-/// failing a delivery that never returns, or the run's own.
+/// completed, else the runtime's original delivery refusal. The explicitly
+/// selected manifest deadline fails a held delivery once no work can progress.
 async fn stuck(hold: bool, active: usize) -> Result<Option<String>> {
     let provider = Arc::new(MemoryStream::default());
     let waiting = Arc::new(Semaphore::new(0));
@@ -201,7 +197,6 @@ async fn stuck(hold: bool, active: usize) -> Result<Option<String>> {
         stopped = host.run(report) => Err(format!("runtime stopped: {stopped:?}").into()),
         completed = schedule => completed,
         _ = failed.acquire() => Ok(failure.lock().map_err(|_| "failure")?.clone()),
-        () = tokio::time::sleep(Duration::from_secs(3600)) => Ok(Some("no progress".into())),
     }
 }
 
@@ -287,7 +282,18 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
                     Some(b"spawned") => step(
                         b"waiting",
                         Vec::new(),
-                        Wait::Until(Until::all(agent.open_children.clone()).within(Some(TIMEOUT))),
+                        Wait::Until(
+                            Until::all(
+                                agent
+                                    .open_children
+                                    .page(None, CHILDREN)
+                                    .await?
+                                    .iter()
+                                    .map(|id| agent.path.child(id))
+                                    .collect::<std::result::Result<_, _>>()?,
+                            )
+                            .within(Some(TIMEOUT)),
+                        ),
                     ),
                     Some(_) => {
                         self.0
@@ -328,7 +334,15 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     });
     host.send(&root, &user(), &start).await?;
     host.drain_event(&root).await?;
-    let children = host.state(&root).await?.open_children;
+    let children = host
+        .state(&root)
+        .await?
+        .open_children
+        .page(None, CHILDREN)
+        .await?
+        .iter()
+        .map(|id| root.child(id))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     assert_eq!(children.len(), CHILDREN);
     for child in &children {
         host.send(child, &user(), &start).await?;
@@ -360,7 +374,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     assert_eq!(host.state(&root).await?.need, 1);
     for bytes in values(&*provider, root.status()?).await? {
         assert!(
-            StatusRecord::decode(&bytes)?.child_wakes.is_empty(),
+            StatusRecord::decode(&bytes)?.child_wakes.is_none(),
             "a partial completion burst must not report a returned wait"
         );
     }
@@ -392,7 +406,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
         "root must resume in the delivery consuming the last completion, before its alarm"
     );
     assert_eq!(host.state(&root).await?.phase, Phase::Idle);
-    assert!(host.state(&root).await?.child_settlements.is_empty());
+    assert!(host.state(&root).await?.child_settlements.is_none());
     let statuses = values(&*provider, root.status()?)
         .await?
         .iter()
@@ -400,24 +414,30 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let measured: Vec<_> = statuses
         .iter()
-        .filter(|status| !status.child_wakes.is_empty())
+        .filter(|status| status.child_wakes.is_some())
         .collect();
     assert_eq!(measured.len(), 1, "one telemetry record per returned wait");
     let wake = measured[0];
     assert_eq!(wake.cursor, before + CHILDREN as u64);
+    let samples = wake
+        .child_wakes
+        .as_ref()
+        .ok_or("missing wake root")?
+        .page(provider.clone(), &root, None, CHILDREN)
+        .await?;
     assert_eq!(
-        wake.child_wakes.len(),
+        samples.len(),
         CHILDREN,
         "every child must have a wake measurement"
     );
     assert_eq!(
-        wake.child_wakes
+        samples
             .iter()
             .map(|sample| sample.child.clone())
             .collect::<BTreeSet<_>>(),
         children.iter().map(AgentPath::id).collect()
     );
-    for sample in &wake.child_wakes {
+    for sample in &samples {
         assert_eq!(sample.settled_at_micros, NOW * 1_000);
         assert_eq!(sample.woke_at_micros, NOW * 1_000);
         assert!(

@@ -10,7 +10,7 @@ impl StockExecution<'_> {
         turn: (&TurnInput, u32, &[ModelMessage]),
         projection: &ResponseProjection,
         accounting: &ContextAccounting,
-        policy: &crate::context::ThresholdCompaction,
+        policy: &crate::context::CapacityCompaction,
     ) -> Result<CompactionSource> {
         let selected_base = turn.1 == 0 && turn.0.selected_context.is_some();
         if selected_base
@@ -19,11 +19,10 @@ impl StockExecution<'_> {
         {
             let (input, step, prior) = turn;
             let (_, base, _) = self.response_base(journal, input, step, prior).await?;
-            if selected_base {
-                return Ok(CompactionSource::Base {
-                    context: base,
-                    count: None,
-                });
+            // Keep a prepared immutable base cut even when only stage output
+            // causes overflow. Its preview is still re-staged and counted.
+            if selected_base || self.background_source_matches(&base).await? {
+                return Ok(CompactionSource::Base { context: base });
             }
             let request = crate::model::PreparedModelRequest::prepare(
                 self.request_from_context(&base)?,
@@ -36,10 +35,7 @@ impl StockExecution<'_> {
                     .await?;
             let tokens = with_history_io(self.io, |work| count.validate(&request, work))?;
             if policy.needs_compaction(accounting.capacity, tokens, self.output_tokens())? {
-                return Ok(CompactionSource::Base {
-                    context: base,
-                    count: Some(count),
-                });
+                return Ok(CompactionSource::Base { context: base });
             }
         }
         Ok(CompactionSource::Projected)

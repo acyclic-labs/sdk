@@ -472,7 +472,7 @@ fn laid_out(
     code: Option<crate::wire::ErrorCode>,
     charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
 ) -> Result<JsonValueShape> {
-    bounds.maximum_depth = bounds.maximum_depth.min(256);
+    bounds.maximum_depth = bounds.maximum_depth.min(RECORD_MAXIMUM_DEPTH);
     if bytes.len() as u64 > bounds.maximum_bytes {
         return Err(boundary("JSON input exceeds declared byte bound", code));
     }
@@ -531,7 +531,7 @@ fn finish(
     {
         return Err(boundary("JSON item limit exceeded", code));
     }
-    if counts.depth > bounds.maximum_depth.min(256) {
+    if counts.depth > bounds.maximum_depth.min(RECORD_MAXIMUM_DEPTH) {
         return Err(input_error(JsonInputError::Depth, code));
     }
     Ok(JsonValueShape {
@@ -596,7 +596,7 @@ pub(super) fn admit_typed(
         // same syntax error, so report that cause. The parse keeps one byte
         // per open container in a vector that doubles, at most twice the
         // admitted depth while it grows.
-        let scratch = u64::from(bounds.maximum_depth.min(256)) * 2;
+        let scratch = u64::from(bounds.maximum_depth.min(RECORD_MAXIMUM_DEPTH)) * 2;
         charge(JsonCodecCharge::Retain { bytes: scratch })?;
         let parsed = serde_json::from_slice::<serde::de::IgnoredAny>(bytes);
         charge(JsonCodecCharge::Release { bytes: scratch })?;

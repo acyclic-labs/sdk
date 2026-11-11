@@ -177,16 +177,19 @@ pub(in crate::bindings) fn authored_transaction(
     let metadata = FileMetadata::default();
     Ok(match operation {
         TransactionOperation::CreateFile { path, bytes } => AuthoredMutation::CreateFile {
+            file_id: None,
             path: browser_path(&path, config)?,
             bytes: acyclic_stream::OwnedBytes::from(bytes.into_vec()),
             metadata,
         },
         TransactionOperation::CreateDirectory { path } => AuthoredMutation::CreateDirectory {
+            file_id: None,
             path: browser_path(&path, config)?,
             metadata,
         },
         TransactionOperation::CreateSymbolicLink { path, target } => {
             AuthoredMutation::CreateSymbolicLink {
+                file_id: None,
                 path: browser_path(&path, config)?,
                 target: acyclic_stream::OwnedBytes::from(target.into_vec()),
                 metadata,
@@ -194,6 +197,7 @@ pub(in crate::bindings) fn authored_transaction(
         }
         TransactionOperation::CreateSpecial { path, file_kind } => {
             AuthoredMutation::CreateEmptySpecial {
+                file_id: None,
                 path: browser_path(&path, config)?,
                 kind: empty_special_kind(&file_kind)?,
                 metadata,
@@ -205,6 +209,7 @@ pub(in crate::bindings) fn authored_transaction(
             major,
             minor,
         } => AuthoredMutation::CreateDevice {
+            file_id: None,
             path: browser_path(&path, config)?,
             kind: device_kind(&file_kind)?,
             major,
@@ -213,6 +218,7 @@ pub(in crate::bindings) fn authored_transaction(
         },
         TransactionOperation::CreateReparsePoint { path, payload } => {
             AuthoredMutation::CreateReparsePoint {
+                file_id: None,
                 path: browser_path(&path, config)?,
                 payload: acyclic_stream::OwnedBytes::from(payload.into_vec()),
                 metadata,

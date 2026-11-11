@@ -36,6 +36,7 @@ fn admission(request: &[u8]) -> Result<ExecutionRecord> {
             purpose: ModelPurpose::Response,
             request_digest: *blake3::hash(request).as_bytes(),
             request: file,
+            context: None,
         },
     })
 }
@@ -522,6 +523,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
                 purpose: ModelPurpose::Response,
                 request_digest: *blake3::hash(&bytes).as_bytes(),
                 request: request_file.clone(),
+                context: None,
             },
             None,
         )?
@@ -706,6 +708,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
                 purpose: ModelPurpose::Response,
                 request_digest: *blake3::hash(&bytes).as_bytes(),
                 request: request_file,
+                context: None,
             },
             None,
         )?

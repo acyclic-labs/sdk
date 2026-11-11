@@ -201,16 +201,18 @@ async fn prepare<P: StreamProvider>(
     candidate: &P,
     baseline: &BaselineProvider,
 ) -> ReadyPair {
-    let path = StreamPath::new("root").unwrap();
     // Compare exact errors as well as all record bytes/metadata and observer order.
+    // A future cursor on an existing stream waits in v3; an absent stream is
+    // the independent error case, not an arbitrarily large cursor.
+    let absent = StreamPath::new("absent").unwrap();
     let errors = [old, candidate].map(|provider| {
         provider
-            .follow(crate::FollowRequest::new(path.clone(), COUNT as u64 + 1))
+            .follow(crate::FollowRequest::new(absent.clone(), 0))
             .map_ok(crate::records_only)
     });
     let [old_error, candidate_error] = errors;
-    assert_eq!(old_error.await.err(), Some(StreamError::OutOfRange));
-    assert_eq!(candidate_error.await.err(), Some(StreamError::OutOfRange));
+    assert_eq!(old_error.await.err(), Some(StreamError::NotFound));
+    assert_eq!(candidate_error.await.err(), Some(StreamError::NotFound));
     {
         ReadyPair::Records(
             records(baseline.clone()).await,

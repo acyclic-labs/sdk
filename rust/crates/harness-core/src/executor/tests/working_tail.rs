@@ -32,11 +32,8 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         )) as Arc<dyn crate::context::ContextStage>]),
         ToolRegistry::default(),
     )
-    .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
-        crate::context::ThresholdCompaction {
-            recent_tokens: 1,
-            ..Default::default()
-        },
+    .with_compaction_policy(crate::context::CompactionPolicy::Capacity(
+        crate::context::CapacityCompaction::default(),
     ));
     let input = TurnInput {
         max_steps: None,

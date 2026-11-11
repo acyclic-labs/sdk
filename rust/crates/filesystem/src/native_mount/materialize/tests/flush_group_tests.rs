@@ -19,6 +19,7 @@ async fn durable_traversal_groups_full_flushes_without_overlapping_staging_actio
         checkout
             .create(
                 crate::AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: portable_path(config.limits, &[name.as_bytes()])?,
                     bytes: Bytes::from(bytes.clone()).into(),
                     metadata: FileMetadata {

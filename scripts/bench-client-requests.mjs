@@ -34,7 +34,7 @@ export function measurements(output) {
 
 /** @param {typeof spawnSync} [run] */
 export function benchClientRequests(run = spawnSync) {
-  const result = run("cargo", cargoArgs, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  const result = run("cargo", cargoArgs, { encoding: "utf8", maxBuffer: Infinity });
   process.stdout.write(result.stdout ?? "");
   process.stderr.write(result.stderr ?? "");
   if (result.error) throw result.error;

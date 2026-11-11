@@ -57,6 +57,7 @@ pub async fn windows_checkout_source_with_files(
             let portable =
                 acyclic_fs::path::PortablePath::parse(&format!("/f{index}.txt"), config.limits)?;
             mutations.push(acyclic_fs::AuthoredMutation::CreateFile {
+                file_id: None,
                 path: acyclic_fs::kernel::NamespacePath::from_portable_in_profile(
                     &portable,
                     config.profile,

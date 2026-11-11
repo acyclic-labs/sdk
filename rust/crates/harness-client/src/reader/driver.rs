@@ -899,7 +899,11 @@ mod tests {
                     .await
                     .unwrap();
             }
-            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            let mut reader = Reader::new(ReaderPolicy {
+                timeout_ms: Some(100),
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
             for witness in &witnesses {
                 reader.observed_head(witness, provider.head(witness.clone()).await.unwrap(), None);
             }

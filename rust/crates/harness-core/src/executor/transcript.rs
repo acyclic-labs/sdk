@@ -644,7 +644,7 @@ async fn load_segment(
     Ok(segment)
 }
 
-pub(super) async fn stage_request(
+pub(crate) async fn stage_request(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     key: &str,
@@ -730,7 +730,7 @@ pub(crate) async fn load_request(
     Ok(request)
 }
 
-pub(super) async fn stage_projection(
+pub(crate) async fn stage_projection(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     key: &str,

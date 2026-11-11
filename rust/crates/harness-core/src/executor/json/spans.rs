@@ -178,7 +178,9 @@ impl StringSyntax {
 #[derive(Default)]
 pub(crate) struct JsonSpans {
     lexical: admission::Lexical,
-    frames: arrayvec::ArrayVec<Frame, 256>,
+    // Container depths are zero-based, so an empty container at the accepted
+    // maximum depth still needs its own frame above the root frame.
+    frames: arrayvec::ArrayVec<Frame, { RECORD_MAXIMUM_DEPTH as usize + 1 }>,
     position: u64,
     root_started: bool,
     root_done: bool,

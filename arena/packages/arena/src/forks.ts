@@ -33,7 +33,7 @@ export class AcyclicForker implements Forker {
 }
 
 function git(cwd: string, args: string[], allowFail = false): string {
-  const p = spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
+  const p = spawnSync("git", args, { maxBuffer: Infinity, cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
   if (p.error) throw p.error;
   if (p.status !== 0 && !allowFail) throw new Error(`git ${args.join(" ")} failed: ${(p.stderr || p.stdout).trim().slice(0, 300)}`);
   return p.stdout;
@@ -97,10 +97,10 @@ export class GitForker implements Forker {
       const path = join(this.root, id);
       git(this.repo, ["worktree", "add", "--detach", "-q", path, head]);
       if (dirty.trim()) {
-        const p = spawnSync("git", ["apply", "--allow-empty", "-"], { cwd: path, input: dirty, encoding: "utf8" });
+        const p = spawnSync("git", ["apply", "--allow-empty", "-"], { maxBuffer: Infinity, cwd: path, input: dirty, encoding: "utf8" });
         if (p.status !== 0) throw new Error(`could not carry uncommitted changes into fork: ${p.stderr}`);
       }
-      for (const f of untracked) { spawnSync("mkdir", ["-p", join(path, f, "..")]); spawnSync("cp", ["-R", join(this.repo, f), join(path, f)]); }
+      for (const f of untracked) { spawnSync("mkdir", ["-p", join(path, f, "..")], { maxBuffer: Infinity }); spawnSync("cp", ["-R", join(this.repo, f), join(path, f)], { maxBuffer: Infinity }); }
       forks.push({ id, path, base: head.slice(0, 12), label: LABELS[i] ?? String(i) });
     }
     return forks;

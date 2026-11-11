@@ -13,7 +13,7 @@ use windows_sys::Win32::{
         Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle},
         Pipes::CreatePipe,
         Threading::{
-            CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS,
+            CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS,
             DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
             InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
             PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
@@ -22,7 +22,10 @@ use windows_sys::Win32::{
     },
 };
 
-pub(crate) fn spawn_service_process(executable: &Path) -> io::Result<File> {
+pub(crate) fn spawn_service_process(
+    executable: &Path,
+    arguments: &[std::ffi::OsString],
+) -> io::Result<File> {
     let executable_argument = executable.as_os_str().encode_wide().collect::<Vec<_>>();
     if executable_argument.contains(&0) {
         return Err(io::Error::new(
@@ -38,10 +41,14 @@ pub(crate) fn spawn_service_process(executable: &Path) -> io::Result<File> {
     }
     let mut executable_wide = executable_argument.clone();
     executable_wide.push(0);
-    let mut command_line = Vec::with_capacity(executable_argument.len() + 32);
-    command_line.push(u16::from(b'"'));
-    command_line.extend(executable_argument);
-    command_line.extend(format!("\" __service {}\0", crate::SERVICE_READY_ARGUMENT).encode_utf16());
+    let mut command = crate::ProcessCommand::new(executable);
+    command.args(arguments).arg(crate::SERVICE_READY_ARGUMENT);
+    for name in crate::obs::LAUNCH_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    let environment = crate::process_tree::service_environment(&command)?;
+    let mut command_line = crate::process_tree::service_command_line(&command)?;
+    command_line.push(0);
 
     let (reader, writer) = readiness_pipe()?;
     let writer_handle: HANDLE = writer.as_raw_handle();
@@ -63,8 +70,13 @@ pub(crate) fn spawn_service_process(executable: &Path) -> io::Result<File> {
             std::ptr::null(),
             std::ptr::null(),
             1,
-            CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT,
-            std::ptr::null(),
+            CREATE_NEW_PROCESS_GROUP
+                | DETACHED_PROCESS
+                | EXTENDED_STARTUPINFO_PRESENT
+                | CREATE_UNICODE_ENVIRONMENT,
+            environment
+                .as_ref()
+                .map_or(std::ptr::null(), |block| block.as_ptr().cast()),
             std::ptr::null(),
             &raw const startup.StartupInfo,
             &mut process,

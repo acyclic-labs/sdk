@@ -98,6 +98,7 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
                     purpose: ModelPurpose::Response,
                     request_digest: prepared.request_digest(),
                     request,
+                    context: None,
                 },
                 Some(&io),
             )?

@@ -1,5 +1,13 @@
 Cases launch the shipping GraphCoder binary with an ordinary provider catalog and isolated settings. Build GraphCoder and harness-mock-model and install scripts/graphcoder-pty dependencies before timing. Run `node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [CASE ...]`.
 
+`pty-tree-sidebar` creates a real worker, authors its private `ui/` row files,
+toggles the automatically visible tree, fuzzy-matches its title, attaches,
+and observes a live rename.
+Parent and attachment-history navigation must return to the original views
+without dispatching another model request. The shared Explorer's 10,000-child
+control separately checks the row golden and request counts across a page and
+sibling boundary, including an absent identity between pages.
+
 `pty-code-highlight` streams a Rust fence, checks real cell foregrounds and a
 code background band, retains the OSC 8 destination, and switches the same
 settled answer through light and dark with `/theme`. Styling is asserted at the
@@ -18,13 +26,20 @@ assertion or a claim that executor construction alone measures product startup.
 `pty-conversation` submits its first prompt and terminal-query replies together on the first terminal output bytes, before admitting a rendered frame, then checks both conversational turns. `pty-cancel-preparation` holds the acknowledged token-count request, observes two distinct thinking highlights, then cancels before any model dispatch and requires the animation to stop. Resume cases use the public text/JSONL and explicit terminal-resume contracts.
 
 `topology-blackboard` selects the embedded role file through native `spawn`.
-Its authored SDK conversation forwards actual wait results into a board in
-the coordinator's private home, then edits it pinned to its original
-publication. Shared-volume grants and concurrent writers need separate cases.
+Its authored SDK conversation waits for one child to publish a session-shared
+board, then a sibling reads and extends that original publication. Two edits
+use the same original version: the second must report a conflict. The
+coordinator reads the unchanged contributions after both producers finish.
+A second GraphCoder process reopens the same session and delegates a reader
+that reads the retained board through its own admitted role.
 `node scripts/qualify-topology-presets.mjs GRAPHCODER MOCK_MODEL FRESH_ABSOLUTE_OUTPUT`
-first selects a generic worker instead: the unchanged conversation must fail at
-the actual provider request missing its role directive. It then restores the
-role selection and runs the same shipping case.
+checks the same conversation with a generic worker, private sibling volumes,
+and an omitted edit version. Each must fail the unchanged assertions before
+the original role, sharing and version condition pass together.
+`topology-hierarchy` joins an original grandchild result into an independent
+reviewer's task and returns that reviewer's actual terminal answer. The same
+qualifier rejects a generic lead, a substituted leaf and a substituted review
+before the original contributions pass together.
 The qualifier retains its modified `cases/` and `coverage.json` input under
 the fresh output directory. `E2E_CASES_ROOT` selects that tree in the ordinary
 runner; checked-in inputs are read only, including if qualification is killed.

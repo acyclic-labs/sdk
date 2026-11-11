@@ -9,6 +9,80 @@ use acyclic_stream::{
 use std::sync::atomic::{AtomicBool, Ordering};
 
 struct Cut(AtomicBool);
+
+#[tokio::test]
+async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(exchange)?;
+    let project = volume(directory.path()).await?;
+    let harness =
+        Arc::new(LocalHarness::open(volume_config(directory.path(), project, text())?).await?);
+    let connection = harness.connect().await?;
+    let mut observer = Observer::open(&connection, 0, 0)?;
+    loop {
+        if matches!(observer.next().await?, Event::Status(status) if matches!(status.phase, crate::agent::Phase::Idle))
+        {
+            break;
+        }
+    }
+    let reader = connection.session.read_provider();
+    let head = reader
+        .head(connection.root.status().map_err(exchange)?)
+        .await;
+    let page = reader
+        .children_page(acyclic_stream::ChildrenPageRequest {
+            parent: Some(connection.root.children().map_err(exchange)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 16,
+            tail_stream: Some(StreamPath::new("conversation").map_err(exchange)?),
+        })
+        .await;
+    assert!(
+        head.is_ok() && page.is_ok(),
+        "head: {head:?}; page: {page:?}"
+    );
+    assert!(page.map_err(exchange)?.children.is_empty());
+    let outside = AgentPath::root(&crate::agent::AgentId::from_bytes([0; 16]));
+    assert_eq!(
+        reader.head(outside.status().map_err(exchange)?).await,
+        Err(StreamError::AccessDenied)
+    );
+    let directory_connection = harness.connect_sessions().await?;
+    let session = super::super::sessions::create(&directory_connection, "reader-session").await?;
+    let page = session
+        .session
+        .read_provider()
+        .children_page(acyclic_stream::ChildrenPageRequest {
+            parent: Some(session.root.children().map_err(exchange)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 16,
+            tail_stream: Some(StreamPath::new("conversation").map_err(exchange)?),
+        })
+        .await
+        .map_err(exchange)?;
+    assert!(page.children.is_empty());
+    assert_eq!(
+        reader.head(session.root.status().map_err(exchange)?).await,
+        Err(StreamError::AccessDenied)
+    );
+    // The primitive filters broad discovery to authorized children. A directory
+    // owner can discover both roots; this original tree credential sees only its own.
+    let page = reader
+        .children_page(acyclic_stream::ChildrenPageRequest {
+            parent: Some(StreamPath::new(crate::agent::AGENTS).map_err(exchange)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 16,
+            tail_stream: None,
+        })
+        .await
+        .map_err(exchange)?;
+    assert_eq!(page.children.len(), 1);
+    assert_eq!(page.children[0].path.as_str(), connection.root.as_str());
+    assert!(page.next_after.is_none());
+    Ok(())
+}
 impl PersistenceCut for Cut {
     fn admit(&self) -> bool {
         false

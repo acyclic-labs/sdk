@@ -18,10 +18,9 @@ mod recovery_tests;
 pub(super) mod seed;
 
 #[cfg(target_os = "linux")]
-pub(super) fn recover_after_crash(root: &acyclic_fs::HeldRoot) -> Result<()> {
-    let relative = Path::new(HOME_PATH);
+pub(super) fn recover_after_crash(root: &acyclic_fs::HeldRoot, relative: &Path) -> Result<()> {
     let (Some(parent), Some(leaf)) = (relative.parent(), relative.file_name()) else {
-        return Err(Error::Invalid("home mount has no parent".into()));
+        return Err(Error::Invalid("volume mount has no parent".into()));
     };
     let parent = held_directories(root, parent)?;
     if recover_binding_alias(root, &root.path().join(relative))? {
@@ -123,7 +122,7 @@ pub(super) async fn attach(
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     for (relative, mount) in mounts.mounts_mut() {
-        if relative.is_empty() {
+        if relative.is_empty() || mount.view.source.is_some() {
             continue;
         }
         let source = filesystem
@@ -622,14 +621,18 @@ fn link_directory(target: &Path, path: &Path) -> std::io::Result<()> {
 
 /// Reserve SDK state in the original checkout once, before the source cut.
 /// Physical projections live under the shared root; aliases remain reserved.
-pub(super) fn exclude_state(root: &acyclic_fs::HeldRoot) -> Result<()> {
+pub(super) fn exclude_state<'a>(
+    root: &acyclic_fs::HeldRoot,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let paths: Vec<_> = names
+        .into_iter()
+        .map(|name| Path::new(".volumes").join(name))
+        .chain([super::HOST_VIEW_ROOT.into(), ".acyclic-sdk".into()])
+        .collect();
     exclude::exclude_mount_paths(
         root,
-        &[
-            Path::new(super::HOST_VIEW_ROOT),
-            Path::new(HOME_PATH),
-            Path::new(".acyclic-sdk"),
-        ],
+        &paths.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
     )
 }
 /// Each binding supplies its durable logical volume identity. The destination

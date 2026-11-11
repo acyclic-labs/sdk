@@ -195,6 +195,7 @@ impl NativeCheckout {
             &mut checkout,
             &paths,
             &CaptureOptions {
+                source_namespace: None,
                 source_root,
                 expected_root_identity,
                 maximum_paths,
@@ -225,6 +226,7 @@ impl NativeCheckout {
         let receipt = Box::pin(capture_baseline(
             &mut checkout,
             &CaptureOptions {
+                source_namespace: None,
                 source_root,
                 expected_root_identity,
                 maximum_paths,
@@ -303,6 +305,7 @@ impl NativeWatcher {
         let baseline = Box::pin(capture_baseline(
             &mut checkout,
             &CaptureOptions {
+                source_namespace: None,
                 source_root: self.source_root.clone(),
                 expected_root_identity,
                 maximum_paths,
@@ -452,6 +455,7 @@ impl NativeWatcher {
                 &mut checkout,
                 pending.batch,
                 &CaptureOptions {
+                    source_namespace: None,
                     source_root: self.source_root.clone(),
                     expected_root_identity,
                     maximum_paths,

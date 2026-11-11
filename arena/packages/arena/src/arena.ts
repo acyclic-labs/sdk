@@ -38,7 +38,7 @@ const LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const SAME = "no meaningful difference";
 
 function unifiedDiff(base: string, fork: string, rel: string, maxChars: number): string {
-  const p = spawnSync("diff", ["-u", "--label", `a/${rel}`, "--label", `b/${rel}`, join(base, rel), join(fork, rel)], { encoding: "utf8" });
+  const p = spawnSync("diff", ["-u", "--label", `a/${rel}`, "--label", `b/${rel}`, join(base, rel), join(fork, rel)], { maxBuffer: Infinity, encoding: "utf8" });
   let out = p.stdout || "";
   if (!out && p.status !== 0 && p.stderr) {
     try { out = "+++ b/" + rel + "\n" + readFileSync(join(fork, rel), "utf8").split("\n").map((l) => "+" + l).join("\n"); } catch { out = ""; }
@@ -108,7 +108,7 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
         probe = "(no changes in this fork; tests not run)";
         say(`probe ${f.label}: skipped, no changes`);
       } else if (opts.testCommand) {
-        const p = spawnSync("sh", ["-c", opts.testCommand], { cwd: f.path, encoding: "utf8", timeout: 300_000 });
+        const p = spawnSync("sh", ["-c", opts.testCommand], { maxBuffer: Infinity, cwd: f.path, encoding: "utf8", timeout: 300_000 });
         probeOk = p.status === 0;
         probe = ((p.stdout || "") + (p.stderr || "")).trim().split("\n").slice(-12).join("\n");
         say(`probe ${f.label}: ${probeOk ? "pass" : "fail"}`);

@@ -13,12 +13,23 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     async fn client_volume(
         &self,
         agent: &AgentPath,
-        session: OperationId,
+        session: Option<OperationId>,
     ) -> Result<(VolumeRef, Scope, crate::core::AuthorityVerifier), Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        let volume = crate::client_files::volume(self.volumes.provider.clone(), agent, session)
-            .map_err(turn)?;
+        let volume = match session {
+            Some(session) => {
+                crate::client_files::volume(self.volumes.provider.clone(), agent, session)
+                    .map_err(turn)?
+            }
+            None => state
+                .volumes
+                .iter()
+                .find(|binding| binding.name == super::super::PRIVATE_VOLUME)
+                .ok_or(Error::Record("agent has no private volume"))?
+                .volume
+                .clone(),
+        };
         let admitted = super::super::agent_turns::AdmittedAgent::verify(
             &self.issuer,
             &self.admission,
@@ -66,13 +77,82 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         paths: &[String],
         after: Option<&GenerationRef>,
     ) -> Result<ClientFiles, Error> {
-        let (volume, scope, verifier) = self.client_volume(agent, session).await?;
+        self.files(agent, Some(session), paths, after).await
+    }
+
+    /// Files owned by the agent, including its authored UI, through the same
+    /// conditional publisher and publication follow as client layout files.
+    pub async fn agent_files(
+        &self,
+        agent: &AgentPath,
+        paths: &[String],
+        after: Option<&GenerationRef>,
+    ) -> Result<ClientFiles, Error> {
+        self.files(agent, None, paths, after).await
+    }
+
+    async fn files(
+        &self,
+        agent: &AgentPath,
+        session: Option<OperationId>,
+        paths: &[String],
+        after: Option<&GenerationRef>,
+    ) -> Result<ClientFiles, Error> {
+        let (volume, scope, verifier, generation) =
+            self.file_selection(agent, session, after).await?;
         let grant = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "", &mut None)
             .map_err(turn)?;
+        let mut files = BTreeMap::new();
+        let access = ContentAccess {
+            ceiling: Some(scope.capabilities()),
+            io: None,
+        };
+        for path in paths {
+            let file = match self
+                .volumes
+                .read_private_path(
+                    &volume,
+                    &grant,
+                    path,
+                    Some(&generation),
+                    self.maximum_bytes,
+                    access,
+                )
+                .await
+            {
+                Ok((file, bytes)) => Some(ClientFile {
+                    file,
+                    text: std::str::from_utf8(&bytes)
+                        .map_err(|_| Error::Record("client file is not UTF-8"))?
+                        .to_owned(),
+                }),
+                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
+                Err(error) => return Err(turn(error)),
+            };
+            files.insert(path.clone(), file);
+        }
+        Ok(ClientFiles { generation, files })
+    }
+
+    async fn file_selection(
+        &self,
+        agent: &AgentPath,
+        session: Option<OperationId>,
+        after: Option<&GenerationRef>,
+    ) -> Result<
+        (
+            VolumeRef,
+            Scope,
+            crate::core::AuthorityVerifier,
+            GenerationRef,
+        ),
+        Error,
+    > {
+        let (volume, scope, verifier) = self.client_volume(agent, session).await?;
         let reference =
             super::super::bounded_io::content_workspace(&self.volumes.provider, &volume, None)
                 .map_err(turn)?;
-        let initial = if after.is_none() {
+        let initial = if after.is_none() && session.is_some() {
             Some(self.volumes.create_volume(&volume).await.map_err(turn)?)
         } else {
             None
@@ -137,39 +217,49 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                 .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))?;
             selected = self.volumes.resolve(&reference, None).await.map_err(turn)?;
         }
-        let mut files = BTreeMap::new();
+        Ok((volume, scope, verifier, selected.generation))
+    }
+
+    /// Read only the caller's display credit, at the same live snapshot used
+    /// by complete file queries. A split final UTF-8 scalar is omitted.
+    pub async fn agent_file_previews(
+        &self,
+        agent: &AgentPath,
+        paths: &[String],
+        after: Option<&GenerationRef>,
+        bytes: u64,
+    ) -> Result<crate::client_files::FilePreviews, Error> {
+        let (volume, scope, verifier, generation) = self.file_selection(agent, None, after).await?;
+        let grant = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "", &mut None)
+            .map_err(turn)?;
         let access = ContentAccess {
             ceiling: Some(scope.capabilities()),
             io: None,
         };
+        let mut files = BTreeMap::new();
         for path in paths {
-            let file = match self
+            let text = match self
                 .volumes
-                .read_private_path(
-                    &volume,
-                    &grant,
-                    path,
-                    Some(&selected.generation),
-                    self.maximum_bytes,
-                    access,
-                )
+                .read_private_prefix(&volume, &grant, path, &generation, bytes, access)
                 .await
             {
-                Ok((file, bytes)) => Some(ClientFile {
-                    file,
-                    text: std::str::from_utf8(&bytes)
-                        .map_err(|_| Error::Record("client file is not UTF-8"))?
-                        .to_owned(),
-                }),
+                Ok(data) => {
+                    let prefix = match std::str::from_utf8(&data) {
+                        Ok(text) => text,
+                        Err(error) if error.error_len().is_none() => {
+                            std::str::from_utf8(&data[..error.valid_up_to()])
+                                .map_err(|_| Error::Record("file preview is not UTF-8"))?
+                        }
+                        Err(_) => return Err(Error::Record("file preview is not UTF-8")),
+                    };
+                    Some(prefix.to_owned())
+                }
                 Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
                 Err(error) => return Err(turn(error)),
             };
-            files.insert(path.clone(), file);
+            files.insert(path.clone(), text);
         }
-        Ok(ClientFiles {
-            generation: selected.generation,
-            files,
-        })
+        Ok(crate::client_files::FilePreviews { generation, files })
     }
 
     /// Publishes one atomic conditional batch. Stable operation identity and
@@ -181,8 +271,32 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         operation: OperationId,
         changes: &[ClientFileChange],
     ) -> Result<GenerationRef, Error> {
+        self.publish_files(agent, Some(session), operation, changes)
+            .await
+    }
+
+    /// Conditionally publish the agent's own files. Source descriptors and
+    /// operation identity have exactly the client-file publication semantics.
+    pub async fn publish_agent_files(
+        &self,
+        agent: &AgentPath,
+        operation: OperationId,
+        changes: &[ClientFileChange],
+    ) -> Result<GenerationRef, Error> {
+        self.publish_files(agent, None, operation, changes).await
+    }
+
+    async fn publish_files(
+        &self,
+        agent: &AgentPath,
+        session: Option<OperationId>,
+        operation: OperationId,
+        changes: &[ClientFileChange],
+    ) -> Result<GenerationRef, Error> {
         let (volume, scope, verifier) = self.client_volume(agent, session).await?;
-        self.volumes.create_volume(&volume).await.map_err(turn)?;
+        if session.is_some() {
+            self.volumes.create_volume(&volume).await.map_err(turn)?;
+        }
         let publisher = FilesystemContentPublisher::new(
             self.volumes.clone(),
             &volume,
@@ -203,7 +317,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                     path: &change.path,
                     bytes: change.text.as_bytes(),
                     media_type: "application/json",
-                    display_name: change.path.rsplit('/').next().unwrap_or(&change.path),
+                    display_name: change.path.rsplit('/').next().unwrap_or_default(),
                 },
             })
             .collect();

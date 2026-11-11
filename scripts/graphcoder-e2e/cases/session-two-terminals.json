@@ -1,0 +1,38 @@
+{
+  "id": "session-two-terminals",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": {
+    "steps": [
+      { "when": { "user": "seed shared session" }, "text": ["SHARED_SESSION_SEED"] },
+      { "when": { "user": "one shared running turn" }, "text": ["TWO_TERMINALS_RUNNING"], "hold": true }
+    ]
+  },
+  "inputs": [
+    { "mode": "text", "args": ["--new-session", "-p", "seed shared session"] },
+    {
+      "mode": "pty-group",
+      "terminals": [
+        {
+          "name": "writer",
+          "resume": true,
+          "actions": [
+            { "when": { "contains": ["GraphCoder", "SHARED_SESSION_SEED"], "cursor": true }, "signal": "writer-ready" },
+            { "when": { "contains": ["GraphCoder", "SHARED_SESSION_SEED"], "cursor": true }, "after_signal": "reader-ready", "prompt": "one shared running turn" },
+            { "when": { "contains": ["TWO_TERMINALS_RUNNING"] }, "after_signal": "reader:closed", "send": "\u0003" },
+            { "when": { "contains": ["cancelled"] }, "prompt": "/quit " }
+          ],
+          "exit": 2
+        },
+        {
+          "name": "reader",
+          "resume": true,
+          "actions": [
+            { "when": { "contains": ["GraphCoder", "SHARED_SESSION_SEED"], "cursor": true }, "signal": "reader-ready" },
+            { "when": { "contains": ["TWO_TERMINALS_RUNNING"] }, "prompt": "/quit " }
+          ]
+        }
+      ]
+    }
+  ],
+  "assert": { "requests": 2, "model_contains": ["seed shared session", "one shared running turn"] }
+}

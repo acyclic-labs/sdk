@@ -48,6 +48,9 @@ mod owner_record;
 mod preflight;
 #[cfg(feature = "serve")]
 mod serve;
+#[cfg(feature = "serve")]
+pub mod service;
+pub mod sessions;
 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 mod settings;
 pub mod study;
@@ -64,6 +67,9 @@ pub mod web;
 mod workspace;
 pub use agents::{LocalAgents, LocalTurns};
 use config::LocalProject;
+
+/// The session volume shared by a local root and its descendants.
+const SHARED_VOLUME: &str = "shared";
 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 pub use config::ModelResolver;
 pub use config::{LocalHarnessConfig, WorkspaceMounting};
@@ -96,6 +102,7 @@ pub struct LocalHarness {
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
+    shared: VolumeRef,
     /// The read-only seed layer under every agent's home, at the generation
     /// this build wrote (see [`crate::seed`]).
     seed: (VolumeRef, crate::resources::GenerationRef),

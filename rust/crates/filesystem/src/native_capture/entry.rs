@@ -570,6 +570,7 @@ async fn capture_paths_in<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             options.maximum_extent_spans,
             &source_root,
             None,
+            options.source_namespace,
             &scope.native,
         )
         .await
@@ -629,6 +630,7 @@ pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObject
             options.maximum_extent_spans,
             &source_root,
             baseline,
+            options.source_namespace,
             meter,
         )
         .await?;
@@ -785,6 +787,7 @@ pub(crate) async fn capture_subtrees_with_native_work<
             options.maximum_extent_spans,
             &source_root,
             baseline,
+            options.source_namespace,
             meter,
         )
         .await
@@ -940,6 +943,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             options.maximum_extent_spans,
             &source_root,
             None,
+            options.source_namespace,
             meter,
         )
         .await

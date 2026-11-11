@@ -93,7 +93,10 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
             std::cmp::Ordering::Greater => high = middle,
             std::cmp::Ordering::Equal => {
                 return match &entry.input {
-                    TurnInput::Message { id: settled, .. } if settled == id => {
+                    TurnInput::Message { id: settled, .. }
+                    | TurnInput::Context { id: settled, .. }
+                        if settled == id =>
+                    {
                         goal_reply(provider, state, middle, entry, None).await
                     }
                     _ => Err(Error::Conflict(
@@ -201,7 +204,7 @@ pub(super) async fn inbox_record<P: crate::store::JournalProvider + ?Sized>(
 }
 
 /// Committed conversation entry `sequence`.
-pub(super) async fn entry<P: crate::store::JournalProvider + ?Sized>(
+pub(crate) async fn entry<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
     conversation: &StreamPath,
     sequence: u64,

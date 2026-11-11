@@ -8,6 +8,7 @@ type OriginalInput<P, O> = (
     Option<(
         super::super::FilesystemExecutionJournal<P, StreamAuthorityStore<P>, O>,
         OperationId,
+        Option<crate::agent::IntentId>,
     )>,
     bool,
     u64,
@@ -19,9 +20,11 @@ mod tests;
 
 trait Projection {
     type Page: acyclic_stream::ProviderTask;
+    const CONTEXT_WINDOW: bool = false;
 
     fn empty(after: u64) -> Self::Page;
     fn end(page: &Self::Page) -> u64;
+    fn context_changed(_page: &mut Self::Page) {}
     fn metadata_changed(_observed: Option<u64>, _open_children: u64) -> bool {
         false
     }
@@ -37,6 +40,7 @@ struct Usage;
 
 impl Projection for Usage {
     type Page = ModelUsagePage;
+    const CONTEXT_WINDOW: bool = true;
 
     fn empty(after: u64) -> Self::Page {
         ModelUsagePage {
@@ -53,6 +57,12 @@ impl Projection for Usage {
 
     fn end(page: &Self::Page) -> u64 {
         page.end
+    }
+
+    fn context_changed(page: &mut Self::Page) {
+        // A settled manual rewrite has no later worker admission to measure.
+        // Retire its old occupancy until the next request verifies a new bound.
+        page.context = Some(crate::executor::ContextUsage::Unavailable);
     }
 
     fn read<'a>(
@@ -94,6 +104,46 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Page completion measurements referenced by an exact original status.
+    /// Rechecks tree admission before reading the original completion range.
+    pub async fn child_wakes(
+        &self,
+        agent: &AgentPath,
+        status: u64,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<crate::agent::ChildWake>, Error> {
+        use crate::agent::AgentRecord as _;
+        use futures::TryStreamExt as _;
+        self.admit_path(agent)?;
+        let provider = self.agents.provider();
+        let mut records = provider
+            .read(acyclic_stream::ReadRequest {
+                path: agent.status()?,
+                from: status,
+                limit: 1,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let record = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .filter(|record| record.sequence == status)
+            .ok_or(Error::Record("status measurement cut is missing"))?;
+        match crate::agent::StatusRecord::decode(&record.value)?.child_wakes {
+            Some(wakes) if status.checked_add(1).is_some_and(|end| wakes.until <= end) => {
+                wakes.page(provider.clone(), agent, after, limit).await
+            }
+            Some(_) => Err(Error::Record(
+                "completion range exceeds its original status",
+            )),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Bounded call admissions and completions from the original private journal.
     /// Quiet pages wait on the same inbox, journal and actor producers as events.
     pub async fn usage_page(
@@ -152,7 +202,7 @@ where
                 "payload input precedes this agent's adoption",
             ));
         }
-        let (journal, operation) =
+        let (journal, operation, _) =
             journal.ok_or(Error::Record("payload input has no original turn"))?;
         let records = journal
             .replay(operation, after, 1, None)
@@ -230,13 +280,22 @@ where
             let settled = progress.settled;
             let open_children = progress.open_children;
             let metadata_changed = Q::metadata_changed(observed_children, open_children);
-            let page = if let Some((journal, operation)) = &journal {
+            let mut page = if let Some((journal, operation, _)) = &journal {
                 Q::read(journal, *operation, agent.as_str(), after)
                     .await
                     .map_err(turn)?
             } else {
                 Q::empty(after)
             };
+            if Q::CONTEXT_WINDOW
+                && settled
+                && let Some((_, _, Some(selection))) = &journal
+                && let crate::agent::Reply::Answered { entry, .. } =
+                    self.agents.reply(agent, selection, input).await?
+                && entry.checkpoint().is_some()
+            {
+                Q::context_changed(&mut page);
+            }
             if !wait || settled || Q::end(&page) > after || metadata_changed {
                 return Ok((input, tail, Some(page), settled, open_children));
             }
@@ -244,7 +303,7 @@ where
             // append between the page and this wait remains visible. No task,
             // timer or status recheck produces readiness.
             let actor_changed = self.journal_record(progress.follow);
-            if let Some((journal, operation)) = &journal {
+            if let Some((journal, operation, _)) = &journal {
                 let journal_changed =
                     self.journal_record(journal.follow(*operation, Q::end(&page)).map_err(turn)?);
                 tokio::select! {
@@ -405,6 +464,12 @@ where
             Some((
                 self.turns.query_journal(state).await.map_err(turn)?,
                 crate::agent::turn_id(state, &queued.input)?,
+                match &queued.input {
+                    crate::agent::TurnInput::Context { id, action, .. } if !matches!(action, crate::agent::ContextAction::Restore { mode, .. } if !mode.context()) => {
+                        Some(id.clone())
+                    }
+                    _ => None,
+                },
             ))
         } else {
             if after != 0 {
