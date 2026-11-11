@@ -410,11 +410,13 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<Arc<dyn Executor>>>;
 
     /// Admitted workspace exposures and instructions not yet present in this
-    /// selected conversation. Hosts without workspace exposure return none.
+    /// selected conversation. `seen` binds each slot to its latest discovered
+    /// source identity, as returned by `WorkspaceInstructions::source_for`.
+    /// Hosts without workspace exposure return none.
     fn workspaces<'a>(
         &'a self,
         agent: &'a AgentState,
-        seen: &'a std::collections::BTreeSet<crate::agent::EntryId>,
+        seen: &'a std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]>,
         content: &'a ContentBindings,
     ) -> BoxFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
         let _ = (agent, seen, content);
@@ -1397,12 +1399,12 @@ impl<'a> TurnContext<'a> {
             .is_some_and(|document| document.digest == digest)
     }
 
-    fn instruction_entries(&self) -> std::collections::BTreeSet<crate::agent::EntryId> {
+    fn instruction_entries(&self) -> std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]> {
         self.settled
             .iter()
             .flat_map(|turn| &turn.announcements)
             .flat_map(|document| &document.instructions)
-            .map(|instructions| instructions.entry)
+            .map(|instructions| (instructions.entry, instructions.source))
             .collect()
     }
 
@@ -1803,6 +1805,11 @@ where
                 // The turn's grant is derived from its context, before the turn
                 // can observe anything: every file the context can reach.
                 let mut context = TurnContext::new(agent, history, turn, input)?;
+                // An open turn pins its original delta, including instructions
+                // from sources no longer bound after a remove or re-root. Admit
+                // those exact files before constructing its reader.
+                let pinned_announcements =
+                    crate::agent::turn_announcements(agent).map_err(Error::from)?;
                 // Steering transcripts pin references admitted after the original
                 // turn opened. Read their manifests under exact grants, then include
                 // those references in this turn's ordinary authority derivation.
@@ -1838,6 +1845,12 @@ where
                 let external: Vec<FileRef> = context
                     .files()
                     .chain(
+                        pinned_announcements
+                            .iter()
+                            .flatten()
+                            .flat_map(crate::agent::AnnouncedDocument::files),
+                    )
+                    .chain(
                         agent
                             .profile
                             .as_ref()
@@ -1865,9 +1878,7 @@ where
                 use crate::agent::{
                     AnnouncedDocument, AnnouncementDocument as _, AnnouncementKind,
                 };
-                let announcements = match crate::agent::turn_announcements(agent)
-                    .map_err(Error::from)?
-                {
+                let announcements = match pinned_announcements {
                     Some(kept) => kept,
                     None => {
                         let mut changed = Vec::new();
@@ -1896,6 +1907,7 @@ where
                         {
                             let (bytes, digest) = update.document.canonical();
                             if !context.contains_announcement(AnnouncementKind::Workspaces, digest)
+                                || !update.instructions.is_empty()
                             {
                                 changed.push(AnnouncedDocument {
                                     kind: AnnouncementKind::Workspaces,

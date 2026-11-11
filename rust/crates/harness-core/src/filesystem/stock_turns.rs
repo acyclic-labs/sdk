@@ -44,7 +44,7 @@ pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
     fn workspaces<'a>(
         &'a self,
         agent: &'a AgentState,
-        seen: &'a std::collections::BTreeSet<crate::agent::EntryId>,
+        seen: &'a std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]>,
         content: &'a crate::runtime::ContentBindings,
     ) -> BoxProviderFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
         let _ = (agent, seen, content);
@@ -307,7 +307,7 @@ impl TurnExecutors for StockExecutors {
     fn workspaces<'a>(
         &'a self,
         agent: &'a AgentState,
-        seen: &'a std::collections::BTreeSet<crate::agent::EntryId>,
+        seen: &'a std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]>,
         content: &'a crate::runtime::ContentBindings,
     ) -> BoxProviderFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
         self.context.workspaces(agent, seen, content)

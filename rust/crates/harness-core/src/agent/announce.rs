@@ -41,9 +41,24 @@ pub struct WorkspaceInstructions {
     /// Stable slot whose instructions these are.
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub entry: super::EntryId,
+    /// Identity of the source and root whose instructions were discovered.
+    /// Renaming a slot preserves it; replacing its source or root changes it.
+    pub source: [u8; 32],
     /// Immutable admitted instruction files.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef[]"))]
     pub files: Vec<crate::conversation::FileRef>,
+}
+
+impl WorkspaceInstructions {
+    /// Bind discovery to the selected repository, independently of its label.
+    pub fn source_for(entry: &WorkspaceEntry) -> Result<[u8; 32], Error> {
+        let source = Announcement::new(
+            &(&entry.source, &entry.root),
+            "acyclic.harness.workspace-instructions.v1",
+            &[],
+        )?;
+        Ok(source.canonical().1)
+    }
 }
 
 /// One immutable document announced at this conversation position.
@@ -111,7 +126,10 @@ pub async fn discover_workspace_instructions(
         ));
     }
     let root = crate::context::ContextRoot {
-        volume: entry.volume()?.clone(),
+        volume: entry
+            .volume()
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?
+            .clone(),
         directory: entry.root.clone(),
     };
     let mut source = crate::context::VolumeDiscovery {
@@ -130,6 +148,8 @@ pub async fn discover_workspace_instructions(
     .await?;
     Ok(WorkspaceInstructions {
         entry: entry.id,
+        source: WorkspaceInstructions::source_for(entry)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?,
         files: files
             .iter()
             .map(|instruction| (**instruction).clone())
