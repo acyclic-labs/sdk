@@ -3,6 +3,16 @@ use super::*;
 use crate::runtime::{Bindings, TaskContext, ToolContext};
 
 async fn read(task: &TaskContext, arguments: Value) -> Result<Value> {
+    // Replay the unreserved call, retaining the actual file/render limits.
+    // Finite range-work accounting is covered by the original grant replay.
+    read_with_budget(task, arguments, acyclic_fs::WorkBudget::UNBOUNDED).await
+}
+
+async fn read_with_budget(
+    task: &TaskContext,
+    arguments: Value,
+    budget: acyclic_fs::WorkBudget,
+) -> Result<Value> {
     let tool = crate::tool::files::read()?;
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
@@ -15,13 +25,9 @@ async fn read(task: &TaskContext, arguments: Value) -> Result<Value> {
         invocation.operation_id,
         &invocation.call_id,
     )?;
-    // Replay the unreserved call, retaining the actual file/render limits.
-    // Finite range-work accounting is covered by the original grant replay.
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &acyclic_fs::CancellationToken::new(),
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let (result, _hold) = tool
         .executor
         .execute_with_native_context(&context, &invocation, &work)?
@@ -103,6 +109,29 @@ async fn recon_read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
     }
     .build()?
     .agent_context(&Capabilities::default(), private.content_bindings())?;
+
+    let error = read_with_budget(
+        &task,
+        json!({"path":path,"selection":{"kind":"lines","offset":20000}}),
+        acyclic_fs::WorkBudget {
+            source_bytes_read: 0,
+            ..acyclic_fs::performance::work_budget(1_000_000, 64_000_000)
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "source_bytes_read",
+                    ..
+                }
+            ),
+            ..
+        }
+    ));
 
     // GC-2: the original call, twice, also exercises an already published index.
     for offset in [20000, 20000, source.len().div_ceil(128) + 1] {

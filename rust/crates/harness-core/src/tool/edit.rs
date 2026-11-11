@@ -200,6 +200,21 @@ pub fn charge(
     Ok(())
 }
 
+/// Admits one source window before scanning it. Byte consumption uses byte
+/// credit; callers charge the canonical items they examine separately.
+pub(super) fn scan_source(work: &acyclic_fs::NativeCustody, bytes: u64) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(custody) = work {
+        custody.work().charge(acyclic_fs::WorkCounters {
+            source_bytes_read: bytes,
+            items_examined: 1,
+            ..Default::default()
+        })?;
+    }
+    let _ = (work, bytes);
+    Ok(())
+}
+
 /// Rejects unbounded or empty allowances at both transformation and I/O boundaries.
 pub(crate) fn validate_edit_bound(maximum_bytes: u64) -> Result<()> {
     if maximum_bytes == 0 || maximum_bytes == u64::MAX {

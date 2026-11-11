@@ -704,6 +704,7 @@ dependencies = [
  "js-sys",
  "jsonschema",
  "loom",
+ "memchr",
  "notify",
  "once_cell",
  "oxc_allocator",

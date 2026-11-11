@@ -46,6 +46,7 @@ browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-stream/wasm", "dep:tsify"]
 
 [dependencies]
+memchr = "=2.8.3"
 tar = { version = "=0.4.46", default-features = false }
 acyclic-mcp = { version = "=0.2.0", path = "../mcp" }
 oxrdf = { version = "=0.3.5", default-features = false, optional = true }
