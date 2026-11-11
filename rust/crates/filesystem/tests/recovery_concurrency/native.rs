@@ -29,7 +29,7 @@ async fn native_backend(
     let admission = NativeTreeMaterializationBackend::admission()
         .await
         .expect("descriptor admission");
-    NativeTreeMaterializationBackend::new(root.0, operation.0, root.1, work.clone(), admission)
+    NativeTreeMaterializationBackend::new(root.0, operation.0, &[], root.1, work.clone(), admission)
         .expect("real original-resource backend")
 }
 

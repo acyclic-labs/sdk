@@ -3,12 +3,24 @@ use crate::native_host::HostRoot;
 
 pub(super) use crate::native_host::host_path;
 
+pub(super) struct PreparationLocation<'a> {
+    pub root: &'a Path,
+    pub operation: &'a Path,
+    pub excluded_names: &'a [&'a str],
+}
+
 /// Validates a recovery location against the held checkout allocation.
 pub fn validate_native_preparation_location(
     root: &Path,
     operation: &Path,
+    excluded_names: &[&str],
     work: &NativeMaterializationWork,
 ) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
+    let location = PreparationLocation {
+        root,
+        operation,
+        excluded_names,
+    };
     let root = HostRoot::open(root, &mut &*work)?;
     let mut existing = operation;
     let parent = loop {
@@ -31,19 +43,53 @@ pub fn validate_native_preparation_location(
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
     }
-    validate_layout(&root, &parent, suffix, work)?;
+    validate_layout(&root, &parent, suffix, location, work)?;
     Ok(root.identity())
 }
 
-pub(super) fn validate_layout(
+pub(super) fn validate_layout<'a>(
     root: &HostRoot,
     operation: &HostRoot,
     suffix: &Path,
+    location: PreparationLocation<'a>,
     work: &NativeMaterializationWork,
-) -> Result<(), NativeTreeMaterializationError> {
-    if root.identity().device != operation.identity().device
-        || root.identity() == operation.identity()
-    {
+) -> Result<Option<&'a str>, NativeTreeMaterializationError> {
+    if root.identity().device != operation.identity().device {
+        return Err(NativeTreeMaterializationError::InvalidLayout);
+    }
+    if let Ok(relative) = location.operation.strip_prefix(location.root) {
+        for component in relative.components() {
+            work.charge(NativeResourceCredit::Items.delta(1))?;
+            if !matches!(component, std::path::Component::Normal(_)) {
+                return Err(NativeTreeMaterializationError::InvalidLayout);
+            }
+        }
+        let name = match relative.components().next() {
+            Some(std::path::Component::Normal(name)) => name.to_str(),
+            _ => None,
+        }
+        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let excluded = location
+            .excluded_names
+            .iter()
+            .copied()
+            .find(|excluded| name.eq_ignore_ascii_case(excluded))
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        let existing = location
+            .operation
+            .ancestors()
+            .nth(suffix.components().count())
+            .and_then(|path| path.strip_prefix(location.root).ok())
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        // Reopen through the checkout capability. An excluded spelling cannot
+        // conceal an authored symlink or select a different held directory.
+        let child = held_child(root, existing, work)?;
+        if child.identity() != operation.identity() {
+            return Err(NativeTreeMaterializationError::InvalidLayout);
+        }
+        return Ok(Some(excluded));
+    }
+    if root.identity() == operation.identity() {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
     // A missing path cannot be an ancestor of an existing checkout.
@@ -76,5 +122,5 @@ pub(super) fn validate_layout(
     if nested {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
-    Ok(())
+    Ok(None)
 }

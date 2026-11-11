@@ -231,6 +231,7 @@ where
     let backend = NativeTreeMaterializationBackend::new(
         root,
         operation,
+        request.excluded_names,
         allocation,
         work.clone(),
         admission,
@@ -301,7 +302,8 @@ fn publication_root_identity(
     request: &NativeWorkspacePublication<'_>,
     work: &NativeMaterializationWork,
 ) -> Result<crate::NativeRootIdentity, NativeWorkspacePublicationError> {
-    let actual = validate_native_preparation_location(root, operation, work)?;
+    let actual =
+        validate_native_preparation_location(root, operation, request.excluded_names, work)?;
     if actual != request.source_root_identity {
         return Err(NativeTreeMaterializationError::AllocationChanged {
             expected: request.source_root_identity,

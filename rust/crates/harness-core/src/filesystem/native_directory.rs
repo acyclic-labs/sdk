@@ -15,10 +15,6 @@ impl NativeDirectory<'_> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> crate::Result<(PathBuf, acyclic_fs::NativeAllocation)> {
         let root = self.0;
-        let parent = root.parent().ok_or(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "root checkout has no same-filesystem staging parent",
-        })?;
         let borrowed = root.as_os_str().to_str();
         // A tuple drops formatted bytes before their original allocation custody,
         // including every early hash or path-construction refusal.
@@ -46,9 +42,10 @@ impl NativeDirectory<'_> {
         let digest = blake3::hash(text.as_bytes());
         work.spent(hashing)?;
         drop(lossy);
+        const PREFIX: &[u8] = b".volumes/publication-v1/";
         let encoding = acyclic_fs::WorkCounters {
             bytes_encoded: 44,
-            bytes_copied: 56,
+            bytes_copied: (PREFIX.len() + 56) as u64,
             ..acyclic_fs::WorkCounters::UNCHARGED
         };
         work.admit(encoding)?;
@@ -58,12 +55,16 @@ impl NativeDirectory<'_> {
                 reason: "root staging identifier encoding exceeded its fixed width",
             }
         })?;
+        let mut relative = [0; PREFIX.len() + 56];
+        relative[..PREFIX.len()].copy_from_slice(PREFIX);
+        relative[PREFIX.len()..].copy_from_slice(&leaf);
         work.spent(encoding)?;
-        let leaf = std::str::from_utf8(&leaf).map_err(|_| crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Storage,
-            reason: "root staging identifier encoding is not UTF-8",
-        })?;
-        Ok(work.path(parent, Some(Path::new(leaf)))?)
+        let relative =
+            std::str::from_utf8(&relative).map_err(|_| crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Storage,
+                reason: "root staging identifier encoding is not UTF-8",
+            })?;
+        Ok(work.path(root, Some(Path::new(relative)))?)
     }
 }
 
@@ -71,7 +72,7 @@ fn root_materialization_leaf(
     digest: &blake3::Hash,
     operation_id: OperationId,
 ) -> Result<[u8; 56], base64::EncodeSliceError> {
-    // Retained journals resume staged bytes at this original v1 location.
+    // Each operation retains its identity within the excluded staging namespace.
     let mut leaf = [std::path::MAIN_SEPARATOR as u8; 56];
     leaf[..10].copy_from_slice(b".acyclic-m");
     base64::engine::general_purpose::URL_SAFE_NO_PAD

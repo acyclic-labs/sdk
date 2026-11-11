@@ -135,9 +135,11 @@ impl Fixture {
         let to = workspace.head(&work, &cancellation).await?;
         let root = directory.path().join("checkout");
         std::fs::create_dir(&root)?;
-        for name in [".git", ".system", ".volumes"] {
+        for name in [".git", ".system"] {
             std::fs::write(root.join(name), "host-owned")?;
         }
+        std::fs::create_dir(root.join(".volumes"))?;
+        std::fs::write(root.join(".volumes/host-owned"), "host-owned")?;
         let identity = work.root_identity(&root)?;
         let state = LocalCoreStateStore::new(directory.path().join("core"));
         Ok(Self {
@@ -215,13 +217,14 @@ impl Fixture {
             .prepare(&self.from, &self.to, &self.state, &options, &self.work)
             .await?;
         assert_eq!(prepared.phase, acyclic_fs::MaterializationPhase::Prepared);
-        // The persisted v1 journal resumes from this same nested namespace.
-        let staging = self.root.parent().unwrap().join(".acyclic-m");
-        assert_eq!(
-            publication.directory().parent().unwrap().parent(),
-            Some(staging.as_path()),
-            "prepared journal changed its original staging namespace"
+        // Recovery remains in the checkout's excluded metadata namespace,
+        // including when the checkout's parent grants no creation authority.
+        assert!(
+            publication
+                .directory()
+                .starts_with(self.root.join(".volumes"))
         );
+        let staging = publication.directory().parent().unwrap().parent().unwrap();
         let shared_parent = publication.directory().parent().unwrap();
         let parent_identity = self.work.root_identity(shared_parent)?;
         let staging_identity = self.work.root_identity(&staging)?;
@@ -275,7 +278,12 @@ impl Fixture {
             "candidate"
         );
         for name in [".git", ".system", ".volumes"] {
-            assert_eq!(std::fs::read_to_string(self.root.join(name))?, "host-owned");
+            let path = if name == ".volumes" {
+                self.root.join(".volumes/host-owned")
+            } else {
+                self.root.join(name)
+            };
+            assert_eq!(std::fs::read_to_string(path)?, "host-owned");
         }
         assert!(!publication.directory().exists());
         // Another operation on this root and another root own real Prepared
@@ -336,6 +344,39 @@ async fn git_adapter_resumes_original_checkout_and_preserves_acknowledged_edits(
         .await?
         .assert_resume_and_acknowledgement(Adapter::Git)
         .await
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn publication_needs_no_write_authority_in_the_checkout_parent() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
+        let fixture = Fixture::new().await?;
+        let parent = fixture.root.parent().unwrap();
+        std::fs::create_dir_all(parent.join("core"))?;
+        let original = std::fs::metadata(parent)?.permissions();
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o500))?;
+        let forbidden = std::fs::create_dir(parent.join("forbidden-sibling"));
+        let published = fixture
+            .publish(adapter, OperationId::new(), &fixture.from)
+            .await;
+        // Restore before checking either result so a failure retains cleanup authority.
+        std::fs::set_permissions(parent, original)?;
+        assert_eq!(
+            forbidden.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        published?;
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join("note"))?,
+            "candidate"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join(".volumes/host-owned"))?,
+            "host-owned"
+        );
+    }
+    Ok(())
 }
 
 // Internal authority model for the publication boundary. Real authenticated
@@ -779,16 +820,18 @@ async fn prepared_adapter_resumes_original_checkout_and_preserves_acknowledged_e
 async fn every_adapter_refuses_retained_internal_edits_with_old_path_control() -> TestResult {
     for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
         let fixture = Fixture::new().await?;
-        for name in [".system", ".volumes"] {
-            std::fs::remove_file(fixture.root.join(name))?;
-        }
+        std::fs::remove_file(fixture.root.join(".system"))?;
+        std::fs::remove_file(fixture.root.join(".volumes/host-owned"))?;
+        std::fs::remove_dir(fixture.root.join(".volumes"))?;
         let operation = OperationId::new();
         let publication = fixture.publication(operation)?;
-        let options = MaterializeOptions::native(publication.directory().join("target"));
+        let old_directory = fixture.root.parent().unwrap().join("former-operation");
+        let options = MaterializeOptions::native(old_directory.join("target"));
         let old_request = || {
             let mut request =
                 publication.request(&fixture.from, &fixture.to, &options, &fixture.work);
             request.excluded_names = &[".git"];
+            request.operation_directory = &old_directory;
             request
         };
         acyclic_fs::materializer::prepare_native_generation_transition(
@@ -848,10 +891,12 @@ async fn every_adapter_refuses_fresh_and_retained_reserved_aliases_before_host_e
             );
             assert!(!fixture.root.join("note").exists());
             for name in [".git", ".system", ".volumes"] {
-                assert_eq!(
-                    std::fs::read_to_string(fixture.root.join(name))?,
-                    "host-owned"
-                );
+                let path = if name == ".volumes" {
+                    fixture.root.join(".volumes/host-owned")
+                } else {
+                    fixture.root.join(name)
+                };
+                assert_eq!(std::fs::read_to_string(path)?, "host-owned");
             }
         }
         // The actual former path publishes the forbidden spelling. On Windows

@@ -181,6 +181,15 @@ async fn native_backend(
     root: &Path,
     operation: &Path,
 ) -> Result<std::sync::Arc<NativeTreeMaterializationBackend>, NativeTreeMaterializationError> {
+    native_backend_with_exclusions(root, operation, &[]).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn native_backend_with_exclusions(
+    root: &Path,
+    operation: &Path,
+    excluded_names: &[&str],
+) -> Result<std::sync::Arc<NativeTreeMaterializationBackend>, NativeTreeMaterializationError> {
     std::fs::create_dir_all(operation.join("backup"))?;
     let work = NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
@@ -191,7 +200,14 @@ async fn native_backend(
     let (operation, mut operation_allocation) = work.path(operation, None)?;
     allocation.absorb(&mut operation_allocation)?;
     let admission = NativeTreeMaterializationBackend::admission().await?;
-    NativeTreeMaterializationBackend::new(root, operation, allocation, work, admission)
+    NativeTreeMaterializationBackend::new(
+        root,
+        operation,
+        excluded_names,
+        allocation,
+        work,
+        admission,
+    )
 }
 
 /// Flat path model whose writes, like every journal CAS, are durable
@@ -766,6 +782,41 @@ async fn nested_operation_is_rejected_without_effects() {
     std::fs::create_dir_all(operation.join("target")).unwrap();
     let sentinel = operation.join("target/sentinel");
     std::fs::write(&sentinel, b"keep").unwrap();
+    assert!(matches!(
+        native_backend(&root, &operation).await,
+        Err(NativeTreeMaterializationError::InvalidLayout)
+    ));
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn excluded_recovery_namespace_is_admitted_and_cannot_be_edited() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("checkout");
+    let operation = root.join(".volumes/publication-v1/operation");
+    std::fs::create_dir_all(operation.join("target")).unwrap();
+    let sentinel = operation.join("target/sentinel");
+    std::fs::write(&sentinel, b"keep").unwrap();
+    let backend = native_backend_with_exclusions(&root, &operation, &[".volumes"])
+        .await
+        .unwrap();
+    for path in [
+        ".volumes",
+        ".volumes/publication-v1",
+        ".VOLUMES/other",
+        "other/../.volumes",
+        "",
+    ] {
+        assert!(matches!(
+            backend
+                .capture(&MaterializationEdit::Remove { path: path.into() })
+                .await,
+            Err(NativeTreeMaterializationError::InvalidLayout)
+        ));
+    }
+    drop(backend);
+    // The same physical nesting without its exclusion still refuses.
     assert!(matches!(
         native_backend(&root, &operation).await,
         Err(NativeTreeMaterializationError::InvalidLayout)

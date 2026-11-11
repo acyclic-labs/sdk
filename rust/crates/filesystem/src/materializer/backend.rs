@@ -6,6 +6,7 @@ use std::sync::Arc;
 pub struct NativeTreeMaterializationBackend {
     root: PathBuf,
     operation: PathBuf,
+    reserved: Option<String>,
     pub(super) held_root: HostRoot,
     pub(super) held_target: HostRoot,
     pub(super) held_backup: HostRoot,
@@ -32,6 +33,7 @@ impl NativeTreeMaterializationBackend {
     pub fn new(
         root: PathBuf,
         operation: PathBuf,
+        excluded_names: &[&str],
         mut allocation: NativeAllocation,
         work: NativeMaterializationWork,
         admission: acyclic_native_runtime::DescriptorAdmission,
@@ -51,12 +53,29 @@ impl NativeTreeMaterializationBackend {
         header.absorb(&mut allocation)?;
         let held_root = HostRoot::open(&root, &mut &work)?;
         let held_operation = HostRoot::open(&operation, &mut &work)?;
-        validate_layout(&held_root, &held_operation, Path::new(""), &work)?;
+        let reserved = validate_layout(
+            &held_root,
+            &held_operation,
+            Path::new(""),
+            super::paths::PreparationLocation {
+                root: &root,
+                operation: &operation,
+                excluded_names,
+            },
+            &work,
+        )?
+        .map(|name| {
+            let (name, mut custody) = work.display(&name)?;
+            header.absorb(&mut custody)?;
+            Ok::<_, NativeTreeMaterializationError>(name)
+        })
+        .transpose()?;
         let held_target = held_child(&held_operation, Path::new("target"), &work)?;
         let held_backup = held_child(&held_operation, Path::new("backup"), &work)?;
         Ok(Arc::new(Self {
             root,
             operation,
+            reserved,
             held_root,
             held_target,
             held_backup,
@@ -98,6 +117,23 @@ impl NativeTreeMaterializationBackend {
         + Send
         + 'static,
     ) -> Result<T, NativeTreeMaterializationError> {
+        if let Some(reserved) = &self.reserved {
+            let allowed = |path: &str| {
+                let mut components = Path::new(path).components();
+                matches!(components.next(),
+                    Some(std::path::Component::Normal(name))
+                    if name.to_str().is_some_and(|name| !name.eq_ignore_ascii_case(reserved)))
+                    && components
+                        .all(|component| matches!(component, std::path::Component::Normal(_)))
+            };
+            let valid = match edit {
+                MaterializationEdit::Rename { from, to } => allowed(from) && allowed(to),
+                edit => allowed(edit_path(edit)),
+            };
+            if !valid {
+                return Err(NativeTreeMaterializationError::InvalidLayout);
+            }
+        }
         let mut allocation = self.work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let edit = duplicate_edit(edit, &mut allocation)?;
         let image = copy_image(image, &mut allocation)?;
