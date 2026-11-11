@@ -13,11 +13,11 @@ tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "
 
 The target selects the available surface automatically. Every target exposes the standard-library-only `limits` module. On `wasm32`, the package also exposes the maintained browser gRPC-Web `Client`, `ResponseBody`, and `options` APIs. Native SDK transports use `limits` with their native tonic channel; this package does not replace that channel.
 
-The checked policy records the caller-selected protobuf payload ceiling, raw trailer ceiling, weighted metadata ceiling, and binary/text body budgets:
+The policy records a caller-selected protobuf payload ceiling. Metadata is unlimited unless the caller selects separate trailer and weighted-header policies with `with_metadata_limits`; an aggregate unary body budget then derives from those explicit policies:
 
 ```rust
 use tonic_web_wasm_client::limits::UnaryResponseLimits;
-let limits = UnaryResponseLimits::new(16 * 1024 * 1024).unwrap();
+let limits = UnaryResponseLimits::new(16 * 1024 * 1024);
 assert_eq!(limits.message_bytes(), 16 * 1024 * 1024);
 ```
 
@@ -25,7 +25,7 @@ For a browser tonic client, disable tonic's native `transport` feature and pass 
 
 ```rust
 use tonic_web_wasm_client::{Client, limits::UnaryResponseLimits, options::{FetchOptions, Redirect}};
-let limits = UnaryResponseLimits::new(16 * 1024 * 1024).unwrap();
+let limits = UnaryResponseLimits::new(16 * 1024 * 1024);
 let transport = Client::new_with_options(
     "https://service.example/api",
     FetchOptions::new().redirect(Redirect::Error).response_limits(limits),

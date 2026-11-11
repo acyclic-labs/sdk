@@ -84,3 +84,7 @@ web-sys = { version = "0.3", features = [
     "Response",
     "ServiceWorkerGlobalScope",
 ] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.67"
+getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
