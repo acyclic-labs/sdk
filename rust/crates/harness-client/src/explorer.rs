@@ -425,6 +425,7 @@ mod tests {
             {
                 let page = provider
                     .children_page(ChildrenPageRequest {
+                        offset: 0,
                         parent: Some(parent.clone()),
                         after: None,
                         hierarchy_version: None,
