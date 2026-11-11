@@ -18,6 +18,11 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "computed_folds"
+path = "tests/computed_folds.rs"
+required-features = ["memory", "test-support"]
+
+[[test]]
 name = "native_cut_custody"
 path = "tests/native_cut_custody.rs"
 required-features = ["native-watch", "memory"]
