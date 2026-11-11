@@ -89,7 +89,7 @@ pub struct ProviderSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
     pub max_event_bytes: Option<usize>,
-    /// Bounded redelivery of a request the endpoint refused before generating anything.
+    /// Redelivery of a request the endpoint refused before generating anything.
     #[serde(default, skip_serializing_if = "RetrySpec::is_default")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
     pub retry: RetrySpec,
@@ -158,17 +158,19 @@ impl Default for TimeoutSpec {
 /// even before its first event. A credential-refresh failure also ends generation
 /// with that original cause. Failure while reading a refusal body cannot make
 /// its HTTP status retryable. Read-only token counts can retry interrupted successful
-/// bodies within the same budget. Waits use the provider's `Retry-After` when present,
+/// bodies within the same budget. HTTP 429 is backpressure: it waits without an
+/// attempt cap, including when `attempts` is zero. Waits use the provider's `Retry-After` when present,
 /// otherwise exponential backoff with deterministic per-dispatch jitter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct RetrySpec {
-    /// Attempts after the first; zero disables redelivery.
+    /// Attempts after the first for failures other than HTTP 429; zero disables those retries.
     pub attempts: u8,
     /// Backoff before the first redelivery; each later one doubles it.
     pub base_delay_ms: u32,
-    /// Longest single wait. A `Retry-After` beyond it ends redelivery immediately.
+    /// Longest computed backoff. For failures other than HTTP 429, a longer
+    /// `Retry-After` ends redelivery; HTTP 429 always honors the provider's wait.
     pub max_delay_ms: u32,
 }
 

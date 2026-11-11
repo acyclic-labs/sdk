@@ -291,7 +291,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
                 )
             } else {
                 (
-                    429,
+                    if index == 4 || index == 6 { 503 } else { 429 },
                     include_str!("../../../conformance/fixtures/inference/llamacpp/rate.body"),
                 )
             };
@@ -317,7 +317,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
     );
     assert!(
         provider.count_tokens(&request, 0).await.is_err(),
-        "captured 429 retains bounded count retry semantics"
+        "captured 429 waits and rebinds credentials before a final 503"
     );
     let mut api_key = specification(
         &origin,

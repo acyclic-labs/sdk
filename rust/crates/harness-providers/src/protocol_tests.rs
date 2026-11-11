@@ -120,11 +120,105 @@ async fn responses_content_filter_and_unknown_incomplete_reasons_are_invalid() {
     }
 }
 
+/// Replay the live swarm's refusal through every protocol, beyond both the old
+/// retry limit and the schedule counter's range, then finish the original turn.
+#[tokio::test]
+async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> Result<()> {
+    use std::time::Duration;
+    struct RateLimited {
+        success: &'static str,
+        sent: Mutex<Vec<HttpRequest>>,
+        waits: Mutex<Vec<Duration>>,
+    }
+    impl HttpTransport for RateLimited {
+        fn now(&self) -> Duration {
+            crate::fixtures::now()
+        }
+        fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
+            self.waits.lock().unwrap().push(wait);
+            crate::fixtures::delay(wait)
+        }
+        fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+            Box::pin(async move {
+                let index = {
+                    let mut sent = self.sent.lock().unwrap();
+                    let index = sent.len();
+                    sent.push(request);
+                    index
+                };
+                Ok(HttpResponse {
+                    status: if index < 300 { 429 } else { 200 },
+                    request_id: None,
+                    // No hint in the recorded failure. Also cover a provider wait
+                    // longer than max_delay_ms, before and after the former cap.
+                    retry_after: matches!(index, 0 | 299).then_some(Duration::from_secs(60)),
+                    body: chunks(
+                        if index < 300 {
+                            r#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#
+                        } else {
+                            self.success
+                        },
+                        7,
+                    ),
+                })
+            })
+        }
+    }
+    for (adapter, success) in fixtures() {
+        let transport = Arc::new(RateLimited {
+            success,
+            sent: Mutex::new(Vec::new()),
+            waits: Mutex::new(Vec::new()),
+        });
+        let mut provider = provider_with(adapter, "https://recorded.invalid/v1", transport.clone());
+        Arc::make_mut(&mut provider.config).retry.attempts = 0;
+        let (request, mut dispatch) = request(&provider)?;
+        dispatch.operation_id = acyclic_harness_core::OperationId::from_bytes([31; 16]);
+        let events = provider
+            .generate(&request, dispatch)
+            .try_collect::<Vec<_>>()
+            .await?;
+        let sent = transport.sent.lock().unwrap();
+        assert_eq!(sent.len(), 301);
+        for request in sent.iter().skip(1) {
+            assert_eq!(request.url, sent[0].url);
+            assert_eq!(request.headers, sent[0].headers);
+            assert_eq!(request.body, sent[0].body);
+        }
+        let waits = transport.waits.lock().unwrap();
+        assert_eq!(waits.len(), 300);
+        assert_eq!(waits[0], Duration::from_secs(60));
+        assert_eq!(waits[299], Duration::from_secs(60));
+        assert!(
+            waits[1..299]
+                .iter()
+                .all(|wait| !wait.is_zero() && *wait <= Duration::from_secs(8))
+        );
+        let calls: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].call_id, dispatch.tool_call_id(0));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ModelEvent::Completed { .. }))
+                .count(),
+            1
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_excerpt() -> Result<()>
 {
     for (adapter, body) in fixtures() {
-        for status in [401, 403, 408, 429, 500, 502, 503, 400, 404] {
+        for status in [401, 403, 408, 500, 502, 503, 400, 404] {
             let (provider, script) = provider(adapter, status);
             let (prepared, dispatch) = request(&provider)?;
             let error = provider
@@ -140,7 +234,7 @@ async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_exce
                 .map_err(|_| invalid("fixture lock"))?
                 .len();
             match status {
-                408 | 429 | 500..=599 => {
+                408 | 500..=599 => {
                     // Redelivered within the default budget, then a typed refusal.
                     assert_eq!(sent, 1 + usize::from(crate::RetrySpec::DEFAULT.attempts));
                     let Error::ModelUnavailable {

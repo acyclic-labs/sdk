@@ -79,7 +79,7 @@ export function modelRefusalFixture(data, status, code) {
         } else if (code) {
           controller.error(Object.assign(new Error('private diagnostic'), {code}));
         } else controller.close();
-      }}, {highWaterMark:0}), {status}));
+      }}, {highWaterMark:0}), {status: !code && status === 429 && state.calls % 2 === 0 ? 503 : status}));
     }});
   return state;
 }

@@ -76,7 +76,11 @@ impl Attempt {
         if !retryable {
             return None;
         }
-        let wait = self.redelivery.next(error, retry_after);
+        let wait = self.redelivery.next(
+            error,
+            retry_after,
+            self.admission == Admission::Refused(429),
+        );
         if wait.is_some() {
             self.admission = Admission::Unknown;
         }
@@ -104,11 +108,12 @@ struct Redelivery {
     spec: RetrySpec,
     /// Jitter seed: concurrent exchanges spread out while one exchange's schedule replays.
     seed: [u8; 32],
+    // Saturation bounds the backoff exponent, never the number of 429 waits.
     attempt: u8,
 }
 
 impl Redelivery {
-    /// The budget of one model dispatch.
+    /// The schedule of one model dispatch.
     fn new(spec: RetrySpec, dispatch: ModelDispatch) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"harness-providers:redelivery:dispatch:v1");
@@ -127,13 +132,20 @@ impl Redelivery {
     }
 
     /// The wait before redelivering after `error`, or `None` when `error` is final.
-    fn next(&mut self, error: &Error, retry_after: Option<Duration>) -> Option<Duration> {
-        if error.code() != ErrorCode::Unavailable || self.attempt >= self.spec.attempts {
+    fn next(
+        &mut self,
+        error: &Error,
+        retry_after: Option<Duration>,
+        backpressure: bool,
+    ) -> Option<Duration> {
+        if error.code() != ErrorCode::Unavailable
+            || (!backpressure && self.attempt >= self.spec.attempts)
+        {
             return None;
         }
         let maximum = Duration::from_millis(self.spec.max_delay_ms.into());
         let wait = match retry_after {
-            Some(wait) if wait > maximum => return None,
+            Some(wait) if !backpressure && wait > maximum => return None,
             Some(wait) => wait,
             None => {
                 let ceiling = u64::from(self.spec.base_delay_ms)
@@ -151,7 +163,7 @@ impl Redelivery {
                 Duration::from_millis(half + sample % (ceiling - half + 1))
             }
         };
-        self.attempt += 1;
+        self.attempt = self.attempt.saturating_add(1);
         Some(wait)
     }
 }
@@ -182,7 +194,9 @@ mod tests {
     #[test]
     fn redelivery_is_bounded_jittered_and_honors_retry_after() {
         let mut retry = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-        let waits: Vec<_> = (0..4).map(|_| retry.next(&unavailable(), None)).collect();
+        let waits: Vec<_> = (0..4)
+            .map(|_| retry.next(&unavailable(), None, false))
+            .collect();
         assert_eq!(waits.last(), Some(&None));
         for (attempt, wait) in waits.iter().take(3).enumerate() {
             let ceiling = Duration::from_millis(500 << attempt);
@@ -191,18 +205,21 @@ mod tests {
         // The schedule replays exactly for the same dispatch.
         let mut again = Redelivery::new(RetrySpec::DEFAULT, dispatch());
         assert_eq!(
-            again.next(&unavailable(), None),
+            again.next(&unavailable(), None, false),
             waits.first().copied().flatten()
         );
         let mut hinted = Redelivery::new(RetrySpec::DEFAULT, dispatch());
         assert_eq!(
-            hinted.next(&unavailable(), Some(Duration::from_secs(2))),
+            hinted.next(&unavailable(), Some(Duration::from_secs(2)), false),
             Some(Duration::from_secs(2))
         );
         // Negative controls: other classes, an over-long hint, a zero budget.
         let mut fresh = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-        assert_eq!(fresh.next(&Error::Storage("lost".into()), None), None);
-        assert_eq!(fresh.next(&Error::Invalid("bad".into()), None), None);
+        assert_eq!(
+            fresh.next(&Error::Storage("lost".into()), None, false),
+            None
+        );
+        assert_eq!(fresh.next(&Error::Invalid("bad".into()), None, false), None);
         let transport = |failure| Error::ModelUnavailable {
             failure,
             excerpt: String::new(),
@@ -211,7 +228,8 @@ mod tests {
         assert_eq!(
             fresh.next(
                 &transport(acyclic_harness_core::ModelTransportFailure::Tls),
-                None
+                None,
+                false
             ),
             None
         );
@@ -221,10 +239,10 @@ mod tests {
             acyclic_harness_core::ModelTransportFailure::Interrupted,
         ] {
             let mut each = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-            assert!(each.next(&transport(failure), None).is_some());
+            assert!(each.next(&transport(failure), None, false).is_some());
         }
         assert_eq!(
-            fresh.next(&unavailable(), Some(Duration::from_secs(9))),
+            fresh.next(&unavailable(), Some(Duration::from_secs(9)), false),
             None
         );
         let mut none = Redelivery::new(
@@ -234,7 +252,7 @@ mod tests {
             },
             dispatch(),
         );
-        assert_eq!(none.next(&unavailable(), None), None);
+        assert_eq!(none.next(&unavailable(), None, false), None);
         assert_eq!(retry_after(" 7 "), Some(Duration::from_secs(7)));
         assert_eq!(retry_after("not a date"), None);
     }
@@ -253,18 +271,20 @@ mod tests {
             proptest::prop_assert_eq!(wait, Duration::from_secs(at.saturating_sub(now)));
             proptest::prop_assert_eq!(retry_after_at(&delta.to_string(), || clock), Some(Duration::from_secs(delta)));
             let mut retry = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-            proptest::prop_assert_eq!(retry.next(&unavailable(), Some(wait)),
+            proptest::prop_assert_eq!(retry.next(&unavailable(), Some(wait), false),
                 (wait <= Duration::from_millis(RetrySpec::DEFAULT.max_delay_ms.into())).then_some(wait));
             // Negative control: the former delta-only parser ignores every date hint.
             proptest::prop_assert_ne!(date.parse::<u64>().ok().map(Duration::from_secs), Some(wait));
+            let mut backpressure = Redelivery::new(RetrySpec::DEFAULT, dispatch());
+            proptest::prop_assert_eq!(backpressure.next(&unavailable(), Some(wait), true), Some(wait));
             let overflow = format!("1{overflow_digits}");
             let wait = retry_after_at(&overflow, || clock);
             proptest::prop_assert_eq!(wait, Some(Duration::from_secs(u64::MAX)));
             let mut retry = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-            proptest::prop_assert_eq!(retry.next(&unavailable(), wait), None);
+            proptest::prop_assert_eq!(retry.next(&unavailable(), wait, false), None);
             // Negative control: discarding numeric overflow would permit an early retry.
             let mut former = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-            proptest::prop_assert!(former.next(&unavailable(), overflow.parse::<u64>().ok().map(Duration::from_secs)).is_some());
+            proptest::prop_assert!(former.next(&unavailable(), overflow.parse::<u64>().ok().map(Duration::from_secs), false).is_some());
         }
     }
 
@@ -324,16 +344,16 @@ mod tests {
                     let retryable = if accepted { count } else {
                         observed.map_or(count || !success, |status| matches!(status, 408 | 429 | 500..=599))
                     };
-                    let expected = retryable && spent < budget;
+                    let expected = retryable && (observed == Some(429) || spent < budget);
                     let mut actual = None;
                     let allocations = acyclic_test_support::measure(|| { actual = owner.next(&error, None); });
                     proptest::prop_assert_eq!(allocations.count_total, 0);
                     proptest::prop_assert_eq!(actual.is_some(), expected);
-                    if expected { spent += 1; observed = None; }
+                    if expected { spent = spent.saturating_add(1); observed = None; }
                     if accepted && !count {
                         // Negative control: the old schedule alone has no acceptance fence.
                         let mut unfenced = Redelivery::new(spec, dispatch());
-                        proptest::prop_assert_eq!(unfenced.next(&error, None).is_some(), budget > 0);
+                        proptest::prop_assert_eq!(unfenced.next(&error, None, false).is_some(), budget > 0);
                     }
                 }
                 if count && budget > 0 {

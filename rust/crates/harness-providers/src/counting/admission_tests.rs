@@ -96,7 +96,6 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         (401, acyclic_harness_core::wire::ErrorCode::Unauthorized),
         (403, acyclic_harness_core::wire::ErrorCode::Unauthorized),
         (408, acyclic_harness_core::wire::ErrorCode::Unavailable),
-        (429, acyclic_harness_core::wire::ErrorCode::Unavailable),
         (503, acyclic_harness_core::wire::ErrorCode::Unavailable),
         (400, acyclic_harness_core::wire::ErrorCode::Invalid),
     ] {
@@ -210,9 +209,9 @@ proptest::proptest! {
         let (request, _) = request(&provider).unwrap();
         let result = futures::executor::block_on(provider.count_tokens(&request, 0));
         let final_failure = definitive || matches!(status, 400 | 413);
-        let expected = if final_failure && failures > 0 { 1 } else { (failures + 1).min(usize::from(budget) + 1) };
+        let expected = if final_failure && failures > 0 { 1 } else if status == 429 { failures + 1 } else { (failures + 1).min(usize::from(budget) + 1) };
         proptest::prop_assert_eq!(transport.sent.load(std::sync::atomic::Ordering::SeqCst), expected);
-        proptest::prop_assert_eq!(result.is_ok(), failures == 0 || (!final_failure && failures <= usize::from(budget)));
+        proptest::prop_assert_eq!(result.is_ok(), failures == 0 || (!final_failure && (status == 429 || failures <= usize::from(budget))));
         if let Ok(count) = result {
             proptest::prop_assert_eq!(count.input_tokens, 7);
             proptest::prop_assert_eq!(count.request_digest, request.request_digest());
