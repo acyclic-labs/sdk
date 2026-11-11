@@ -6,13 +6,14 @@ struct RefusingResources {
     queued: Option<Arc<MemoryStream>>,
 }
 impl ResourceProvider for RefusingResources {
-    fn follow(&self, _: ResourceFollowRequest) -> Result<ResourceSubscription, StreamError> {
+    fn follow(&self, request: ResourceFollowRequest) -> Result<ResourceSubscription, StreamError> {
         let Some(provider) = self.queued.clone() else {
             return Err(self.error.clone());
         };
         let error = self.error.clone();
         let (send, receive) = futures::channel::oneshot::channel();
         Ok(ResourceSubscription {
+            authorization: request.authorization,
             revalidate: Arc::new(|| Ok(())),
             terminal: Box::pin(async move { receive.await.unwrap_or(StreamError::Unavailable) }),
             open: Box::pin(async move {
