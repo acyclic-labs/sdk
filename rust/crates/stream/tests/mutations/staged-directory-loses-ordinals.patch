@@ -1,8 +1,8 @@
 diff --git a/rust/crates/stream/src/staged/directory.rs b/rust/crates/stream/src/staged/directory.rs
 --- a/rust/crates/stream/src/staged/directory.rs
 +++ b/rust/crates/stream/src/staged/directory.rs
-@@ -133,3 +133,3 @@ impl MutationDirectory {
--            value[..8].copy_from_slice(&effect.to_le_bytes());
-+            value[..8].copy_from_slice(&effect.wrapping_add(1).to_le_bytes());
-             value[8..16].copy_from_slice(&mutation.to_le_bytes());
-             value[16..].copy_from_slice(&bookmark.encode());
+@@ -60,3 +60,3 @@ pub(super) fn row(effect: u64, mutation: u64, bookmark: &Bookmark) -> Field {
+-    value[..8].copy_from_slice(&effect.to_le_bytes());
++    value[..8].copy_from_slice(&effect.wrapping_add(1).to_le_bytes());
+     value[8..16].copy_from_slice(&mutation.to_le_bytes());
+     value[16..].copy_from_slice(&bookmark.encode());

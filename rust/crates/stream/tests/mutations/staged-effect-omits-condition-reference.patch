@@ -1,0 +1,8 @@
+diff --git a/rust/crates/stream/src/staged/effects.rs b/rust/crates/stream/src/staged/effects.rs
+--- a/rust/crates/stream/src/staged/effects.rs
++++ b/rust/crates/stream/src/staged/effects.rs
+@@ -62,4 +62,3 @@ impl<'a, S: Storage> Pending<'a, S> {
+         let mut writer = tree::Writer::new(storage)?;
+-        writer.reference(checkpoint).await?;
+         writer.write(&bytes).await?;
+         let root = writer.finish().await?;

@@ -867,3 +867,47 @@ target lock and had executed no negative tests. Its earlier 20 Stream and two
 collections positive results remain valid for that exact source. Cleanup and a
 new exact-source native run are tracked in the operational handoff; cancellation
 is not counted as a negative-control success.
+
+### Effect/condition directory contract (before implementation)
+
+Extend the private destination directory into one Directory built by the same
+single pass over the sealed token body. Keep the existing global unique mutation
+index; add a caller-ordered effect index keyed by the fixed-width big-endian
+original effect ordinal. Each effect value retains a versioned metadata page
+containing its original boundary, soft flag and a checkpoint of its own unique
+byte-ordered condition index. A condition index uses the same Sorter, Index,
+location codec and bounded cursor as mutation destinations. The current effect's
+sorter is sealed before the next effect starts; no vector grows with the number
+of effects or conditions. Equal condition paths in different effects are allowed;
+equal paths inside one effect are refused. Effects with no conditions keep an
+empty checkpoint and remain present in caller order.
+
+Locations expose effect and original within-effect ordinal, with one bookmark
+codec shared by conditions and mutations. The Directory root retains the body,
+mutation checkpoint and effect checkpoint; each effect metadata page declares
+its condition-checkpoint reference. Reopening checks the immutable body binding
+and lazily opens effect/condition metadata. No condition is evaluated and no
+sequence, revision, head, fork cut, namespace or retry decision is assigned.
+The original token body and all record order remain unchanged. This replaces the
+unpublished mutation-only directory API/codec rather than adding a second path;
+the new directory/effect formats each start at v1, without migration code.
+
+Controls must cover shuffled condition paths, original effect/condition order,
+soft flags, empty conditions, duplicate scope across/within effects, reopen and
+complete dependency retention. A negative control removes the metadata page's
+condition-checkpoint edge; the independent retained-graph control must fail.
+Canonical headers/exclusions, authority publication and all six final-apply
+proof obligations remain outstanding.
+
+The effect/condition directory is now implemented over the same location codec,
+Sorter, Index and bounded path cursor. The original effect boundary and soft flag
+are retained. Controls include 4097 shuffled conditions, duplicate paths allowed
+across effects/refused inside one, empty condition sets, original ordinal/token
+recovery and an independent retained-graph check after reopen. A real-file gate
+checks that cancelling a consumed effect metadata read cannot skip that effect.
+The existing file/gate/graph fixture is shared by content-index and staged
+controls rather than copied. New mutations remove the checkpoint dependency and
+effect-cursor interruption guard; the ordinal mutation follows the shared codec.
+This source needs remote compile and controls. Metadata object packing and native
+original-work admission remain required before production cutover; this is not
+the 100k-effect atomic-write conformance or any final-publication proof.

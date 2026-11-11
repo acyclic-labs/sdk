@@ -1,5 +1,5 @@
 use super::*;
-use crate::content::tree::tests::Disk;
+use crate::content::tree::tests::{Delayed, Disk, reachable};
 use crate::{AppendRecord, CommitEffect, CommitRequest, StreamPath};
 use std::sync::atomic::Ordering;
 
@@ -768,12 +768,12 @@ async fn staged_destination_directory_reopens_original_ordinals_and_records()
         tokens
     }));
     let staged = stage_tokens(&storage, submission.clone(), tokens).await?;
-    let indexed = MutationDirectory::build(&storage, &staged).await?;
+    let indexed = Directory::build(&storage, &staged).await?;
     let root = indexed.root();
     drop(indexed);
     drop(storage);
     let storage = Disk::open(directory.path());
-    let indexed = MutationDirectory::open(&storage, &staged, root).await?;
+    let indexed = Directory::open(&storage, &staged, root).await?;
     let model: std::collections::BTreeMap<_, _> = (0..514_u64)
         .map(|ordinal| (format!("directory/{:04}", ordinal * 259 % 514), ordinal))
         .collect();
@@ -782,7 +782,7 @@ async fn staged_destination_directory_reopens_original_ordinals_and_records()
         let (key, location) = cursor.next().await?.ok_or("missing directory entry")?;
         assert_eq!(inline(key)?.as_slice(), path.as_bytes());
         assert_eq!(
-            (location.effect, location.mutation),
+            (location.effect, location.ordinal),
             (ordinal / 2, ordinal % 2),
             "directory lost original mutation ordinals"
         );
@@ -791,8 +791,8 @@ async fn staged_destination_directory_reopens_original_ordinals_and_records()
             .await?
             .ok_or("missing point lookup")?;
         assert_eq!(
-            (found.effect, found.mutation),
-            (location.effect, location.mutation)
+            (found.effect, found.ordinal),
+            (location.effect, location.ordinal)
         );
         let mut reader = found.reader(&storage, &staged)?;
         assert_eq!(reader.deadline_unix_millis(), Some(72));
@@ -824,21 +824,13 @@ async fn staged_destination_directory_reopens_original_ordinals_and_records()
     );
     let mut wrong = staged.clone();
     wrong.commit_id = CommitId::from_bytes([64; 32]);
-    assert!(
-        MutationDirectory::open(&storage, &wrong, root)
-            .await
-            .is_err()
-    );
+    assert!(Directory::open(&storage, &wrong, root).await.is_err());
     wrong = staged.clone();
     wrong.body.part.length += 1;
-    assert!(
-        MutationDirectory::open(&storage, &wrong, root)
-            .await
-            .is_err()
-    );
+    assert!(Directory::open(&storage, &wrong, root).await.is_err());
     let mut projected = staged.clone();
     projected.accepted = true;
-    MutationDirectory::open(&storage, &projected, root).await?;
+    Directory::open(&storage, &projected, root).await?;
     let duplicate = stage_tokens(
         &storage,
         Submission {
@@ -867,10 +859,227 @@ async fn staged_destination_directory_reopens_original_ordinals_and_records()
     .await?;
     assert!(
         matches!(
-            MutationDirectory::build(&storage, &duplicate).await,
+            Directory::build(&storage, &duplicate).await,
             Err(StreamError::InvalidArgument)
         ),
         "directory accepted duplicate destinations across effects"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn staged_condition_directory_preserves_effect_scope_order_and_retention()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Disk::open(directory.path());
+    let count = |effect| match effect {
+        0 => 4097_u64,
+        1 => 2,
+        _ => 0,
+    };
+    let path = |effect, ordinal| {
+        format!(
+            "condition/{:04}",
+            if effect == 0 {
+                ordinal * 2053 % 4097
+            } else {
+                ordinal * 4096
+            }
+        )
+    };
+    let submission = Submission {
+        commit_id: CommitId::from_bytes([69; 32]),
+        idempotency_key: IdempotencyKey::new("condition-directory")?,
+        family: Family::Commit,
+        deadline_unix_millis: None,
+        effects: 3,
+        accepted: false,
+    };
+    let tokens = futures::stream::iter((0..3_u64).flat_map(|effect| {
+        std::iter::once(Ok(Token::Effect {
+            soft: effect == 1,
+            conditions: count(effect),
+            mutations: 1,
+        }))
+        .chain((0..count(effect)).map(move |ordinal| {
+            Ok(Token::Presence {
+                path: Field::Inline(OwnedBytes::from(path(effect, ordinal))),
+                present: ordinal % 2 == 0,
+            })
+        }))
+        .chain([
+            Ok(Token::Append {
+                path: Field::Inline(OwnedBytes::from(format!("output/{effect}"))),
+                records: 1,
+            }),
+            Ok(Token::Record {
+                value: Field::Inline(OwnedBytes::from(vec![effect as u8])),
+                keys: 0,
+                attributes: 0,
+            }),
+        ])
+    }));
+    let staged = stage_tokens(&storage, submission.clone(), tokens).await?;
+    let prepared = Directory::build(&storage, &staged).await?;
+    let root = prepared.root();
+    drop(prepared);
+    drop(storage);
+    let storage = Disk::open(directory.path());
+    let prepared = Directory::open(&storage, &staged, root).await?;
+    let graph = reachable(&storage, root).await?;
+    let mut effects = prepared.effects(&storage).await?;
+    for expected in 0..3_u64 {
+        let effect = effects.next().await?.ok_or("missing original effect")?;
+        assert_eq!(effect.ordinal, expected);
+        assert_eq!(effect.soft, expected == 1);
+        assert!(
+            graph.contains(&effect.condition_root().part.digest),
+            "effect metadata lost condition-checkpoint ownership"
+        );
+        let mut original = effect.reader(&storage, &staged)?;
+        assert_eq!(
+            original.next().await?,
+            Some(Token::Effect {
+                soft: expected == 1,
+                conditions: count(expected),
+                mutations: 1
+            })
+        );
+        let model: std::collections::BTreeMap<_, _> = (0..count(expected))
+            .map(|ordinal| (path(expected, ordinal), ordinal))
+            .collect();
+        let mut conditions = effect.conditions(&storage).await?;
+        for (path, ordinal) in model {
+            let (key, location) = conditions.next().await?.ok_or("missing condition")?;
+            assert_eq!(inline(key)?.as_slice(), path.as_bytes());
+            assert_eq!((location.effect, location.ordinal), (expected, ordinal));
+            let mut reader = location.reader(&storage, &staged)?;
+            assert_eq!(
+                reader.next().await?,
+                Some(Token::Presence {
+                    path: Field::Inline(OwnedBytes::from(path.clone())),
+                    present: ordinal % 2 == 0,
+                })
+            );
+            if ordinal == 0 {
+                let found = effect
+                    .condition(&storage, Field::Inline(OwnedBytes::from(path)))
+                    .await?
+                    .ok_or("missing condition lookup")?;
+                assert_eq!((found.effect, found.ordinal), (expected, ordinal));
+            }
+        }
+        assert!(conditions.next().await?.is_none());
+    }
+    assert!(effects.next().await?.is_none());
+    let duplicate = stage_tokens(
+        &storage,
+        Submission {
+            effects: 1,
+            ..submission
+        },
+        futures::stream::iter([
+            Ok(Token::Effect {
+                soft: false,
+                conditions: 2,
+                mutations: 1,
+            }),
+            Ok(Token::Presence {
+                path: Field::Inline(OwnedBytes::from_static(b"duplicate")),
+                present: true,
+            }),
+            Ok(Token::Presence {
+                path: Field::Inline(OwnedBytes::from_static(b"duplicate")),
+                present: false,
+            }),
+            Ok(Token::Append {
+                path: Field::Inline(OwnedBytes::from_static(b"output")),
+                records: 1,
+            }),
+            Ok(Token::Record {
+                value: Field::Inline(OwnedBytes::new()),
+                keys: 0,
+                attributes: 0,
+            }),
+        ]),
+    )
+    .await?;
+    assert!(
+        matches!(
+            Directory::build(&storage, &duplicate).await,
+            Err(StreamError::InvalidArgument)
+        ),
+        "directory accepted duplicate conditions within one effect"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_effect_metadata_cursor_cannot_skip_the_consumed_effect()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let disk = Disk::open(directory.path());
+    let staged = stage_tokens(
+        &disk,
+        Submission {
+            commit_id: CommitId::from_bytes([70; 32]),
+            idempotency_key: IdempotencyKey::new("effect-cursor-cancel")?,
+            family: Family::Commit,
+            deadline_unix_millis: None,
+            effects: 2,
+            accepted: false,
+        },
+        futures::stream::iter((0..2_u64).flat_map(|effect| {
+            [
+                Ok(Token::Effect {
+                    soft: false,
+                    conditions: 0,
+                    mutations: 1,
+                }),
+                Ok(Token::Append {
+                    path: Field::Inline(OwnedBytes::from(format!("output/{effect}"))),
+                    records: 1,
+                }),
+                Ok(Token::Record {
+                    value: Field::Inline(OwnedBytes::new()),
+                    keys: 0,
+                    attributes: 0,
+                }),
+            ]
+        })),
+    )
+    .await?;
+    let prepared = Directory::build(&disk, &staged).await?;
+    let storage = Delayed {
+        disk,
+        put: Default::default(),
+        get: Default::default(),
+    };
+    let mut effects = prepared.effects(&storage).await?;
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (_resume, resumed) = tokio::sync::oneshot::channel();
+    *storage.get.lock().map_err(|_| "gate poisoned")? = Some((entered, resumed));
+    {
+        let next = effects.next();
+        tokio::pin!(next);
+        tokio::select! {
+            _ = waiting => {},
+            result = &mut next => { result?; return Err("effect metadata read did not suspend".into()); },
+        }
+    }
+    assert!(
+        matches!(effects.next().await, Err(StreamError::Unavailable)),
+        "cancelled effect cursor skipped consumed metadata"
+    );
+    let mut fresh = prepared.effects(&storage).await?;
+    assert_eq!(
+        fresh.next().await?.ok_or("missing first effect")?.ordinal,
+        0
+    );
+    assert_eq!(
+        fresh.next().await?.ok_or("missing second effect")?.ordinal,
+        1
+    );
+    assert!(fresh.next().await?.is_none());
     Ok(())
 }

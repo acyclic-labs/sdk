@@ -15,9 +15,11 @@ use crate::{
 
 mod decode;
 mod directory;
+mod effects;
 mod encode;
 pub use decode::{Bookmark, Reader};
-pub use directory::{MutationCursor, MutationDirectory, MutationLocation};
+pub use directory::{Cursor, Directory, Location};
+pub use effects::{Effect, Effects};
 
 const MAGIC: &[u8] = b"acyclic-stream-staged-v1\0";
 

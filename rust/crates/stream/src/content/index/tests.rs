@@ -1,59 +1,9 @@
 use super::*;
-use crate::content::tree::tests::Disk;
+use crate::content::tree::tests::{Delayed, Disk, reachable};
 use std::sync::atomic::Ordering;
 
 fn bytes(value: impl AsRef<[u8]>) -> Field {
     Field::Inline(OwnedBytes::copy_from_slice(value.as_ref()))
-}
-
-type Gate = (
-    tokio::sync::oneshot::Sender<()>,
-    tokio::sync::oneshot::Receiver<()>,
-);
-struct Delayed {
-    disk: Disk,
-    put: std::sync::Mutex<Option<Gate>>,
-    get: std::sync::Mutex<Option<Gate>>,
-}
-async fn pause(gate: &std::sync::Mutex<Option<Gate>>) -> Result<(), StreamError> {
-    let gate = gate.lock().map_err(|_| StreamError::Unavailable)?.take();
-    if let Some((entered, resume)) = gate {
-        entered.send(()).map_err(|_| StreamError::Unavailable)?;
-        resume.await.map_err(|_| StreamError::Unavailable)?;
-    }
-    Ok(())
-}
-#[async_trait::async_trait]
-impl Storage for Delayed {
-    async fn put(&self, digest: [u8; 32], page: tree::Page) -> Result<(), StreamError> {
-        self.disk.put(digest, page).await?;
-        pause(&self.put).await
-    }
-    async fn get(&self, digest: [u8; 32]) -> Result<tree::Page, StreamError> {
-        let page = self.disk.get(digest).await?;
-        pause(&self.get).await?;
-        Ok(page)
-    }
-}
-
-async fn reachable(
-    storage: &Disk,
-    root: Root,
-) -> Result<std::collections::BTreeSet<[u8; 32]>, StreamError> {
-    let mut pending = vec![root.part.digest];
-    let mut reachable = std::collections::BTreeSet::new();
-    while let Some(digest) = pending.pop() {
-        if !reachable.insert(digest) {
-            continue;
-        }
-        let page = storage.get(digest).await?;
-        if page.kind == tree::Kind::Manifest {
-            let manifest = crate::content::Manifest::decode(page.bytes.as_slice())?;
-            pending.extend(manifest.parts().map(|part| part.digest));
-            pending.extend(manifest.edges());
-        }
-    }
-    Ok(reachable)
 }
 
 #[tokio::test]

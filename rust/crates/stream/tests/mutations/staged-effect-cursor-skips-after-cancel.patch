@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/staged/effects.rs b/rust/crates/stream/src/staged/effects.rs
+--- a/rust/crates/stream/src/staged/effects.rs
++++ b/rust/crates/stream/src/staged/effects.rs
+@@ -150,7 +150,3 @@ impl<'a, S: Storage> Effects<'a, S> {
+     pub async fn next(&mut self) -> Result<Option<Effect>, StreamError> {
+-        if self.interrupted {
+-            return Err(StreamError::Unavailable);
+-        }
+-        self.interrupted = true;
+         let result = self.next_inner().await;
+         if result.is_ok() {
