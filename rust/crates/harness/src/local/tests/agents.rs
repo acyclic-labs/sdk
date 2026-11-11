@@ -2313,6 +2313,10 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
         ),
         ScriptedTurn::Text("writer settled".into()),
         call(
+            "shell",
+            serde_json::json!({"command":"pwd", "cwd":"missing-cwd-gc65"}),
+        ),
+        call(
             "read",
             serde_json::json!({"path":".volumes/shared/board.txt"}),
         ),
@@ -2321,13 +2325,9 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
     let directory = tempfile::tempdir().map_err(agent)?;
     let harness = Arc::new(
         LocalHarness::open(
-            volume_config(
-                directory.path(),
-                volume(directory.path()).await?,
-                provider.clone(),
-            )?
-            .workspace_mounting(crate::local::WorkspaceMounting::Physical)
-            .compaction(crate::context::CompactionPolicy::Disabled),
+            super::checkout_config(directory.path(), (super::model()?, provider.clone()))?
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .compaction(crate::context::CompactionPolicy::Disabled),
         )
         .await?,
     );
@@ -2371,10 +2371,29 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
             crate::agent::TurnOutcome::Completed
         ));
     }
-    assert_eq!(provider.request_count(), 4);
+    assert_eq!(provider.request_count(), 5);
     let request = provider
-        .request(3)
+        .request(4)
         .ok_or_else(|| Error::NotFound("shared-board read request".into()))?;
+    let refused = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id, content, ..
+            } if call_id == "shell" => Some(content),
+            _ => None,
+        })
+        .ok_or_else(|| Error::NotFound("missing-cwd tool result".into()))?;
+    assert!(matches!(
+        refused,
+        crate::model::ToolResultContent::Error { .. }
+    ));
+    assert!(
+        matches!(refused, crate::model::ToolResultContent::Error { message }
+        if message == "tool execution failed: cwd missing-cwd-gc65 does not exist")
+    );
     let result = request
         .messages
         .iter()

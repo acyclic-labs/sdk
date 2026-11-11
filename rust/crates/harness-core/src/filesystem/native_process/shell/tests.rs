@@ -575,3 +575,91 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
     assert!(!root.join("injected").exists());
     Ok(())
 }
+
+#[test]
+fn missing_shell_inputs_are_preflight_results_with_paths() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(Error::process_io)?;
+    let root = directory.path().canonicalize().map_err(Error::process_io)?;
+    std::fs::write(root.join("file-cwd"), b"file").map_err(Error::process_io)?;
+    let mounts = table(root)?;
+    for (cwd, command) in [
+        (
+            Some(".volumes/shared".into()),
+            crate::tools::ShellCommand::Source("pwd".into()),
+        ),
+        (
+            Some("missing-cwd".into()),
+            crate::tools::ShellCommand::Source("pwd".into()),
+        ),
+        (
+            None,
+            crate::tools::ShellCommand::Argv(vec!["/missing-executable-gc65".into()]),
+        ),
+    ] {
+        let expected_cwd = cwd.clone();
+        let error = prepare(
+            ShellInput {
+                command,
+                cwd,
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            &mounts,
+            invocation(&mounts.root),
+            1,
+        )
+        .err()
+        .ok_or_else(|| Error::Invalid("missing shell input was accepted".into()))?;
+        assert!(
+            matches!(error, Error::Process(crate::ProcessError::NotFound { .. })),
+            "{error:?}"
+        );
+        assert!(error.is_tool_failure());
+        if let Some(cwd) = expected_cwd {
+            let Error::Process(crate::ProcessError::NotFound { message, .. }) = &error else {
+                return Err(Error::Invalid(
+                    "missing cwd lost its process classification".into(),
+                ));
+            };
+            assert_eq!(message, &format!("cwd {cwd} does not exist"));
+        }
+    }
+    for (cwd, command) in [
+        (
+            Some("file-cwd".into()),
+            crate::tools::ShellCommand::Source("pwd".into()),
+        ),
+        (
+            Some("file-cwd/child".into()),
+            crate::tools::ShellCommand::Source("pwd".into()),
+        ),
+        (
+            Some("../escape".into()),
+            crate::tools::ShellCommand::Source("pwd".into()),
+        ),
+        (None, crate::tools::ShellCommand::Argv(Vec::new())),
+        (
+            None,
+            crate::tools::ShellCommand::Source("nul\0command".into()),
+        ),
+    ] {
+        let error = prepare(
+            ShellInput {
+                command,
+                cwd,
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            &mounts,
+            invocation(&mounts.root),
+            1,
+        )
+        .err()
+        .ok_or_else(|| Error::Invalid("invalid shell input was accepted".into()))?;
+        assert!(error.is_tool_failure(), "{error:?}");
+        assert!(!error.uncertain());
+    }
+    Ok(())
+}

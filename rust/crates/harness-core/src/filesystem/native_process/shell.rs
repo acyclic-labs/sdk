@@ -46,6 +46,15 @@ pub fn prepare<T>(
     mut invocation: Invocation,
     now: u64,
 ) -> Result<Invocation> {
+    let cwd_error = |cause: std::io::Error| {
+        let path = input.cwd.as_deref().unwrap_or(".");
+        let message = match cause.kind() {
+            std::io::ErrorKind::NotFound => format!("cwd {path} does not exist"),
+            std::io::ErrorKind::NotADirectory => format!("cwd {path} is not a directory"),
+            _ => format!("cannot use cwd {path}: {cause}"),
+        };
+        Error::process_io(std::io::Error::new(cause.kind(), message))
+    };
     input.validate()?;
     let relative = Path::new(input.cwd.as_deref().unwrap_or(""));
     let (mount, path) = mounts.resolve(relative)?;
@@ -70,7 +79,12 @@ pub fn prepare<T>(
     } else {
         mounts.root.join(relative)
     };
-    let cwd = std::fs::canonicalize(requested).map_err(io)?;
+    let cwd = std::fs::canonicalize(&requested).map_err(cwd_error)?;
+    if !std::fs::metadata(&cwd).map_err(cwd_error)?.is_dir() {
+        return Err(cwd_error(std::io::Error::from(
+            std::io::ErrorKind::NotADirectory,
+        )));
+    }
     let selected = cwd
         .strip_prefix(root)
         .map_err(|_| Error::Invalid("shell cwd escapes the task view".into()))?;
@@ -120,7 +134,7 @@ pub fn prepare<T>(
                     })
                     .map(|(_, value)| value.into())
             });
-        invocation.executable = search.resolve(program).map_err(io)?;
+        invocation.executable = search.resolve(program).map_err(Error::process_io)?;
     }
     invocation.argv = arguments;
     invocation.standard_input =

@@ -182,10 +182,14 @@ pub(crate) struct CauseText<'a>(pub &'a Error);
 
 impl fmt::Display for CauseText<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cause: &dyn fmt::Display = match self.0 {
+            Error::Process(error) => error,
+            error => error,
+        };
         let mut probe = Visible(false);
-        let _ = write!(probe, "{}", self.0);
+        let _ = write!(probe, "{cause}");
         if probe.0 {
-            write!(formatter, "{}", Sanitized(self.0))
+            write!(formatter, "{}", Sanitized(cause))
         } else {
             write!(formatter, "{} error", ToolErrorClass::of(self.0).label())
         }
