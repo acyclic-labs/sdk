@@ -175,7 +175,7 @@ fn configured_limits_reject_oversized_references() -> Result<()> {
         original.volume().clone(),
         path.clone(),
         label.clone(),
-        FileDescriptor::from_bytes(b"hello", media_type, &mut None)?,
+        FileDescriptor::from_bytes(b"hello", &media_type, &mut None)?,
         label,
         &mut None,
     )?;
