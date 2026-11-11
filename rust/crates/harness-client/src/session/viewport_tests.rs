@@ -50,7 +50,8 @@ fn client() -> (WireSession, Arc<Scheduler>) {
     (
         WireSession::with_view_policy(
             pool,
-            DemandPolicy::default(),
+            // This fixture proves finite reservation refusal and residency.
+            DemandPolicy::new(Some(16), Some(8)).unwrap(),
             StreamViewPolicy::new(4, 8192).unwrap(),
         ),
         scheduler,
