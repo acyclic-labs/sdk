@@ -25,6 +25,7 @@ struct Frame {
 struct State {
     frame: Option<Frame>,
     failure: Option<Box<dyn std::any::Any + Send>>,
+    retirement_failure: Option<Box<dyn std::any::Any + Send>>,
 }
 struct Inner {
     state: InlineMutex<State>,
@@ -80,6 +81,7 @@ where
         state: InlineMutex::new(State {
             frame: Some(frame),
             failure: None,
+            retirement_failure: None,
         }),
         owner: InlineMutex::new(None),
         retired: InlineCondvar::new(),
@@ -134,7 +136,7 @@ impl OwnedFuture {
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        if state.failure.is_some() {
+        if state.failure.is_some() || state.retirement_failure.is_some() {
             Err(io::ErrorKind::Other.into())
         } else {
             Ok(())
@@ -220,19 +222,16 @@ impl Inner {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let discarded = match result {
-            Err(payload) if state.failure.is_none() => {
-                state.failure = Some(payload);
-                None
-            }
-            Err(payload) => Some(payload),
-            Ok(()) => None,
-        };
+        // Polling and frame destruction can each fail once. Preserve both
+        // original payloads without allocating or destroying user data under
+        // the control lock or in a concurrent stop's completion handoff.
+        if let Err(payload) = result {
+            state.retirement_failure = Some(payload);
+        }
         self.stopped.store(true, Ordering::Release);
         self.set_owner(None);
         drop(state);
         self.retired.notify_all();
-        drop(discarded);
     }
     fn set_owner(&self, owner: Option<std::thread::ThreadId>) {
         *self
