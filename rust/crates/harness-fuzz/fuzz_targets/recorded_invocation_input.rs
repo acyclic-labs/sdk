@@ -76,7 +76,14 @@ pub fn assert_replay(record: Record, limits: Limits) {
         return;
     }
     let encoded = serde_json::to_vec(&record).unwrap();
-    assert!(encoded.len() as u64 <= limits.file_bytes.min(limits.render_bytes));
+    assert!(
+        limits
+            .file_bytes
+            .into_iter()
+            .chain(limits.render_bytes)
+            .min()
+            .is_none_or(|maximum| encoded.len() as u64 <= maximum)
+    );
     let result = serde_json::to_vec(&ToolResult { value: Value::Null }).unwrap();
     let projection = serde_json::to_vec(&ToolResultContent::Json { value: Value::Null }).unwrap();
     let files = Resolver(BTreeMap::from([
