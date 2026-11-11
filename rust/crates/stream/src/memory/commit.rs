@@ -76,8 +76,7 @@ impl CommitPublication {
         time: u64,
         retained: RetainedFactRef,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        let commit_id = self.envelope.commit_id;
-        let previous = install_namespace(state, self.namespace, &self.envelope);
+        install_namespace(state, self.namespace, &self.envelope);
         state.decision += 1;
         state.last_committed_at_micros = time;
         retain(
@@ -89,7 +88,6 @@ impl CommitPublication {
             IdempotencyOutcome::Commit(self.envelope),
             (self.resident, retained),
         );
-        notify_committed(state, &previous, commit_id)?;
         Ok((self.result, self.output_claim))
     }
 }
@@ -881,11 +879,7 @@ fn stage_namespace(
 // caller retains the terminal retry result under the same state guard before
 // delivering any notification, so notification failure cannot spend the write
 // without retaining its identity.
-fn install_namespace(
-    state: &mut State,
-    next: Namespace,
-    envelope: &CommittedEnvelope,
-) -> Namespace {
+fn install_namespace(state: &mut State, next: Namespace, envelope: &CommittedEnvelope) {
     if next.len() != state.paths.len() {
         state.hierarchy_version = envelope.commit_id;
     }
@@ -897,19 +891,14 @@ fn install_namespace(
             .map(|record| record.payload_bytes())
             .sum::<usize>();
     }
-    std::mem::replace(&mut state.paths, next)
+    state.paths = next;
 }
 
-fn notify_committed(
-    state: &State,
-    previous: &Namespace,
-    commit_id: CommitId,
-) -> Result<(), StreamError> {
+fn notify_committed(state: &State, previous: &Namespace) -> Result<(), StreamError> {
     let envelope = state
         .retained
         .last()
         .and_then(|entry| entry.envelope())
-        .filter(|envelope| envelope.commit_id == commit_id)
         .ok_or(StreamError::InvalidResponse)?;
     // Only missing subscriptions beneath a published destination can be
     // created. Range over subscribers, never over the inherited subtree.

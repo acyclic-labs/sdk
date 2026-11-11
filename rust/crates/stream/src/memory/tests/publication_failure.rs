@@ -1,12 +1,21 @@
 //! A real poisoned notification registry must not separate visibility and retry identity.
 use super::*;
-use crate::{WriteOutcome, WriteRequest};
+use crate::{NativeStreamProvider as _, WriteOutcome, WriteRequest, test_meter::Meter};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::Ordering;
 
 #[tokio::test]
 async fn notification_failure_keeps_whole_write_and_exact_retry_for_every_family()
 -> Result<(), Box<dyn std::error::Error>> {
-    for family in 0..4 {
+    for (family, native) in [
+        (0, false),
+        (1, false),
+        (2, false),
+        (3, false),
+        (0, true),
+        (2, true),
+        (3, true),
+    ] {
         let provider = MemoryStream::default();
         let source = StreamPath::new("source")?;
         let destination = StreamPath::new("destination")?;
@@ -75,10 +84,24 @@ async fn notification_failure_keeps_whole_write_and_exact_retry_for_every_family
             }))
             .is_err()
         );
-        assert_eq!(
-            provider.write(request.clone()).await,
-            Err(StreamError::Unavailable)
-        );
+        let meter = Arc::new(Meter::default());
+        let failed = if native {
+            provider
+                .native_write(request.clone(), meter.original())
+                .await?
+                .map(|output| output.value().clone())
+        } else {
+            provider.write(request.clone()).await
+        };
+        assert_eq!(failed, Err(StreamError::Unavailable));
+        if native {
+            assert_eq!(meter.write_operations.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                meter.write_bytes.load(Ordering::SeqCst),
+                if family == 0 { 11 } else { 19 },
+                "notification failure erased accounting for the installed bytes"
+            );
+        }
         let observation = provider.inspect_idempotency(retry_key.clone()).await?;
         assert!(
             observation.is_some(),

@@ -25,9 +25,22 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
         match self {
             Self::Returned(result) => Ok(result),
             Self::Accepted { bytes, install } => {
+                // Keep the predecessor without copying its namespace. Notification
+                // delivery is outside the original write accounting boundary: the
+                // write succeeded even when its subsequent wake delivery fails.
+                let previous = state.paths.clone();
+                let decision = state.decision;
                 let result = core.publish(bytes, || install(state, durable, at_millis));
                 core.applied(state);
-                result
+                let notified = if state.decision != decision {
+                    notify_committed(state, &previous)
+                } else {
+                    Ok(())
+                };
+                match result {
+                    Ok(value) => notified.map(|()| value),
+                    Err(error) => Err(error),
+                }
             }
         }
     }

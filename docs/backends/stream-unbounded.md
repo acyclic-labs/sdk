@@ -345,3 +345,17 @@ fix while keeping the same test, requiring the lost-observation assertion.
 This fixes the named root/receipt failure window; it does not certify recovery
 of failed follower delivery or fulfill the staged crash/loom proofs above.
 Validation is pending for this change.
+
+The notification boundary is centralised in Decision::install_at, including
+prepared native commits. Native write accounting completes before notification
+attempts: a notification error must not erase byte transfer for an installed
+write. The predecessor namespace is retained by one O(1) root clone across that
+boundary; no subscriber scan or notification-copy queue is added. The regression
+also covers native append, commit and accepted commit with original Meter byte
+and operation accounting (native fork is an explicitly unsupported capability).
+
+At 997f0a962b2, Linux all-target check and the four focused positive controls
+passed (0.168 s). Reversing production code failed exactly the lost-terminal-
+observation assertion. The custom command then failed because rg is absent on
+the build host; its EXIT trap restored the patch. Use grep for the next control
+witness. The accounting-boundary refinement requires its focused run next.
