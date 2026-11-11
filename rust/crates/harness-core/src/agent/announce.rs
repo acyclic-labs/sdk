@@ -139,7 +139,7 @@ pub async fn discover_workspace_instructions(
     };
     let files = crate::context::capture_instructions(
         &mut source,
-        "",
+        &root.directory,
         "",
         &policy.instruction_names,
         work,

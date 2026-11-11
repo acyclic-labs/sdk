@@ -117,17 +117,19 @@ async fn workspace_deltas_keep_local_turns_on_the_same_primary() -> Result<()> {
     let (instructions, _) = publisher
         .stage(
             crate::OperationId::new(),
-            "AGENTS.md",
+            "repo/AGENTS.md",
             b"Instructions from the newly added repository.",
             "text/markdown",
             "AGENTS.md",
             Default::default(),
         )?
         .await?;
+    let mut added = WorkspaceEntry::initial_volume(WorkspaceRole::User, "second".into(), added);
+    added.root = "repo".into();
     let record = InboxRecord::WorkspaceChanged(Box::new(WorkspaceChanged {
         version: 1,
         op: WorkspaceOp::Add,
-        entry: WorkspaceEntry::initial_volume(WorkspaceRole::User, "second".into(), added),
+        entry: added,
     }));
     let result = streams
         .commit(acyclic_stream::CommitRequest {
