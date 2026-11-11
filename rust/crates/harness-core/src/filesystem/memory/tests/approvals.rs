@@ -164,7 +164,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
                 .expect("approval actor namespace"),
             AgentPath::root(&agent),
             (OperationId::new(), 0),
-            65_536,
+            Some(65_536),
         ),
     );
     let reads = Arc::new(Reads {
@@ -576,11 +576,11 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
     );
     let bytes = storage
         .internal_files
-        .read(&path, 65_536)
+        .read(&path, Some(65_536))
         .await?
         .ok_or_else(|| Error::NotFound("original rule decision".into()))?;
     assert_eq!(
-        crate::interaction::ApprovalDecisionFile::decode(&bytes, 65_536)?.verdict,
+        crate::interaction::ApprovalDecisionFile::decode(&bytes, Some(65_536))?.verdict,
         ApprovalVerdict::ApproveRule
     );
     let later = InteractionId::new();
