@@ -26,13 +26,15 @@ The three initial schedules are explicitly generated controls:
 | `interleaved-cancellation` | `78797a7b7c7d7e7f38393a3b` |
 | `accepted-reconciliation` | `b8b9babbbcbdbebff8f9fafbfcfdfeff` |
 
-The ordinary corpus control also replays `refusal-retry` with operation identity
+The shared oracle also runs every schedule with operation identity
 `369244c89aa44235bc4f4ab23daa7479`, captured unchanged from the first
 `INDEX52` observation in the native diagnostic at commit
 `d559de01eb80e9c91b171065b0ea8080b15dfe6f`. The original observation began
 with action `00`, an empty index and no differing bit. This preserves that
 original key independently of the deterministic generated operation identities;
-it does not establish a compiler or index repair.
+it does not establish a compiler or index repair. Both the ordinary corpus
+control and `recorded_replay` therefore exercise the captured operation together
+with the unchanged original action sequence, independently of generated keys.
 
 The oracle independently tracks only accepted source occurrence coordinates and
 consumed tool results. A refused returned object must change neither; an

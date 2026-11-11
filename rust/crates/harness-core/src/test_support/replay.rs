@@ -43,7 +43,16 @@ pub fn assert_replay_admission(schedule: &[u8]) {
     let operation = OperationId::from_bytes(std::array::from_fn(|index| {
         schedule.get(index).copied().unwrap_or(0)
     }));
-    futures::executor::block_on(check(schedule, operation)).expect("replay schedule admission");
+    // Keep the original diagnostic's index operand independent of its actions
+    // in every consumer, including the fuzz entry point. The generated input
+    // still selects its own operation without changing retained schedule bytes.
+    let captured = OperationId::from_bytes([
+        0x36, 0x92, 0x44, 0xc8, 0x9a, 0xa4, 0x42, 0x35, 0xbc, 0x4f, 0x4a, 0xb2, 0x3d, 0xaa, 0x74,
+        0x79,
+    ]);
+    for operation in [operation, captured] {
+        futures::executor::block_on(check(schedule, operation)).expect("replay schedule admission");
+    }
 }
 
 async fn check(schedule: &[u8], operation: OperationId) -> Result<()> {
@@ -249,15 +258,4 @@ fn retained_replay_schedules_use_the_production_admission_oracle() {
     ] {
         assert_replay_admission(schedule);
     }
-    // Original native replay diagnostic, including its captured operation.
-    // See recorded-replay-corpus.md for the unchanged operand provenance.
-    let operation = OperationId::from_bytes([
-        0x36, 0x92, 0x44, 0xc8, 0x9a, 0xa4, 0x42, 0x35, 0xbc, 0x4f, 0x4a, 0xb2, 0x3d, 0xaa, 0x74,
-        0x79,
-    ]);
-    futures::executor::block_on(check(
-        include_bytes!("../../../harness-fuzz/corpus/recorded_replay/refusal-retry"),
-        operation,
-    ))
-    .expect("original replay diagnostic coordinates");
 }
