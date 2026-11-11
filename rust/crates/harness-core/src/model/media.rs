@@ -15,10 +15,10 @@ pub enum FileProjectionPolicy {
     Native(Box<NativeMediaPolicy>),
 }
 impl FileProjectionPolicy {
-    /// Admits projection support and caller-provided credit, returning the
-    /// projected source bytes including instruction framing, or zero for a
-    /// reference. Refusal precedes reading or allocating a pinned body.
-    pub fn projected_bytes(&self, file: &FileRef, maximum: u64) -> Result<u64> {
+    /// Plans projected bytes under optional caller and native source-byte credit,
+    /// including instruction framing. `None` adds no caller ceiling. Native work
+    /// units and supported media belong to the consuming adapter. No file is read.
+    pub fn projected_bytes(&self, file: &FileRef, maximum: Option<u64>) -> Result<u64> {
         let policy = self;
         match policy {
             FileProjectionPolicy::Reference => return Ok(0),
@@ -29,23 +29,7 @@ impl FileProjectionPolicy {
                     ));
                 }
             }
-            FileProjectionPolicy::Native(policy) => {
-                let supported = match policy.intent {
-                    NativeMediaIntent::Image { .. } => matches!(
-                        file.descriptor().media_type(),
-                        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-                    ),
-                    NativeMediaIntent::Document { .. } => {
-                        file.descriptor().media_type() == "application/pdf"
-                    }
-                    _ => false,
-                };
-                if !supported || policy.configuration.is_some() {
-                    return Err(Error::Unsupported(
-                        "unsupported native model media policy".into(),
-                    ));
-                }
-            }
+            FileProjectionPolicy::Native(_) => {}
         }
         let bytes = match policy {
             Self::ProjectInstructions(source) => {
@@ -55,19 +39,34 @@ impl FileProjectionPolicy {
         };
         let mut byte_limit = maximum;
         if let FileProjectionPolicy::Native(native) = policy {
-            byte_limit = byte_limit.min(native.maximum_bytes);
-            if bytes > native.maximum_work {
-                return Err(Error::Invalid(
-                    "model files exceed projection work limit".into(),
-                ));
-            }
+            byte_limit = Some(maximum.map_or(native.maximum_bytes, |maximum| {
+                maximum.min(native.maximum_bytes)
+            }));
         }
-        if bytes > byte_limit {
+        if byte_limit.is_some_and(|maximum| bytes > maximum) {
             return Err(Error::Invalid(
                 "model files exceed projection byte limit".into(),
             ));
         }
         Ok(bytes)
+    }
+
+    /// Native source bytes can be spliced directly only for these original
+    /// formats, without a configured transform. Other valid native policies
+    /// remain available to adapters that implement their own media processing.
+    pub(crate) fn supports_byte_projection(&self, file: &FileRef) -> bool {
+        let Self::Native(policy) = self else {
+            return true;
+        };
+        policy.configuration.is_none()
+            && match policy.intent {
+                NativeMediaIntent::Image { .. } => matches!(
+                    file.descriptor().media_type(),
+                    "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+                ),
+                NativeMediaIntent::Document => file.descriptor().media_type() == "application/pdf",
+                NativeMediaIntent::Audio { .. } | NativeMediaIntent::Video { .. } => false,
+            }
     }
 
     /// Whether a file of `media_type` projects as bounded text
@@ -78,24 +77,24 @@ impl FileProjectionPolicy {
         media_type.starts_with("text/") || media_type == "application/json"
     }
 
-    /// How a file a user attaches to a prompt projects: supported images and PDFs
-    /// natively, under the default render credit; anything else as bounded text.
+    /// Projects supported images and PDFs natively from their immutable source
+    /// extent; other attachments use the caller-selected text projection.
     #[must_use]
     pub fn for_attachment(file: &FileRef) -> Self {
         match file.descriptor().media_type() {
             "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-                let bounds = crate::conversation::Limits::default().render_bytes;
+                let bytes = file.descriptor().byte_length();
                 Self::Native(Box::new(NativeMediaPolicy {
                     intent: NativeMediaIntent::Image {
                         detail: ImageDetail::Auto,
                     },
-                    maximum_bytes: bounds,
-                    maximum_work: bounds,
+                    maximum_bytes: bytes,
+                    maximum_work: bytes,
                     configuration: None,
                 }))
             }
             "application/pdf" => {
-                let bounds = crate::conversation::Limits::default().render_bytes;
+                let bounds = file.descriptor().byte_length().max(1);
                 Self::Native(Box::new(NativeMediaPolicy {
                     intent: NativeMediaIntent::Document,
                     maximum_bytes: bounds,
