@@ -1,6 +1,6 @@
 # Unbounded atomic Stream commits
 
-Status: design recorded before implementation; no runtime change yet.
+Status: content-page foundation implemented; atomic publication and its proofs remain outstanding.
 Baseline: 506843a3822. Lane: stream-unbounded. Objective includes SDK main landing
 through Foreman and a separate Cloud adoption PR; neither is complete.
 
@@ -280,3 +280,21 @@ lazy read, fragment-independent identity, embedded manifest bytes, empty values,
 fanout carry into a second manifest level, and corruption refusal. These prove
 content-tree behavior only, NOT atomic Stream writes, crash staging visibility,
 event-driven collection, all-backend conformance or removal of public limits.
+
+## Reuse of existing publication and proof machinery
+
+The final-apply capability extends MemoryStream::publication in
+src/memory/memory_stream.rs. Append, fork, commit and durable apply already
+acquire it in memory/provider.rs and memory/decision.rs. Keep that one mechanism;
+do not add a separate staged authority lock or an independent writer queue.
+The immutable namespace trie already supports retaining a predecessor while
+building a successor. Preparation must become paged without publishing any
+intermediate Namespace root, fact list or retry receipt.
+
+The production-linked loom driver is memory/recovery_model.rs, exported through
+verification with cfg(loom, feature=local). Its ReleasePendingPublication fault
+already demonstrates why final-apply ownership must span durable IO. Extend this
+instrumentation for staged applies and batch cursors, with negative controls;
+a disconnected generic Stage model would not prove this provider's behavior.
+Existing models are evidence for their current bounded paths only and do not
+certify the new staged protocol until it is wired through those same paths.
