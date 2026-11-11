@@ -115,7 +115,7 @@ pub(super) async fn attach(
     store: &acyclic_fs::LocalCoreStateStore,
     root: &acyclic_fs::HeldRoot,
     mounts: &mut Mounts,
-    authority: &crate::filesystem::NativeMountAuthority,
+    authority: Option<&crate::filesystem::NativeMountAuthority>,
     admission: &Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     native: bool,
 ) -> Result<()> {
@@ -145,6 +145,7 @@ pub(super) async fn attach(
         let options = if native {
             Some(
                 authority
+                    .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
                     .mount_options(
                         &source,
                         Some(&mount.view.volume),

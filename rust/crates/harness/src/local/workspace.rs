@@ -228,7 +228,7 @@ impl LocalWorkspace {
             &self.store,
             &root,
             &mut mounts,
-            authority,
+            Some(authority),
             &self.task_view_admission,
             native,
         )
@@ -439,9 +439,7 @@ pub(super) async fn open(
         &store,
         &binding_root,
         &mut mounts,
-        mount_authority
-            .as_ref()
-            .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
+        mount_authority.as_ref(),
         &task_view_admission,
         native_mounts,
     )
