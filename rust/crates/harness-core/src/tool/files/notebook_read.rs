@@ -588,6 +588,7 @@ pub(super) async fn read(
         #[serde(skip_serializing_if = "Vec::is_empty")]
         outputs: &'a Vec<NotebookOutput>,
     }
+    let source_bytes = window.source.byte_length();
     let result = super::value(
         &Read {
             file: window.source,
@@ -596,6 +597,8 @@ pub(super) async fn read(
                 start,
                 end,
                 next: (selection.next_cell < total || end < selected_end).then_some(end),
+                total: source_bytes,
+                eof: selection.next_cell >= total && end == selected_end,
                 offset,
             },
             outputs: &outputs.values,

@@ -226,7 +226,7 @@ pub(super) async fn read(
             .await?;
         window.bytes = bytes;
     }
-    let start = start.ok_or_else(|| executor::rejection(work, "line offset exceeds source"))?;
+    let start = start.unwrap_or(window.source.byte_length());
     let truncated = start + (selected.len() as u64) < window.source.byte_length();
     let text = super::read::page_text(&selected, selected.is_empty(), truncated, work)?;
     let shown = crate::tools::bounds::prefix(text, usize::try_from(budget).unwrap_or(usize::MAX));
@@ -243,6 +243,8 @@ pub(super) async fn read(
                 start,
                 end,
                 next: (end < window.source.byte_length()).then_some(end),
+                total: window.source.byte_length(),
+                eof: end == window.source.byte_length(),
                 offset,
             },
             file: window.source,

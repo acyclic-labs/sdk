@@ -18,7 +18,8 @@ pub struct ReadFileInput {
     /// current path under the original directory read grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Optional UTF-8 byte interval. Large intervals return a continuation page.
+    /// Optional UTF-8 byte interval, clipped to the source. Offsets past EOF
+    /// return an empty page. Large intervals return a continuation page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<super::text::TextRange>,
     /// A line, cell or native media projection. Mutually exclusive with `range`.
@@ -84,7 +85,12 @@ pub struct ReadPage {
     /// Exclusive end of the selected interval.
     pub end: u64,
     /// Next byte offset for `range`, absent at end of source.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<u64>,
+    /// Total byte length of the original immutable source.
+    pub total: u64,
+    /// This page reaches the end of the source projection.
+    pub eof: bool,
     /// First zero-based line/cell in this view.
     pub offset: u64,
 }
@@ -246,7 +252,7 @@ pub struct ReadFileResult {
     pub file: FileReadSource,
     /// Exact selected UTF-8 text.
     pub text: String,
-    /// Provenance of a bounded text/cell view; absent for exact complete reads.
+    /// Provenance and EOF for every text/cell view; absent for native media.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<ReadPage>,
     /// Native media selection; the immutable file supplies its bytes.
