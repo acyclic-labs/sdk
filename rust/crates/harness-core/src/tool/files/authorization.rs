@@ -223,7 +223,12 @@ impl FileTool {
                     || input.0.query.len() as u64 > options.maximum_query_bytes
                     || u64::from(options.maximum_matches)
                         * std::mem::size_of::<super::text::TextRange>() as u64
-                        > maximum_result_bytes.min(scope.limits().file_bytes)
+                        > scope
+                            .limits()
+                            .file_bytes
+                            .map_or(*maximum_result_bytes, |maximum| {
+                                (*maximum_result_bytes).min(maximum)
+                            })
                 {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,

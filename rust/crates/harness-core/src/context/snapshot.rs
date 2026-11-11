@@ -69,7 +69,9 @@ fn validate_reference(
 ) -> Result<()> {
     crate::executor::with_history_io(io, |work| limits.validate_file(reference, work))?;
     if reference.descriptor().media_type() != "application/json"
-        || reference.descriptor().byte_length() > limits.render_bytes
+        || limits
+            .render_bytes
+            .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
     {
         return Err(crate::executor::stock_boundary(
             io,

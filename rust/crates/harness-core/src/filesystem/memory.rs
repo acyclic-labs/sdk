@@ -308,7 +308,7 @@ impl<
                 &volume,
                 &verifier,
                 &scope,
-                Some(maximum_file_bytes),
+                maximum_file_bytes,
                 None,
             )?;
             Ok(Self {

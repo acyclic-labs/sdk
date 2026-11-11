@@ -307,7 +307,11 @@ pub(super) async fn retain(
             .checked_sub(payload.start)
             .filter(|length| {
                 *length > 0
-                    && *length <= context.effective_scope().limits().file_bytes
+                    && context
+                        .effective_scope()
+                        .limits()
+                        .file_bytes
+                        .is_none_or(|maximum| *length <= maximum)
                     && payload.end <= window.source.byte_length()
             })
             .ok_or_else(|| {
@@ -390,7 +394,11 @@ pub(super) async fn retain(
             || file.descriptor().media_type() != payload.media.mime()
             || file.display_name() != "notebook-output"
             || file.descriptor().byte_length() == 0
-            || file.descriptor().byte_length() > context.effective_scope().limits().file_bytes
+            || context
+                .effective_scope()
+                .limits()
+                .file_bytes
+                .is_some_and(|maximum| file.descriptor().byte_length() > maximum)
         {
             return Err(executor::rejection(
                 work,

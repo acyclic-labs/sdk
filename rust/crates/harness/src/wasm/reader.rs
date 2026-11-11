@@ -26,6 +26,13 @@ impl ContentResidencyVerifier for BrowserContentReader {
                 "browser content reader has no finite ledger".into(),
             ));
         }
+        if maximum.is_some_and(|maximum| file.descriptor().byte_length() > maximum) {
+            return Err(Error::Invalid(
+                "model file exceeds projection byte limit".into(),
+            ));
+        }
+        // The immutable extent bounds the physical callback, independently of policy.
+        let maximum = file.descriptor().byte_length();
         BoundedContentFuture::new(io, || async move {
             let encoded = to_js_admitted(file)
                 .map_err(|_| Error::Invalid("model file encoding failed".into()))?;

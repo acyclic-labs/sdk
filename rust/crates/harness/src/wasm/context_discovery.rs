@@ -60,7 +60,7 @@ pub fn frame_instructions(
 ) -> std::result::Result<String, JsValue> {
     let (file, source) = instruction_source(file, source)?;
     let source = crate::model::InstructionSource::with_identity(&file, &source);
-    let mut remaining = maximum;
+    let mut remaining = Some(maximum);
     source.reserve(&mut remaining, None).map_err(js_error)?;
     let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(bytes, |length| {
         if length != file.descriptor().byte_length() {
@@ -308,7 +308,9 @@ impl ContentResidencyVerifier for BrowserReader {
 
         crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
-            let maximum_bytes = maximum_bytes.min(self.maximum_bytes);
+            let maximum_bytes = maximum_bytes.map_or(self.maximum_bytes, |maximum| {
+                maximum.min(self.maximum_bytes)
+            });
             let generation = generation.ok_or_else(|| {
                 Error::Invalid("context path requires a pinned generation".into())
             })?;

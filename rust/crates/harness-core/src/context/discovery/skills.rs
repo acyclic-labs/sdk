@@ -105,7 +105,7 @@ impl SkillMetadata {
             })?;
         if file.volume() != &source.root.volume
             || file.path() != source.path
-            || bytes.len() as u64 > maximum_bytes
+            || maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
         {
             return Err(stock_boundary(
                 io,

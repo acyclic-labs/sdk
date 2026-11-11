@@ -240,9 +240,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         if volume.provider() != &self.provider
-            || input
-                .bytes()
-                .is_some_and(|bytes| bytes.len() as u64 > maximum_bytes)
+            || input.bytes().is_some_and(|bytes| {
+                maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
+            })
         {
             return Err(stock_boundary(
                 io,
@@ -381,16 +381,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     // Replay needs the request digest, never new content puts.
                     let mut chunk = [0; 8192];
                     loop {
-                        let remaining = maximum_bytes.checked_sub(source.length)
-                            .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                                "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"))?;
-                        let read = source.read(&mut chunk, remaining.saturating_add(1), active_io.cancellation())
+                        let remaining = maximum_bytes.map(|maximum| maximum.checked_sub(source.length).ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                                "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"))).transpose()?;
+                        let page = chunk.len() as u64;
+                        let requested = remaining.map_or(page, |remaining| remaining.saturating_add(1).min(page));
+                        let read = source.read(&mut chunk, requested, active_io.cancellation())
                             .await.map_err(|error| {
                                 if active_io.cancellation().is_cancelled() { Error::Cancelled }
                                 else { Error::Storage(format!("content source read failed: {error}; recovery: recreate the complete original source and replay the same publication")) }
                             })?;
                         active_io.charge(acyclic_fs::WorkCounters { source_bytes_read: read as u64, ..Default::default() })?;
-                        if source.length > maximum_bytes {
+                        if maximum_bytes.is_some_and(|maximum| source.length > maximum) {
                             return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
                                 "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
                         }
@@ -401,12 +402,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         operation, active_io, active_io.cancellation()).await)?;
                     // Staging credit cannot exceed this volume's capacity;
                     // the publisher's independent byte credit still applies.
-                    let staging_bytes = maximum_bytes.max(1)
-                        .min(opened.volume_config().limits.maximum_generation_bytes);
+                    let capacity = opened.volume_config().limits.maximum_generation_bytes;
+                    let staging_bytes = maximum_bytes.map_or(capacity, |maximum| maximum.max(1).min(capacity));
                     let content = active_io.sdk(transaction.stage_content(
                         &mut source, staging_bytes, active_io, active_io.cancellation()).await)
                         .map_err(|error| if active_io.cancellation().is_cancelled() { Error::Cancelled } else { error })?;
-                    if source.length > maximum_bytes {
+                    if maximum_bytes.is_some_and(|maximum| source.length > maximum) {
                         return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
                             "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
                     }
@@ -602,7 +603,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 reference.validate(&mut Some(&mut io.history_io()))?;
             }
             if reference.volume().provider() != &self.provider
-                || reference.descriptor().byte_length() > maximum_bytes
+                || maximum_bytes
+                    .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
             {
                 #[cfg(not(target_arch = "wasm32"))]
                 if io.and_then(PreparationIo::original_native_work).is_some() {
@@ -625,8 +627,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 (hold, path)
             };
             #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-            acyclic_differential::record(("read", maximum_bytes));
-            let bytes = read_generation(generation, &path, maximum_bytes, io).await?;
+            acyclic_differential::record(("read", reference.descriptor().byte_length()));
+            let bytes =
+                read_generation(generation, &path, reference.descriptor().byte_length(), io)
+                    .await?;
             crate::executor::with_history_io(io, |work| {
                 reference.descriptor().verify(&bytes, work)
             })?;
@@ -687,7 +691,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     {
         async move {
             if reference.volume().provider() != &self.provider
-                || reference.descriptor().byte_length() > maximum_bytes
+                || maximum_bytes
+                    .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
             {
                 return Err(Error::Invalid(
                     "content provider or size limit mismatch".into(),
@@ -701,13 +706,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             // retaining caller can pin it without opening the workspace
             // and authenticating this same generation a second time.
             #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-            acyclic_differential::record(("read", maximum_bytes));
+            acyclic_differential::record(("read", reference.descriptor().byte_length()));
             let owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             let opened = self.open(&workspace, Some(&owned)).await?;
             let pinned = self.generation(&opened, &generation, Some(&owned)).await?;
             let bytes = owned.sdk(
                 pinned
-                    .read(&path, maximum_bytes, &owned, owned.cancellation())
+                    .read(
+                        &path,
+                        reference.descriptor().byte_length(),
+                        &owned,
+                        owned.cancellation(),
+                    )
                     .await,
             )?;
             owned.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
@@ -731,7 +741,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let io = &scratch;
                 reference.validate(&mut Some(&mut io.history_io()))?;
                 if reference.volume().provider() != &self.provider
-                    || reference.descriptor().byte_length() > maximum_bytes
+                    || maximum_bytes
+                        .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
                 {
                     return Err(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Invalid,
@@ -752,9 +763,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let opened = (self).open(&workspace, Some(io)).await?;
                 let pinned = self.generation(&opened, &generation, Some(io)).await?;
                 #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-                acyclic_differential::record(("read", maximum_bytes));
+                acyclic_differential::record(("read", reference.descriptor().byte_length()));
                 let bytes = pinned
-                    .read(&path, maximum_bytes, original, io.cancellation())
+                    .read(
+                        &path,
+                        reference.descriptor().byte_length(),
+                        original,
+                        io.cancellation(),
+                    )
                     .await
                     .map_err(|source| Error::NativeWorkspace {
                         source: Box::new(source),
@@ -769,7 +785,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 return Ok(bytes);
             }
             if reference.volume().provider() != &self.provider
-                || reference.descriptor().byte_length() > maximum_bytes
+                || maximum_bytes
+                    .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
             {
                 return Err(Error::Invalid(
                     "content provider or size limit mismatch".into(),
@@ -795,10 +812,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     let opened = (self).open(&workspace, Some(io)).await?;
                     let pinned = self.generation(&opened, &generation, Some(io)).await?;
                     #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-                    acyclic_differential::record(("read", maximum_bytes));
+                    acyclic_differential::record(("read", reference.descriptor().byte_length()));
                     let bytes = io.receive(
                         pinned
-                            .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
+                            .read(
+                                &path,
+                                reference.descriptor().byte_length(),
+                                io.remaining()?,
+                                io.cancellation(),
+                            )
                             .await,
                     )?;
                     let capacity = bytes.retained_capacity().ok_or_else(|| {
@@ -813,8 +835,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     bytes
                 }
                 None => {
-                    self.read(&workspace, Some(&generation), &path, maximum_bytes, None)
-                        .await?
+                    self.read(
+                        &workspace,
+                        Some(&generation),
+                        &path,
+                        reference.descriptor().byte_length(),
+                        None,
+                    )
+                    .await?
                 }
             };
             crate::executor::with_history_io(io, |work| {
