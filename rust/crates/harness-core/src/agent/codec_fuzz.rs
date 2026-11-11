@@ -98,14 +98,14 @@ fn envelope(value: &acyclic_actors::guest::Checkpoint) {
             }
             assert!(
                 matches!(
-                    checkpoint::checkpoint_state(&foreign),
+                    checkpoint::checkpoint_head(&foreign),
                     Err(super::Error::IncompatibleCheckpointCodec)
                 ),
                 "checkpoint codec refusal did not precede payload decoding"
             );
         }
     }
-    let decoded = checkpoint::checkpoint_state(value);
+    let decoded = checkpoint::checkpoint_head(value);
     if value.codec != checkpoint::codec() {
         assert!(
             matches!(decoded, Err(super::Error::IncompatibleCheckpointCodec)),
@@ -114,12 +114,10 @@ fn envelope(value: &acyclic_actors::guest::Checkpoint) {
     } else if let Ok(state) = decoded {
         let encoded = acyclic_actors::guest::Checkpoint {
             codec: checkpoint::codec(),
-            bytes: checkpoint::encode(&state)
-                .expect("admitted state encodes")
-                .into(),
+            bytes: state.encode().expect("admitted state encodes").into(),
         };
         assert_eq!(
-            checkpoint::checkpoint_state(&encoded).expect("checkpoint identity admits"),
+            checkpoint::checkpoint_head(&encoded).expect("checkpoint identity admits"),
             state
         );
         // Checkpoint and record versions evolve independently. Exercise this
@@ -146,7 +144,7 @@ fn envelope(value: &acyclic_actors::guest::Checkpoint) {
             bytes: Vec::new().into(),
         };
         assert!(matches!(
-            checkpoint::checkpoint_state(&malformed),
+            checkpoint::checkpoint_head(&malformed),
             Err(super::Error::Record(_))
         ));
     }
@@ -164,7 +162,10 @@ pub fn check(bytes: &[u8]) {
     if let Ok(state) = serde_json::from_slice::<AgentState>(bytes) {
         if let Ok(encoded) = checkpoint::encode(&state) {
             assert_eq!(
-                checkpoint::decode(&encoded).expect("written checkpoint decodes"),
+                checkpoint::decode(&encoded)
+                    .expect("written checkpoint decodes")
+                    .restore(state.volumes.clone())
+                    .expect("table identity"),
                 state,
                 "checkpoint lost the writer's state"
             );
@@ -595,7 +596,10 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             assert_eq!(StatusRecord::decode(&status_bytes)?, status);
             let encoded = checkpoint::encode(&state)?;
             let envelope = checkpoint::from_encoded(encoded.clone())?;
-            assert_eq!(checkpoint::checkpoint_state(&envelope)?, state);
+            assert_eq!(
+                checkpoint::checkpoint_head(&envelope)?.restore(state.volumes.clone())?,
+                state
+            );
             seeds.extend([
                 (names[0], status_bytes),
                 (names[1], encoded),
@@ -652,12 +656,15 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             }
             let encoded = checkpoint::encode(&state)?;
             assert_eq!(
-                checkpoint::decode(&encoded)?,
+                checkpoint::decode(&encoded)?.restore(state.volumes.clone())?,
                 state,
                 "checkpoint lost the writer's state"
             );
             let envelope = checkpoint::from_encoded(encoded.clone())?;
-            assert_eq!(checkpoint::checkpoint_state(&envelope)?, state);
+            assert_eq!(
+                checkpoint::checkpoint_head(&envelope)?.restore(state.volumes.clone())?,
+                state
+            );
             seeds.extend([
                 (names[0], encoded),
                 (names[1], crate::contract::canonical_json_bytes(&envelope)?),

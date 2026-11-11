@@ -1,4 +1,5 @@
 //! Agent checkpoint: persistent membership roots and raw turn bytes.
+use super::workspace_checkpoint::TableRef;
 use super::{AgentRecord, AgentState, Error};
 use acyclic_actors::guest::{Checkpoint, CodecIdentity};
 use prost::Message as _;
@@ -24,21 +25,65 @@ fn identity() -> &'static CodecIdentity {
     &IDENTITY
 }
 
-/// The agent state a committed checkpoint carries.
-pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Error> {
+/// Metadata and the fixed-size folded workspace snapshot identity. Inspectors
+/// that need no workspace contents retain their single actor-head read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Head {
+    pub(crate) state: AgentState,
+    pub(crate) table: TableRef,
+    initial: Option<Vec<super::WorkspaceEntry>>,
+}
+
+impl Head {
+    pub(crate) fn restore(
+        mut self,
+        entries: Vec<super::WorkspaceEntry>,
+    ) -> Result<AgentState, Error> {
+        self.table.verify(&entries)?;
+        self.state.volumes = entries;
+        Ok(self.state)
+    }
+
+    pub(crate) async fn load<P: acyclic_stream::StreamProvider + ?Sized>(
+        self,
+        provider: &P,
+    ) -> Result<AgentState, Error> {
+        let entries = match &self.initial {
+            Some(entries) => entries.clone(),
+            None => self.table.load(provider).await?,
+        };
+        self.restore(entries)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, Error> {
+        encode_head(&self.state, &self.table)
+    }
+}
+
+pub(crate) fn checkpoint_head(checkpoint: &Checkpoint) -> Result<Head, Error> {
     acyclic_actors::guest::admit_checkpoint(Some(checkpoint), identity())
         .map_err(|_| Error::IncompatibleCheckpointCodec)?;
     decode(&checkpoint.bytes)
 }
 
+/// The agent's complete folded state at the committed checkpoint, loaded
+/// from its immutable snapshot rather than reconstructed from inbox history.
+pub(crate) async fn checkpoint_state<P: acyclic_stream::StreamProvider + ?Sized>(
+    provider: &P,
+    checkpoint: &Checkpoint,
+) -> Result<AgentState, Error> {
+    checkpoint_head(checkpoint)?.load(provider).await
+}
+
 /// Original bindings available to a host composition, before its first step
 /// from the delivered adoption and afterwards from the committed checkpoint.
-pub(crate) fn committed_state(
+pub(crate) fn committed_head(
     previous: Option<&Checkpoint>,
     delivered: Option<&acyclic_stream::Record>,
-) -> Result<AgentState, Error> {
+) -> Result<Head, Error> {
     if let Some(previous) = previous {
-        return checkpoint_state(previous);
+        return checkpoint_head(previous);
     }
     let record = delivered.ok_or(Error::Record("agent has no committed adoption"))?;
     let super::InboxRecord::ForkAdopted(adopted) = super::InboxRecord::decode(&record.value)?
@@ -49,7 +94,14 @@ pub(crate) fn committed_state(
         Some(parent) => parent.child(&adopted.agent)?,
         None => super::AgentPath::root(&adopted.agent),
     };
-    AgentState::adopted(path, &adopted)
+    let mut state = AgentState::adopted(path, &adopted)?;
+    let table = TableRef::of(&state.volumes)?;
+    let initial = Some(std::mem::take(&mut state.volumes));
+    Ok(Head {
+        state,
+        table,
+        initial,
+    })
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -64,6 +116,9 @@ struct Encoded {
     /// Inbox sequence of the input that started the turn.
     #[prost(uint64, optional, tag = "6")]
     turn_inbox: Option<u64>,
+    /// Version-one immutable workspace snapshot, never embedded table entries.
+    #[prost(bytes = "vec", tag = "7")]
+    workspace: Vec<u8>,
 }
 
 /// Retains the exact final checkpoint bytes for atomic publication.
@@ -76,43 +131,55 @@ pub(super) fn from_encoded(bytes: Vec<u8>) -> Result<Checkpoint, Error> {
 
 /// Artifact state as checkpoint bytes. Subscription cuts belong to Actors.
 pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
+    encode_head(state, &TableRef::of(&state.volumes)?)
+}
+
+fn encode_head(state: &AgentState, table: &TableRef) -> Result<Vec<u8>, Error> {
     state.validate_parent()?;
     let mut rest = state.clone();
     let turn = rest.turn.take();
     rest.parent = None;
+    rest.volumes.clear();
     Ok(Encoded {
         state: super::records::encode_payload(&rest)
             .map_err(|_| Error::Record("agent checkpoint does not encode"))?,
         turn_inbox: turn.as_ref().map(|turn| turn.inbox),
         turn: turn.map(|turn| turn.checkpoint),
+        workspace: crate::contract::canonical_json_bytes(table)
+            .map_err(|_| Error::Record("workspace snapshot reference does not encode"))?,
     }
     .encode_to_vec())
 }
 
 /// The artifact state checkpoint `bytes` holds.
-pub(crate) fn decode(bytes: &[u8]) -> Result<AgentState, Error> {
+pub(crate) fn decode(bytes: &[u8]) -> Result<Head, Error> {
     let malformed = || Error::Record("agent checkpoint is malformed");
     let encoded = Encoded::decode(bytes).map_err(|_| malformed())?;
     let mut state: AgentState =
         super::records::decode_payload(&encoded.state).map_err(|_| malformed())?;
-    if state.turn.is_some() || state.parent.is_some() {
+    if state.turn.is_some() || state.parent.is_some() || !state.volumes.is_empty() {
         return Err(malformed());
     }
-    super::records::check_volumes(state.volumes.iter())?;
+    let table: TableRef = serde_json::from_slice(&encoded.workspace).map_err(|_| malformed())?;
+    table.check().map_err(|_| malformed())?;
     state.parent = state.path.parent();
     state.turn = match (encoded.turn, encoded.turn_inbox) {
         (Some(checkpoint), Some(inbox)) => Some(super::Progress { inbox, checkpoint }),
         (None, None) => None,
         _ => return Err(malformed()),
     };
-    Ok(state)
+    Ok(Head {
+        state,
+        table,
+        initial: None,
+    })
 }
 
 /// Shared fuzz checks use the actual wire type to derive malformed inputs.
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn check_wire(bytes: &[u8]) {
     let Ok(state) = decode(bytes) else { return };
-    let canonical = encode(&state).expect("admitted checkpoint encodes");
+    let canonical = state.encode().expect("admitted checkpoint encodes");
     assert_eq!(decode(&canonical).expect("checkpoint decodes"), state);
     let encoded = Encoded::decode(canonical.as_slice()).expect("checkpoint wire writer");
     let refuses = |changed: Encoded, reason| {
@@ -129,10 +196,10 @@ pub(super) fn check_wire(bytes: &[u8]) {
     for field in 0..2 {
         let mut changed = rest.clone();
         let reason = if field == 0 {
-            changed.parent = state.parent.clone();
+            changed.parent = state.state.parent.clone();
             "checkpoint admitted an embedded parent"
         } else {
-            changed.turn = state.turn.clone();
+            changed.turn = state.state.turn.clone();
             "checkpoint admitted an embedded turn"
         };
         if changed != rest {
@@ -589,12 +656,24 @@ mod tests {
                     "{} > {MAX_CHECKPOINT_BYTES}",
                     bytes.len() + TAIL_SLACK
                 );
-                assert_eq!(decode(&bytes).expect("decodes"), state);
+                assert_eq!(
+                    decode(&bytes)
+                        .expect("decodes")
+                        .restore(state.volumes.clone())
+                        .expect("table identity"),
+                    state
+                );
                 // Retired tag 1 cannot override Actors' committed cut. Keep
                 // the same artifact decoder for checkpoints carrying it.
                 let mut with_retired_cursor = bytes;
                 with_retired_cursor.extend_from_slice(&[0x08, 0x01]);
-                assert_eq!(decode(&with_retired_cursor).expect("retired cursor"), state);
+                assert_eq!(
+                    decode(&with_retired_cursor)
+                        .expect("retired cursor")
+                        .restore(state.volumes.clone())
+                        .expect("table identity"),
+                    state
+                );
             }
         }
         // Wrapped in the actor state record with its one inbox subscription.

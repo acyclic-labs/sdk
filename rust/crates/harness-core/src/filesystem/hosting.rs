@@ -172,7 +172,7 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     spawns: Arc<FilesystemSpawnVolumes<P, O>>,
     clock: Arc<dyn Clock>,
     handler: Arc<dyn acyclic_actors::guest::Handler>,
-    composer: Arc<crate::agent::AgentComposer>,
+    composer: Arc<crate::agent::AgentComposer<P>>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
@@ -384,7 +384,11 @@ where
                 .with_spawn_volumes(spawns.clone())
                 .with_close(),
         );
-        let composer = Arc::new(crate::agent::AgentComposer::new(Some(spawns.clone()), None));
+        let composer = Arc::new(crate::agent::AgentComposer::new(
+            stream.clone(),
+            Some(spawns.clone()),
+            None,
+        ));
         let agents = AgentHost::hosting(
             stream,
             within.clone(),

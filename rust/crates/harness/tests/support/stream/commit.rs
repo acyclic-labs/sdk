@@ -30,7 +30,8 @@ impl<P: StreamProvider> LostSessionAck<P> {
         }
         self.io.writes.fetch_add(1, Ordering::SeqCst);
         for mutation in request.mutations() {
-            if let acyclic_stream::CommitMutation::Append { records, .. } = mutation {
+            if let acyclic_stream::CommitMutation::Append { path, records, .. } = mutation {
+                self.io.append_paths.lock().unwrap().push(path.clone());
                 self.measure_write(records);
             }
         }

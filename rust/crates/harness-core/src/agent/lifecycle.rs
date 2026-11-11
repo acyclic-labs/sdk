@@ -9,7 +9,7 @@
 //! holds nothing, credentials never enter the handler, and a retried step
 //! repeats only idempotent releases.
 
-use super::{AgentPath, AgentState, Error, SpawnVolumes, WorkspaceEntry};
+use super::{AgentPath, Error, SpawnVolumes};
 use acyclic_actors::{
     addressing::ActorReference,
     guest::{Checkpoint, Composer, Composition, GuestError, GuestFuture, Participant},
@@ -55,19 +55,25 @@ pub(super) fn close_participant(
 }
 
 /// The host composer of agent steps: spawned volumes and closing releases.
-pub struct AgentComposer {
+pub struct AgentComposer<P: ?Sized> {
+    provider: Arc<P>,
     volumes: Option<Arc<dyn SpawnVolumes>>,
     lifecycle: Option<Arc<dyn AgentLifecycle>>,
 }
 
-impl AgentComposer {
+impl<P: ?Sized> AgentComposer<P> {
     /// Composes spawns through `volumes` and closes through `lifecycle`.
     #[must_use]
     pub fn new(
+        provider: Arc<P>,
         volumes: Option<Arc<dyn SpawnVolumes>>,
         lifecycle: Option<Arc<dyn AgentLifecycle>>,
     ) -> Self {
-        Self { volumes, lifecycle }
+        Self {
+            provider,
+            volumes,
+            lifecycle,
+        }
     }
 }
 
@@ -75,7 +81,7 @@ fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
 }
 
-impl Composer for AgentComposer {
+impl<P: acyclic_stream::StreamProvider + ?Sized + 'static> Composer for AgentComposer<P> {
     fn open(
         &self,
         actor: &ActorReference,
@@ -95,20 +101,20 @@ impl Composer for AgentComposer {
         }
         // Re-derived from the committed checkpoints, never from the request:
         // the publishing agent is open before this step and closed after it.
-        let closed: AgentState = super::checkpoint_state(next).map_err(guest)?;
+        let closed = super::checkpoint_head(next).map_err(guest)?;
         let request: CloseRequest = serde_json::from_slice(&participant.plan).map_err(guest)?;
         if crate::contract::canonical_json_bytes(&request).map_err(guest)?
             != participant.plan.as_ref()
         {
             return Err(guest("close request is not canonical"));
         }
-        let original = super::checkpoint::committed_state(previous, delivered).map_err(guest)?;
-        if !closed.closed
-            || original.closed
-            || original.path != closed.path
-            || original.volumes != closed.volumes
-            || closed.path.id().as_str() != actor.id()
-            || request.agent != closed.path
+        let original = super::checkpoint::committed_head(previous, delivered).map_err(guest)?;
+        if !closed.state.closed
+            || original.state.closed
+            || original.state.path != closed.state.path
+            || original.table != closed.table
+            || closed.state.path.id().as_str() != actor.id()
+            || request.agent != closed.state.path
         {
             return Err(guest("close request is not this agent's closing step"));
         }
@@ -131,25 +137,27 @@ impl Composer for AgentComposer {
             None => None,
         };
         Ok(Box::new(Closing {
+            provider: self.provider.clone(),
             lifecycle: self.lifecycle.clone(),
             owner: self.volumes.clone(),
-            bindings: original.volumes,
-            agent: closed.path,
+            original,
+            agent: closed.state.path,
             volumes,
         }))
     }
 }
 
 /// Releases one closing agent's resources before its step first commits.
-struct Closing {
+struct Closing<P: ?Sized> {
+    provider: Arc<P>,
     lifecycle: Option<Arc<dyn AgentLifecycle>>,
     owner: Option<Arc<dyn SpawnVolumes>>,
-    bindings: Vec<WorkspaceEntry>,
+    original: super::checkpoint::Head,
     agent: AgentPath,
     volumes: Option<Box<dyn Composition>>,
 }
 
-impl Composition for Closing {
+impl<P: acyclic_stream::StreamProvider + ?Sized + 'static> Composition for Closing<P> {
     fn revalidate(&self, conflicts: &[acyclic_stream::CommitConflict]) -> bool {
         self.volumes
             .as_ref()
@@ -162,8 +170,14 @@ impl Composition for Closing {
                 None => request,
             };
             if let Some(owner) = &self.owner {
+                let original = self
+                    .original
+                    .clone()
+                    .load(self.provider.as_ref())
+                    .await
+                    .map_err(guest)?;
                 owner
-                    .release(&self.agent, &self.bindings)
+                    .release(&self.agent, &original.volumes)
                     .await
                     .map_err(guest)?;
             }

@@ -358,29 +358,27 @@ where
         participant: &Participant,
     ) -> Result<Box<dyn Composition>, GuestError> {
         let requested = requested(participant)?;
-        let next = crate::agent::checkpoint_state(next).map_err(guest)?;
-        let parent = crate::agent::committed_state(previous, delivered).map_err(guest)?;
-        if parent.path != next.path || parent.volumes != next.volumes {
+        let next = crate::agent::checkpoint_head(next).map_err(guest)?;
+        let parent = crate::agent::committed_head(previous, delivered).map_err(guest)?;
+        if parent.state.path != next.state.path || parent.table != next.table {
             return Err(guest(
                 "spawn parent bindings differ from its committed state",
             ));
         }
-        if parent.path.id().as_str() != actor.id() {
+        if parent.state.path.id().as_str() != actor.id() {
             return Err(guest("spawn parent is not the publishing actor"));
         }
-        let (_, planned) = children(&parent, &requested.children).map_err(guest)?;
-        let history = next.conversation_tail > parent.conversation_tail;
-        if requested.history != history || (planned.is_empty() && !history) {
+        let history = next.state.conversation_tail > parent.state.conversation_tail;
+        if requested.history != history {
             return Err(guest("spawn volume request creates nothing"));
         }
-        let parent_path = parent.path.clone();
-        Ok(Box::new(SpawnFork {
+        Ok(Box::new(StoredSpawn {
             host: Arc::clone(&self.host),
             cuts: self.cuts.clone(),
-            planned,
-            history: history.then_some((parent, next)),
-            parent: parent_path,
-            commit: None,
+            parent,
+            next,
+            requested,
+            fork: None,
         }))
     }
 }
@@ -409,6 +407,73 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
             }
             .compose(request)
             .await
+        })
+    }
+}
+
+/// The table identity is checked at admission; its contents are read only
+/// when the composition needs the original volume bindings for sealing.
+struct StoredSpawn<P: ?Sized + 'static, O: 'static> {
+    host: Arc<Host<P, O>>,
+    cuts: Option<Arc<dyn VolumeResources>>,
+    parent: crate::agent::checkpoint::Head,
+    next: crate::agent::checkpoint::Head,
+    requested: VolumeRequest,
+    fork: Option<SpawnFork<P, O>>,
+}
+
+impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Composition
+    for StoredSpawn<P, O>
+{
+    fn revalidate(&self, conflicts: &[acyclic_stream::CommitConflict]) -> bool {
+        self.fork
+            .as_ref()
+            .is_some_and(|fork| fork.revalidate(conflicts))
+    }
+    fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest> {
+        Box::pin(async move {
+            if self.fork.is_none() {
+                let provider = self.host.filesystem.stream_provider();
+                let parent = self
+                    .parent
+                    .clone()
+                    .load(provider.as_ref())
+                    .await
+                    .map_err(guest)?;
+                let next = self
+                    .next
+                    .clone()
+                    .restore(parent.volumes.clone())
+                    .map_err(guest)?;
+                let (_, planned) = children(&parent, &self.requested.children).map_err(guest)?;
+                if planned.is_empty() && !self.requested.history {
+                    return Err(guest("spawn volume request creates nothing"));
+                }
+                self.fork = Some(SpawnFork {
+                    host: self.host.clone(),
+                    cuts: self.cuts.clone(),
+                    planned,
+                    parent: parent.path.clone(),
+                    history: self.requested.history.then_some((parent, next)),
+                    commit: None,
+                });
+            }
+            self.fork
+                .as_mut()
+                .ok_or_else(|| guest("spawn plan is missing"))?
+                .seal(request)
+                .await
+        })
+    }
+    fn settle<'a>(
+        self: Box<Self>,
+        outcome: Result<&'a CommitOutcome, &'a StreamError>,
+    ) -> GuestFuture<'a, ()> {
+        Box::pin(async move {
+            match self.fork {
+                Some(fork) => Box::new(fork).settle(outcome).await,
+                None => Ok(()),
+            }
         })
     }
 }

@@ -258,7 +258,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             .ok_or(Error::Record("agent inbox subscription differs"))?
             .cursor;
         let mut observed = if let Some(checkpoint) = state.checkpoint() {
-            checkpoint_state(checkpoint)?
+            checkpoint_state(self.store.provider().as_ref(), checkpoint).await?
         } else {
             // A new child's inherited inbox starts with its ancestors' records.
             // Its own adoption is at the cursor installed by the spawn commit.
@@ -335,7 +335,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         cancellation: acyclic_actors::guest::CancellationToken,
         failure: Option<&str>,
     ) -> Result<Transition, Error> {
-        let saved = checkpoint.map(checkpoint_state).transpose()?;
+        let saved = match checkpoint {
+            Some(checkpoint) => {
+                Some(checkpoint_state(self.agents.store.provider().as_ref(), checkpoint).await?)
+            }
+            None => None,
+        };
         let cut = delivery
             .subscriptions
             .get(INBOX)
@@ -435,7 +440,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .await?
         };
         prepared
-            .persist_children(Arc::clone(self.agents.store.provider()))
+            .persist_indexes(Arc::clone(self.agents.store.provider()), checkpoint)
             .await?;
         let participant = match &self.volumes {
             Some(volumes) => {

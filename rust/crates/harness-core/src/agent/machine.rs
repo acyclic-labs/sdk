@@ -662,20 +662,32 @@ pub(super) struct PreparedStep {
 }
 
 impl PreparedStep {
-    pub(super) async fn persist_children<P: acyclic_stream::StreamProvider + ?Sized>(
+    pub(super) async fn persist_indexes<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
         provider: std::sync::Arc<P>,
+        previous: Option<&acyclic_actors::guest::Checkpoint>,
     ) -> Result<(), Error> {
         self.step.state.open_children.bind(provider.clone());
         self.step.state.archive_pending.bind(provider.clone());
         self.step.state.topology_refusals.bind(provider.clone());
         self.step.state.spawned_children.bind(provider.clone());
-        self.step.state.awaiting.bind(provider);
+        self.step.state.awaiting.bind(provider.clone());
         self.step.state.open_children.persist().await?;
         self.step.state.archive_pending.persist().await?;
         self.step.state.topology_refusals.persist().await?;
         self.step.state.spawned_children.persist().await?;
-        self.step.state.awaiting.persist().await
+        self.step.state.awaiting.persist().await?;
+        let table = checkpoint::checkpoint_head(&self.checkpoint)?.table;
+        if previous
+            .map(checkpoint::checkpoint_head)
+            .transpose()?
+            .is_none_or(|head| head.table != table)
+        {
+            table
+                .persist(provider.as_ref(), &self.step.state.volumes)
+                .await?;
+        }
+        Ok(())
     }
 
     pub(super) fn step(&self) -> &Step {

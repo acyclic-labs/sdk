@@ -6,7 +6,7 @@
 //! and commits each step (checkpoint, conversation, status and every outgoing
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
-mod checkpoint;
+pub(crate) mod checkpoint;
 mod children;
 pub use children::Children;
 mod continuation;
@@ -76,6 +76,7 @@ pub use targets::{
     TargetRecord, TargetRefusal, TargetState, USER_PREFIX,
 };
 mod word;
+pub(crate) mod workspace_checkpoint;
 mod workspaces;
 pub use workspaces::{
     EntryId, WorkspaceChanged, WorkspaceEntry, WorkspaceFilter, WorkspaceInherit, WorkspaceKind,
@@ -85,7 +86,7 @@ mod volumes;
 pub use volumes::SpawnVolumes;
 
 pub use checkpoint::MAX_CHECKPOINT_BYTES;
-pub(crate) use checkpoint::{checkpoint_state, committed_state};
+pub(crate) use checkpoint::{checkpoint_head, checkpoint_state, committed_head};
 pub use commit::{
     Spawn, Submitted, archive, create_root, create_root_with_peer, inbox_tail, intent_key, send,
     set_peer_membership, spawn, submit,

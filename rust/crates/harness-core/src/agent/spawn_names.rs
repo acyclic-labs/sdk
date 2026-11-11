@@ -1,7 +1,7 @@
 //! Spawn names resolve against immutable, terminal setup failures. No index or
 //! generation counter is persisted: the recorded intent is the replay identity.
 
-use super::{AgentPath, Error, IntentId, TurnEffect, checkpoint_state, handler::Agents};
+use super::{AgentPath, Error, IntentId, TurnEffect, handler::Agents};
 use std::sync::Arc;
 
 pub(crate) const SPAWN: &str = "spawn:";
@@ -89,7 +89,7 @@ pub async fn resolve_spawn_name<P: crate::store::JournalProvider + ?Sized + 'sta
         };
         let released = match state.checkpoint() {
             Some(checkpoint) => {
-                let state = checkpoint_state(checkpoint)?;
+                let state = super::checkpoint_head(checkpoint)?.state;
                 if state.path != child || state.parent.as_ref() != Some(parent) {
                     return Err(Error::Record("spawn state binding differs"));
                 }

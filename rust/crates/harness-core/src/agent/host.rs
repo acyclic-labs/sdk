@@ -124,7 +124,11 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         }
         let composer: Option<Arc<dyn Composer>> = match (&volumes, &lifecycle) {
             (None, None) => None,
-            _ => Some(Arc::new(AgentComposer::new(volumes, lifecycle.clone()))),
+            _ => Some(Arc::new(AgentComposer::new(
+                provider.clone(),
+                volumes,
+                lifecycle.clone(),
+            ))),
         };
         let host = Self::hosting(provider, within, Arc::new(handler), clock, composer)?;
         Ok(match lifecycle {
@@ -306,7 +310,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             .filter(|subscription| subscription.path == inbox)
             .ok_or(Error::Record("agent inbox subscription differs"))?;
         let (settled, closed, open_children) = if let Some(checkpoint) = state.checkpoint() {
-            let observed = super::checkpoint_state(checkpoint)?;
+            let observed = super::checkpoint_head(checkpoint)?.state;
             if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
                 return Err(Error::Record("agent state binding differs"));
             }
@@ -379,7 +383,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 .state()
                 .ok_or(Error::Stream(StreamError::NotFound))?;
             if let Some(checkpoint) = state.checkpoint() {
-                let observed = super::checkpoint_state(checkpoint)?;
+                let observed = super::checkpoint_head(checkpoint)?.state;
                 if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
                     return Err(Error::Record("agent state binding differs"));
                 }
@@ -470,7 +474,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                     .await;
             }
             if let Some(checkpoint) = state.checkpoint()
-                && super::checkpoint_state(checkpoint)?.closed
+                && super::checkpoint_head(checkpoint)?.state.closed
                 && sequence
                     >= self
                         .provider
@@ -533,9 +537,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             Err(StreamError::NotFound) => {}
             Err(error) => return Err(Error::Stream(error)),
         }
-        let mut state = super::checkpoint_state(checkpoint.ok_or(Error::Record(
+        let mut state = super::checkpoint_head(checkpoint.ok_or(Error::Record(
             "the step consuming the spawn has no checkpoint",
-        ))?)?;
+        ))?)?
+        .state;
         state.topology_refusals.bind(Arc::clone(&self.provider));
         let topology_refusal = state.topology_refusals.contains(&child).await?;
         if !state.closed && !topology_refusal {

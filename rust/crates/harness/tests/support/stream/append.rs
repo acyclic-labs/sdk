@@ -7,6 +7,11 @@ impl<P: StreamProvider> LostSessionAck<P> {
         request: &acyclic_stream::AppendRequest,
     ) -> Result<u8, StreamError> {
         self.io.writes.fetch_add(1, Ordering::SeqCst);
+        self.io
+            .append_paths
+            .lock()
+            .unwrap()
+            .push(request.path.clone());
         self.measure_write(&request.records);
         if self.forbid_writes.load(Ordering::SeqCst) {
             self.observation_writes.fetch_add(1, Ordering::SeqCst);
