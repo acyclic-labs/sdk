@@ -22,6 +22,10 @@ pub(super) async fn store(
             writer.write(bytes.as_slice()).await?;
             Ok(Field::Content(writer.finish().await?))
         }
+        Field::Inline(bytes) => {
+            let (bytes, _) = bytes.into_backed(inline);
+            Ok(Field::Inline(bytes))
+        }
         other => Ok(other),
     }
 }
@@ -75,6 +79,11 @@ pub(super) struct Key {
 }
 
 impl Key {
+    pub(super) async fn stored(storage: &impl Storage, field: Field) -> Result<Self, StreamError> {
+        let mut key = Self::new(storage, field).await?;
+        key.field = store(storage, key.field, INLINE_KEY).await?;
+        Ok(key)
+    }
     pub(super) async fn new(storage: &impl Storage, field: Field) -> Result<Self, StreamError> {
         let mut prefix = [0; PREFIX];
         let count = length(&field).min(PREFIX as u64) as usize;

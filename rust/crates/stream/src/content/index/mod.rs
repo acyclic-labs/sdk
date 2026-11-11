@@ -12,9 +12,11 @@ mod checkpoint;
 mod codec;
 mod cursor;
 mod key;
+mod sort;
 pub use build::Builder;
 pub use cursor::Cursor;
 use key::Key;
+pub use sort::Sorter;
 
 const MAGIC: &[u8] = b"acyclic-ordered-index-v1\0";
 const HEADER: usize = MAGIC.len() + 5;

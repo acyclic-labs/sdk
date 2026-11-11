@@ -263,6 +263,125 @@ async fn ordered_index_compares_large_keys_by_bytes_and_retains_references()
         duplicate.finish().await,
         Err(StreamError::Unavailable)
     ));
+    struct Backing {
+        bytes: Vec<u8>,
+        retired: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl AsRef<[u8]> for Backing {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+    impl Drop for Backing {
+        fn drop(&mut self) {
+            self.retired.store(true, Ordering::Release);
+        }
+    }
+    let retired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let slice = OwnedBytes::from(bytes::Bytes::from_owner(Backing {
+        bytes: vec![9; 1024 * 1024],
+        retired: std::sync::Arc::clone(&retired),
+    }))
+    .slice(..8);
+    let mut bounded = Builder::new(&storage);
+    bounded.push(bytes("small"), Field::Inline(slice)).await?;
+    assert!(
+        retired.load(Ordering::Acquire),
+        "inline index field retained an oversized backing"
+    );
+    let bounded = bounded.finish().await?;
+    assert_eq!(
+        bounded.get(&storage, bytes("small")).await?,
+        Some(bytes([9; 8]))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unordered_index_runs_match_the_ordered_model_and_refuse_global_duplicates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Disk::open(directory.path());
+    let mut sorter = Sorter::new(&storage);
+    let mut expected = std::collections::BTreeMap::new();
+    for source in 0..4097_u64 {
+        let position = source * 2053 % 4097;
+        let key = format!("descriptors/{position:08}");
+        let value = position.to_le_bytes();
+        expected.insert(key.clone(), value);
+        sorter.push(bytes(&key), bytes(value)).await?;
+    }
+    let index = sorter.finish().await?;
+    assert_eq!(index.len(), expected.len() as u64);
+    let mut cursor = index.scan(&storage, None).await?;
+    for (key, value) in expected {
+        assert_eq!(cursor.next().await?, Some((bytes(key), bytes(value))));
+    }
+    assert!(cursor.next().await?.is_none());
+    let mut duplicate = Sorter::new(&storage);
+    for position in 0..4097_u64 {
+        duplicate
+            .push(
+                bytes(format!("descriptors/{position:08}")),
+                bytes(position.to_le_bytes()),
+            )
+            .await?;
+    }
+    let result = match duplicate
+        .push(bytes("descriptors/00000000"), bytes("changed"))
+        .await
+    {
+        Err(error) => Err(error),
+        Ok(()) => duplicate.finish().await.map(|_| ()),
+    };
+    assert_eq!(
+        result,
+        Err(StreamError::InvalidArgument),
+        "ordered index sorter accepted a duplicate across runs"
+    );
+    let mut within = Sorter::new(&storage);
+    within.push(bytes("same"), bytes("first")).await?;
+    assert_eq!(
+        within.push(bytes("same"), bytes("second")).await,
+        Err(StreamError::InvalidArgument)
+    );
+    assert!(matches!(
+        within.finish().await,
+        Err(StreamError::Unavailable)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_unordered_index_input_cannot_resume_or_seal_a_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let (written, event) = tokio::sync::oneshot::channel();
+    let (_resume, wait) = tokio::sync::oneshot::channel();
+    let storage = Delayed {
+        disk: Disk::open(directory.path()),
+        put: std::sync::Mutex::new(Some((written, wait))),
+        get: std::sync::Mutex::new(None),
+    };
+    let mut sorter = Sorter::new(&storage);
+    sorter.push(bytes("a"), bytes("accepted input")).await?;
+    {
+        let writing = sorter.push(bytes("b"), bytes(vec![1; tree::PAGE_BYTES]));
+        tokio::pin!(writing);
+        tokio::select! {
+            result = &mut writing => return Err(format!("input completed before its stored-page event: {result:?}").into()),
+            result = event => result?,
+        }
+    }
+    assert_eq!(
+        sorter.push(bytes("c"), bytes("replacement")).await,
+        Err(StreamError::Unavailable),
+        "cancelled unordered-index sorter accepted replacement input"
+    );
+    assert!(matches!(
+        sorter.finish().await,
+        Err(StreamError::Unavailable)
+    ));
     Ok(())
 }
 

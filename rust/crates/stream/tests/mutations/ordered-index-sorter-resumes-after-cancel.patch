@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/content/index/sort.rs b/rust/crates/stream/src/content/index/sort.rs
+--- a/rust/crates/stream/src/content/index/sort.rs
++++ b/rust/crates/stream/src/content/index/sort.rs
+@@ -26,8 +26,4 @@ impl<'a, S: Storage> Sorter<'a, S> {
+     pub async fn push(&mut self, key: Field, value: Field) -> Result<(), StreamError> {
+-        if self.interrupted {
+-            return Err(StreamError::Unavailable);
+-        }
+-        self.interrupted = true;
+         let result = self.push_inner(key, value).await;
+         if result.is_ok() {
+             self.interrupted = false;

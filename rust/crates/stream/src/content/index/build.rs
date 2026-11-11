@@ -181,21 +181,24 @@ impl<'a, S: Storage> Builder<'a, S> {
         result
     }
     async fn push_inner(&mut self, key: Field, value: Field) -> Result<(), StreamError> {
-        let field = key::store(self.storage, key, key::INLINE_KEY).await?;
-        let key = Key::new(self.storage, field).await?;
+        let key = Key::stored(self.storage, key).await?;
         if let Some(last) = &self.last
             && last.compare(self.storage, &key).await? != Ordering::Less
         {
             return Err(StreamError::InvalidArgument);
         }
         let value = key::store(self.storage, value, INLINE_FIELD_BYTES).await?;
+        self.append(Entry { key, value }).await
+    }
+    // Internal producers establish strict ordering and field normalization;
+    // they share this writer without repeating large-key comparisons.
+    pub(super) async fn append(&mut self, entry: Entry) -> Result<(), StreamError> {
         let count = self.count.checked_add(1).ok_or(StreamError::Capacity)?;
-        let last = key.clone();
+        let last = entry.key.clone();
         let level = self.level(0)?;
         let Page::Leaf(entries) = &mut level.page else {
             return Err(StreamError::InvalidArgument);
         };
-        let entry = Entry { key, value };
         entries.try_reserve(1).map_err(|_| StreamError::Capacity)?;
         level.bytes += codec::entry_length(&entry);
         entries.push(entry);

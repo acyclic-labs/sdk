@@ -753,3 +753,53 @@ shared machinery edit is involved. The wrapper forwards the compiler arguments
 unchanged. Check its exact bytes and source SHA in the log before compile and
 focused controls. Source: [Cargo environment variables](https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-reads).
 The native volume had 16 GiB available before this change.
+
+### Bounded external ordering for canonical descriptors (before implementation)
+
+Add an unordered Sorter over the same index writer. It normalizes fields, keeps
+one physical-page-sized sorted buffer, and uses Search for insertion. A full
+buffer becomes an immutable run. Binary carry merges runs through the existing
+index cursor and writer, retaining at most u64::BITS run roots plus bounded
+cursor pages. No request-sized descriptor vector or caller chunking is needed.
+Equal logical keys refuse both within a buffer and across runs; interruption
+cannot seal a successful prefix. Returned runs remain private stage data.
+
+The index writer exposes one internal append for already ordered, normalized
+entries; public ordered input keeps its validation. Merging uses that same append
+and codec, not a second index format. Canonicalization will sort descriptor keys;
+record payload tokens and their caller ordinals remain in the original sealed
+body and must not be reordered by this utility.
+
+Inline fields must also have bounded retained backing, not just bounded visible
+length. Reuse OwnedBytes::into_backed when normalizing small fields so a tiny
+slice cannot pin an arbitrary allocation in a pending page. Large visible fields
+still spill rather than reject. Original-work admission integration remains due.
+Controls compare multi-run output with an independent ordered map, refuse a
+cross-run duplicate, and prove a large original slice owner retires while a small
+normalized field is buffered. A merge duplicate-guard mutation must fail.
+This is canonicalization groundwork; no Stream publication is added here.
+
+At exact c278ae9d6f6e7a81e36077e33b96e397bacafc2b, native Stream/collections
+all-target checking and test-binary compilation passed with the verified workspace
+wrapper. The binaries use separate workspace artifact hashes. Both collections
+controls passed in 0.01s and all 20 Stream controls passed in 0.90s, including
+index traversal/checkpoint recovery and staged path validation. Its ten mutations
+are still pending at this checkpoint; no negative result is inferred early.
+
+Sorter is now implemented over the same internal index append, page codec and
+cursor. The sorted-input fast path appends to the bounded buffer; arbitrary input
+uses Search. A deterministic permutation of 4097 descriptors is compared with an
+independent BTreeMap, with duplicate checks inside a buffer and across completed
+runs. A separate real-file gate covers cancelled unordered input. Two mutations
+remove the cross-run duplicate refusal and the sorter interruption guard.
+
+Working-space argument: normalized inline keys/values retain at most 64/4096
+bytes using the existing bounded-backing helper; content fields retain fixed
+references. Each encoded entry is at least 50 and at most 4210 bytes. Successful
+push either keeps a buffer below half a physical leaf or flushes it; an in-flight
+push adds at most one bounded entry. Run carry stores at most 64 index handles.
+Merging retains two bounded cursor spines and one bounded output writer. No bound
+scales with total input count. Original-work admission remains an integration
+obligation, and this is not the production atomicity proof. The large-key control
+also witnesses release of a 1MiB original owner while its 8-byte slice is buffered.
+The new sorting/retention source needs its own remote check and controls.
