@@ -7,33 +7,12 @@ async fn probe_limits_reject_oversized_dependencies_before_backend_work()
     let probe = AuthenticatedGenerationProbe::new(
         &store,
         ProbeLimits {
-            maximum_content_payload_bytes: 8,
             maximum_directory_entries: 2,
             ..ProbeLimits::default()
         },
     )?;
     let generation = GenerationId::new(Digest::from_bytes([1; 32]));
     let file_id = FileId::from_bytes([2; 16]);
-    let content = probe
-        .probe_async(
-            generation,
-            &DependencyRegion::ContentRange {
-                file_id,
-                offset: 0,
-                length: 9,
-            },
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .err()
-        .ok_or("oversized content dependency unexpectedly succeeded")?;
-    assert!(matches!(
-        content.error,
-        AuthenticatedProbeError::ContentRangeTooLarge
-    ));
-    assert_eq!(*content.work, WorkCounters::default());
-
     let directory = probe
         .probe_async(
             generation,
@@ -131,10 +110,6 @@ fn every_zero_probe_bound_is_rejected_before_cache_or_backend_access() {
         },
         ProbeLimits {
             maximum_extent_spans: 0,
-            ..defaults
-        },
-        ProbeLimits {
-            maximum_content_payload_bytes: 0,
             ..defaults
         },
         ProbeLimits {

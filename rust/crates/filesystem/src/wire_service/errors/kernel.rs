@@ -151,7 +151,7 @@ project!(AuthenticatedProbeError, {
     E::Cancelled => Code::Cancelled,
     E::InvalidLimits | E::ZeroBatchLimit | E::RecordIdentityMismatch => Code::InvalidArgument,
     E::TooManyRegions { .. } | E::AllocationFailed | E::EncodedAllocationFailed(_)
-    | E::ContentRangeTooLarge | E::DirectoryPageTooLarge | E::Work(_) => Code::ResourceExhausted,
+    | E::DirectoryPageTooLarge | E::Work(_) => Code::ResourceExhausted,
     E::CachePoisoned => Code::Internal,
     E::InvalidDependency(error) => filesystem_code(&FsError::Dependency(*error)),
     E::Storage(error) => object_code(error),

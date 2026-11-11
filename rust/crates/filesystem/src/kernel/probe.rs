@@ -22,24 +22,11 @@ const CONTENT_RANGE_DOMAIN: &[u8] = b"acyclic-fs-dependency-content-range-v1\0";
 /// Computes canonical layout-independent evidence for one non-empty logical content range already present in memory.
 pub fn capture_content_range_bytes(
     bytes: &[u8],
-    maximum_bytes: u64,
     budget: WorkBudget,
 ) -> Result<ProbeReceipt, ProbeFailure> {
-    if maximum_bytes == 0 {
-        return Err(failed(
-            AuthenticatedProbeError::InvalidLimits,
-            WorkCounters::default(),
-        ));
-    }
     if bytes.is_empty() {
         return Err(failed(
             AuthenticatedProbeError::InvalidDependency(DependencyError::EmptyContentRange),
-            WorkCounters::default(),
-        ));
-    }
-    if usize_to_u64(bytes.len()) > maximum_bytes {
-        return Err(failed(
-            AuthenticatedProbeError::ContentRangeTooLarge,
             WorkCounters::default(),
         ));
     }
@@ -64,10 +51,8 @@ pub struct ProbeLimits {
     pub maximum_cached_generations: u32,
     /// Maximum retained `(generation, file)` summaries.
     pub maximum_cached_records: u32,
-    /// Maximum sparse spans produced for one content dependency.
+    /// Maximum sparse spans retained in one streamed content page.
     pub maximum_extent_spans: u32,
-    /// Maximum semantic file bytes in one observed content range.
-    pub maximum_content_payload_bytes: u64,
     /// Maximum entries in one observed directory page.
     pub maximum_directory_entries: u32,
 }
@@ -79,7 +64,6 @@ impl Default for ProbeLimits {
             maximum_cached_generations: 64,
             maximum_cached_records: 4_096,
             maximum_extent_spans: 4_096,
-            maximum_content_payload_bytes: 16 * 1024 * 1024,
             maximum_directory_entries: 1_024,
         }
     }
@@ -91,7 +75,6 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
         if limits.maximum_cached_generations == 0
             || limits.maximum_cached_records == 0
             || limits.maximum_extent_spans == 0
-            || limits.maximum_content_payload_bytes == 0
             || limits.maximum_directory_entries == 0
             || !limits.decode.page_limits_valid(1)
         {
@@ -153,11 +136,6 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
     ) -> Result<FileId, AuthenticatedProbeError> {
         region.validate()?;
         match region {
-            DependencyRegion::ContentRange { length, .. }
-                if *length > self.limits.maximum_content_payload_bytes =>
-            {
-                return Err(AuthenticatedProbeError::ContentRangeTooLarge);
-            }
             DependencyRegion::DirectoryRange {
                 maximum_entries, ..
             } if *maximum_entries > self.limits.maximum_directory_entries => {
@@ -1101,7 +1079,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "Sparse content capture retains its admitted spans until the digest is complete."
+        reason = "Sparse content capture retires each bounded page before admitting its successor."
     )]
     async fn content_state_with_accounting(
         &self,
@@ -1138,97 +1116,121 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                 custody,
             );
         };
+        let end = offset
+            .checked_add(length)
+            .filter(|end| *end <= logical_bytes)
+            .ok_or(AuthenticatedProbeError::Extent(
+                ExtentReadError::InvalidRange,
+            ))?;
         accounting.admit(content_hash_work(length)?)?;
-        let (plan, allocation) = super::range::plan_extent_range_with_accounting(
-            self.store,
-            super::ExtentRangeRequest {
-                root: extents,
-                file_size: logical_bytes,
-                range: ByteRange { offset, length },
-                maximum_spans: self.limits.maximum_extent_spans,
-                limits: self.limits.decode,
-                budget: WorkBudget::UNCHARGED,
-            },
+        let mut hasher = blake3::Hasher::new();
+        hash_probe_bytes(
+            &mut hasher,
+            CONTENT_RANGE_DOMAIN,
             accounting,
             cancellation,
-        )
-        .await?;
-        let retained = plan.retained_allocation_bytes;
-        let plan = Owned::new(plan, allocation, retained);
-        let result = async {
-            let mut hasher = blake3::Hasher::new();
-            hash_probe_bytes(
-                &mut hasher,
-                CONTENT_RANGE_DOMAIN,
+            custody,
+        )?;
+        hash_probe_bytes(
+            &mut hasher,
+            &length.to_le_bytes(),
+            accounting,
+            cancellation,
+            custody,
+        )?;
+        let mut next = offset;
+        while next < end {
+            let (plan, allocation) = super::range::plan_extent_prefix_with_accounting(
+                self.store,
+                super::ExtentRangeRequest {
+                    root: extents,
+                    file_size: logical_bytes,
+                    range: ByteRange {
+                        offset: next,
+                        length: (end - next).min(1024 * 1024),
+                    },
+                    maximum_spans: self.limits.maximum_extent_spans,
+                    limits: self.limits.decode,
+                    budget: WorkBudget::UNCHARGED,
+                },
                 accounting,
                 cancellation,
-                custody,
-            )?;
-            hash_probe_bytes(
-                &mut hasher,
-                &length.to_le_bytes(),
-                accounting,
-                cancellation,
-                custody,
-            )?;
-            for span in &plan.value.spans {
-                cancellation.check()?;
-                match span.kind {
-                    ExtentKind::Hole | ExtentKind::AllocatedZero => {
-                        let mut remaining = span.length;
-                        while remaining != 0 {
-                            let count =
-                                usize::try_from(remaining.min(usize_to_u64(ZERO_HASH_BLOCK.len())))
-                                    .map_err(|_| WorkError::Overflow)?;
-                            let zeroes = ZERO_HASH_BLOCK.get(..count).ok_or(WorkError::Overflow)?;
-                            hash_probe_bytes(
+            )
+            .await?;
+            let retained = plan.retained_allocation_bytes;
+            let plan = Owned::new(plan, allocation, retained);
+            let result = async {
+                for span in &plan.value.spans {
+                    cancellation.check()?;
+                    match span.kind {
+                        ExtentKind::Hole | ExtentKind::AllocatedZero => {
+                            let mut remaining = span.length;
+                            while remaining != 0 {
+                                let count = usize::try_from(
+                                    remaining.min(usize_to_u64(ZERO_HASH_BLOCK.len())),
+                                )
+                                .map_err(|_| WorkError::Overflow)?;
+                                let zeroes =
+                                    ZERO_HASH_BLOCK.get(..count).ok_or(WorkError::Overflow)?;
+                                hash_probe_bytes(
+                                    &mut hasher,
+                                    zeroes,
+                                    accounting,
+                                    cancellation,
+                                    custody,
+                                )?;
+                                remaining -= usize_to_u64(count);
+                            }
+                        }
+                        ExtentKind::Content {
+                            object,
+                            object_offset,
+                        } => {
+                            let read = super::blob::read_blob_range_with_accounting(
+                                self.store,
+                                object,
+                                ByteRange {
+                                    offset: object_offset,
+                                    length: span.length,
+                                },
+                                self.limits.decode,
+                                accounting,
+                                cancellation,
+                                true,
+                            )
+                            .await?;
+                            let result = hash_probe_bytes(
                                 &mut hasher,
-                                zeroes,
+                                &read.bytes,
                                 accounting,
                                 cancellation,
                                 custody,
-                            )?;
-                            remaining -= usize_to_u64(count);
+                            );
+                            let retained = read.logical_owned_bytes;
+                            drop(read);
+                            super::file_read::release_standalone_read_bytes(retained, accounting)?;
+                            result?;
                         }
                     }
-                    ExtentKind::Content {
-                        object,
-                        object_offset,
-                    } => {
-                        let read = super::blob::read_blob_range_with_accounting(
-                            self.store,
-                            object,
-                            ByteRange {
-                                offset: object_offset,
-                                length: span.length,
-                            },
-                            self.limits.decode,
-                            accounting,
-                            cancellation,
-                            true,
-                        )
-                        .await?;
-                        let result = hash_probe_bytes(
-                            &mut hasher,
-                            &read.bytes,
-                            accounting,
-                            cancellation,
-                            custody,
-                        );
-                        let retained = read.logical_owned_bytes;
-                        drop(read);
-                        super::file_read::release_standalone_read_bytes(retained, accounting)?;
-                        result?;
-                    }
                 }
+                plan.value
+                    .spans
+                    .last()
+                    .and_then(|span| span.offset.checked_add(span.length))
+                    .filter(|offset| *offset > next)
+                    .ok_or_else(|| {
+                        crate::FsError::from(AuthenticatedProbeError::Extent(
+                            ExtentReadError::IncompleteCoverage,
+                        ))
+                    })
             }
-            Ok(DependencyState::Present(Digest::from_bytes(
-                *hasher.finalize().as_bytes(),
-            )))
+            .await;
+            plan.retire(accounting)?;
+            next = result?;
         }
-        .await;
-        plan.retire(accounting)?;
-        result
+        Ok(DependencyState::Present(Digest::from_bytes(
+            *hasher.finalize().as_bytes(),
+        )))
     }
 }
 
@@ -1623,9 +1625,6 @@ pub enum AuthenticatedProbeError {
     /// A directly supplied record does not own the requested dependency region.
     #[error("authenticated record identity does not match dependency region")]
     RecordIdentityMismatch,
-    /// Content dependency exceeds the configured byte bound.
-    #[error("authenticated content dependency exceeds its byte bound")]
-    ContentRangeTooLarge,
     /// Directory dependency exceeds the configured entry bound.
     #[error("authenticated directory dependency exceeds its entry bound")]
     DirectoryPageTooLarge,

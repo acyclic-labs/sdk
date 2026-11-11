@@ -1950,7 +1950,6 @@ pub fn dependency_vectors_json() -> Result<String, Box<dyn std::error::Error>> {
     for (name, bytes) in cases {
         let receipt = acyclic_fs::kernel::capture_content_range_bytes(
             &bytes,
-            u64::try_from(bytes.len())?,
             acyclic_fs::WorkBudget::UNBOUNDED,
         )?;
         let acyclic_fs::kernel::DependencyState::Present(digest) = receipt.value else {

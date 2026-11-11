@@ -12,7 +12,7 @@ async fn content_digest_is_layout_independent_and_hash_budget_is_exact()
         bytes_hashed: hash_bytes,
         ..WorkBudget::UNBOUNDED
     };
-    let inline = capture_content_range_bytes(&[0; 8], 8, exact_budget)?;
+    let inline = capture_content_range_bytes(&[0; 8], exact_budget)?;
     let extents = crate::test_support::put_extent_page(
         &store,
         &ExtentPage::Leaf(vec![Extent {
@@ -49,7 +49,6 @@ async fn content_digest_is_layout_independent_and_hash_budget_is_exact()
     assert_eq!(inline.work.bytes_hashed, hash_bytes);
     let failure = capture_content_range_bytes(
         &[0; 8],
-        8,
         WorkBudget {
             bytes_hashed: hash_bytes - 1,
             ..WorkBudget::UNBOUNDED
@@ -73,7 +72,7 @@ async fn content_digest_is_layout_independent_and_hash_budget_is_exact()
 fn canonical_content_range_surface_matches_golden_vector_and_fails_before_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let expected = hex::decode("e06aee566a0811dd9212ffd2d478c71bcc6fab338bfe63af1bc0ddc513366f64")?;
-    let receipt = capture_content_range_bytes(b"hello", 5, WorkBudget::UNBOUNDED)?;
+    let receipt = capture_content_range_bytes(b"hello", WorkBudget::UNBOUNDED)?;
     assert_eq!(
         receipt.value,
         DependencyState::Present(Digest::from_bytes(
@@ -85,18 +84,11 @@ fn canonical_content_range_surface_matches_golden_vector_and_fails_before_work()
     assert_eq!(receipt.work.bytes_hashed, 52);
 
     let cases = [
-        capture_content_range_bytes(b"hello", 0, WorkBudget::UNBOUNDED)
-            .err()
-            .ok_or("zero maximum unexpectedly succeeded")?,
-        capture_content_range_bytes(b"", 1, WorkBudget::UNBOUNDED)
+        capture_content_range_bytes(b"", WorkBudget::UNBOUNDED)
             .err()
             .ok_or("empty range unexpectedly succeeded")?,
-        capture_content_range_bytes(b"hello", 4, WorkBudget::UNBOUNDED)
-            .err()
-            .ok_or("oversized range unexpectedly succeeded")?,
         capture_content_range_bytes(
             b"hello",
-            5,
             WorkBudget {
                 bytes_hashed: 51,
                 ..WorkBudget::UNBOUNDED
@@ -107,18 +99,10 @@ fn canonical_content_range_surface_matches_golden_vector_and_fails_before_work()
     ];
     assert!(matches!(
         cases[0].error,
-        AuthenticatedProbeError::InvalidLimits
-    ));
-    assert!(matches!(
-        cases[1].error,
         AuthenticatedProbeError::InvalidDependency(DependencyError::EmptyContentRange)
     ));
     assert!(matches!(
-        cases[2].error,
-        AuthenticatedProbeError::ContentRangeTooLarge
-    ));
-    assert!(matches!(
-        cases[3].error,
+        cases[1].error,
         AuthenticatedProbeError::Work(WorkError::BudgetExceeded {
             counter: "bytes_hashed",
             observed: 52,
@@ -310,5 +294,143 @@ async fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
     }
     assert_eq!(page_states.len(), 2);
     assert_ne!(page_states[0], page_states[1]);
+    Ok(())
+}
+
+async fn large_content_record(
+    store: &MemoryObjectStore,
+    bytes: &[u8],
+) -> Result<FileRecord, Box<dyn std::error::Error>> {
+    let (_, file_id, metadata) = fixture(store, None).await?;
+    let mut chunks = Vec::new();
+    let mut offset = 0;
+    for bytes in bytes.chunks(1024 * 1024) {
+        let chunk = put(store, ObjectKind::BlobChunk, bytes.to_vec()).await?;
+        let end = offset + u64::try_from(bytes.len())?;
+        chunks.push(BlobChunkRef {
+            first_offset: offset,
+            end_offset: end,
+            chunk,
+        });
+        offset = end;
+    }
+    let blob = put_blob_page(
+        store,
+        &BlobPage {
+            first_offset: 0,
+            end_offset: offset,
+            node: BlobNode::Leaf(chunks),
+        },
+        32,
+    )
+    .await?;
+    let extents = put_extent_page(
+        store,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 0,
+            length: offset,
+            kind: ExtentKind::Content {
+                object: blob,
+                object_offset: 0,
+            },
+        }]),
+        8,
+    )
+    .await?;
+    Ok(FileRecord {
+        bindings: None,
+        file_id,
+        kind: FileKind::Regular,
+        link_count: 1,
+        metadata,
+        payload: FilePayload::Regular {
+            logical_bytes: offset,
+            extents,
+        },
+    })
+}
+
+#[tokio::test]
+async fn content_dependencies_stream_past_byte_and_span_pages()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let bytes: Vec<_> = (0usize..17 * 1024 * 1024 + 3)
+        .map(|index| {
+            let [a, b, c, d, ..] = index.to_le_bytes();
+            a.wrapping_add(b)
+                .wrapping_add(c)
+                .wrapping_add(d.wrapping_mul(17))
+        })
+        .collect();
+    let record = large_content_record(&store, &bytes).await?;
+    let probe = AuthenticatedGenerationProbe::new(
+        &store,
+        ProbeLimits {
+            maximum_extent_spans: 1,
+            ..ProbeLimits::default()
+        },
+    )?;
+    for (offset, length) in [
+        (0, u64::try_from(bytes.len())? + 1),
+        (u64::try_from(bytes.len())?, 1),
+    ] {
+        let failure = probe
+            .capture_record_async(
+                Some(record),
+                &DependencyRegion::ContentRange {
+                    file_id: record.file_id,
+                    offset,
+                    length,
+                },
+                WorkBudget {
+                    bytes_hashed: 0,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .err()
+            .ok_or("range beyond EOF was accepted")?;
+        assert!(matches!(
+            failure.error,
+            AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange)
+        ));
+        assert_eq!(*failure.work, WorkCounters::UNCHARGED);
+    }
+    let region = DependencyRegion::ContentRange {
+        file_id: record.file_id,
+        offset: 1,
+        length: u64::try_from(bytes.len())? - 2,
+    };
+    let expected = capture_content_range_bytes(&bytes[1..bytes.len() - 1], WorkBudget::UNBOUNDED)?;
+    let observed = probe
+        .capture_record_async(
+            Some(record),
+            &region,
+            WorkBudget {
+                peak_allocation_bytes: 8 * 1024 * 1024,
+                ..WorkBudget::UNBOUNDED
+            },
+            &CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(observed.value, expected.value);
+    assert!(observed.work.backend_read_operations > 1);
+    let sparse = sparse_probe_fixture(&store).await?;
+    let expected =
+        capture_content_range_bytes(b"\0\0\0\0\0\0\0\0DATA\0\0\0\0", WorkBudget::UNBOUNDED)?;
+    let observed = probe
+        .probe_async(
+            sparse.generation,
+            &DependencyRegion::ContentRange {
+                file_id: sparse.regular_id,
+                offset: 0,
+                length: 16,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(observed.value, expected.value);
     Ok(())
 }
