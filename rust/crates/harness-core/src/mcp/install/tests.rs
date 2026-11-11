@@ -318,38 +318,126 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
 
 #[tokio::test]
 async fn initialization_is_concurrent_and_optional_diagnostics_keep_config_order() -> Result<()> {
+    struct Active(Arc<AtomicUsize>);
+    impl Drop for Active {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    for (credit, population) in [(None, 0), (None, 33), (Some(1), 5), (Some(2), 5)] {
+        let names: Vec<String> = if population == 5 {
+            ["a", "b", "c", "d", "e"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        } else {
+            (0..population)
+                .map(|index| format!("server{index:02}"))
+                .collect()
+        };
+        let mut config = McpConfig::default();
+        for name in &names {
+            config.servers.insert(
+                name.clone(),
+                server(json!({"command":name}), Dialect::Codex)?,
+            );
+        }
+        let concurrent = credit.map_or(names.len().max(1), |credit| credit as usize);
+        let barrier = Arc::new(tokio::sync::Barrier::new(concurrent));
+        let active = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let result = config
+            .install_with(
+                ToolRegistry::default(),
+                McpClientLimits {
+                    servers: credit,
+                    ..Default::default()
+                },
+                |_| {
+                    let barrier = barrier.clone();
+                    let active = active.clone();
+                    let calls = calls.clone();
+                    Box::pin(async move {
+                        let index = calls.fetch_add(1, Ordering::SeqCst);
+                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        let _active = Active(active);
+                        assert!(current <= concurrent, "initialization credit exceeded");
+                        if index < population - population % concurrent {
+                            barrier.wait().await;
+                        }
+                        Err(Error::Invalid("startup rejected".into()))
+                    })
+                },
+            )
+            .await?;
+        assert_eq!(calls.load(Ordering::SeqCst), names.len());
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .map(|failure| failure.server.as_str())
+                .collect::<Vec<_>>(),
+            names.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        assert!(result.tools.definitions(None)?.is_empty());
+        assert!(result.capabilities.iter().next().is_none());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn completed_initialization_releases_credit_before_an_earlier_server_finishes() -> Result<()>
+{
     let mut config = McpConfig::default();
-    let names: Vec<_> = (0..33).map(|index| format!("server{index:02}")).collect();
-    for name in &names {
+    for name in ["a", "b", "c"] {
         config.servers.insert(
-            name.clone(),
-            server(json!({"command":name}), Dialect::Codex)?,
+            name.into(),
+            server(json!({"command": name}), Dialect::Codex)?,
         );
     }
-    let barrier = Arc::new(tokio::sync::Barrier::new(names.len()));
-    let result = config
-        .install_with(
-            ToolRegistry::default(),
-            McpClientLimits::default(),
-            move |_| {
-                let barrier = barrier.clone();
-                Box::pin(async move {
-                    barrier.wait().await;
-                    Err(Error::Invalid("startup rejected".into()))
-                })
-            },
-        )
-        .await?;
+    let release = Arc::new(tokio::sync::Notify::new());
+    let third = Arc::new(AtomicUsize::new(0));
+    let installation = config.install_with(
+        ToolRegistry::default(),
+        McpClientLimits {
+            servers: Some(2),
+            ..Default::default()
+        },
+        |server| {
+            let release = release.clone();
+            let third = third.clone();
+            Box::pin(async move {
+                let crate::mcp::McpTransport::Stdio { command, .. } = &server.transport else {
+                    return Err(Error::Invalid("expected original stdio server".into()));
+                };
+                if command == "a" {
+                    release.notified().await;
+                } else if command == "c" {
+                    third.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(Error::Invalid("startup rejected".into()))
+            })
+        },
+    );
+    tokio::pin!(installation);
+    // One observation of a deliberately held owner: never a readiness loop.
+    assert!(futures::poll!(installation.as_mut()).is_pending());
     assert_eq!(
-        result
+        third.load(Ordering::SeqCst),
+        1,
+        "the completed second server must release its credit"
+    );
+    release.notify_one();
+    let installed = installation.await?;
+    assert_eq!(
+        installed
             .diagnostics
             .iter()
             .map(|failure| failure.server.as_str())
             .collect::<Vec<_>>(),
-        names.iter().map(String::as_str).collect::<Vec<_>>()
+        ["a", "b", "c"]
     );
-    assert!(result.tools.definitions(None)?.is_empty());
-    assert!(result.capabilities.iter().next().is_none());
     Ok(())
 }
 
@@ -392,10 +480,11 @@ async fn filtered_tools_stay_unavailable_and_invalid_limits_never_connect() -> R
         ["mcp:call:configured"]
     );
     assert!(installed.diagnostics.is_empty());
-    for field in 0..2 {
+    for field in 0..3 {
         let mut limits = McpClientLimits::default();
         match field {
-            0 => limits.frame_bytes = 0,
+            0 => limits.servers = Some(0),
+            1 => limits.frame_bytes = 0,
             _ => limits.tool_bytes = 0,
         }
         assert!(matches!(
@@ -677,6 +766,7 @@ IFS= read -r input
             McpClientLimits {
                 frame_bytes: 1024,
                 tool_bytes: 8192,
+                ..Default::default()
             },
             Arc::new(crate::secrets::EnvSecrets),
         )
