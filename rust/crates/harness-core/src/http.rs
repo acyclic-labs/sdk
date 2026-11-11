@@ -30,7 +30,7 @@ pub struct HttpResponse {
     /// Allow-listed provider request identifier. Header storage moves from the
     /// transport and is copied once into admitted completion metadata.
     pub request_id: Option<::http::HeaderValue>,
-    /// The response's `Retry-After` delay, when it gave one in seconds.
+    /// The provider's recovery delay: Retry-After takes precedence over reset headers.
     pub retry_after: Option<std::time::Duration>,
 }
 
@@ -139,34 +139,5 @@ mod browser_credentials;
 #[cfg(target_arch = "wasm32")]
 pub use browser_credentials::BrowserCredentialResolver;
 
-/// Both HTTP forms of `Retry-After`, relative to the platform clock.
-pub fn retry_after(value: &str) -> Option<std::time::Duration> {
-    retry_after_at(value, || {
-        #[cfg(not(target_arch = "wasm32"))]
-        let now = std::time::SystemTime::now();
-        #[cfg(target_arch = "wasm32")]
-        let now = std::time::UNIX_EPOCH
-            + std::time::Duration::from_secs_f64(js_sys::Date::now() / 1_000.0);
-        now
-    })
-}
-
-/// Decodes a delay hint relative to the supplied original clock.
-pub fn retry_after_at(
-    value: &str,
-    now: impl FnOnce() -> std::time::SystemTime,
-) -> Option<std::time::Duration> {
-    let value = value.trim();
-    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
-        // Overflow is still a delay hint, always beyond our u32-millisecond retry budget.
-        // Treating it as absent would retry before the endpoint's requested time.
-        return Some(std::time::Duration::from_secs(
-            value.parse().unwrap_or(u64::MAX),
-        ));
-    }
-    let date = httpdate::parse_http_date(value).ok()?;
-    Some(
-        date.duration_since(now())
-            .unwrap_or(std::time::Duration::ZERO),
-    )
-}
+mod retry;
+pub use retry::{response_retry_after, retry_after, retry_after_at};

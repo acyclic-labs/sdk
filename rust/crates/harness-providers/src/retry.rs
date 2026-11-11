@@ -122,7 +122,42 @@ impl Redelivery {
     }
 }
 
-pub(crate) use acyclic_harness_core::http::retry_after;
+/// Observe the original recovery timer; it alone determines when redelivery resumes.
+pub(crate) async fn wait(
+    transport: &dyn crate::HttpTransport,
+    error: Error,
+    duration: Duration,
+    work: acyclic_harness_core::NativeWork<'_>,
+) -> acyclic_harness_core::Result<()> {
+    let primitive = match &error {
+        Error::ModelUnavailable {
+            failure: acyclic_harness_core::ModelTransportFailure::Status(429),
+            ..
+        } => "provider rate limit",
+        _ => "provider transport",
+    };
+    drop(error);
+    let timer = crate::deadline::timer(transport, duration, work)?;
+    let until = u128::from(transport.unix_ms()?) * 1_000_000 + duration.as_nanos();
+    let (seconds, nanos) = (until / 1_000_000_000, until % 1_000_000_000);
+    tracing::info!(
+        target: "acyclic.provider.wait",
+        until_unix_ns = %until,
+        wait_ns = %duration.as_nanos(),
+        reason = primitive,
+        "waiting for {primitive} until {seconds}.{nanos:09} (Unix seconds)"
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    return acyclic_native_runtime::obs::waiting(
+        primitive,
+        format_args!("until {seconds}.{nanos:09} (Unix seconds)"),
+        timer,
+    )
+    .await;
+    #[cfg(target_arch = "wasm32")]
+    timer.await
+}
+
 #[cfg(any(test, feature = "fuzzing"))]
 pub(crate) use acyclic_harness_core::http::retry_after_at;
 

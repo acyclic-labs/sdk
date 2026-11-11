@@ -334,7 +334,6 @@ async fn exchange_count(
         let Some(wait) = recovery.next(&failure, retry_after) else {
             return Err(failure);
         };
-        drop(failure);
-        crate::deadline::timer(provider.transport.as_ref(), wait, work)?.await?;
+        crate::retry::wait(provider.transport.as_ref(), failure, wait, work).await?;
     }
 }

@@ -155,7 +155,8 @@ impl Default for TimeoutSpec {
 
 /// Transient provider failures wait with uncapped redelivery. Permanent authentication
 /// and invalid-request failures return immediately. The original request and turn identity
-/// are preserved. Retry-After is honored; absent a hint, waits use exponential backoff
+/// are preserved. Retry-After and reset headers are honored unchanged; absent a hint,
+/// waits use exponential backoff
 /// with deterministic per-dispatch jitter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

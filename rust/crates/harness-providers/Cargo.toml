@@ -32,6 +32,7 @@ http.workspace = true
 httpdate = "1.0.3"
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 zeroize.workspace = true
 url = "2.5.7"
 
@@ -67,7 +68,6 @@ acyclic-test-support = { path = "../test-support" }
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false, features = ["local"] }
 acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0", features = ["test-support"] }
 prost.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 acyclic-objects = { path = "../objects", version = "=0.2.0", default-features = false }

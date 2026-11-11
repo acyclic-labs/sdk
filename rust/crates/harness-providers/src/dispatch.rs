@@ -322,9 +322,7 @@ impl GenerationAttempt {
         }
         let _ = auth;
         if let Some(wait) = self.attempt.next(&error, retry_after) {
-            drop(error);
-            crate::deadline::timer(provider.transport.as_ref(), wait, work)?.await?;
-            return Ok(());
+            return crate::retry::wait(provider.transport.as_ref(), error, wait, work).await;
         }
         Err(error)
     }

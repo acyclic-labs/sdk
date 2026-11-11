@@ -10,6 +10,8 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 enum Reply {
     /// A complete response with this status and body.
     Full(u16, &'static str),
+    /// A complete response with provider-authored recovery headers.
+    Headers(u16, &'static str, &'static str),
     /// A response declaring the whole body but sending only `usize` bytes before closing.
     Cut(u16, &'static str, usize),
     /// The server reads the request, then closes without returning headers.
@@ -18,10 +20,48 @@ enum Reply {
     Garbage,
 }
 
-/// Counts every send while delegating to the platform transport, without backoff waits.
+/// Counts real exchanges and records recovery timers, optionally held on an event.
 struct Counted {
     inner: ReqwestTransport,
     sent: AtomicUsize,
+    waits: Mutex<Vec<std::time::Duration>>,
+    gate: Option<Arc<WaitGate>>,
+}
+
+struct WaitGate {
+    entered: Mutex<Option<tokio::sync::oneshot::Sender<std::time::Duration>>>,
+    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+impl Counted {
+    fn wait(
+        &self,
+        wait: std::time::Duration,
+    ) -> impl std::future::Future<Output = Result<()>> + Send + 'static + use<> {
+        self.waits.lock().unwrap().push(wait);
+        let gate = self.gate.clone();
+        async move {
+            if let Some(gate) = gate {
+                let release = gate
+                    .release
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("one recovery wait");
+                gate.entered
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(wait)
+                    .unwrap();
+                release
+                    .await
+                    .map_err(|_| invalid("recovery timer producer stopped"))?;
+            }
+            Ok(())
+        }
+    }
 }
 
 impl HttpTransport for Counted {
@@ -31,10 +71,13 @@ impl HttpTransport for Counted {
     }
     // Each failed exchange is the explicit model-redelivery step.
     fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
+        Box::pin(self.wait(wait))
     }
     fn now(&self) -> std::time::Duration {
         crate::fixtures::now()
+    }
+    fn unix_ms(&self) -> Result<u64> {
+        Ok(1_700_000_000_000)
     }
     fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         self.inner.supports_native(work)
@@ -52,7 +95,7 @@ impl HttpTransport for Counted {
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
-        crate::fixtures::native_delay(wait, work)
+        acyclic_harness_core::NativeFutureBundle::new(work, || self.wait(wait))
     }
 }
 
@@ -81,6 +124,10 @@ async fn serve(replies: Vec<Reply>) -> Result<(u16, Arc<AtomicUsize>)> {
             let bytes = match reply {
                 Reply::Full(status, body) => format!(
                     "HTTP/1.1 {status} S\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                ),
+                Reply::Headers(status, headers, body) => format!(
+                    "HTTP/1.1 {status} S\r\n{headers}content-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 ),
                 Reply::Cut(status, body, sent) => format!(
@@ -135,6 +182,8 @@ fn model(base_url: &str) -> Result<(ResolvedModel, Arc<Counted>)> {
     let transport = Arc::new(Counted {
         inner: ReqwestTransport::new()?,
         sent: AtomicUsize::new(0),
+        waits: Mutex::new(Vec::new()),
+        gate: None,
     });
     Ok((
         super::provider_with(Adapter::Chat, base_url, transport.clone()),
@@ -152,6 +201,130 @@ fn failure(error: &Error) -> Option<ModelTransportFailure> {
         Error::ModelUnavailable { failure, .. } => Some(*failure),
         _ => None,
     }
+}
+
+#[tokio::test]
+async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_the_turn()
+-> Result<()> {
+    use std::time::Duration;
+    use tracing::instrument::WithSubscriber as _;
+    use tracing_subscriber::prelude::*;
+
+    #[derive(Clone)]
+    struct Log(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    for native in [false, true] {
+        for (status, headers, reason) in [
+            (
+                429,
+                "Retry-After: 60\r\nRateLimit-Reset: 900\r\n",
+                "provider rate limit",
+            ),
+            (429, "RateLimit-Reset: 60\r\n", "provider rate limit"),
+            (503, "Retry-After: 60\r\n", "provider transport"),
+        ] {
+            let (port, accepted) = serve(vec![
+                Reply::Headers(status, headers, r#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#),
+                Reply::Full(200, CHAT),
+            ]).await?;
+            let (entered_tx, mut entered) = tokio::sync::oneshot::channel();
+            let (release, release_rx) = tokio::sync::oneshot::channel();
+            let transport = Arc::new(Counted {
+                inner: ReqwestTransport::new()?,
+                sent: AtomicUsize::new(0),
+                waits: Mutex::new(Vec::new()),
+                gate: Some(Arc::new(WaitGate {
+                    entered: Mutex::new(Some(entered_tx)),
+                    release: Mutex::new(Some(release_rx)),
+                })),
+            });
+            let provider = super::provider_with(
+                Adapter::Chat,
+                &format!("http://127.0.0.1:{port}/v1"),
+                transport.clone(),
+            );
+            let (request, dispatch) = super::request(&provider)?;
+            let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+            let baseline = work.live_allocation_bytes();
+            let report = acyclic_native_runtime::obs::WaitReport::default();
+            let log = Log(Arc::new(Mutex::new(Vec::new())));
+            let writer = log.clone();
+            let subscriber = tracing_subscriber::registry().with(report.clone()).with(
+                tracing_subscriber::fmt::layer()
+                    .without_time()
+                    .with_ansi(false)
+                    .with_writer(move || writer.clone()),
+            );
+            let run = async {
+                let (mut completed, mut calls, mut content) = (0, 0, false);
+                let mut observe = |event: &ModelEvent| match event {
+                    ModelEvent::Content { delta } => content |= delta == "hé",
+                    ModelEvent::ToolCall(call) => {
+                        assert_eq!(call.call_id, dispatch.tool_call_id(0));
+                        calls += 1;
+                    }
+                    ModelEvent::Completed { .. } => completed += 1,
+                    _ => {}
+                };
+                if native {
+                    let mut stream = provider
+                        .generate_with_native_work(&request, dispatch, &work)?
+                        .await?;
+                    while let Some(event) = stream.next().await {
+                        let (event, custody) = event?;
+                        observe(&event);
+                        drop((event, custody));
+                    }
+                } else {
+                    let mut stream = provider.generate(&request, dispatch);
+                    while let Some(event) = stream.next().await {
+                        observe(&event?);
+                    }
+                }
+                Ok::<_, Error>((completed, calls, content))
+            }
+            .with_subscriber(subscriber);
+            tokio::pin!(run);
+            tokio::select! {
+                result = &mut run => panic!("turn ended before its provider wait: {result:?}"),
+                wait = &mut entered => assert_eq!(wait.unwrap(), Duration::from_secs(60)),
+            }
+            assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
+            assert_eq!(accepted.load(Ordering::SeqCst), 1);
+            assert_eq!(*transport.waits.lock().unwrap(), [Duration::from_secs(60)]);
+            let waits = report.snapshot();
+            assert!(waits.iter().any(|wait| wait.primitive == reason
+                && wait.key == "until 1700000060.000000000 (Unix seconds)"));
+            let visible = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+            assert!(
+                visible.contains(&format!(
+                    "waiting for {reason} until 1700000060.000000000 (Unix seconds)"
+                )),
+                "{visible}"
+            );
+            release.send(()).unwrap();
+            assert_eq!(run.await?, (1, 1, true));
+            assert_eq!(transport.sent.load(Ordering::SeqCst), 2);
+            assert_eq!(accepted.load(Ordering::SeqCst), 2);
+            assert!(
+                report
+                    .snapshot()
+                    .iter()
+                    .all(|wait| wait.primitive != reason)
+            );
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]
