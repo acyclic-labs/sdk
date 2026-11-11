@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Processes } from "./process.mjs";
 
-test("configured hook records the exact envelope and preserves allow, deny and ask", async () => {
+test("configured hook records its envelope and exact allow, deny and ask response", async () => {
   const root = await mkdtemp(join(tmpdir(), "e2e-hook-")), processes = new Processes();
   try {
     for (const decision of ["allow", "deny", "ask"]) {
@@ -16,8 +16,13 @@ test("configured hook records the exact envelope and preserves allow, deny and a
       const result = await processes.run(process.execPath,
         [fileURLToPath(new URL("./hook.mjs", import.meta.url)), path, decision], {}, JSON.stringify(envelope));
       assert.equal(result.code, 0, result.stderr);
-      assert.deepEqual(JSON.parse(await readFile(path, "utf8")), envelope);
-      assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, decision);
+      const response = { hookSpecificOutput: {
+        permissionDecision: decision, permissionDecisionReason: "E2E approval policy",
+      } };
+      assert.deepEqual(JSON.parse(result.stdout), response);
+      assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
+        ...envelope, fixture_action: decision, fixture_response: response,
+      });
     }
     const result = await processes.run(process.execPath,
       [fileURLToPath(new URL("./hook.mjs", import.meta.url)), join(root, "stop.jsonl"), "allow"],
