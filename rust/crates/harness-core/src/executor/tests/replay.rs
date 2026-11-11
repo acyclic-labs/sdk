@@ -182,6 +182,34 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
         Limits::default(),
         None,
     )?;
+    // Retain a real announced parent table while the child has no tools.
+    let parent = uncompacted_executor(
+        model.clone(),
+        Arc::new(scripted_model()),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let definitions = echo_tools(
+        Arc::new(FakeTool(AtomicUsize::new(0))),
+        json!({"type": "object"}),
+        json!({"type": "object"}),
+        crate::tool::json_projection_schema(json!({"type": "object"})),
+    )?
+    .definitions(None)?;
+    let mut announced = crate::context::Context {
+        messages: root.request().messages.clone(),
+        ..Default::default()
+    };
+    StockExecution::ordinary(&parent).tools_notice(&mut announced, &definitions, true)?;
+    assert!(announced.messages.len() > root.request().messages.len());
+    let root = crate::model::PreparedModelRequest::prepare(
+        ModelRequest {
+            messages: announced.messages,
+            ..root.request().clone()
+        },
+        Limits::default(),
+        None,
+    )?;
     let journal = Arc::new(Journal::default());
     let root_file = journal
         .stage_source(
@@ -216,6 +244,23 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
     expected.messages.push(ModelMessage {
         role: ModelRole::User,
         content: input.input.clone(),
+    });
+    expected.messages.push(ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Part(ModelContentPart::Notices {
+            notices: vec![crate::conversation::wire::Notice {
+                source: "tools".into(),
+                kind: "tools.changed".into(),
+                body: json!({
+                    "offset": 0,
+                    "json": "[]",
+                    "complete": true,
+                    "removed": ["example.echo"],
+                }),
+                wake: false,
+                coalesce_key: None,
+            }],
+        }),
     });
     let expected = crate::model::PreparedModelRequest::prepare(expected, Limits::default(), None)?;
     assert_eq!(

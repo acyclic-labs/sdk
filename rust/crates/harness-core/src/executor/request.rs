@@ -181,12 +181,6 @@ impl StockExecution<'_> {
             .await?;
         let tools = self.request_tools()?;
         let compose_tools = self.code_composition(&tools)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        // Summaries retain the selected source, including its existing notices.
-        // Only the transient instruction is appended; tools cannot be invoked.
-        if self.summary.is_none() {
-            self.tools_notice(&mut context, &tools, false)?;
-        }
         let message_count = context.messages.len();
         let request =
             self.request_from_parts(std::mem::take(&mut context.messages), tools, compose_tools)?;
@@ -227,6 +221,12 @@ impl StockExecution<'_> {
             0
         };
         context.messages = std::mem::take(&mut request.messages);
+        #[cfg(not(target_arch = "wasm32"))]
+        // Compare the complete visible history, including inherited tables.
+        // Summaries retain their selected notices without changing the tools.
+        if self.summary.is_none() {
+            self.tools_notice(&mut context, &request.tools, false)?;
+        }
         self.context_pipeline().project_optional(
             &mut context,
             prefix_count,
