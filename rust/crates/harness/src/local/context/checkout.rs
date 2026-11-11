@@ -33,7 +33,7 @@ impl LocalHarness {
     ) -> Result<DiscoveredContext> {
         let mut bounds = crate::context::DiscoveryWork {
             limits: ContextDiscoveryLimits {
-                instruction_bytes: maximum,
+                instruction_bytes: Some(maximum),
                 ..Default::default()
             },
             ..Default::default()
@@ -290,7 +290,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
         &'a mut self,
         path: &'a str,
         cut: &'a Self::Revision,
-        maximum: u64,
+        maximum: Option<u64>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>
     {
         Box::pin(async move {

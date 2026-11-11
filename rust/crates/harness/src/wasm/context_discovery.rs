@@ -90,7 +90,7 @@ struct ContextDirectoryQuery {
 #[tsify(large_number_types_as_bigints)]
 struct ContextReadQuery {
     source: PinnedContextPath,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 #[derive(Serialize, Tsify)]
@@ -119,7 +119,7 @@ struct BrowserReader {
     list: Function,
     prefix: Function,
     read: Function,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 fn platform_error(error: JsValue) -> Error {
@@ -131,8 +131,8 @@ fn platform_error(error: JsValue) -> Error {
 }
 
 impl BrowserReader {
-    fn new(receiver: JsValue, maximum_bytes: u64) -> Result<Self> {
-        if maximum_bytes == 0 {
+    fn new(receiver: JsValue, maximum_bytes: Option<u64>) -> Result<Self> {
+        if maximum_bytes == Some(0) {
             return Err(Error::Invalid("browser read bound is invalid".into()));
         }
         let function = |name: &str| -> Result<Function> {
@@ -160,12 +160,12 @@ impl BrowserReader {
             .map_err(platform_error)
     }
 
-    fn bytes(value: JsValue, maximum_bytes: u64) -> Result<Vec<u8>> {
+    fn bytes(value: JsValue, maximum_bytes: Option<u64>) -> Result<Vec<u8>> {
         let bytes: Uint8Array = value
             .dyn_into()
             .map_err(|_| Error::Storage("context reader requires Uint8Array".into()))?;
         let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&bytes, |length| {
-            if length > maximum_bytes {
+            if maximum_bytes.is_some_and(|maximum| length > maximum) {
                 return Err(JsValue::from_str("context reader exceeded byte bound"));
             }
             Ok(())
@@ -278,8 +278,11 @@ impl ContentResidencyVerifier for BrowserReader {
                 },
                 maximum_bytes,
             };
-            Self::bytes(self.invoke(&self.prefix, &query).await?, maximum_bytes)
-                .map(acyclic_stream::OwnedBytes::from)
+            Self::bytes(
+                self.invoke(&self.prefix, &query).await?,
+                Some(maximum_bytes),
+            )
+            .map(acyclic_stream::OwnedBytes::from)
         })
     }
 
@@ -308,9 +311,7 @@ impl ContentResidencyVerifier for BrowserReader {
 
         crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
-            let maximum_bytes = maximum_bytes.map_or(self.maximum_bytes, |maximum| {
-                maximum.min(self.maximum_bytes)
-            });
+            let maximum_bytes = maximum_bytes.into_iter().chain(self.maximum_bytes).min();
             let generation = generation.ok_or_else(|| {
                 Error::Invalid("context path requires a pinned generation".into())
             })?;
@@ -396,7 +397,7 @@ pub async fn read_pinned_context_path(
     maximum_bytes: u32,
 ) -> std::result::Result<JsValue, JsValue> {
     let source: PinnedContextPath = from_js(source)?;
-    let reader = BrowserReader::new(reader, u64::from(maximum_bytes)).map_err(js_error)?;
+    let reader = BrowserReader::new(reader, Some(u64::from(maximum_bytes))).map_err(js_error)?;
     let (file, bytes) = source
         .read(&reader, u64::from(maximum_bytes))
         .await

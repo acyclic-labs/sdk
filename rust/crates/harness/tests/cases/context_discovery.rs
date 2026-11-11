@@ -408,7 +408,7 @@ impl Fixture {
                 entries: 64,
                 directories: 8,
                 header_bytes: 256,
-                instruction_bytes: 512,
+                instruction_bytes: Some(512),
             },
         }
     }
