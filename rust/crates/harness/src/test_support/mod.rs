@@ -215,8 +215,7 @@ pub fn local_harness_config(
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
     // Store opening supplies temporary state only when no explicit root was selected.
     let policy = crate::approvals::ApprovalPolicy::accept_all("graphcoder-default");
-    let models = std::sync::Arc::new(role_models(model)?);
-    let config = crate::LocalHarnessConfig::resolving(workspace, models, None)
+    let config = crate::LocalHarnessConfig::new(workspace, model)
         .hermetic()
         .approval_policy(policy);
     #[cfg(any(test, not(target_arch = "wasm32")))]

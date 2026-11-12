@@ -1064,7 +1064,6 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         inspection.snapshot().waits.elapsed_ns(),
         Some(2_007_000_000)
     );
-    // The fixture catalog serves the root role's model with its own binding.
     assert_eq!(inspection.snapshot().model, Some(("scripted", "test")));
     assert_eq!(inspection.snapshot().open_children, Some(0));
     assert_eq!(
@@ -1562,28 +1561,20 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
         ])
     };
     let prices = Arc::new(ModelPrices::from_jsonl(
-        // The fixture catalog serves both roles with its one binding.
-        &["test"]
-            .into_iter()
-            .map(|name| {
-                serde_json::to_string(&ModelPriceRecord {
-                    version: 1,
-                    revision: "chosen-price-1".into(),
-                    provider: "scripted".into(),
-                    model: name.into(),
-                    effective_at: 1,
-                    currency: "USD".into(),
-                    input_nano_units_per_million: Some(1_000_000),
-                    output_nano_units_per_million: Some(2_000_000),
-                    cached: TokenPrice::Included,
-                    cache_write: TokenPrice::Included,
-                    reasoning: TokenPrice::Included,
-                })
-                .map_err(agent)
-            })
-            .collect::<Result<Vec<_>>>()?
-            .join("\n")
-            .into_bytes(),
+        &serde_json::to_vec(&ModelPriceRecord {
+            version: 1,
+            revision: "chosen-price-1".into(),
+            provider: "scripted".into(),
+            model: "test".into(),
+            effective_at: 1,
+            currency: "USD".into(),
+            input_nano_units_per_million: Some(1_000_000),
+            output_nano_units_per_million: Some(2_000_000),
+            cached: TokenPrice::Included,
+            cache_write: TokenPrice::Included,
+            reasoning: TokenPrice::Included,
+        })
+        .map_err(agent)?,
     )?);
     let provider = super::scripted([
         completed(100, 20),

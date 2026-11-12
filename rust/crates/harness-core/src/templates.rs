@@ -27,7 +27,15 @@ pub fn resolve_model<'a>(role: Option<&'a str>, fallback: Option<&'a str>) -> Op
 /// absent, or `models`' refusal of that model.
 pub fn root_model(binding: &str, models: Option<&crate::model::ModelResolver>) -> Result<String> {
     let role = root()?.model;
-    let selection = resolve_model(role.as_deref(), Some(binding)).unwrap_or(binding);
+    model_for_role(role.as_deref(), binding, models)
+}
+
+fn model_for_role(
+    role: Option<&str>,
+    binding: &str,
+    models: Option<&crate::model::ModelResolver>,
+) -> Result<String> {
+    let selection = resolve_model(role, Some(binding)).unwrap_or(binding);
     if selection != binding {
         models
             .ok_or_else(|| {
@@ -311,53 +319,35 @@ pub(crate) async fn directive(
 }
 
 #[cfg(test)]
-mod model_precedence_tests {
+mod binding_admission_tests {
     use super::*;
 
     #[test]
-    fn configured_role_model_wins_over_parent_or_requested_fallback() {
-        for fallback in [None, Some("other/parent"), Some("other/requested")] {
-            assert_eq!(
-                resolve_model(Some("morph/morph-dsv41flash"), fallback),
-                Some("morph/morph-dsv41flash")
-            );
-        }
-    }
-
-    #[test]
-    fn role_without_model_inherits_parent_model() {
+    fn explicit_role_models_require_a_serving_binding() -> Result<()> {
+        assert_eq!(model_for_role(None, "fixture/fixed", None)?, "fixture/fixed");
         assert_eq!(
-            resolve_model(None, Some("other/parent")),
-            Some("other/parent")
+            model_for_role(Some("fixture/role"), "fixture/role", None)?,
+            "fixture/role"
         );
-        assert_eq!(resolve_model(None, None), None);
-    }
-
-    #[test]
-    fn a_fixed_binding_serves_the_root_role_or_its_composition_is_refused() -> Result<()> {
-        let role = root()?
-            .model
-            .ok_or_else(|| Error::Invalid("the root role selects no model".into()))?;
-        assert!(role_models()?.contains(&role));
-        // The role's own binding needs no catalog.
-        assert_eq!(root_model(&role, None)?, role);
-        // Negative control: any other fixed binding without a catalog is refused.
         assert!(matches!(
-            root_model("other/fixed", None),
+            model_for_role(Some("fixture/role"), "fixture/fixed", None),
             Err(Error::Invalid(_))
         ));
-        let refusing = crate::model::ModelResolver::new("other/fixed", |selection: &str| {
+        let refusing = crate::model::ModelResolver::new("fixture/fixed", |selection: &str| {
             Err(Error::NotFound(selection.to_owned()))
         });
-        assert!(root_model("other/fixed", Some(&refusing)).is_err());
-        let turns: Vec<crate::test_support::ScriptedTurn> = Vec::new();
+        assert!(model_for_role(Some("fixture/role"), "fixture/fixed", Some(&refusing)).is_err());
         let binding: crate::model::ModelBinding = (
-            crate::model::Model::new("other".into(), "fixed".into(), "1".into())?,
-            Arc::new(crate::test_support::ScriptedModelProvider::new(turns)),
+            crate::model::Model::new("fixture".into(), "role".into(), "1".into())?,
+            Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new())),
         );
-        let served =
-            crate::model::ModelResolver::new("other/fixed", move |_: &str| Ok(binding.clone()));
-        assert_eq!(root_model("other/fixed", Some(&served))?, role);
+        let served = crate::model::ModelResolver::new("fixture/fixed", move |_: &str| {
+            Ok(binding.clone())
+        });
+        assert_eq!(
+            model_for_role(Some("fixture/role"), "fixture/fixed", Some(&served))?,
+            "fixture/role"
+        );
         Ok(())
     }
 }

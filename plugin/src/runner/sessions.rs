@@ -158,6 +158,7 @@ mod tests {
                 )?
                 .without_user_settings()
                 .state_directory(directory.path().join("unchecked-state"))
+                .feedback_plugin(false)
                 .workspace_mounting(WorkspaceMounting::Physical)
                 .compaction(acyclic_harness::context::CompactionPolicy::Disabled),
             )
