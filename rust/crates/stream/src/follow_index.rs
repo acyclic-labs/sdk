@@ -408,7 +408,7 @@ mod batch_scaling {
         StreamProviderExt as _,
     };
     use acyclic_test_support::scale::{Bound, assert_scales};
-    use futures::{StreamExt as _, TryStreamExt as _};
+    use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
 
     #[tokio::test]
     async fn unfiltered_follow_publication_visits_subscribers_once_per_batch()
@@ -509,7 +509,9 @@ mod batch_scaling {
                 for _ in 0..subscriber_count {
                     let mut request = FollowRequest::new(path.clone(), 1);
                     request.filter = filter.clone();
-                    follows.push(stream.follow(request).await?);
+                    let mut follow = stream.follow(request).await?;
+                    assert!(futures::poll!(follow.next()).is_pending());
+                    follows.push(follow);
                 }
                 let mut records = Vec::new();
                 for owner in ["denied", "allowed"] {
