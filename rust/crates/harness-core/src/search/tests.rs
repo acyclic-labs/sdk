@@ -9,6 +9,8 @@ use acyclic_stream::{
 };
 use std::num::NonZeroU32;
 
+mod prompts;
+
 #[tokio::test]
 async fn file_search_pages_original_ranges_at_one_cut_and_rechecks_read_authority() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::from_bytes([63; 16]), 1_000_000).await?;

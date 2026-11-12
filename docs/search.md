@@ -40,6 +40,22 @@ authenticated provider, which checks current grants on every observation; a
 serialized continuation confers no authority. A provider that cannot retain the
 selected cut refuses rather than silently switching to current state.
 
+Prompt history uses the same `Cursor::page_with` and
+`acyclic_harness::search::ContentMatcher::user_prompts(reader, ceiling)`.
+Select the authorized sessions subtree and an empty literal to enumerate
+original human message bodies. Each hit retains its original inbox address and
+`FileRef`; no history array or second prompt store is written. Follow-up messages
+are included. Host and agent messages, record metadata and attachments are
+excluded. Inherited records are skipped at their fork paths, while a new
+submission with the same body remains a distinct prompt. Reading the selected
+body uses the existing reader and its exact retained version.
+
+This projection has the cursor's depth-first path/sequence order; it does not
+claim global chronological order. A nonempty literal searches original body
+bytes with the same bounded range matcher. Empty pages with a continuation still
+represent bounded work. Continuations bind this selection mode as well as the
+literal and frozen cut, and current content authority is checked on every page.
+
 Mounted files use the same literal query and work budget:
 
 ```text

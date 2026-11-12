@@ -59,6 +59,7 @@ fn inspect_window(length: u64, offset: u64, pattern: &[u8], bytes: &[u8]) -> Res
 pub struct ContentMatcher<'a> {
     reader: &'a dyn ContentResidencyVerifier,
     ceiling: Option<&'a Capabilities>,
+    user_prompts: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -74,7 +75,39 @@ impl<'a> ContentMatcher<'a> {
         reader: &'a dyn ContentResidencyVerifier,
         ceiling: Option<&'a Capabilities>,
     ) -> Self {
-        Self { reader, ceiling }
+        Self {
+            reader,
+            ceiling,
+            user_prompts: false,
+        }
+    }
+
+    /// Project committed human prompts from the selected session subtree.
+    /// Only original user-message bodies match: inherited records, agent/host
+    /// messages, attachments and record metadata are excluded. Empty literals
+    /// enumerate original body references without materializing their text.
+    /// The caller's provider and content grants remain authoritative per page.
+    pub fn user_prompts(
+        reader: &'a dyn ContentResidencyVerifier,
+        ceiling: Option<&'a Capabilities>,
+    ) -> Self {
+        Self {
+            reader,
+            ceiling,
+            user_prompts: true,
+        }
+    }
+}
+
+fn prompt_reference(record: &Record) -> Vec<FileRef> {
+    use crate::agent::{AgentRecord as _, InboxRecord, Sender};
+    match InboxRecord::decode(&record.value) {
+        Ok(InboxRecord::Message(message) | InboxRecord::FollowUp(message))
+            if matches!(message.from, Sender::User { .. }) =>
+        {
+            vec![*message.body]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -127,7 +160,14 @@ impl Matcher for ContentMatcher<'_> {
     type Source = FileRef;
     type Error = Error;
     fn identity(&self) -> [u8; 32] {
-        *b"acyclic:search:linked-content:v1"
+        if self.user_prompts {
+            *b"acyclic:search:prompt-content:v1"
+        } else {
+            *b"acyclic:search:linked-content:v1"
+        }
+    }
+    fn selects(&self, path: &acyclic_stream::StreamPath, record: &Record) -> bool {
+        !self.user_prompts || path == &record.origin
     }
     fn step<'a>(
         &'a self,
@@ -137,14 +177,18 @@ impl Matcher for ContentMatcher<'_> {
     ) -> impl std::future::Future<Output = Result<Step<FileRef>>> + acyclic_stream::ProviderTask + 'a
     {
         async move {
-            if after.is_none() && contains(record.value.as_slice(), pattern) {
+            if !self.user_prompts && after.is_none() && contains(record.value.as_slice(), pattern) {
                 return Ok(Step {
                     matched: true,
                     source: None,
                     next: None,
                 });
             }
-            let files = references(record)?;
+            let files = if self.user_prompts {
+                prompt_reference(record)
+            } else {
+                references(record)?
+            };
             let position = match after {
                 Some(after) => serde_json::from_slice::<Position>(after)
                     .map_err(|_| Error::Invalid("invalid content search cursor".into()))?,
@@ -168,7 +212,7 @@ impl Matcher for ContentMatcher<'_> {
                     "content search cursor exceeds source".into(),
                 ));
             }
-            if position.offset == length {
+            if position.offset == length && !pattern.is_empty() {
                 return progress(
                     Position {
                         file: position.file + 1,

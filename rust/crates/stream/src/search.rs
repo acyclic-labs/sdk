@@ -74,6 +74,11 @@ pub trait Matcher: crate::ProviderPlatform {
     type Error: From<StreamError> + crate::ProviderTask;
     /// Versioned matching semantics, bound into every continuation.
     fn identity(&self) -> [u8; 32];
+    /// Select a record at its observed path before inspecting linked content.
+    /// A rejected record still consumes one unit of the page's work budget.
+    fn selects(&self, _path: &StreamPath, _record: &Record) -> bool {
+        true
+    }
     /// One bounded step. A continuation must advance; a match ends this record.
     fn step<'a>(
         &'a self,
@@ -277,6 +282,12 @@ async fn scan<P: StreamProvider + ?Sized, M: Matcher>(
         let record = records.try_next().await?.ok_or(StreamError::Unavailable)?;
         if record.sequence != frame.sequence {
             return Err(StreamError::InvalidResponse.into());
+        }
+        if !matcher.selects(&frame.path, &record) {
+            work += 1;
+            frame.sequence += 1;
+            frame.content = None;
+            continue;
         }
         loop {
             let step = matcher
