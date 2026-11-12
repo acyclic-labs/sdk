@@ -59,13 +59,16 @@ The deterministic stock-container acceptance command is:
 
 ```sh
 docker pull node:24-trixie
+E2E_FILESYSTEM_BINARY=/absolute/path/to/harness-filesystem-fixture \
 node scripts/qualify-docker-no-fuse.mjs node:24-trixie \
   /absolute/path/to/graphcoder /absolute/path/to/harness-mock-model \
   /absolute/path/to/fresh-evidence
 ```
 
 Run this on Linux with Docker available and executables built from the checked
-out source. The qualifier pins the selected image ID, transfers a committed
+out source, including `harness-filesystem-fixture` from `harness-mock-model`.
+The qualifier copies that fixture into the container and binds its digest into
+the acceptance evidence. It pins the selected image ID, transfers a committed
 acceptance snapshot and runs the shipping session cases with both automatic
 and explicit physical selection. It asserts writes, child fork/message/merge
 back into the parent's files, reopen and crash recovery. Its scripted model
