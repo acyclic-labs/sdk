@@ -383,7 +383,11 @@ impl TurnContext for LocalContext {
                 .collect();
             let limits = crate::context::ContextDiscoveryLimits::default();
             let limits = crate::context::ContextDiscoveryLimits {
-                instruction_bytes: limits.instruction_bytes.min(local.limits.file_bytes),
+                instruction_bytes: limits
+                    .instruction_bytes
+                    .into_iter()
+                    .chain(local.limits.file_bytes)
+                    .min(),
                 ..limits
             };
             crate::agent::WorkspaceUpdate::discover(
