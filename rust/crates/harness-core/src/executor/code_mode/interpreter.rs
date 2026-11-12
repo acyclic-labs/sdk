@@ -639,24 +639,53 @@ mod tests {
             ),
             ("42", Ok(serde_json::Value::Null)),
             (
+                "export default (await tools) === tools",
+                Ok(serde_json::json!(true)),
+            ),
+            (
+                "export default (await Promise.resolve(tools)) === tools",
+                Ok(serde_json::json!(true)),
+            ),
+            ("export default tools", Ok(serde_json::json!({}))),
+            (
                 "export default Promise.reject(new Error('failed'))",
                 Err("Error: failed".into()),
             ),
         ] {
-            let (send, _receive) = tokio::sync::mpsc::channel(1);
-            let result = acyclic_native_runtime::blocking_future(super::run(
-                code.into(),
-                acyclic_stream::OwnedBytes::from_static(b"[]"),
-                send,
-                tokio_util::sync::CancellationToken::new(),
-                4096,
-                super::super::allocator::EngineAllocator::new(None),
-                super::INTERRUPT_BUDGET,
-                false,
-            ))
-            .await
-            .unwrap();
-            assert_eq!(result.map(|result| result.value), expected);
+            for lazy in [false, true] {
+                let (send, mut receive) = tokio::sync::mpsc::channel(1);
+                let dispatch = async {
+                    let mut calls = 0;
+                    while let Some(request) = receive.recv().await {
+                        let super::Request::Tool(call) = request else {
+                            panic!("unexpected log");
+                        };
+                        calls += 1;
+                        let _ = call
+                            .reply
+                            .send(Some(acyclic_stream::OwnedBytes::from_static(
+                                br#"{"ok":true,"value":null}"#,
+                            )));
+                    }
+                    calls
+                };
+                let execution = acyclic_native_runtime::blocking_future(super::run(
+                    code.into(),
+                    acyclic_stream::OwnedBytes::from_static(b"[]"),
+                    send,
+                    tokio_util::sync::CancellationToken::new(),
+                    4096,
+                    super::super::allocator::EngineAllocator::new(None),
+                    super::INTERRUPT_BUDGET,
+                    lazy,
+                ));
+                let (result, calls) = tokio::join!(execution, dispatch);
+                assert_eq!(
+                    calls, 0,
+                    "language protocol probes must not call host tools"
+                );
+                assert_eq!(result.unwrap().map(|result| result.value), expected);
+            }
         }
     }
 

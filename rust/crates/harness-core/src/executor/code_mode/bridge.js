@@ -40,7 +40,9 @@
     const exposed = lazy ? new Proxy(Object.freeze(tools), {
         get(target, name) {
             if (own(target, name)) return target[name];
-            if (typeof name !== 'string') return undefined;
+            // Promise assimilation and JSON encoding probe protocol properties
+            // without authored calls. Only fixed declarations may own them.
+            if (typeof name !== 'string' || name === 'then' || name === 'toJSON') return undefined;
             return args => {
                 if (closed) throw new ErrorType('JavaScript calls are closed');
                 return invoke(name, args);
