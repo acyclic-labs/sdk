@@ -205,7 +205,7 @@ test("native progress qualification instruments the real mutex and requires ever
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
-        if (ordinary) assert.equal(options.env, undefined);
+        if (ordinary) assert.equal(options.env.RUSTC_WORKSPACE_WRAPPER, process.env.RUSTC_WORKSPACE_WRAPPER);
         else assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         assert.ok(args.includes("--lib") && args.includes("--no-run"));
         return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
