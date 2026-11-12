@@ -173,6 +173,7 @@ mod tests {
     async fn merge_publication_touches_only_changed_files() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut changed_cost = None;
+        let mut unchanged_writes = None;
         for count in [32, 256] {
             let directory = tempfile::tempdir()?;
             let cancellation = crate::CancellationToken::new();
@@ -254,6 +255,7 @@ mod tests {
                 let work = NativeMaterializationWork::new(budget, &cancellation)
                     .map_err(|(cause, _)| cause)?;
                 let operation = directory.path().join("operation");
+                let operation_id = OperationId::new();
                 let options = crate::MaterializeOptions::native(operation.join("target"));
                 work.state.lock().write_probe = Some(crate::demand::WriteProbe {
                     writes: 0,
@@ -274,7 +276,7 @@ mod tests {
                         root: &root,
                         source_root_identity: work.root_identity(&root)?,
                         operation_directory: &operation,
-                        operation_id: OperationId::new(),
+                        operation_id,
                         from: before.id(),
                         to: after.id(),
                         excluded_names: &[],
@@ -320,9 +322,23 @@ mod tests {
                     assert_eq!(receipt.work.materializations, 0);
                     assert_eq!(receipt.work.source_bytes_read, 0);
                     assert_eq!(receipt.work.object_bytes_written, 0);
-                    assert_eq!(writes, 0, "an unchanged merge must not append a journal");
+                    // The crash-cut probe includes lock releases and directory
+                    // operations. Measure those separately from journal data.
+                    assert_eq!(writes, *unchanged_writes.get_or_insert(writes));
+                    assert!(
+                        MaterializationJournalStore::load(&store, operation_id)
+                            .await?
+                            .is_none()
+                    );
+                    assert!(store.materialization_operations_async().await?.is_empty());
+                    assert!(
+                        !directory
+                            .path()
+                            .join("state/materialization-data-v1")
+                            .exists()
+                    );
                     eprintln!(
-                        "merge_publication files={count} changed=0 materializations=0 writes=0 read=0 written=0"
+                        "merge_publication files={count} changed=0 rewritten=0 journal_records=0 materializations=0 write_class_operations={writes} read=0 written=0"
                     );
                 }
             }
