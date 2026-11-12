@@ -67,7 +67,7 @@ class File {
 }
 
 export async function read(path) {
-    let result = await bind('read', {path, selection: {kind: 'text'}});
+    let result = await bind('read', {path, include_body: true, selection: {kind: 'text'}});
     if (result === null) return null;
     const version = result.version;
     const size = result.file.authored ? result.file.authored.byte_length
@@ -76,7 +76,7 @@ export async function read(path) {
     const parts = [result.text];
     while (result.page?.next != null) {
         const start = result.page.next;
-        result = await bind('read', {path, version, range: {start, end: size}});
+        result = await bind('read', {path, version, include_body: true, range: {start, end: size}});
         if (result.page?.next != null && result.page.next <= start)
             throw new Error('File read did not advance');
         parts.push(result.text);
