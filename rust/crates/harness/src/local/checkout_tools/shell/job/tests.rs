@@ -179,7 +179,7 @@ async fn ready_connection(
 }
 
 #[tokio::test]
-async fn foreground_deadline_retains_capture_and_publication_after_cleanup() -> Result<()> {
+async fn cancelled_foreground_call_retains_capture_and_publication_after_cleanup() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
     let harness = LocalHarness::open(crate::test_support::local_harness_config(
@@ -206,7 +206,7 @@ async fn foreground_deadline_retains_capture_and_publication_after_cleanup() -> 
             writer: Some(writer),
         },
     )?);
-    let context = ToolContext::new(task, crate::OperationId::new(), "foreground-timeout")?;
+    let context = ToolContext::new(task, crate::OperationId::new(), "foreground-cancellation")?;
     let output_directory = format!("tools/{}/{}", context.turn_id(), context.operation_id());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -230,41 +230,67 @@ async fn foreground_deadline_retains_capture_and_publication_after_cleanup() -> 
     .map_err(storage)?;
     let invocation = ToolInvocation {
         operation_id: context.operation_id(),
-        call_id: "foreground-timeout".into(),
+        call_id: "foreground-cancellation".into(),
         name: "shell".into(),
-        arguments: serde_json::json!({"command": [child_executable(&harness)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child", "--nocapture"], "timeout_ms": 30_000}),
+        arguments: serde_json::json!({"command": [child_executable(&harness)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child", "--nocapture"]}),
     };
-    let (schedule, boundaries) = acyclic_native_runtime::testing::Schedule::seeded(79);
-    schedule.set_unix_millis(acyclic_stream::UnixMillisClock::now_unix_millis(
-        &acyclic_stream::SystemUnixMillisClock,
-    ));
-    crate::test_support::run_native_schedule(&schedule, boundaries, async {
-        let executor = listener_executor(&harness, vec![listener.local_addr().map_err(storage)?.port()]).await?;
-        let mut call = executor.execute(invocation, Some(context));
-        let mut gate = tokio::select! {
-            connection = listener.accept() => connection.map(|(socket, _)| socket).map_err(storage)?,
-            result = &mut call => panic!("shell returned before its writes: {result:?}"),
-        };
-        let mut byte = [0];
-        gate.read_exact(&mut byte).await.map_err(storage)?;
-        assert_eq!(byte, [b'R']);
-        let clock = acyclic_stream::SystemUnixMillisClock;
-        schedule.set_unix_millis(acyclic_stream::UnixMillisClock::now_unix_millis(&clock) + 30_000);
-        let result = call.await;
-        assert!(matches!(result, Err(Error::Process(crate::ProcessError::Timeout { .. }))), "{result:?}");
-        let published = terminal(&harness, &output_directory).await?;
-        assert_eq!(published["stop"]["cleanup_completed"], true, "{published}");
-        let physical = harness.workspace.as_ref().unwrap();
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let head = physical.view().workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
-        let retained = head.read("/retained", 64, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
-        assert_eq!(retained.as_ref(), b"before-stop");
-        let grant = ContentGrant::verify_directory_read(&harness.verifier, &harness.signed, &home_volume, "", &mut None)?;
-        let (_, retained) = harness.files.read_private_path(&home_volume, &grant, "timeout-retained", None, 64, Default::default()).await?;
-        assert_eq!(retained.as_ref(), b"before-stop");
-        assert_eq!(gate.read(&mut byte).await.map_err(storage)?, 0);
-        Ok::<_, Error>(())
-    }).await?;
+    let executor = listener_executor(
+        &harness,
+        vec![listener.local_addr().map_err(storage)?.port()],
+    )
+    .await?;
+    let mut call = executor.execute(invocation, Some(context));
+    let mut gate = tokio::select! {
+        connection = listener.accept() => connection.map(|(socket, _)| socket).map_err(storage)?,
+        result = &mut call => panic!("shell returned before its writes: {result:?}"),
+    };
+    let mut byte = [0];
+    gate.read_exact(&mut byte).await.map_err(storage)?;
+    assert_eq!(byte, [b'R']);
+    drop(call);
+    let published = terminal(&harness, &output_directory).await?;
+    assert_eq!(published["stop"]["cleanup_completed"], true, "{published}");
+    let physical = harness.workspace.as_ref().unwrap();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let head = physical
+        .view()
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    let retained = head
+        .read(
+            "/retained",
+            64,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    assert_eq!(retained.as_ref(), b"before-stop");
+    let grant = ContentGrant::verify_directory_read(
+        &harness.verifier,
+        &harness.signed,
+        &home_volume,
+        "",
+        &mut None,
+    )?;
+    let (_, retained) = harness
+        .files
+        .read_private_path(
+            &home_volume,
+            &grant,
+            "timeout-retained",
+            None,
+            64,
+            Default::default(),
+        )
+        .await?;
+    assert_eq!(retained.as_ref(), b"before-stop");
+    assert_eq!(gate.read(&mut byte).await.map_err(storage)?, 0);
+
     harness.disconnect().await
 }
 
