@@ -11,18 +11,78 @@ use crate::{
 /// Retain this value through admission and dispatch; do not reopen entry files.
 #[derive(Debug)]
 pub struct LoadedProgram {
+    /// The same declaration consumed by the stock tool registry.
     definition: ToolDefinition,
-    pub(crate) run: HookRun,
+    /// The same command consumed by the stock hook runner.
+    run: HookRun,
     /// The admitted source selector for a hook; absent for a tool.
-    pub on: Option<config::ProgramTrigger>,
+    on: Option<config::ProgramTrigger>,
     // Retained manifest and entry bytes retire before their original credit.
     custody: acyclic_fs::NativeCustody,
 }
 
+/// A selected hook and its canonical executable binding. Source selection
+/// grants no authority; dispatch uses the binding's ordinary shell admission,
+/// approvals, execution owner and receipts. No command bytes escape their
+/// original allocation owner.
+pub struct BoundHook {
+    selector: HookSelector,
+    binding: crate::tool::Tool,
+}
+
+struct HookSelector {
+    value: config::ProgramTrigger,
+    _custody: acyclic_fs::NativeCustody,
+}
+
+impl BoundHook {
+    /// The immutable source selector from the selected program revision.
+    pub fn on(&self) -> &config::ProgramTrigger {
+        &self.selector.value
+    }
+
+    /// The existing tool binding, for ordinary canonical call admission.
+    pub fn binding(&self) -> &crate::tool::Tool {
+        &self.binding
+    }
+}
+
 impl LoadedProgram {
-    /// The pinned declaration, borrowed without detaching its original credit.
+    /// Borrows the selected declaration without separating its allocation owner.
     pub fn definition(&self) -> &ToolDefinition {
         &self.definition
+    }
+
+    /// Binds a hook through the same canonical shell adapter as authored tools.
+    /// Retains the selected source and its original native credit independently
+    /// of the executable's transferred ownership, including on failed binding.
+    ///
+    /// # Errors
+    /// Refuses a tool manifest, an invalid shell binding, or an exhausted
+    /// original preparation allowance.
+    pub fn bind_hook(mut self, shell: std::sync::Arc<crate::tool::Tool>) -> Result<BoundHook> {
+        let value = self
+            .on
+            .take()
+            .ok_or_else(|| Error::Invalid("tool programs have no hook source".into()))?;
+        let mut selector = HookSelector {
+            value,
+            _custody: None,
+        };
+        let bytes = match &selector.value {
+            config::ProgramTrigger::Lifecycle { .. } => 0,
+            config::ProgramTrigger::File { volume, prefix, .. } => {
+                crate::core::owned_sum([volume.capacity() as u64, prefix.capacity() as u64])?
+            }
+            config::ProgramTrigger::Stream { path, .. } => path.capacity() as u64,
+        };
+        selector._custody = self
+            .custody
+            .as_mut()
+            .map(|custody| custody.split_off(bytes))
+            .transpose()?;
+        let binding = self.bind(shell)?;
+        Ok(BoundHook { selector, binding })
     }
 
     /// Binds an authored tool to the host's ordinary shell capability. Every
