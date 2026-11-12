@@ -646,6 +646,25 @@ fn physical_cleanup_joins_last_lease(
     };
     let source_control = recording_refused.then(|| Arc::clone(&source));
     let alias = lease.clone();
+    let cleanup_credit = || {
+        source
+            .cleanup_credit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|credit| credit.remaining_work())
+            .ok_or("missing cleanup credit")
+    };
+    let reserved = cleanup_credit()?;
+    let refused = root.receipt();
+    assert!(matches!(
+        mounted.shutdown_with_cleanup_wait(&CancellationToken::new()),
+        Err(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::Work(_)
+        ))
+    ));
+    assert_eq!(root.receipt(), refused);
+    assert_eq!(cleanup_credit()?, reserved);
     root_stop.cancel();
     let wait = CancellationToken::new();
     wait.cancel();
