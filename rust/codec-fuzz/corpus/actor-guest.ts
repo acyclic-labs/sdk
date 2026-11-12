@@ -237,7 +237,7 @@ codec: CodecIdentity,
  * Encoded logical state. No runtime heap format is implied.
  */
 bytes: Uint8Array, };
-export type GuestError = { "type": "unsupportedAbi", "detail": number } | { "type": "unsupportedFormat" } | { "type": "nestedMutation" } | { "type": "missingIdentity" } | { "type": "incompatibleCodec" } | { "type": "decode", "detail": string } | { "type": "encode", "detail": string } | { "type": "handler", "detail": string };
+export type GuestError = { "type": "unsupportedAbi", "detail": number } | { "type": "unsupportedFormat" } | { "type": "nestedMutation" } | { "type": "missingIdentity" } | { "type": "incompatibleCodec" } | { "type": "decode", "detail": string } | { "type": "encode", "detail": string } | { "type": "handler", "detail": string } | { "type": "revoked" };
 export type CheckpointCodec<State> = {
 /**
  * Identity written on the next checkpoint.

@@ -138,9 +138,10 @@ impl RequestId {
 
 /// The host-side capability binding `request -> (actor, epoch)`, local to one
 /// host process: the only authority a host capability call carries. The host
-/// opens one binding per handler attempt and the binding closes when that
-/// attempt ends, is cancelled, times out or is abandoned, so a late call from
-/// it is refused without any provider read. Co-resident actors of one process
+/// opens one binding per handler invocation (`on_record`, then `on_failure`,
+/// each its own) and the binding closes when that invocation returns, is
+/// cancelled, times out or is abandoned, so a late call from it is refused
+/// as [`GuestError::Revoked`] without any provider read. Co-resident actors of one process
 /// are one principal; distinct principals need distinct processes. It does not
 /// stop a partitioned old owner's in-flight or already issued external call;
 /// that needs resource-side fencing.
@@ -194,7 +195,7 @@ impl Requests {
             .live
             .get(&request.0)
             .cloned()
-            .ok_or_else(|| GuestError::Handler("host request is not live".into()))
+            .ok_or(GuestError::Revoked)
     }
 }
 

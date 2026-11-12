@@ -1807,6 +1807,36 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
     Ok(())
 }
 
+/// A duplicate drain cancelled while it waits for an actor another delivery
+/// owns settles nothing: the owner's armed alarm and its watermark hold
+/// survive. Negative control: settling from before the slot is acquired
+/// suspended the owner's alarm, so its deadline vanished.
+#[tokio::test]
+async fn a_cancelled_waiter_leaves_the_active_delivery_alarm() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "waiter-alarm", &[b"set 100"]).await?;
+    let runtime = Runtime::new(
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(Manual(AtomicU64::new(1))),
+    );
+    runtime.host(address.clone())?;
+    runtime.drain_actor(&address).await?;
+    let armed = runtime.ready.next_deadline();
+    assert_eq!(armed, Some(101));
+    let slot = runtime.slot(&address).ok_or("missing actor")?;
+    // The active delivery owns the actor.
+    let active = slot.inner.lock().await;
+    let mut waiter = Box::pin(runtime.drain_actor(&address));
+    assert!(futures::poll!(waiter.as_mut()).is_pending());
+    drop(waiter);
+    assert_eq!(runtime.ready.next_deadline(), armed);
+    assert!(!slot.refresh.load(Ordering::Acquire));
+    drop(active);
+    Ok(())
+}
+
 /// Every ready subscription gets a turn even when the first has a backlog.
 /// Always starting from the lowest key fails on the second committed input.
 #[tokio::test]
