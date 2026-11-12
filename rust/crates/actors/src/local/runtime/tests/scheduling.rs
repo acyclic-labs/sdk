@@ -27,8 +27,11 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
     let original_path = store.activation_record(&first)?.0;
     assert_ne!(original_path, store.activation_record(&second)?.0);
     assert!(matches!(
-        provider.tail(root()?).await,
-        Err(StreamError::NotFound)
+        provider
+            .tail(root()?)
+            .await
+            .map_err(|error| error.category()),
+        Ok(0) | Err(StreamError::NotFound)
     ));
     let host = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
@@ -39,12 +42,13 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
     host.place(first.clone(), 1).await?;
     assert!(matches!(
         host.place(second.clone(), 1).await,
-        Err(Error::Invalid("invalid actor placement"))
+        Err(Error::Invalid("actor is outside this runtime's scope"))
     ));
     let (checkpoint, address) = host.dispatcher_store(shard)?;
-    let initial = host.dispatcher(&checkpoint, &address, shard).await?;
+    let initial = checkpoint.load(&address).await?;
     let tail = provider.tail(original_path.clone()).await?;
-    host.advance_dispatcher(&checkpoint, initial, tail).await?;
+    host.advance_dispatcher(&checkpoint, initial, shard, tail)
+        .await?;
     let replacement = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
@@ -56,7 +60,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
         replacement.store().activation_record(&first)?.0,
         original_path
     );
-    let restored = replacement.dispatcher(&checkpoint, &address, shard).await?;
+    let restored = checkpoint.load(&address).await?;
     assert_eq!(
         restored
             .state()
@@ -64,12 +68,10 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
         Some(tail)
     );
     let (other_checkpoint, other_address) = replacement.dispatcher_store(other_shard)?;
-    let other = replacement
-        .dispatcher(&other_checkpoint, &other_address, other_shard)
-        .await?;
-    assert_eq!(
-        other.state().and_then(|state| state.cursor("activation")),
-        Some(0)
+    let other = other_checkpoint.load(&other_address).await?;
+    assert!(
+        other.state().is_none(),
+        "an unadvanced shard owns no checkpoint"
     );
     assert_ne!(
         checkpoint.path(&address)?,

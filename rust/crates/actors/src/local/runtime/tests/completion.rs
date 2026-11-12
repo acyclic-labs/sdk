@@ -141,8 +141,9 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
         assert!(futures::poll!(completed.as_mut()).is_pending());
         assert!(futures::poll!(cancelled.as_mut()).is_pending());
         drop(cancelled);
+        let mut entered = handler.entered.subscribe();
         observe_while_running(serving.as_mut(), async {
-            state_after(runtime.store(), &addresses[0], |state| state.epoch() == 1).await?;
+            entered.wait_for(|active| *active == 1).await?;
             Ok(())
         })
         .await?;

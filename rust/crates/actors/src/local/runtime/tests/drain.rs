@@ -22,7 +22,7 @@ async fn unbounded_default_admits_beyond_old_concurrency_with_explicit_credit_co
         let mut addresses = Vec::new();
         for index in 0..ACTORS {
             let address = spawn_with(&store, &format!("unbounded-{index}"), &[b"emit"]).await?;
-            runtime.track(address.clone())?;
+            runtime.host(address.clone())?;
             addresses.push(address);
         }
         let mut entered = handler.entered.subscribe();
@@ -72,7 +72,7 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
         let mut actors = Vec::new();
         for index in 0..6 {
             let address = spawn_with(&store, &format!("finite-{index}"), &[b"emit"]).await?;
-            runtime.track(address.clone())?;
+            runtime.host(address.clone())?;
             actors.push(address);
         }
         {

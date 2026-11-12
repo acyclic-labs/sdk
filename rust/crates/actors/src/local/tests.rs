@@ -1223,7 +1223,8 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
         let initial = store.load(&address).await?;
         let journal = StreamPath::new(format!("{}/journal", initial.path()))?;
         let initial_tail = initial.tail;
-        let wake_from = provider.tail(store.root().clone()).await?;
+        let wakes_path = store.activation_record(&address)?.0;
+        let wake_from = provider.tail(wakes_path.clone()).await?;
         let mut binding = store.bind_state(initial, 1)?;
         assert_eq!(binding.seed()?.journal_tail, "0");
         binding.transaction(|state| {
@@ -1282,10 +1283,10 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
         let confirmed = binding.finish()?;
         assert_eq!(confirmed.tail, initial_tail + 1);
         assert_eq!(confirmed.state().ok_or("missing state")?.journal_tail(), 2);
-        assert_eq!(provider.tail(store.root().clone()).await?, wake_from + 1);
+        assert_eq!(provider.tail(wakes_path.clone()).await?, wake_from + 1);
         let mut wakes = provider
             .read(ReadRequest {
-                path: store.root().clone(),
+                path: wakes_path,
                 from: wake_from,
                 limit: 1,
                 key: None,

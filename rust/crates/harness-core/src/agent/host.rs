@@ -803,9 +803,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// pending input runs without waiting for activation discovery.
     pub fn host(&self, agent: &AgentPath) -> Result<(), Error> {
         let actor = self.actor(agent)?;
-        self.runtime.track(actor.clone()).map_err(actor_error)?;
-        self.runtime.wake(&actor);
-        Ok(())
+        self.runtime.host(actor).map_err(actor_error)
     }
 
     /// Admit execution through the actor-local placement command. Registration

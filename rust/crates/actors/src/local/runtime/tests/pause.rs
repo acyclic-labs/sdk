@@ -32,6 +32,7 @@ async fn pause_active_delivery(producer_lost: bool) -> TestResult {
         &runtime.store,
         &address,
         &slot,
+        None,
         true,
         async {
             parked.fetch_add(1, Ordering::SeqCst);
@@ -384,6 +385,7 @@ async fn completed_unread_failure() -> TestResult {
         Store::new(Arc::clone(&provider), root()?),
         address.clone(),
         runtime.pin(&address)?.ok_or("missing original placement")?,
+        None,
         true,
         std::future::ready(()),
     );
