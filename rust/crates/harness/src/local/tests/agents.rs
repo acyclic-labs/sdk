@@ -2946,20 +2946,20 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     else {
         return Err(Error::Invalid("spawn did not return its child".into()));
     };
-    let settlement = settled(&harness, &child).await.map(|_| ());
-    if let Err(error) = settlement {
-        return Err(Error::Conflict(format!(
-            "child write did not settle: {error}; model_requests={}; child_state={:?}",
-            provider.request_count(),
-            agents.state(&child).await,
-        )));
-    }
-    let child_state = agents.state(&child).await.map_err(agent)?;
+    let history = settled(&harness, &child).await?;
+    let entry = ConversationEntry::decode(
+        history
+            .last()
+            .ok_or_else(|| Error::NotFound("child task completion".into()))?,
+    )
+    .map_err(agent)?;
     assert_eq!(
-        provider.request_count(),
-        2,
-        "child task did not reach its bound model: {child_state:?}"
+        entry.outcome,
+        crate::agent::TurnOutcome::Completed,
+        "child task must complete before inspecting its catalog and writes"
     );
+    let child_state = agents.state(&child).await.map_err(agent)?;
+    assert_eq!(provider.request_count(), 2);
     let child_file = publication(&connection, &child, 0).await?;
     let child_project = child_state
         .volumes
