@@ -508,7 +508,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
     .await?;
     let mut parent = ObservedConversation::open(&harness).await?;
     parent.send("prefix", "decision point").await?;
-    let prefix = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
+    let prefix = records(agents.provider(), root.conversation().map_err(agent)?).await?;
     let saved = crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 0).await?;
     assert!(saved.live_children);
     workspace
@@ -546,7 +546,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
         let state = agents.state(&child).await.map_err(agent)?;
         assert!(state.open_children.is_empty());
         assert_eq!(
-            records(&**agents.provider(), child.conversation().map_err(agent)?).await?,
+            records(agents.provider(), child.conversation().map_err(agent)?).await?,
             prefix
         );
         let creation = state.profile.as_ref().expect("decider creation");
@@ -650,7 +650,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
                 b"at cut".as_slice()
             }
         );
-        let history = records(&**agents.provider(), child.conversation().map_err(agent)?).await?;
+        let history = records(agents.provider(), child.conversation().map_err(agent)?).await?;
         assert_eq!(&history[..prefix.len()], prefix.as_slice());
         assert_eq!(history.len(), prefix.len() + 1);
         if operation == "treatment" {
@@ -708,25 +708,42 @@ fn input_content<'a>(
         .ok_or_else(|| Error::NotFound("committed input absent from model request".into()))
 }
 
-async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<Vec<u8>>> {
-    match stream
-        .read(ReadRequest {
-            key: None,
-            path,
-            from: 0,
-            limit: 16,
-            at_least: Default::default(),
-        })
-        .await
-    {
-        Ok(records) => Ok(records
-            .map_ok(|record| record.value.to_vec())
-            .try_collect()
-            .await
-            .map_err(agent)?),
-        Err(StreamError::NotFound) => Ok(Vec::new()),
-        Err(error) => Err(agent(error)),
+async fn records<P: StreamProvider + ?Sized>(
+    stream: &Arc<P>,
+    path: StreamPath,
+) -> Result<Vec<Vec<u8>>> {
+    let tail = match stream.tail(path.clone()).await {
+        Ok(tail) => tail,
+        Err(StreamError::NotFound) => return Ok(Vec::new()),
+        Err(error) => return Err(agent(error)),
+    };
+    let mut replay = acyclic_stream::Stream::new(Arc::clone(stream), path.as_str())
+        .map_err(agent)?
+        .replay(0)
+        .until(tail);
+    let mut values = Vec::new();
+    while let Some(page) = replay.next_page().await.map_err(agent)? {
+        values.extend(page.into_iter().map(|record| record.value.to_vec()));
     }
+    Ok(values)
+}
+
+#[tokio::test]
+async fn conversation_records_include_the_complete_committed_prefix() -> Result<()> {
+    let provider = Arc::new(acyclic_stream::MemoryStream::default());
+    let stream = acyclic_stream::Stream::new(Arc::clone(&provider), "captured-conversation")
+        .map_err(agent)?;
+    let expected = (0_u8..17).map(|value| vec![value]).collect::<Vec<_>>();
+    stream
+        .append_batch(
+            expected.iter().cloned().map(Into::into).collect(),
+            None,
+            acyclic_stream::IdempotencyKey::unique(),
+        )
+        .await
+        .map_err(agent)?;
+    assert_eq!(records(&provider, stream.path().clone()).await?, expected);
+    Ok(())
 }
 
 /// The root's conversation once it has settled every input sent before
@@ -746,7 +763,7 @@ pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Re
         if let Some(input) = inbox.checked_sub(1) {
             agents.wait_for_input(root, input).await.map_err(agent)?;
         }
-        records(&**agents.provider(), root.conversation().map_err(agent)?).await
+        records(agents.provider(), root.conversation().map_err(agent)?).await
     };
     tokio::select! {
         biased;
@@ -1195,7 +1212,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     // The same intent replays its commit at the same sequence; no second turn runs.
     assert_eq!(client.send("hello", "hello").await?, inbox);
-    assert_eq!(records(&**agents.provider(), conversation).await?.len(), 1);
+    assert_eq!(records(agents.provider(), conversation).await?.len(), 1);
     // The status-only follow retains the opening frontier through later tool
     // publications and observes archive without a conversation or output reader.
     agents
@@ -1419,7 +1436,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     );
     assert_eq!(
         records(
-            &**hosted.agents().provider(),
+            hosted.agents().provider(),
             hosted.root().conversation().map_err(agent)?
         )
         .await?
@@ -2246,7 +2263,7 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
         "archived physical binding survived its committed close"
     );
     assert_eq!(
-        records(&**agents.provider(), child.conversation().map_err(agent)?).await?,
+        records(agents.provider(), child.conversation().map_err(agent)?).await?,
         *history
     );
     let output = Conversation::read(
@@ -3187,8 +3204,8 @@ async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
     let inline = serde_json::to_vec(&listed).map_err(agent)?;
     // The records carry one reference rather than the full inline manifest.
     let (agents, root) = harness.agents().await?;
-    let entries = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
-    let inbox = records(&**agents.provider(), root.inbox().map_err(agent)?).await?;
+    let entries = records(agents.provider(), root.conversation().map_err(agent)?).await?;
+    let inbox = records(agents.provider(), root.inbox().map_err(agent)?).await?;
     for record in inbox.iter().chain(&entries) {
         assert!(record.len() < inline.len());
     }
@@ -3700,7 +3717,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         matches!(replay, crate::client::AgentReply::Delivered { delivery: Delivered::Committed { inbox: repeated } } if repeated == inbox)
     );
     settlement(&mut observed, inbox).await?;
-    let entries = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
+    let entries = records(agents.provider(), root.conversation().map_err(agent)?).await?;
     assert_eq!(entries.len(), 3);
     let restored =
         crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 2).await?;
@@ -3965,7 +3982,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     assert_eq!(saved.context.tail, 2);
     assert_eq!(saved.context.path.as_str(), format!("{child}/context/1"));
     assert_eq!(
-        records(&**agents.provider(), root.conversation().map_err(agent)?)
+        records(agents.provider(), root.conversation().map_err(agent)?)
             .await?
             .len(),
         3
@@ -4127,7 +4144,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         }
     }
     let (agents, root) = harness.agents().await?;
-    let source = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
+    let source = records(agents.provider(), root.conversation().map_err(agent)?).await?;
     assert_eq!(source.len(), 2);
     let connection = harness.connect_sessions().await?;
     let request = AgentCommand::ForkSession {
@@ -4158,7 +4175,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
             .paused()
     );
     assert_eq!(
-        records(&**agents.provider(), branch.conversation().map_err(agent)?).await?,
+        records(agents.provider(), branch.conversation().map_err(agent)?).await?,
         source[..1]
     );
     let selected_branch = Conversation::open(connection.select(branch.clone()).await?);
@@ -4215,7 +4232,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         b"after cut"
     );
     assert_eq!(
-        records(&**agents.provider(), root.conversation().map_err(agent)?).await?,
+        records(agents.provider(), root.conversation().map_err(agent)?).await?,
         source
     );
     let AgentReply::Root { agent: replay } = connection.execute(&request).await? else {
@@ -4246,11 +4263,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         ));
     };
     assert_eq!(
-        records(
-            &**agents.provider(),
-            repeated.conversation().map_err(agent)?
-        )
-        .await?,
+        records(agents.provider(), repeated.conversation().map_err(agent)?).await?,
         source[..1]
     );
     assert_eq!(
@@ -4298,7 +4311,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         .await?;
     assert_eq!(provider.requests().len(), 3);
     assert_eq!(
-        records(&**agents.provider(), root.conversation().map_err(agent)?).await?,
+        records(agents.provider(), root.conversation().map_err(agent)?).await?,
         source
     );
     let source_conversation = Conversation::open(connection.select(root.clone()).await?);

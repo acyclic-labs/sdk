@@ -86,10 +86,11 @@ mod replay_tests {
     use super::*;
     use futures::StreamExt as _;
 
-    /// Delegates to memory but drops one sequence from every read, as a
+    /// Delegates to real memory and injects missing or extra records.
     struct Gapped {
         inner: MemoryStream,
         missing: u64,
+        extra_records: u32,
     }
 
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -120,12 +121,29 @@ mod replay_tests {
         }
 
         async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+            let extra = if self.extra_records == 0 {
+                None
+            } else {
+                let mut extra = request.clone();
+                extra.from = extra
+                    .from
+                    .checked_add(u64::from(extra.limit))
+                    .ok_or(StreamError::LimitExceeded)?;
+                extra.limit = self.extra_records;
+                Some(self.inner.read(extra).await?)
+            };
             let missing = self.missing;
             let records = self.inner.read(request).await?;
             Ok(records.map_cursor(|records| {
-                Box::pin(records.filter(move |record| {
-                    std::future::ready(!matches!(record, Ok(record) if record.sequence == missing))
-                }))
+                Box::pin(
+                    records
+                        .chain(futures::stream::iter(extra).flatten())
+                        .filter(move |record| {
+                            std::future::ready(
+                                !matches!(record, Ok(record) if record.sequence == missing),
+                            )
+                        }),
+                )
             }))
         }
         async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
@@ -148,6 +166,7 @@ mod replay_tests {
         let provider = Gapped {
             inner: MemoryStream::default(),
             missing: u64::MAX,
+            extra_records: 0,
         };
         let path = StreamPath::new("native-refusal")?;
         let request = AppendRequest {
@@ -293,15 +312,85 @@ mod replay_tests {
             drain(&mut replay).await.unwrap(),
             (1_500..2_500).collect::<Vec<_>>()
         );
+        let tail = stream.tail().await.unwrap();
+        let mut replay = stream.replay(0).until(tail);
+        let first = replay.next_page().await.unwrap().unwrap();
+        assert!(
+            replay.cursor() < tail,
+            "append must occur between replay pages"
+        );
+        stream
+            .append("later", IdempotencyKey::unique())
+            .await
+            .unwrap();
+        let mut prefix = first
+            .into_iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>();
+        prefix.extend(drain(&mut replay).await.unwrap());
+        assert_eq!(prefix, (0..tail).collect::<Vec<_>>());
+        assert_eq!(replay.cursor(), tail);
+        assert!(replay.next_page().await.unwrap().is_none());
+        for end in [0, 1_499, 1_500] {
+            assert!(
+                drain(&mut stream.replay(1_500).until(end))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert_eq!(drain(&mut stream.replay(tail)).await.unwrap(), [tail]);
+        assert_eq!(
+            drain(&mut stream.replay(0).until(tail + 2)).await,
+            Err(StreamError::Unavailable)
+        );
     }
 
     #[tokio::test]
     async fn gaps_within_and_between_pages_fail_closed() {
-        for missing in [7, u64::from(REPLAY_PAGE)] {
+        for (missing, cursor) in [(7, 0), (u64::from(REPLAY_PAGE), u64::from(REPLAY_PAGE))] {
             let inner = MemoryStream::new(MemoryLimits::default());
-            let stream = filled(Gapped { inner, missing }, 2_100).await;
+            let stream = filled(
+                Gapped {
+                    inner,
+                    missing,
+                    extra_records: 0,
+                },
+                2_100,
+            )
+            .await;
             let mut replay = stream.replay(0);
             assert_eq!(drain(&mut replay).await, Err(StreamError::Unavailable));
+            assert_eq!(
+                replay.cursor(),
+                cursor,
+                "a refused page advanced its cursor"
+            );
+            assert_eq!(
+                drain(&mut stream.replay(0).until(missing)).await.unwrap(),
+                (0..missing).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                drain(&mut stream.replay(0).until(missing + 1)).await,
+                Err(StreamError::Unavailable)
+            );
+        }
+        let stream = filled(
+            Gapped {
+                inner: MemoryStream::default(),
+                missing: u64::MAX,
+                extra_records: 1,
+            },
+            2_500,
+        )
+        .await;
+        for end in [None, Some(7), Some(2_500)] {
+            let mut replay = stream.replay(0);
+            if let Some(end) = end {
+                replay = replay.until(end);
+            }
+            assert_eq!(drain(&mut replay).await, Err(StreamError::Unavailable));
+            assert_eq!(replay.cursor(), 0, "an overlong page advanced its cursor");
         }
     }
 }

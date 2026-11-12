@@ -183,6 +183,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         Replay {
             stream: self.clone(),
             next: from,
+            until: None,
             done: false,
         }
     }
@@ -218,29 +219,57 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
 pub struct Replay<P: ?Sized> {
     stream: Stream<P>,
     next: u64,
+    until: Option<u64>,
     done: bool,
 }
 
 impl<P: StreamProvider + ?Sized> Replay<P> {
+    /// Stops before `sequence`, even if the stream grows while pages are read.
+    /// An end at or before the cursor is empty; an incomplete prefix refuses.
+    #[must_use]
+    pub fn until(mut self, sequence: u64) -> Self {
+        self.until = Some(sequence);
+        self
+    }
+
     /// The next page in order, or `None` once the tail is reached.
     pub async fn next_page(&mut self) -> Result<Option<Vec<Record>>, StreamError> {
-        use futures::TryStreamExt as _;
-        if self.done {
+        use futures::{StreamExt as _, TryStreamExt as _};
+        if self.done || self.until.is_some_and(|end| self.next >= end) {
+            self.done = true;
             return Ok(None);
         }
-        let page = match self.stream.read(self.next, REPLAY_PAGE).await {
-            Ok(records) => records.try_collect::<Vec<_>>().await?,
+        let limit = match self.until {
+            Some(end) => u32::try_from((end - self.next).min(u64::from(REPLAY_PAGE)))
+                .map_err(|_| StreamError::LimitExceeded)?,
+            None => REPLAY_PAGE,
+        };
+        let page = match self.stream.read(self.next, limit).await {
+            Ok(records) => {
+                records
+                    .take(limit as usize + 1)
+                    .try_collect::<Vec<_>>()
+                    .await?
+            }
             Err(error) if error.category() == StreamError::NotFound && self.next == 0 => Vec::new(),
             Err(error) => return Err(error),
         };
+        if page.len() > limit as usize {
+            return Err(StreamError::Unavailable);
+        }
+        let mut next = self.next;
         for record in &page {
-            if record.sequence != self.next {
+            if record.sequence != next || self.until.is_some_and(|end| next >= end) {
                 return Err(StreamError::Unavailable);
             }
-            self.next = self.next.checked_add(1).ok_or(StreamError::LimitExceeded)?;
+            next = next.checked_add(1).ok_or(StreamError::LimitExceeded)?;
         }
-        self.done = page.is_empty();
-        Ok((!self.done).then_some(page))
+        if page.is_empty() && self.until.is_some_and(|end| next < end) {
+            return Err(StreamError::Unavailable);
+        }
+        self.next = next;
+        self.done = page.is_empty() || self.until == Some(self.next);
+        Ok((!page.is_empty()).then_some(page))
     }
 
     /// The sequence after the last record returned.
