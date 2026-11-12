@@ -224,9 +224,9 @@ pub async fn prompt_settled(
     let mut events = conversation.observe(None).await?;
     let inbox = conversation.send(id, prompt).await?;
     let mut phase = None;
-    let entry = loop {
+    let (sequence, entry) = loop {
         let dropped = match conversation.reply(id, inbox).await? {
-            Reply::Answered { entry, .. } => break entry,
+            Reply::Answered { sequence, entry, .. } => break (sequence, entry),
             Reply::Dropped => true,
             Reply::Pending | Reply::Continuing { .. } => false,
         };
@@ -272,12 +272,7 @@ pub async fn prompt_settled(
     if let TurnOutcome::Failed { message } = &entry.outcome {
         return Ok(PromptOutcome::Failed(message.clone()));
     }
-    let bytes = harness
-        .client_reader()?
-        .read(&entry.output, 1 << 20, None, None)?
-        .await?;
-    let output =
-        serde_json::from_slice(&bytes).map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    let output = conversation.output_at(sequence, &entry).await?;
     Ok(PromptOutcome::Settled(entry, output))
 }
 

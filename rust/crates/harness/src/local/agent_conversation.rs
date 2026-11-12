@@ -790,31 +790,17 @@ impl Conversation {
         Ok(totals)
     }
 
-    /// A settled turn as a view shows it: its prompt, its tool calls and its
-    /// answer, from the entry's input and its one output record.
-    ///
-    /// # Errors
-    /// Session, host or decoding failures.
-    pub async fn turn(&self, entry: &ConversationEntry) -> Result<Turn> {
-        self.selected_turn(entry, None).await
-    }
-
     /// Render a turn with its original committed sequence as the exact-file
     /// proof. This also reads inherited turns without source-volume authority.
+    ///
+    /// # Errors
+    /// Original record, file authorization, host or decoding failures.
     pub async fn turn_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<Turn> {
-        self.selected_turn(entry, Some(sequence)).await
-    }
-
-    async fn selected_turn(
-        &self,
-        entry: &ConversationEntry,
-        sequence: Option<u64>,
-    ) -> Result<Turn> {
         let prompt = match &entry.input {
-            TurnInput::Message { body, .. } => Some(self.selected_text(body, sequence).await?),
+            TurnInput::Message { body, .. } => Some(self.selected_text(body, Some(sequence)).await?),
             _ => None,
         };
-        let output = self.output(entry, sequence).await?;
+        let output = self.output_at(sequence, entry).await?;
         Ok(Turn {
             prompt,
             tools: output.tool_cards(),
@@ -828,17 +814,16 @@ impl Conversation {
     ///
     /// # Errors
     /// Session, host or output decoding failures.
-    pub async fn output_text(&self, entry: &ConversationEntry) -> Result<String> {
-        Ok(self.output(entry, None).await?.text)
-    }
-
-    /// Read an inherited output with its exact committed record as proof.
     pub async fn output_text_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<String> {
-        Ok(self.output(entry, Some(sequence)).await?.text)
+        Ok(self.output_at(sequence, entry).await?.text)
     }
 
-    async fn output(&self, entry: &ConversationEntry, sequence: Option<u64>) -> Result<TurnOutput> {
-        let output = self.selected_text(&entry.output, sequence).await?;
+    /// Reads every output field through its original committed record proof.
+    ///
+    /// # Errors
+    /// Original record, file authorization, host or output decoding failures.
+    pub async fn output_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<TurnOutput> {
+        let output = self.selected_text(&entry.output, Some(sequence)).await?;
         serde_json::from_str(&output).map_err(failed)
     }
 

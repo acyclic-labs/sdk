@@ -528,8 +528,10 @@ pub(super) async fn prompt(
     // Subscribed first, so a committed reply cannot lose its original event.
     loop {
         let reason = match conversation.settle(operation, inbox, &mut events).await? {
-            Settlement::Reply(Reply::Answered { entry, .. }) => {
-                return print(conversation, &entry, output).await;
+            Settlement::Reply(Reply::Answered {
+                sequence, entry, ..
+            }) => {
+                return print(conversation, sequence, &entry, output).await;
             }
             Settlement::Reply(_) => conversation.dropped().await?,
             Settlement::Ended(reason) => reason,
@@ -606,10 +608,11 @@ async fn announce_approval(
 /// Prints the prompt's settled text and returns its committed outcome.
 async fn print(
     conversation: &Conversation,
+    sequence: u64,
     entry: &ConversationEntry,
     output: &mut Output,
 ) -> Result<(), Failure> {
-    let mut text = conversation.output_text(entry).await?;
+    let mut text = conversation.output_text_at(sequence, entry).await?;
     text.push('\n');
     output.write(conversation.task(), text.into_bytes()).await?;
     match &entry.outcome {
@@ -623,10 +626,11 @@ async fn print(
 async fn answer(
     conversation: &Conversation,
     id: &str,
+    sequence: u64,
     entry: &ConversationEntry,
     inbox: u64,
 ) -> Result<Value, Failure> {
-    let text = conversation.output_text(entry).await?;
+    let text = conversation.output_text_at(sequence, entry).await?;
     Ok(json!({"id": id, "inbox": inbox, "text": text}))
 }
 
@@ -638,18 +642,25 @@ async fn settled(
     reply: Reply,
 ) -> Result<Option<Value>, Failure> {
     Ok(match reply {
-        Reply::Answered { entry, origin, .. } => {
+        Reply::Answered {
+            sequence,
+            entry,
+            origin,
+            ..
+        } => {
             let inbox = origin.as_ref().map_or(entry.inbox, |origin| origin.inbox);
             // Only a completed turn is an answer. A cancelled or failed turn's
             // partial output is never a result, so it cannot replace a final
             // artifact.
             match &entry.outcome {
-                TurnOutcome::Completed => Some(answer(conversation, id, &entry, inbox).await?),
+                TurnOutcome::Completed => {
+                    Some(answer(conversation, id, sequence, &entry, inbox).await?)
+                }
                 TurnOutcome::Cancelled => {
                     Some(json!({"id": id, "inbox": inbox, "error": "turn cancelled"}))
                 }
                 TurnOutcome::RestoreConflict => {
-                    let text = conversation.output_text(&entry).await?;
+                    let text = conversation.output_text_at(sequence, &entry).await?;
                     Some(json!({"id": id, "inbox": inbox, "error": text}))
                 }
                 TurnOutcome::Failed { message } => {

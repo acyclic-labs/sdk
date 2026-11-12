@@ -2139,7 +2139,7 @@ mod tests {
         forked.wait_current_input().await?;
         let inherited = forked.entries(0, 1).await?;
         assert!(
-            forked.turn(&inherited[0]).await.is_err(),
+            forked.text(&inherited[0].output).await.is_err(),
             "an inherited file needs its original conversation proof"
         );
         let page = older(Arc::clone(&forked), 0, 0, 1).await?;

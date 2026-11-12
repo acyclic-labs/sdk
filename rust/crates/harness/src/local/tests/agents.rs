@@ -380,7 +380,10 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
                 return Err(Error::Invalid(format!(
                     "input settled before its expected approval: {:?}; {}; original tool failures: {failures:?}",
                     entry.outcome,
-                    client.turn(&entry).await?.answer
+                    client
+                        .turn_at(observed.observer.seen() - 1, &entry)
+                        .await?
+                        .answer
                 )));
             }
             Some(crate::local::Event::Status(StatusRecord {
@@ -973,7 +976,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         "settled producer outcome: {:?}",
         entry.outcome
     );
-    let turn = client.turn(&entry).await?;
+    let turn = client.turn_at(0, &entry).await?;
     assert_eq!(
         (turn.prompt.as_deref(), turn.answer.as_str()),
         (Some("hello"), "done")
@@ -997,10 +1000,10 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         return Err(Error::Invalid("the settled input is not a prompt".into()));
     };
     **body = absent(body)?;
-    assert!(client.turn(&output_only).await.is_err());
-    assert_eq!(client.output_text(&output_only).await?, "done");
+    assert!(client.turn_at(0, &output_only).await.is_err());
+    assert_eq!(client.output_text_at(0, &output_only).await?, "done");
     output_only.output = absent(&entry.output)?;
-    assert!(client.output_text(&output_only).await.is_err());
+    assert!(client.output_text_at(0, &output_only).await.is_err());
     // The same live query started before this input. Its exact completion
     // replaces the original admission, rather than counting another call.
     while inspection.snapshot().usage.completed == 0 {
@@ -2694,7 +2697,10 @@ async fn a_prompt_past_two_frames_is_accepted_and_reads_back_exactly() -> Result
     assert!(prompt.len() > 2 * MAX_AGENT_COMMAND_BYTES);
     let inbox = client.send("large", &prompt).await?;
     let entry = observed.settled(inbox).await?;
-    let read = client.turn(&entry).await?.prompt;
+    let read = client
+        .turn_at(observed.observer.seen() - 1, &entry)
+        .await?
+        .prompt;
     assert!(read.as_deref() == Some(prompt.as_str()));
     // A resend is the same delivery.
     assert_eq!(client.send("large", &prompt).await?, inbox);
@@ -3864,7 +3870,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     );
     assert!(
         client
-            .turn(&refusal)
+            .turn_at(observed.observer.seen() - 1, &refusal)
             .await?
             .answer
             .contains("expected project heads changed")
@@ -4034,7 +4040,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     assert_eq!(refusal.outcome, TurnOutcome::RestoreConflict);
     assert!(
         client
-            .turn(&refusal)
+            .turn_at(observed.observer.seen() - 1, &refusal)
             .await?
             .answer
             .contains("cannot replace the current access policy")
@@ -4214,7 +4220,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let inherited = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let branched = ConversationEntry::decode(&entries[1]).map_err(agent)?;
     assert!(matches!(branched.input, TurnInput::Brief { .. }));
-    assert_eq!(client.turn(&inherited).await?.answer, "answer 0");
+    assert_eq!(client.turn_at(0, &inherited).await?.answer, "answer 0");
     let saved =
         crate::filesystem::history_checkpoint(agents.provider().as_ref(), &child, 1).await?;
     assert_eq!(saved.context.tail, 2);

@@ -1079,13 +1079,18 @@ mod tests {
             release
                 .send(())
                 .map_err(|()| Error::Storage("model gate ended".into()))?;
-            let Settlement::Reply(crate::agent::Reply::Answered { entry, .. }) = second
+            let Settlement::Reply(crate::agent::Reply::Answered {
+                sequence, entry, ..
+            }) = second
                 .settle("shared-operation", inbox, &mut events)
                 .await?
             else {
                 return Err(Error::Invalid("shared prompt did not settle".into()));
             };
-            assert_eq!(second.output_text(&entry).await?, "settled after detach");
+            assert_eq!(
+                second.output_text_at(sequence, &entry).await?,
+                "settled after detach"
+            );
             assert_eq!(provider.request_count(), 1);
             assert_eq!(std::fs::read(&stray).map_err(storage)?, untrusted);
             loop {

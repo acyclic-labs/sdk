@@ -595,9 +595,9 @@ async fn trial(
     let fork = Conversation::open(connection.select(agent.clone()).await?);
     // The fork inherits entries 0..=at; its brief settles as the next one.
     let mut events = fork.observe(Some(at + 1)).await?;
-    let entry = loop {
+    let (sequence, entry) = loop {
         match events.next().await? {
-            Event::Turn(entry) => break entry,
+            Event::Turn(entry) => break (events.seen() - 1, entry),
             Event::Status(status) => {
                 if let Some(reason) = super::agent_conversation::ended(&status) {
                     return Ok(failed(agent, reason, None));
@@ -638,7 +638,7 @@ async fn trial(
             cost_usd,
         ));
     }
-    let text = fork.output_text(&entry).await?;
+    let text = fork.output_text_at(sequence, &entry).await?;
     Ok(match Decision::decode(text.as_bytes()) {
         Ok(decision) => Trial {
             agent: Some(agent),

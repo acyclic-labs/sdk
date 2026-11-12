@@ -275,12 +275,12 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                 )?,
                 inbox
             );
-            let entry = loop {
+            let (sequence, entry) = loop {
                 if let Event::Turn(entry) = checked(phase, "follow-turn", observer.next().await)? {
-                    break entry;
+                    break (observer.seen() - 1, entry);
                 }
             };
-            let turn = checked(phase, "read-turn", conversation.turn(&entry).await)?;
+            let turn = checked(phase, "read-turn", conversation.turn_at(sequence, &entry).await)?;
             assert_eq!(
                 (
                     turn.prompt.as_deref(),
