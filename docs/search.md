@@ -44,7 +44,8 @@ Mounted files use the same literal query and work budget:
 
 ```text
 fs grep 'accepted patch' --volume private --directory decisions --page-size 64
-fs grep 'accepted patch' --volume private --file decisions/body.txt --cursor TOKEN
+fs grep 'accepted patch' --volume private --directory decisions --page-size 64 --cursor TOKEN
+fs grep 'accepted patch' --volume private --file decisions/body.txt
 ```
 
 Without a path option the selected mounted directory is searched. File and
