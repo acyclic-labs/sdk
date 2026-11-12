@@ -53,6 +53,8 @@ pub mod experiments;
 pub mod input_watch;
 #[cfg(feature = "metrics-export")]
 pub use executor::metrics;
+#[cfg(not(target_arch = "wasm32"))]
+mod computed_watch;
 pub mod evals;
 pub mod extension;
 pub mod filesystem;
