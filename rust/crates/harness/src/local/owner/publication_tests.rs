@@ -146,7 +146,7 @@ async fn legacy_native_preparation_refuses_before_checkout_attachment() -> Resul
         SigningCustody::Store(store.as_ref()),
         None,
     )?;
-    let old_record = state.join("owner.v3");
+    let old_record = state.join("owner.v4");
     fs::rename(state.join(RECORD), &old_record).map_err(storage)?;
     let original = fs::read(&old_record).map_err(storage)?;
     let config = LocalHarnessConfig::native_host(&path)

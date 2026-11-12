@@ -45,15 +45,17 @@ numeric statuses. Apple interaction-not-allowed is
 InteractionRequired(-25308); it cannot distinguish a locked keychain from an
 unavailable prompt. Credential contents never enter diagnostics.
 
-The current owner.v4 record admits external native preparation and retains
+The current owner.v5 record admits external native preparation and host-owned
+interaction journals, and retains
 the same store-owned seed reference. If that record is absent but owner.json,
-owner.v2 or owner.v3 exists, both opening and explicit deletion
+owner.v2, owner.v3 or owner.v4 exists, both opening and explicit deletion
 return Error::Conflict with: local state at <dir> uses an older format; remove
 that directory to start fresh. Refusal happens before decoding the older
 record or accessing credentials, and leaves its bytes unchanged. There is
 no compatible reader, migration, adoption, or silent key regeneration.
 This refusal precedes filesystem attachment, lazy discovery and checkout
 capture: a v3 owner can retain interrupted v5 target/backup data inside the
-checkout. Finish or discard that recovery using its original runtime before
+checkout, and a v4 owner can retain interaction records in an authored volume.
+Finish or discard that recovery using its original runtime before
 starting fresh. A former recovery basename in a workspace with current state
 is an ordinary authored name; admission never probes or filters it.

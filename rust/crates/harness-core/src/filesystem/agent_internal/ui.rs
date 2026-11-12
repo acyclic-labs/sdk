@@ -50,7 +50,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> AgentInter
                     Publication::Files { files } => files,
                 };
                 for file in publications {
-                    if file.volume() == &self.volume && file.path().starts_with("ui/") {
+                    if file.volume() == &self.public_volume && file.path().starts_with("ui/") {
                         files.insert(file.path().to_owned(), file);
                     }
                 }
@@ -59,7 +59,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> AgentInter
         if files.is_empty() {
             return Ok(None);
         }
-        let head = self.head().await?;
+        let head = self
+            .volume_head(&self.public_volume, &self.public_grant)
+            .await?;
         for (path, file) in files {
             // The journal already owns authenticated reads of this private
             // volume's pinned receipts; the internal file grant is write-only.

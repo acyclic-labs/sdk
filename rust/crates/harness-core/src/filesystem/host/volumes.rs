@@ -270,6 +270,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
     }
 
+    fn initialization_for(&self, volume: &VolumeRef) -> acyclic_fs::VolumeInitialization<'static> {
+        let mut initialization = self.volume_initialization();
+        if volume.is_agent_journal() {
+            initialization.access_policy = Some(include_bytes!("journal-policy.json"));
+        }
+        initialization
+    }
+
     /// The one storage name and creation operation of fresh `volume` on this
     /// host, so every path creating it (alone or within another commit) names
     /// the identical generation and a retry replays exactly.
@@ -284,8 +292,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let name = volume.storage_name(&mut None)?;
-        let digest =
-            blake3::derive_key("acyclic harness volume initialization v1", name.as_bytes());
+        let domain = if volume.is_agent_journal() {
+            "acyclic harness protected journal initialization v1"
+        } else {
+            "acyclic harness volume initialization v1"
+        };
+        let digest = blake3::derive_key(domain, name.as_bytes());
         let mut operation = [0; 16];
         operation.copy_from_slice(&digest[..16]);
         Ok((name, acyclic_fs::OperationId::from_bytes(operation)))
@@ -305,7 +317,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .map_err(|failure| map_error(failure.error))?
             .value,
-            initialization: self.volume_initialization(),
+            initialization: self.initialization_for(volume),
             creation: acyclic_fs::CreationOperation::populated(operation, &[]),
         })
     }
@@ -329,7 +341,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             self.filesystem
                 .create_workspace_with_operation::<_, (), WorkspaceError>(
                     &name,
-                    self.volume_initialization(),
+                    self.initialization_for(volume),
                     operation,
                     acyclic_fs::WorkBudget::UNBOUNDED,
                     &cancellation,

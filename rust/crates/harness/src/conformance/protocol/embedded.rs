@@ -113,6 +113,7 @@ pub async fn open<B: Backend + ?Sized>(
         &Capabilities::new([
             grant,
             acyclic_harness_core::contract::capability::INTERACTION_ROUTE.to_owned(),
+            acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
         ]),
         None,
         &mut None,

@@ -91,7 +91,9 @@ pub enum TurnAdmission {
     LocalRoot,
     /// A workload scope admitted under `audience`. Each agent's scope is
     /// delegated from it, keeping its audience, agent and lifetime, and grants
-    /// only what it admits: a read-only admission cannot write.
+    /// only what it admits: a read-only admission cannot write. The host
+    /// requires journal read/write and the signed `role:harness-host` claim;
+    /// guest scopes always remove that claim.
     Admitted {
         /// The audience the admitted scope was issued for.
         audience: Authority,
@@ -140,6 +142,7 @@ pub(super) struct AdmittedAgent<'v> {
     owner: crate::AgentId,
     volumes: &'v [WorkspaceEntry],
     private: &'v WorkspaceEntry,
+    journal: VolumeRef,
     /// Original immutable admission; attestation occurs only when needed.
     parent: Option<&'v Scope>,
 }
@@ -190,13 +193,50 @@ impl<'v> AdmittedAgent<'v> {
                 VolumeOperation::Write,
                 &mut None,
             )?;
-            require_structured_write(scope, owner, private.volume()?)?;
+            require_structured_access(
+                scope,
+                owner,
+                private.volume()?,
+                &[
+                    acyclic_fs::access::Action::Create,
+                    acyclic_fs::access::Action::Write,
+                ],
+            )?;
+            if !scope
+                .capabilities()
+                .contains(crate::contract::capability::HARNESS_HOST)
+            {
+                return Err(Error::Unauthorized(
+                    "admission has no host journal custody".into(),
+                ));
+            }
+            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+                crate::conversation::ContentGrant::authorize_agent_volume(
+                    &issuer.verifier(&mut None)?,
+                    scope,
+                    owner,
+                    &journal,
+                    operation,
+                    &mut None,
+                )?;
+            }
+            require_structured_access(
+                scope,
+                owner,
+                &journal,
+                &[
+                    acyclic_fs::access::Action::Read,
+                    acyclic_fs::access::Action::Create,
+                    acyclic_fs::access::Action::Write,
+                ],
+            )?;
         }
         Ok(Self {
             issuer,
             owner,
             volumes,
             private,
+            journal,
             parent,
         })
     }
@@ -206,34 +246,48 @@ impl<'v> AdmittedAgent<'v> {
     /// result from another agent) is granted alone, by its exact version; an
     /// admitted agent reads what its admission grants.
     pub(super) async fn authority(self, external: &[FileRef]) -> Result<AgentAuthority<'v>> {
-        let Self {
-            issuer,
-            owner,
-            volumes,
-            private,
-            parent,
-        } = self;
-        let (grants, scope) = match parent {
+        let (grants, scope) = match self.parent {
             Some(parent) => {
-                let scope = issuer
-                    .issue(Some(parent), "agent", parent.capabilities(), Some(owner))
+                let grants = Capabilities::new(
+                    parent
+                        .capabilities()
+                        .iter()
+                        .filter(|label| *label != crate::contract::capability::HARNESS_HOST)
+                        .map(str::to_owned),
+                );
+                let scope = self
+                    .issuer
+                    .issue(Some(parent), "agent", &grants, Some(self.owner))
                     .await?;
                 (scope.capabilities().clone(), scope)
             }
             None => {
-                let grants = Capabilities::new(root_grants(volumes, external)?);
-                let scope = issuer.issue(None, "agent", &grants, Some(owner)).await?;
+                let grants = Capabilities::new(root_grants(self.volumes, external)?);
+                let scope = self
+                    .issuer
+                    .issue(None, "agent", &grants, Some(self.owner))
+                    .await?;
                 (grants, scope)
             }
         };
-        let verifier = issuer.verifier(&mut None)?;
+        let verifier = self.issuer.verifier(&mut None)?;
         Ok(AgentAuthority {
-            issuer,
+            issuer: self.issuer,
             scope,
             grants,
             verifier,
-            private,
+            private: self.private,
         })
+    }
+
+    async fn control_scope(&self, content: &Capabilities) -> Result<Scope> {
+        let grants = match self.parent {
+            Some(parent) => parent.capabilities().clone(),
+            None => journal_grants(&self.journal, content)?,
+        };
+        self.issuer
+            .issue(self.parent, "host-journal", &grants, Some(self.owner))
+            .await
     }
 
     /// Pure admission for a proposed volume. Local enrollment already owns
@@ -248,7 +302,15 @@ impl<'v> AdmittedAgent<'v> {
                 VolumeOperation::Write,
                 &mut None,
             )?;
-            require_structured_write(scope, self.owner, volume)?;
+            require_structured_access(
+                scope,
+                self.owner,
+                volume,
+                &[
+                    acyclic_fs::access::Action::Create,
+                    acyclic_fs::access::Action::Write,
+                ],
+            )?;
         } else {
             volume.require_writer(Some(self.owner), &None)?;
         }
@@ -256,22 +318,34 @@ impl<'v> AdmittedAgent<'v> {
     }
 }
 
+/// One host journal grant set shared by local, portable and memory admission.
+pub(super) fn journal_grants(journal: &VolumeRef, content: &Capabilities) -> Result<Capabilities> {
+    Ok(Capabilities::new(content.iter().map(str::to_owned).chain(
+        [
+            crate::contract::capability::HARNESS_HOST.to_owned(),
+            journal.capability(VolumeOperation::Read, &mut None)?,
+            journal.capability(VolumeOperation::Write, &mut None)?,
+        ],
+    )))
+}
+
 /// The filesystem's decision over `scope`'s structured grant, if it has one:
 /// it creates and writes every path of `volume`. It performs no IO; the
 /// writer still applies the volume's persisted policy.
-pub(super) fn require_structured_write(
+pub(super) fn require_structured_access(
     scope: &Scope,
     owner: crate::AgentId,
     volume: &crate::conversation::VolumeRef,
+    actions: &[acyclic_fs::access::Action],
 ) -> Result<()> {
     use acyclic_fs::access::{
-        Action, Capability, Context, INITIAL_POLICY, PathTrie, Policy, Principal, PrincipalKind,
-        Resource,
+        Capability, Context, INITIAL_POLICY, PathTrie, Policy, Principal, PrincipalKind, Resource,
     };
     let Some(label) = crate::core::filesystem_scope_label(scope.capabilities(), &mut None)? else {
         return Ok(());
     };
-    let denied = || Error::Unauthorized("admission does not grant writing the volume".into());
+    let denied =
+        || Error::Unauthorized("admission does not grant the complete volume access".into());
     let capability = Capability::from_scope_label(label)
         .ok()
         .flatten()
@@ -303,7 +377,7 @@ pub(super) fn require_structured_write(
         &capability,
     )
     .map_err(|_| denied())?;
-    if view.allows_every_path(&[Action::Create, Action::Write], now) {
+    if view.allows_every_path(actions, now) {
         Ok(())
     } else {
         Err(denied())
@@ -888,6 +962,12 @@ where
         Arc<AgentInternalFiles<A, O>>,
     )> {
         let local_root = admitted.parent.is_none();
+        let control_volume = admitted.journal.clone();
+        let control_scope = crate::core::until_turn_stopped(
+            stop.clone(),
+            admitted.control_scope(&Capabilities::default()),
+        )
+        .await?;
         let AgentAuthority {
             issuer,
             mut scope,
@@ -963,7 +1043,13 @@ where
             },
         )?
         .with_input_verifier(reader.clone());
-        let internal = self.internal_files(private.volume()?, &verifier, &scope)?;
+        let internal = self.internal_files(
+            &control_volume,
+            private.volume()?,
+            &verifier,
+            &control_scope,
+            &scope,
+        )?;
         Ok((
             journal,
             Bindings {
@@ -983,8 +1069,10 @@ where
     fn internal_files(
         &self,
         volume: &VolumeRef,
+        public_volume: &VolumeRef,
         verifier: &AuthorityVerifier,
         scope: &Scope,
+        public_scope: &Scope,
     ) -> Result<Arc<AgentInternalFiles<A, O>>> {
         Ok(Arc::new(AgentInternalFiles::new(
             Arc::clone(&self.host),
@@ -993,6 +1081,14 @@ where
                 verifier,
                 scope,
                 volume,
+                VolumeOperation::Write,
+                &mut None,
+            )?,
+            public_volume.clone(),
+            crate::conversation::ContentGrant::verify(
+                verifier,
+                public_scope,
+                public_volume,
                 VolumeOperation::Write,
                 &mut None,
             )?,
@@ -1011,33 +1107,17 @@ where
         Arc<FilesystemContentVerifier<A, O>>,
     )> {
         let admitted = self.admit(agent)?;
-        let volume = crate::conversation::journal_volume(
-            admitted.private.volume()?.provider().clone(),
-            &crate::agent::AgentId::from_bytes(admitted.owner.into_bytes()),
-        )?;
-        admitted.authorize_volume(&volume)?;
-        let grants = match admitted.parent {
-            Some(parent) => parent.capabilities().clone(),
-            None => Capabilities::new(
-                [VolumeOperation::Read, VolumeOperation::Write]
-                    .into_iter()
-                    .map(|operation| volume.capability(operation, &mut None))
-                    .chain(retained.iter().map(|file| file.read_capability(&mut None)))
-                    .collect::<Result<Vec<_>>>()?,
-            ),
-        };
-        let scope = admitted
-            .issuer
-            .issue(
-                admitted.parent,
-                "announcements",
-                &grants,
-                Some(admitted.owner),
-            )
-            .await?;
+        let volume = &admitted.journal;
+        let grants = Capabilities::new(
+            retained
+                .iter()
+                .map(|file| file.read_capability(&mut None))
+                .collect::<Result<Vec<_>>>()?,
+        );
+        let scope = admitted.control_scope(&grants).await?;
         let verifier = admitted.issuer.verifier(&mut None)?;
         Ok((
-            self.internal_files(&volume, &verifier, &scope)?,
+            self.internal_files(volume, volume, &verifier, &scope, &scope)?,
             FilesystemContentVerifier::new(
                 Arc::clone(&self.host),
                 &verifier,

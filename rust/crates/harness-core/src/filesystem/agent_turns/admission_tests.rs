@@ -6,6 +6,211 @@ use crate::{
 };
 
 #[tokio::test]
+async fn external_interactions_require_host_custody_even_under_broad_guest_grants() -> Result<()> {
+    use crate::contract::capability::HARNESS_HOST;
+    use crate::conversation::{ContentResidencyVerifier, VolumeOperation};
+    for structured in [false, true] {
+        let path = AgentPath::root(&crate::agent::AgentId::from_bytes([187; 16]));
+        let owner = crate::AgentId::from_bytes(path.id_bytes());
+        let provider =
+            ProviderRef::new("custody".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+        let private = private_volume(provider.clone(), &path.id())?;
+        let journal = crate::conversation::journal_volume(provider, &path.id())?;
+        host.create_volume(&private).await?;
+        host.create_volume(&journal).await?;
+        let volumes = [WorkspaceEntry::initial_volume(
+            crate::agent::WorkspaceRole::Private,
+            PRIVATE_VOLUME.into(),
+            private.clone(),
+        )];
+        let audience = Authority {
+            kind: AggregateKind::Conversation,
+            id: "custody".into(),
+        };
+        let root = AuthorityRoot::new("custody", [188; 32], audience.clone());
+        let mut capabilities = vec![HARNESS_HOST.to_owned()];
+        for volume in [&private, &journal] {
+            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+                capabilities.push(volume.capability(operation, &mut None)?);
+            }
+        }
+        if structured {
+            capabilities.push(
+                acyclic_fs::access::Capability::whole_volume(
+                    None,
+                    &acyclic_fs::access::Action::ALL,
+                )
+                .to_scope_label()
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            );
+        }
+        let parent = root.bootstrap_scope(
+            "host",
+            &Capabilities::new(capabilities),
+            Some(owner),
+            &mut None,
+        )?;
+        let admission = TurnAdmission::Admitted {
+            audience: audience.clone(),
+            scope: parent.clone(),
+        };
+        let issuer = RuntimeAuthority::from(root.clone());
+        let admitted = AdmittedAgent::verify(&issuer, &admission, &path, &volumes)?;
+        let control_scope = admitted.control_scope(&Capabilities::default()).await?;
+        let guest = admitted.authority(&[]).await?;
+        assert!(!guest.grants.contains(HARNESS_HOST));
+        let control_grant = ContentGrant::verify(
+            &guest.verifier,
+            &control_scope,
+            &journal,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        let private_grant = ContentGrant::verify(
+            &guest.verifier,
+            &guest.scope,
+            &private,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        let files = AgentInternalFiles::new(
+            host.clone(),
+            journal.clone(),
+            control_grant.clone(),
+            private.clone(),
+            private_grant,
+        );
+        files
+            .create("custody.json", b"original interaction", 4096)
+            .await?;
+        assert_eq!(
+            files.read("custody.json", 4096).await?.as_deref(),
+            Some(b"original interaction".as_slice())
+        );
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let private_workspace = host
+            .filesystem
+            .open_workspace(
+                private.storage_name(&mut None)?,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| crate::filesystem::map_error(failure.error))?
+            .value;
+        let private_head = private_workspace
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| crate::filesystem::map_error(failure.error))?
+            .value;
+        let missing = private_head
+            .read(
+                "/.system/interactions/custody.json",
+                4096,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect_err("control appeared in the authored volume");
+        assert_eq!(
+            crate::filesystem::map_error(missing.error).code(),
+            crate::wire::ErrorCode::NotFound
+        );
+
+        // Use an ordinary path, so a filename reservation cannot satisfy the
+        // confidentiality or integrity assertions instead of the actual policy.
+        let control = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "control.json",
+                b"host data",
+                "application/json",
+                "control.json",
+                4096,
+                &crate::IdempotencyKey::new("host-control")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        ContentGrant::verify_read(&guest.verifier, &guest.scope, &control)?;
+        let reader = FilesystemContentVerifier::new(
+            host.clone(),
+            &guest.verifier,
+            &guest.scope,
+            4096,
+            None,
+        )?;
+        for ceiling in [None, Some(parent.capabilities())] {
+            let denied = async { reader.read(&control, 4096, ceiling, None)?.await }
+                .await
+                .expect_err("guest read host data through the persisted policy");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        }
+        let guest_write = ContentGrant::verify(
+            &guest.verifier,
+            &guest.scope,
+            &journal,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        let denied = host
+            .put_content(
+                &journal,
+                &guest_write,
+                "forged.json",
+                b"guest data",
+                "application/json",
+                "forged.json",
+                4096,
+                &crate::IdempotencyKey::new("guest-forgery")?,
+                None,
+                Default::default(),
+            )
+            .await
+            .expect_err("guest wrote the host journal");
+        assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        let announcements = AgentInternalFiles::new(
+            host.clone(),
+            journal.clone(),
+            control_grant.clone(),
+            journal.clone(),
+            control_grant,
+        );
+        let published = announcements
+            .stage_announcement(
+                crate::agent::AnnouncementKind::Targets,
+                [189; 32],
+                b"published announcement",
+            )
+            .await?;
+        assert_eq!(
+            reader.read(&published, 4096, None, None)?.await?.as_ref(),
+            b"published announcement"
+        );
+        let missing_role = root.bootstrap_scope("guest", &guest.grants, Some(owner), &mut None)?;
+        assert!(
+            AdmittedAgent::verify(
+                &issuer,
+                &TurnAdmission::Admitted {
+                    audience,
+                    scope: missing_role
+                },
+                &path,
+                &volumes
+            )
+            .is_err()
+        );
+        assert_eq!(
+            files.read("custody.json", 4096).await?.as_deref(),
+            Some(b"original interaction".as_slice())
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result<()> {
     use crate::agent::{
         EntryId, WorkspaceInherit, WorkspaceKind, WorkspaceMode, WorkspaceRole, WorkspaceSource,
@@ -244,7 +449,13 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
         VolumeOperation::Write,
         &mut None,
     )?;
-    let files = Arc::new(AgentInternalFiles::new(host.clone(), volume, grant));
+    let files = Arc::new(AgentInternalFiles::new(
+        host.clone(),
+        volume.clone(),
+        grant.clone(),
+        volume,
+        grant,
+    ));
     let reopen = || FilesystemTurnChildren {
         files: files.clone(),
         stream: Arc::new(acyclic_stream::MemoryStream::default()),
@@ -585,7 +796,15 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
         acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
             .to_scope_label()
             .map_err(|_| Error::Invalid("fixture filesystem ceiling".into()))?;
-    let scope = root.bootstrap_scope("caller", &Capabilities::new([ceiling]), None, &mut None)?;
+    let scope = root.bootstrap_scope(
+        "caller",
+        &Capabilities::new([
+            ceiling,
+            crate::contract::capability::HARNESS_HOST.to_owned(),
+        ]),
+        None,
+        &mut None,
+    )?;
     let admission = TurnAdmission::Admitted {
         audience: audience.clone(),
         scope: scope.clone(),

@@ -160,6 +160,8 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
             host.clone(),
             volume.clone(),
             writer.clone(),
+            volume.clone(),
+            writer.clone(),
         );
         assert_eq!(
             files
