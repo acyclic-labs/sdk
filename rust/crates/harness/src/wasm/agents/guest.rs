@@ -6,8 +6,8 @@
 //! settlement of the transition it returns.
 
 use super::{
-    BrowserHandler, WasmAgentAuthority, WasmAgentProviders, WasmAgentRegistry,
-    WasmBrowserAgentOptions, from_js, js_error,
+    WasmAgentAuthority, WasmAgentProviders, WasmAgentRegistry, WasmBrowserAgentOptions,
+    WasmMachinesWorkspace, from_js, js_error,
 };
 use crate::Error;
 use crate::wasm::cancel::{Cancel, Listening};
@@ -21,7 +21,11 @@ use wasm_bindgen_futures::JsFuture;
 /// One agent handler package, loaded in a guest.
 #[wasm_bindgen]
 pub struct AgentGuest {
-    handler: BrowserHandler,
+    manifest: Vec<u8>,
+    providers: WasmAgentProviders,
+    options: WasmBrowserAgentOptions,
+    owner: WasmAgentAuthority,
+    registry: WasmAgentRegistry,
 }
 
 fn guest_error(error: GuestError) -> JsValue {
@@ -39,10 +43,18 @@ impl AgentGuest {
         registry: &WasmAgentRegistry,
     ) -> Result<AgentGuest, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
-        Ok(Self {
-            handler: providers
+        let handler =
+            providers
                 .providers
-                .handler(&options, owner, registry, &owner.admission()?)?,
+                .handler(&options, owner, registry, &owner.admission()?)?;
+        Ok(Self {
+            manifest: wire::encode_manifest(handler.manifest()),
+            providers: WasmAgentProviders {
+                providers: providers.providers.clone(),
+            },
+            options,
+            owner: owner.clone(),
+            registry: registry.clone(),
         })
     }
 
@@ -58,7 +70,7 @@ impl AgentGuest {
     /// checkpoint bytes).
     #[must_use]
     pub fn manifest(&self) -> Vec<u8> {
-        wire::encode_manifest(self.handler.manifest())
+        self.manifest.clone()
     }
 
     /// Runs one canonical delivery (with the actor's committed checkpoint)
@@ -77,16 +89,35 @@ impl AgentGuest {
         let cancellation = CancellationToken::new();
         let token = cancellation.clone();
         let _interrupt = Listening::abort(&interrupt, move || token.cancel())?;
-        let (turn, handle) = futures::future::abortable(self.handler.on_record(
-            delivery,
-            checkpoint.as_ref(),
-            cancellation,
-        ));
+        // Admission, executor selection and the turn share this attempt's lifetime.
+        // No admitted Machine is written back into the namespace registry.
+        let (turn, handle) = futures::future::abortable(async {
+            let mut registry = self.registry.clone();
+            if let Some(source) = &self.registry.workspace_source {
+                let workspace = WasmMachinesWorkspace::admit(
+                    &self.owner,
+                    &self.providers,
+                    source,
+                    delivery.request.get(),
+                )
+                .await?;
+                registry.bind_machines_workspace(&workspace);
+            }
+            let handler = self.providers.providers.handler(
+                &self.options,
+                &self.owner,
+                &registry,
+                &self.owner.admission()?,
+            )?;
+            handler
+                .on_record(delivery, checkpoint.as_ref(), cancellation)
+                .await
+                .map_err(guest_error)
+        });
         let _listening = Listening::abort(&signal, move || handle.abort())?;
         let transition = turn
             .await
-            .map_err(|_| guest_error(GuestError::Handler("delivery was aborted".into())))?
-            .map_err(guest_error)?;
+            .map_err(|_| guest_error(GuestError::Handler("delivery was aborted".into())))??;
         wire::encode_transition(&transition).map_err(guest_error)
     }
 }

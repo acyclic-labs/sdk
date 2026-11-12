@@ -1,10 +1,10 @@
 /** The shared harness as one Actor application: the same event host and
  * session engine as every other deployment, behind the public guest ABI. */
 import { defineActor, GUEST_ABI_VERSION, type CheckpointCodec, type GuestState } from "@acyclic-labs/actors";
-import { ActorStateStorage, EventAgentHost, initializeHosting, serveActorFetch, WasmStream, streamLedgerPort,
+import { ActorStateStorage, EventAgentHost, initializeHosting, serveActorFetch,
   type ActorState, type EventHostAccess, type StreamLedger, type WasmObjectsPort } from "@acyclic-labs/harness/hosting";
-import { BrowserAgentAuthority, BrowserAgentRegistry, BrowserAgentProviders, BrowserMachinesWorkspace, type BrowserAgentOptions,
-  type BrowserMachinesWorkspaceSource, type WasmAuthorityCapability } from "@acyclic-labs/harness/browser";
+import { BrowserAgentAuthority, BrowserAgentRegistry, type BrowserAgentOptions,
+  type BrowserMachinesWorkspaceAdmission, type WasmAuthorityCapability } from "@acyclic-labs/harness/browser";
 import { ModelRegistry, type CompactionPolicy, type ModelCredentialResolver, type ProviderSpec } from "@acyclic-labs/harness";
 import { HARNESS_BINDINGS, MODEL_FETCH, HarnessActorError } from "./bindings.js";
 import { harnessStreamLedger } from "./streams.js";
@@ -34,8 +34,8 @@ interface Values {
   streams: Pick<StreamLedger, "register" | "dispatch" | "open">;
   access: EventHostAccess;
   authority: WasmAuthorityCapability;
-  /** The platform's admitted Machine, opened in this module with the actor's own authority. */
-  workspace: BrowserMachinesWorkspaceSource;
+  /** Host source admitted by request id inside each delivery, never at heap open. */
+  workspace: BrowserMachinesWorkspaceAdmission;
 }
 type Bound = Values & { model: ModelCredentialResolver };
 
@@ -100,15 +100,7 @@ export const actor = defineActor<Opened, HarnessBindings>({
       const provider = models.resolve(model.selection);
       try { provider.install(registry, model.compaction); } finally { provider.free(); }
     } finally { models.free(); }
-    // The handle lives in this bundle's own module instance; the registry retains its executor.
-    const stream = WasmStream.connectProvider(streamLedgerPort(ledger, name));
-    try {
-      const providers = BrowserAgentProviders.injected(stream, ledger.objects, true, { ...options, children: false });
-      try {
-        const workspace = await BrowserMachinesWorkspace.open(owner, providers, env.workspace);
-        try { registry.bindMachinesWorkspace(workspace); } finally { workspace.free(); }
-      } finally { providers.free(); }
-    } finally { stream.free(); }
+    registry.bindMachinesWorkspaceSource(env.workspace);
     const state = new ActorStateStorage(env.storage);
     // Shared history alone does not admit a child Actor's placement and wake,
     // so this host runs no children and both spawn entrances refuse, whatever
