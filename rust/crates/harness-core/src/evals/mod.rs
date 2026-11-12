@@ -1,6 +1,6 @@
 //! Evaluation files are pure, lazy projections of the original settled turns.
 //! No evaluation database or credential input exists at this boundary.
-use crate::agent::{ConversationEntry, TurnInput, TurnOutcome};
+use crate::agent::{ConversationEntry, HistoryCheckpoint, TurnInput, TurnOutcome};
 use crate::conversation::FileRef;
 use acyclic_fs::{demand::*, kernel::*};
 use acyclic_stream::{Record, StreamPath};
@@ -20,6 +20,8 @@ pub trait Inputs: Send + Sync + 'static {
     fn tail(&self) -> u64;
     /// One already-resident original record and its decoded turn.
     fn entry(&self, sequence: u64) -> Result<(&Record, &ConversationEntry), DemandError>;
+    /// Original context and project roots at one settled boundary.
+    fn checkpoint(&self, sequence: u64) -> Result<&HistoryCheckpoint, DemandError>;
 }
 
 /// A case's selected context is the prefix before its decision was admitted.
@@ -28,6 +30,7 @@ pub trait Inputs: Send + Sync + 'static {
 struct Cut<'a> {
     stream: &'a str,
     through: u64,
+    checkpoint: Option<&'a HistoryCheckpoint>,
 }
 
 /// The version-one export schema borrows only committed product data. Host
@@ -55,6 +58,7 @@ struct Decision<'a> {
 #[derive(Serialize)]
 struct Outcome<'a> {
     status: &'a TurnOutcome,
+    checkpoint: &'a HistoryCheckpoint,
     output: &'a FileRef,
     tool_results: Option<&'a str>,
 }
@@ -81,6 +85,10 @@ pub fn write_case(
             cut: Cut {
                 stream: inputs.stream().as_str(),
                 through: sequence,
+                checkpoint: sequence
+                    .checked_sub(1)
+                    .map(|at| inputs.checkpoint(at))
+                    .transpose()?,
             },
             source: Source {
                 origin: record.origin.as_str(),
@@ -94,6 +102,7 @@ pub fn write_case(
             },
             outcome: Outcome {
                 status: &entry.outcome,
+                checkpoint: inputs.checkpoint(sequence)?,
                 output: &entry.output,
                 tool_results: entry.tool_results.as_deref(),
             },

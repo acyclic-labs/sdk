@@ -166,19 +166,44 @@ impl HistoryCheckpoint {
     pub fn decode(bytes: &[u8]) -> Result<Self, super::Error> {
         let checkpoint: Self = serde_json::from_slice(bytes)
             .map_err(|_| super::Error::Record("history checkpoint is malformed"))?;
+        checkpoint.check()?;
+        Ok(checkpoint)
+    }
+
+    /// Decode an original history descriptor while retaining its allocation credit.
+    pub fn decode_accounted(
+        bytes: &[u8],
+        accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
+    ) -> Result<
+        acyclic_fs::kernel::Retained<Self>,
+        acyclic_fs::kernel::MetadataDecodeError<super::Error>,
+    > {
+        use acyclic_fs::kernel::MetadataDecodeError;
+        let checkpoint = accounting
+            .decode_json::<Self>(bytes)
+            .map_err(|error| match error {
+                MetadataDecodeError::Work(error) => MetadataDecodeError::Work(error),
+                MetadataDecodeError::Codec(_) => MetadataDecodeError::Codec(super::Error::Record(
+                    "history checkpoint is malformed",
+                )),
+            })?;
+        checkpoint.check().map_err(MetadataDecodeError::Codec)?;
+        Ok(checkpoint)
+    }
+
+    fn check(&self) -> Result<(), super::Error> {
+        let checkpoint = self;
         if checkpoint.version != 2 || checkpoint.conversation == 0 {
             return Err(super::Error::Record(
                 "history checkpoint version or cut is invalid",
             ));
         }
         super::records::check_volumes(checkpoint.volumes.iter().map(|volume| &volume.binding))?;
-        let mut bindings = std::collections::BTreeSet::new();
         if checkpoint.volumes.iter().any(|volume| {
             volume
                 .binding
                 .as_volume()
                 .is_none_or(|source| source.class() != crate::conversation::VolumeClass::Project)
-                || !bindings.insert(&volume.binding.name)
         }) {
             return Err(super::Error::Record("saved project bindings are invalid"));
         }
@@ -198,6 +223,6 @@ impl HistoryCheckpoint {
         {
             return Err(super::Error::Record("context checkpoint exceeds its cut"));
         }
-        Ok(checkpoint)
+        Ok(())
     }
 }

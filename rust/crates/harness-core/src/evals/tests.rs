@@ -39,6 +39,7 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
     let storage = MemoryHarnessStorage::new(agent.id(), 1_000_000).await?;
     let streams = Arc::new(MemoryStream::default());
     let mut entries = Vec::new();
+    let mut checkpoints = Vec::new();
     for (inbox, decision) in [
         "Reject the proposed diff.",
         "Override the earlier decision.",
@@ -84,6 +85,27 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
             tool_results: None,
             notices: None,
         };
+        let checkpoint = HistoryCheckpoint {
+            version: 2,
+            live_children: false,
+            conversation: inbox as u64 + 1,
+            checkpoint: None,
+            context: crate::agent::ContextCut {
+                path: acyclic_stream::StreamPath::new(format!("{agent}/context/0"))?,
+                tail: if inbox == 0 { 1 } else { 0 },
+                checkpoint: None,
+            },
+            volumes: Vec::new(),
+        };
+        streams
+            .append(AppendRequest {
+                path: agent.history()?,
+                records: vec![serde_json::to_vec(&checkpoint)?.into()],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        checkpoints.push(checkpoint);
         streams
             .append(AppendRequest {
                 path: stream.clone(),
@@ -139,6 +161,17 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
         let case: serde_json::Value = serde_json::from_slice(&output.bytes)?;
         assert_eq!(case["cut"]["through"], sequence as u64);
         assert_eq!(case["cut"]["stream"], stream.as_str());
+        assert_eq!(
+            case["outcome"]["checkpoint"],
+            serde_json::to_value(&checkpoints[sequence])?
+        );
+        assert_eq!(
+            case["cut"]["checkpoint"],
+            match sequence.checked_sub(1) {
+                Some(previous) => serde_json::to_value(&checkpoints[previous])?,
+                None => serde_json::Value::Null,
+            }
+        );
         assert_eq!(
             case["decision"]["input"],
             serde_json::to_value(&entry.input)?

@@ -12,10 +12,22 @@ range serializes directly into the requested output interval.
 
 The version-one JSON case contains:
 
-- `cut`: original conversation stream and exclusive prefix before the decision;
+- `cut`: original conversation prefix plus its preceding history checkpoint;
 - `source`: original sequence, origin and publication identity, including forks;
 - `decision`: admitted inbox position, typed input and steering transcript;
-- `outcome`: settled status, original output FileRef and tool-result directory.
+- `outcome`: settled status, original output FileRef, tool-result directory and
+  the original history checkpoint after settlement.
+
+History checkpoints are the existing typed descriptors, not copies of volume
+contents. They name the selected model-context stream/checkpoint and exact
+retained project generations, including after a context restore. Opening one
+case reads its conversation entry and at most two indexed history descriptors;
+directory pages read no descriptors. Both stream heads share the selected cut,
+and descriptor reads use its revision floor and the current authenticated reader.
+Missing or malformed descriptors fail; current generations are never substituted.
+The first case has no preceding settled checkpoint (`cut.checkpoint` is null).
+An exporter must resolve that initial state from original creation custody; null
+does not authorize using current project heads.
 
 Human corrections and overrides retain their exact authored input. Approval
 inputs retain their request identity. No classifier guesses acceptance from prose.
