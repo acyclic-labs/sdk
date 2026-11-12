@@ -512,22 +512,20 @@ impl LocalHarness {
             return Ok(());
         }
         let child = root.spawned_project_view(&child_project).await?;
-        // This child's own children may have handed back while it was busy.
-        // Their work belongs in the cut it hands back, so it publishes them
-        // first, waiting only on its own checkout.
+        // A timed-out shell retains this guard through cleanup and capture.
+        // Include that work and queued descendant publications in one cut.
+        let own = self
+            .completion_target(root, agent, &child_project, turn)
+            .await?;
+        let mut state =
+            crate::sync::owned::lock_owned(super::workspace::StateArc::clone(&own.workspace.state))
+                .await;
         if super::workspace::LocalWorkspace::owes_publication(
             &root.filesystem,
             child.workspace().id(),
         )
         .await?
         {
-            let own = self
-                .completion_target(root, agent, &child_project, turn)
-                .await?;
-            let mut state = crate::sync::owned::lock_owned(super::workspace::StateArc::clone(
-                &own.workspace.state,
-            ))
-            .await;
             own.workspace
                 .publication_debt
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -535,6 +533,16 @@ impl LocalHarness {
                 .settle_publications(&own.context(), &mut state)
                 .await?;
         }
+        let source = child
+            .workspace()
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(storage)?
+            .value;
+        drop(state);
         let target = self
             .completion_target(root, &parent, &parent_project, turn)
             .await?;
@@ -546,15 +554,6 @@ impl LocalHarness {
         .register_branch_workspace(branch.clone(), child.workspace().id(), None, false)
         .await
         .map_err(storage)?;
-        let source = child
-            .workspace()
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map_err(storage)?
-            .value;
         target
             .commands()
             .hand_back(
