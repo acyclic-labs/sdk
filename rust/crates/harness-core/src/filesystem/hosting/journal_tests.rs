@@ -399,7 +399,9 @@ async fn input_previews_pin_pending_messages_without_reading_the_whole_body() ->
         .send(
             &root,
             &by,
-            &InboxRecord::Cancel(Control {
+            &InboxRecord::Cancel(crate::agent::Cancellation {
+                conversation: 0,
+                input: 1,
                 by: by.clone(),
                 id: IntentId::try_from("filtered")?,
             }),
@@ -461,7 +463,7 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
             host: "query-race".into(),
         };
         assert!(
-            matches!(agents.send(&root, &by, &InboxRecord::Cancel(Control {
+            matches!(agents.send(&root, &by, &InboxRecord::Cancel(crate::agent::Cancellation { conversation: 0, input: 1,
             by: by.clone(), id: IntentId::try_from("arrived")?,
         })).await?, Delivered::Committed { inbox } if inbox == cut)
         );

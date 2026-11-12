@@ -102,6 +102,7 @@ async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Resul
         assert_eq!(
             settled(&provider, &within, &root).await?,
             Settlement {
+                input: None,
                 settled: true,
                 phase: Phase::Idle,
                 answer: Some(n),
@@ -303,7 +304,9 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
                 host.send(
                     &root,
                     &user(),
-                    &InboxRecord::Cancel(Control {
+                    &InboxRecord::Cancel(Cancellation {
+                        input: 1,
+                        conversation: 0,
                         by: user(),
                         id: intent("stop"),
                     }),
@@ -335,6 +338,209 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
     return super::control_trace::checkpoint(checkpoint_tails()).await;
     #[cfg(not(feature = "test-support"))]
     checkpoint_tails().await.map(|_| ())
+}
+
+#[tokio::test]
+async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -> Result {
+    use acyclic_actors::guest::CancellationToken;
+    use tokio::sync::{mpsc, oneshot};
+
+    struct Controlled(mpsc::UnboundedSender<(u64, CancellationToken, oneshot::Sender<()>)>);
+    impl TurnDriver for Controlled {
+        fn step<'a>(
+            &'a self,
+            _agent: &'a AgentState,
+            _cursor: u64,
+            input: Option<Queued>,
+            cancellation: CancellationToken,
+        ) -> TurnFuture<'a> {
+            Box::pin(async move {
+                let Queued { inbox, input, .. } = input.ok_or(Error::Record("missing input"))?;
+                let (release, released) = oneshot::channel();
+                self.0
+                    .send((inbox, cancellation.clone(), release))
+                    .expect("turn observer");
+                let outcome = tokio::select! {
+                    _ = cancellation.cancelled() => TurnOutcome::Cancelled,
+                    result = released => { result.expect("turn release"); TurnOutcome::Completed }
+                };
+                let entry = ConversationEntry {
+                    inbox,
+                    input,
+                    outcome,
+                    output: super::driver::file("output.json")
+                        .map_err(|_| Error::Record("output"))?,
+                    observed_through: inbox + 1,
+                    steering: None,
+                    goal: None,
+                    announcements: Vec::new(),
+                    tool_results: None,
+                    notices: None,
+                };
+                Ok(TurnStep {
+                    checkpoint: None,
+                    outs: vec![Out::Conversation(entry.encode()?)],
+                    wait: Wait::Input,
+                    drops: None,
+                })
+            })
+        }
+    }
+
+    let provider = Arc::new(MemoryStream::default());
+    let (starting, mut started) = mpsc::unbounded_channel();
+    let host = AgentHost::new(
+        provider.clone(),
+        Controlled(starting),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    assert!(host.runtime().drain().await.is_empty());
+    let message = |name| -> Result<InboxRecord> {
+        Ok(InboxRecord::Message(Message {
+            from: user(),
+            id: intent(name),
+            body: Box::new(super::driver::file(name)?),
+            re: None,
+            attachments: None,
+        }))
+    };
+    let original = host.send(&root, &user(), &message("original")?).await?;
+    let Delivered::Committed { inbox: original } = original else {
+        panic!("original refused")
+    };
+    let drain = host.runtime().drain();
+    tokio::pin!(drain);
+    let (input, original_stop, release) = tokio::select! {
+        input = started.recv() => input.expect("original starts"),
+        failures = &mut drain => panic!("original ended: {failures:?}"),
+    };
+    assert_eq!(input, original);
+    let Delivered::Committed { inbox: injected } =
+        host.send(&root, &user(), &message("injected")?).await?
+    else {
+        panic!("injected input refused")
+    };
+    let cancel = InboxRecord::Cancel(Cancellation {
+        by: user(),
+        id: intent("cancel-injected"),
+        input: injected,
+        conversation: 0,
+    });
+    host.send(&root, &user(), &cancel).await?;
+    assert!(matches!(
+        host.reply(&root, &intent("injected"), injected).await?,
+        Reply::Dropped
+    ));
+    assert!(matches!(
+        host.reply(&root, &intent("original"), original).await?,
+        Reply::Pending
+    ));
+    assert!(futures::poll!(&mut drain).is_pending());
+    assert!(
+        !original_stop.is_cancelled(),
+        "injected cancellation reached the original turn"
+    );
+    release.send(()).expect("original remains active");
+    assert!(drain.await.is_empty());
+    assert!(
+        started.try_recv().is_err(),
+        "cancelled queued input executed"
+    );
+    assert!(matches!(
+        host.reply(&root, &intent("original"), original).await?,
+        Reply::Answered {
+            entry: ConversationEntry {
+                outcome: TurnOutcome::Completed,
+                ..
+            },
+            ..
+        }
+    ));
+
+    let Delivered::Committed { inbox: later } =
+        host.send(&root, &user(), &message("later")?).await?
+    else {
+        panic!("later input refused")
+    };
+    let drain = host.runtime().drain();
+    tokio::pin!(drain);
+    let (input, later_stop, _release) = tokio::select! {
+        input = started.recv() => input.expect("later starts"),
+        failures = &mut drain => panic!("later ended: {failures:?}"),
+    };
+    assert_eq!(input, later);
+    host.send(
+        &root,
+        &user(),
+        &InboxRecord::Cancel(Cancellation {
+            by: user(),
+            id: intent("stale-original-cancel"),
+            input: original,
+            conversation: 1,
+        }),
+    )
+    .await?;
+    assert!(futures::poll!(&mut drain).is_pending());
+    assert!(
+        !later_stop.is_cancelled(),
+        "stale cancel reached another turn"
+    );
+    let Delivered::Committed { inbox: queued } =
+        host.send(&root, &user(), &message("queued")?).await?
+    else {
+        panic!("queued input refused")
+    };
+    host.send(
+        &root,
+        &user(),
+        &InboxRecord::Cancel(Cancellation {
+            by: user(),
+            id: intent("cancel-later"),
+            input: later,
+            conversation: 1,
+        }),
+    )
+    .await?;
+    let (input, queued_stop, release) = tokio::select! {
+        input = started.recv() => input.expect("unrelated queued input starts"),
+        failures = &mut drain => panic!("queued input lost: {failures:?}"),
+    };
+    assert!(later_stop.is_cancelled());
+    assert_eq!(input, queued);
+    assert!(!queued_stop.is_cancelled());
+    release.send(()).expect("queued input remains active");
+    assert!(drain.await.is_empty());
+    assert!(matches!(
+        host.reply(&root, &intent("later"), later).await?,
+        Reply::Answered {
+            entry: ConversationEntry {
+                outcome: TurnOutcome::Cancelled,
+                ..
+            },
+            ..
+        }
+    ));
+    let tail = inbox_tail(&*provider, &root).await?;
+    host.send(&root, &user(), &cancel).await?;
+    assert_eq!(
+        inbox_tail(&*provider, &root).await?,
+        tail,
+        "cancel replay appended twice"
+    );
+    assert!(matches!(
+        host.reply(&root, &intent("original"), original).await?,
+        Reply::Answered {
+            entry: ConversationEntry {
+                outcome: TurnOutcome::Completed,
+                ..
+            },
+            ..
+        }
+    ));
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -693,7 +899,9 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
             host.send(
                 &root,
                 &user(),
-                &InboxRecord::Cancel(Control {
+                &InboxRecord::Cancel(acyclic_harness_core::agent::Cancellation {
+                    conversation: 0,
+                    input: 1,
                     by: user(),
                     id: intent("stop"),
                 }),
@@ -1034,7 +1242,9 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
         host.send(&root, &user(), &done).await?,
         Delivered::Committed { .. }
     ));
-    let another = InboxRecord::Cancel(Control {
+    let another = InboxRecord::Cancel(acyclic_harness_core::agent::Cancellation {
+        conversation: 0,
+        input: 1,
         by: user(),
         id: intent("next"),
     });

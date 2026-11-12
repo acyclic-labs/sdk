@@ -41,7 +41,8 @@ pub enum BoundaryEnd {
 }
 
 /// Read one window at an actual model boundary. A later arrival belongs to a
-/// later boundary. Cancel/archive are barriers and remain explicit interrupts.
+/// later boundary. Cancellation remains an ordered notice for other inputs;
+/// the actor interrupts only its selected input. Archive is a barrier.
 /// `from` is the last admitted model frontier; a frozen range is replayed
 /// independently of which unrelated queued inputs the actor has consumed.
 pub async fn select_boundary<P: StreamProvider + ?Sized>(
@@ -97,7 +98,7 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
                 return Err(Error::Record("steering inbox is not contiguous"));
             }
             let input = InboxRecord::decode(&record.value)?;
-            if matches!(input, InboxRecord::Cancel(_) | InboxRecord::Archive(_)) {
+            if matches!(input, InboxRecord::Archive(_)) {
                 barrier = true;
                 break;
             }
@@ -106,6 +107,19 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
                 .checked_add(1)
                 .ok_or(Error::Record("steering inbox cursor overflow"))?;
             read += 1;
+            let input = match input {
+                InboxRecord::Cancel(cancel) => InboxRecord::Notice {
+                    id: cancel.id,
+                    notice: super::NoticePayload::Quiet(crate::conversation::wire::Notice {
+                        source: "harness".into(),
+                        kind: "harness.input_cancelled".into(),
+                        body: serde_json::json!({"input": cancel.input}),
+                        wake: false,
+                        coalesce_key: None,
+                    }),
+                },
+                input => input,
+            };
             // Independent records keep their ordered turns. Page past them
             // without retaining them or capping how far a reply can arrive.
             if matches!(input, InboxRecord::Notice { .. } | InboxRecord::Message(_)) {

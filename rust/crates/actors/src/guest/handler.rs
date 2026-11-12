@@ -261,6 +261,17 @@ pub trait Composition: acyclic_stream::ProviderPlatform + 'static {
 pub trait Handler: acyclic_stream::ProviderPlatform {
     /// The package's immutable code, codec, subscriptions and bindings.
     fn manifest(&self) -> &Manifest;
+    /// Match a declared interrupt against the original active delivery. A
+    /// control for another operation must not cancel this delivery's work.
+    fn accepts_interrupt(
+        &self,
+        _delivery: &Delivery,
+        _checkpoint: Option<&Checkpoint>,
+        _subscription: &str,
+        _record: &Record,
+    ) -> Result<bool, GuestError> {
+        Ok(true)
+    }
     /// Original host-bound admission fences, applied to both success and failure
     /// replies at the sole publication boundary. Guests cannot remove them.
     fn publication_conditions(&self) -> Vec<CommitCondition> {

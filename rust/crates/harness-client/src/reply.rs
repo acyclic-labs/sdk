@@ -198,6 +198,8 @@ pub enum AgentReply {
     },
     /// How far an agent has settled, from one committed actor checkpoint.
     Settlement {
+        /// Original active input, or the next accepted input before execution.
+        input: Option<u64>,
         /// Settled turns: the checkpoint's exclusive conversation tail.
         settled: u64,
         /// Published statuses: the checkpoint's exclusive status tail.
