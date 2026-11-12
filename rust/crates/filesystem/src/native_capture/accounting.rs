@@ -19,6 +19,10 @@ impl CaptureWorkScope {
     ) -> Result<Self, OperationFailure<CaptureError>> {
         let custody = crate::demand::CaptureTransientCustody::new_native(native)
             .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
+        // Capture is also a standalone entry point: metered native I/O cannot
+        // depend on a previous mount or materialization warming the services.
+        acyclic_native_runtime::initialize_native_io_services()
+            .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
         let view = native
             .with_capture_custody(&custody)
             .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
