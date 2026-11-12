@@ -122,7 +122,7 @@ impl StockExecution<'_> {
         });
         preparation_digest(
             &Request {
-                executor: "acyclic.stock.v9",
+                executor: "acyclic.stock.v10",
                 input,
                 model: &self.stock.model,
                 sampling: self.sampling()?,

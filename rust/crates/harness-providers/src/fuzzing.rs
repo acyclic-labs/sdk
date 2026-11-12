@@ -441,6 +441,20 @@ mod properties {
 
     #[test]
     fn checked_in_stream_corpus_obeys_the_properties() {
+        for seed in [
+            include_bytes!("../fuzz/corpus/provider_stream/reasoning.json").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/anthropic-multiline-reasoning.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/native-string-surrogate.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/native-summary-surrogate.json")
+                .as_slice(),
+        ] {
+            let body = seed.strip_prefix(b"R").expect("reasoning corpus selector");
+            serde_json::from_slice::<acyclic_harness_core::model::ReasoningBlock>(body)
+                .expect("reasoning seed must reach native replay checks");
+            assert_stream_invariants(seed);
+        }
         assert_stream_invariants(include_bytes!(
             "../fuzz/corpus/provider_stream/llamacpp-text-request-literal-extension"
         ));
