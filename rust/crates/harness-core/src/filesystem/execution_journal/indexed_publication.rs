@@ -70,12 +70,32 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    #[cfg(test)]
     pub(super) async fn publish_contributed_observation(
         &self,
         summary: &mut ExecutionSummary,
         retry: [u8; 32],
         event: &ExecutionEvent,
         bytes: &OwnedBytes,
+        contributions: &[Contribution<'_>],
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<(Recovery, acyclic_stream::CommitId)>> {
+        self.publish_contributed_observations(
+            summary,
+            retry,
+            event,
+            std::slice::from_ref(bytes),
+            contributions,
+            io,
+        )
+        .await
+    }
+    pub(super) async fn publish_contributed_observations(
+        &self,
+        summary: &mut ExecutionSummary,
+        retry: [u8; 32],
+        event: &ExecutionEvent,
+        bytes: &[OwnedBytes],
         contributions: &[Contribution<'_>],
         io: Option<&PreparationIo>,
     ) -> Result<Option<(Recovery, acyclic_stream::CommitId)>> {
@@ -113,7 +133,7 @@ where
             nodes_tail: writer.tail()?,
             roots,
             pending_dispatches: summary.pending_dispatches,
-            anchor: crate::model::hash_bytes(bytes, io)?,
+            anchor: crate::model::hash_bytes(bytes.last().ok_or_else(|| invalid(io))?, io)?,
             latest_response: summary.latest_response,
             model_dispatched: summary.model_dispatched,
         };
@@ -126,8 +146,13 @@ where
         let head_tail = summary.recovery.map_or(0, |recovery| recovery.head_tail);
         let next_head_tail = head_tail.checked_add(1).ok_or_else(|| invalid(io))?;
         let head_condition = condition(&self.stream, &head, head_tail, &mut work).await?;
-        let execution_condition =
-            condition(&self.stream, &execution, summary.tail - 1, &mut work).await?;
+        let execution_condition = condition(
+            &self.stream,
+            &execution,
+            summary.tail - bytes.len() as u64,
+            &mut work,
+        )
+        .await?;
         let digest = publication_digest(&checkpoint, retry, io)?;
         let cut = pages::Cut {
             operation,
@@ -136,14 +161,14 @@ where
             pages: &pages,
             execution_condition,
             head_condition,
-            execution_tail: summary.tail - 1,
+            execution_tail: summary.tail - bytes.len() as u64,
             head_tail,
             base,
             digest,
             contributions,
         };
         let committed = cut
-            .publish(
+            .publish_many(
                 &self.stream,
                 writer.records(),
                 bytes,

@@ -2,13 +2,13 @@ use super::*;
 use crate::executor::ModelPurpose;
 use crate::model::{Model, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest};
 
-type Journal = FilesystemExecutionJournal<
+pub(crate) type Journal = FilesystemExecutionJournal<
     acyclic_stream::MemoryStream,
     acyclic_fs::MemoryAuthorityBackend,
     acyclic_fs::MemoryObjectBackend,
 >;
 
-async fn initialize(journal: &Journal, operation: OperationId) -> Result<()> {
+pub(crate) async fn initialize(journal: &Journal, operation: OperationId) -> Result<()> {
     journal
         .append(
             operation,
@@ -38,7 +38,7 @@ async fn initialize(journal: &Journal, operation: OperationId) -> Result<()> {
         .await
 }
 
-fn request() -> Result<PreparedModelRequest> {
+pub(crate) fn request() -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
             summary: false,

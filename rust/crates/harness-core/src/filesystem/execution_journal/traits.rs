@@ -318,6 +318,75 @@ where
         self.append_projected(operation, None, key, event, &[], None, io, |_| Ok(()))
     }
 
+    fn inline_model_event_bytes(&self) -> u64 {
+        0
+    }
+
+    fn append_prepared_models<'a>(
+        &'a self,
+        operation: OperationId,
+        prepared: &'a [crate::executor::PreparedModelObservation<'a>],
+        original: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<u64>>> {
+        crate::conversation::BoundedContentFuture::new(original, || async move {
+            let scope = crate::filesystem::PreparationScope::new(original)?;
+            let io = scope.io();
+            self.authorize_private_content(VolumeOperation::Read, io)?;
+            self.authorize_private_content(VolumeOperation::Write, io)?;
+            let mut entries = crate::model::vec_with_capacity(prepared.len(), io)?;
+            for observation in prepared {
+                if observation.operation != operation
+                    || observation.binding != self.cache_identity()
+                {
+                    return Err(canonical_boundary(
+                        io,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "prepared model observation belongs to another journal binding",
+                    ));
+                }
+                let (payload, usage) = match &observation.event {
+                    ExecutionEvent::Model { event, usage, .. } => (Some(event), usage.as_ref()),
+                    ExecutionEvent::ModelInline { usage, .. } => (None, usage.as_ref()),
+                    _ => {
+                        return Err(canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "prepared model group contains another record family",
+                        ));
+                    }
+                };
+                for reference in payload.into_iter().chain(usage) {
+                    if reference.volume() != &self.volume {
+                        return Err(canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "prepared model content belongs to another private volume",
+                        ));
+                    }
+                }
+                entries.push(observations::Observation {
+                    key: &observation.key,
+                    event: &observation.event,
+                    model: Some(observation.model),
+                });
+            }
+            let receipt = self
+                .append_observation_group(operation, None, &entries, &[], None, io)
+                .await?;
+            if !receipt.accepted {
+                return Err(Error::Indeterminate(operation));
+            }
+            #[cfg(feature = "research")]
+            {
+                Ok(receipt.sequence)
+            }
+            #[cfg(not(feature = "research"))]
+            {
+                Ok(None)
+            }
+        })
+    }
+
     #[cfg(feature = "research")]
     fn sequenced_appends(&self) -> Option<&dyn crate::executor::SequencedExecutionJournal> {
         Some(self)

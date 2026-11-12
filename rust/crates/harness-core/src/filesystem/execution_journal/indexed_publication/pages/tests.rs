@@ -82,7 +82,7 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
                     path: pages.clone(),
                 },
                 &records,
-                Some((&observation, &checkpoint)),
+                Some((std::slice::from_ref(&observation), &checkpoint)),
                 &mut work,
             )?;
             assert_eq!(
@@ -95,7 +95,13 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
             }
             let original = request.0.clone();
             let outcome = provider.commit(request.0).await?;
-            let confirmed = cut.confirm(&outcome, 0, &records, &observation, &checkpoint);
+            let confirmed = cut.confirm(
+                &outcome,
+                0,
+                &records,
+                std::slice::from_ref(&observation),
+                &checkpoint,
+            );
             if omitted.is_some() {
                 assert!(
                     matches!(confirmed, Err(Error::Indeterminate(operation)) if operation == cut.operation)
@@ -121,8 +127,14 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
                 let refused = provider.commit(racing).await?;
                 assert!(matches!(refused, CommitOutcome::Conflict(_)));
                 assert!(
-                    cut.confirm(&refused, 0, &records, &observation, &checkpoint)?
-                        .is_none()
+                    cut.confirm(
+                        &refused,
+                        0,
+                        &records,
+                        std::slice::from_ref(&observation),
+                        &checkpoint
+                    )?
+                    .is_none()
                 );
             }
             drop(request.1);
@@ -356,8 +368,14 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
     };
     let committed = receipt.commit_id;
     assert!(
-        cut.confirm(&outcome, 0, &records, &observation, &checkpoint)
-            .is_err()
+        cut.confirm(
+            &outcome,
+            0,
+            &records,
+            std::slice::from_ref(&observation),
+            &checkpoint
+        )
+        .is_err()
     );
     let (mut commit, quota) = prepared;
     for omitted in 0..receipt.appends.len() {
@@ -386,11 +404,23 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
     // Full membership has already been checked by its original owner. A semantic
     // mismatch cannot retire the prepared result or require a second validation.
     assert!(
-        cut.confirm_composed(&validated, 1, &records, &observation, &checkpoint)
-            .is_err()
+        cut.confirm_composed(
+            &validated,
+            1,
+            &records,
+            std::slice::from_ref(&observation),
+            &checkpoint
+        )
+        .is_err()
     );
     assert_eq!(
-        cut.confirm_composed(&validated, 0, &records, &observation, &checkpoint)?,
+        cut.confirm_composed(
+            &validated,
+            0,
+            &records,
+            std::slice::from_ref(&observation),
+            &checkpoint
+        )?,
         Some(committed)
     );
     let acyclic_fs::FilesystemCommitOutcome::Committed(result) = store
@@ -409,7 +439,13 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
         .prepare_settlement(replay_commit, replay)
         .map_err(|_| invalid(None))?;
     assert_eq!(
-        cut.confirm_composed(&validated, 0, &records, &observation, &checkpoint)?,
+        cut.confirm_composed(
+            &validated,
+            0,
+            &records,
+            std::slice::from_ref(&observation),
+            &checkpoint
+        )?,
         Some(committed)
     );
     drop(validated);
@@ -424,7 +460,13 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
         .prepare_settlement(racing, loser)
         .map_err(|_| invalid(None))?;
     assert_eq!(
-        cut.confirm_composed(&loser, 0, &records, &observation, &checkpoint)?,
+        cut.confirm_composed(
+            &loser,
+            0,
+            &records,
+            std::slice::from_ref(&observation),
+            &checkpoint
+        )?,
         None
     );
     assert!(matches!(
@@ -474,7 +516,7 @@ async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() 
                 path: pages.clone(),
             },
             &records,
-            Some((&observation, &checkpoint)),
+            Some((std::slice::from_ref(&observation), &checkpoint)),
             &mut work,
         )?;
         if let Some(index) = omitted {
@@ -482,7 +524,13 @@ async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() 
         }
         let original = request.0.clone();
         let outcome = provider.commit(request.0).await?;
-        let confirmed = cut.confirm(&outcome, 0, &records, &observation, &checkpoint);
+        let confirmed = cut.confirm(
+            &outcome,
+            0,
+            &records,
+            std::slice::from_ref(&observation),
+            &checkpoint,
+        );
         if omitted.is_some() {
             assert!(
                 matches!(confirmed, Err(Error::Indeterminate(operation))
@@ -513,8 +561,14 @@ async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() 
             let refused = provider.commit(racing).await?;
             assert!(matches!(refused, CommitOutcome::Conflict(_)));
             assert!(
-                cut.confirm(&refused, 0, &records, &observation, &checkpoint)?
-                    .is_none()
+                cut.confirm(
+                    &refused,
+                    0,
+                    &records,
+                    std::slice::from_ref(&observation),
+                    &checkpoint
+                )?
+                .is_none()
             );
         }
         drop(request.1);
@@ -575,7 +629,7 @@ async fn check_publication(_native: bool, large: bool) -> Result<()> {
             path: pages.clone(),
         },
         &records,
-        Some((&observation, &checkpoint)),
+        Some((std::slice::from_ref(&observation), &checkpoint)),
         &mut old_work,
     )?;
     assert!(

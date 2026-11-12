@@ -65,7 +65,7 @@ mod conversation;
 mod durability;
 mod indexed_publication;
 #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
-mod inline_tests;
+pub(crate) mod inline_tests;
 mod interactions;
 mod observations;
 #[cfg(not(target_arch = "wasm32"))]
@@ -89,7 +89,7 @@ mod summary_authorization;
 mod summary_cache;
 mod summary_map;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 mod tool_settlement;

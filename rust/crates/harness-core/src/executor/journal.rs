@@ -42,6 +42,34 @@ pub type IndexedExecutionRecords = (u64, Vec<ExecutionRecord>);
 pub type IndexedExecutionFuture<'a> =
     crate::conversation::BoundedContentFuture<'a, Option<IndexedExecutionRecords>>;
 
+/// A model observation whose original canonical bytes were admitted and staged
+/// by this journal. The producer retains the decoded event until publication;
+/// an adapter can validate it without reading its own newly written content.
+pub struct PreparedModelObservation<'a> {
+    pub(crate) operation: OperationId,
+    pub(crate) binding: Option<ExecutionJournalCacheId>,
+    pub(crate) key: String,
+    pub(crate) event: ExecutionEvent,
+    pub(crate) model: &'a ModelEvent,
+}
+
+impl PreparedModelObservation<'_> {
+    /// Original operation-scoped retry identity.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Original journal record, including its immutable payload binding.
+    pub fn event(&self) -> &ExecutionEvent {
+        &self.event
+    }
+
+    /// Original decoded provider event, not a second payload load.
+    pub fn model(&self) -> &ModelEvent {
+        self.model
+    }
+}
+
 impl ExecutionRecordQuery<'_> {
     pub(crate) fn step_bound(limits: Limits) -> Option<usize> {
         limits
@@ -206,6 +234,50 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
+
+    /// Publishes an ordered group using its original prepared payloads. The
+    /// ordinary composition preserves per-record retry semantics; journals
+    /// with atomic publication commit the group in one original transaction.
+    /// A returned sequence is the last original accepted observation.
+    fn append_prepared_models<'a>(
+        &'a self,
+        operation: OperationId,
+        observations: &'a [PreparedModelObservation<'a>],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<u64>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(feature = "research")]
+            let mut sequence = None;
+            #[cfg(not(feature = "research"))]
+            let sequence = None;
+            for observation in observations {
+                if observation.operation != operation {
+                    return Err(stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "prepared model observation belongs to another operation",
+                    ));
+                }
+                #[cfg(feature = "research")]
+                if let Some(sequenced) = self.sequenced_appends() {
+                    sequence = Some(
+                        sequenced
+                            .append_with_sequence(
+                                operation,
+                                observation.key(),
+                                observation.event(),
+                                io,
+                            )?
+                            .await?,
+                    );
+                    continue;
+                }
+                self.append(operation, observation.key(), observation.event(), io)?
+                    .await?;
+            }
+            Ok(sequence)
+        })
+    }
 
     /// Stable receipt capability of this immutable journal binding. `None`
     /// uses ordinary append and retains unknown coverage on live completion

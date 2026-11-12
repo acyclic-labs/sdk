@@ -93,8 +93,8 @@ pub(crate) struct ModelCallUsage<'a> {
     pub tokens: ModelTokenUsage,
     pub started_at: Option<u64>,
     pub completed_at: Option<u64>,
-    /// Dispatch through receipt of the terminal event, including original
-    /// journal backpressure between chunks. Excludes the terminal commit.
+    /// Dispatch through receipt of the terminal event. Provider reads continue
+    /// during group publication; terminal durability is measured afterwards.
     /// Unknown for recovered calls and platforms without this clock.
     pub latency_ns: Option<u64>,
     /// Original HTTP request identifier, never inferred from the generation id.

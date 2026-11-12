@@ -48,7 +48,7 @@ fn encode_observation(
     Ok(encoded.into())
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) mod codec_fuzz {
     use super::*;
 
@@ -384,174 +384,277 @@ where
         confirmation: Option<&mut Option<acyclic_stream::CommitId>>,
         io: Option<&PreparationIo>,
     ) -> Result<AppendObservation> {
-        // Validation decoders and their scratch retire on success, refusal and
-        // cancellation; the optional receipt is only a fixed-width identity.
-        // authenticated caches retain their own independent ownership pools.
+        self.append_observation_group(
+            operation_id,
+            expected_tail,
+            &[Observation {
+                key: claim_id,
+                event,
+                model: None,
+            }],
+            contributions,
+            confirmation,
+            io,
+        )
+        .await
+    }
+
+    pub(super) async fn append_observation_group(
+        &self,
+        operation_id: OperationId,
+        expected_tail: Option<u64>,
+        entries: &[Observation<'_>],
+        contributions: &[indexed_publication::Contribution<'_>],
+        mut confirmation: Option<&mut Option<acyclic_stream::CommitId>>,
+        io: Option<&PreparationIo>,
+    ) -> Result<AppendObservation> {
+        use std::borrow::Cow;
         let scope = crate::filesystem::PreparationScope::new(io)?;
         let io = scope.io();
         self.require_operation(operation_id, io)?;
+        if entries.is_empty() {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "empty observation group",
+            ));
+        }
         let identity = indexed_publication::contribution_identity(contributions, io)?;
-        let bound = match event {
-            ExecutionEvent::ConversationItem { publication, .. }
-            | ExecutionEvent::ToolStarted { publication, .. } => *publication == identity,
-            _ => identity.is_none(),
-        };
-        if !bound || (!contributions.is_empty() && expected_tail.is_none()) {
+        if !contributions.is_empty() && (expected_tail.is_none() || entries.len() != 1) {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
-                "execution publication differs from its original contribution binding",
+                "contributed observations require one original conditional cut",
             ));
         }
-        if claim_id.is_empty() {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "execution journal compare-and-append is invalid",
-            ));
-        }
-        if let ExecutionEvent::ModelInline { event, .. } = event {
-            self.authorize_inline_event(event, VolumeOperation::Write, io)?;
-        }
-        let model = self
-            .verify_event_refs_with_io(operation_id, event, io)
-            .await?;
-        let limits = Limits::default();
-        self.verify_canonical_publication_with_io(event, limits, io)
-            .await?;
-        let digest = super::content::operation_digest(operation_id, claim_id, io)?;
-        let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
-        if let Some(io) = io {
-            io.allocation_attempt(64)?;
-            let copying = acyclic_fs::WorkCounters {
-                bytes_copied: 64,
-                ..Default::default()
+        let mut encoded = crate::model::vec_with_capacity(entries.len(), io)?;
+        for entry in entries {
+            let bound = match entry.event {
+                ExecutionEvent::ConversationItem { publication, .. }
+                | ExecutionEvent::ToolStarted { publication, .. } => *publication == identity,
+                _ => identity.is_none(),
             };
-            io.preflight(copying)?;
-            io.charge(copying)?;
+            if !bound || entry.key.is_empty() {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "execution publication differs from its original contribution binding",
+                ));
+            }
+            if let ExecutionEvent::ModelInline { event, .. } = entry.event {
+                self.authorize_inline_event(event, VolumeOperation::Write, io)?;
+            }
+            let model = match entry.model {
+                Some(model) => Some(Cow::Borrowed(model)),
+                None => self
+                    .verify_event_refs_with_io(operation_id, entry.event, io)
+                    .await?
+                    .map(Cow::Owned),
+            };
+            self.verify_canonical_publication_with_io(entry.event, Limits::default(), io)
+                .await?;
+            let digest = super::content::operation_digest(operation_id, entry.key, io)?;
+            let retry_digest = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(format_args!("{}", digest.to_hex()), work)
+            })?;
+            let observation = BorrowedObservation {
+                version: OBSERVATION_VERSION,
+                operation_id,
+                turn_operation: self.turn_operation(operation_id),
+                retry_digest: &retry_digest,
+                event: entry.event,
+            };
+            let bytes = encode_observation(&observation, io)?;
+            let retry_key = crate::model::hash_bytes(retry_digest.as_bytes(), io)?;
+            let event_digest = crate::executor::with_history_io(io, |work| {
+                crate::executor::json::canonical_json_digest(
+                    entry.event,
+                    Some(if io.is_some() {
+                        acyclic_stream::MAX_RECORD_BYTES as u64
+                    } else {
+                        u64::MAX
+                    }),
+                    work,
+                )
+            })?;
+            encoded.push(EncodedObservation {
+                retry_key,
+                event_digest,
+                bytes,
+                event: entry.event,
+                model,
+            });
         }
-        let retry_digest = digest.to_hex().to_string();
-        let observation = BorrowedObservation {
-            version: OBSERVATION_VERSION,
-            operation_id,
-            turn_operation: self.turn_operation(operation_id),
-            retry_digest: &retry_digest,
-            event,
-        };
-        let bytes = encode_observation(&observation, io)?;
-        let body_hold = match io {
-            Some(io) => io.guard_bytes(&bytes)?,
-            None => None,
-        };
-        let retry_hashing = acyclic_fs::WorkCounters {
-            bytes_hashed: 64,
-            ..Default::default()
-        };
-        if let Some(io) = io {
-            io.preflight(retry_hashing)?;
-            io.charge(retry_hashing)?;
+        let mut offset = 0;
+        let mut receipt = AppendObservation::refused();
+        while offset < encoded.len() {
+            // Leave space for the checkpoint and at least one index page. This
+            // chunks protocol frames; it never caps the call or its queue.
+            let mut end = offset;
+            let mut bytes = 0;
+            while end < encoded.len() && end - offset < acyclic_stream::MAX_ITEMS {
+                let next = bytes + encoded[end].bytes.len() + 16;
+                if end > offset && next > acyclic_stream::MAX_COMMAND_BYTES / 2 {
+                    break;
+                }
+                bytes = next;
+                end += 1;
+            }
+            receipt = self
+                .append_encoded_group(
+                    operation_id,
+                    expected_tail,
+                    &encoded[offset..end],
+                    contributions,
+                    confirmation.as_deref_mut(),
+                    io,
+                )
+                .await?;
+            if !receipt.accepted {
+                break;
+            }
+            offset = end;
         }
-        let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
-        let event_digest = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(
-                event,
-                Some(if io.is_some() {
-                    acyclic_stream::MAX_RECORD_BYTES as u64
-                } else {
-                    u64::MAX
-                }),
-                work,
-            )
-        })?;
+        Ok(receipt)
+    }
+
+    async fn append_encoded_group(
+        &self,
+        operation_id: OperationId,
+        expected_tail: Option<u64>,
+        encoded: &[EncodedObservation<'_>],
+        contributions: &[indexed_publication::Contribution<'_>],
+        mut confirmation: Option<&mut Option<acyclic_stream::CommitId>>,
+        io: Option<&PreparationIo>,
+    ) -> Result<AppendObservation> {
+        let limits = Limits::default();
         let mut cache = self.verified.lock().await;
         loop {
             self.refresh_cached_summary(operation_id, &mut cache, io)
                 .await?;
-            let mut edit = cache.edit();
-            let (summary, retained_io) = edit.parts();
-            self.preload_summary(summary, retry_key, event, retained_io)
-                .await?;
-            edit.finish();
-            let summary = cache.summary();
-            if let Some((sequence, previous)) = summary.retries.get(&retry_key, io)? {
-                if *previous != event_digest {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if io.is_some() {
-                        return Err(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Conflict,
-                            reason: "execution journal retry identity reused",
-                        });
-                    }
-                    return Err(Error::Conflict(
-                        "execution journal retry identity reused".into(),
+            if expected_tail.is_some_and(|tail| tail != cache.summary().tail) {
+                // Exact retries are checked before deciding a stale tail below.
+                let first = &encoded[0];
+                let mut edit = cache.edit();
+                let (summary, retained_io) = edit.parts();
+                self.preload_summary(summary, first.retry_key, first.event, retained_io)
+                    .await?;
+                let previous = summary.retries.get(&first.retry_key, io)?;
+                if previous.is_some_and(|(_, digest)| *digest != first.event_digest) {
+                    return Err(stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Conflict,
+                        "execution journal retry identity reused",
                     ));
                 }
-                let accepted =
-                    expected_tail.is_none_or(|tail| tail.checked_add(1) == Some(*sequence));
-                if accepted && let Some(confirmation) = confirmation {
-                    // The signed retry index already located this exact observation.
-                    // Only callers consuming its receipt need the original commit;
-                    // ordinary retries perform no additional provider read.
+                let accepted = previous
+                    .filter(|(sequence, _)| {
+                        expected_tail.and_then(|tail| tail.checked_add(1)) == Some(*sequence)
+                    })
+                    .map(|(sequence, _)| *sequence);
+                edit.finish();
+                let Some(sequence) = accepted else {
+                    return Ok(AppendObservation::refused());
+                };
+                if let Some(confirmation) = confirmation.as_deref_mut() {
                     *confirmation = Some(
-                        self.confirm_observation_record(operation_id, *sequence, &bytes, io)
+                        self.confirm_observation_record(operation_id, sequence, &first.bytes, io)
                             .await?,
                     );
                 }
                 return Ok(AppendObservation {
-                    accepted,
+                    accepted: true,
                     #[cfg(feature = "research")]
-                    sequence: accepted.then_some(*sequence),
+                    sequence: Some(sequence),
                 });
             }
-            if expected_tail.is_some_and(|tail| tail != summary.tail) {
-                return Ok(AppendObservation::refused());
-            }
-            summary.validate_next(event, model.as_ref(), limits, io)?;
-            let tail = summary.tail;
-            let sequence = tail.checked_add(1).ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "execution journal sequence overflows",
-                )
-            })?;
-            // A dispatch claim must not commit until every fallible cache
-            // allocation and admission has succeeded. The edit invalidates
-            // this speculative state on conflict, error or cancellation.
             let mut edit = cache.edit();
             let (summary, retained_io) = edit.parts();
-            summary.accept_verified(
-                (sequence, retry_key, event_digest),
-                event,
-                model.as_ref(),
-                limits,
-                retained_io,
-            )?;
+            let mut records = crate::model::vec_with_capacity(encoded.len(), io)?;
+            let mut last_new = None;
+            let mut sequence = 0;
+            for (index, entry) in encoded.iter().enumerate() {
+                self.preload_summary(summary, entry.retry_key, entry.event, retained_io)
+                    .await?;
+                if let Some((original, digest)) = summary.retries.get(&entry.retry_key, io)? {
+                    if *digest != entry.event_digest {
+                        return Err(stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Conflict,
+                            "execution journal retry identity reused",
+                        ));
+                    }
+                    sequence = *original;
+                    if last_new.is_some() {
+                        return Err(stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Conflict,
+                            "observation group repeats an already published suffix",
+                        ));
+                    }
+                    continue;
+                }
+                summary.validate_next(entry.event, entry.model.as_deref(), limits, io)?;
+                sequence = summary.tail.checked_add(1).ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "execution journal sequence overflows",
+                    )
+                })?;
+                summary.accept_verified(
+                    (sequence, entry.retry_key, entry.event_digest),
+                    entry.event,
+                    entry.model.as_deref(),
+                    limits,
+                    retained_io,
+                )?;
+                records.push(entry.bytes.clone());
+                last_new = Some(index);
+            }
+            let Some(last) = last_new else {
+                edit.finish();
+                if let Some(confirmation) = confirmation.as_deref_mut() {
+                    let last = encoded.last().ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                            "observation group lost its final record",
+                        )
+                    })?;
+                    *confirmation = Some(
+                        self.confirm_observation_record(operation_id, sequence, &last.bytes, io)
+                            .await?,
+                    );
+                }
+                return Ok(AppendObservation {
+                    accepted: true,
+                    #[cfg(feature = "research")]
+                    sequence: Some(sequence),
+                });
+            };
+            let last = &encoded[last];
             let committed = self
-                .publish_contributed_observation(
+                .publish_contributed_observations(
                     summary,
-                    retry_key,
-                    event,
-                    &bytes,
+                    last.retry_key,
+                    last.event,
+                    &records,
                     contributions,
                     retained_io,
                 )
                 .await?;
             if let Some((recovery, commit_id)) = committed {
-                #[cfg(feature = "test-support")]
+                #[cfg(any(test, feature = "test-support"))]
                 tracing::trace!(target: "acyclic_harness::journal_work",
-                    journal_appends = 1_u64, journal_append_bytes = bytes.len() as u64,
-                    "execution journal observation accepted");
+                    journal_appends = records.len() as u64, journal_publications = 1_u64,
+                    "execution journal observation group accepted");
                 summary.recovery = Some(recovery);
                 summary.pending_steps.clear();
                 edit.finish();
-                if let Some(confirmation) = confirmation {
+                if let Some(confirmation) = confirmation.as_deref_mut() {
                     *confirmation = Some(commit_id);
                 }
-                drop(bytes);
-                drop(body_hold);
-                drop(retry_digest);
-                drop(retry_hold);
                 return Ok(AppendObservation {
                     accepted: true,
                     #[cfg(feature = "research")]
@@ -559,13 +662,25 @@ where
                 });
             }
             drop(edit);
-            // A contributed fence can lose while the journal tail is unchanged.
-            // Its original producer must settle that conditional refusal.
             if !contributions.is_empty() {
                 return Ok(AppendObservation::refused());
             }
         }
     }
+}
+
+pub(super) struct Observation<'a> {
+    pub(super) key: &'a str,
+    pub(super) event: &'a ExecutionEvent,
+    pub(super) model: Option<&'a crate::model::ModelEvent>,
+}
+
+struct EncodedObservation<'a> {
+    retry_key: [u8; 32],
+    event_digest: [u8; 32],
+    bytes: acyclic_stream::OwnedBytes,
+    event: &'a ExecutionEvent,
+    model: Option<std::borrow::Cow<'a, crate::model::ModelEvent>>,
 }
 
 use crate::executor::stock_boundary;

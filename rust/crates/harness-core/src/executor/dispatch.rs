@@ -7,6 +7,10 @@ use futures::{FutureExt as _, future::Either};
 #[path = "dispatch_size_tests.rs"]
 mod size_tests;
 
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[path = "dispatch_group_tests.rs"]
+mod group_tests;
+
 struct ObservedCall<'a> {
     operation_id: OperationId,
     dispatch: crate::model::ModelDispatch,
@@ -34,6 +38,126 @@ struct ModelStepScope<'a> {
     boundary: Option<&'a dyn crate::agent::ModelBoundary>,
 }
 
+#[derive(Clone, Copy)]
+struct ModelGroupCall<'a> {
+    operation: OperationId,
+    dispatch: crate::model::ModelDispatch,
+    model: &'a Model,
+    sampling: crate::model::ModelSampling,
+    max_output_tokens: Option<u32>,
+    purpose: ModelPurpose,
+    started_at: Option<u64>,
+    agent_path: Option<&'a str>,
+}
+
+struct ModelTerminalTiming {
+    latency_ns: Option<u64>,
+    completed_at: Option<u64>,
+    #[cfg(feature = "research")]
+    ttft_ns: Option<u64>,
+}
+
+struct WrittenModelGroup<'a> {
+    events: Vec<ModelEvent>,
+    text: Option<super::live_reply::LiveText<'a>>,
+    receipt: super::model_observation::ModelObservationReceipt,
+    terminal: bool,
+}
+
+fn write_model_group<'a>(
+    execution: &'a StockExecution<'_>,
+    journal: &'a dyn ExecutionJournal,
+    call: ModelGroupCall<'a>,
+    first: usize,
+    events: Vec<ModelEvent>,
+    timing: Option<ModelTerminalTiming>,
+    mut text: Option<super::live_reply::LiveText<'a>>,
+) -> Result<crate::conversation::BoundedContentFuture<'a, WrittenModelGroup<'a>>> {
+    let io = execution.io;
+    crate::conversation::BoundedContentFuture::new(io, || async move {
+        if let Some(text) = text.as_mut() {
+            for event in &events {
+                text.observe(event);
+                if matches!(event, ModelEvent::Restarted) {
+                    text.flush().await?;
+                }
+            }
+        }
+        let terminal = matches!(events.last(), Some(ModelEvent::Completed { .. }));
+        let usage = match (events.last(), timing.as_ref()) {
+            (Some(ModelEvent::Completed { metadata }), Some(timing)) => {
+                Some(super::model_usage::ModelCallUsage {
+                    version: ModelUsageRecord::VERSION,
+                    completed: true,
+                    dispatch: call.dispatch,
+                    purpose: call.purpose,
+                    provider: &call.model.provider,
+                    model: &call.model.name,
+                    agent_path: call.agent_path,
+                    sampling: call.sampling,
+                    max_output_tokens: call.max_output_tokens,
+                    tokens: super::model_usage::ModelTokenUsage::reported(metadata),
+                    started_at: call.started_at,
+                    completed_at: timing.completed_at,
+                    latency_ns: timing.latency_ns,
+                    #[cfg(feature = "research")]
+                    provider_request_id: metadata["provider_request_id"].as_str(),
+                    #[cfg(feature = "research")]
+                    system_fingerprint: metadata["system_fingerprint"].as_str(),
+                    #[cfg(feature = "research")]
+                    ttft_ns: timing.ttft_ns,
+                    #[cfg(feature = "research")]
+                    cache: ModelCacheObservation::reported(metadata),
+                })
+            }
+            _ => None,
+        };
+        let writer = execution.journal_writes.lock().await;
+        let receipt = crate::obs::waiting(
+            "journal-commit",
+            call.operation,
+            super::model_observation::append_many(
+                journal,
+                call.operation,
+                (call.dispatch.step, call.purpose),
+                first,
+                &events,
+                usage.as_ref(),
+                io,
+            ),
+        )
+        .await?;
+        drop(writer);
+        if let Some(text) = text.as_mut() {
+            text.flush().await?;
+        }
+        Ok(WrittenModelGroup {
+            events,
+            text,
+            receipt,
+            terminal,
+        })
+    })
+}
+
+fn finish_model_group<'a>(
+    written: WrittenModelGroup<'a>,
+    observed: &mut Vec<ModelEvent>,
+    io: Option<&PreparationIo>,
+    #[cfg(feature = "research")] phase: &mut DispatchPhase,
+    purpose: ModelPurpose,
+) -> Result<Option<super::live_reply::LiveText<'a>>> {
+    #[cfg(feature = "research")]
+    if written.terminal && purpose == ModelPurpose::Response {
+        phase.1 = written.receipt.journal_cut;
+    }
+    #[cfg(not(feature = "research"))]
+    let _ = (written.receipt, written.terminal, purpose);
+    for event in stock_events_into_iter(written.events, io)? {
+        stock_push_model_event(observed, event?, io)?;
+    }
+    Ok(written.text)
+}
 impl StockExecution<'_> {
     /// Cancellation covers boundary reads, preparation, headers and chunks.
     pub(super) async fn cancellable_model_step(
@@ -587,143 +711,144 @@ impl StockExecution<'_> {
         } = call;
         #[cfg(feature = "research")]
         let mut clock = clock;
-        let step = dispatch.step;
-        let purpose_key = model_purpose_key(purpose);
         let io = self.io;
+        let call = ModelGroupCall {
+            operation: operation_id,
+            dispatch,
+            model,
+            sampling,
+            max_output_tokens,
+            purpose,
+            started_at: clock.started_at(),
+            agent_path: self
+                .stock
+                .task_context
+                .as_ref()
+                .and_then(|(context, _)| context.agent())
+                .map(|(agent, _)| agent.as_str()),
+        };
         let mut text = self
             .stock
             .live_reply
             .as_ref()
             .filter(|_| live)
             .map(LiveReply::dispatch);
-        {
-            let mut stream = stream;
-            loop {
-                // Stage the text so far whenever the provider pauses.
-                let next = match &mut stream {
-                    Either::Left(continuation) => continuation.next().map(Ok),
-                    Either::Right(stream) => match (stream.next().now_or_never(), text.as_mut()) {
-                        (Some(next), _) => next,
-                        (None, Some(text)) => {
-                            text.flush().await?;
-                            crate::obs::waiting("provider-event", operation_id, stream.next()).await
-                        }
-                        (None, None) => {
-                            crate::obs::waiting("provider-event", operation_id, stream.next()).await
-                        }
-                    },
-                };
-                let Some(event) = next else {
-                    break;
-                };
-                let event = match event {
-                    Ok(event) => event,
-                    Err(error) => {
-                        // An error can follow text without a transport pause.
-                        // Retain that original prefix before settling the turn.
-                        if let Some(text) = text.as_mut() {
-                            text.flush().await?;
-                        }
-                        return Err(error);
-                    }
-                };
-                #[cfg(feature = "research")]
-                clock.observe(&event);
-                let latency_ns = matches!(event, ModelEvent::Completed { .. })
-                    .then(|| clock.elapsed_ns())
-                    .flatten();
-                let completed_at = matches!(event, ModelEvent::Completed { .. })
-                    .then(|| clock.completed_at())
-                    .flatten();
-                let index = admission.count;
-                let key = with_history_io(io, |work| {
-                    preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
-                })?;
-                stock_push_model_event(&mut observed, event, io)?;
-                let event = observed.last().ok_or_else(|| {
-                    stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Storage,
-                        "model observation was not retained",
-                    )
-                })?;
-                admission.observe(event, self.stock.limits, io)?;
-                // Reconciliation owns a finite continuation. Reject a known
-                // successor before committing its terminal event; live streams
-                // settle at completion without waiting for transport closure.
-                if admission.completed
-                    && let Either::Left(continuation) = &mut stream
-                    && let Some(next) = continuation.next()
-                {
-                    admission.validate_next(&next, self.stock.limits, io)?;
-                }
-                if let Some(text) = text.as_mut() {
-                    text.observe(event);
-                    if matches!(event, ModelEvent::Restarted) {
-                        text.flush().await?;
-                    }
-                }
-                let usage = match event {
-                    ModelEvent::Completed { metadata } => {
-                        Some(super::model_usage::ModelCallUsage {
-                            version: ModelUsageRecord::VERSION,
-                            completed: true,
-                            dispatch,
-                            purpose,
-                            provider: &model.provider,
-                            model: &model.name,
-                            agent_path: self
-                                .stock
-                                .task_context
-                                .as_ref()
-                                .and_then(|(context, _)| context.agent())
-                                .map(|(agent, _)| agent.as_str()),
-                            sampling,
-                            max_output_tokens,
-                            tokens: super::model_usage::ModelTokenUsage::reported(metadata),
-                            started_at: clock.started_at(),
-                            completed_at,
-                            latency_ns,
-                            #[cfg(feature = "research")]
-                            provider_request_id: metadata["provider_request_id"].as_str(),
-                            #[cfg(feature = "research")]
-                            system_fingerprint: metadata["system_fingerprint"].as_str(),
-                            #[cfg(feature = "research")]
-                            ttft_ns: clock.ttft_ns(),
-                            #[cfg(feature = "research")]
-                            cache: ModelCacheObservation::reported(metadata),
-                        })
-                    }
-                    _ => None,
-                };
-                let writer = self.journal_writes.lock().await;
-                let receipt = crate::obs::waiting(
-                    "journal-commit",
-                    operation_id,
-                    super::model_observation::append(
-                        journal,
-                        operation_id,
-                        &key,
-                        (step, purpose),
-                        event,
-                        usage.as_ref(),
-                        io,
-                    ),
-                )
-                .await?;
-                drop(writer);
-                #[cfg(feature = "research")]
-                if admission.completed && purpose == ModelPurpose::Response {
-                    phase.1 = receipt.journal_cut;
-                }
-                #[cfg(not(feature = "research"))]
-                let _ = receipt;
-                // The committed terminal event settles this step. Transport
-                // closure is independent and may never follow it.
-                if admission.completed {
-                    break;
-                }
+        let mut stream = stream;
+        let mut pending = Vec::new();
+        let mut first = admission.count;
+        let mut writing = None;
+        let mut timing = None;
+        let mut stopped = false;
+        let mut source_error = None;
+        loop {
+            if writing.is_none() && !pending.is_empty() {
+                let events = std::mem::take(&mut pending);
+                writing = Some(write_model_group(
+                    self,
+                    journal,
+                    call,
+                    first,
+                    events,
+                    timing.take(),
+                    text.take(),
+                )?);
+                first = admission.count;
             }
+            if stopped {
+                if let Some(write) = writing.take() {
+                    text = finish_model_group(
+                        write.await?,
+                        &mut observed,
+                        io,
+                        #[cfg(feature = "research")]
+                        phase,
+                        purpose,
+                    )?;
+                    continue;
+                }
+                break;
+            }
+            let next = {
+                let read = async {
+                    match &mut stream {
+                        Either::Left(continuation) => continuation.next().map(Ok),
+                        Either::Right(stream) => {
+                            crate::obs::waiting("provider-event", operation_id, stream.next()).await
+                        }
+                    }
+                };
+                futures::pin_mut!(read);
+                let next = if let Some(write) = writing.as_mut() {
+                    // A pending publication never prevents polling the provider.
+                    // Completion opens exactly one next group, containing everything
+                    // admitted during that original publication.
+                    match futures::future::select(write, read).await {
+                        Either::Left((result, _)) => {
+                            writing.take();
+                            text = finish_model_group(
+                                result?,
+                                &mut observed,
+                                io,
+                                #[cfg(feature = "research")]
+                                phase,
+                                purpose,
+                            )?;
+                            continue;
+                        }
+                        Either::Right((next, _)) => next,
+                    }
+                } else {
+                    read.await
+                };
+                next
+            };
+            let event = match next {
+                Some(Ok(event)) => event,
+                Some(Err(error)) => {
+                    source_error = Some(error);
+                    stopped = true;
+                    continue;
+                }
+                None => {
+                    stopped = true;
+                    continue;
+                }
+            };
+            #[cfg(feature = "research")]
+            clock.observe(&event);
+            if let Err(error) = admission.observe(&event, self.stock.limits, io) {
+                stock_retire_event(event, io)?;
+                source_error = Some(error);
+                stopped = true;
+                continue;
+            }
+            // A finite reconciliation cannot hide a known post-terminal event.
+            // A live call settles at completion without waiting for transport EOF.
+            if admission.completed
+                && let Either::Left(continuation) = &mut stream
+                && let Some(next) = continuation.next()
+                && let Err(error) = admission.validate_next(&next, self.stock.limits, io)
+            {
+                stock_retire_event(event, io)?;
+                source_error = Some(error);
+                stopped = true;
+                continue;
+            }
+            if admission.completed {
+                timing = Some(ModelTerminalTiming {
+                    latency_ns: clock.elapsed_ns(),
+                    completed_at: clock.completed_at(),
+                    #[cfg(feature = "research")]
+                    ttft_ns: clock.ttft_ns(),
+                });
+                stopped = true;
+            }
+            // Keep restart boundaries until publication; only the retained
+            // response projection retires the earlier attempt's events.
+            stock_vec_push(&mut pending, event, io)?;
+        }
+        if let Some(error) = source_error {
+            return Err(error);
         }
         Ok(observed)
     }
@@ -775,7 +900,7 @@ impl StockExecution<'_> {
     }
 }
 
-fn model_purpose_key(purpose: ModelPurpose) -> &'static str {
+pub(super) fn model_purpose_key(purpose: ModelPurpose) -> &'static str {
     match purpose {
         ModelPurpose::Response => "model",
         ModelPurpose::Summary => "summary",

@@ -1,4 +1,4 @@
-//! Inline small model observations without a separate staged generation.
+//! Prepared model groups retain their original bytes through one publication.
 use super::*;
 
 pub(crate) fn matches_turn(event: &ExecutionEvent, step: u32, purpose: ModelPurpose) -> bool {
@@ -17,27 +17,91 @@ pub(crate) struct ModelObservationReceipt {
 async fn commit(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
-    key: &str,
-    event: &ExecutionEvent,
-    model: &ModelEvent,
+    observations: &[PreparedModelObservation<'_>],
     io: Option<&PreparationIo>,
 ) -> Result<ModelObservationReceipt> {
-    #[cfg(feature = "research")]
-    if matches!(model, ModelEvent::Completed { .. })
-        && let Some(sequenced) = journal.sequenced_appends()
-    {
-        return sequenced
-            .append_with_sequence(operation, key, event, io)?
-            .await
-            .map(|sequence| ModelObservationReceipt {
-                journal_cut: journal::completion_cut(Some(sequenced), operation, sequence),
-            });
-    }
-    let _ = model;
-    journal.append(operation, key, event, io)?.await?;
+    let sequence = journal
+        .append_prepared_models(operation, observations, io)?
+        .await?;
+    #[cfg(not(feature = "research"))]
+    let _ = sequence;
     Ok(ModelObservationReceipt {
         #[cfg(feature = "research")]
-        journal_cut: None,
+        journal_cut: sequence.map(|sequence| ExecutionJournalCut {
+            version: 1,
+            operation,
+            sequence,
+        }),
+    })
+}
+
+async fn prepare<'a>(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    key: String,
+    (step, purpose): (u32, ModelPurpose),
+    model: &'a ModelEvent,
+    usage: Option<&super::model_usage::ModelCallUsage<'_>>,
+    io: Option<&PreparationIo>,
+) -> Result<PreparedModelObservation<'a>> {
+    validate_journal(journal, io)?;
+    let usage = if let Some(usage) = usage {
+        let key = with_history_io(io, |work| {
+            preparation_format(format_args!("{key}:usage"), work)
+        })?;
+        let _key_hold = io
+            .map(|io| io.guard_owned(key.capacity() as u64))
+            .transpose()?;
+        // Validate the original canonical bytes before staging. Publication
+        // retains this proof instead of reloading the file it just created.
+        let bytes = match io {
+            Some(io) => io.encode(usage, io.remaining()?.bytes_encoded, true)?,
+            None => crate::contract::canonical_json_bytes(usage)?.into(),
+        };
+        let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
+        let decoded = super::payload::decode_json::<ModelUsageRecord>(&bytes, io)?;
+        super::model_usage::validate(&decoded.0, operation, step, purpose, model, io)?;
+        let reference = stage_bytes(journal, operation, &key, &bytes, true, io).await?;
+        drop(decoded);
+        Some(reference)
+    } else {
+        None
+    };
+    let maximum = journal.inline_model_event_bytes();
+    let bytes: acyclic_stream::OwnedBytes = match io {
+        Some(io) => io.encode(model, io.remaining()?.bytes_encoded, true)?,
+        None => crate::contract::canonical_json_bytes(model)?.into(),
+    };
+    let _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
+    let event = if bytes.len() as u64 <= maximum {
+        let text = std::str::from_utf8(&bytes).map_err(|_| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "canonical model event is not UTF-8",
+            )
+        })?;
+        ExecutionEvent::ModelInline {
+            step,
+            purpose,
+            event: stock_string_copy(text, io)?,
+            usage,
+        }
+    } else {
+        let event = stage_bytes(journal, operation, &key, &bytes, true, io).await?;
+        ExecutionEvent::Model {
+            step,
+            purpose,
+            event,
+            usage,
+        }
+    };
+    Ok(PreparedModelObservation {
+        operation,
+        binding: journal.cache_identity(),
+        key,
+        event,
+        model,
     })
 }
 
@@ -50,72 +114,49 @@ pub(crate) async fn append(
     usage: Option<&super::model_usage::ModelCallUsage<'_>>,
     original: Option<&PreparationIo>,
 ) -> Result<ModelObservationReceipt> {
-    validate_journal(journal, original)?;
-    let maximum = journal.inline_model_event_bytes();
-    let (step, purpose) = turn;
-    let usage = if let Some(usage) = usage {
-        let key = with_history_io(original, |work| {
-            preparation_format(format_args!("{key}:usage"), work)
-        })?;
-        let _key_hold = original
-            .map(|io| io.guard_owned(key.capacity() as u64))
-            .transpose()?;
-        Some(stage_json(journal, operation, &key, usage, original).await?)
-    } else {
-        None
-    };
-    if maximum == 0 {
-        let event = stage_json(journal, operation, key, model, original).await?;
-        return commit(
-            journal,
-            operation,
-            key,
-            &ExecutionEvent::Model {
-                step,
-                purpose,
-                event,
-                usage,
-            },
-            model,
-            original,
-        )
-        .await;
-    }
     let scope = crate::filesystem::PreparationScope::new(original)?;
     let io = scope.io();
-    let _hold;
-    let bytes: acyclic_stream::OwnedBytes = match io {
-        Some(io) => {
-            let bytes = io.encode(model, io.remaining()?.bytes_encoded, true)?;
-            _hold = io.guard_bytes(&bytes)?;
-            bytes
-        }
-        _ => crate::contract::canonical_json_bytes(model)?.into(),
-    };
-    let event = if bytes.len() as u64 <= maximum {
-        let event = std::str::from_utf8(&bytes).map_err(|_| {
+    let key = stock_string_copy(key, io)?;
+    let observation = prepare(journal, operation, key, turn, model, usage, io).await?;
+    commit(journal, operation, std::slice::from_ref(&observation), io).await
+}
+
+pub(crate) async fn append_many(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    turn: (u32, ModelPurpose),
+    first: usize,
+    models: &[ModelEvent],
+    usage: Option<&super::model_usage::ModelCallUsage<'_>>,
+    original: Option<&PreparationIo>,
+) -> Result<ModelObservationReceipt> {
+    let scope = crate::filesystem::PreparationScope::new(original)?;
+    let io = scope.io();
+    let mut observations = crate::model::vec_with_capacity(models.len(), io)?;
+    for (offset, model) in models.iter().enumerate() {
+        let index = first.checked_add(offset).ok_or_else(|| {
             stock_boundary(
                 io,
-                crate::wire::ErrorCode::Storage,
-                "canonical model event is not UTF-8",
+                crate::wire::ErrorCode::Invalid,
+                "model observation ordinal overflows",
             )
         })?;
-        ExecutionEvent::ModelInline {
-            step,
-            purpose,
-            event: stock_string_copy(event, io)?,
-            usage,
-        }
-    } else {
-        let event = stage_bytes(journal, operation, key, &bytes, true, io).await?;
-        ExecutionEvent::Model {
-            step,
-            purpose,
-            event,
-            usage,
-        }
-    };
-    commit(journal, operation, key, &event, model, io).await
+        let key = with_history_io(io, |work| {
+            preparation_format(
+                format_args!(
+                    "{}:{}:{index}",
+                    super::dispatch::model_purpose_key(turn.1),
+                    turn.0
+                ),
+                work,
+            )
+        })?;
+        let terminal_usage = matches!(model, ModelEvent::Completed { .. })
+            .then_some(usage)
+            .flatten();
+        observations.push(prepare(journal, operation, key, turn, model, terminal_usage, io).await?);
+    }
+    commit(journal, operation, &observations, io).await
 }
 
 pub(crate) async fn load(

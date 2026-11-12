@@ -1,9 +1,9 @@
 //! A model dispatch's text while it streams, staged as files for observers.
 //!
 //! The answer and reasoning a provider has produced are staged whenever the
-//! provider's stream pauses, as `{directory}/{dispatch}/reply/{sequence}` and
+//! the journal publishes a group, as `{directory}/{dispatch}/reply/{sequence}` and
 //! `{directory}/{dispatch}/reasoning/{sequence}`, beside the turn's tool
-//! output. So an observer following that directory shows each delta as it
+//! output. An observer following that directory sees each published group as it
 //! arrives, over the same follow as tool output, and the staging rate is
 //! bounded by the publication itself: no timer and no per-token write. A
 //! replayed or reconciled step stages nothing; the settled turn is the record.

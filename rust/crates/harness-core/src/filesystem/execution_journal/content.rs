@@ -39,6 +39,14 @@ where
                 .transpose()?;
             (hold, key, path)
         };
+        self.authorize_private_content(operation, io)
+    }
+
+    pub(super) fn authorize_private_content(
+        &self,
+        operation: VolumeOperation,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         crate::executor::with_history_io(io, |work| {
             ContentGrant::authorize_volume(
                 &self.verifier,
@@ -176,7 +184,7 @@ where
                 io,
             )
             .await;
-        #[cfg(feature = "test-support")]
+        #[cfg(any(test, feature = "test-support"))]
         if result.is_ok() {
             tracing::trace!(target: "acyclic_harness::journal_work",
                 payload_stages = 1_u64, payload_stage_bytes = bytes.len() as u64,
@@ -203,6 +211,14 @@ where
             .map(|io| io.remaining().map(|budget| budget.bytes_encoded))
             .transpose()?
             .unwrap_or(u64::MAX);
+        self.authorize_private_content(operation, io)
+    }
+
+    pub(super) fn authorize_private_content(
+        &self,
+        operation: VolumeOperation,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         crate::executor::with_history_io(io, |work| {
             ContentGrant::authorize_volume(
                 &self.verifier,
@@ -222,7 +238,7 @@ where
             .await?
             .retain()
             .await?;
-        #[cfg(feature = "test-support")]
+        #[cfg(any(test, feature = "test-support"))]
         tracing::trace!(target: "acyclic_harness::journal_work",
             payload_loads = 1_u64, payload_load_bytes = bytes.len() as u64,
             "execution payload loaded");
@@ -242,6 +258,14 @@ where
                 "inline model observation exceeds its bound",
             ));
         }
+        self.authorize_private_content(operation, io)
+    }
+
+    pub(super) fn authorize_private_content(
+        &self,
+        operation: VolumeOperation,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         crate::executor::with_history_io(io, |work| {
             ContentGrant::authorize_volume(
                 &self.verifier,

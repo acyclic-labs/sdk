@@ -5,7 +5,7 @@ use super::*;
 pub(in crate::filesystem::execution_journal) struct Publication<'a> {
     pub(in crate::filesystem::execution_journal) pages_tail: u64,
     pub(in crate::filesystem::execution_journal) records: &'a [OwnedBytes],
-    pub(in crate::filesystem::execution_journal) observation: &'a OwnedBytes,
+    pub(in crate::filesystem::execution_journal) observation: &'a [OwnedBytes],
     pub(in crate::filesystem::execution_journal) checkpoint: &'a OwnedBytes,
 }
 

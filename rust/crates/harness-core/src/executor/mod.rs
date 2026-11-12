@@ -40,7 +40,7 @@ pub use journal::SequencedExecutionJournal;
 use journal::validate_journal;
 pub use journal::{
     ExecutionJournal, ExecutionJournalCacheId, ExecutionRecordQuery, IndexedExecutionFuture,
-    IndexedExecutionRecords,
+    IndexedExecutionRecords, PreparedModelObservation,
 };
 mod replay;
 pub(crate) use replay::replay_execution;

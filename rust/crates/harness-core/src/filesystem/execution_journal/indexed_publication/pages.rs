@@ -110,7 +110,7 @@ impl Cut<'_> {
         &self,
         page_condition: CommitCondition,
         records: &[OwnedBytes],
-        publication: Option<(&OwnedBytes, &OwnedBytes)>,
+        publication: Option<(&[OwnedBytes], &OwnedBytes)>,
         work: &'a mut Option<&'b mut dyn crate::store::HistoryIo>,
     ) -> Result<(
         acyclic_stream::CommitRequest,
@@ -167,7 +167,7 @@ impl Cut<'_> {
             &mut prepared.1,
             page_condition,
             records,
-            Some((observation, checkpoint)),
+            Some((std::slice::from_ref(observation), checkpoint)),
         )?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = prepared
@@ -200,7 +200,7 @@ impl Cut<'_> {
         custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
         page_condition: CommitCondition,
         records: &[OwnedBytes],
-        publication: Option<(&OwnedBytes, &OwnedBytes)>,
+        publication: Option<(&[OwnedBytes], &OwnedBytes)>,
     ) -> Result<()> {
         // Both standalone and composed publication use this one funded builder.
         for condition in [
@@ -211,12 +211,7 @@ impl Cut<'_> {
             crate::distributed::add_condition(request, custody, condition)?;
         }
         if let Some((observation, checkpoint)) = publication {
-            add_records(
-                request,
-                custody,
-                self.execution,
-                std::slice::from_ref(observation),
-            )?;
+            add_records(request, custody, self.execution, observation)?;
             add_records(
                 request,
                 custody,
@@ -304,11 +299,29 @@ impl Cut<'_> {
         }
     }
 
+    #[cfg(test)]
     pub(super) async fn publish<P: crate::store::JournalProvider + ?Sized>(
         &self,
         provider: &Arc<P>,
         records: &[OwnedBytes],
         observation: &OwnedBytes,
+        checkpoint: &OwnedBytes,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<Option<acyclic_stream::CommitId>> {
+        self.publish_many(
+            provider,
+            records,
+            std::slice::from_ref(observation),
+            checkpoint,
+            work,
+        )
+        .await
+    }
+    pub(super) async fn publish_many<P: crate::store::JournalProvider + ?Sized>(
+        &self,
+        provider: &Arc<P>,
+        records: &[OwnedBytes],
+        observation: &[OwnedBytes],
         checkpoint: &OwnedBytes,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Option<acyclic_stream::CommitId>> {
@@ -387,7 +400,7 @@ impl Cut<'_> {
         outcome: &CommitOutcome,
         pages_tail: u64,
         records: &[OwnedBytes],
-        observation: &OwnedBytes,
+        observation: &[OwnedBytes],
         checkpoint: &OwnedBytes,
     ) -> Result<Option<acyclic_stream::CommitId>> {
         self.confirm_members(outcome, pages_tail, records, observation, checkpoint, false)
@@ -407,7 +420,7 @@ impl Cut<'_> {
             prepared.outcome(),
             pages_tail,
             records,
-            observation,
+            std::slice::from_ref(observation),
             checkpoint,
             true,
         )
@@ -418,7 +431,7 @@ impl Cut<'_> {
         outcome: &CommitOutcome,
         pages_tail: u64,
         records: &[OwnedBytes],
-        observation: &OwnedBytes,
+        observation: &[OwnedBytes],
         checkpoint: &OwnedBytes,
         composed: bool,
     ) -> Result<Option<acyclic_stream::CommitId>> {
@@ -442,7 +455,7 @@ impl Cut<'_> {
         receipt: &acyclic_stream::CommitReceipt,
         pages_tail: u64,
         records: &[OwnedBytes],
-        observation: &OwnedBytes,
+        observation: &[OwnedBytes],
         checkpoint: &OwnedBytes,
         composed: bool,
     ) -> Result<acyclic_stream::CommitId> {
@@ -466,12 +479,7 @@ impl Cut<'_> {
             let (bit, valid) = if append.path == *self.execution {
                 (
                     1,
-                    confirms(
-                        append,
-                        self.execution,
-                        self.execution_tail,
-                        std::slice::from_ref(observation),
-                    ),
+                    confirms(append, self.execution, self.execution_tail, observation),
                 )
             } else if append.path == *self.head {
                 (
