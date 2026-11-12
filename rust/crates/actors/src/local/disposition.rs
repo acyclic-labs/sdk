@@ -10,6 +10,8 @@ use prost::Message as _;
 // A forbidden protobuf wire type prevents an unversioned decoder accepting it.
 const FORMAT_V1: &[u8] = b"\xffAFD\x01";
 const DIRECTORY: &str = ".failures";
+/// The actor's participant custody stream: one intent per composed publication.
+pub(super) const CUSTODY: &str = "custody";
 
 /// A fork replaces its destination subtree; appends write one exact stream.
 /// Compare borrowed components so admission adds no allocation or provider IO.
@@ -22,23 +24,27 @@ pub(super) fn targets_host_records(mutation: &CommitMutation, owner: &StreamPath
         .as_str()
         .strip_prefix(owner.as_str())
         .and_then(|suffix| suffix.strip_prefix('/'));
-    [DIRECTORY, "placement"].into_iter().any(|reserved| {
-        relative
-            .and_then(|suffix| suffix.strip_prefix(reserved))
-            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
-    })
+    [DIRECTORY, CUSTODY, "placement"]
+        .into_iter()
+        .any(|reserved| {
+            relative
+                .and_then(|suffix| suffix.strip_prefix(reserved))
+                .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+        })
 }
 
 pub(super) fn fork_exclusions() -> Result<Vec<acyclic_stream::RelativePath>, Error> {
     Ok(vec![
         acyclic_stream::RelativePath::new(DIRECTORY)?,
+        acyclic_stream::RelativePath::new(CUSTODY)?,
         acyclic_stream::RelativePath::new("placement")?,
     ])
 }
 
 pub(super) fn is_fork_exclusion(exclude: &[acyclic_stream::RelativePath]) -> bool {
-    matches!(exclude, [failure, placement]
-        if failure.as_str() == DIRECTORY && placement.as_str() == "placement")
+    matches!(exclude, [failure, custody, placement]
+        if failure.as_str() == DIRECTORY && custody.as_str() == CUSTODY
+            && placement.as_str() == "placement")
 }
 
 fn status_path(path: &StreamPath) -> Result<StreamPath, Error> {
