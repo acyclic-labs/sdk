@@ -294,19 +294,24 @@ pub struct Registration<K: Ord + Clone> {
     id: Id,
 }
 
-/// A direct delivery of one actor, taken without [`Work`]: it counts in
-/// flight like work, so no checkpoint passes what it may still commit.
+/// One delivery of one actor: it counts in flight, so no checkpoint passes
+/// what it may still commit. It settles only by dropping, and a drop before
+/// [`Flight::finish`] (an error, a panic, a cancelled await) settles failed.
 #[must_use]
-pub struct Flight<K> {
+pub struct Flight<K: Ord + Clone> {
     core: Arc<Core<K>>,
     key: K,
+    failed: bool,
 }
 
-/// Running work retains notifications until its final durable-tail recheck completes.
-pub struct Work<K> {
+/// Running work retains notifications until its final durable-tail recheck
+/// completes. A drop before [`Work::settle`] (an error, a panic, a cancelled
+/// await) marks its key failed, so the input keeps a carried wake.
+pub struct Work<K: Ord + Clone> {
     core: Arc<Core<K>>,
     id: Id,
     key: K,
+    settled: bool,
 }
 
 impl<K: Ord + Clone> ReadySet<K> {
@@ -366,6 +371,7 @@ impl<K: Ord + Clone> ReadySet<K> {
             core: Arc::clone(&self.core),
             id,
             key,
+            settled: false,
         })
     }
 
@@ -386,6 +392,7 @@ impl<K: Ord + Clone> ReadySet<K> {
                 core: Arc::clone(&self.core),
                 id,
                 key,
+                settled: false,
             })
         } else {
             let previous = index.waiter.replace(waker);
@@ -470,6 +477,7 @@ impl<K: Ord + Clone> ReadySet<K> {
         Flight {
             core: Arc::clone(&self.core),
             key: key.clone(),
+            failed: true,
         }
     }
 
@@ -614,11 +622,17 @@ impl<K> Core<K> {
         }
     }
 
-    fn finish(&self, id: Id) {
+    fn finish(&self, id: Id, failed: Option<&K>)
+    where
+        K: Ord + Clone,
+    {
         let mut index = self
             .index
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(key) = failed {
+            index.failed.insert(key.clone());
+        }
         let waiter = if let Some(entry) = index.entries.get_mut(&id) {
             let notified = matches!(entry.phase, Phase::Running { notified: true });
             entry.phase = Phase::Idle;
@@ -846,45 +860,51 @@ impl<K: Ord + Clone> Drop for Registration<K> {
         }
     }
 }
-impl<K> Work<K> {
+impl<K: Ord + Clone> Work<K> {
     /// Identity to replay using its durable cursor before parking this work.
     pub const fn key(&self) -> &K {
         &self.key
     }
+
+    /// Its delivery ran to an outcome, which that delivery's [`Flight`]
+    /// recorded; or there was none to run.
+    pub fn settle(mut self) {
+        self.settled = true;
+    }
 }
 impl<K: Ord + Clone> Flight<K> {
-    /// The delivery settles: a failed one leaves its key's input for a
-    /// carried wake, a completed one clears that.
-    pub fn finish(self, failed: bool) {
+    /// The delivery ran to an outcome: a failed one leaves its key's input
+    /// for a carried wake, a completed one clears that.
+    pub fn finish(mut self, failed: bool) {
+        self.failed = failed;
+    }
+}
+
+/// The one settlement of every delivery, however it ends.
+impl<K: Ord + Clone> Drop for Flight<K> {
+    fn drop(&mut self) {
         let mut index = self
             .core
             .index
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if failed {
+        if self.failed {
             index.failed.insert(self.key.clone());
         } else {
             index.failed.remove(&self.key);
         }
-    }
-}
-
-impl<K> Drop for Flight<K> {
-    fn drop(&mut self) {
-        let waiter = self
-            .core
-            .index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .settle();
+        let waiter = index.settle();
+        drop(index);
         if let Some(waiter) = waiter {
             waiter.wake();
         }
     }
 }
-impl<K> Drop for Work<K> {
+/// The one settlement of all taken work, however it ends.
+impl<K: Ord + Clone> Drop for Work<K> {
     fn drop(&mut self) {
-        self.core.finish(self.id);
+        self.core
+            .finish(self.id, (!self.settled).then_some(&self.key));
     }
 }
 

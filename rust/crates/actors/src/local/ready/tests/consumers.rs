@@ -1,6 +1,7 @@
 //! Deterministic simulation of delivery accounting across consumers. The
 //! run loop and a concurrent `drain` both take work from the one shared ready
-//! index, and either may stall or fail mid-delivery; producers commit input
+//! index, and either may stall, fail or be cancelled at any await point of
+//! its delivery (before admission, or while delivering); producers commit input
 //! with its activation entry, and the host checkpoints and crashes at every
 //! point, to a bounded depth. The activation checkpoint advances only while
 //! the index reports nothing queued or in flight, and keeps or carries
@@ -29,6 +30,10 @@ enum Op {
     Observe,
     /// A consumer takes one ready actor; it may then stall indefinitely.
     Take(Consumer),
+    /// The consumer's delivery starts and waits for its lock and admission.
+    Admit(Consumer),
+    /// The consumer's future is dropped at its current await point.
+    Cancel(Consumer),
     /// The consumer's delivery commits the actor's input, then settles.
     Deliver(Consumer),
     /// The consumer's delivery fails, leaving the actor's input unconsumed.
@@ -52,8 +57,8 @@ struct World {
     cursor: usize,
     /// Per actor, just past its latest entry observed or carried.
     latest: BTreeMap<u8, usize>,
-    /// Each consumer's taken work and its delivery's flight.
-    taken: BTreeMap<Consumer, (Work<u8>, Flight<u8>)>,
+    /// Each consumer's taken work and its started delivery's flight.
+    taken: BTreeMap<Consumer, (Work<u8>, Option<Flight<u8>>)>,
     crashed: bool,
 }
 
@@ -102,7 +107,15 @@ impl World {
             Op::Send(_) => self.undelivered.len() < INPUTS && self.entries.len() < 2 * INPUTS,
             Op::Observe => self.seen < self.entries.len(),
             Op::Take(consumer) => !self.taken.contains_key(&consumer),
-            Op::Deliver(consumer) | Op::Fail(consumer) => self.taken.contains_key(&consumer),
+            Op::Admit(consumer) => self
+                .taken
+                .get(&consumer)
+                .is_some_and(|(_, flight)| flight.is_none()),
+            Op::Cancel(consumer) => self.taken.contains_key(&consumer),
+            Op::Deliver(consumer) | Op::Fail(consumer) => self
+                .taken
+                .get(&consumer)
+                .is_some_and(|(_, flight)| flight.is_some()),
             Op::Checkpoint => true,
             Op::Crash => !self.crashed,
         }
@@ -127,9 +140,15 @@ impl World {
             }
             Op::Take(consumer) => {
                 if let Some(work) = self.set.take() {
-                    let flight = self.set.flight(work.key());
-                    self.taken.insert(consumer, (work, flight));
+                    self.taken.insert(consumer, (work, None));
                 }
+            }
+            Op::Admit(consumer) => {
+                let (work, flight) = self.taken.get_mut(&consumer).ok_or("nothing taken")?;
+                *flight = Some(self.set.flight(work.key()));
+            }
+            Op::Cancel(consumer) => {
+                self.taken.remove(&consumer).ok_or("nothing taken")?;
             }
             Op::Deliver(consumer) => {
                 let (work, flight) = self.taken.remove(&consumer).ok_or("nothing taken")?;
@@ -137,13 +156,13 @@ impl World {
                 let actor = *work.key();
                 let entries = &self.entries;
                 self.undelivered.retain(|&entry| entries[entry] != actor);
-                flight.finish(false);
-                drop(work);
+                flight.ok_or("not admitted")?.finish(false);
+                work.settle();
             }
             Op::Fail(consumer) => {
                 let (work, flight) = self.taken.remove(&consumer).ok_or("nothing taken")?;
-                flight.finish(true);
-                drop(work);
+                flight.ok_or("not admitted")?.finish(true);
+                work.settle();
             }
             Op::Checkpoint => self.checkpoint()?,
             Op::Crash => {
@@ -211,6 +230,8 @@ impl World {
             let op = [
                 Op::Deliver(Consumer::Run),
                 Op::Deliver(Consumer::Drain),
+                Op::Admit(Consumer::Run),
+                Op::Admit(Consumer::Drain),
                 Op::Observe,
                 Op::Take(Consumer::Run),
             ]
@@ -267,6 +288,9 @@ fn no_consumer_lets_a_checkpoint_pass_an_in_flight_delivery() -> Outcome {
         Op::Observe,
         Op::Take(Consumer::Run),
         Op::Take(Consumer::Drain),
+        Op::Admit(Consumer::Run),
+        Op::Admit(Consumer::Drain),
+        Op::Cancel(Consumer::Drain),
         Op::Deliver(Consumer::Run),
         Op::Deliver(Consumer::Drain),
         Op::Fail(Consumer::Drain),
@@ -299,6 +323,9 @@ fn a_poisoned_actor_holds_back_only_its_own_entry() -> Outcome {
                 world.apply(Op::Observe)?;
             }
             world.apply(Op::Take(Consumer::Run))?;
+            if world.enabled(Op::Admit(Consumer::Run)) {
+                world.apply(Op::Admit(Consumer::Run))?;
+            }
             if let Some((work, _)) = world.taken.get(&Consumer::Run) {
                 let poisoned = *work.key() == POISONED;
                 world.apply(if poisoned {

@@ -7,7 +7,7 @@
 //! is also the wake set: a producer that writes an actor's subscription appends
 //! [`Store::activation`] for that actor in the same commit, and the dispatcher's
 //! assigned shard follow wakes it. A delivery reads its inputs with bounded finite reads.
-use super::ready::{ReadySet, Registration, Work};
+use super::ready::{Flight, ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store, scheduling};
 use acyclic_stream::StreamProviderExt as _;
 mod clock;
@@ -76,17 +76,26 @@ impl Drop for EventDelivery {
     }
 }
 
-/// Invalidate cancelled delivery or control publication without taking its lock.
-/// Control changes also wake the dispatcher after publication finishes.
-struct RefreshOnDrop(Option<Arc<Slot>>, bool);
-impl Drop for RefreshOnDrop {
+/// One delivery's single settlement, on every way out: an error, a panic
+/// or a cancelled await settles it failed. A failed delivery invalidates
+/// its slot's state without taking its lock (a cancelled publication may
+/// have committed), and its carried wake, not a resident token, retains
+/// the alarm; its flight then keeps the actor's failure mark.
+struct Settlement<'a> {
+    slot: &'a Slot,
+    flight: Option<Flight<ActorReference>>,
+    failed: bool,
+}
+impl Drop for Settlement<'_> {
     fn drop(&mut self) {
-        if let Some(slot) = &self.0 {
-            slot.refresh.store(true, Ordering::Release);
-            if self.1 {
-                slot.waker.wake_by_ref();
-            }
+        let Some(flight) = self.flight.take() else {
+            return;
+        };
+        if self.failed {
+            self.slot.refresh.store(true, Ordering::Release);
+            self.slot.registration.suspend_alarm();
         }
+        flight.finish(self.failed);
     }
 }
 
@@ -1060,6 +1069,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     async fn execute(&self, work: Work<ActorReference>) -> Result<(), (ActorReference, Error)> {
         let actor = work.key().clone();
         let Some(slot) = self.slot(&actor) else {
+            work.settle();
             return Ok(());
         };
         let result = self.deliver(&actor, &slot).await;
@@ -1067,7 +1077,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // Another placement owns the actor now; stop hosting it here.
             self.release(&actor);
         }
-        drop(work);
+        // The delivery recorded its outcome; dropped before here, the work
+        // settles failed.
+        work.settle();
         result.map(|_| ()).map_err(|error| (actor, error))
     }
 
@@ -1080,8 +1092,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             async {
                 // Every delivery counts in flight in the shared ready index,
                 // whichever consumer started it, until it settles; a failed
-                // one keeps its actor's wake past every later checkpoint.
-                let flight = self.ready.flight(actor);
+                // or unfinished one keeps its actor's wake past every later
+                // checkpoint.
+                let mut settlement = Settlement {
+                    slot,
+                    flight: Some(self.ready.flight(actor)),
+                    failed: true,
+                };
                 // Duplicate events for one actor wait outside global admission. Only
                 // an actor that can make progress may occupy an active delivery slot.
                 let mut inner = slot.inner.lock().await;
@@ -1097,28 +1114,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     self.handler.manifest().validate_interrupts()?;
                     Ok(admission)
                 }) {
-                    Ok(_admission) => {
-                        let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
-                        let result = self.deliver_retained(actor, slot, &mut inner).await;
-                        // Cancellation can interrupt a committed publication before its
-                        // receipt is retained. A completed attempt handles its outcome.
-                        refresh.0 = None;
-                        result
-                    }
+                    Ok(_admission) => self.deliver_retained(actor, slot, &mut inner).await,
                     Err(error) => Err(error),
                 };
                 // Every failure keeps a wake, a conflict's included: one that
                 // releases the actor leaves its single carried entry behind.
-                let failed = result.is_err();
-                if failed {
-                    // The carried wake, not a resident token, now retains its
-                    // alarm: a later delivery observes it again.
-                    slot.refresh.store(true, Ordering::Release);
-                    slot.registration.suspend_alarm();
-                }
-                // Recorded under the actor's delivery lock, so an earlier
-                // delivery's outcome never overwrites a later one's.
-                flight.finish(failed);
+                // Settled under the actor's delivery lock, so an earlier
+                // delivery's success never clears a later one's failure.
+                settlement.failed = result.is_err();
+                drop(settlement);
                 drop(inner);
                 result
             }
