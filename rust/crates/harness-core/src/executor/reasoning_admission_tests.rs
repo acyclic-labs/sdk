@@ -66,3 +66,32 @@ fn block_only_admission_negative_control_accepts_unreadable_envelope() {
             .is_err()
     );
 }
+
+#[test]
+fn continuation_encoding_growth_tracks_only_binary_payload_bytes() {
+    let empty = event(Vec::new());
+    let ModelEvent::ReasoningBlock { block } = &empty else {
+        unreachable!()
+    };
+    let native = |bytes| crate::model::NativePart {
+        origin: block.origin.clone(),
+        continuity: bytes,
+    };
+    let event_header = serde_json::to_vec(&empty).unwrap().len();
+    let native_header = serde_json::to_vec(&native(Vec::new())).unwrap().len();
+    for count in [768, 6144, 49152] {
+        let bytes = vec![255; count];
+        let envelope_bytes = serde_json::to_vec(&event(bytes.clone())).unwrap().len();
+        let native_bytes = serde_json::to_vec(&native(bytes.clone())).unwrap().len();
+        assert_eq!(envelope_bytes - event_header, count * 4 / 3);
+        assert_eq!(native_bytes - native_header, count * 4 / 3);
+        let obsolete = serde_json::to_vec(&bytes).unwrap().len();
+        assert!(
+            obsolete > 2 * (envelope_bytes - event_header),
+            "decimal arrays must fail the same encoded-byte bound"
+        );
+        eprintln!(
+            "continuation_encoding payload={count} envelope={envelope_bytes} native={native_bytes} decimal_array={obsolete}"
+        );
+    }
+}
