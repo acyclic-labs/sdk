@@ -806,11 +806,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     self.ready.wake_due(now, self.limits.work);
                     // An opened window wakes its dormant actors, page by page;
                     // each delivery installs its exact committed deadline.
-                    while let Some(&(window, shard)) = windows.first()
-                        && scheduling::window_start(window) <= now
+                    for (shard, window) in
+                        scheduling::open(&mut windows, &mut reading, &consumed, now)
                     {
-                        windows.pop_first();
-                        reading.insert((shard, window));
                         opening.push(Box::pin(self.open_window(shard, window, 0)));
                     }
                 }
@@ -839,22 +837,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         Next::Page(from) => {
                             opening.push(Box::pin(self.open_window(shard, window, from)))
                         }
-                        Next::Window(next) => {
-                            let from = window
-                                .checked_add(1)
-                                .ok_or(Error::Invalid("alarm window overflow"))?;
-                            reading.remove(&(shard, window));
-                            // An earlier window still being read keeps the
-                            // watermark; its own completion finds what follows.
-                            if reading.range((shard, 0)..(shard, window)).next().is_none()
-                                && consumed
-                                    .get(&shard)
-                                    .is_some_and(|&consumed| consumed < from)
-                            {
-                                consumed.insert(shard, from);
-                                windows.extend(next.map(|next| (next, shard)));
-                            }
-                        }
+                        Next::Window(next) => scheduling::read(
+                            &mut reading,
+                            &mut consumed,
+                            &mut windows,
+                            (shard, window),
+                            next,
+                        )?,
                     }
                 }
                 Event::Failed(error) => return Err(error.into()),
