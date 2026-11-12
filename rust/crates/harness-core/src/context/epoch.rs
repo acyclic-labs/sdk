@@ -162,7 +162,10 @@ impl ContextEpoch {
                     kind: CONTEXT_CHANGED.into(),
                     body,
                     wake: false,
-                    coalesce_key: Some(format!("{CONTEXT_CHANGED}:{source}")),
+                    coalesce_key: Some(format!(
+                        "{CONTEXT_CHANGED}:{}",
+                        blake3::hash(source.as_bytes()).to_hex()
+                    )),
                 },
             });
         };

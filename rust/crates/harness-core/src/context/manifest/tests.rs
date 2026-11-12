@@ -44,18 +44,27 @@ fn definition(name: String, description: String) -> ToolDefinition {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn skill_catalog_credit_depends_on_visible_names_and_descriptions() -> Result<()> {
+fn skill_catalog_credit_excludes_callable_fields_and_source_identity() -> Result<()> {
     let mut entry = skill("private/provenance/inspect/SKILL.md".into())?;
     entry.fields.insert(
         "opaque_metadata".into(),
         json!("UNPULLED_METADATA".repeat(4096)),
     );
+    entry.identity = "PRIVATE_ORIGINAL_SOURCE".into();
+    let expected = json!([{
+        "name":"inspect",
+        "description":"Inspect files",
+        "source": entry.source
+    }]);
+    let catalog_bytes = serde_json::to_vec(&expected)
+        .map_err(|error| Error::Invalid(error.to_string()))?
+        .len() as u64;
     let discovery = DiscoveredContext {
         skills: vec![entry],
         ..Default::default()
     };
     let limits = Limits {
-        render_bytes: Some(256),
+        render_bytes: Some(catalog_bytes),
         ..Limits::default()
     };
     for native in [false, true] {
@@ -79,15 +88,17 @@ fn skill_catalog_credit_depends_on_visible_names_and_descriptions() -> Result<()
         assert_eq!(
             serde_json::from_str::<Value>(catalog)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
-            json!([{"name":"inspect","description":"Inspect files"}])
+            expected
         );
+        assert!(!catalog.contains("PRIVATE_ORIGINAL_SOURCE"));
+        assert!(!catalog.contains("opaque_metadata"));
         // Source retention is independent of the model's small catalog credit.
         assert!(
             discovery.skills[0].fields["opaque_metadata"]
                 .as_str()
                 .unwrap()
                 .len()
-                > 256
+                > catalog_bytes as usize
         );
         assert_eq!(
             discovery.skills[0].source.path,
@@ -373,6 +384,12 @@ async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> R
         skill("user/inspect/SKILL.md".into())?,
         skill("project/inspect/SKILL.md".into())?,
     ];
+    manifest.discovery.skills[0].identity = "PRIVATE_ORIGINAL_SOURCE".into();
+    let initial = ContextEpoch::changes(&BTreeMap::new(), &manifest, reader.as_ref()).await?;
+    assert_ne!(
+        initial[0].notice.coalesce_key,
+        initial[1].notice.coalesce_key
+    );
     let told = manifest.digests()?;
     manifest.discovery.skills[0].description = "changed user skill".into();
     // Retention selects another immutable body path, never another source.
@@ -381,13 +398,22 @@ async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> R
     assert_eq!(changed.len(), 1);
     assert_eq!(
         changed[0].notice.body["skill"],
-        json!({"name":"inspect","description":"changed user skill"})
+        json!({"name":"inspect","description":"changed user skill","source":manifest.discovery.skills[0].source})
+    );
+    assert!(
+        !serde_json::to_string(&changed[0].notice)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .contains("PRIVATE_ORIGINAL_SOURCE")
     );
     let told = manifest.digests()?;
     manifest.discovery.skills.remove(0);
     let removed = ContextEpoch::changes(&told, &manifest, reader.as_ref()).await?;
     assert_eq!(removed.len(), 1);
     assert_eq!(removed[0].source, changed[0].source);
+    assert_eq!(
+        removed[0].notice.coalesce_key,
+        changed[0].notice.coalesce_key
+    );
     assert_eq!(removed[0].notice.body["skill"], json!({"name":"inspect"}));
     assert_eq!(removed[0].notice.body["removed"], true);
     Ok(())
