@@ -95,14 +95,7 @@ impl<
         let lookup = self.inspect(path, ctx).await?;
         if let LazyLookup::Source { source, node } = lookup.0 {
             let change = LazyOverlayChange::Observe { source, node };
-            let recorded = async {
-                let state = self.state(ctx).await?;
-                if self.overlay_fact(state.overlay, path, ctx).await? != Some(change.clone()) {
-                    self.append_overlay(path, change, ctx).await?;
-                }
-                Ok::<_, LazyWorkspaceError>(())
-            }
-            .await;
+            let recorded = self.append_overlay(path, change, ctx).await;
             if let Err(error) = recorded {
                 self.retire_lookup(lookup, ctx)?;
                 return Err(error);

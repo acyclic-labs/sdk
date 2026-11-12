@@ -139,6 +139,23 @@ async fn conditional_binding_conflicts_rebuild_without_losing_the_winner() {
             release.send(()).unwrap();
         }
     );
+    // A read observation loses its publication to a completed remove of the
+    // very same path. It may return its original read, but cannot resurrect
+    // the deleted source binding in any later lookup or fork.
+    let (entering, release) = store.pause_next_commit();
+    let (observed, ()) = tokio::join!(
+        async { root.lookup("/file.txt", accounting!()).await.unwrap() },
+        async {
+            entering.await.unwrap();
+            root.remove("/file.txt", None, accounting!()).await.unwrap();
+            release.send(()).unwrap();
+        }
+    );
+    root.retire_lookup(observed, accounting!()).unwrap();
+    assert!(matches!(
+        root.stat("/file.txt", accounting!()).await,
+        Err(LazyWorkspaceError::NotFound)
+    ));
     let state = root.state(accounting!()).await.unwrap();
     for path in ["/winner", "/loser", "/second-winner"] {
         assert!(
@@ -224,7 +241,7 @@ async fn conditional_binding_conflicts_rebuild_without_losing_the_winner() {
         Some(next)
     );
     root.recover_pending_remove(accounting!()).await.unwrap();
-    assert_eq!(store.conflicts.load(Ordering::SeqCst), 3);
+    assert_eq!(store.conflicts.load(Ordering::SeqCst), 4);
     // Stale identity is still a real refusal, never retried as contention.
     source.epoch.store(1, Ordering::Relaxed);
     assert!(matches!(

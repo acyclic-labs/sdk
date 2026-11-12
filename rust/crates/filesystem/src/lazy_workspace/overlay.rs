@@ -15,6 +15,19 @@ impl<
     ) -> Result<(), LazyWorkspaceError> {
         loop {
             let state = self.state(ctx).await?;
+            if let LazyOverlayChange::Observe { source, .. } = &change {
+                // Observation is read knowledge, never an authored mutation.
+                // A changed source or a concurrent path/ancestor removal wins
+                // over a reader that resolved the earlier cut.
+                if *source != state.source || self.tombstoned(state.overlay, path, ctx).await? {
+                    return Ok(());
+                }
+                if matches!(self.overlay_fact(state.overlay, path, ctx).await?,
+                    Some(LazyOverlayChange::Observe { source, .. }) if source == state.source)
+                {
+                    return Ok(());
+                }
+            }
             let overlay = self
                 .insert_overlay(state.overlay, path, change.clone(), ctx)
                 .await?;
