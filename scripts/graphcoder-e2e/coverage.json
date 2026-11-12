@@ -60,7 +60,9 @@
         "pty-question",
         "question-headless",
         "question-headless-approval-eof",
-        "question-write-hook-deny"
+        "question-write-hook-deny",
+        "search-cross-agent-git",
+        "search-cross-agent-plain"
       ]
     },
     "A4": {
