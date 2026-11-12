@@ -99,6 +99,7 @@ async fn explicit_home_module_configures_the_first_model_call() {
     )
     .unwrap();
     let input = format!("agent.ts={}", source.display());
+    let plugins = task_plugins(&fixture);
     let mut endpoint = graphcoder_command(&fixture);
     endpoint.args([
         "--endpoint",
@@ -125,6 +126,8 @@ async fn explicit_home_module_configures_the_first_model_call() {
             "physical",
             "--home-file",
             &input,
+            "--home-file",
+            &plugins,
             "-p",
             "reply",
         ],
@@ -360,6 +363,18 @@ fn fixture() -> Fixture {
         settings,
         home,
     }
+}
+
+// These finite scripts prove original task execution, not settlement feedback.
+// Use the existing Home plugin setting, as local open_scripted fixtures do.
+fn task_plugins(fixture: &Fixture) -> String {
+    let source = fixture._directory.path().join("task-plugins.ts");
+    std::fs::write(
+        &source,
+        "export default base => ({ ...base, feedback: { ...base.feedback, enabled: false } });",
+    )
+    .unwrap();
+    format!("plugins.ts={}", source.display())
 }
 
 fn graphcoder_command(fixture: &Fixture) -> Command {
@@ -606,7 +621,12 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     #[cfg(unix)]
     assert!(std::fs::write(fixture.home.join("must-not-write"), b"refused").is_err());
     let model = model(fixture._directory.path()).await;
-    let run = |operation: &'static str| {
+    let plugins = task_plugins(&fixture);
+    let run = |operation: &'static str, initialize: bool| {
+        let mut arguments = vec!["--operation", operation, "-p", "hello"];
+        if initialize {
+            arguments.extend(["--home-file", plugins.as_str()]);
+        }
         graphcoder(
             &fixture,
             &model.catalog,
@@ -614,14 +634,14 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
             "",
         )
     };
-    assert_eq!(succeeded(&run("first").await), "fixture answer\n");
+    assert_eq!(succeeded(&run("first", true).await), "fixture answer\n");
     assert_eq!(model.generated(), 1);
     // The same operation names the same message: a second process prints the
     // settled answer without generating again.
     assert_eq!(succeeded(&run("first").await), "fixture answer\n");
     assert_eq!(model.generated(), 1);
     // Another operation is a new message to the same root agent.
-    assert_eq!(succeeded(&run("second").await), "fixture answer\n");
+    assert_eq!(succeeded(&run("second", false).await), "fixture answer\n");
     assert_eq!(model.generated(), 2);
     // Invalid user settings cannot become an implicit model or tool source in
     // default-config mode. Ordinary MCP loading still rejects these same bytes.
@@ -634,23 +654,30 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     let usage = explicit._directory.path().join("usage.jsonl");
     let transcripts = explicit._directory.path().join("transcripts");
     let mut previous_transcript = None;
-    for _ in 0..2 {
+    let explicit_plugins = task_plugins(&explicit);
+    for attempt in 0..2 {
         assert_eq!(
             succeeded(
                 &graphcoder(
                     &explicit,
                     &model.catalog,
-                    vec![
-                        "--default-config",
-                        "--usage-jsonl",
-                        usage.to_str().unwrap(),
-                        "--transcripts",
-                        transcripts.to_str().unwrap(),
-                        "--operation",
-                        "explicit-defaults",
-                        "-p",
-                        "hello"
-                    ],
+                    {
+                        let mut arguments = vec![
+                            "--default-config",
+                            "--usage-jsonl",
+                            usage.to_str().unwrap(),
+                            "--transcripts",
+                            transcripts.to_str().unwrap(),
+                            "--operation",
+                            "explicit-defaults",
+                            "-p",
+                            "hello",
+                        ];
+                        if attempt == 0 {
+                            arguments.extend(["--home-file", explicit_plugins.as_str()]);
+                        }
+                        arguments
+                    },
                     "",
                 )
                 .await
@@ -1492,7 +1519,9 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     catalog["morph"]["models"]["morph-kimik31"]["capacity"] =
         json!({"context_tokens":1_048_576,"output_tokens":1_048_576});
     std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
+    let plugins = task_plugins(&fixture);
     let mut command = graphcoder_command(&fixture);
+    command.arg("--home-file").arg(&plugins);
     command.arg("--catalog").arg(&model.catalog).args([
         "--default-config",
         "--operation",
@@ -1511,6 +1540,9 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             )
             .unwrap()
             .without_user_settings()
+            .feedback_plugin(false)
+            .topology(acyclic_harness::topology::Topology::select(Some("swarm")).unwrap())
+            .unwrap()
             .state_directory(fixture._directory.path().join(state))
             .working_directory(&fixture.workspace)
             .unwrap()
@@ -1530,7 +1562,6 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             "model",
             "tools",
             "instructions",
-            "input",
             "max_output_tokens",
             "reasoning",
         ]
@@ -1540,7 +1571,11 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     assert_eq!(cli["model"], "morph-kimik31");
     assert!(cli.get("max_output_tokens").is_none());
     assert!(!cli["tools"].as_array().unwrap().is_empty());
-    assert!(cli.to_string().contains("Preserve Unicode Ï€"));
+    for request in [&cli, &embedded] {
+        let input = request["input"].to_string();
+        assert!(input.contains("Preserve Unicode Ï€"));
+        assert!(input.contains("hello"));
+    }
     assert!(
         same_contract(&cli, &embedded),
         "CLI={cli}; embedding={embedded}"
