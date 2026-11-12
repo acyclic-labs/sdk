@@ -805,7 +805,7 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
             journal: &harness.journal,
             maximum_bytes: harness.limits.file_bytes,
         };
-        let tree = super::super::agent_settings::Tree::new(&volumes).await?;
+        let tree = super::super::agent_settings::Tree::new(&volumes, None).await?;
         let result = super::super::agent_settings::admit(
             &tree,
             harness.root,
@@ -959,7 +959,7 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
         journal: &harness.journal,
         maximum_bytes: harness.limits.file_bytes,
     };
-    let tree = super::super::agent_settings::Tree::new(&volumes).await?;
+    let tree = super::super::agent_settings::Tree::new(&volumes, None).await?;
     let reason = match super::super::agent_settings::plugins(
         false,
         None,
