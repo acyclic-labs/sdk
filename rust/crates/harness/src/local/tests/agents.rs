@@ -3003,7 +3003,8 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
 
     // Count the original native provider boundary, including the real command
-    // admission. A settlement must add only its one actor observation.
+    // admission. A settlement must add only its original actor and accepted
+    // inbox-cut observation, with no reread of its derived stream tails.
     struct HeadReads(Arc<AtomicUsize>);
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for HeadReads {
         fn on_new_span(
@@ -3298,11 +3299,11 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         connection.execute(&AgentCommand::Root {}).await?;
         let admission_heads = head_reads.load(Ordering::Relaxed) - before;
         let before = head_reads.load(Ordering::Relaxed);
-        let state = agents.state(owner).await.map_err(agent)?;
+        let (state, settlement) = agents.settlement_snapshot(owner).await.map_err(agent)?;
         let state_heads = head_reads.load(Ordering::Relaxed) - before;
         assert!(
             state_heads > 0,
-            "native checkpoint observation was not counted"
+            "native settlement observation was not counted"
         );
         let before = head_reads.load(Ordering::Relaxed);
         let observed = connection
@@ -3313,7 +3314,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             .await?;
         let observed_heads = head_reads.load(Ordering::Relaxed) - before;
         eprintln!(
-            "settlement head reads: admission={admission_heads}, checkpoint={state_heads}, observed={observed_heads}"
+            "settlement head reads: admission={admission_heads}, snapshot={state_heads}, observed={observed_heads}"
         );
         assert_eq!(
             observed_heads,
@@ -3331,7 +3332,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         };
         assert_eq!(
             (settled, statuses, phase),
-            (state.conversation_tail, state.status_tail, state.phase),
+            (state.conversation_tail, state.status_tail, settlement.phase),
             "settlement mixed committed actor cuts"
         );
         if owner == &root {
