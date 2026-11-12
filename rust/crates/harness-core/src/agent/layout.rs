@@ -46,6 +46,7 @@ const CONVERSATION: &str = "conversation";
 const MEMBERSHIP: &str = "harness/membership";
 
 pub(crate) enum AgentStream {
+    Inbox,
     Status,
     Conversation,
     Membership,
@@ -339,6 +340,7 @@ impl AgentPath {
 
     pub(crate) fn stream_parts(&self, stream: AgentStream) -> [&str; 5] {
         match stream {
+            AgentStream::Inbox => [self.as_str(), "", "", "", ""],
             AgentStream::Status => [STATUSES, &self.text[AGENTS.len()..], "", "", ""],
             AgentStream::Conversation => [self.as_str(), "/", CONVERSATION, "", ""],
             AgentStream::Membership => [
