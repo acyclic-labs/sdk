@@ -594,6 +594,7 @@ fn guarantee(operation: Operation) -> &'static str {
         Operation::ObjectPut => {
             "store bytes under their verified digest; crash survival belongs to the separate flush"
         }
+        Operation::ObjectFlush => "make the original selected stored blob crash durable",
         Operation::ObjectGet => "return the requested digest's bounded body range",
         Operation::ObjectHead => "return metadata for the requested digest",
         Operation::ObjectList => "return the requested bounded digest page",

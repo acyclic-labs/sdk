@@ -105,6 +105,7 @@ pub(super) async fn run(
     let result: Result = async {
         if any(&[
             Operation::ObjectPut,
+            Operation::ObjectFlush,
             Operation::ObjectGet,
             Operation::ObjectHead,
             Operation::ObjectList,
@@ -183,9 +184,18 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>)
             return Err("object PUT returned a different content identity".into());
         }
         first = Some(first.map_or(digest, |current| current.min(digest)));
-        // Settle this sample before subsequent work. This explicit commit is
-        // outside the PUT interval, whose public guarantee is only storage.
-        fixture.objects.flush(Some(&[digest])).await?;
+        // Admission and crash durability are separate public operations. Keep
+        // their intervals separate while retaining the same stored identity.
+        timed!(
+            rows,
+            Operation::ObjectFlush,
+            Terms {
+                flushes: 1,
+                ..read(0)
+            },
+            serde_json::json!({"digests": [digest.to_string()]}),
+            fixture.objects.flush(Some(&[digest]))
+        )?;
         let get = timed!(
             rows,
             Operation::ObjectGet,

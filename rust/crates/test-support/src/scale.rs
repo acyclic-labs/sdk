@@ -54,12 +54,13 @@ pub const LIFECYCLE_OPERATIONS: [Operation; 6] = [
     Operation::Archive,
 ];
 /// Primitive and session operations measured by the shared native benchmark.
-pub const CORE_OPERATIONS: [Operation; 17] = [
+pub const CORE_OPERATIONS: [Operation; 18] = [
     Operation::ActorCreate,
     Operation::ActorWake,
     Operation::ActorDurableWrite,
     Operation::ActorWarmRead,
     Operation::ObjectPut,
+    Operation::ObjectFlush,
     Operation::ObjectGet,
     Operation::ObjectHead,
     Operation::ObjectList,
@@ -98,6 +99,8 @@ pub enum Operation {
     ActorWarmRead,
     /// Store one content-addressed blob.
     ObjectPut,
+    /// Make one stored blob crash durable.
+    ObjectFlush,
     /// Read one blob body.
     ObjectGet,
     /// Read one blob's metadata.
@@ -145,6 +148,7 @@ impl Operation {
             Self::ActorDurableWrite => "actors.durable_write",
             Self::ActorWarmRead => "actors.warm_read",
             Self::ObjectPut => "objects.put",
+            Self::ObjectFlush => "objects.flush",
             Self::ObjectGet => "objects.get",
             Self::ObjectHead => "objects.head",
             Self::ObjectList => "objects.list",
