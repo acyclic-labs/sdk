@@ -45,6 +45,7 @@ fn reserve_records(
 }
 
 #[inline]
+#[cfg(test)]
 fn contains_path(state: &State, path: &str) -> bool {
     #[cfg(test)]
     PATH_LOOKUPS.with(|count| count.set(count.get() + 1));
@@ -52,6 +53,8 @@ fn contains_path(state: &State, path: &str) -> bool {
 }
 #[cfg(test)]
 std::thread_local! { static PATH_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+std::thread_local! { static NAMESPACE_SEGMENT_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 fn missing_paths<'a>(
     state: &'a State,
@@ -59,12 +62,21 @@ fn missing_paths<'a>(
     explicit: impl Fn(&str) -> bool + Copy + 'a,
 ) -> impl Iterator<Item = (&'a StreamPath, usize)> + 'a {
     let mut previous = "";
-    // Existing destinations imply indexed ancestors; no hierarchy work remains.
+    // One descent identifies the first missing prefix. Every later prefix is
+    // absent too; indexed ancestors need no repeated root lookup.
     // The explicit lookup uses the same canonical slice as destinations, so an
     // ancestor lookup never rescans the whole request or allocates another index.
     destinations
-        .filter(|path| !contains_path(state, path.as_str()))
-        .flat_map(move |destination| {
+        .filter_map(move |path| {
+            #[cfg(test)]
+            PATH_LOOKUPS.with(|count| count.set(count.get() + 1));
+            state
+                .paths
+                .descend(path.as_str())
+                .err()
+                .map(|end| (path, end))
+        })
+        .flat_map(move |(destination, missing)| {
             let path = destination.as_str();
             let before = previous;
             previous = path;
@@ -75,7 +87,7 @@ fn missing_paths<'a>(
                     let Some(prefix) = path.get(..*end) else {
                         return false;
                     };
-                    !contains_path(state, prefix)
+                    *end >= missing
                         && before != prefix
                         && !before
                             .strip_prefix(prefix)
