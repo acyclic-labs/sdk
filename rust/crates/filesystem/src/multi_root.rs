@@ -145,9 +145,9 @@ pub struct MultiRootConflictFinish {
 }
 
 /// Durable optimistic store for publication decisions.
-pub trait MultiRootPublicationStore: Send + Sync {
+pub trait MultiRootPublicationStore: acyclic_stream::ProviderPlatform {
     /// Adapter error.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 
     /// Loads one operation record.
     fn load(
@@ -313,9 +313,9 @@ where
 }
 
 /// Applies one logically published root generation to its host checkout.
-pub trait MultiRootMaterializer<A, O>: Send + Sync {
+pub trait MultiRootMaterializer<A, O>: acyclic_stream::ProviderPlatform {
     /// Materialization failure.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 
     /// Idempotently applies the exact published generation for one root.
     fn materialize(
@@ -460,7 +460,7 @@ pub enum WorkspaceMultiRootPublisherError<E: std::error::Error + 'static> {
 }
 
 /// Authorization boundary for direct-parent and root-binding validation.
-pub trait MultiRootPublicationAuthorizer: Send + Sync {
+pub trait MultiRootPublicationAuthorizer: acyclic_stream::ProviderPlatform {
     /// Authorizer error.
     type Error: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 

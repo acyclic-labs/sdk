@@ -232,7 +232,7 @@ pub enum WorkspaceOperationFinish<A: 'static, O: 'static> {
 /// Durable optimistic-concurrency adapter for operation-window state.
 pub trait OperationWindowStore: acyclic_stream::ProviderPlatform {
     /// Adapter error.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 
     /// Loads current state, returning `None` before first use.
     fn load(
