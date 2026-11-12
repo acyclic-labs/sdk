@@ -16,7 +16,7 @@ impl Files {
         Self {
             files: [
                 (format!("{root}/program.ts"),
-                    "import {description} from './description.ts'; export default {version: 1, name: 'count', description, inputSchema: {type: 'object', properties: {}, additionalProperties: false}, entry: {sh: 'main.sh', ps1: 'main.ps1'}};".into()),
+                    "import {description} from './description.ts'; export default {version: 1, name: 'count', description, inputSchema: {}, entry: {sh: 'main.sh', ps1: 'main.ps1'}};".into()),
                 (format!("{root}/description.ts"), "export const description = 'Count entries';".into()),
                 (format!("{root}/main.sh"), "printf done > receipt".into()),
                 (format!("{root}/main.ps1"), "[System.IO.File]::WriteAllText((Join-Path (Get-Location) 'receipt'), 'done')".into()),
@@ -113,30 +113,47 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
     let program = load_program(&tree, "tools/count").await?;
     let retained = program.custody.as_ref().unwrap().bytes();
     let tool = program.bind(shell)?;
-    let arguments = serde_json::json!({"text": "$(touch injected); ' \" \\ \n 🦀", "nested": [null, {"__proto__": "data"}]});
-    let call = crate::tool::ToolInvocation {
-        operation_id: crate::OperationId::new(),
-        call_id: "authored-call".into(),
-        name: "count".into(),
-        arguments: arguments.clone(),
-    };
-    let canonical = tool.executor.canonical(&call, None)?.unwrap();
-    let input: crate::tools::ShellInput = serde_json::from_value(canonical.invocation.arguments)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    input.validate()?;
-    let (_, argv, stdin) = input.command.prepare(&crate::tools::shell::PLATFORM)?;
-    assert!(
-        !argv
-            .iter()
-            .any(|argument| argument.contains("touch injected"))
-    );
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&stdin.unwrap())
-            .map_err(|error| Error::Invalid(error.to_string()))?,
-        arguments
-    );
-    assert_eq!(canonical.invocation.operation_id, call.operation_id);
-    assert_eq!(canonical.invocation.call_id, call.call_id);
+    for arguments in [
+        serde_json::json!({"text": "$(touch injected); ' \" \\ \n 🦀", "nested": [null, {"__proto__": "data"}]}),
+        serde_json::json!([null, "$(touch injected)", {"text": "🦀"}]),
+        serde_json::json!("$(touch injected); ' \" \\ \n 🦀"),
+        serde_json::json!(17),
+        serde_json::json!(true),
+        serde_json::Value::Null,
+    ] {
+        crate::executor::with_history_io(Some(&io), |history| {
+            crate::executor::check_json_schema_value(
+                &tool.definition.input_schema,
+                &arguments,
+                "tool input",
+                history,
+            )
+        })??;
+        let call = crate::tool::ToolInvocation {
+            operation_id: crate::OperationId::new(),
+            call_id: "authored-call".into(),
+            name: "count".into(),
+            arguments: arguments.clone(),
+        };
+        let canonical = tool.executor.canonical(&call, Some(&work))?.unwrap();
+        let input: crate::tools::ShellInput =
+            serde_json::from_value(canonical.invocation.arguments)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        input.validate()?;
+        let (_, argv, stdin) = input.command.prepare(&crate::tools::shell::PLATFORM)?;
+        assert!(
+            !argv
+                .iter()
+                .any(|argument| argument.contains("touch injected"))
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&stdin.unwrap())
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            arguments
+        );
+        assert_eq!(canonical.invocation.operation_id, call.operation_id);
+        assert_eq!(canonical.invocation.call_id, call.call_id);
+    }
     let before_drop = work.live_allocation_bytes();
     drop(tool);
     assert!(
