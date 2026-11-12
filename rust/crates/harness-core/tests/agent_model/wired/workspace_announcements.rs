@@ -318,6 +318,7 @@ fn tree(source: &WorkspaceEntry, path: &AgentPath) -> WorkspaceEntry {
 #[tokio::test]
 async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> Result {
     let Fixture {
+        path,
         files,
         issuer,
         users,
@@ -360,7 +361,7 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
         volume.capability(VolumeOperation::Read, &mut None)?,
         volume.directory_read_capability("", &mut None)?,
     ]);
-    let scope = issuer.bootstrap_scope("large-document", &grants, None, &mut None)?;
+    let scope = issuer.bootstrap_scope("large-document", &grants, Some(path.id()), &mut None)?;
     let verifier = issuer.verifier(&mut None)?;
     let grant = ContentGrant::verify(
         &verifier,
