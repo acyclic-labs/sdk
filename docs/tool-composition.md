@@ -80,6 +80,25 @@ resumption reruns deterministic JavaScript against the same inner call receipts.
 Programs should derive call order and arguments only from their code and tool
 results. Ambient time and randomness are absent.
 
+### Hook effect ownership and recovery
+
+`hooks::effects::run_once` requires the task's original execution journal.
+Before observing a durable start or outcome, it acquires child-effect ownership
+through that journal's existing filesystem operation registry. Another live
+attempt at the same effect returns a conflict. A later execution of the same
+agent shares this exclusion; changing the enclosing turn does not create a new
+effect identity. The journal authenticates its original execution independently
+of the hook's event identity, including session-start events shared by turns.
+
+The owner publishes the start marker before running a command, and retains its
+claim until the outcome is published. Reopening a completed effect returns its
+original outcome. Reopening an unfinished start records the hook's interrupted
+outcome and does not run the command again. An arbitrary external process effect
+cannot be atomically committed with a journal outcome: interruption may leave
+its external result unknown. The interrupted outcome preserves that uncertainty
+rather than repeating the effect or claiming successful execution. A missing
+original journal grants no execution ownership.
+
 ### File-authored tools
 
 An agent authors a tool in its home volume, at
