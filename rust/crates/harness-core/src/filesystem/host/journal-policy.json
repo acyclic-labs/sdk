@@ -9,6 +9,13 @@
     "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "**"},
     "conditions": {"role": "harness-host"}
   }, {
+    "id": "published-input",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/**"},
+    "conditions": {}
+  }, {
     "id": "published-conversation",
     "effect": "allow",
     "principal": {"attributes": {}},
