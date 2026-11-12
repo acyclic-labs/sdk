@@ -67,9 +67,11 @@ node scripts/qualify-docker-no-fuse.mjs node:24-trixie \
 Run this on Linux with Docker available and executables built from the checked
 out source. The qualifier pins the selected image ID, transfers a committed
 acceptance snapshot and runs the shipping session cases with both automatic
-and explicit physical selection. It asserts writes, child fork/message/merge
-back into the parent's files, reopen and crash recovery. Its scripted model
-needs no credentials or external network.
+and explicit physical selection. It asserts a child's shell write, stream fork
+and completed merge back into the admitted checkout while preserving the original
+files. Its scripted model needs no credentials or external network. The broader
+file-tool, messaging, capture, reopen and crash-recovery cases remain available
+as explicit case-name arguments after the evidence directory.
 
 The container runs as the caller's UID/GID with no network, extra capabilities,
 devices or security overrides. Evidence must show Docker's seccomp filter,

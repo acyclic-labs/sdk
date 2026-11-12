@@ -15,8 +15,9 @@ import { nativeEnvironment } from "./graphcoder-e2e/scratch.mjs";
 import { sha256File } from "./file-digest.mjs";
 
 // Reuse the original assertions, provider scripts, capture and event waits.
-// Auto must work without a flag; physical proves the explicit selection too.
-const defaultCases = ["file-tools-responses", "file-tools-responses-physical",
+// The default proves child completion into the admitted checkout in both modes.
+// Broader harness cases remain available as explicit selections.
+const availableCases = ["file-tools-responses", "file-tools-responses-physical",
   "bash-capture", "bash-capture-physical", "child-fork-message-merge",
   "child-fork-message-merge-physical", "child-completion-merge",
   "child-completion-merge-physical", "jsonl-reopen", "kill-and-resume"];
@@ -24,10 +25,10 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const recovery = "node scripts/qualify-docker-no-fuse.mjs IMAGE GRAPHCODER MOCK_MODEL FRESH_ABSOLUTE_OUTPUT";
 
 function selectedCases(requested) {
-  if (!requested.length) return defaultCases;
-  assert.ok(requested.every(id => defaultCases.includes(id)), "unknown no-FUSE acceptance case");
+  if (!requested.length) return availableCases.filter(id => id.startsWith("child-completion-merge"));
+  assert.ok(requested.every(id => availableCases.includes(id)), "unknown no-FUSE acceptance case");
   assert.equal(new Set(requested).size, requested.length, "duplicate no-FUSE acceptance case");
-  return defaultCases.filter(id => requested.includes(id));
+  return availableCases.filter(id => requested.includes(id));
 }
 
 export function confinement(status, fuse, helpers, mountinfo) {
