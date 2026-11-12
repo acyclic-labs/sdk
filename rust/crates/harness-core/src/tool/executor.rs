@@ -53,7 +53,7 @@ pub struct Dispatch {
     pub activation: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
 }
 
-/// Read-only preparation of one authorized invocation, before its claim.
+/// Read-only preparation of one authorized invocation, after its durable claim.
 /// A ready result belongs only to that invocation and is published through its
 /// original claim. A deferred call commits the primitive condition and releases
 /// its delivery; no executor future remains responsible for waking it.
@@ -101,7 +101,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// Preparation cannot execute an effect. The caller retains the complete
     /// invocation, metadata, target and context through the same claim, and
     /// consumes a ready result instead of invoking `execute` again. A restart
-    /// prepares again from the original invocation; there is no retained cache.
+    /// prepares again under the original claim; there is no retained cache.
     /// The original content IO admits the future before allocation. Native
     /// producers must return the custody of every retained result allocation;
     /// the caller refuses missing custody. Other tools return `None`, without

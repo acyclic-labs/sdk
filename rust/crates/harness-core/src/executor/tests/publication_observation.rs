@@ -222,6 +222,146 @@ async fn cancellation_retires_provider_before_pending_completion_durability() ->
 }
 
 #[tokio::test]
+async fn tool_start_is_durable_before_preparation_and_reused_after_interruption() -> Result<()> {
+    struct PreparedTool {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        attempts: AtomicUsize,
+        reject: bool,
+    }
+    impl crate::tool::ToolExecutor for PreparedTool {
+        fn prepare<'a>(
+            &'a self,
+            _: &'a ToolInvocation,
+            _: Option<&'a crate::runtime::ToolContext>,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<Option<crate::tool::ToolPreparationFuture<'a>>> {
+            Ok(Some(crate::conversation::BoundedContentFuture::new(
+                io,
+                || async {
+                    self.attempts.fetch_add(1, Ordering::SeqCst);
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                    if self.reject {
+                        return Err(Error::Invalid("selected observation refused".into()));
+                    }
+                    Ok((
+                        crate::tool::ToolPreparation::Ready(ToolResult { value: json!({}) }),
+                        None,
+                    ))
+                },
+            )?))
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<ToolResult>> {
+            panic!("a prepared call must not execute again")
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            panic!("a prepared call resumes its original read-only preparation")
+        }
+    }
+    for reject in [false, true] {
+        let (journal, _issuer) = journal().await?;
+        let tool = Arc::new(PreparedTool {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            attempts: AtomicUsize::new(0),
+            reject,
+        });
+        let model = Arc::new(ScriptedModelProvider::new([
+            tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "prepared".into(),
+                "example.echo".into(),
+                json!({}),
+            ))]),
+            ScriptedTurn::Text("answer".into()),
+        ]));
+        let executor = uncompacted_executor(
+            Model::new("fixture".into(), "prepared-start".into(), "1".into())?,
+            model.clone(),
+            ContextPipeline::default(),
+            echo_tools(tool.clone(), json!(true), json!(true), json!(true))?,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["model:generate", "tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            allowed()?,
+        )?;
+        let input = TurnInput {
+            max_steps: None,
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("input".into()),
+            selected_context: None,
+        };
+        for attempt in 0..2 {
+            let mut execution = Box::pin(executor.execute(input.clone(), &journal));
+            tokio::select! {
+                result = &mut execution => panic!("call returned before releasing preparation: {result:?}"),
+                () = tool.entered.notified() => {}
+            }
+            let records = journal.replay(input.operation_id, 0, 100, None)?.await?;
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. }))
+                    .count(),
+                1
+            );
+            assert!(!records.iter().any(|record| matches!(
+                record.event,
+                ExecutionEvent::ToolCompleted { .. } | ExecutionEvent::ToolFailed { .. }
+            )));
+            if attempt == 0 {
+                drop(execution);
+                continue;
+            }
+            tool.release.notify_one();
+            assert_eq!(execution.await?.text, "answer");
+        }
+        assert_eq!(
+            executor.execute(input.clone(), &journal).await?.text,
+            "answer"
+        );
+        let records = journal.replay(input.operation_id, 0, 100, None)?.await?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
+                .count(),
+            usize::from(!reject)
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
+                .count(),
+            usize::from(reject)
+        );
+        assert_eq!(tool.attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(model.requests().len(), 2);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn original_publications_match_receipts_and_preserve_observation_failures() -> Result<()> {
     use crate::executor::phase::Publication;
     use acyclic_observability::Outcome;

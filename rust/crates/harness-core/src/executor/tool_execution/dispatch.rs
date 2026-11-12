@@ -28,67 +28,16 @@ impl<'io> StockExecution<'io> {
                 self.io,
             )?
         };
-        // The ready value is linear and scoped to this exact authorized record.
-        // Neither a cached operation key nor a second executor call can replace
-        // its original observations after the claim.
-        let prepared = if started || replayed.is_some() {
+        // Construct read-only preparation under the original authority, but do
+        // not poll it until the start is durable. A resumed prepared call uses
+        // its original claim and observes its condition again.
+        let preparation = if replayed.is_some() {
             None
-        } else if let Some(preparation) =
+        } else {
             tool.executor
                 .prepare(invocation, context.as_ref(), self.io)?
-        {
-            let preparation = self
-                .observe_tool_cancellation(
-                    journal,
-                    identity,
-                    &invocation.call_id,
-                    true,
-                    None,
-                    preparation,
-                )
-                .await;
-            let (preparation, custody) = match preparation {
-                Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
-                    return Ok(ToolInvocationOutcome::Interrupted);
-                }
-                Err(error) => return Err(error),
-                Ok(Err(error)) if error.is_tool_failure() && !error.leaves_effect_uncertain() => {
-                    return self
-                        .settle_tool_refusal(
-                            journal,
-                            operation_id,
-                            step,
-                            invocation,
-                            ToolCallRejection::Failed(error),
-                        )
-                        .await
-                        .map(|content| ToolInvocationOutcome::Settled(content, None));
-                }
-                Ok(preparation) => preparation?,
-            };
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = self.io.filter(|io| io.original_native_work().is_some()) {
-                io.absorb_native_custody(custody.ok_or_else(|| {
-                    stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Unsupported,
-                        "tool preparation has no native result custody",
-                    )
-                })?)?;
-            }
-            #[cfg(target_arch = "wasm32")]
-            let _ = custody;
-            match preparation {
-                crate::tool::ToolPreparation::Ready(result) => Some(result),
-                crate::tool::ToolPreparation::Deferred(until) => {
-                    journal.defer_tool(until, self.io)?;
-                    return Ok(ToolInvocationOutcome::Pending(invocation.operation_id));
-                }
-            }
-        } else {
-            None
         };
-        let dispatch = if started || replayed.is_some() || prepared.is_some() {
+        let dispatch = if started || replayed.is_some() || preparation.is_some() {
             None
         } else {
             match tool
@@ -127,6 +76,59 @@ impl<'io> StockExecution<'io> {
                 claim,
             ))
             .await?
+        };
+        let prepared = if let Some(preparation) = preparation {
+            let preparation = self
+                .observe_tool_cancellation(
+                    journal,
+                    identity,
+                    &invocation.call_id,
+                    true,
+                    None,
+                    preparation,
+                )
+                .await;
+            let (preparation, custody) = match preparation {
+                Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
+                    return Ok(ToolInvocationOutcome::Interrupted);
+                }
+                Err(error) => return Err(error),
+                Ok(Err(error)) if error.is_tool_failure() && !error.leaves_effect_uncertain() => {
+                    return self
+                        .reject_tool_call(
+                            journal,
+                            operation_id,
+                            step,
+                            &invocation.call_id,
+                            ToolFailureKind::ExecutorRejected,
+                            error,
+                        )
+                        .await
+                        .map(|content| ToolInvocationOutcome::Settled(content, None));
+                }
+                Ok(preparation) => preparation?,
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io) = self.io.filter(|io| io.original_native_work().is_some()) {
+                io.absorb_native_custody(custody.ok_or_else(|| {
+                    stock_boundary(
+                        Some(io),
+                        crate::wire::ErrorCode::Unsupported,
+                        "tool preparation has no native result custody",
+                    )
+                })?)?;
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = custody;
+            match preparation {
+                crate::tool::ToolPreparation::Ready(result) => Some(result),
+                crate::tool::ToolPreparation::Deferred(until) => {
+                    journal.defer_tool(until, self.io)?;
+                    return Ok(ToolInvocationOutcome::Pending(invocation.operation_id));
+                }
+            }
+        } else {
+            None
         };
         let (replayed, hold) = match replayed {
             // A recorded failure settles again; an interruption also stops
