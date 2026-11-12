@@ -51,6 +51,17 @@ impl Wake for DeliveryWake {
 macro_rules! timed {
     ($rows:expr, $name:expr, $floor:expr, $identity:expr, $future:expr) => {{ timed!($rows, $name, $floor, $identity, None, $future) }};
     ($rows:expr, $name:expr, $floor:expr, $identity:expr, $requested_query:expr, $future:expr) => {{
+        timed!(
+            $rows,
+            $name,
+            $floor,
+            $identity,
+            $requested_query,
+            $future,
+            |_| Ok(None)
+        )
+    }};
+    ($rows:expr, $name:expr, $floor:expr, $identity:expr, $requested_query:expr, $future:expr, $work:expr) => {{
         // Retain original request identity outside both measured intervals.
         let identity = $identity;
         // Allocate the sampler's future before the interval; construction of
@@ -61,7 +72,14 @@ macro_rules! timed {
             let start = Instant::now();
             let result = future.await;
             let elapsed = start.elapsed();
-            $rows.record_terminal($name, $floor, (elapsed, before), identity, result, emit)?
+            $rows.record_terminal(
+                $name,
+                $floor,
+                (elapsed, before),
+                identity,
+                result,
+                (emit, $work),
+            )?
         } else {
             future.await
         }
@@ -321,6 +339,7 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>)
             appended,
             Observation::default(),
             serde_json::json!({"path": stream.path().as_str(), "key_hex": append_identity, "start": receipt.start, "count": 1}),
+            None,
         )?;
         rows.record(
             Operation::StreamFollow,
@@ -332,6 +351,7 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>)
             notified,
             Observation::default(),
             serde_json::json!({"path": stream.path().as_str(), "sequence": delivered.sequence, "commit": format!("{:?}", delivered.commit_id)}),
+            None,
         )?;
         next = receipt
             .start
@@ -793,6 +813,7 @@ async fn actor_delivery(
                 .elapsed()?,
                 observed,
                 serde_json::json!({"actor": format!("{actor:?}"), "epoch": epoch, "subscription": INBOX, "sequence": inbox}),
+                None,
             )?;
             completed.push(ns(elapsed));
         }
@@ -828,6 +849,12 @@ async fn actor_delivery(
     })
 }
 
+fn filesystem_work<T>(
+    receipt: &acyclic_fs::OperationReceipt<T>,
+) -> Result<Option<serde_json::Value>> {
+    Ok(Some(serde_json::to_value(receipt.work)?))
+}
+
 async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {
     let cancellation = CancellationToken::new();
     let volume = fixture.volume(&id(0)?)?;
@@ -857,7 +884,9 @@ async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements<'
             Operation::PinnedRead,
             read(1024),
             serde_json::json!({"workspace": format!("{:?}", generation.workspace_id()), "generation": format!("{:?}", generation.id()), "path": "/value"}),
-            generation.read("/value", 1024, WorkBudget::UNBOUNDED, &cancellation)
+            None,
+            generation.read("/value", 1024, WorkBudget::UNBOUNDED, &cancellation),
+            filesystem_work
         )
         .map_err(|failure| failure.error)?
         .value;
@@ -880,7 +909,9 @@ async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements<'
             Operation::StagedWrite,
             read(1024),
             serde_json::json!({"volume": name, "transaction": format!("{operation:?}"), "path": "/value"}),
-            transaction.write("/value", staged, WorkBudget::UNBOUNDED, &cancellation)
+            None,
+            transaction.write("/value", staged, WorkBudget::UNBOUNDED, &cancellation),
+            filesystem_work
         )
         .map_err(|failure| failure.error)?;
         // Staging promises no publication. Check the live workspace outside
@@ -896,6 +927,7 @@ async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements<'
             Operation::Fsync,
             commit(1024),
             serde_json::json!({"volume": name, "transaction": format!("{operation:?}")}),
+            None,
             transaction.commit(
                 None,
                 acyclic_fs::PublicationPermit::Unrestricted,
@@ -909,7 +941,8 @@ async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements<'
                         },
                     )
                 },
-            )
+            ),
+            filesystem_work
         )
         .map_err(|failure| failure.error)?
         .value;

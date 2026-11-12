@@ -80,6 +80,7 @@ fn serialize_work_receipts<S: serde::Serializer>(
         sample: usize,
         identity: &'a serde_json::Value,
         work: &'a [Option<u64>],
+        original_semantic_work: Option<&'a serde_json::Value>,
         physical_admission_binding: Option<()>,
         progress: &'static str,
     }
@@ -89,6 +90,7 @@ fn serialize_work_receipts<S: serde::Serializer>(
             sample,
             identity: &retained.identity,
             work: &retained.observation.work.0,
+            original_semantic_work: retained.semantic_work.as_ref(),
             physical_admission_binding: None,
             progress: "original operation returned successfully; result oracles are complete only when cohort_completed is true",
         }
@@ -207,6 +209,7 @@ pub(super) fn check_observations() -> Result {
             "request": {"operation": "object.get", "requested_copy_bytes": bytes},
             "resource": {"path": "original/requested/object"},
         });
+        let semantic_work = Some(serde_json::json!({"bytesCopied": bytes}));
         let mut result = Ok(());
         let allocations = acyclic_test_support::measure(|| {
             result = cohort.record(
@@ -218,6 +221,7 @@ pub(super) fn check_observations() -> Result {
                 Duration::ZERO,
                 observation,
                 identity,
+                semantic_work,
             );
         });
         result.map(|()| allocations)
@@ -265,6 +269,7 @@ pub(super) fn check_observations() -> Result {
             Duration::ZERO,
             Observation::default(),
             serde_json::Value::Null,
+            None,
         )
         .is_ok()
     {
@@ -326,6 +331,10 @@ pub(super) fn check_observations() -> Result {
         || encoded["native_attempt_counts"] != serde_json::json!([[1, 0, 0], null])
         || encoded["original_work_receipts"][0]["identity"] != row.observations[0].identity
         || encoded["original_work_receipts"][1]["identity"] != row.observations[1].identity
+        || encoded["original_work_receipts"][0]["original_semantic_work"]
+            != serde_json::json!({"bytesCopied": 1024})
+        || encoded["original_work_receipts"][1]["original_semantic_work"]
+            != serde_json::json!({"bytesCopied": 1024})
     {
         return Err("operation encoding changed original diagnostic evidence".into());
     }
@@ -362,7 +371,10 @@ pub(super) fn check_observations() -> Result {
             (Duration::ZERO, before),
             failed_identity.clone(),
             Err::<(), _>(missing),
-            |receipt| emit_to(&mut failed, receipt),
+            (
+                |receipt| emit_to(&mut failed, receipt),
+                |_| Err("failed operations cannot supply success work".into()),
+            ),
         )?
         .unwrap_err();
     if returned.raw_os_error() != original_code {
@@ -396,7 +408,7 @@ pub(super) fn check_observations() -> Result {
             (Duration::ZERO, before),
             failed_identity.clone(),
             Err::<(), _>(returned),
-            |receipt| emit_to(&mut failed, receipt),
+            (|receipt| emit_to(&mut failed, receipt), |_| Ok(None)),
         )?
         .unwrap_err();
     if returned.raw_os_error() != original_code {
@@ -438,10 +450,13 @@ pub(super) fn check_observations() -> Result {
         (Duration::ZERO, before),
         failed_identity,
         Ok::<_, std::io::Error>(()),
-        |_| {
-            published_success = true;
-            Ok(())
-        },
+        (
+            |_| {
+                published_success = true;
+                Ok(())
+            },
+            |_| Ok(None),
+        ),
     );
     if published_success
         || success_refusal.err().is_none_or(|error| {
@@ -654,6 +669,8 @@ struct Row {
 struct RetainedObservation {
     identity: serde_json::Value,
     observation: Observation,
+    // Producer-returned semantic work is not physical syscall or worker coverage.
+    semantic_work: Option<serde_json::Value>,
 }
 
 impl Row {
@@ -825,6 +842,7 @@ impl<'a> Measurements<'a> {
         elapsed: Duration,
         observation: Observation,
         identity: serde_json::Value,
+        semantic_work: Option<serde_json::Value>,
     ) -> Result {
         if !self.includes(operation) {
             return Ok(());
@@ -843,6 +861,7 @@ impl<'a> Measurements<'a> {
         row.observations.push(RetainedObservation {
             identity,
             observation,
+            semantic_work,
         });
         Ok(())
     }
@@ -857,8 +876,12 @@ impl<'a> Measurements<'a> {
         interval: (Duration, Before),
         identity: serde_json::Value,
         result: std::result::Result<T, E>,
-        publish: impl FnOnce(serde_json::Value) -> Result,
+        projection: (
+            impl FnOnce(serde_json::Value) -> Result,
+            impl FnOnce(&T) -> Result<Option<serde_json::Value>>,
+        ),
     ) -> Result<std::result::Result<T, E>> {
+        let (publish, semantic_work) = projection;
         let (elapsed, before) = interval;
         let observed = self.stop(before);
         let diagnostic = if let Err(error) = &result {
@@ -877,7 +900,24 @@ impl<'a> Measurements<'a> {
             }))
         } else {
             observed.and_then(|observation| {
-                self.record(operation, floor, elapsed, observation, identity)
+                let semantic_work = if self.includes(operation) {
+                    result
+                        .as_ref()
+                        .ok()
+                        .map(semantic_work)
+                        .transpose()?
+                        .flatten()
+                } else {
+                    None
+                };
+                self.record(
+                    operation,
+                    floor,
+                    elapsed,
+                    observation,
+                    identity,
+                    semantic_work,
+                )
             })
         };
         super::durability::retain_diagnostics(result, || diagnostic, self.recovery)
