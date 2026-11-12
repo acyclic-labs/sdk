@@ -190,7 +190,7 @@ impl ContextEpoch {
                 change(
                     &key,
                     now.get(&key).copied(),
-                    serde_json::json!({"version": 1, "skill": skill}),
+                    serde_json::json!({"version": 1, "skill": skill.summary()}),
                 );
             }
         }
@@ -204,9 +204,9 @@ impl ContextEpoch {
         for key in told.keys().filter(|key| !now.contains_key(*key)) {
             let body = match key.split_once(':') {
                 Some(("skill", identity)) => {
-                    let (name, identity): (String, String) = serde_json::from_str(identity)
+                    let (name, _identity): (String, String) = serde_json::from_str(identity)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
-                    serde_json::json!({"version": 1, "skill": {"name": name, "identity": identity}, "removed": true})
+                    serde_json::json!({"version": 1, "skill": {"name": name}, "removed": true})
                 }
                 Some(("instructions", identity)) => {
                     let (volume, path): (crate::conversation::VolumeRef, String) =
