@@ -231,6 +231,29 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             model.requests().len(),
             if reserved > 0 { 5 + reserved } else { 4 }
         );
+        let requests = model.requests();
+        for (request, call) in [(2, "first-input"), (3, "second-input")] {
+            let value = requests[request]
+                .messages
+                .iter()
+                .flat_map(|message| message.content.parts())
+                .find_map(|part| match part {
+                    ModelContentPart::ToolResult {
+                        call_id,
+                        content: acyclic_harness_core::model::ToolResultContent::Json { value },
+                        ..
+                    } if call_id == call => Some(value),
+                    _ => None,
+                })
+                .expect("released wait result");
+            assert_eq!(
+                value["reason"]["kind"],
+                if answer { "input" } else { "deadline" }
+            );
+            if answer {
+                assert!(value["reason"]["inbox"].as_u64().is_some());
+            }
+        }
     }
     Ok(())
 }

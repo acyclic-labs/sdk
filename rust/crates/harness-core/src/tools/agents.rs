@@ -38,13 +38,7 @@ use acyclic_stream::BoxProviderFuture;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeSet,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 /// Revision of the agent tools, selected for the model over other revisions.
 pub const REVISION: &str = "agent-3";
@@ -129,8 +123,8 @@ struct Turn {
     /// when either is absent.
     templates: Option<(CreationConfig, Arc<dyn SpawnTemplates>)>,
     volumes: Vec<crate::agent::WorkspaceEntry>,
-    /// The first unfinished wait consumes the actor deadline release.
-    released: AtomicBool,
+    /// Only the original deferred invocation consumes its named release event.
+    released: Option<crate::agent::WaitResume>,
 }
 
 struct AgentTool {
@@ -198,6 +192,13 @@ pub fn resolve_child_branch(
 }
 
 impl AgentTool {
+    fn release(&self, operation: crate::OperationId) -> Option<crate::agent::WaitReason> {
+        self.turn
+            .released
+            .as_ref()
+            .filter(|release| release.operation == operation)
+            .and_then(|release| release.reason.clone())
+    }
     async fn run(
         &self,
         invocation: ToolInvocation,
@@ -206,13 +207,17 @@ impl AgentTool {
         let turn = &*self.turn;
         if self.name == "wait" {
             return match self
-                .prepare_wait(invocation.operation_id, &invocation.arguments, true)
+                .prepare_wait(
+                    invocation.operation_id,
+                    &invocation.arguments,
+                    self.release(invocation.operation_id),
+                )
                 .await?
             {
                 ToolPreparation::Ready(result) => Ok(result),
-                ToolPreparation::Deferred(_) => {
-                    Err(Error::Conflict("released wait deferred its result".into()))
-                }
+                ToolPreparation::Deferred(_) => Err(Error::Unsupported(
+                    "wait requires its deferred actor condition before execution".into(),
+                )),
             };
         }
         let key = call_key(&invocation, context.as_ref());
@@ -495,7 +500,7 @@ impl AgentTool {
         &self,
         operation: crate::OperationId,
         arguments: &Value,
-        released: bool,
+        released: Option<crate::agent::WaitReason>,
     ) -> Result<ToolPreparation> {
         let input: WaitAgentInput = match WaitAgentInput::deserialize(arguments) {
             Ok(input) => input,
@@ -507,7 +512,7 @@ impl AgentTool {
                     "need requires named children",
                 )));
             }
-            let until = if input.input {
+            let mut until = if input.input {
                 crate::agent::Until::input(input.timeout_ms)
             } else if let Some(timeout) = input.timeout_ms {
                 crate::agent::Until::sleep(timeout)
@@ -516,9 +521,10 @@ impl AgentTool {
                     "wait needs children, input or an alarm",
                 )));
             };
-            return Ok(if released {
+            until.operation = Some(operation);
+            return Ok(if let Some(reason) = released {
                 ToolPreparation::Ready(ToolResult {
-                    value: json!({"settled": [], "unsettled": []}),
+                    value: json!({"settled": [], "unsettled": [], "reason": reason}),
                 })
             } else {
                 ToolPreparation::Deferred(until)
@@ -597,8 +603,9 @@ impl AgentTool {
                 stranded.join(", ")
             ))));
         }
-        if !released && need != 0 {
+        if released.is_none() && need != 0 {
             return Ok(ToolPreparation::Deferred(crate::agent::Until {
+                operation: Some(operation),
                 input: on_input,
                 ..crate::agent::Until::quorum(pending, need).within(timeout_ms)
             }));
@@ -634,7 +641,7 @@ impl AgentTool {
         ))
         .await?;
         Ok(ToolPreparation::Ready(ToolResult {
-            value: json!({"settled": settled, "unsettled": unsettled}),
+            value: json!({"settled": settled, "unsettled": unsettled, "reason": released.unwrap_or(crate::agent::WaitReason::NeedMet)}),
         }))
     }
 }
@@ -750,7 +757,7 @@ impl ToolExecutor for AgentTool {
         Ok(Some(crate::conversation::BoundedContentFuture::new(
             io,
             || async move {
-                let released = self.turn.released.swap(false, Ordering::AcqRel);
+                let released = self.release(invocation.operation_id);
                 self.prepare_wait(invocation.operation_id, &invocation.arguments, released)
                     .await
                     .map(|prepared| (prepared, None))
@@ -889,7 +896,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "wait",
             definition::<WaitAgentInput>(
                 "wait",
-                "Wait for subagents (children) to finish their current work and messages. Returns each settled child's phase and last answer, its error as failed when that turn failed, plus its branch when addressed by spawn name, and lists the rest as unsettled with their phase; a wait its open children cannot meet fails naming each child that cannot settle. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. With no agents, set timeout_ms for one actor alarm, input=true to wait for inbox input, or both to resume on whichever arrives first; input=true also interrupts a child wait. No timer runs per waiting agent. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
+                "Wait for subagents (children) to finish their current work and messages. Returns each settled child's phase and last answer, its error as failed when that turn failed, plus its branch when addressed by spawn name, and lists the rest as unsettled with their phase. Every result identifies its reason: need_met, deadline, input (with its inbox sequence), or settlement (with its child); a wait its open children cannot meet fails naming each child that cannot settle. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. With no agents, set timeout_ms for one actor alarm, input=true to wait for inbox input, or both to resume on whichever arrives first; input=true also interrupts a child wait. No timer runs per waiting agent. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
             )?,
         ),
     ] {
@@ -925,7 +932,7 @@ pub fn bind_agent_tools(
         maximum_bytes,
         templates: agent.profile.clone().zip(templates),
         volumes: agent.volumes.clone(),
-        released: AtomicBool::new(matches!(agent.phase, crate::agent::Phase::Waiting { .. })),
+        released: agent.wait_resume.clone(),
     });
     for (name, definition) in selected(names)? {
         let tool = Tool {
@@ -946,6 +953,7 @@ pub fn bind_agent_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     struct Effects(std::sync::atomic::AtomicUsize);
 
@@ -1016,7 +1024,7 @@ mod tests {
                     maximum_bytes: u64::MAX,
                     templates: None,
                     volumes: Vec::new(),
-                    released: AtomicBool::new(false),
+                    released: None,
                 }),
             };
             let invocation = ToolInvocation {

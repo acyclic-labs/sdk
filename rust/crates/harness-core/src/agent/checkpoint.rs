@@ -625,6 +625,10 @@ mod tests {
             });
             for outcome in outcomes() {
                 let state = AgentState {
+                    wait_resume: Some(super::super::WaitResume {
+                        operation: crate::OperationId::from_bytes([u8::MAX; 16]),
+                        reason: Some(super::super::WaitReason::Input { inbox: u64::MAX }),
+                    }),
                     spawned_children: open_children.clone(),
                     reserved_spawns: u64::MAX,
                     topology_refusals: open_children.clone(),

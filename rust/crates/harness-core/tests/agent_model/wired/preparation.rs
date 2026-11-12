@@ -312,6 +312,7 @@ async fn observe(
         "wait replaced the original answer position"
     );
     let value = result(model);
+    assert_eq!(value["reason"]["kind"], "need_met");
     assert_eq!(value["settled"][0]["answer"], "later child answer");
     assert_eq!(value["settled"][0]["agent"], child.as_str());
     assert_eq!(value["unsettled"], serde_json::json!([]));
@@ -332,6 +333,10 @@ async fn observe(
     host.drain(parent).await?;
     assert_eq!(host.state(parent).await?.phase, Phase::Idle);
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 1);
+    assert_eq!(
+        result(model)["reason"],
+        serde_json::json!({"kind":"settlement", "child":child.as_str()})
+    );
     assert_eq!(
         result(model)["settled"][0]["answer"],
         "child releases deferred wait"
@@ -444,6 +449,7 @@ async fn deadlines(
         "second wait reused the first deadline release"
     );
     assert_eq!(model.requests().len(), requests + 2);
+    assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
         serde_json::json!([{ "name": child.as_str(), "phase": "idle" }])
@@ -456,6 +462,7 @@ async fn deadlines(
     assert_eq!(host.state(parent).await?.phase, Phase::Idle);
     assert_eq!(model.requests().len(), requests + 3);
     assert_eq!(result(model)["settled"], serde_json::json!([]));
+    assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
         serde_json::json!([{ "name": child.as_str(), "phase": "idle" }])
