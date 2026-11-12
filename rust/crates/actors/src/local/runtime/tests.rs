@@ -16,6 +16,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 mod clock;
 mod completion;
 mod drain;
+mod handler_failure;
 mod invocation_failure;
 mod pause;
 mod progress;

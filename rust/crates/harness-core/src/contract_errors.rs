@@ -888,6 +888,15 @@ impl Error {
             )
     }
 
+    /// Preserve undecided host work when crossing the actor guest boundary.
+    pub(crate) fn into_guest(self) -> acyclic_actors::guest::GuestError {
+        if self.uncertain() {
+            acyclic_actors::guest::GuestError::Pending(self.to_string())
+        } else {
+            acyclic_actors::guest::GuestError::Handler(self.to_string())
+        }
+    }
+
     /// A tool's definitive refusal is model feedback. Native accounting and
     /// producer faults remain harness failures even when their wire code is Invalid.
     pub(crate) fn is_tool_failure(&self) -> bool {

@@ -125,7 +125,7 @@ fn terminal(error: &Error) -> bool {
     match error {
         Error::Stream(error) => !error.uncertain() && !matches!(error, StreamError::Capacity),
         Error::PreconditionUnchanged => true,
-        Error::Handler(_) => true,
+        Error::Handler(failure) => !matches!(failure, crate::guest::GuestError::Pending(_)),
         _ => false,
     }
 }
@@ -925,7 +925,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         transition,
                         key(&snapshot, "publish")?,
                     )?,
-                    Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
+                    Err(Error::Handler(failure))
+                        if !cancellation.is_cancelled()
+                            && !matches!(failure, crate::guest::GuestError::Pending(_)) =>
+                    {
                         let Some(input) = record.as_ref() else {
                             return Err(Error::Handler(failure));
                         };

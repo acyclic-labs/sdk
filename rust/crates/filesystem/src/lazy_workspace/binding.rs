@@ -296,6 +296,7 @@ impl<
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
+        let mut recovering = None;
         loop {
             let state = self
                 .store
@@ -311,6 +312,11 @@ impl<
             let Some(pending) = state.pending_remove.as_ref() else {
                 return Ok(());
             };
+            match &recovering {
+                Some(original) if original != pending => return Ok(()),
+                None => recovering = Some(pending.clone()),
+                _ => {}
+            }
             let committed = match pending.kind {
                 PendingLazyRemoveKind::SourceOnly => true,
                 PendingLazyRemoveKind::Authored { idempotency_key }

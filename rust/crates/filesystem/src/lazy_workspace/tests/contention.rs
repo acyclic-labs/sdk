@@ -151,7 +151,80 @@ async fn conditional_binding_conflicts_rebuild_without_losing_the_winner() {
             "lost {path}"
         );
     }
-    assert_eq!(store.conflicts.load(Ordering::SeqCst), 2);
+    // A recovering opener can lose to another recovery followed by a new
+    // operation. Re-read the state, but never clear that new owner's intent.
+    let pending = PendingLazyRemove {
+        prior_overlay: state.overlay,
+        prior_shadows: state.shadows,
+        prepared_overlay: state.overlay,
+        kind: PendingLazyRemoveKind::SourceOnly,
+    };
+    assert!(
+        store
+            .compare_and_swap_lazy_workspace(
+                root.workspace().id(),
+                state.revision,
+                LazyWorkspaceState {
+                    revision: state.revision + 1,
+                    pending_remove: Some(pending),
+                    ..state
+                },
+                accounting!()
+            )
+            .await
+            .unwrap()
+    );
+    let (entering, release) = store.pause_next_commit();
+    let ((), next) = tokio::join!(
+        async { root.recover_pending_remove(accounting!()).await.unwrap() },
+        async {
+            entering.await.unwrap();
+            root.recover_pending_remove(accounting!()).await.unwrap();
+            let state = root.state(accounting!()).await.unwrap();
+            let overlay = root
+                .insert_overlay(
+                    state.overlay,
+                    "/next-operation",
+                    LazyOverlayChange::Tombstone { removed: None },
+                    accounting!(),
+                )
+                .await
+                .unwrap();
+            let next = LazyWorkspaceState {
+                revision: state.revision + 1,
+                overlay,
+                pending_remove: Some(PendingLazyRemove {
+                    prior_overlay: state.overlay,
+                    prior_shadows: state.shadows,
+                    prepared_overlay: overlay,
+                    kind: PendingLazyRemoveKind::SourceOnly,
+                }),
+                ..state
+            };
+            assert!(
+                store
+                    .compare_and_swap_lazy_workspace(
+                        root.workspace().id(),
+                        next.revision - 1,
+                        next.clone(),
+                        accounting!()
+                    )
+                    .await
+                    .unwrap()
+            );
+            release.send(()).unwrap();
+            next
+        }
+    );
+    assert_eq!(
+        store
+            .load_lazy_workspace(root.workspace().id(), accounting!())
+            .await
+            .unwrap(),
+        Some(next)
+    );
+    root.recover_pending_remove(accounting!()).await.unwrap();
+    assert_eq!(store.conflicts.load(Ordering::SeqCst), 3);
     // Stale identity is still a real refusal, never retried as contention.
     source.epoch.store(1, Ordering::Relaxed);
     assert!(matches!(
