@@ -1,8 +1,7 @@
 //! The root's original operation index pins content routing before its effect.
 use super::*;
 
-const SELECTION_PATH: &str = "/.system/harness-content-workspace";
-const SELECTION_BYTES: u64 = 17;
+const SELECTION_BYTES: usize = 17;
 
 fn selection_key(
     operation: acyclic_fs::IdempotencyKey,
@@ -42,16 +41,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let operation = selection_key(operation, io)?;
         let Some(binding) = io.sdk(
-            root.operation_generation(operation, io, io.cancellation())
+            root.operation_publication(operation, io, io.cancellation())
                 .await,
         )?
         else {
             return Ok(None);
         };
-        let bytes =
-            read_generation(&binding, SELECTION_PATH, Some(SELECTION_BYTES), Some(io)).await?;
-        let _hold = io.guard_bytes(&bytes)?;
-        if bytes.len() != SELECTION_BYTES as usize || bytes[0] != 1 {
+        let bytes = binding.evidence().ok_or_else(|| {
+            stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Storage,
+                "content workspace binding has no original evidence",
+            )
+        })?;
+        if bytes.len() != SELECTION_BYTES || bytes[0] != 1 {
             return Err(stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Storage,
@@ -63,7 +66,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace = family
             .workspace(self, root, acyclic_fs::WorkspaceId::from_bytes(owner), io)?
             .await?;
-        Ok(Some((workspace, Some(binding))))
+        Ok(Some((workspace, Some(binding.into_generation()))))
     }
 
     pub(in crate::filesystem) fn bind_content_operation<'a>(
@@ -76,34 +79,42 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let operation = selection_key(operation, io)?;
-            let mut encoded = [1; SELECTION_BYTES as usize];
+            let mut encoded = [1; SELECTION_BYTES];
             encoded[1..].copy_from_slice(&selected.into_bytes());
-            let mutations = [
-                WorkspaceMutation::CreateDirectory {
-                    path: stock_string_copy("/.system", Some(io))?,
-                },
-                WorkspaceMutation::PutFile {
-                    path: stock_string_copy(SELECTION_PATH, Some(io))?,
-                    bytes: encoded.as_slice().mutation_bytes(Some(io))?,
-                },
-            ];
+            let evidence = encoded.as_slice().mutation_bytes(Some(io))?;
+            let work = WorkCounters {
+                bytes_hashed: SELECTION_BYTES as u64,
+                ..Default::default()
+            };
+            io.preflight(work)?;
+            let fingerprint = acyclic_fs::Digest::from_bytes(*blake3::hash(&encoded).as_bytes());
+            io.charge(work)?;
+            let mut transaction = io.sdk(
+                root.begin_transaction(operation, io, io.cancellation())
+                    .await,
+            )?;
+            io.sdk(
+                transaction
+                    .observe_policy_fence(authorization.0, io, io.cancellation())
+                    .await,
+            )?;
             // The ordinary publication receipt decides this binding. A conflict or
             // uncertain result never permits publication in a newly selected view.
-            let binding = self
-                .publish_selected_operation(
-                    root,
-                    &mutations,
-                    move || Ok(operation),
-                    io,
-                    super::workspaces::FilePublication::Authorized(
-                        authorization.0,
-                        authorization.1,
-                        None,
-                    ),
+            let binding = Self::commit_contextual_publication(
+                transaction,
+                io,
+                super::workspaces::FilePublication::Authorized(
+                    authorization.0,
+                    authorization.1,
                     None,
-                    None,
-                )?
-                .await?;
+                ),
+                Some((
+                    fingerprint,
+                    evidence,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                )),
+            )?
+            .await?;
             bounded_io::retain(&binding, Some(io)).await?;
             Ok(())
         })

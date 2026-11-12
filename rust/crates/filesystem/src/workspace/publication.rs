@@ -3,7 +3,93 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
+/// An original publication and its caller-supplied evidence, recovered together.
+/// The evidence aliases the durable record and retains its original allocation.
+/// It is not a workspace file and never appears in a directory or checkout.
+pub struct OperationPublication<A: 'static, O: 'static> {
+    generation: Generation<A, O>,
+    evidence: Option<crate::kernel::Retained<Bytes>>,
+}
+
+impl<A, O> OperationPublication<A, O> {
+    /// The immutable result of this operation, independent of the current head.
+    pub fn generation(&self) -> &Generation<A, O> {
+        &self.generation
+    }
+
+    /// The exact evidence supplied when this publication was prepared.
+    pub fn evidence(&self) -> Option<&[u8]> {
+        self.evidence.as_ref().map(|evidence| evidence.as_ref())
+    }
+
+    /// Releases the record backing while retaining the immutable result.
+    pub fn into_generation(self) -> Generation<A, O> {
+        self.generation
+    }
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
+    /// Recovers a publication's immutable generation and original evidence using
+    /// its existing authority operation index. Reads neither the mutable head
+    /// nor any workspace path. Publications without caller evidence, including
+    /// workspace creation, return a generation with no evidence. Missing
+    /// operations return `None`.
+    pub async fn operation_publication<W: crate::facade::FsWork>(
+        &self,
+        key: IdempotencyKey,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Option<OperationPublication<A, O>>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let (observed, mut allocation) = self
+                .volume
+                .fs
+                .workspace_operation_generation(
+                    &self.volume,
+                    key.operation_id(),
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            let Some((id, record, evidence)) = observed else {
+                crate::kernel::retire_allocation(allocation, 0, &mut accounting)?;
+                return Ok(None);
+            };
+            let bytes = record.payload.len() as u64;
+            if matches!(allocation, KernelOwnedAllocation::Standalone) {
+                let (funding, admitted) = accounting.record_actual_owned(bytes)?;
+                allocation = funding;
+                if let Err(error) = admitted {
+                    drop(evidence);
+                    drop(record);
+                    crate::kernel::retire_allocation(allocation, bytes, &mut accounting)?;
+                    return Err(error.into());
+                }
+            }
+            drop(record);
+            let evidence = if let Some(evidence) = evidence {
+                Some(crate::kernel::Retained::from_owned(
+                    crate::kernel::Owned::new(evidence, allocation, bytes),
+                    &mut accounting,
+                )?)
+            } else {
+                crate::kernel::retire_allocation(allocation, bytes, &mut accounting)?;
+                None
+            };
+            Ok(Some(OperationPublication {
+                generation: Generation {
+                    workspace: self.clone(),
+                    id,
+                    publication_closure: None,
+                },
+                evidence,
+            }))
+        }
+        .await;
+        work.finish(result, &accounting)
+    }
+
     /// Fences this workspace's mutable head for an exact publication operation.
     pub async fn reserve_publication<W: crate::facade::FsWork>(
         &self,
@@ -129,7 +215,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             )
             .await
             .map(|mut observed| {
-                let id = observed.0.take().map(|(id, record)| {
+                let id = observed.0.take().map(|(id, record, _evidence)| {
                     drop(record);
                     id
                 });

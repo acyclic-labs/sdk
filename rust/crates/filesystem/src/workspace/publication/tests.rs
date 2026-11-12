@@ -4,6 +4,82 @@ use crate::workspace::accounting_tests::Prefunded;
 use std::sync::Mutex;
 
 #[tokio::test]
+async fn original_publication_evidence_survives_later_heads_without_workspace_files()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let filesystem = Fs::memory();
+    let workspace = filesystem
+        .create_workspace("evidence", budget, &cancellation)
+        .await?
+        .value;
+    let key = IdempotencyKey::new();
+    let mut transaction = workspace
+        .begin_transaction(key, budget, &cancellation)
+        .await?
+        .value;
+    let published = transaction
+        .commit(
+            Some((
+                crate::Digest::from_bytes([7; 32]),
+                acyclic_stream::OwnedBytes::from_static(b"original context"),
+                crate::PublicationPermit::Unrestricted,
+            )),
+            crate::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            publication_ready,
+        )
+        .await?
+        .value;
+    let TransactionCommit::Committed(original) = published else {
+        return Err("publication failed".into());
+    };
+    workspace.write_text("/later", "later head").await?;
+    let current = workspace.head(budget, &cancellation).await?.value.id();
+    assert_ne!(current, original.id());
+    let publication = workspace
+        .operation_publication(key, budget, &cancellation)
+        .await?;
+    publication.work.verify(budget)?;
+    let publication = publication.value.ok_or("publication disappeared")?;
+    assert_eq!(publication.generation().id(), original.id());
+    assert_eq!(publication.evidence(), Some(b"original context".as_slice()));
+    assert!(
+        original
+            .stat("/.system", budget, &cancellation)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        workspace.head(budget, &cancellation).await?.value.id(),
+        current
+    );
+    let missing = workspace
+        .operation_publication(IdempotencyKey::new(), budget, &cancellation)
+        .await?;
+    assert!(missing.value.is_none());
+    let denied = WorkBudget {
+        backend_read_operations: 0,
+        ..budget
+    };
+    let failure = workspace
+        .operation_publication(key, denied, &cancellation)
+        .await
+        .err()
+        .ok_or("unfunded read admitted")?;
+    assert_eq!(failure.work.backend_read_operations, 0);
+    cancellation.cancel();
+    let failure = workspace
+        .operation_publication(key, budget, &cancellation)
+        .await
+        .err()
+        .ok_or("cancelled read admitted")?;
+    assert_eq!(*failure.work, crate::WorkCounters::default());
+    Ok(())
+}
+
+#[tokio::test]
 async fn reservation_preserves_original_live_peak_and_refuses_before_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_arch = "wasm32"))]

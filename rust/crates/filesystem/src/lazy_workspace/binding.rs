@@ -387,7 +387,7 @@ impl<
                 cancellation(ctx),
             )
             .await?;
-        Ok(original.0.as_ref().map(|(id, _)| *id))
+        Ok(original.0.as_ref().map(|(id, _, _)| *id))
     }
     /// Opens an accounted readonly checkout of the selected generation.
     pub async fn checkout(

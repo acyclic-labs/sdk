@@ -65,6 +65,7 @@ mod outcomes;
 mod path_apply;
 mod paths;
 mod publication;
+pub use publication::OperationPublication;
 mod read_core;
 mod reads;
 mod restore;

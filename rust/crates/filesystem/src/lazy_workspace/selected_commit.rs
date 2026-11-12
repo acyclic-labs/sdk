@@ -40,7 +40,7 @@ impl<
                 cancellation(ctx),
             )
             .await?;
-        let Some((actual, record)) = record else {
+        let Some((actual, record, evidence)) = record else {
             crate::kernel::retire_allocation(guard, 0, ctx)?;
             return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
         };
@@ -49,6 +49,7 @@ impl<
             let (funding, admitted) = ctx.record_actual_owned(bytes)?;
             guard = funding;
             if let Err(error) = admitted {
+                drop(evidence);
                 drop(record);
                 crate::kernel::retire_allocation(guard, bytes, ctx)?;
                 return Err(error.into());
@@ -59,13 +60,8 @@ impl<
             if actual != generation {
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
             }
-            let decoded = crate::kernel::decode_publication_evidence_with_accounting(
-                &record.value.payload,
-                self.workspace.limits().maximum_object_bytes,
-                ctx,
-            )?;
-            let evidence = decoded
-                .original_evidence
+            let evidence = evidence
+                .as_deref()
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
             let context = publication_codec::decode_publication_context(evidence, operation, ctx)?;
             let NativeSnapshotContext::Selected { cut, input } = context else {
@@ -92,6 +88,7 @@ impl<
                 input,
             ))
         })();
+        drop(evidence);
         record.retire(ctx)?;
         result
     }

@@ -168,8 +168,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         operation_id: OperationId,
         accounting: &mut KernelAccounting<'_>,
         _cancellation: &CancellationToken,
-    ) -> Result<(Option<(GenerationId, DurableCommit)>, KernelOwnedAllocation), WorkspaceError>
-    {
+    ) -> Result<
+        (
+            Option<(GenerationId, DurableCommit, Option<bytes::Bytes>)>,
+            KernelOwnedAllocation,
+        ),
+        WorkspaceError,
+    > {
         accounting.check()?;
         let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
@@ -190,11 +195,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 if record.operation_id != operation_id {
                     return Err(FsError::InvalidAuthorityHistory);
                 }
-                generation_from_record(record, workspace.id, accounting)
-                    .map(|root| GenerationId::from_root(root))
+                if record.sequence == crate::Sequence::new(1) {
+                    return generation_from_record(record, workspace.id, accounting)
+                        .map(|root| (GenerationId::from_root(root), None));
+                }
+                let decoded = crate::kernel::decode_publication_evidence_with_accounting(
+                    &record.payload,
+                    record.payload.len() as u64,
+                    accounting,
+                )?;
+                if decoded.publication.volume_id != workspace.id {
+                    return Err(FsError::VolumeMismatch);
+                }
+                Ok((
+                    GenerationId::from_root(decoded.publication.generation_root),
+                    decoded
+                        .original_evidence
+                        .map(|bytes| record.payload.slice_ref(bytes)),
+                ))
             })
             .transpose()?;
-        Ok((generation.zip(record), allocation))
+        Ok((
+            generation
+                .zip(record)
+                .map(|((id, evidence), record)| (id, record, evidence)),
+            allocation,
+        ))
     }
 
     /// Verifies the exact publication identity of a committed workspace join.

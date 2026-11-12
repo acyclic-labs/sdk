@@ -220,7 +220,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinBuilde
                     )
                     .await?
                     .0
-                    .map(|(_, commit)| commit)
+                    .map(|(_, commit, _evidence)| commit)
             } else {
                 None
             };

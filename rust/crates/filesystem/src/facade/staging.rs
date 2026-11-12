@@ -144,7 +144,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await?
             .0
-            .map(|(generation, record)| {
+            .map(|(generation, record, _evidence)| {
                 drop(record);
                 generation
             })
