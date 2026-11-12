@@ -252,10 +252,6 @@ struct IntentRecord {
     delivered_path: Option<String>,
     #[prost(uint64, optional, tag = "5")]
     delivered_sequence: Option<u64>,
-    #[prost(bytes = "bytes", optional, tag = "6")]
-    delivered_commit: Option<bytes::Bytes>,
-    #[prost(bytes = "bytes", optional, tag = "7")]
-    replaced_commit: Option<bytes::Bytes>,
 }
 
 /// A composed publication's durable participant custody. It is appended by
@@ -269,11 +265,8 @@ pub(super) struct Intent {
     pub(super) participant: crate::guest::Participant,
     /// The publication's retry identity, whose retained outcome is its receipt.
     pub(super) key: acyclic_stream::IdempotencyKey,
-    /// The delivered input record: its stream, sequence and the exact
-    /// commit that introduced it there.
-    pub(super) delivered: Option<(StreamPath, u64, acyclic_stream::CommitId)>,
-    /// The commit of the state record the publication replaced.
-    pub(super) replaced: Option<acyclic_stream::CommitId>,
+    /// The delivered input record, by stream and sequence.
+    pub(super) delivered: Option<(StreamPath, u64)>,
 }
 
 impl Intent {
@@ -285,15 +278,8 @@ impl Intent {
             delivered_path: self
                 .delivered
                 .as_ref()
-                .map(|(path, _, _)| path.as_str().to_owned()),
-            delivered_sequence: self.delivered.as_ref().map(|(_, sequence, _)| *sequence),
-            delivered_commit: self
-                .delivered
-                .as_ref()
-                .map(|(_, _, commit)| bytes::Bytes::copy_from_slice(commit.as_bytes())),
-            replaced_commit: self
-                .replaced
-                .map(|commit| bytes::Bytes::copy_from_slice(commit.as_bytes())),
+                .map(|(path, _)| path.as_str().to_owned()),
+            delivered_sequence: self.delivered.as_ref().map(|(_, sequence)| *sequence),
         };
         let mut record = Vec::with_capacity(CUSTODY_FORMAT_V1.len() + payload.encoded_len());
         record.extend_from_slice(CUSTODY_FORMAT_V1);
@@ -309,25 +295,15 @@ impl Intent {
         )?;
         let record = IntentRecord::decode(record)
             .map_err(|_| Error::Invalid("malformed actor custody record"))?;
-        let delivered = match (
-            record.delivered_path,
-            record.delivered_sequence,
-            record.delivered_commit,
-        ) {
-            (Some(path), Some(sequence), Some(commit)) => Some((
+        let delivered = match (record.delivered_path, record.delivered_sequence) {
+            (Some(path), Some(sequence)) => Some((
                 StreamPath::new(path)
                     .map_err(|_| Error::Invalid("custody input is not a stream path"))?,
                 sequence,
-                commit_id(&commit)?,
             )),
-            (None, None, None) => None,
+            (None, None) => None,
             _ => return Err(Error::Invalid("malformed actor custody input")),
         };
-        let replaced = record
-            .replaced_commit
-            .as_deref()
-            .map(commit_id)
-            .transpose()?;
         Ok(Self {
             participant: crate::guest::Participant {
                 kind: record.kind,
@@ -335,17 +311,8 @@ impl Intent {
             },
             key: acyclic_stream::IdempotencyKey::new(record.key)?,
             delivered,
-            replaced,
         })
     }
-}
-
-fn commit_id(bytes: &[u8]) -> Result<acyclic_stream::CommitId, Error> {
-    Ok(acyclic_stream::CommitId::from_bytes(
-        bytes
-            .try_into()
-            .map_err(|_| Error::Invalid("malformed actor custody commit"))?,
-    ))
 }
 
 #[cfg(test)]
