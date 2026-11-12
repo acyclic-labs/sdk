@@ -71,7 +71,7 @@ pub(crate) async fn values(
             .map_ok(|record| record.value.to_vec())
             .try_collect()
             .await?),
-        Err(StreamError::NotFound) => Ok(Vec::new()),
+        Err(error) if error.category() == StreamError::NotFound => Ok(Vec::new()),
         Err(error) => Err(error.into()),
     }
 }

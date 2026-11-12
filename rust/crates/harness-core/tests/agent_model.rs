@@ -105,7 +105,10 @@ async fn values<P: StreamProvider + ?Sized>(
         .collect())
 }
 
-async fn create(provider: &MemoryStream, agent: AgentId) -> Result<AgentPath> {
+async fn create<P: acyclic_harness_core::store::JournalProvider + ?Sized>(
+    provider: &P,
+    agent: AgentId,
+) -> Result<AgentPath> {
     let created = create_root(&intent("create"), adopted(agent))?;
     assert!(matches!(
         submit(provider, created.request).await?,
