@@ -472,6 +472,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 &journal,
                 &guest.verifier,
                 &guest.scope,
+                true,
                 || std::future::ready(Ok(guest_write.clone())),
                 None,
             )?
@@ -507,6 +508,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 &journal,
                 &guest.verifier,
                 &control_scope,
+                true,
                 || std::future::ready(Ok(limited_grant)),
                 None,
             )?
@@ -541,6 +543,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 &journal,
                 &guest.verifier,
                 &control_scope,
+                true,
                 || std::future::ready(Err(Error::Unauthorized("no policy writer selected".into()))),
                 None,
             )?
@@ -645,13 +648,27 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             foreign.clone(),
             foreign_write.clone(),
             foreign.clone(),
-            foreign_write,
+            foreign_write.clone(),
         );
         let shared = source_files
             .stage_announcement(
                 crate::agent::AnnouncementKind::Targets,
                 [203; 32],
                 br#"{"source":"shared"}"#,
+            )
+            .await?;
+        let source_input = host
+            .put_content(
+                &foreign,
+                &foreign_write,
+                "inputs/message.txt",
+                b"shared original input",
+                "text/plain",
+                "message.txt",
+                4096,
+                &crate::IdempotencyKey::new("shared-input")?,
+                None,
+                Default::default(),
             )
             .await?;
         let source_workspace = host
@@ -678,6 +695,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .map(str::to_owned)
             .collect();
         read_only.push(shared.read_capability(&mut None)?);
+        read_only.push(source_input.read_capability(&mut None)?);
         if structured {
             let mut capability = acyclic_fs::access::Capability::whole_volume(
                 Some(private.id().into()),
@@ -732,7 +750,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
         );
         let read_only_admission = TurnAdmission::Admitted {
             audience: audience.clone(),
-            scope: read_only,
+            scope: read_only.clone(),
         };
         let reader_admission =
             AdmittedAgent::verify(&source_issuer, &read_only_admission, &path, &volumes)?;
@@ -745,7 +763,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             "reading a foreign journal changed its owner's policy"
         );
         let reader_authority = reader_admission
-            .authority(std::slice::from_ref(&shared))
+            .authority(&[shared.clone(), source_input.clone()])
             .await?;
         let foreign_reader = FilesystemContentVerifier::new(
             host.clone(),
@@ -761,8 +779,73 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 .as_ref(),
             br#"{"source":"shared"}"#
         );
+        assert_eq!(
+            async { foreign_reader.read(&source_input, 4096, None, None)?.await }
+                .await
+                .expect_err("source policy admitted its unpublished input rule")
+                .code(),
+            crate::wire::ErrorCode::Unauthorized,
+        );
         if structured {
-            let administrator = AdmittedAgent::verify(&issuer, &admission, &path, &volumes)?;
+            let label = crate::core::filesystem_scope_label(read_only.capabilities(), &mut None)?
+                .expect("structured source capability");
+            let mut capability = acyclic_fs::access::Capability::from_scope_label(label)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .expect("typed source capability");
+            for rule in capability.layers.iter_mut().flatten() {
+                if rule.resource.volume.as_deref() == Some(foreign.id()) {
+                    rule.actions = acyclic_fs::access::Action::ALL.into_iter().collect();
+                    rule.resource.generations = acyclic_fs::access::Generations::Range(
+                        acyclic_fs::access::GenerationRange {
+                            first: 1,
+                            last: u64::MAX,
+                        },
+                    );
+                }
+            }
+            let mut capabilities: Vec<_> = read_only
+                .capabilities()
+                .iter()
+                .filter(|candidate| *candidate != label)
+                .map(str::to_owned)
+                .collect();
+            capabilities.push(foreign.capability(VolumeOperation::Write, &mut None)?);
+            capabilities.push(
+                capability
+                    .to_scope_label()
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            );
+            let administrator_scope = root.bootstrap_scope(
+                "generation-bound-source-administrator",
+                &Capabilities::new(capabilities),
+                Some(owner),
+                &mut None,
+            )?;
+            let (_administrator_producer, administrator_stopped) =
+                futures::channel::oneshot::channel::<()>();
+            let administrator_context = acyclic_auth::operation::Context::from_stopped(
+                root.verifier(&mut None)?
+                    .expiry(&administrator_scope)?
+                    .saturating_mul(1000),
+                async move {
+                    let _ = administrator_stopped.await;
+                    acyclic_auth::operation::Stopped::Cancelled
+                },
+            );
+            let administrator_issuer = RuntimeAuthority::admitted(
+                root.admit(administrator_scope.clone(), administrator_context)?,
+                OperationId::from_bytes([205; 16]),
+            );
+            let administrator_admission = TurnAdmission::Admitted {
+                audience: audience.clone(),
+                scope: administrator_scope,
+            };
+            let administrator = AdmittedAgent::verify(
+                &administrator_issuer,
+                &administrator_admission,
+                &path,
+                &volumes,
+            )?;
             administrator
                 .journal_authority(&reopened, &[], std::slice::from_ref(&shared))
                 .await?;
@@ -770,6 +853,13 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 host.resolve(&source_reference, None).await?.generation,
                 source_before.generation,
                 "an actor-bound administrator could not update its admitted source"
+            );
+            assert_eq!(
+                foreign_reader
+                    .read(&source_input, 4096, None, None)?
+                    .await?
+                    .as_ref(),
+                b"shared original input"
             );
         }
         let announcements = AgentInternalFiles::new(
