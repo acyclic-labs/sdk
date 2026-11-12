@@ -6,7 +6,23 @@ async fn native_delivery_loss_wakes_every_observer_and_preserves_invalidation()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::source_watch::HostChangeSink as _;
     use std::future::Future as _;
-    use std::task::{Context, Waker};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Wake, Waker};
+
+    #[derive(Default)]
+    struct ObservedWake(AtomicUsize);
+    impl Wake for ObservedWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let first_wake = Arc::new(ObservedWake::default());
+    let second_wake = Arc::new(ObservedWake::default());
+    let first_waker = Waker::from(Arc::clone(&first_wake));
+    let second_waker = Waker::from(Arc::clone(&second_wake));
     let root = tempfile::tempdir()?;
     let mut watch = NativeWatch::open(root.path(), measured_watch_options())?;
     let scan = watch.begin_rescan()?;
@@ -17,13 +33,13 @@ async fn native_delivery_loss_wakes_every_observer_and_preserves_invalidation()
     assert!(
         first
             .as_mut()
-            .poll(&mut Context::from_waker(Waker::noop()))
+            .poll(&mut Context::from_waker(&first_waker))
             .is_pending()
     );
     assert!(
         second
             .as_mut()
-            .poll(&mut Context::from_waker(Waker::noop()))
+            .poll(&mut Context::from_waker(&second_waker))
             .is_pending()
     );
     let (sender, _receiver) = crate::watch_queue::channel(None);
@@ -41,8 +57,22 @@ async fn native_delivery_loss_wakes_every_observer_and_preserves_invalidation()
         fenced: Arc::clone(&watch.fenced),
     };
     sink.delivery_lost();
-    first.await?;
-    second.await?;
+    assert!(
+        first_wake.0.load(Ordering::Relaxed) > 0,
+        "first observer was not woken"
+    );
+    assert!(
+        second_wake.0.load(Ordering::Relaxed) > 0,
+        "second observer was not woken"
+    );
+    assert!(matches!(
+        first.await,
+        Err(NativeWatchError::SourceUnavailable)
+    ));
+    assert!(matches!(
+        second.await,
+        Err(NativeWatchError::SourceUnavailable)
+    ));
     assert!(matches!(
         watch
             .poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
@@ -54,7 +84,12 @@ async fn native_delivery_loss_wakes_every_observer_and_preserves_invalidation()
     ));
     // The notification is not the evidence: a later subscriber sees the same
     // retained failure even though no callback will ever fire again.
-    watch.subscription().changed_with_native_work(&work).await?;
+    let late = watch.subscription().changed_with_native_work(&work);
+    let mut late = std::pin::pin!(late);
+    assert!(matches!(
+        late.as_mut().poll(&mut Context::from_waker(&first_waker)),
+        std::task::Poll::Ready(Err(NativeWatchError::SourceUnavailable))
+    ));
     Ok(())
 }
 
