@@ -100,6 +100,7 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 root,
                 after,
                 maximum_entries,
+                None,
                 DecodeLimits::for_volume(volume.config),
                 accounting,
                 cancellation,
@@ -256,6 +257,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                     root,
                     after,
                     256,
+                    through_class,
                     DecodeLimits::for_volume(self.volume.config),
                     &mut accounting,
                     cancellation,
@@ -270,16 +272,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                     .map(usize_to_u64)
                     .ok_or(WorkError::Overflow)?;
                 attributes.allocation.absorb(&mut allocation)?;
-                let mut reached_bound = false;
                 for entry in listing.entries.drain(..) {
-                    if through_class.is_some_and(|bound| entry.name.class() > bound) {
-                        reached_bound = true;
-                        accounting.release_owned(
-                            &mut attributes.allocation,
-                            usize_to_u64(entry.name.retained_bytes()),
-                        )?;
-                        continue;
-                    }
                     attributes.ensure_for_push(usize::MAX, &mut accounting)?;
                     let read = read_blob_range_with_accounting(
                         &self.volume.fs.inner.objects,
@@ -304,7 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                     attributes.value.push((entry.name, read.bytes));
                     accounting.record_completed(copied)?;
                 }
-                let has_more = listing.has_more && !reached_bound;
+                let has_more = listing.has_more;
                 drop(listing);
                 accounting.release_owned(&mut attributes.allocation, retired)?;
                 if !has_more {

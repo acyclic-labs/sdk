@@ -96,6 +96,14 @@ impl AttributeName {
         Self::new(self.class, bytes).map_err(|error| E::from(invariant(error)))
     }
 
+    /// An ordering-only lower bound; empty names are never persisted.
+    pub(crate) const fn class_start(class: AttributeClass) -> Self {
+        Self {
+            class,
+            bytes: Vec::new(),
+        }
+    }
+
     /// Returns source semantics.
     #[must_use]
     pub const fn class(&self) -> AttributeClass {
