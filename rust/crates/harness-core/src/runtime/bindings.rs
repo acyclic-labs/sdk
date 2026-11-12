@@ -99,21 +99,22 @@ impl Bindings {
 }
 
 impl AgentHarness {
-    /// Selects an agent's execution targets and project content together,
-    /// preserving this composition's scope and independent artifact storage.
-    /// The providers must already be bound to the selected project authority.
+    /// Selects an agent's execution targets, project and retained home together.
+    /// Providers must already be bound to the selected agent's authority.
     pub fn with_workspace(
         &self,
         targets: Option<Arc<dyn super::TargetResolver>>,
         content: ContentBindings,
+        home: ContentBindings,
     ) -> Result<Arc<Self>> {
         content.validate()?;
+        home.validate()?;
         Ok(Arc::new(Self {
             targets,
             filesystem: None,
             content: Some(content),
             scope: self.scope.clone(),
-            artifacts: self.artifacts.clone(),
+            artifacts: Some(home),
             seed: self.seed.clone(),
             system: self.system.clone(),
         }))

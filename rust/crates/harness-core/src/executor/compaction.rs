@@ -1,7 +1,14 @@
 use super::*;
 
-/// The backstop's one fixed marker, in place of every evicted range.
-pub(crate) const BACKSTOP_MARKER: &str = crate::seed::CONTEXT_BACKSTOP;
+#[derive(serde::Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+struct ManagerRewrite {
+    version: u32,
+    drop_through: u32,
+    summary: String,
+}
+
+impl PreparationRecord for ManagerRewrite {}
 
 pub(super) enum CompactionSource {
     Projected,
@@ -51,7 +58,7 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        let (through, maximum) = self
+        let (eligible, _) = self
             .summary_budget(
                 accounting.capacity,
                 &context,
@@ -61,8 +68,14 @@ impl StockExecution<'_> {
                 (input.operation_id, step),
             )
             .await?;
-        let summary = self
-            .backstop_marker(journal, input.operation_id, step, (&context, through))
+        let (summary, maximum) = self
+            .managed_summary(
+                journal,
+                (input, step),
+                &context,
+                policy,
+                (eligible, message_limit),
+            )
             .await?;
         let (compacted, reference) =
             crate::context::compact_projection(&context, maximum, Some(summary), self.io)?;
@@ -116,35 +129,85 @@ impl StockExecution<'_> {
         Err(stock_boundary(
             self.io,
             crate::wire::ErrorCode::Invalid,
-            "context backstop: the irreducible set exceeds the model window",
+            "context rewrite does not fit the selected model window",
         ))
     }
 
-    /// The fixed marker standing in for the evicted `[0, through)`, staged
-    /// with the provenance replay verifies. No model call: the backstop is
-    /// mechanical, and deliberate summaries are the agent's own program.
-    async fn backstop_marker(
+    /// The manager chooses the cut. The kernel only validates dependency
+    /// closure and the final request's capacity, never a retention heuristic.
+    async fn managed_summary(
         &self,
         journal: &dyn ExecutionJournal,
-        operation_id: OperationId,
-        step: u32,
-        source: (&crate::context::Context, usize),
-    ) -> Result<crate::context::ContextSummary> {
-        let (context, through) = source;
+        turn: (&TurnInput, u32),
+        context: &crate::context::Context,
+        policy: &crate::context::CapacityCompaction,
+        selection: (usize, Option<usize>),
+    ) -> Result<(crate::context::ContextSummary, usize)> {
+        let (input, step) = turn;
+        let (source_messages, message_limit) = selection;
         let invalid = |reason| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, reason);
-        let source_messages =
-            u32::try_from(through).map_err(|_| invalid("evicted range exceeds portable count"))?;
+        let (source, _) = with_history_io(self.io, |work| {
+            crate::context::clone_context(context, Some(source_messages), work)
+        })?;
+        let instruction = with_history_io(self.io, |work| {
+            crate::executor::preparation_format(
+                format_args!(
+                    "{}\nSource count: {source_messages}.",
+                    crate::seed::CONTEXT_MANAGER
+                ),
+                work,
+            )
+        })?;
+        let mut phase = DispatchPhase::new();
+        let (_, text) = self
+            .summarize(
+                journal,
+                Some(input),
+                input.operation_id,
+                step,
+                (source, ModelContent::Text(instruction)),
+                &mut phase,
+            )
+            .await?;
+        let rewrite: ManagerRewrite = match self.io {
+            Some(io) => {
+                let (value, hold) = io.decode(
+                    std::marker::PhantomData,
+                    text.as_bytes(),
+                    crate::wire::ErrorCode::Invalid,
+                )?;
+                retain_preparation((value, Some(hold)))?
+            }
+            None => crate::contract::json_from_slice(text.as_bytes())
+                .map_err(|_| invalid("context manager returned an invalid rewrite"))?,
+        };
+        let requested = rewrite.drop_through as usize;
+        if rewrite.version != 1 || requested == 0 || requested > source_messages {
+            return Err(invalid("context manager selected an invalid source range"));
+        }
+        let (through, maximum) = crate::context::plan_compaction_budget(
+            policy,
+            context,
+            message_limit,
+            requested,
+            self.io,
+        )?;
+        if through != requested {
+            return Err(invalid("context manager cut splits a dependency group"));
+        }
         let source_digest = crate::context::prefix_digest(context, through, self.io)?;
         let key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(format_args!("backstop:{step}:marker"), work)
+            crate::executor::preparation_format(format_args!("manager:{step}:summary"), work)
         })?;
-        self.publish_summary(
-            journal,
-            (operation_id, step),
-            (source_messages, source_digest),
-            (&key, BACKSTOP_MARKER.as_bytes()),
-        )
-        .await
+        let summary = self
+            .publish_summary(
+                journal,
+                (input.operation_id, step),
+                (rewrite.drop_through, source_digest),
+                (&key, rewrite.summary.as_bytes()),
+            )
+            .await?;
+        Ok((summary, maximum))
     }
 
     async fn prepare_compacted_request(
@@ -181,7 +244,11 @@ impl StockExecution<'_> {
             policy,
             context,
             message_limit,
-            context.messages.len().saturating_sub(1),
+            context
+                .current_input_index
+                .map_or(context.messages.len().saturating_sub(1), |index| {
+                    index as usize
+                }),
             self.io,
         )?;
         let mandatory = with_history_io(self.io, |work| {

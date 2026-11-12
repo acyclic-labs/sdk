@@ -321,7 +321,7 @@ impl StockExecution<'_> {
         let mut prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &mut prepared)
             .await?;
-        let ceiling = u64::from(capacity.context_tokens);
+        let ceiling = crate::context::CapacityCompaction::default().input_ceiling(capacity)?;
         let count = match stock_count_tokens(
             self.stock.provider.as_ref(),
             &prepared,
