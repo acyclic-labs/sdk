@@ -396,7 +396,7 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
     )?);
     let interrupt_handler = handler.clone();
     let remote = wire::Remote::new(
-        handler.manifest().clone(),
+        wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?,
         move |bytes: Vec<u8>, cancellation| -> GuestFuture<'static, Vec<u8>> {
             let handler = handler.clone();
             Box::pin(async move {
