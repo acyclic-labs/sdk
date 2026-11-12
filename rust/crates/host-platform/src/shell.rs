@@ -133,6 +133,46 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn powershell_decodes_json_data_after_a_legacy_console_encoding() -> std::io::Result<()> {
+        use std::{
+            io::Write,
+            process::{Command, Stdio},
+        };
+        let source = "param(); $data = [Console]::In.ReadToEnd() | ConvertFrom-Json; if ($data.text -cne 'quoted '' value 🦀') { exit 9 }; [Console]::Out.Write($data.text)";
+        for wrapped in [false, true] {
+            let rendered = if wrapped {
+                source_argument("powershell", source, |_| Ok::<_, std::io::Error>(()))?
+                    .expect("supported source")
+            } else {
+                std::borrow::Cow::Borrowed(source)
+            };
+            // A legacy host is a supported initial state. The control fails
+            // even when the test runner itself happens to use UTF-8.
+            let command =
+                format!("[Console]::InputEncoding = [Text.Encoding]::GetEncoding(437); {rendered}");
+            let mut child = Command::new("powershell.exe")
+                .args(POWERSHELL.arguments)
+                .arg(command)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            child
+                .stdin
+                .take()
+                .expect("piped input")
+                .write_all("{\"text\":\"quoted ' value 🦀\"}".as_bytes())?;
+            let output = child.wait_with_output()?;
+            assert_eq!(output.status.success(), wrapped, "{output:?}");
+            if wrapped {
+                assert_eq!(output.stdout, "quoted ' value 🦀".as_bytes());
+            }
+        }
+        Ok(())
+    }
+
     proptest! {
         #[test]
         fn source_moves_into_one_exact_command_channel(source in any::<String>()) {
