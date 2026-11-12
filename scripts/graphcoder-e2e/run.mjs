@@ -114,11 +114,10 @@ async function prepare(test, gitOrigin) {
   fixture.output = artifact;
   fixture.env = environment(fixture.settings, hostEnvironment);
   fixture.provider = "e2e";
-  if (test.keychain) {
-    fixture.credentials = join(fixture.settings, "credentials.json");
-    await mkdir(fixture.settings, { recursive: true });
-    await json(fixture.credentials, { api_keys: {}, keychain_service: `e2e-first-run-${randomUUID()}` });
-  }
+  fixture.credentials = join(fixture.settings, "native-credentials.json");
+  fixture.credential_service = `e2e-first-run-${randomUUID()}`;
+  await mkdir(fixture.settings, { recursive: true });
+  await json(fixture.credentials, { api_keys: {}, keychain_service: fixture.credential_service });
   if (nativeCases.has(test.id)) {
     fixture.url = `http://127.0.0.1:${port}/native-${test.id}/v1`;
     fixture.nativeCapability = nativeCapability;
@@ -150,7 +149,8 @@ async function prepare(test, gitOrigin) {
   const selection = ["--workspace", fixture.workspace, "--catalog", fixture.catalog,
     ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`])];
   const extra = [...expand(test.extra_args ?? [], fixture),
-    ...(test.keychain ? ["--credentials", fixture.credentials] : [])];
+    ...(test.inputs.some(input => input.args?.includes("--credentials"))
+      ? [] : ["--credentials", fixture.credentials])];
   fixture.clientArgs = [...selection, ...extra];
   fixture.args = [...selection, "--settings-root", fixture.settings,
     ...mountingArguments(test), ...extra];

@@ -134,13 +134,13 @@ async fn explicit_home_module_configures_the_first_model_call() {
     succeeded(&output);
     let requests = model.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0]["model"], "tiny");
+    assert_eq!(requests[0]["model"], "morph-kimik31");
     assert_eq!(requests[0]["temperature"], json!(0.25));
     model.close().await;
 }
 
 #[tokio::test]
-async fn home_model_selection_preserves_only_explicit_model_requirements() {
+async fn role_model_requirements_reject_conflicting_home_selection() {
     for (explicit, credentials_available) in [(false, true), (true, true), (false, false)] {
         let fixture = fixture();
         let model = model(fixture._directory.path()).await;
@@ -149,13 +149,14 @@ async fn home_model_selection_preserves_only_explicit_model_requirements() {
         catalog["unused"] = catalog["graphcoder-qual"].clone();
         catalog["unused"]["authentication"] = json!("api_key");
         catalog["graphcoder-qual"]["authentication"] = json!("api_key");
+        catalog["morph"]["authentication"] = json!("api_key");
         catalog["default_model"] = json!("unused/tiny");
         std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
         let credentials = fixture._directory.path().join("credentials.json");
         std::fs::write(
             &credentials,
             serde_json::to_vec(&json!({"api_keys": if credentials_available {
-                json!({"graphcoder-qual": "fixture-key"})
+                json!({"graphcoder-qual": "fixture-key", "morph": "fixture-key"})
             } else {
                 json!({})
             }}))
@@ -177,8 +178,6 @@ async fn home_model_selection_preserves_only_explicit_model_requirements() {
                 "--catalog",
             ])
             .arg(&model.catalog)
-            .arg("--credentials")
-            .arg(&credentials)
             .arg("--home-file")
             .arg(format!("agent.ts={}", source.display()))
             .args(["-p", "reply"]);
@@ -189,22 +188,17 @@ async fn home_model_selection_preserves_only_explicit_model_requirements() {
         if !credentials_available {
             assert!(!output.status.success());
             assert!(
-                String::from_utf8_lossy(&output.stderr).contains("API key is unavailable"),
+                String::from_utf8_lossy(&output.stderr).contains("provider key unavailable"),
                 "{output:?}"
             );
             assert_eq!(model.generated(), 0);
-        } else if explicit {
+        } else {
             assert!(!output.status.success());
             assert!(
                 String::from_utf8_lossy(&output.stderr).contains("requested model"),
                 "{output:?}"
             );
             assert_eq!(model.generated(), 0);
-        } else {
-            succeeded(&output);
-            let requests = model.requests.lock().unwrap().clone();
-            assert_eq!(requests.len(), 1);
-            assert_eq!(requests[0]["model"], "drifted");
         }
         model.close().await;
     }
@@ -259,14 +253,19 @@ async fn model_adapter(
             .unwrap();
     });
     let catalog = directory.join("catalog.json");
-    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
+    let mut document = json!({"graphcoder-qual":{
         "adapter":adapter,"authentication":"optional","base_url":format!("http://{address}"),
         "models":{
             "tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}},
             "drifted":{"capacity":{"context_tokens":4096,"output_tokens":512},"features":{"tools":true,"images":false}}
         },"max_event_bytes":4096,
         "token_counter": (adapter != "chat").then(|| json!({"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}))
-    }})).unwrap()).unwrap();
+    }});
+    document["morph"] = document["graphcoder-qual"].clone();
+    for name in ["morph-kimik31", "morph-dsv41flash"] {
+        document["morph"]["models"][name] = document["graphcoder-qual"]["models"]["tiny"].clone();
+    }
+    std::fs::write(&catalog, serde_json::to_vec(&document).unwrap()).unwrap();
     Model {
         catalog,
         requests,
@@ -348,6 +347,13 @@ fn fixture() -> Fixture {
     }
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::create_dir_all(settings.join(".codex")).unwrap();
+    std::fs::write(
+        directory.path().join("credentials.json"),
+        serde_json::to_vec(&json!({
+            "api_keys": {},
+            "keychain_service": format!("e2e-cli-{}", directory.path().file_name().unwrap().to_string_lossy())
+        })).unwrap(),
+    ).unwrap();
     Fixture {
         custody: acyclic_native_runtime::signing_key::FixtureCustody::new().unwrap(),
         _directory: directory,
@@ -373,9 +379,12 @@ fn graphcoder_command(fixture: &Fixture) -> Command {
         .env("ACYCLIC_LOG", "off")
         .env_remove("ACYCLIC_MODEL")
         .env_remove("OPENAI_API_KEY")
+        .env_remove("MORPH_API_KEY")
         .current_dir(&fixture.workspace)
         .arg("--workspace")
-        .arg(&fixture.workspace);
+        .arg(&fixture.workspace)
+        .arg("--credentials")
+        .arg(fixture._directory.path().join("credentials.json"));
     command
 }
 
@@ -685,8 +694,8 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
         assert_eq!(index.len(), 1, "replay replaces the agent index");
         assert_eq!(index[0]["agent_path"], row["agent_path"]);
         assert_eq!(index[0]["parent"], Value::Null);
-        assert_eq!(row["provider"], "graphcoder-qual");
-        assert_eq!(row["model"], "tiny");
+        assert_eq!(row["provider"], "morph");
+        assert_eq!(row["model"], "morph-kimik31");
         assert_eq!(row["completed"], true);
         assert_eq!(row["tokens"]["input"], 64);
         assert_eq!(row["tokens"]["output"], 2);
@@ -1471,7 +1480,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     let mut catalog: Value =
         serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
     catalog["default_model"] = json!("graphcoder-qual/tiny");
-    catalog["graphcoder-qual"]["models"]["tiny"]["capacity"] =
+    catalog["morph"]["models"]["morph-kimik31"]["capacity"] =
         json!({"context_tokens":1_048_576,"output_tokens":1_048_576});
     std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
     let mut command = graphcoder_command(&fixture);
@@ -1520,7 +1529,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         .iter()
         .all(|field| left.get(field) == right.get(field))
     };
-    assert_eq!(cli["model"], "tiny");
+    assert_eq!(cli["model"], "morph-kimik31");
     assert!(cli.get("max_output_tokens").is_none());
     assert!(!cli["tools"].as_array().unwrap().is_empty());
     assert!(cli.to_string().contains("Preserve Unicode Ï€"));
@@ -1528,8 +1537,8 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         same_contract(cli, embedded),
         "CLI={cli}; embedding={embedded}"
     );
-    // The alternate embedding still returns the same answer from this endpoint.
-    // Its actual different model/capacity or missing tool must fail request parity.
+    // A configured role prevents fallback-model drift; removing tools still
+    // changes the contract even when the endpoint returns the same answer.
     for changed_model in [true, false] {
         let selected = if changed_model { "drifted" } else { "tiny" };
         let mut config = configured(Some(selected), selected);
@@ -1542,7 +1551,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         );
         let actual = model.requests.lock().unwrap().last().unwrap().clone();
         if changed_model {
-            assert_eq!(actual["model"], "drifted");
+            assert_eq!(actual["model"], "morph-kimik31");
             assert_eq!(actual["tools"], cli["tools"]);
         } else {
             assert_eq!(actual["model"], cli["model"]);
@@ -1551,7 +1560,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
                 actual["tools"].as_array().unwrap().len() < cli["tools"].as_array().unwrap().len()
             );
         }
-        assert!(!same_contract(cli, &actual), "{actual}");
+        assert_eq!(same_contract(cli, &actual), changed_model, "{actual}");
     }
     assert_eq!(model.generated(), 4);
     // A new identity appends another prompt to the same persistent conversation.
