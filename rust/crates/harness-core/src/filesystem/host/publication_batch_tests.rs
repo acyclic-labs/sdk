@@ -580,6 +580,7 @@ impl PublicationCase<'_> {
         workspace: &WorkspaceRef,
         path: &str,
         key: &IdempotencyKey,
+        class: Option<InternalContentClass>,
     ) -> Result<()> {
         let metadata_path = content_metadata_path_io(self.volume, path, true, None)?;
         let record = self
@@ -602,16 +603,21 @@ impl PublicationCase<'_> {
             )?
             .ok_or_else(|| io.invalid("publication evidence is absent"))?;
         assert_eq!(publication.evidence(), Some(record.as_ref()));
+        let identity = if class.is_some() { path } else { key.as_str() };
+        let former_receipt = format!(
+            "/.system/harness-uploads/{}.json",
+            blake3::hash(identity.as_bytes()).to_hex()
+        );
         assert!(
             io.sdk(
                 publication
                     .generation()
-                    .stat("/.system/harness-uploads", &io, &cancellation)
+                    .stat(&former_receipt, &io, &cancellation)
                     .await
             )
             .is_err()
         );
-        if !crate::conversation::is_internal_path(path) {
+        if class.is_none() {
             // A populated previous index can contain either historical shape.
             // The new index owns another namespace and never reinterprets them.
             let previous_path = metadata_path.replace("/v2/", "/v1/");
@@ -675,18 +681,108 @@ impl PublicationCase<'_> {
         Ok(())
     }
 
+    async fn put_without_evidence(
+        &self,
+        workspace: &WorkspaceRef,
+        path: &str,
+        key: &IdempotencyKey,
+        file_only_index: bool,
+        class: Option<InternalContentClass>,
+    ) -> Result<FileRef> {
+        let mut file = FileRef::new(
+            self.volume.copy(&mut None)?,
+            path.into(),
+            bounded_io::hex_key(&filesystem_key(key).into_bytes(), None)?,
+            FileDescriptor::from_bytes(b"original", "application/json", &mut None)?,
+            "payload".into(),
+            &mut None,
+        )?;
+        let namespace = self.volume.storage_name(&mut None)?;
+        let mut hash = blake3::Hasher::new_derive_key("acyclic harness file index v1");
+        hash.update(namespace.as_bytes());
+        hash.update(&[0]);
+        hash.update(path.as_bytes());
+        let metadata = format!(
+            "/.system/harness-file-metadata/v1/{}.json",
+            hash.finalize().to_hex()
+        );
+        let receipt = crate::contract::canonical_json_bytes(&(&file, None::<GenerationRef>))?;
+        let index = if file_only_index {
+            serde_json::to_vec(&file).map_err(|error| Error::Invalid(error.to_string()))?
+        } else {
+            receipt.clone()
+        };
+        let identity = if class.is_some() { path } else { key.as_str() };
+        let receipt_path = format!(
+            "/.system/harness-uploads/{}.json",
+            blake3::hash(identity.as_bytes()).to_hex()
+        );
+        let generation = self
+            .host
+            .apply(
+                workspace,
+                None,
+                &[
+                    WorkspaceMutation::CreateDirectory {
+                        path: format!("/{}", path.rsplit_once('/').unwrap().0),
+                    },
+                    WorkspaceMutation::CreateDirectory {
+                        path: "/.system/harness-file-metadata/v1".into(),
+                    },
+                    WorkspaceMutation::CreateDirectory {
+                        path: "/.system/harness-uploads".into(),
+                    },
+                    WorkspaceMutation::PutFile {
+                        path: format!("/{path}"),
+                        bytes: acyclic_stream::OwnedBytes::from_static(b"original"),
+                    },
+                    WorkspaceMutation::PutFile {
+                        path: metadata,
+                        bytes: index.into(),
+                    },
+                    WorkspaceMutation::PutFile {
+                        path: receipt_path,
+                        bytes: receipt.into(),
+                    },
+                ],
+                key,
+            )
+            .await?;
+        file.pin_version(
+            bounded_io::hex_key(generation.as_resource().key(), None)?,
+            &mut None,
+        )?;
+        Ok(file)
+    }
+
     async fn verify(
         &self,
         workspace: &WorkspaceRef,
         class: Option<InternalContentClass>,
+        file_only_index: Option<bool>,
     ) -> Result<()> {
+        let format = match file_only_index {
+            None => "evidence",
+            Some(false) => "tuple",
+            Some(true) => "file",
+        };
         let path = format!(
-            "{}payload.json",
+            "{}payload-{format}.json",
             class.map_or("uploads/", |class| class.prefix())
         );
         let key = IdempotencyKey::new(format!("first-{path}"))?;
-        let original = self.put(&path, b"original", &key, class).await?;
-        self.original_evidence(workspace, &path, &key).await?;
+        let original = if let Some(file_only) = file_only_index {
+            self.put_without_evidence(workspace, &path, &key, file_only, class)
+                .await?
+        } else {
+            let file = self.put(&path, b"original", &key, class).await?;
+            self.original_evidence(workspace, &path, &key, class)
+                .await?;
+            file
+        };
+        let before_retry = self.host.resolve(workspace, None).await?;
+        assert_eq!(self.put(&path, b"original", &key, class).await?, original);
+        assert_eq!(self.host.resolve(workspace, None).await?, before_retry);
         self.put(
             &path,
             b"replacement",
@@ -737,8 +833,7 @@ impl PublicationCase<'_> {
 }
 
 #[tokio::test]
-async fn publication_recovers_original_evidence_without_receipt_paths_for_every_adapter()
--> Result<()> {
+async fn publication_recovers_original_uploads_for_every_adapter() -> Result<()> {
     for adapter in 0..3 {
         let provider =
             ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
@@ -759,29 +854,34 @@ async fn publication_recovers_original_evidence_without_receipt_paths_for_every_
             Some(InternalContentClass::Interaction),
             Some(InternalContentClass::Execution),
             Some(InternalContentClass::ToolResult),
+            Some(InternalContentClass::Conversation),
         ] {
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
-            let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let io = match adapter {
-                0 => None,
-                1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
-                _ => Some(PreparationIo::from_native_work(&native)?),
-            };
-            let case = PublicationCase {
-                host: &host,
-                volume: &volume,
-                write: &write,
-                read: &read,
-                io: io.as_ref(),
-            };
-            case.verify(&workspace, class).await.map_err(|error| {
-                Error::Storage(format!(
-                    "adapter {adapter}, family {}: {error:?}",
-                    class.map_or("uploads/", |class| class.prefix())
-                ))
-            })?;
+            for file_only_index in [None, Some(false), Some(true)] {
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+                let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+                let io = match adapter {
+                    0 => None,
+                    1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+                    _ => Some(PreparationIo::from_native_work(&native)?),
+                };
+                let case = PublicationCase {
+                    host: &host,
+                    volume: &volume,
+                    write: &write,
+                    read: &read,
+                    io: io.as_ref(),
+                };
+                case.verify(&workspace, class, file_only_index)
+                    .await
+                    .map_err(|error| {
+                        Error::Storage(format!(
+                            "adapter {adapter}, family {}, index {file_only_index:?}: {error:?}",
+                            class.map_or("uploads/", |class| class.prefix())
+                        ))
+                    })?;
+            }
         }
     }
     Ok(())
