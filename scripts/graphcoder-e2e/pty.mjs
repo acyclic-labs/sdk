@@ -113,6 +113,7 @@ export async function pty(processes, binary, fixture, input, capture) {
         trace({ event: "action", prompt_bytes: Buffer.byteLength(action.prompt ?? ""),
           send: action.send, kill: action.kill, available: frames.available() });
         index++;
+        if (action.prompt !== undefined || action.send !== undefined || action.kill) frames.consume();
         if (action.prompt !== undefined) {
           prompted = requests;
           running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);

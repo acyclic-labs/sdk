@@ -1,0 +1,47 @@
+diff --git a/rust/crates/harness-core/src/agent/machine.rs b/rust/crates/harness-core/src/agent/machine.rs
+index 7133b83462c..28b3d431b7c 100644
+--- a/rust/crates/harness-core/src/agent/machine.rs
++++ b/rust/crates/harness-core/src/agent/machine.rs
+@@ -1155,7 +1155,7 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
+ }
+ 
+ /// Whether a driver's effect fits the record that carries it.
+-fn admissible(out: &Out, path: &AgentPath) -> bool {
++fn admissible(out: &Out, _path: &AgentPath) -> bool {
+     match out {
+         Out::Steered(_) => true,
+         Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
+@@ -1165,15 +1165,7 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
+                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
+             ) && record.encode_for(to).is_ok()
+         }
+-        Out::Archive { id, .. } => {
+-            let by = super::Sender::Agent { path: path.clone() };
+-            super::AgentRecord::encode(&InboxRecord::Archive(super::Control {
+-                by: by.clone(),
+-                id: id.clone(),
+-            }))
+-            .is_ok()
+-                && super::AgentRecord::encode(&super::Closed { by, id: id.clone() }).is_ok()
+-        }
++        Out::Archive { .. } => true,
+         Out::Checkpoint | Out::Roster(_) | Out::Notices(_) | Out::GoalCompleted { .. } => true,
+         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes.iter()).is_ok(),
+     }
+@@ -1253,16 +1245,6 @@ async fn run<T: TurnDriver + ?Sized>(
+     if !turn.outs.iter().all(|out| admissible(out, &state.path))
+         || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
+         || matches!(&turn.wait, Wait::User(path) if super::records::check_ui_path(path).is_err())
+-        || matches!(&turn.wait, Wait::Approval { id, binding } if super::AgentRecord::encode(&StatusRecord {
+-            child_settlement: Some(super::ChildSettlement {
+-                child: super::AgentId::from_bytes([u8::MAX; 16]),
+-                settled_at_micros: u64::MAX,
+-            }),
+-            child_wakes: child_wakes.clone(),
+-            phase: Phase::WaitingApproval { id: id.clone(), binding: binding.clone() },
+-            cursor: u64::MAX,
+-            conversation: u64::MAX,
+-        }).is_err())
+     {
+         turn = TurnStep {
+             checkpoint: None,

@@ -9,7 +9,7 @@ pub(crate) fn stream_error_with_work(
 ) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     if work.as_deref().is_some_and(original_native_decode_mode) {
-        let code = if matches!(&source, StreamError::IdempotencyMismatch) {
+        let code = if source.category() == StreamError::IdempotencyMismatch {
             crate::wire::ErrorCode::Conflict
         } else {
             Storage
@@ -194,7 +194,7 @@ pub(crate) async fn tail_optional_with_work<P: crate::store::JournalProvider + ?
     let result = tail_result_with_work(client, path, work).await?;
     match result {
         Ok(tail) => Ok(Some(tail)),
-        Err(StreamError::NotFound) => Ok(None),
+        Err(error) if error.category() == StreamError::NotFound => Ok(None),
         Err(error) => Err(stream_error_with_work(error, work)),
     }
 }
@@ -209,7 +209,7 @@ pub(crate) async fn one_record<P: crate::store::JournalProvider + ?Sized>(
     let mut quota = CodecQuota::new(work, 0)?;
     let mut records = match read_records(client, path, from, 1, quota.work()).await? {
         Ok(records) => records,
-        Err(StreamError::NotFound) => {
+        Err(error) if error.category() == StreamError::NotFound => {
             return Ok(None);
         }
         Err(error) => {

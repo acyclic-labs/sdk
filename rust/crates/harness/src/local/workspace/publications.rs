@@ -252,7 +252,7 @@ mod tests {
             };
             commands
                 .invoke(
-                    "branch child",
+                    commands.fs_arguments("branch child", &scope)?,
                     context(OperationId::new()),
                     Box::pin(async { Ok(()) }),
                 )

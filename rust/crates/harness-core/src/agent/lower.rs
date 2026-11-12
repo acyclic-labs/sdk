@@ -219,9 +219,9 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 if matches!(record, InboxRecord::Message(_) | InboxRecord::FollowUp(_))
                     && to != path
                 {
-                    builder.offer(to.inbox()?, to.closed()?, record.encode()?);
+                    builder.offer(to.inbox()?, to.closed()?, record.encode_for(to)?);
                 } else {
-                    builder.append(to.inbox()?, record.encode()?);
+                    builder.append(to.inbox()?, record.encode_for(to)?);
                 }
             }
             Out::Archive { target, id } => {

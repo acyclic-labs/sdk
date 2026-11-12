@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/agent/records.rs b/rust/crates/harness-core/src/agent/records.rs
+index 164b9f3c63e..89b041c6352 100644
+--- a/rust/crates/harness-core/src/agent/records.rs
++++ b/rust/crates/harness-core/src/agent/records.rs
+@@ -190,7 +190,7 @@ impl TryFrom<String> for IntentId {
+     type Error = Error;
+ 
+     fn try_from(value: String) -> Result<Self, Error> {
+-        if (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_graphic()))
++        if (!value.is_empty() && value.len() <= 128 && value.bytes().all(|byte| byte.is_ascii_graphic()))
+             || super::spawn_names::generated_intent(&value)
+         {
+             Ok(Self(value))

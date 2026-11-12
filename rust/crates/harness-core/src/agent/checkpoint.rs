@@ -230,7 +230,7 @@ mod tests {
     const FIXTURE_LABEL_BYTES: usize = 255;
     use crate::agent::{
         AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
-        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
+        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_MESSAGE_BYTES, MAX_NAME_BYTES,
         MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, Message, NoticePayload, Phase, Sender, SpawnRequest,
         StatusRecord, TurnInput, WorkspaceEntry,
     };
@@ -284,8 +284,7 @@ mod tests {
     }
 
     fn intent() -> IntentId {
-        super::super::spawn_names::spawn_intent(&widest(MAX_INTENT_BYTES - 6), u64::MAX)
-            .expect("intent")
+        IntentId::try_from(widest(255)).expect("portable child intent")
     }
 
     fn volume() -> VolumeRef {
@@ -327,10 +326,10 @@ mod tests {
                 path: agent(FIXTURE_DEPTH),
             },
             Sender::User {
-                principal: widest(MAX_INTENT_BYTES),
+                principal: widest(MAX_NAME_BYTES),
             },
             Sender::Host {
-                host: widest(MAX_INTENT_BYTES),
+                host: widest(MAX_NAME_BYTES),
             },
         ]
     }
@@ -402,7 +401,7 @@ mod tests {
                 id: intent(),
             }),
             InboxRecord::Hook(Hook {
-                host: widest(MAX_INTENT_BYTES),
+                host: widest(MAX_NAME_BYTES),
                 id: intent(),
                 event: Box::new(file()),
             }),
@@ -511,6 +510,48 @@ mod tests {
         inputs
     }
 
+    // Find the admitted boundary through the production encoder, retaining
+    // each original record's other maximum-width fields.
+    fn largest_intent(record: InboxRecord) -> InboxRecord {
+        let mut value = serde_json::to_value(&record).expect("record fields");
+        let Some(fields) = value
+            .as_object_mut()
+            .and_then(|record| record.values_mut().next())
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            return record;
+        };
+        let Some(identity) = fields.get_mut("id") else {
+            return record;
+        };
+        if !identity.is_string() {
+            return record;
+        }
+        let mut low = 1;
+        let mut high = MAX_RECORD_BYTES + 1;
+        while low + 1 < high {
+            let middle = low + (high - low) / 2;
+            value.as_object_mut().unwrap().values_mut().next().unwrap()["id"] =
+                "a".repeat(middle).into();
+            let candidate: InboxRecord =
+                serde_json::from_value(value.clone()).expect("intent fields");
+            if candidate.encode().is_ok() {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        value.as_object_mut().unwrap().values_mut().next().unwrap()["id"] = "a".repeat(high).into();
+        assert!(
+            serde_json::from_value::<InboxRecord>(value.clone())
+                .unwrap()
+                .encode()
+                .is_err()
+        );
+        value.as_object_mut().unwrap().values_mut().next().unwrap()["id"] = "a".repeat(low).into();
+        serde_json::from_value(value).expect("admitted intent")
+    }
+
     #[test]
     fn wide_record_fixtures_fit_the_frame_and_round_trip() {
         assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
@@ -569,7 +610,15 @@ mod tests {
             .encode()
             .expect("a status fits");
         }
-        for input in turn_inputs() {
+        let mut inputs = vec![TurnInput::Brief {
+            brief: Box::new(file()),
+        }];
+        for record in inbox_records() {
+            let record = largest_intent(record);
+            record.encode().expect("original inbox admission");
+            inputs.extend(crate::agent::input::input(0, record).map(|queued| queued.input));
+        }
+        for input in inputs {
             ConversationEntry {
                 observed_through: u64::MAX,
                 inbox: u64::MAX,
@@ -777,7 +826,7 @@ mod tests {
                         action_digest: [255; 32],
                     }),
                 },
-                Phase::WaitingHost { host: widest(MAX_INTENT_BYTES) },
+                Phase::WaitingHost { host: widest(MAX_NAME_BYTES) },
                 Phase::Waiting { deadline_unix_ms: Some(u64::MAX), input: true }];
             let record_outcomes = outcomes().into_iter().chain([AgentOutcome::Failed {
                 message: widest_text(MAX_MESSAGE_BYTES),
@@ -800,7 +849,7 @@ mod tests {
 
     #[test]
     fn waiting_host_status_requires_a_bounded_name() {
-        for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
+        for host in [String::new(), widest(MAX_NAME_BYTES + 1), "\0".into()] {
             let record = StatusRecord {
                 child_settlement: None,
                 child_wakes: None,
@@ -817,7 +866,7 @@ mod tests {
             child_settlement: None,
             child_wakes: None,
             phase: Phase::WaitingHost {
-                host: widest(MAX_INTENT_BYTES),
+                host: widest(MAX_NAME_BYTES),
             },
             cursor: u64::MAX,
             conversation: u64::MAX,

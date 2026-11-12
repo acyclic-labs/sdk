@@ -16,7 +16,8 @@
 //!
 //! Status lives outside the subtree so the commit that creates an agent (a spawn
 //! fork may write nothing inside its destination) also writes its first status:
-//! every agent a `children` page lists already has one.
+//! every agent a `children` page lists already has one. Status paths preserve
+//! agent ancestry, so observing a subtree needs one scoped prefix grant.
 //! Membership also lives outside fork destinations. Its first record and each
 //! parent's child record share the creation commit, so consumers discover new
 //! agents by following, without rescanning child listings.
@@ -70,7 +71,7 @@ fn id_bytes(text: &str) -> [u8; 16] {
 
 /// 128-bit agent identity, canonical lowercase hex. It is also the actor id.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[serde(try_from = "String")]
 pub struct AgentId(String);
 
 impl AgentId {
@@ -159,14 +160,17 @@ impl fmt::Display for AgentId {
 }
 
 /// The canonical path of an agent's root (inbox) stream; the agent's address.
-#[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
-)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, crate::HeapLayout)]
+#[serde(try_from = "String")]
 #[heap_layout(as = String)]
 pub struct AgentPath {
     text: String,
     depth: usize,
+}
+impl Serialize for AgentPath {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
+    }
 }
 crate::core::ownership::owned_struct!(AgentPath { text, depth });
 
