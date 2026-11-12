@@ -191,6 +191,76 @@ async fn foreground_deadline_retains_capture_and_publication_after_cleanup() -> 
 }
 
 #[tokio::test]
+async fn background_startup_deadline_bounds_volume_admission() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
+        directory.path(),
+        (
+            model,
+            Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+        ),
+    )?)
+    .await?;
+    let writer = crate::filesystem::FilesystemContentPublisher::new(
+        harness.files.clone(),
+        &harness.scratch,
+        &harness.verifier,
+        &harness.signed,
+        1 << 20,
+        None,
+    )?;
+    let task = Arc::new(harness.harness.agent_context(
+        &crate::Capabilities::new(Vec::<String>::new()),
+        ContentBindings {
+            volume: harness.scratch.clone(),
+            reader: harness.client_reader()?,
+            writer: Some(writer),
+        },
+    )?);
+    let context = ToolContext::new(task, crate::OperationId::new(), "background-admission")?;
+    let output_directory = format!("tools/{}/{}", context.turn_id(), context.operation_id());
+    let physical = harness.workspace.as_ref().unwrap();
+    let (_, home) = physical.mounts.named(Some("home"))?;
+    let source = home.view.source.as_ref().unwrap();
+    let held = crate::sync::owned::lock_owned(StateArc::clone(&source.execution)).await;
+    let invocation = ToolInvocation {
+        operation_id: context.operation_id(),
+        call_id: "background-admission".into(),
+        name: "shell".into(),
+        arguments: serde_json::json!({
+            "command": [std::env::current_exe().map_err(storage)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child"],
+            "timeout_ms": 20,
+            "background": true,
+        }),
+    };
+    let (schedule, _) = acyclic_native_runtime::testing::Schedule::seeded(83);
+    schedule
+        .scope(async {
+            tokio::time::pause();
+            let executor = &harness.harness.target(None)?.executor;
+            let result = executor.execute(invocation, Some(context)).await;
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::Process(crate::ProcessError::Timeout { .. }))
+                ),
+                "{result:?}"
+            );
+            assert!(
+                StateArc::clone(&physical.state).try_lock_owned().is_err(),
+                "worker did not retain its admitted checkout"
+            );
+            drop(held);
+            let published = terminal(&harness, &output_directory).await?;
+            assert!(published.get("error").is_some(), "{published}");
+            Ok::<_, Error>(())
+        })
+        .await?;
+    harness.disconnect().await
+}
+
+#[tokio::test]
 async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;

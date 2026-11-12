@@ -546,7 +546,7 @@ impl LocalHarness {
         if child_project == parent_project {
             return Ok(());
         }
-        let child = root.spawned_project_view(&child_project).await?;
+
         // A timed-out shell retains this guard through cleanup and capture.
         // Include that work and queued descendant publications in one cut.
         let own = self
@@ -1167,6 +1167,7 @@ mod completion_tests {
             ),
         )?)
         .await?;
+        let local = Arc::new(local);
         let (agents, root) = local.agents().await?;
         let agent = agents.state(root).await.map_err(storage)?;
         let workspace = local.workspace.as_ref().unwrap();
