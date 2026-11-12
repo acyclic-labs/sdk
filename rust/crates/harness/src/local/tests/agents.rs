@@ -19,6 +19,135 @@ async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> 
 }
 
 #[tokio::test]
+async fn project_directory_queries_pin_pages_and_keep_consumers_independent() -> Result<()> {
+    use crate::client::AgentPageRequest;
+    use crate::filesystem::{WorkspaceMutation, workspace_ref};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted([]);
+    let harness = Arc::new(
+        super::open_scripted(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .without_default_tools(),
+        )
+        .await?,
+    );
+    let workspace = workspace_ref(
+        project.provider().clone(),
+        &project.storage_name(&mut None)?,
+    )?;
+    harness
+        .files
+        .apply(
+            &workspace,
+            None,
+            &[
+                WorkspaceMutation::CreateDirectory {
+                    path: "/names".into(),
+                },
+                WorkspaceMutation::PutFile {
+                    path: "/names/a.md".into(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"a"),
+                },
+                WorkspaceMutation::PutFile {
+                    path: "/names/b.md".into(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"b"),
+                },
+                WorkspaceMutation::PutFile {
+                    path: "/names/c.md".into(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"c"),
+                },
+            ],
+            &crate::IdempotencyKey::new("directory-query-base")?,
+        )
+        .await?;
+    let client = conversation(&harness).await?;
+    let page = || AgentPageRequest::new(1, 256, None).map_err(agent);
+    let mut first = client
+        .project_directory("names".into(), page()?)
+        .await
+        .map_err(agent)?;
+    let mut retained = client
+        .project_directory("names".into(), page()?)
+        .await
+        .map_err(agent)?;
+    let first_page = first
+        .next()
+        .await
+        .map_err(agent)?
+        .ok_or_else(|| Error::Invalid("directory ended before its first name".into()))?;
+    let retained_page = retained.next().await.map_err(agent)?.ok_or_else(|| {
+        Error::Invalid("independent directory ended before its first name".into())
+    })?;
+    assert_eq!(first_page, retained_page);
+    assert_eq!(first_page.len(), 1);
+    drop(first);
+    harness
+        .files
+        .apply(
+            &workspace,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: "/names/later.md".into(),
+                bytes: acyclic_stream::OwnedBytes::from_static(b"later"),
+            }],
+            &crate::IdempotencyKey::new("directory-query-later")?,
+        )
+        .await?;
+    let mut names = retained_page
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    while let Some(entries) = retained.next().await.map_err(agent)? {
+        assert!(entries.len() <= 1);
+        names.extend(entries.into_iter().map(|entry| entry.name));
+    }
+    assert_eq!(names, ["a.md", "b.md", "c.md"]);
+    assert!(retained.next().await.map_err(agent)?.is_none());
+    let mut fresh = client
+        .project_directory("names".into(), page()?)
+        .await
+        .map_err(agent)?;
+    let mut names = Vec::new();
+    while let Some(entries) = fresh.next().await.map_err(agent)? {
+        names.extend(entries.into_iter().map(|entry| entry.name));
+    }
+    assert_eq!(names, ["a.md", "b.md", "c.md", "later.md"]);
+    // Negative controls: insufficient original byte credit and a foreign root
+    // must fail, never look like a successful empty directory.
+    let mut tiny = client
+        .project_directory(
+            "names".into(),
+            AgentPageRequest::new(1, 2, None).map_err(agent)?,
+        )
+        .await
+        .map_err(agent)?;
+    assert!(tiny.next().await.is_err());
+    assert!(
+        tiny.next().await.is_err(),
+        "a poisoned source cannot turn into EOF"
+    );
+    let connection = harness.connect().await?;
+    let foreign = AgentPath::root(&crate::agent::AgentId::from_bytes([91; 16]));
+    match connection
+        .controls
+        .directory_query(foreign, "names".into(), page()?)
+        .await
+    {
+        Err(acyclic_harness_client::AgentExchangeError::Session(StreamError::AccessDenied)) => {}
+        Ok(mut query) => assert!(matches!(
+            query.next().await,
+            Err(acyclic_harness_client::AgentExchangeError::Session(
+                StreamError::AccessDenied
+            ))
+        )),
+        Err(error) => return Err(agent(error)),
+    }
+    assert_eq!(provider.request_count(), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn peer_pages_expose_members_without_private_titles_or_directory_authority() -> Result<()> {
     use crate::client::{AgentPageRequest, SessionsScope};
     use crate::local::sessions::{self, Filter};
