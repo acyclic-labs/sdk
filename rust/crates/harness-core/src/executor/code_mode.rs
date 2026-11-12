@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 mod allocator;
 mod interpreter;
+mod lazy;
 #[cfg(feature = "test-support")]
 pub(super) mod model;
 pub(crate) use interpreter::MEMORY_BYTES;
@@ -308,6 +309,7 @@ impl StockExecution<'_> {
                 maximum,
                 allocator,
                 interpreter::INTERRUPT_BUDGET,
+                self.stock.tools.has_lazy_tools(),
             )));
             let mut ordinal = 0_u64;
             let mut log_ordinal = 0_u64;
@@ -564,6 +566,25 @@ impl StockExecution<'_> {
             arguments,
             self.native_work(),
         )?;
+        let invocation = if !call.module
+            && self.stock.tools.has_lazy_tools()
+            && self
+                .stock
+                .tools
+                .resolve(&invocation.name, self.io)?
+                .is_none()
+        {
+            match self
+                .lazy_call(invocation, (&call.name.value, &call.arguments.value))
+                .await?
+            {
+                Ok(invocation) => invocation,
+                Err(cause) => return Ok(ExecutionProgress::Ready(Err(cause))),
+            }
+        } else {
+            invocation
+        };
+        let name = stock_string_copy(&invocation.name, self.io)?;
         // Local call/result messages supply the identical stock metadata contract;
         // they never become model history. The journal retains the ordinary records.
         let mut messages = vec![ModelMessage {

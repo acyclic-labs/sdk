@@ -25,6 +25,13 @@ impl StockExecutor {
         )))
     }
 
+    /// Adds an original host-owned tool source. Context declarations remain
+    /// pinned; lazy file programs load only when code selects their names.
+    #[must_use]
+    pub fn with_tool_source(mut self, source: Arc<dyn crate::tool::ToolSource>) -> Self {
+        self.tools = self.tools.with_source(source);
+        self
+    }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());

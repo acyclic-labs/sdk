@@ -40,6 +40,8 @@ pub mod host_owner;
 pub mod host_process;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host_workspace;
+#[cfg(not(target_arch = "wasm32"))]
+mod programs;
 pub use endpoint::Connection;
 mod observer;
 pub(crate) mod open;

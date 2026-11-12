@@ -1,7 +1,8 @@
-(rpc, definitions) => {
+(rpc, definitions, lazy) => {
     const parse = JSON.parse, stringify = JSON.stringify;
     const ErrorType = Error, PromiseType = Promise;
     const define = Object.defineProperty, tools = Object.create(null);
+    const own = Object.hasOwn;
     const then = Promise.prototype.then;
     const constructor = Object.freeze({[Symbol.species]: PromiseType});
     // Await only private promises with a stable constructor. User
@@ -34,7 +35,19 @@
         Object.defineProperty(tool, 'input_schema', {value: definition.input_schema});
         tools[definition.name] = Object.freeze(tool);
     }
-    Object.defineProperty(globalThis, 'tools', {value: Object.freeze(tools)});
+    // File programs are addressed by name. Directory pages and manifests stay
+    // ordinary reads; property access never loads sibling schemas or code.
+    const exposed = lazy ? new Proxy(Object.freeze(tools), {
+        get(target, name) {
+            if (own(target, name)) return target[name];
+            if (typeof name !== 'string' || name === 'then') return undefined;
+            return args => {
+                if (closed) throw new ErrorType('JavaScript calls are closed');
+                return invoke(name, args);
+            };
+        }
+    }) : Object.freeze(tools);
+    Object.defineProperty(globalThis, 'tools', {value: exposed});
     // Canonical action names do not depend on a model family's native names.
     // The host still settles each invocation through its existing registry.
     Object.defineProperty(globalThis, '__acyclic', {configurable: true, value: (name, args) => {
