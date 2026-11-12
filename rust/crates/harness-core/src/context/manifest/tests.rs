@@ -42,6 +42,61 @@ fn definition(name: String, description: String) -> ToolDefinition {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn skill_catalog_credit_depends_on_visible_names_and_descriptions() -> Result<()> {
+    let mut entry = skill("private/provenance/inspect/SKILL.md".into())?;
+    entry.fields.insert(
+        "opaque_metadata".into(),
+        json!("UNPULLED_METADATA".repeat(4096)),
+    );
+    let discovery = DiscoveredContext {
+        skills: vec![entry],
+        ..Default::default()
+    };
+    let limits = Limits {
+        render_bytes: Some(256),
+        ..Limits::default()
+    };
+    for native in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(100_000, 1_000_000),
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let messages = discovery.messages(limits, if native { Some(&io) } else { None })?;
+        let [
+            ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(catalog),
+            },
+        ] = messages.as_slice()
+        else {
+            return Err(Error::Invalid("expected one skill catalog".into()));
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(catalog)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            json!([{"name":"inspect","description":"Inspect files"}])
+        );
+        // Source retention is independent of the model's small catalog credit.
+        assert!(
+            discovery.skills[0].fields["opaque_metadata"]
+                .as_str()
+                .unwrap()
+                .len()
+                > 256
+        );
+        assert_eq!(
+            discovery.skills[0].source.path,
+            "private/provenance/inspect/SKILL.md"
+        );
+    }
+    Ok(())
+}
+
 // Property: canonical encoding is idempotent, preserves array order and round-trips
 // arbitrary descriptions; byte admission rejects before accepting an oversized manifest.
 proptest! {
@@ -325,19 +380,15 @@ async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> R
     let changed = ContextEpoch::changes(&told, &manifest, reader.as_ref()).await?;
     assert_eq!(changed.len(), 1);
     assert_eq!(
-        changed[0].notice.body["skill"]["source"]["path"],
-        "retained/new-version/SKILL.md"
+        changed[0].notice.body["skill"],
+        json!({"name":"inspect","description":"changed user skill"})
     );
     let told = manifest.digests()?;
     manifest.discovery.skills.remove(0);
     let removed = ContextEpoch::changes(&told, &manifest, reader.as_ref()).await?;
     assert_eq!(removed.len(), 1);
     assert_eq!(removed[0].source, changed[0].source);
-    assert_eq!(
-        removed[0].notice.body["skill"]["identity"],
-        serde_json::to_string("user/inspect/SKILL.md")
-            .map_err(|error| Error::Invalid(error.to_string()))?
-    );
+    assert_eq!(removed[0].notice.body["skill"], json!({"name":"inspect"}));
     assert_eq!(removed[0].notice.body["removed"], true);
     Ok(())
 }
