@@ -63,8 +63,10 @@ impl AgentGuest {
 
     /// Test a candidate control against the guest's original active input.
     #[wasm_bindgen(js_name = acceptsInterrupt)]
-    pub fn accepts_interrupt(&self, query: Vec<u8>) -> Result<bool, JsValue> {
-        wire::accepts_interrupt(&self.handler, &query).map_err(guest_error)
+    pub async fn accepts_interrupt(&self, query: Vec<u8>) -> Result<bool, JsValue> {
+        wire::accepts_interrupt(&self.handler, &query)
+            .await
+            .map_err(guest_error)
     }
 
     /// Runs one canonical delivery (with the actor's committed checkpoint)
@@ -144,12 +146,17 @@ pub(super) fn call(
 }
 
 /// The host forwards the original predicate without running a second delivery.
-pub(super) fn interrupt(callback: Function) -> impl Fn(Vec<u8>) -> Result<bool, GuestError> {
+pub(super) fn interrupt(callback: Function) -> impl Fn(Vec<u8>) -> GuestFuture<'static, bool> {
     move |query| {
-        callback
-            .call1(&JsValue::UNDEFINED, &Uint8Array::from(query.as_slice()))
-            .map_err(rejected)?
-            .as_bool()
-            .ok_or_else(|| GuestError::Decode("interrupt predicate must return a boolean".into()))
+        let result = callback.call1(&JsValue::UNDEFINED, &Uint8Array::from(query.as_slice()));
+        Box::pin(async move {
+            JsFuture::from(Promise::resolve(&result.map_err(rejected)?))
+                .await
+                .map_err(rejected)?
+                .as_bool()
+                .ok_or_else(|| {
+                    GuestError::Decode("interrupt predicate must return a boolean".into())
+                })
+        })
     }
 }

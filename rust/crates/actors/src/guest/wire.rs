@@ -53,7 +53,7 @@ pub fn encode_interrupt(
 }
 
 /// Evaluate the same handler predicate across the canonical guest boundary.
-pub fn accepts_interrupt(handler: &dyn Handler, bytes: &[u8]) -> Result<bool, GuestError> {
+pub async fn accepts_interrupt(handler: &dyn Handler, bytes: &[u8]) -> Result<bool, GuestError> {
     let query: InterruptQuery = canonical(bytes, "interrupt", INTERRUPT_DOMAIN)?;
     let (delivery, checkpoint) = decode_delivery(&query.delivery)?;
     let record = wire_codec::record(
@@ -61,7 +61,9 @@ pub fn accepts_interrupt(handler: &dyn Handler, bytes: &[u8]) -> Result<bool, Gu
         None,
     )
     .map_err(|_| invalid("interrupt record"))?;
-    handler.accepts_interrupt(&delivery, checkpoint.as_ref(), &query.subscription, &record)
+    handler
+        .accepts_interrupt(&delivery, checkpoint.as_ref(), &query.subscription, &record)
+        .await
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -551,7 +553,7 @@ impl<F, I> Remote<F, I>
 where
     F: Fn(Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>>
         + acyclic_stream::ProviderPlatform,
-    I: Fn(Vec<u8>) -> Result<bool, GuestError> + acyclic_stream::ProviderPlatform,
+    I: Fn(Vec<u8>) -> GuestFuture<'static, bool> + acyclic_stream::ProviderPlatform,
 {
     /// The guest of `manifest`, as [`decode_manifest`] admitted it.
     pub const fn new(manifest: Manifest, call: F, interrupt: I) -> Self {
@@ -567,19 +569,19 @@ impl<F, I> Handler for Remote<F, I>
 where
     F: Fn(Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>>
         + acyclic_stream::ProviderPlatform,
-    I: Fn(Vec<u8>) -> Result<bool, GuestError> + acyclic_stream::ProviderPlatform,
+    I: Fn(Vec<u8>) -> GuestFuture<'static, bool> + acyclic_stream::ProviderPlatform,
 {
     fn manifest(&self) -> &Manifest {
         &self.manifest
     }
 
-    fn accepts_interrupt(
-        &self,
-        delivery: &Delivery,
-        checkpoint: Option<&Checkpoint>,
-        subscription: &str,
-        record: &acyclic_stream::Record,
-    ) -> Result<bool, GuestError> {
+    fn accepts_interrupt<'a>(
+        &'a self,
+        delivery: &'a Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        subscription: &'a str,
+        record: &'a acyclic_stream::Record,
+    ) -> GuestFuture<'a, bool> {
         (self.interrupt)(encode_interrupt(delivery, checkpoint, subscription, record))
     }
 

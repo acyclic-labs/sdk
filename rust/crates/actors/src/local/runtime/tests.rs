@@ -586,7 +586,10 @@ async fn reservation_package_commits_over_strict_wire_and_cleans_up_on_reopen() 
                     wire::encode_transition(&transition)
                 }) as GuestFuture<'static, Vec<u8>>
             },
-            move |query| wire::accepts_interrupt(interrupt_package.as_ref(), &query),
+            move |query| -> crate::guest::GuestFuture<'static, bool> {
+                let handler = interrupt_package.clone();
+                Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
+            },
         )))
     };
     let clock = Arc::new(Manual(AtomicU64::new(1)));
@@ -679,7 +682,10 @@ async fn generic_event_host_runs_the_original_package_over_strict_wire() -> Test
                     wire::encode_transition(&transition)
                 }) as GuestFuture<'static, Vec<u8>>
             },
-            move |query| wire::accepts_interrupt(interrupt_package.as_ref(), &query),
+            move |query| -> crate::guest::GuestFuture<'static, bool> {
+                let handler = interrupt_package.clone();
+                Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
+            },
         )))
     };
     let clock = Arc::new(Manual(AtomicU64::new(1)));
