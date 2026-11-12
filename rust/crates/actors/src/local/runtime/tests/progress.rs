@@ -194,7 +194,7 @@ impl World {
         };
         let id = *work.key();
         self.deliver(id, choices)?;
-        drop(work);
+        work.settle();
         Ok(true)
     }
 
