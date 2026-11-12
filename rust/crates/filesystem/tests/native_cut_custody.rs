@@ -12,6 +12,7 @@ use std::{borrow::Cow, sync::Arc};
 #[tokio::test]
 async fn decoded_cut_credit_survives_a_cursor_clone_on_another_meter()
 -> Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("a"), b"a")?;
     std::fs::write(directory.path().join("b"), b"b")?;
@@ -31,11 +32,7 @@ async fn decoded_cut_credit_survives_a_cursor_clone_on_another_meter()
     .await?;
     let source = Arc::new(Routed::new(
         Empty,
-        LogicalName::new(
-            NameEncoding::Utf8,
-            b"ui".to_vec(),
-            config.limits.maximum_component_bytes,
-        )?,
+        LogicalName::new(NameEncoding::Utf8, b"ui".to_vec())?,
         native,
         config.limits,
     ));

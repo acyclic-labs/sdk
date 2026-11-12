@@ -1,4 +1,4 @@
-//! One event-driven owner for the three inputs of a subscribed UI view.
+//! One event-driven owner for the inputs of a subscribed UI view.
 use super::*;
 use acyclic_native_runtime::{OwnedFuture, retain_future};
 use acyclic_stream::{FollowRequest, NativeRecordStream, WhenAbsent};
@@ -51,7 +51,7 @@ impl Drop for Delivery {
 
 pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
     streams: Arc<P>,
-    paths: [StreamPath; 3],
+    paths: [StreamPath; 4],
     original: NativeMaterializationWork,
     sink: Arc<dyn ViewChangeSink<Affected>>,
     ctx: &mut KernelAccounting<'_>,
@@ -99,20 +99,29 @@ pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
                         &original,
                     )?
                 };
-                let [conversation, status, children] = paths;
+                let [conversation, status, children, inbox] = paths;
                 let mut conversation = open(&*streams, conversation, &heads, 0, &original).await?;
                 let mut status = open(&*streams, status, &heads, 1, &original).await?;
                 let mut children = open(&*streams, children, &heads, 2, &original).await?;
+                let mut inbox = open(&*streams, inbox, &heads, 3, &original).await?;
                 drop(heads);
                 // Changes preceding the opening cuts invalidate earlier observations.
-                for input in [Affected::Conversation, Affected::Status, Affected::Children] {
+                for input in [
+                    Affected::Conversation,
+                    Affected::Status,
+                    Affected::Children,
+                    Affected::Role,
+                ] {
                     delivery.0.changed(&input, &mut ctx)?;
                 }
                 let mut events = stream::select(
                     events(conversation.value_mut(), Affected::Conversation, &original),
                     stream::select(
                         events(status.value_mut(), Affected::Status, &original),
-                        events(children.value_mut(), Affected::Children, &original),
+                        stream::select(
+                            events(children.value_mut(), Affected::Children, &original),
+                            events(inbox.value_mut(), Affected::Role, &original),
+                        ),
                     ),
                 );
                 while let Some(input) = events.next().await {

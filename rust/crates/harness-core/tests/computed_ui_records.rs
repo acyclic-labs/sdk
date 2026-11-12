@@ -73,6 +73,103 @@ fn status(path: &str) -> StatusRecord {
 }
 
 #[tokio::test]
+async fn computed_role_reads_the_agents_own_adoption_after_its_fork_origin() -> Result {
+    use acyclic_harness_core::{
+        OperationId,
+        agent::{AgentId, IntentId, SpawnContext, create_root, spawn},
+        filesystem::MemoryHarnessStorage,
+        ui::{StreamUiProvider, View},
+    };
+    use std::sync::Arc;
+    let streams = Arc::new(MemoryStream::default());
+    let mut adopted = adoption(AgentId::from_bytes([31; 16]));
+    adopted.profile = Some(acyclic_harness_core::templates::root()?);
+    let root = create_root(&IntentId::try_from("role-root".to_owned())?, adopted)?;
+    let parent = root.child;
+    streams.commit(root.request).await?;
+    let storage = MemoryHarnessStorage::with_stream(parent.id(), 16_384, streams.clone()).await?;
+    let template = storage
+        .stage(
+            OperationId::new(),
+            "templates/worker/AGENT.md",
+            b"worker role",
+            "text/markdown",
+            "AGENT.md",
+        )
+        .await?;
+    let mut profile = acyclic_harness_core::templates::root()?;
+    profile.context = SpawnContext::Fork;
+    profile.template = Some(template);
+    let mut adopted = adoption(AgentId::from_bytes([32; 16]));
+    adopted.profile = Some(profile);
+    let spawned = spawn(
+        &parent,
+        &IntentId::try_from("role-child".to_owned())?,
+        1,
+        adopted,
+    )?;
+    let child = spawned.child;
+    streams.commit(spawned.request).await?;
+    let cancellation = CancellationToken::new();
+    let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut ctx = KernelAccounting::NativeOriginal {
+        work: &native,
+        cancellation: &cancellation,
+    };
+    let path = namespace("/role");
+    for (agent, expected) in [(parent, "orchestrator"), (child, "worker")] {
+        let source = StreamUiProvider::new(
+            streams.clone(),
+            Arc::new(NoContent),
+            agent.clone(),
+            View::new(1)?,
+            [9; 16],
+            navigation,
+        )
+        .into_source();
+        let cut = source.reference(&mut ctx).await?;
+        let node = source
+            .lookup(cut.clone(), &path, &native, &cancellation)
+            .await?
+            .ok_or("missing computed role")?;
+        // Later inbox progress must not select its last record as the role.
+        streams
+            .append(AppendRequest {
+                path: agent.inbox()?,
+                records: vec![
+                    acyclic_harness_core::agent::InboxRecord::Awaited
+                        .encode()?
+                        .into(),
+                ],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        let bytes = source
+            .read_range(
+                cut.clone(),
+                &path,
+                node.version,
+                0,
+                u64::MAX,
+                &native,
+                &cancellation,
+            )
+            .await?;
+        assert_eq!(bytes.bytes.as_slice(), expected.as_bytes());
+        let opened = source
+            .open_file(cut, &path, node.version, &native, &cancellation)
+            .await?;
+        assert_eq!(
+            opened.read_range(1, 3, &mut ctx)?.bytes.as_slice(),
+            &expected.as_bytes()[1..4]
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Result {
     use acyclic_harness_core::{
         OperationId,
@@ -757,10 +854,10 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
         .ok_or("missing watch")?;
     let opening = streams.requests().since(before);
     assert_eq!(opening.control(), 1, "one joint starting cut");
-    assert_eq!(opening.data(), 3, "one subscription per input");
+    assert_eq!(opening.data(), 4, "one subscription per input");
     assert_eq!(
         sink.changes.lock().unwrap().len(),
-        6,
+        7,
         "opening invalidates earlier observations"
     );
     sink.changes.lock().unwrap().clear();
@@ -785,6 +882,23 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
             SourceChange::Entry(namespace("/status.md")),
             SourceChange::Entry(namespace("/glyph"))
         ]
+    );
+    sink.changes.lock().unwrap().clear();
+    streams
+        .append(AppendRequest {
+            path: agent.inbox()?,
+            records: vec![
+                acyclic_harness_core::agent::InboxRecord::Awaited
+                    .encode()?
+                    .into(),
+            ],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    assert_eq!(
+        *sink.changes.lock().unwrap(),
+        [SourceChange::Entry(namespace("/role"))]
     );
     sink.changes.lock().unwrap().clear();
     let child = spawn(
