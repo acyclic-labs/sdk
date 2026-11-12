@@ -618,6 +618,7 @@ async fn journal_receipts_refuse_independently_admitted_history() {
     let operation = OperationId::new();
     for (index, store) in stores.iter().enumerate() {
         let mut journal = materialization_journal(operation);
+        journal.phase = crate::MaterializationPhase::Preparing;
         journal
             .plan
             .edits
@@ -631,8 +632,7 @@ async fn journal_receipts_refuse_independently_admitted_history() {
         });
         assert!(MaterializationJournal::empty(journal.plan.clone(), None).is_none());
         assert!(
-            store
-                .compare_and_swap(operation, 0, journal)
+            MaterializationJournalStore::compare_and_swap(store, operation, 0, journal)
                 .await
                 .unwrap()
                 .0
@@ -640,21 +640,29 @@ async fn journal_receipts_refuse_independently_admitted_history() {
     }
     // Identical revisions and progress do not admit another store's history.
     // Exercise both physical-action admission and ordinary progress publication.
-    let foreign = stores[1].load(operation).await.unwrap().unwrap();
+    let foreign = MaterializationJournalStore::load(&stores[1], operation)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!stores[0].matches(&foreign).await.unwrap());
     assert!(stores[1].matches(&foreign).await.unwrap());
     assert!(stores[0].prepare_action(foreign).await.is_err());
-    let mut foreign = stores[1].load(operation).await.unwrap().unwrap();
+    let mut foreign = MaterializationJournalStore::load(&stores[1], operation)
+        .await
+        .unwrap()
+        .unwrap();
     let revision = foreign.revision;
     foreign.revision += 1;
     assert!(
-        !stores[0]
-            .compare_and_swap(operation, revision, foreign)
+        !MaterializationJournalStore::compare_and_swap(&stores[0], operation, revision, foreign)
             .await
             .unwrap()
             .0
     );
-    let original = stores[0].load(operation).await.unwrap().unwrap();
+    let original = MaterializationJournalStore::load(&stores[0], operation)
+        .await
+        .unwrap()
+        .unwrap();
     for field in ["plan", "preimages"] {
         let mut snapshot = serde_json::to_value(&original).unwrap();
         if field == "plan" {
@@ -674,6 +682,9 @@ async fn journal_receipts_refuse_independently_admitted_history() {
     assert_eq!(image, &[0]);
     assert_eq!(original.preimages[0].image, [2]);
     assert!(stores[0].matches(&original).await.unwrap());
+    let copy = original.try_clone().unwrap();
+    assert!(stores[0].matches(&copy).await.unwrap());
+    drop(copy);
     let completion = stores[0].prepare_action(original).await.unwrap();
     let acknowledged = completion.await.unwrap();
     assert!(stores[0].matches(&acknowledged).await.unwrap());

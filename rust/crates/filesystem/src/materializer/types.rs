@@ -146,6 +146,10 @@ impl PartialEq for MaterializationJournal {
 }
 impl Eq for MaterializationJournal {}
 impl MaterializationJournal {
+    /// Whether snapshots descend from the same store-admitted immutable history.
+    pub fn shares_history_with(&self, other: &Self) -> bool {
+        self.history_id == other.history_id
+    }
     /// The immutable plan admitted by the journal store.
     pub fn plan(&self) -> &MaterializationPlan {
         &self.plan

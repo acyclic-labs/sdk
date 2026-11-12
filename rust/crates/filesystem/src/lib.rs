@@ -283,10 +283,11 @@ pub use lineage::{
 };
 pub use materializer::{
     JournaledMaterializer, MaterializationBackend, MaterializationEdit, MaterializationError,
-    MaterializationIntent, MaterializationJournal, MaterializationJournalStore,
-    MaterializationPhase, MaterializationPlan, MaterializationPreimage,
-    MaterializationPreparationIdentity, MaterializationPreparationProgress,
-    MaterializationPreparationSelection, MaterializationRecovery,
+    MaterializationIntent, MaterializationJournal, MaterializationJournalCopyError,
+    MaterializationJournalStore, MaterializationPhase, MaterializationPlan,
+    MaterializationPreimage, MaterializationPreparationIdentity,
+    MaterializationPreparationProgress, MaterializationPreparationSelection,
+    MaterializationRecovery,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{

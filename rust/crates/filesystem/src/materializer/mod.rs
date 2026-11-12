@@ -16,6 +16,8 @@ mod intent;
 pub use intent::*;
 mod types;
 pub use types::*;
+mod journal_copy;
+pub use journal_copy::MaterializationJournalCopyError;
 mod protocol;
 #[cfg(test)]
 use crate as sdk;

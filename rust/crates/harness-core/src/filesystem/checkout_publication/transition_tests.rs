@@ -901,7 +901,7 @@ async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult 
             .publish(state, &options, || std::future::ready(Ok(())))
             .await;
         if promoted {
-            assert!(result?.plan.edits.is_empty());
+            assert!(result?.plan().edits.is_empty());
             assert_eq!(
                 state.materialization_operations_async().await?.is_empty(),
                 unchanged
@@ -922,7 +922,7 @@ async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult 
                 .prepare(from, &fixture.to, state, &options, &fixture.work)
                 .await?;
             assert_eq!(retry.phase, acyclic_fs::MaterializationPhase::Applied);
-            assert!(retry.plan.edits.is_empty());
+            assert!(retry.plan().edits.is_empty());
             // The original namespace retains completion even without an
             // approval handle, protecting later edits on a cold retry.
             publication
