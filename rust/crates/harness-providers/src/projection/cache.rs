@@ -49,11 +49,18 @@ pub(crate) fn control(provider: &ResolvedModel) -> serde_json::Value {
     serde_json::json!({"type":"ephemeral","ttl":ttl})
 }
 
-/// Stable prefix identity: the admitted profile's frozen prefix, otherwise the
+/// Chat placement follows the original conversation across turns and retries.
+/// Other protocols retain the admitted profile's frozen prefix, otherwise the
 /// header the provider renders before any message (model, tools, instructions).
 /// It is never derived from messages, so history paging, eviction and forks
 /// keep it, and a mid-run delta (appended, never declared) cannot change it.
 fn prefix_key(provider: &ResolvedModel, fields: &Fields) -> String {
+    if provider.config.adapter == Family::Chat {
+        return key(
+            "conversation-v1:",
+            *blake3::hash(provider.conversation.as_bytes()).as_bytes(),
+        );
+    }
     if let Some(binding) = provider.profile_binding() {
         return super::profile::cache_key(binding);
     }
@@ -272,6 +279,53 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn chat_conversations_keep_distinct_affinity_across_turns_and_credential_refresh() {
+        use acyclic_harness_core::{
+            OperationId,
+            model::{ModelEvent, ModelProvider},
+        };
+        use futures::TryStreamExt as _;
+
+        let (provider, transport) = crate::tests::provider(Family::Chat, 200);
+        let (prepared, dispatch) = crate::tests::request(&provider).unwrap();
+        let conversation = OperationId::new();
+        let first = provider.bind_conversation(conversation).unwrap();
+        let reopened = provider.bind_conversation(conversation).unwrap();
+        let other = provider.bind_conversation(OperationId::new()).unwrap();
+        for selected in [first, reopened, other] {
+            let events: Vec<ModelEvent> = selected
+                .generate(
+                    &prepared,
+                    acyclic_harness_core::model::ModelDispatch {
+                        operation_id: OperationId::new(),
+                        ..dispatch
+                    },
+                )
+                .try_collect()
+                .await
+                .unwrap();
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, ModelEvent::Completed { .. }))
+            );
+        }
+        let sent = transport.sent.lock().unwrap();
+        let bodies: Vec<serde_json::Value> = sent
+            .iter()
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 3);
+        assert_eq!(bodies[0]["prompt_cache_key"], bodies[1]["prompt_cache_key"]);
+        assert_ne!(bodies[0]["prompt_cache_key"], bodies[2]["prompt_cache_key"]);
+        assert_eq!(bodies[0]["messages"], bodies[2]["messages"]);
+        eprintln!(
+            "affinity_keys={}",
+            json!([bodies[0]["prompt_cache_key"], bodies[2]["prompt_cache_key"]])
+        );
+    }
 
     #[tokio::test]
     async fn native_chat_affinity_preserves_append_prefix_and_reported_cache_misses() {
