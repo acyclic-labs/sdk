@@ -253,11 +253,7 @@ impl StockExecution<'_> {
             policy,
             context,
             message_limit,
-            context
-                .current_input_index
-                .map_or(context.messages.len().saturating_sub(1), |index| {
-                    index as usize
-                }),
+            context.messages.len().saturating_sub(1),
             self.io,
         )?;
         let mandatory = with_history_io(self.io, |work| {
