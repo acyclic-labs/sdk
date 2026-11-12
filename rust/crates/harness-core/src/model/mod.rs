@@ -15,7 +15,9 @@ pub(crate) use instruction_reads::deduplicate_reads;
 mod inventory;
 mod retained_inventory;
 pub use instructions::InstructionSource;
-pub(crate) use instructions::{project_instruction, reserve_instruction_bodies};
+pub(crate) use instructions::{
+    project_instruction, reserve_instruction_bodies, try_reserve_instruction_bodies,
+};
 mod image;
 mod media;
 mod native_tool_profile;

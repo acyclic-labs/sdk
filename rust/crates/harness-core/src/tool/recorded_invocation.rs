@@ -118,7 +118,10 @@ fn validate<I: Serialize>(
                 target: None,
                 filesystem: None,
             },
-            Some(limits.file_bytes.min(limits.render_bytes)),
+            Some(limits.file_bytes)
+                .into_iter()
+                .chain(limits.render_bytes)
+                .min(),
             crate::executor::json::RECORD_MAXIMUM_DEPTH,
             work,
         )?;

@@ -543,7 +543,13 @@ impl ToolExecutor for CheckoutTools {
             } else {
                 None
             };
-            let maximum = context.effective_scope().limits().render_bytes;
+            let maximum = context
+                .effective_scope()
+                .limits()
+                .render_bytes
+                .map_or(crate::tool::VIEW_BYTES, |maximum| {
+                    maximum.min(crate::tool::VIEW_BYTES)
+                });
             let maximum = usize::try_from(maximum).map_err(storage)?;
             let background = shell.as_ref().is_some_and(|input| input.background);
             let (started, launched) = tokio::sync::oneshot::channel();

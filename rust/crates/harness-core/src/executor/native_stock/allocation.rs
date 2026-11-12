@@ -166,14 +166,15 @@ pub(crate) fn stock_vec_reserve<T>(
 pub(crate) fn stock_string_push(
     text: &mut String,
     suffix: &str,
-    maximum: u64,
+    maximum: impl Into<Option<u64>>,
     reason: &'static str,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
+    let maximum = maximum.into();
     let target = text
         .len()
         .checked_add(suffix.len())
-        .filter(|target| *target as u64 <= maximum)
+        .filter(|target| maximum.is_none_or(|maximum| *target as u64 <= maximum))
         .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid, reason))?;
     with_history_io(io, |work| {
         if let Some(work) = work.as_deref_mut() {

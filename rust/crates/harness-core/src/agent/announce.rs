@@ -182,7 +182,7 @@ pub async fn announcement_messages(
                 .await?;
             let text = std::str::from_utf8(&bytes)
                 .map_err(|_| crate::Error::Invalid("announcement is not UTF-8".into()))?;
-            for part in ModelContent::bounded_text_parts(text, Some(limits.render_bytes))? {
+            for part in ModelContent::bounded_text_parts(text, limits.render_bytes)? {
                 if message.len() == maximum {
                     messages.push(ModelContent::Parts(std::mem::take(&mut message)));
                 }

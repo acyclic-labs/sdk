@@ -246,7 +246,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         selected_context: None,
     };
     let narrow = Limits {
-        render_bytes: "bounded".len() as u64 - 1,
+        render_bytes: Some("bounded".len() as u64 - 1),
         ..Limits::default()
     };
     assert!(matches!(
@@ -630,7 +630,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         );
         let limits = Limits {
             context_messages: std::num::NonZeroUsize::new(message_limit),
-            render_bytes,
+            render_bytes: Some(render_bytes),
             ..Limits::default()
         };
         // Bind the manifest before installing the inherited prefix, as public

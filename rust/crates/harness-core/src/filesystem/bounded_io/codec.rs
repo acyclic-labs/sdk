@@ -89,9 +89,9 @@ impl PreparationIo {
         result
     }
 
-    fn bounds(&self, bytes: u64, depth: u32) -> Result<JsonBounds> {
+    fn bounds(&self, bytes: impl Into<Option<u64>>, depth: u32) -> Result<JsonBounds> {
         Ok(JsonBounds {
-            maximum_bytes: Some(bytes),
+            maximum_bytes: bytes.into(),
             maximum_items: Some(self.remaining()?.items_examined),
             maximum_depth: depth,
         })
@@ -131,11 +131,12 @@ impl PreparationIo {
     pub fn encode<T: Serialize>(
         &self,
         value: &T,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
         canonical: bool,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        let maximum = maximum.into();
         let remaining = self.remaining()?;
-        if maximum != 0 {
+        if maximum != Some(0) {
             self.preflight(WorkCounters {
                 bytes_encoded: 1,
                 items_examined: 1,
@@ -143,7 +144,9 @@ impl PreparationIo {
             })?;
         }
         let bounds = JsonBounds {
-            maximum_bytes: Some(maximum.min(remaining.bytes_encoded)),
+            maximum_bytes: Some(maximum.map_or(remaining.bytes_encoded, |maximum| {
+                maximum.min(remaining.bytes_encoded)
+            })),
             maximum_items: Some(remaining.items_examined),
             maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
@@ -314,7 +317,7 @@ impl PreparationIo {
     pub(crate) fn value_json<T: Serialize>(
         &self,
         value: &T,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
     ) -> Result<serde_json::Value> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_none() {
@@ -340,7 +343,7 @@ impl PreparationIo {
     pub(crate) fn check_json_byte_bound(
         &self,
         value: &serde_json::Value,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
     ) -> Result<()> {
         if self.original_native_work().is_none() {
             return Err(self.invalid("native JSON sizing requires original work"));

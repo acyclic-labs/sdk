@@ -45,7 +45,7 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
     let narrow = RuntimeScope::new(
         grants,
         Limits {
-            render_bytes: 4,
+            render_bytes: Some(4),
             ..Limits::default()
         },
     )?;
@@ -96,7 +96,7 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
     }
     let limits = Limits {
         file_bytes: 65536,
-        render_bytes: 4096,
+        render_bytes: Some(4096),
         ..Limits::default()
     };
     let task = Arc::new(

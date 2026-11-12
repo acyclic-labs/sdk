@@ -216,7 +216,7 @@ impl FileTool {
         };
         #[cfg(not(target_arch = "wasm32"))]
         let _file_custody = io.map(|io| io.take_native_custody(file.1)).transpose()?;
-        let encoded = super::value(&FileResult { file: file.0 }, u64::MAX, work)?;
+        let encoded = super::value(&FileResult { file: file.0 }, None, work)?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
     async fn search(
@@ -607,7 +607,7 @@ impl ToolExecutor for FileTool {
             };
             match receipt.0 {
                 Some(file) => {
-                    let encoded = super::value(&FileResult { file }, u64::MAX, Some(work))?;
+                    let encoded = super::value(&FileResult { file }, None, Some(work))?;
                     Ok((
                         Some(ToolResult { value: encoded.0 }),
                         encoded.1.ok_or(Error::NativeBoundary {
@@ -693,7 +693,7 @@ impl ToolExecutor for FileTool {
                 return receipt
                     .0
                     .map(|file| {
-                        let encoded = super::value(&FileResult { file }, u64::MAX, None)?;
+                        let encoded = super::value(&FileResult { file }, None, None)?;
                         Ok(ToolResult { value: encoded.0 })
                     })
                     .transpose();
@@ -766,10 +766,10 @@ impl FileTool {
                     "remove receipt differs from its original path or action",
                 ));
             }
-            super::value(&(), u64::MAX, work)?
+            super::value(&(), None, work)?
         } else {
             let file = created_file(receipt, path, work)?;
-            super::value(&FileResult { file }, u64::MAX, work)?
+            super::value(&FileResult { file }, None, work)?
         };
         Ok((ToolResult { value: encoded.0 }, encoded.1))
     }

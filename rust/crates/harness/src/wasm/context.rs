@@ -107,24 +107,30 @@ pub async fn select_model_context_wasm(
     reader: js_sys::Function,
     maximum_messages: u32,
     maximum_attachments: u32,
-    maximum_render_bytes: f64,
+    maximum_render_bytes: Option<f64>,
     maximum_projected_attachments: u32,
 ) -> Result<JsValue, JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
     let resolver = BrowserContentReader(reader);
-    if !crate::conversation::is_exact_js_number(maximum_render_bytes)
-        || maximum_render_bytes < 0.0
-        || maximum_render_bytes.fract() != 0.0
-    {
-        return Err(JsValue::from_str(
-            "maximum render bytes must be a safe non-negative integer",
-        ));
-    }
     let maximum_render_bytes = maximum_render_bytes
-        .to_string()
-        .parse::<u64>()
-        .map_err(|_| JsValue::from_str("maximum render bytes is outside the supported range"))?;
+        .map(|maximum_render_bytes| {
+            if !crate::conversation::is_exact_js_number(maximum_render_bytes)
+                || maximum_render_bytes < 0.0
+                || maximum_render_bytes.fract() != 0.0
+            {
+                return Err(JsValue::from_str(
+                    "maximum render bytes must be a safe non-negative integer",
+                ));
+            }
+            maximum_render_bytes
+                .to_string()
+                .parse::<u64>()
+                .map_err(|_| {
+                    JsValue::from_str("maximum render bytes is outside the supported range")
+                })
+        })
+        .transpose()?;
     let selected = select_model_context(
         &conversation,
         selection.conversation_revision,

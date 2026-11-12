@@ -38,7 +38,12 @@ async fn read_with_budget(
         .0;
     tool.definition
         .validate_projection(&full, task.scope().limits(), None)?;
-    assert!(serde_json::to_vec(&full).unwrap().len() as u64 <= task.scope().limits().render_bytes);
+    assert!(
+        task.scope()
+            .limits()
+            .render_bytes
+            .is_none_or(|maximum| serde_json::to_vec(&full).unwrap().len() as u64 <= maximum)
+    );
     let reference = crate::tools::catalog::READ
         .bind_with_projection(crate::tool::schema::ProjectionMode::Reference)?;
     let compact = reference
@@ -90,7 +95,7 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
         .await?;
     let limits = Limits {
         file_bytes: 65_536,
-        render_bytes: 32_768,
+        render_bytes: Some(32_768),
         ..Limits::default()
     };
     let task = Bindings {

@@ -229,45 +229,55 @@ impl StockExecution<'_> {
         crate::model::charge_items(self.io, table.len() as u64)?;
         // Charge actual JSON escaping, with worst-case offset and completion
         // framing. A schema larger than one part is split without truncation.
-        let overhead = with_history_io(self.io, |work| {
-            json::json_byte_length(&content(kind, "", usize::MAX, false, &[]), None, work)
-        })?;
         let maximum = self
             .stock
             .limits
             .render_bytes
-            .checked_sub(overhead)
-            .ok_or_else(|| invalid("render allowance cannot frame a tool notice"))?;
+            .map(|maximum| {
+                let overhead = with_history_io(self.io, |work| {
+                    json::json_byte_length(&content(kind, "", usize::MAX, false, &[]), None, work)
+                })?;
+                maximum
+                    .checked_sub(overhead)
+                    .ok_or_else(|| invalid("render allowance cannot frame a tool notice"))
+            })
+            .transpose()?;
         let mut pending = Vec::new();
         let mut offset = 0;
         let mut removed_offset = 0;
         while offset < table.len() || removed_offset < removed.len() {
             let remaining = &table[offset..];
-            let mut bytes = 0;
             let removed_start = removed_offset;
-            while let Some(name) = removed.get(removed_offset) {
-                let size =
-                    with_history_io(self.io, |work| json::json_byte_length(name, None, work))?
-                        + u64::from(removed_offset != removed_start);
-                if size > maximum - bytes {
-                    break;
+            let end = if let Some(maximum) = maximum {
+                let mut bytes = 0;
+                while let Some(name) = removed.get(removed_offset) {
+                    let size =
+                        with_history_io(self.io, |work| json::json_byte_length(name, None, work))?
+                            + u64::from(removed_offset != removed_start);
+                    if size > maximum - bytes {
+                        break;
+                    }
+                    bytes += size;
+                    removed_offset += 1;
                 }
-                bytes += size;
-                removed_offset += 1;
-            }
-            let mut end = 0;
-            for (index, character) in remaining.char_indices() {
-                let size = match character {
-                    '"' | '\\' | '\n' | '\r' | '\t' | '\u{08}' | '\u{0c}' => 2,
-                    character if character < '\u{20}' => 6,
-                    character => character.len_utf8() as u64,
-                };
-                if size > maximum - bytes {
-                    break;
+                let mut end = 0;
+                for (index, character) in remaining.char_indices() {
+                    let size = match character {
+                        '"' | '\\' | '\n' | '\r' | '\t' | '\u{08}' | '\u{0c}' => 2,
+                        character if character < '\u{20}' => 6,
+                        character => character.len_utf8() as u64,
+                    };
+                    if size > maximum - bytes {
+                        break;
+                    }
+                    bytes += size;
+                    end = index + character.len_utf8();
                 }
-                bytes += size;
-                end = index + character.len_utf8();
-            }
+                end
+            } else {
+                removed_offset = removed.len();
+                remaining.len()
+            };
             if end == 0 && removed_offset == removed_start {
                 return Err(invalid("render allowance cannot advance a tool notice"));
             }

@@ -56,7 +56,7 @@ pub fn frame_instructions(
     #[wasm_bindgen(unchecked_param_type = "WasmFileRefWire")] file: JsValue,
     #[wasm_bindgen(unchecked_param_type = "InstructionIdentity")] source: JsValue,
     bytes: &Uint8Array,
-    maximum: u64,
+    maximum: Option<u64>,
 ) -> std::result::Result<String, JsValue> {
     let (file, source) = instruction_source(file, source)?;
     let source = crate::model::InstructionSource::with_identity(&file, &source);

@@ -28,7 +28,7 @@ fuzz_target!(|input: &[u8]| {
         }
     }
     let limits = Limits {
-        render_bytes: 4096,
+        render_bytes: Some(4096),
         file_bytes: 4096,
         context_messages: std::num::NonZeroUsize::new(16),
         ..Default::default()

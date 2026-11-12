@@ -361,7 +361,7 @@ async fn check_replies(
     let cause =
         crate::executor::ToolFailureCause::of(&crate::Error::Invalid(text.to_owned()), &mut None)
             .expect("canonical host refusal");
-    let (refusal, _) = crate::tool::value(&cause, u64::MAX, None).expect("canonical refusal value");
+    let (refusal, _) = crate::tool::value(&cause, None, None).expect("canonical refusal value");
     let expected_refusal: Result<_, String> = Ok(serde_json::json!({
         "ok": false, "value": &cause.message, "class": cause.class,
     }));

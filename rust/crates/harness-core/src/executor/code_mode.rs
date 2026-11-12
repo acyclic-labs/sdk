@@ -288,7 +288,11 @@ impl StockExecution<'_> {
                         )
                     })?,
             };
-            let maximum = usize::try_from(self.stock.limits.render_bytes)
+            let maximum = self
+                .stock
+                .limits
+                .render_bytes
+                .and_then(|maximum| usize::try_from(maximum).ok())
                 .unwrap_or(usize::MAX)
                 .saturating_sub(crate::tool::schema::json_envelope_bytes()?);
             let token = CancellationToken::new();
@@ -373,7 +377,7 @@ impl StockExecution<'_> {
                         let (value, _result_hold, _failure_hold) = match result {
                             Ok((value, hold)) => (value, hold, None),
                             Err(cause) => {
-                                let (value, hold) = crate::tool::value(&cause, u64::MAX, self.native_work())?;
+                                let (value, hold) = crate::tool::value(&cause, None, self.native_work())?;
                                 (value, None, hold)
                             },
                         };

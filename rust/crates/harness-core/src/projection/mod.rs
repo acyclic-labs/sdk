@@ -115,8 +115,10 @@ pub async fn select_model_context(
     with_history_io(io, |work| {
         validate_model_context_selection(conversation, &selection, conversation_revision, work)
     })?;
-    if limits.render_bytes == 0
-        || limits.render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+    if limits.render_bytes == Some(0)
+        || limits
+            .render_bytes
+            .is_some_and(|maximum| maximum > crate::conversation::MAX_EXACT_JS_INTEGER)
         || maximum_projected_attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
         || limits
             .context_messages
@@ -281,10 +283,12 @@ async fn project_message(
     }
     let policy = match message.content.descriptor().media_type() {
         "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-            attachments::native_image(limits.render_bytes, io)?
+            attachments::native_image(&message.content, limits.render_bytes, io)?
         }
         kind if FileProjectionPolicy::is_text(kind)
-            && message.content.descriptor().byte_length() <= limits.render_bytes =>
+            && limits
+                .render_bytes
+                .is_none_or(|maximum| message.content.descriptor().byte_length() <= maximum) =>
         {
             FileProjectionPolicy::BoundedFull
         }

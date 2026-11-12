@@ -73,7 +73,7 @@ impl CheckoutTools {
             .to_owned();
         let spill_file = format!("tools/{}/{operation}/spill.log", context.turn_id());
         let spill_path = format!("{}{spill_file}", crate::layers::OUTPUT_PATH);
-        let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output.min(30_000));
+        let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output);
         let cancellation = background
             .then(|| job::Cancellation::open(&spill_root, operation))
             .transpose()?;

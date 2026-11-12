@@ -51,14 +51,14 @@ pub const DEFAULT_CONVERSATION_PAGE_MESSAGES: u32 = 1_024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
-    /// Maximum bytes in one referenced file admitted to a conversation.
+    /// Maximum bytes in one referenced file.
     pub file_bytes: u64,
     /// Optional maximum normalized UTF-8 path bytes.
     pub path_bytes: Option<std::num::NonZeroUsize>,
     /// Optional maximum attachments in one message, inline or manifest-backed.
     pub attachments: Option<std::num::NonZeroUsize>,
-    /// Maximum bytes rendered directly into one model context part.
-    pub render_bytes: u64,
+    /// Optional maximum bytes rendered into one context part; `None` is unbounded.
+    pub render_bytes: Option<u64>,
     /// Optional maximum streamed observations in one model round trip; `None` is unbounded.
     pub model_events_per_step: Option<std::num::NonZeroUsize>,
     /// Optional maximum distinct tool calls in one model round trip; `None` is unbounded.
@@ -71,9 +71,9 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             file_bytes: MAX_EXACT_JS_INTEGER,
+            render_bytes: None,
             path_bytes: None,
             attachments: None,
-            render_bytes: MAX_EXACT_JS_INTEGER,
             model_events_per_step: None,
             tool_calls_per_step: None,
             context_messages: None,
@@ -90,8 +90,9 @@ impl Limits {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
         }
-        if [self.file_bytes, self.render_bytes]
+        if [Some(self.file_bytes), self.render_bytes]
             .into_iter()
+            .flatten()
             .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
             || self
                 .path_bytes

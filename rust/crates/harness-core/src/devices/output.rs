@@ -13,7 +13,7 @@ pub(super) struct Output {
     operation: OperationId,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-    remaining: u64,
+    remaining: Option<u64>,
     omitted: u64,
     destination: Option<(VolumeRef, String)>,
 }
@@ -81,8 +81,13 @@ impl Output {
                 self.destination = Some((file.volume().clone(), parent.to_owned()));
             }
         }
-        let take = self.remaining.min(data.len() as u64) as usize;
-        self.remaining -= take as u64;
+        let take = self
+            .remaining
+            .map_or(data.len() as u64, |maximum| maximum.min(data.len() as u64))
+            as usize;
+        if let Some(remaining) = &mut self.remaining {
+            *remaining -= take as u64;
+        }
         self.omitted = self.omitted.saturating_add((data.len() - take) as u64);
         let output = if stderr {
             &mut self.stderr
@@ -137,7 +142,7 @@ mod tests {
             storage.owner_scope().capabilities().clone(),
             Limits {
                 file_bytes: 2,
-                render_bytes: 4,
+                render_bytes: Some(4),
                 ..Limits::default()
             },
         )?;

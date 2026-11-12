@@ -2,7 +2,7 @@ use super::*;
 use crate::conversation::{
     Attachment, ContentHold, ConversationMessage, FileRef, ReferencedAttachments,
 };
-use crate::model::{ImageDetail, NativeMediaIntent, NativeMediaPolicy};
+use crate::model::NativeMediaPolicy;
 use std::borrow::Cow;
 
 fn allocate(bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
@@ -15,18 +15,18 @@ fn allocate(bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
 }
 
 pub(super) fn native_image(
-    maximum_work: u64,
+    file: &FileRef,
+    maximum_work: Option<u64>,
     io: Option<&PreparationIo>,
 ) -> Result<FileProjectionPolicy> {
     allocate(std::mem::size_of::<NativeMediaPolicy>() as u64, io)?;
-    Ok(FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
-        intent: NativeMediaIntent::Image {
-            detail: ImageDetail::Auto,
-        },
-        maximum_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
-        maximum_work,
-        configuration: None,
-    })))
+    let mut policy = FileProjectionPolicy::for_attachment(file);
+    if let FileProjectionPolicy::Native(native) = &mut policy
+        && let Some(maximum) = maximum_work
+    {
+        native.maximum_work = native.maximum_work.min(maximum);
+    }
+    Ok(policy)
 }
 
 pub(super) fn omission_text(count: usize, io: Option<&PreparationIo>) -> Result<String> {
@@ -113,13 +113,13 @@ pub(super) fn append(
     source_hold: Option<ContentHold<'_>>,
     count: usize,
     parts: &mut Vec<ModelContentPart>,
-    maximum_work: u64,
+    maximum_work: Option<u64>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     let mut append = |file: FileRef| -> Result<()> {
         let policy = match file.descriptor().media_type() {
             "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-                native_image(maximum_work, io)?
+                native_image(&file, maximum_work, io)?
             }
             _ => FileProjectionPolicy::Reference,
         };

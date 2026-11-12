@@ -42,6 +42,24 @@ test("WASM model validators preserve Rust limits and tool-name checks", async ()
   expect(() => validateModelContent({ kind: "tool_call", callId: "call", name: "bad name", arguments: {} }, fixtureLimits)).toThrow();
   expect(() => validateModelContent({ kind: "text", text: "x".repeat(fixtureLimits.render_bytes + 1) }, fixtureLimits)).toThrow();
   expect(() => validateModelContent({ kind: "unknown", value: true } as never, fixtureLimits)).toThrow();
+  const unbounded = { ...fixtureLimits, render_bytes: null };
+  const body = "x".repeat(fixtureLimits.render_bytes + 1) + "λ🙂";
+  expect(contracts.validateContract("limits", unbounded, undefined).render_bytes).toBeNull();
+  expect(() => validateModelContent({ kind: "text", text: body }, unbounded)).not.toThrow();
+  const bytes = new TextEncoder().encode(body);
+  const source = contracts.validateContract("file_ref", {
+    ...content, path: "docs/AGENTS.md", display_name: "AGENTS.md",
+    descriptor: contracts.fileDescriptor(bytes, "text/markdown"),
+  }, undefined) as WasmFileRefWire;
+  const identity = { volume: source.volume, path: source.path };
+  const frame = contracts.frameInstructions(source, identity, bytes, null);
+  expect(frame).toBe(`# AGENTS.md instructions for docs\n\n<INSTRUCTIONS>\n${body}\n</INSTRUCTIONS>`);
+  expect(contracts.frameInstructions(source, identity, bytes, undefined)).toBe(frame);
+  expect(() => contracts.frameInstructions(source, identity, bytes, BigInt(fixtureLimits.render_bytes))).toThrow();
+  expect(contracts.frameInstructions(source, identity, bytes, BigInt(new TextEncoder().encode(frame).length))).toBe(frame);
+  const corrupted = Uint8Array.from(bytes);
+  corrupted[0] = corrupted[0]! ^ 1;
+  expect(() => contracts.frameInstructions(source, identity, corrupted, null)).toThrow();
 });
 
 test("WASM user-input validator rejects empty, tool, and malformed content", async () => {

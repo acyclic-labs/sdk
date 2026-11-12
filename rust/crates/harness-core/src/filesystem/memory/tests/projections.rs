@@ -195,7 +195,7 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
     ))?;
     let limits = Limits {
         file_bytes: 8192,
-        render_bytes: 8192,
+        render_bytes: Some(8192),
         ..Limits::default()
     };
     let task = Bindings {
@@ -365,7 +365,7 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
         "many.ipynb",
     ))?;
     let narrow = Limits {
-        render_bytes: 4096,
+        render_bytes: Some(4096),
         ..limits
     };
     let paged = task.scoped(task.scope().grants().clone(), narrow)?;
@@ -435,7 +435,7 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
     ))?;
     let limits = Limits {
         file_bytes: 4096,
-        render_bytes: 4096,
+        render_bytes: Some(4096),
         ..Limits::default()
     };
     let task = Bindings {
@@ -499,7 +499,11 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
     let projection = tool.projection.project(&invocation, &result, None)?.0;
     tool.definition
         .validate_projection(&projection, limits, None)?;
-    assert!(serde_json::to_vec(&projection).unwrap().len() as u64 <= limits.render_bytes);
+    assert!(
+        limits
+            .render_bytes
+            .is_none_or(|maximum| serde_json::to_vec(&projection).unwrap().len() as u64 <= maximum)
+    );
 
     let (warm, warm_ranges) =
         acyclic_test_support::differential::observe::<_, _, (&'static str, u64, u64)>(
@@ -765,7 +769,7 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
     ))?;
     let limits = Limits {
         file_bytes: 4096,
-        render_bytes: 4096,
+        render_bytes: Some(4096),
         ..Limits::default()
     };
     let source_grants = [source.read_capability.clone(), "tool:call:read".into()];
@@ -873,7 +877,7 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
             ]),
             Limits {
                 file_bytes: 65_536,
-                render_bytes: 4096,
+                render_bytes: Some(4096),
                 ..limits
             },
         )?,
@@ -888,7 +892,7 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
         &complete,
         &spill_task,
         OperationId::new(),
-        4096,
+        Some(4096),
         None,
     ))?;
     let spill_file: crate::conversation::FileRef = serde_json::from_str(
@@ -988,7 +992,7 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
                 &complete,
                 &denied,
                 OperationId::new(),
-                4096,
+                Some(4096),
                 None,
             ))
             .unwrap_err()

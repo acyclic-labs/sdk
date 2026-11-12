@@ -159,7 +159,7 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
             ]),
             crate::conversation::Limits {
                 file_bytes: 4096,
-                render_bytes: 4096,
+                render_bytes: Some(4096),
                 ..Default::default()
             },
         )?,

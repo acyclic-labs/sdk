@@ -3,7 +3,7 @@ use super::*;
 
 /// A shared rendering quantum, not a capacity limit. Omitted bytes remain in
 /// an immutable volume file and are read through the ordinary file reader.
-pub(crate) const VIEW_BYTES: u64 = 30_000;
+pub const VIEW_BYTES: u64 = 30_000;
 
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -218,7 +218,7 @@ pub(crate) async fn spill(
     projection: &Value,
     context: &crate::runtime::TaskContext,
     operation: OperationId,
-    maximum: u64,
+    maximum: Option<u64>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(Value, acyclic_fs::NativeCustody)> {
     let _bytes_hold;
@@ -276,7 +276,7 @@ fn render(
     projection: &Value,
     encoded: &[u8],
     source: SpillRef<'_>,
-    maximum: u64,
+    maximum: Option<u64>,
     io: Option<&crate::executor::PreparationIo>,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(Value, acyclic_fs::NativeCustody)> {
@@ -311,10 +311,13 @@ fn render(
     };
     // Reference metadata is indivisible. The display quantum bounds text;
     // caller credit, rather than that quantum, admits native references.
-    let maximum = maximum.min(VIEW_BYTES).max(overhead).min(maximum);
-    let budget = maximum.checked_sub(overhead).ok_or_else(|| {
-        Error::tool_rejected("render credit cannot hold an output file reference")
-    })?;
+    let display = VIEW_BYTES.saturating_sub(overhead);
+    let budget = match maximum {
+        Some(maximum) => display.min(maximum.checked_sub(overhead).ok_or_else(|| {
+            Error::tool_rejected("render credit cannot hold an output file reference")
+        })?),
+        None => display,
+    };
     // A multipart preview is JSON inside a text part. Every escaped byte can
     // at most double at the second string boundary.
     let budget = if media.is_some() { budget / 2 } else { budget };
@@ -328,7 +331,7 @@ fn render(
         omitted_bytes: (text.len() - shown.len()) as u64,
     };
     if let Some(parts) = media {
-        with_media(&view, parts, io, |view| super::value(view, u64::MAX, work))
+        with_media(&view, parts, io, |view| super::value(view, None, work))
     } else {
         super::schema::project_json(&view, work)
     }
@@ -384,7 +387,7 @@ mod checks {
                 {"kind":"file", "file":file, "policy":"reference"}
             ]});
             let bytes = serde_json::to_vec(&projection).unwrap();
-            let (bounded, _hold) = render(&projection, &bytes, SpillRef {path:"output λ\".json",version:r#"{"source":"λ\\value"}"#}, maximum, None, None).unwrap();
+            let (bounded, _hold) = render(&projection, &bytes, SpillRef {path:"output λ\".json",version:r#"{"source":"λ\\value"}"#}, Some(maximum), None, None).unwrap();
             prop_assert!(serde_json::to_vec(&bounded).unwrap().len() as u64 <= maximum);
             let mut definition = crate::tool::files::read().unwrap().definition;
             definition.projection_schema = crate::tool::json_projection_schema(serde_json::json!({"type":"null"}));
@@ -392,7 +395,7 @@ mod checks {
             prop_assert!(prepare(&definition, &bounded).is_ok(), "request refused the original multipart spill");
             let plain = serde_json::json!({"kind":"json", "value":text});
             let plain_bytes = serde_json::to_vec(&plain).unwrap();
-            let (plain, _plain_hold) = render(&plain, &plain_bytes, SpillRef {path:"output.json",version:"retained"}, maximum, None, None).unwrap();
+            let (plain, _plain_hold) = render(&plain, &plain_bytes, SpillRef {path:"output.json",version:"retained"}, Some(maximum), None, None).unwrap();
             prop_assert!(prepare(&definition, &plain).is_ok(), "request refused the original JSON spill");
             let expected = crate::model::ModelDataPart::File {file, policy:crate::model::FileProjectionPolicy::Reference};
             prop_assert!(matches!(&content, crate::model::ToolResultContent::Parts {parts} if parts.len() == 2 && parts.get(1) == Some(&expected)), "native file part changed or disappeared");

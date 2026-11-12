@@ -153,12 +153,24 @@ pub(in crate::executor) async fn stock_project_tool(
         return Ok(Err(violation));
     }
     let maximum = context.map_or(limits.render_bytes, |_| {
-        limits.render_bytes.min(crate::tool::output::VIEW_BYTES)
+        Some(
+            limits
+                .render_bytes
+                .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
+                    maximum.min(crate::tool::output::VIEW_BYTES)
+                }),
+        )
     });
-    let length = with_history_io(io, |history| {
-        crate::executor::json::json_byte_length(&value, None, history)
-    })?;
-    let value = if length > maximum {
+    let spill = maximum
+        .map(|maximum| {
+            with_history_io(io, |history| {
+                crate::executor::json::json_byte_length(&value, None, history)
+            })
+            .map(|length| length > maximum)
+        })
+        .transpose()?
+        .unwrap_or(false);
+    let value = if spill {
         let context = context.ok_or_else(|| {
             stock_boundary(
                 io,
@@ -196,4 +208,112 @@ pub(in crate::executor) async fn stock_project_tool(
     };
     stock_json_bound(&value, limits.render_bytes, io)?;
     Ok(Ok((value, content)))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use crate::model::{FileProjectionPolicy, ModelDataPart, ToolResultContent};
+
+    struct Parts;
+    impl crate::tool::ToolProjection for Parts {
+        fn project(
+            &self,
+            _invocation: &ToolInvocation,
+            result: &ToolResult,
+            work: acyclic_fs::NativeWork<'_>,
+        ) -> Result<(Value, acyclic_fs::NativeCustody)> {
+            crate::tool::value(&result.value, None, work)
+        }
+    }
+
+    #[tokio::test]
+    async fn media_references_exceed_the_text_display_page_without_losing_content() -> Result<()> {
+        let storage =
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 256_000).await?;
+        let file = storage
+            .stage(
+                OperationId::new(),
+                "image.png",
+                include_bytes!("../../../tests/fixtures/notebook-output.png"),
+                "image/png",
+                "image.png",
+            )
+            .await?;
+        let original = ToolResultContent::Parts {
+            parts: (0..128)
+                .map(|_| ModelDataPart::File {
+                    file: file.clone(),
+                    policy: FileProjectionPolicy::for_attachment(&file),
+                })
+                .collect(),
+        };
+        let result = ToolResult {
+            value: serde_json::to_value(&original).unwrap(),
+        };
+        let encoded = serde_json::to_vec(&result.value).unwrap();
+        assert!(encoded.len() as u64 > crate::tool::VIEW_BYTES);
+        let mut tool = crate::tool::files::read()?;
+        tool.definition.projection_schema = Value::Bool(true);
+        tool.projection = Arc::new(Parts);
+        for render_bytes in [None, Some(encoded.len() as u64 + 10_000), Some(1_024)] {
+            let limits = Limits {
+                render_bytes,
+                ..Limits::default()
+            };
+            let task = crate::runtime::Bindings {
+                scope: RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?,
+                content: Some(storage.content_bindings()),
+                ..crate::runtime::Bindings::local()
+            }
+            .build()?
+            .agent_context(&crate::Capabilities::default(), storage.content_bindings())?;
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "media".into(),
+                name: tool.definition.name.clone(),
+                arguments: Value::Null,
+            };
+            let projected =
+                stock_project_tool(&tool, &invocation, &result, limits, None, Some(&task)).await;
+            if render_bytes == Some(1_024) {
+                assert!(!matches!(projected, Ok(Ok(_))));
+                continue;
+            }
+            let (value, content) = projected??;
+            let ToolResultContent::Parts { parts: expected } = &original else {
+                unreachable!()
+            };
+            let ToolResultContent::Parts { parts: actual } = content else {
+                return Err(Error::Invalid("spill lost multipart content".into()));
+            };
+            assert_eq!(&actual[1..], expected.as_slice());
+            let preview: Value = serde_json::from_str(
+                value["parts"][0]["text"]
+                    .as_str()
+                    .ok_or_else(|| Error::Invalid("spill has no preview".into()))?,
+            )
+            .unwrap();
+            assert_eq!(
+                preview["omitted_bytes"].as_u64(),
+                Some(encoded.len() as u64)
+            );
+            let context = crate::runtime::ToolContext::new(
+                Arc::new(task),
+                invocation.operation_id,
+                &invocation.call_id,
+            )?;
+            let (_, retained, _) = context
+                .read_tool_path(
+                    preview["output_spill"]["path"]
+                        .as_str()
+                        .ok_or_else(|| Error::Invalid("spill has no retained path".into()))?,
+                    None,
+                    None,
+                )
+                .await?;
+            assert_eq!(retained.as_ref(), encoded.as_slice());
+        }
+        Ok(())
+    }
 }

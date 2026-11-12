@@ -145,7 +145,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             reader.clone(),
             ContextPlacement::Prepend,
             Limits {
-                render_bytes: 1,
+                render_bytes: Some(1),
                 ..limits
             },
         )

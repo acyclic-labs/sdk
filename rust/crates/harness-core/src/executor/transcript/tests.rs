@@ -196,7 +196,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
             file_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
             path_bytes: std::num::NonZeroUsize::new(4096),
             attachments: std::num::NonZeroUsize::new(8),
-            render_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
+            render_bytes: Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             context_messages: std::num::NonZeroUsize::new(128),
             ..Limits::default()
         };
@@ -440,7 +440,7 @@ async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> 
     assert!(!manifest.authenticates(
         &verifier,
         Limits {
-            render_bytes: 1,
+            render_bytes: Some(1),
             ..Limits::default()
         },
         digest,

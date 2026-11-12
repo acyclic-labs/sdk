@@ -1496,7 +1496,7 @@ impl<'a> TurnContext<'a> {
         announcements: &[crate::agent::AnnouncedDocument],
         content_limits: crate::conversation::Limits,
     ) -> Result<SelectedModelContext> {
-        let render_bytes = Some(content_limits.render_bytes);
+        let render_bytes = content_limits.render_bytes;
         let Self {
             checkpoint,
             settled,
@@ -2036,7 +2036,7 @@ where
                     Arc::clone(bindings.content.writer.as_ref().ok_or_else(|| {
                         Error::Invalid("agent turn has no private writer".into())
                     })?),
-                    Some(self.executors.content_limits().render_bytes),
+                    self.executors.content_limits().render_bytes,
                 );
                 // Each call dispatches only once the effects of the turn's earlier
                 // calls committed, so it reaches what they created, and a `wait`

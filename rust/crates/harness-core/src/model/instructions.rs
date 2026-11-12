@@ -64,18 +64,32 @@ impl<'a> InstructionSource<'a> {
             .ok_or_else(|| Error::Invalid("project instruction size overflows".into()))
     }
 
-    /// Reserves the entire frame before any body read or allocation.
-    pub fn reserve(self, remaining: &mut u64, io: Option<&ContentIo>) -> Result<u64> {
-        *remaining = remaining.checked_sub(self.framed_bytes()?).ok_or_else(|| {
-            crate::executor::stock_boundary(
+    /// Reserves the entire frame under the selected optional byte policy.
+    pub fn reserve(self, remaining: &mut Option<u64>, io: Option<&ContentIo>) -> Result<()> {
+        if let Some(remaining) = remaining {
+            self.reserve_frame(remaining, io)?;
+        }
+        Ok(())
+    }
+
+    fn reserve_frame(self, remaining: &mut u64, io: Option<&ContentIo>) -> Result<()> {
+        if !self.try_reserve_frame(remaining)? {
+            return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "project instructions exceed render bound",
-            )
-        })?;
-        Ok(self.file.descriptor().byte_length())
+            ));
+        }
+        Ok(())
     }
 
+    fn try_reserve_frame(self, remaining: &mut u64) -> Result<bool> {
+        let Some(next) = remaining.checked_sub(self.framed_bytes()?) else {
+            return Ok(false);
+        };
+        *remaining = next;
+        Ok(true)
+    }
     /// Frames already authenticated UTF-8 bytes, preserving them verbatim.
     pub fn render(self, bytes: &[u8], io: Option<&ContentIo>) -> Result<String> {
         if bytes.len() as u64 != self.file.descriptor().byte_length() {
@@ -134,18 +148,37 @@ impl<'a> InstructionSource<'a> {
 
 pub(crate) fn reserve_instruction_bodies(
     messages: &[ModelMessage],
-    remaining: &mut u64,
+    remaining: &mut Option<u64>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
+    if !try_reserve_instruction_bodies(messages, remaining)? {
+        return Err(crate::executor::stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "project instructions exceed render bound",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn try_reserve_instruction_bodies(
+    messages: &[ModelMessage],
+    remaining: &mut Option<u64>,
+) -> Result<bool> {
+    let Some(remaining) = remaining else {
+        return Ok(true);
+    };
     for (file, policy) in messages
         .iter()
         .flat_map(|message| message.content.file_parts())
     {
-        if let FileProjectionPolicy::ProjectInstructions(source) = policy {
-            InstructionSource::with_identity(file, source).reserve(remaining, io)?;
+        if let FileProjectionPolicy::ProjectInstructions(source) = policy
+            && !InstructionSource::with_identity(file, source).try_reserve_frame(remaining)?
+        {
+            return Ok(false);
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn project_instruction(
@@ -217,7 +250,7 @@ impl super::instruction_sources::InstructionSources<'_> {
                         "instruction metadata exceeds render bound",
                     )
                 })?;
-            file.source().reserve(&mut remaining, io)?;
+            file.source().reserve_frame(&mut remaining, io)?;
         }
         Ok(maximum - remaining)
     }
@@ -289,7 +322,7 @@ mod tests {
                 policy: FileProjectionPolicy::ProjectInstructions(source),
             } = part
             {
-                InstructionSource::with_identity(file, source).reserve(remaining, None)?;
+                InstructionSource::with_identity(file, source).reserve_frame(remaining, None)?;
             }
         }
         Ok(())
@@ -300,11 +333,17 @@ mod tests {
         fn aggregate_budget_covers_direct_and_nested_instruction_files(left in 1usize..7000,right in 1usize..7000) {
             for nested in [[false,false],[true,true],[false,true],[true,false]] {
                 let (messages,total)=fixture([left,right],nested);
+                let (unbounded, trace) = acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(
+                    || (),
+                    |()| reserve_instruction_bodies(&messages, &mut None, None),
+                );
+                prop_assert!(unbounded.is_ok());
+                prop_assert!(!trace.iter().any(|(name, _)| *name == "instruction frame plans"));
                 for budget in [0,total-1,total,total+1] {
-                    let mut remaining=budget;
+                    let mut remaining=Some(budget);
                     let result=reserve_instruction_bodies(&messages,&mut remaining,None);
                     prop_assert_eq!(result.is_ok(),budget>=total);
-                    if result.is_ok() {prop_assert_eq!(remaining,budget-total);}
+                    if result.is_ok() {prop_assert_eq!(remaining,Some(budget-total));}
                 }
                 if nested.iter().any(|nested|*nested) {
                     let mut remaining=total-1;
@@ -312,6 +351,48 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn unbounded_instruction_frames_exceed_a_selected_portable_byte_budget() -> Result<()> {
+        let original = super::super::instruction_tests::file("AGENTS.md", "rules", "rules");
+        let file = FileRef::new(
+            original.volume().clone(),
+            original.path().into(),
+            original.version().into(),
+            crate::conversation::FileDescriptor::new(
+                [0; 32],
+                crate::conversation::MAX_EXACT_JS_INTEGER,
+                "text/markdown".into(),
+            )?,
+            original.display_name().into(),
+            &mut None,
+        )?;
+        let instruction = project_instruction(&file.into(), None)?;
+        let messages = [instruction.clone(), instruction];
+        reserve_instruction_bodies(&messages, &mut None, None)?;
+        assert!(
+            reserve_instruction_bodies(
+                &messages,
+                &mut Some(crate::conversation::MAX_EXACT_JS_INTEGER),
+                None,
+            )
+            .is_err()
+        );
+        let scope =
+            crate::runtime::RuntimeScope::new(crate::Capabilities::default(), Limits::default())?;
+        let bounded = scope.narrow(
+            crate::Capabilities::default(),
+            Limits {
+                render_bytes: Some(128),
+                ..Limits::default()
+            },
+        )?;
+        assert!(
+            bounded
+                .narrow(crate::Capabilities::default(), Limits::default())
+                .is_err()
+        );
+        Ok(())
     }
     #[test]
     fn prepared_request_rejects_two_nested_six_thousand_byte_instructions_before_dispatch() {
@@ -337,7 +418,7 @@ mod tests {
         let Err(error) = PreparedModelRequest::prepare(
             request,
             Limits {
-                render_bytes: 10_000,
+                render_bytes: Some(10_000),
                 ..Limits::default()
             },
             None,

@@ -80,34 +80,38 @@ impl EnvironmentFacts {
         {
             return Ok(None);
         }
-        let used = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(context, None, work)
-        })?;
-        let mut bodies = u64::MAX;
-        crate::model::reserve_instruction_bodies(&context.messages, &mut bodies, io)?;
-        let wrapper = ModelMessage {
-            role: ModelRole::User,
-            content: ModelContent::Text(String::new()),
+        let available = if let Some(maximum) = limits.render_bytes {
+            let used = crate::executor::with_history_io(io, |work| {
+                crate::executor::json::json_byte_length(context, None, work)
+            })?;
+            let mut bodies = Some(maximum);
+            if !crate::model::try_reserve_instruction_bodies(&context.messages, &mut bodies)? {
+                return Ok(None);
+            }
+            let wrapper = ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(String::new()),
+            };
+            let wrapper = crate::executor::with_history_io(io, |work| {
+                crate::executor::json::json_byte_length(&wrapper, None, work)
+            })?;
+            // Empty string quotes are already in wrapper. One separator and at
+            // most one extra input-index digit accompany the inserted message.
+            bodies.map(|remaining| remaining.saturating_sub(used).saturating_sub(wrapper + 2))
+        } else {
+            None
         };
-        let wrapper = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&wrapper, None, work)
-        })?;
-        // Empty string quotes are already in wrapper. One separator and at
-        // most one extra input-index digit accompany the inserted message.
-        let available = limits
-            .render_bytes
-            .saturating_sub(used)
-            .saturating_sub(u64::MAX - bodies)
-            .saturating_sub(wrapper + 2);
         let mut encoded = 0_u64;
         let mut raw = 0_u64;
         self.parts(|part| {
             crate::model::charge_items(io, part.len() as u64)?;
             raw = raw.saturating_add(part.len() as u64);
-            encoded = encoded.saturating_add(json_string_bytes(part));
+            if available.is_some() {
+                encoded = encoded.saturating_add(json_string_bytes(part));
+            }
             Ok(())
         })?;
-        if encoded > available {
+        if available.is_some_and(|maximum| encoded > maximum) {
             return Ok(None);
         }
         let mut text = String::new();
@@ -223,6 +227,53 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn optional_environment_does_not_reject_required_instruction_frames() -> Result<()> {
+        let storage =
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+        let file = storage
+            .stage(
+                crate::OperationId::new(),
+                "AGENTS.md",
+                &[b'x'; 512],
+                "text/markdown",
+                "AGENTS.md",
+            )
+            .await?;
+        let context = Context {
+            messages: vec![crate::model::project_instruction(&file.into(), None)?],
+            ..Context::default()
+        };
+        let required = Limits {
+            render_bytes: Some(4096),
+            ..Limits::default()
+        };
+        super::super::validate_projected_context(&context, required, None)?;
+        let optional = Limits {
+            render_bytes: Some(128),
+            ..required
+        };
+        let facts = facts("/work".into());
+        assert!(facts.project(&context, optional, None)?.is_none());
+        assert!(facts.project(&context, required, None)?.is_some());
+        super::super::validate_projected_context(&context, required, None)?;
+        assert!(super::super::validate_projected_context(&context, optional, None).is_err());
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::WorkBudget {
+            bytes_copied: 1_048_576,
+            bytes_encoded: 1_048_576,
+            bytes_hashed: 1_048_576,
+            items_examined: 4096,
+            allocation_operations: 4096,
+            peak_allocation_bytes: 1_048_576,
+            ..acyclic_fs::WorkBudget::default()
+        };
+        let io = PreparationIo::from_budget(budget, &cancellation)?;
+        cancellation.cancel();
+        assert!(facts.project(&context, optional, Some(&io)).is_err());
+        Ok(())
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]
@@ -233,7 +284,7 @@ mod tests {
                 messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text("current".into()) }],
                 current_input_index: Some(0), ..Default::default()
             };
-            let limits = Limits { render_bytes: budget, context_messages: messages.and_then(std::num::NonZeroUsize::new), ..Limits::default() };
+            let limits = Limits { render_bytes: Some(budget), context_messages: messages.and_then(std::num::NonZeroUsize::new), ..Limits::default() };
             if let Some(insertion) = facts(cwd).project(&context, limits, None)? {
                 insertion.insert(&mut context, 0, None)?;
                 prop_assert_eq!(context.current_input_index, Some(1));

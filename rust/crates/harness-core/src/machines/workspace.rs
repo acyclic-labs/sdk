@@ -162,16 +162,17 @@ impl MachinesWorkspace {
         &self,
         operation: crate::OperationId,
         input: ShellInput,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
         task_deadline: Option<u64>,
     ) -> Result<ToolResult> {
+        let maximum = maximum.into();
         if input.background {
             return Err(Error::Unsupported(
                 "this Machine has no managed background shell owner".into(),
             ));
         }
         let stream = self
-            .shell_until(input, Some(maximum), task_deadline)
+            .shell_until(input, maximum, task_deadline)
             .await
             .map_err(|error| match error {
                 Error::Machines(cause) => map_error(cause, Some(operation)),

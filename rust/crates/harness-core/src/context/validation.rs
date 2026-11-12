@@ -194,7 +194,11 @@ pub(crate) fn restrict_context_limits(
             .into_iter()
             .chain(admitted.attachments)
             .min(),
-        render_bytes: pinned.render_bytes.min(admitted.render_bytes),
+        render_bytes: pinned
+            .render_bytes
+            .into_iter()
+            .chain(admitted.render_bytes)
+            .min(),
         model_events_per_step: pinned
             .model_events_per_step
             .into_iter()

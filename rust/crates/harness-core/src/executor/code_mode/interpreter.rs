@@ -304,7 +304,7 @@ mod tests {
                     grants,
                     Limits {
                         file_bytes: 65536,
-                        render_bytes: 4096,
+                        render_bytes: Some(4096),
                         ..Limits::default()
                     },
                 )?,

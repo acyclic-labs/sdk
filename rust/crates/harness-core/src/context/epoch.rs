@@ -130,9 +130,14 @@ impl ContextEpoch {
         reader: &dyn ContentResidencyVerifier,
         limits: Limits,
     ) -> Result<BTreeMap<String, [u8; 32]>> {
-        let bytes = reader
-            .read(&self.manifest, limits.render_bytes, None, None)?
-            .await?;
+        let (bytes, _hold) = crate::conversation::verified_content_bytes(
+            reader,
+            &self.manifest,
+            limits.render_bytes,
+            None,
+            None,
+        )
+        .await?;
         ContextManifest::decode(&bytes, limits)?.digests()
     }
 

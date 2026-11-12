@@ -394,12 +394,16 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
     )?;
     let (bytes, digest) = document.canonical();
     let limits = acyclic_harness_core::conversation::Limits {
-        render_bytes: 64 * 1024,
+        render_bytes: Some(64 * 1024),
         file_bytes: 64 * 1024,
         attachments: std::num::NonZeroUsize::new(1),
         ..Default::default()
     };
-    assert!(bytes.len() as u64 > limits.render_bytes);
+    assert!(
+        limits
+            .render_bytes
+            .is_some_and(|maximum| bytes.len() as u64 > maximum)
+    );
     let volume = users[0].volume()?;
     let grants = Capabilities::new([
         volume.capability(VolumeOperation::Write, &mut None)?,
@@ -539,7 +543,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
     );
     let projection_limits = acyclic_harness_core::conversation::Limits {
         file_bytes: 64 * 1024,
-        render_bytes: 64 * 1024,
+        render_bytes: Some(64 * 1024),
         attachments: std::num::NonZeroUsize::new(1),
         ..Default::default()
     };
@@ -753,7 +757,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             .reading_content(),
         );
         let projection_limits = acyclic_harness_core::conversation::Limits {
-            render_bytes: 64 * 1024,
+            render_bytes: Some(64 * 1024),
             file_bytes: 64 * 1024,
             attachments: std::num::NonZeroUsize::new(1),
             ..Default::default()
@@ -865,7 +869,11 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             })
             .collect::<String>();
         let original = announcement_text(&proof_files, &pinned).await?;
-        assert!(selection.content.descriptor().byte_length() > projection_limits.render_bytes);
+        assert!(
+            projection_limits
+                .render_bytes
+                .is_some_and(|maximum| selection.content.descriptor().byte_length() > maximum)
+        );
         assert_eq!(
             rendered.as_bytes(),
             original.as_bytes(),

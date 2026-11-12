@@ -71,19 +71,24 @@ pub(crate) fn clone_value(
 #[doc(hidden)]
 pub fn value<T: Serialize>(
     value: &T,
-    maximum_bytes: u64,
+    maximum_bytes: impl Into<Option<u64>>,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(Value, acyclic_fs::NativeCustody)> {
+    let maximum_bytes = maximum_bytes.into();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let value = io.value_json(value, maximum_bytes.min(work.remaining()?.bytes_encoded))?;
+        let remaining = work.remaining()?.bytes_encoded;
+        let value = io.value_json(
+            value,
+            maximum_bytes.map_or(remaining, |maximum| maximum.min(remaining)),
+        )?;
         let retained = retained_value_bytes(&value)?;
         let custody = io.into_native_custody(retained)?;
         return Ok((value, Some(custody)));
     }
     let _ = work;
-    if maximum_bytes != u64::MAX {
+    if let Some(maximum_bytes) = maximum_bytes {
         crate::executor::json::json_byte_length(value, Some(maximum_bytes), &mut None)?;
     }
     serde_json::to_value(value)

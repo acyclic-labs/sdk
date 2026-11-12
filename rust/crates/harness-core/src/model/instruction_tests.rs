@@ -100,9 +100,9 @@ proptest! {
         let rendered = source.render(body.as_bytes(), None).unwrap();
         prop_assert_eq!(&rendered, &expected);
         prop_assert_eq!(source.framed_bytes().unwrap(), expected.len() as u64);
-        let mut remaining = expected.len() as u64;
+        let mut remaining = Some(expected.len() as u64);
         source.reserve(&mut remaining, None).unwrap();
-        prop_assert_eq!(remaining, 0);
+        prop_assert_eq!(remaining, Some(0));
         prop_assert!(source.reserve(&mut remaining, None).is_err());
         let per_file_only = [source, source].iter().all(|source| source.framed_bytes().unwrap() <= expected.len() as u64);
         prop_assert!(per_file_only, "negative control must accept overflowing total");

@@ -12,6 +12,7 @@ use std::{collections::BTreeMap, sync::Arc};
 pub mod edit;
 pub mod files;
 pub(crate) mod output;
+pub use output::VIEW_BYTES;
 pub mod patch;
 pub mod schema;
 pub mod text;

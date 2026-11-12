@@ -14,7 +14,7 @@ pub struct CapturedExec {
 /// a reader. Dropping this future drops the original stream and its RPC.
 pub async fn capture_exec(
     mut output: ExecStream,
-    maximum_bytes: u64,
+    maximum_bytes: impl Into<Option<u64>>,
 ) -> Result<CapturedExec, ProviderError> {
     let mut captured = CapturedExec {
         stdout: Vec::new(),
@@ -22,7 +22,7 @@ pub async fn capture_exec(
         exit_code: None,
         stop: None,
     };
-    let mut received = 0_u64;
+    let mut remaining = maximum_bytes.into();
     while let Some(frame) = output.next().await {
         match frame? {
             ExecOutput::Data(bytes) | ExecOutput::Stderr(bytes) if bytes.is_empty() => {
@@ -30,12 +30,8 @@ pub async fn capture_exec(
                     "exec emitted empty data; recovery: omit empty producer frames".into(),
                 ));
             }
-            ExecOutput::Data(bytes) => {
-                append(&mut captured.stdout, bytes, &mut received, maximum_bytes)?
-            }
-            ExecOutput::Stderr(bytes) => {
-                append(&mut captured.stderr, bytes, &mut received, maximum_bytes)?
-            }
+            ExecOutput::Data(bytes) => append(&mut captured.stdout, bytes, &mut remaining)?,
+            ExecOutput::Stderr(bytes) => append(&mut captured.stderr, bytes, &mut remaining)?,
             ExecOutput::ExitCode(code) => {
                 captured.exit_code = Some(code);
                 return Ok(captured);
@@ -52,12 +48,12 @@ pub async fn capture_exec(
 fn append(
     destination: &mut Vec<u8>,
     bytes: Vec<u8>,
-    received: &mut u64,
-    maximum: u64,
+    remaining: &mut Option<u64>,
 ) -> Result<(), ProviderError> {
-    *received = received.checked_add(bytes.len() as u64)
-        .filter(|value| *value <= maximum)
-        .ok_or_else(|| ProviderError::Rejected("exec producer exceeded its output allowance; recovery: stop the original command and repair producer accounting".into()))?;
+    if let Some(remaining) = remaining {
+        *remaining = remaining.checked_sub(bytes.len() as u64)
+            .ok_or_else(|| ProviderError::Rejected("exec producer exceeded its output allowance; recovery: stop the original command and repair producer accounting".into()))?;
+    }
     if destination.is_empty() {
         *destination = bytes;
     } else {

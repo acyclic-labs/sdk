@@ -18,7 +18,9 @@ impl ContextManifest {
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>, Vec<ToolDefinition>)> {
         crate::executor::with_history_io(io, |work| limits.validate_record(&reference, work))?;
         if reference.descriptor().media_type() != "application/json"
-            || reference.descriptor().byte_length() > limits.render_bytes
+            || limits
+                .render_bytes
+                .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
         {
             return Err(stock_boundary(
                 io,
@@ -28,7 +30,12 @@ impl ContextManifest {
         }
         let content_io = io;
         let bytes = reader
-            .read(&reference, limits.render_bytes, None, content_io)?
+            .read(
+                &reference,
+                reference.descriptor().byte_length(),
+                None,
+                content_io,
+            )?
             .await?;
         crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
         let manifest: Self = match io {
@@ -69,16 +76,19 @@ impl ContextManifest {
         append_context_messages(&mut messages, &mut discovered, io)?;
         let mut remaining = limits
             .render_bytes
-            .checked_sub(crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&messages, Some(limits.render_bytes), work)
-            })?)
-            .ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    ErrorCode::Invalid,
-                    "manifest exceeds context byte bound",
-                )
-            })?;
+            .map(|maximum| {
+                let size = crate::executor::with_history_io(io, |work| {
+                    crate::executor::json::json_byte_length(&messages, Some(maximum), work)
+                })?;
+                maximum.checked_sub(size).ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        ErrorCode::Invalid,
+                        "manifest exceeds context byte bound",
+                    )
+                })
+            })
+            .transpose()?;
         crate::model::reserve_instruction_bodies(&messages, &mut remaining, io)?;
         for name in manifest.selected_skills {
             let skill = manifest
@@ -94,18 +104,24 @@ impl ContextManifest {
                     )
                 })?;
             let message = skill
-                .invoke_observed(reader, limits.file_bytes.min(remaining), io)
-                .await?;
-            let size = crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&message, Some(remaining), work)
-            })?;
-            remaining = remaining.checked_sub(size).ok_or_else(|| {
-                stock_boundary(
+                .invoke_observed(
+                    reader,
+                    remaining.map_or(limits.file_bytes, |maximum| limits.file_bytes.min(maximum)),
                     io,
-                    ErrorCode::Invalid,
-                    "manifest exceeds context byte bound",
                 )
-            })?;
+                .await?;
+            if let Some(maximum) = &mut remaining {
+                let size = crate::executor::with_history_io(io, |work| {
+                    crate::executor::json::json_byte_length(&message, Some(*maximum), work)
+                })?;
+                *maximum = maximum.checked_sub(size).ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        ErrorCode::Invalid,
+                        "manifest exceeds context byte bound",
+                    )
+                })?;
+            }
             messages.push(message);
         }
         let key = crate::executor::stock_string_copy("context.manifest", io)?;

@@ -436,15 +436,19 @@ impl ContextPipeline {
         if !self.has_optional() {
             return Ok(());
         }
-        let frame = crate::executor::with_history_io(io, |work| {
-            let context_bytes = crate::executor::json::json_byte_length(context, None, work)?;
-            let messages = crate::executor::json::json_byte_length(&context.messages, None, work)?;
-            Ok::<_, crate::Error>(context_bytes - messages)
-        })?;
+        let render_bytes = if let Some(maximum) = limits.render_bytes {
+            let frame = crate::executor::with_history_io(io, |work| {
+                let context_bytes = crate::executor::json::json_byte_length(context, None, work)?;
+                let messages =
+                    crate::executor::json::json_byte_length(&context.messages, None, work)?;
+                Ok::<_, crate::Error>(context_bytes - messages)
+            })?;
+            Some(maximum.saturating_sub(request_frame_bytes.saturating_sub(frame)))
+        } else {
+            None
+        };
         let optional_limits = Limits {
-            render_bytes: limits
-                .render_bytes
-                .saturating_sub(request_frame_bytes.saturating_sub(frame)),
+            render_bytes,
             ..limits
         };
         for stage in self.0.iter().filter(|stage| stage.has_optional()) {

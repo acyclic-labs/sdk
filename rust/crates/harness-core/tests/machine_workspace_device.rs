@@ -143,7 +143,7 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
             Capabilities::default(),
             acyclic_harness_core::conversation::Limits {
                 file_bytes: 4096,
-                render_bytes: 4096,
+                render_bytes: Some(4096),
                 ..Default::default()
             },
         )?;
@@ -489,7 +489,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             scope.capabilities().clone(),
             acyclic_harness_core::conversation::Limits {
                 file_bytes: 2,
-                render_bytes: 4,
+                render_bytes: Some(4),
                 ..Default::default()
             },
         )?;

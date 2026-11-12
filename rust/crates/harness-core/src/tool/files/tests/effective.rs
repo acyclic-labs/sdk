@@ -33,7 +33,7 @@ async fn waiting_reads_cover_media_and_effective_paths_and_can_be_dropped() -> R
                     ]),
                     Limits {
                         file_bytes: 4096,
-                        render_bytes: 4096,
+                        render_bytes: Some(4096),
                         ..Limits::default()
                     },
                 )?,
@@ -238,7 +238,7 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                 content.reader = reader.clone();
                 let limits = Limits {
                     file_bytes: 4096,
-                    render_bytes: 4096,
+                    render_bytes: Some(4096),
                     ..Limits::default()
                 };
                 let task = crate::runtime::Bindings {
