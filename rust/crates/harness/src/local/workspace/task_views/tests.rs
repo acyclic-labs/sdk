@@ -20,9 +20,15 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         &mut None,
     )?;
     harness.files.create_volume(&shared).await?;
-    let grants = crate::Capabilities::new([
-        shared.capability(crate::conversation::VolumeOperation::Write, &mut None)?
-    ]);
+    let read = shared.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+    let write = shared.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
+    let grants = crate::Capabilities::new(
+        harness
+            .signed
+            .capabilities()
+            .iter()
+            .chain([read.as_str(), write.as_str()]),
+    );
     let signed = harness
         .root_authority
         .as_ref()
