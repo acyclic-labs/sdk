@@ -76,6 +76,7 @@ impl Source {
 
 #[derive(Default)]
 pub(super) struct Context {
+    pub diff: Option<acyclic_harness::tui::DiffPage>,
     pub approval_status: Option<u64>,
     history: Vec<u64>,
     pub question: Option<(
@@ -169,18 +170,14 @@ pub(super) async fn load(
             .with_context(Context::default()))
         }
 
-        Source::Diff(cursor) => Ok(diff::query(conversation, rows, cursor, None)
-            .await?
-            .with_context(Context::default())),
+        Source::Diff(cursor) => diff::query(conversation, rows, cursor, None).await,
         Source::AgentDiff(agent, cursor) => {
             let selected = if cursor.is_none() {
                 root.select(agent.clone()).await?
             } else {
                 conversation
             };
-            Ok(diff::query(selected, rows, cursor, Some(agent))
-                .await?
-                .with_context(Context::default()))
+            diff::query(selected, rows, cursor, Some(agent)).await
         }
         Source::Discard(agent, operation) => {
             let selected = root.select(agent).await?;
@@ -254,6 +251,7 @@ pub(super) async fn load(
                 approval_status: None,
                 history: selected,
                 question: None,
+                ..Context::default()
             }))
         }
         Source::Approval {
@@ -313,6 +311,7 @@ pub(super) async fn load(
                 approval_status: Some(status),
                 history: Vec::new(),
                 question: None,
+                ..Context::default()
             }))
         }
     }
@@ -358,6 +357,7 @@ mod tests {
                 approval_status: Some(7),
                 history: Vec::new(),
                 question: None,
+                ..Context::default()
             }),
         );
         let input = PromptInput::default();

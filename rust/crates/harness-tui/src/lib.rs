@@ -10,7 +10,11 @@ mod completion_popup;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod config;
 #[cfg(not(target_arch = "wasm32"))]
+mod diff;
+#[cfg(not(target_arch = "wasm32"))]
 mod display_text;
+#[cfg(not(target_arch = "wasm32"))]
+pub use diff::DiffPage;
 #[cfg(not(target_arch = "wasm32"))]
 mod feedback;
 #[cfg(not(target_arch = "wasm32"))]
