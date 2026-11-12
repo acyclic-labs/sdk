@@ -40,6 +40,11 @@ impl Pool {
                     if let Some((id,generation)) = self.pending.pop_front()
                         && self.routes.get(&id).is_some_and(|route| route.generation == generation && self.links.contains_key(&route.node)) { self.subscribe(id)?; }
                 }
+                Some((id,generation)) = self.retrying.next(), if !self.retrying.is_empty() => {
+                    if self.routes.get(&id).is_some_and(|route| route.live() && !route.opened && route.generation == generation && self.links.contains_key(&route.node)) {
+                        self.subscribe(id)?;
+                    }
+                }
                 next = self.reads.next(), if !self.reads.is_empty() => match next {
                     Some((node,epoch,response,value)) => {
                         if self.links.get(&node).is_none_or(|link| link.epoch != epoch) { continue; }
@@ -194,6 +199,7 @@ impl Pool {
         self.reads.clear();
         self.dials.clear();
         self.pending.clear();
+        self.retrying.clear();
         self.routes.clear();
     }
     pub(super) fn reset_home(&mut self) {
@@ -546,10 +552,18 @@ impl Pool {
                 let error =
                     original_error.unwrap_or_else(|| StreamError::from_session_close(&closed.code));
                 // A resumable subscription retains its application cursor. A
-                // temporarily unavailable producer is a disconnected transport,
-                // not a terminal result of the subscription.
+                // temporarily unavailable producer retries only its own route;
+                // sibling calls and finite reads retain their live connection.
                 if error.category() == StreamError::Unavailable && route.resumable() {
-                    return self.reconnect(node);
+                    route.generation = route.progress.fence()?;
+                    route.opened = false;
+                    let generation = route.generation;
+                    let executor = self.executor.clone();
+                    self.retrying.push(Box::pin(async move {
+                        executor.sleep(10).await;
+                        (id, generation)
+                    }));
+                    return Ok(());
                 }
                 if let Some(input) = &route.input {
                     input.0.close(error.clone());

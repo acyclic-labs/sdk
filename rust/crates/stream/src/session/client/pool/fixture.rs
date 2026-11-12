@@ -43,6 +43,7 @@ pub(in crate::session::client) fn fixture(
         reads: FuturesUnordered::new(),
         dials: BTreeMap::new(),
         pending: VecDeque::new(),
+        retrying: FuturesUnordered::new(),
         home_channel: native::endpoint(
             channel.clone(),
             Some(tonic::metadata::MetadataValue::from_static(

@@ -862,6 +862,9 @@ async fn integrate<D: TurnDriver>(
 
 #[tokio::test]
 async fn completed_answer_commits_before_workspace_settlement_failure() -> Result {
+    use acyclic_stream::{MemoryStream, StreamProviderExt as _};
+    let provider = MemoryStream::default();
+    super::create(&provider, id(1)).await?;
     let path = AgentPath::root(&id(1));
     let (script, driver) = driver(vec![ready()]);
     *script.settlement_failure.lock().expect("lock") =
@@ -888,6 +891,17 @@ async fn completed_answer_commits_before_workspace_settlement_failure() -> Resul
         .ok_or("completion omitted the durable answer")??;
     assert_eq!(entry.outcome, TurnOutcome::Completed);
     assert_eq!(completed.state.conversation_tail, 1);
+    let committed = provider
+        .commit(lower(
+            &completed,
+            2,
+            delivery_key(&completed.state, "completed-answer")?,
+        )?)
+        .await?;
+    assert!(matches!(
+        committed,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
     let resumed = step(
         &driver,
         &path,
@@ -904,6 +918,18 @@ async fn completed_answer_commits_before_workspace_settlement_failure() -> Resul
         }
     ));
     assert_eq!(resumed.state.conversation_tail, 1);
+    let committed = provider
+        .commit(lower(
+            &resumed,
+            2,
+            delivery_key(&resumed.state, "failed-integration")?,
+        )?)
+        .await?;
+    assert!(matches!(
+        committed,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    assert_eq!(answer(&provider, &path, 0).await?, entry);
     assert!(
         !resumed
             .outs

@@ -1,6 +1,40 @@
 use super::*;
 
 impl<S: GitCompatStore> GitCompatRepository<S> {
+    /// Pins an accepted join to its first immutable source cut. A retry keeps
+    /// that cut even when the source workspace has since advanced.
+    pub async fn pin_join_source(
+        &self,
+        operation: OperationId,
+        source: WorkspaceId,
+        generation: GenerationId,
+    ) -> Result<GenerationId, GitCompatError<S::Error>> {
+        let mut state = self.load().await?;
+        let pending = state.pending.as_mut().ok_or(GitCompatError::InvalidState)?;
+        if pending.id.operation_id() != operation {
+            return Err(GitCompatError::StaleTransition);
+        }
+        let GitFilesystemAction::Join {
+            source_workspace,
+            source_generation,
+            ..
+        } = &mut pending.action
+        else {
+            return Err(GitCompatError::InvalidState);
+        };
+        if *source_workspace != source {
+            return Err(GitCompatError::WorkspaceMismatch);
+        }
+        if let Some(original) = source_generation {
+            return Ok(*original);
+        }
+        *source_generation = Some(generation);
+        if self.publish(state).await? {
+            return Ok(generation);
+        }
+        Err(GitCompatError::Contended)
+    }
+
     /// Retains the exact conflicted paths in the existing pending join record.
     pub async fn record_merge_conflicts(
         &self,

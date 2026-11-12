@@ -939,6 +939,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         transition,
                         key(&snapshot, "publish")?,
                     )?,
+                    Err(error) if transport::unavailable(&error) => return Err(error),
                     Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
                         let Some(input) = record.as_ref() else {
                             return Err(Error::Handler(failure));

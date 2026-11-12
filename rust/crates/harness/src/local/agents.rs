@@ -19,6 +19,7 @@ use crate::{
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
+use acyclic_fs::facade::FsWork as _;
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness_client::AgentCommand;
 use acyclic_stream::{BoxProviderFuture, StreamError};
@@ -471,10 +472,7 @@ impl LocalHarness {
         }
         let child = root.spawned_project_view(&child_project).await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let mut accounting = acyclic_fs::KernelAccounting::standalone(
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
+        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
         let state = child.state(&mut accounting).await.map_err(storage)?;
         let origin = state
             .fork_origin

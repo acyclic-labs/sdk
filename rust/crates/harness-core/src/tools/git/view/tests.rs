@@ -92,6 +92,13 @@ async fn execute_request(
 
 #[tokio::test]
 async fn completed_source_cut_survives_pending_join_recovery() -> TestResult {
+    for freeze_explicitly in [false, true] {
+        recover_source_cut(freeze_explicitly).await?;
+    }
+    Ok(())
+}
+
+async fn recover_source_cut(freeze_explicitly: bool) -> TestResult {
     let (_directory, filesystem, store, main) = fixture().await?;
     main.write_text("/base", "base\n").await?;
     execute(
@@ -132,7 +139,7 @@ async fn completed_source_cut_survives_pending_join_recovery() -> TestResult {
     let request = acyclic_fs::GitRequest {
         operation: OperationId::new(),
         unanswered: Arc::new(|_| true),
-        merge_source: Some(acyclic_fs::GitGenerationRef {
+        merge_source: freeze_explicitly.then_some(acyclic_fs::GitGenerationRef {
             workspace_id: child.workspace().id(),
             generation: cut.id(),
         }),
@@ -154,14 +161,16 @@ async fn completed_source_cut_survives_pending_join_recovery() -> TestResult {
     // A later turn changes the same workspace after the request's immutable
     // action was persisted. Recover through the real executor, without the
     // original caller's in-memory source selection.
-    child
-        .workspace()
-        .write_text("/completed", "unfinished replacement\n")
-        .await?;
-    child
-        .workspace()
-        .write_text("/unfinished", "unfinished\n")
-        .await?;
+    if freeze_explicitly {
+        child
+            .workspace()
+            .write_text("/completed", "unfinished replacement\n")
+            .await?;
+        child
+            .workspace()
+            .write_text("/unfinished", "unfinished\n")
+            .await?;
+    }
     let interrupted = super::super::run_with_guard(
         Workspace {
             access: &crate::filesystem::local_owner_workspace_access("test")?,
@@ -207,6 +216,14 @@ async fn completed_source_cut_survives_pending_join_recovery() -> TestResult {
     )
     .await;
     assert!(matches!(interrupted, Err(Error::Storage(_))));
+    child
+        .workspace()
+        .write_text("/completed", "newer source\n")
+        .await?;
+    child
+        .workspace()
+        .write_text("/unfinished", "unfinished\n")
+        .await?;
     execute_request(
         &filesystem,
         &store,

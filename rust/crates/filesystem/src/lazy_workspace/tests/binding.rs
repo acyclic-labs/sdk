@@ -33,6 +33,51 @@ async fn observations_need_no_publication_but_source_deletions_do() {
 }
 
 #[tokio::test]
+async fn failed_change_checks_release_overlay_charges() {
+    let fs = Fs::memory();
+    let root = attach(
+        &fs,
+        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let cut = root.snapshot(accounting!()).await.unwrap();
+    root.remove("/removed", None, accounting!()).await.unwrap();
+    let cancellation = CancellationToken::new();
+    let mut probe = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    assert!(
+        root.has_authored_changes_since(cut, &mut probe)
+            .await
+            .unwrap()
+    );
+    let allocations = probe.standalone_parts().unwrap().1.allocation_operations;
+    let mut refused = 0;
+    for allocation_operations in 0..allocations {
+        let mut work = KernelAccounting::standalone(
+            WorkBudget {
+                allocation_operations,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        );
+        if root
+            .has_authored_changes_since(cut, &mut work)
+            .await
+            .is_err()
+        {
+            refused += 1;
+            assert_eq!(
+                work.standalone_parts().unwrap().0.live_bytes(),
+                0,
+                "refusal at allocation {allocation_operations} retained an overlay charge"
+            );
+        }
+    }
+    assert!(refused > 0);
+}
+
+#[tokio::test]
 async fn tombstones_distinguish_deletion_from_hiding() {
     let fs = Fs::memory();
     let root = attach(

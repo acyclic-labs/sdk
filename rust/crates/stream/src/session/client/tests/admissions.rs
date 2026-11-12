@@ -1,4 +1,5 @@
 use super::*;
+use futures::FutureExt as _;
 
 #[tokio::test]
 async fn unavailable_subscription_keeps_its_cursor_and_reopens() -> TestResult {
@@ -7,6 +8,15 @@ async fn unavailable_subscription_keeps_its_cursor_and_reopens() -> TestResult {
     pool.links.remove("bad");
     let progress = Arc::new(Progress::new(7));
     pool.routes.get_mut(&3).ok_or("missing route")?.progress = progress.clone();
+    let (sender, mut sibling) = mpsc::channel(2);
+    pool.routes.insert(
+        5,
+        pool::fixture::route(
+            "good",
+            Kind::ActorCall(wire::SessionCall::default()),
+            sender,
+        ),
+    );
     assert!(pool.receive_frame(
         "good",
         frame(
@@ -22,7 +32,25 @@ async fn unavailable_subscription_keeps_its_cursor_and_reopens() -> TestResult {
     assert_eq!(route.generation, 2);
     assert_eq!(progress.next()?, 7);
     assert!(!progress.ended());
-    assert_eq!(pool.dials.len(), 1);
+    assert!(pool.dials.is_empty());
+    assert!(pool.links.contains_key("good"));
+    assert_eq!(
+        pool.routes
+            .get(&5)
+            .ok_or("sibling call was discarded")?
+            .generation,
+        1
+    );
+    assert!(sibling.next().now_or_never().is_none());
+    assert_eq!(pool.retrying.next().await, Some((3, 2)));
+    pool.subscribe(3)?;
+    assert_eq!(
+        pool.routes
+            .get(&3)
+            .ok_or("reopened route disappeared")?
+            .received,
+        7
+    );
     Ok(())
 }
 
