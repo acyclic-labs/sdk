@@ -29,7 +29,10 @@ const withTests = [
 ];
 
 // Library only: each acyclic-fs capability on its own.
-const libraryOnly = native;
+const libraryOnly = [
+  ...native,
+  ["-p", "acyclic-native-runtime", "--features", "test-support"],
+];
 
 // Explicit shipped combinations share defining-package admission with the
 // generated matrix. They remain independent compiler invocations.

@@ -54,9 +54,10 @@ and `rg --files` in the confined shell. Install these inspection tools even
 when using a different linker; the shared Linux CI toolchain action provisions
 the additional `ripgrep`, `debianutils` and `file` packages.
 
-On Linux, a sandbox syscall denial terminates the command tree and becomes a
-typed tool failure after cleanup. Descriptor-local FIONREAD and FIONBIO are
-allowed, as are read-only terminal attribute/window queries. A shell cannot hide a denied child behind a successful pipeline.
+On Linux, sandbox syscall denials return `EPERM` to the calling process; they
+do not terminate the command tree. Anonymous Unix stream/seqpacket pairs and process-group
+or session changes are allowed. Custody follows descendants across those changes.
+Descriptor-local FIONREAD and FIONBIO and read-only terminal queries are allowed.
 If the root exits while descendants remain unfinished, cleanup terminates them
 and reports a failed command tree rather than successful partial output. Join
 background work before exiting the shell. Guest-generated SIGSYS remains an
@@ -65,8 +66,9 @@ The closed Unix tool environment supplies the already-selected `SHELL` path.
 This avoids Bash looking up a login shell through host name-service IPC during
 startup. The default workspace policy sets `HOME` to the workspace, so tools
 such as ripgrep do not rediscover a host home through NSS. Unix socket creation
-returns `EAFNOSUPPORT` without contacting host services, so name-service probes
-can fall back to numeric ownership. Native policy tests exercise ordinary
+returns `EPERM` without contacting host services, so name-service probes
+can fall back to numeric ownership. Datagram pairs remain closed because sendto/sendmsg can retarget them to host
+services. Native policy tests exercise ordinary
 inspection commands and force a socket probe independently of the host's NSS
 configuration.
 

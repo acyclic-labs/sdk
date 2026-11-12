@@ -242,7 +242,7 @@ proptest! {
             && !attributes.contains(&i64::from(syscall))
             && ![libc::SYS_read, libc::SYS_write, libc::SYS_fcntl, libc::SYS_ioctl,
                 libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid,
-                libc::SYS_clone3, libc::SYS_io_uring_setup].contains(&(i64::from(syscall))) {
+                libc::SYS_clone3, libc::SYS_io_uring_setup, libc::SYS_socketpair].contains(&(i64::from(syscall))) {
             prop_assert_eq!(evaluate(code, ARCH, syscall, arguments)?, DENY);
         }
         for call in attributes {
@@ -254,7 +254,7 @@ proptest! {
             libc::SYS_semget, libc::SYS_semop, libc::SYS_semctl,
             libc::SYS_mq_open, libc::SYS_mq_unlink, libc::SYS_process_vm_writev,
             libc::SYS_process_madvise, libc::SYS_process_mrelease,
-            libc::SYS_setpgid, libc::SYS_setsid, libc::SYS_capset] {
+            libc::SYS_capset] {
             prop_assert_eq!(evaluate(code, ARCH, u32::try_from(call).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, DENY);
         }
         for call in [libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid] {
@@ -341,7 +341,7 @@ proptest! {
     }
 
     // Generated programs must not admit a second syscall ABI, x32 numbers,
-    // namespace-bearing clone or an IPC socket through an incorrect jump.
+    // namespace-bearing clone or a host IPC socket through an incorrect jump.
     #[test]
     fn generated_filter_seals_abi_and_escape_branches(
         architecture in any::<u32>(),
@@ -359,7 +359,7 @@ proptest! {
             prop_assert_eq!(evaluate(code, architecture, syscall, arguments)?, DENY);
         }
         prop_assert_eq!(evaluate(code, ARCH, syscall | 0x4000_0000, arguments)?, DENY);
-        for syscall in [libc::SYS_ptrace, libc::SYS_setns, libc::SYS_mount, libc::SYS_socketpair] {
+        for syscall in [libc::SYS_ptrace, libc::SYS_setns, libc::SYS_mount] {
             prop_assert_eq!(evaluate(code, ARCH, u32::try_from(syscall).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, DENY);
         }
         for flag in [libc::CLONE_NEWUSER, libc::CLONE_NEWNET, libc::CLONE_NEWPID, libc::CLONE_PARENT] {
@@ -373,7 +373,15 @@ proptest! {
             0x0005_0000 | libc::ENOSYS as u32);
         let mut socket = arguments;
         socket[0] = libc::AF_UNIX as u64;
-        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_socket).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, socket)?, UNIX_UNAVAILABLE);
+        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_socket).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, socket)?, DENY);
+        socket[1] = libc::SOCK_STREAM as u64;
+        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_socketpair).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, socket)?, ALLOW);
+        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_socketpair).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?,
+            if arguments[0] & u64::from(u32::MAX) == libc::AF_UNIX as u64
+                && [libc::SOCK_STREAM as u64, libc::SOCK_SEQPACKET as u64].contains(&(arguments[1] & 0xf)) { ALLOW } else { DENY });
+        for call in [libc::SYS_setpgid, libc::SYS_setsid] {
+            prop_assert_eq!(evaluate(code, ARCH, u32::try_from(call).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, ALLOW);
+        }
     }
 
     #[test]
@@ -403,7 +411,7 @@ proptest! {
             for family in [family, libc::AF_INET as u32, libc::AF_INET6 as u32, libc::AF_UNIX as u32] {
                 socket[0] = u64::from(family);
                 prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_socket).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, socket)?,
-                    if family == libc::AF_UNIX as u32 { UNIX_UNAVAILABLE }
+                    if family == libc::AF_UNIX as u32 { DENY }
                     else if enabled && (family == libc::AF_INET as u32 || family == libc::AF_INET6 as u32) { ALLOW } else { DENY });
             }
             let mut clone = [0; 6];

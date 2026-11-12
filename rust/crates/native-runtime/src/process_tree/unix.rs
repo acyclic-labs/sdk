@@ -15,7 +15,9 @@ pub(super) struct Child {
     pid: libc::pid_t,
     status: Option<ExitStatus>,
     #[cfg(target_os = "linux")]
-    pub(super) syscall_report: Option<std::fs::File>,
+    pub(super) completion_report: Option<std::fs::File>,
+    #[cfg(target_os = "linux")]
+    pub(super) supervised: bool,
 }
 
 impl Child {
@@ -32,7 +34,9 @@ impl Child {
             pid,
             status: None,
             #[cfg(target_os = "linux")]
-            syscall_report: None,
+            completion_report: None,
+            #[cfg(target_os = "linux")]
+            supervised: false,
         }
     }
 
@@ -312,6 +316,8 @@ fn nonblocking(pipe: &impl Pipe, meter: Option<&dyn crate::NativeReadMeter>) -> 
 pub(super) struct Guard {
     process_group: libc::pid_t,
     active: bool,
+    #[cfg(target_os = "linux")]
+    supervised: bool,
 }
 
 /// Native spawn objects that a failed SDK destroy did not release.
@@ -379,11 +385,15 @@ pub(super) fn adopt(
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
         let (child, started) = start()?;
         let process_group = child.pid;
+        #[cfg(target_os = "linux")]
+        let supervised = child.supervised;
         *custody = Some(super::ProcessTree {
             child: Some(child),
             guard: Guard {
                 process_group,
                 active: true,
+                #[cfg(target_os = "linux")]
+                supervised,
             },
             output_taken: false,
             native_child: None,
@@ -558,6 +568,8 @@ impl SpawnObjects<'_> {
                     guard: Guard {
                         process_group: 0,
                         active: false,
+                        #[cfg(target_os = "linux")]
+                        supervised: false,
                     },
                     output_taken: false,
                     cleanup_on_drop: false,
@@ -667,6 +679,8 @@ impl SpawnObjects<'_> {
                         guard: Guard {
                             process_group: pid,
                             active: true,
+                            #[cfg(target_os = "linux")]
+                            supervised: false,
                         },
                         output_taken: false,
                         cleanup_on_drop: false,
@@ -715,14 +729,21 @@ impl Guard {
         self.active
     }
 
-    /// One process-group kill; no enumeration or allocation is needed to
-    /// notify a custodied warden that its program must be drained.
+    /// Signal the stable warden PID, or the group of a direct launch. The
+    /// warden drains descendants even when its program changed session.
     pub(super) fn kill(&mut self) -> io::Result<()> {
         if !self.active {
             return Ok(());
         }
-        // SAFETY: the owned, unreaped leader reserves this exact group ID.
-        if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
+        let (target, signal) = (-self.process_group, libc::SIGKILL);
+        #[cfg(target_os = "linux")]
+        let (target, signal) = if self.supervised {
+            (self.process_group, libc::SIGUSR1)
+        } else {
+            (target, signal)
+        };
+        // SAFETY: the unreaped child reserves the warden PID or group ID.
+        if unsafe { libc::kill(target, signal) } == 0 {
             self.active = false;
             return Ok(());
         }
@@ -759,8 +780,15 @@ impl Guard {
         }
         let signal =
             super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-                // SAFETY: the unreaped owned leader reserves this process group.
-                if unsafe { libc::kill(-self.process_group, libc::SIGTERM) } == 0 {
+                let target = -self.process_group;
+                #[cfg(target_os = "linux")]
+                let target = if self.supervised {
+                    self.process_group
+                } else {
+                    target
+                };
+                // SAFETY: the unreaped owned child reserves this PID or group.
+                if unsafe { libc::kill(target, libc::SIGTERM) } == 0 {
                     Ok(())
                 } else {
                     Err(io::Error::last_os_error())

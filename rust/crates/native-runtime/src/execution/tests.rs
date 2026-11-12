@@ -111,34 +111,11 @@ fn sandbox_policy() {
                 None,
                 None,
             );
-            #[cfg(target_os = "linux")]
-            if confined {
-                let failure = captured.unwrap_err();
-                assert!(
-                    matches!(failure.error.get_ref().and_then(|cause| cause.downcast_ref::<ExecutionViolation>()),
-                        Some(ExecutionViolation::Syscall { number }) if i64::from(*number) == libc::SYS_socket),
-                    "{failure:?}"
-                );
-                assert!(failure.cleanup_completed);
-                assert!(
-                    String::from_utf8_lossy(&failure.stderr).contains("POLICY_BEFORE_NETWORK"),
-                    "{failure:?}"
-                );
-            } else {
-                let output = captured.unwrap();
-                assert!(output.status.success(), "{output:?}");
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let output = captured.unwrap();
-                assert!(
-                    output.status.success(),
-                    "confined={confined}, access={access:?}, volume_write={volume_write}, custody={custodied}: status={} stdout={} stderr={}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+            let output = captured.unwrap();
+            assert!(
+                output.status.success(),
+                "confined={confined}, access={access:?}, volume_write={volume_write}, custody={custodied}: {output:?}"
+            );
             if confined {
                 assert_eq!(
                     listener.accept().unwrap_err().kind(),
@@ -1350,8 +1327,6 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
     .flat_map(|(network, allowed)| {
         [None, Some(&custody)].map(move |custody| (network.clone(), allowed, custody))
     }) {
-        let syscall_denial = matches!(&network, ExecutionNetwork::Off)
-            || matches!(&network, ExecutionNetwork::TcpPorts(ports) if ports.is_empty());
         let grant = ExecutionGrant::new(
             root.path(),
             ExecutionAccess::ReadOnly,
@@ -1396,20 +1371,8 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
             None,
             None,
         );
-        if syscall_denial {
-            let failure = captured.unwrap_err();
-            assert!(failure.cleanup_completed);
-            assert!(
-                failure
-                    .error
-                    .get_ref()
-                    .is_some_and(|cause| cause.is::<ExecutionViolation>()),
-                "{failure:?}"
-            );
-        } else {
-            let output = captured.unwrap();
-            assert!(output.status.success(), "{output:?}");
-        }
+        let output = captured.unwrap();
+        assert!(output.status.success(), "{output:?}");
         if allowed {
             listener.accept().unwrap();
         } else {
@@ -1970,7 +1933,7 @@ fn local_socket_unavailability_probe() -> io::Result<()> {
     let path = std::env::var_os("ACYCLIC_LOCAL_SOCKET_PATH").ok_or(io::ErrorKind::NotFound)?;
     let error = std::os::unix::net::UnixStream::connect(path).unwrap_err();
     let expected = match mode.to_str() {
-        Some("confined") => libc::EAFNOSUPPORT,
+        Some("confined") => libc::EPERM,
         Some("unconfined") => libc::ENOENT,
         _ => return Err(io::ErrorKind::InvalidInput.into()),
     };
@@ -1986,11 +1949,14 @@ fn node_capture_preserves_workspace_writes_and_output() -> io::Result<()> {
     let node =
         crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
             .resolve_native("node")?;
+    let timeout =
+        crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
+            .resolve_native("timeout")?;
     let grant = ExecutionGrant::workspace_default(
         root.path(),
         ExecutionAccess::WorkspaceWrite,
         [],
-        [node.clone()],
+        [node.clone(), timeout.clone()],
     )?;
     std::fs::write(
         root.path().join("capture.mjs"),
@@ -1998,34 +1964,49 @@ fn node_capture_preserves_workspace_writes_and_output() -> io::Result<()> {
 writeFileSync("written", "GC95_NODE_CONTENT\n");
 process.stdout.write(readFileSync("written"));"#,
     )?;
-    let mut command = Command::new(node);
-    command
-        .arg("capture.mjs")
-        .current_dir(root.path())
-        .env_clear()
-        .env("HOME", root.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut tree = ProcessTree::spawn_granted(command, &grant, None)?;
-    let output = tree
-        .wait_with_output(
-            crate::CaptureSchedule::Unbounded,
-            65536,
-            None,
-            || Ok(()),
-            |_| Ok(Default::default()),
-            None,
-            None,
-            None,
-        )
-        .map_err(io::Error::other)?;
-    assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
-    assert_eq!(
-        std::fs::read(root.path().join("written"))?,
-        b"GC95_NODE_CONTENT\n"
-    );
-    assert_eq!(output.stdout, b"GC95_NODE_CONTENT\n");
+    std::fs::write(
+        root.path().join("capture.test.mjs"),
+        "import {test} from 'node:test'; test('capture', async () => { await import('./capture.mjs'); });",
+    )?;
+    // timeout establishes a process group; node --test creates child IPC pairs.
+    // Zero disables the timer: completion must come from the real process exit.
+    let mut commands = [Command::new(&node), Command::new(timeout)];
+    commands[0].arg("capture.mjs");
+    commands[1]
+        .arg("0")
+        .arg(&node)
+        .args(["--test", "capture.test.mjs"]);
+    for mut command in commands {
+        command
+            .current_dir(root.path())
+            .env_clear()
+            .env("HOME", root.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut tree = ProcessTree::spawn_granted(command, &grant, None)?;
+        let output = tree
+            .wait_with_output(
+                crate::CaptureSchedule::Unbounded,
+                65536,
+                None,
+                || Ok(()),
+                |_| Ok(Default::default()),
+                None,
+                None,
+                None,
+            )
+            .map_err(io::Error::other)?;
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert_eq!(
+            std::fs::read(root.path().join("written"))?,
+            b"GC95_NODE_CONTENT\n"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("GC95_NODE_CONTENT"),
+            "{output:?}"
+        );
+    }
     Ok(())
 }

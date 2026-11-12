@@ -34,6 +34,7 @@ pub const SIGHUP: i32 = 1;
 pub const SIGINT: i32 = 2;
 pub const SIGQUIT: i32 = 3;
 pub const SIGKILL: i32 = 9;
+pub const SIGUSR1: i32 = 10;
 pub const SIGPIPE: i32 = 13;
 pub const SIGTERM: i32 = 15;
 pub const SIGCHLD: i32 = 17;
@@ -60,11 +61,7 @@ mod number {
     pub const RT_SIGPROCMASK: usize = 14;
     pub const MREMAP: usize = 25;
     pub const GETPID: usize = 39;
-    pub const SOCKET: usize = 41;
-    pub const IOCTL: usize = 16;
     pub const RECVMSG: usize = 47;
-    pub const SENDMSG: usize = 46;
-    pub const SOCKETPAIR: usize = 53;
     pub const CLONE: usize = 56;
     pub const EXECVE: usize = 59;
     pub const WAIT4: usize = 61;
@@ -90,6 +87,7 @@ mod number {
     pub const PRLIMIT64: usize = 302;
     pub const UMASK: usize = 95;
     pub const PIDFD_OPEN: usize = 434;
+    pub const SIGNALFD4: usize = 289;
     pub const CLOSE_RANGE: usize = 436;
     pub const LANDLOCK_RESTRICT_SELF: usize = 446;
 }
@@ -121,12 +119,8 @@ mod number {
     pub const CAPSET: usize = 91;
     pub const SECCOMP: usize = 277;
     pub const GETPID: usize = 172;
-    pub const SOCKET: usize = 198;
-    pub const IOCTL: usize = 29;
     pub const GETPPID: usize = 173;
     pub const RECVMSG: usize = 212;
-    pub const SENDMSG: usize = 211;
-    pub const SOCKETPAIR: usize = 199;
     pub const MREMAP: usize = 216;
     pub const CLONE: usize = 220;
     pub const EXECVE: usize = 221;
@@ -135,6 +129,7 @@ mod number {
     pub const PRLIMIT64: usize = 261;
     pub const UMASK: usize = 166;
     pub const PIDFD_OPEN: usize = 434;
+    pub const SIGNALFD4: usize = 74;
     pub const CLOSE_RANGE: usize = 436;
     pub const LANDLOCK_RESTRICT_SELF: usize = 446;
 }
@@ -401,6 +396,41 @@ pub fn pidfd(pid: Pid) -> Result<Fd, Errno> {
     unsafe { call(number::PIDFD_OPEN, [arg(pid), 0, 0, 0, 0, 0]) }.map(fd)
 }
 
+/// Warden control stays addressable when the guest changes group or session.
+/// Block before forking; prepare_program restores the guest's original mask.
+pub fn tree_control() -> Result<Fd, Errno> {
+    set_signal_checked(SIGUSR1, false)?;
+    set_signal_checked(SIGTERM, false)?;
+    let mask = (1_u64 << (SIGUSR1 - 1)) | (1_u64 << (SIGTERM - 1));
+    // SAFETY: a readable native kernel signal set; SIG_BLOCK preserves other bits.
+    unsafe {
+        call(
+            number::RT_SIGPROCMASK,
+            [0, core::ptr::from_ref(&mask).addr(), 0, 8, 0, 0],
+        )
+    }?;
+    // SAFETY: a new descriptor for exactly those blocked signals.
+    unsafe {
+        call(
+            number::SIGNALFD4,
+            [
+                usize::MAX,
+                core::ptr::from_ref(&mask).addr(),
+                8,
+                O_CLOEXEC as usize,
+                0,
+                0,
+            ],
+        )
+    }
+    .map(fd)
+}
+
+pub fn getpgid(pid: Pid) -> Result<Pid, Errno> {
+    // SAFETY: reads the process group of a named live child.
+    unsafe { call(number::GETPGID, [arg(pid), 0, 0, 0, 0, 0]) }.map(fd)
+}
+
 /// One descriptor `poll` waits on.
 #[repr(C)]
 pub struct PollFd {
@@ -410,9 +440,6 @@ pub struct PollFd {
 }
 
 impl PollFd {
-    pub const fn notified(&self) -> bool {
-        self.revents & 1 != 0
-    }
     pub const fn readable(fd: Fd) -> Self {
         Self {
             fd,
@@ -565,15 +592,15 @@ pub fn restrict_filesystem(ruleset: Fd) -> Result<(), i32> {
     .map_err(|Errno(error)| error)
 }
 
-pub fn restrict_syscalls(program: &super::entry::Program) -> Result<Fd, i32> {
+pub fn restrict_syscalls(program: &super::entry::Program) -> Result<(), i32> {
     // SAFETY: enter borrows the complete original request's filter buffer.
     unsafe {
         call(
             number::SECCOMP,
-            [1, 8, core::ptr::from_ref(program).addr(), 0, 0, 0],
+            [1, 0, core::ptr::from_ref(program).addr(), 0, 0, 0],
         )
     }
-    .map(fd)
+    .map(drop)
     .map_err(|Errno(error)| error)
 }
 
@@ -725,122 +752,4 @@ pub fn receive(socket: Fd, header: &mut MessageHeader) -> Result<usize, Errno> {
             ],
         )
     }
-}
-
-/// Private bootstrap transport, closed before guest exec.
-pub fn notification_pair() -> Result<[Fd; 2], Errno> {
-    let mut pair = [-1; 2];
-    // SAFETY: two writable descriptors, AF_UNIX and SOCK_SEQPACKET|CLOEXEC.
-    unsafe {
-        call(
-            number::SOCKETPAIR,
-            [1, 5 | O_CLOEXEC as usize, 0, pair.as_mut_ptr().addr(), 0, 0],
-        )
-    }?;
-    Ok(pair)
-}
-
-/// Transfers exactly one listener over the private bootstrap transport.
-pub fn notification_transfer(socket: Fd, listener: Option<Fd>) -> Result<Fd, Errno> {
-    #[repr(C, align(8))]
-    struct Control([u8; 24]);
-    let mut control = Control([0; 24]);
-    let mut byte = [1_u8];
-    let mut vector = IoVector {
-        base: byte.as_mut_ptr(),
-        length: 1,
-    };
-    if let Some(listener) = listener {
-        control.0[..8].copy_from_slice(&20_usize.to_ne_bytes());
-        control.0[8..12].copy_from_slice(&SOL_SOCKET.to_ne_bytes());
-        control.0[12..16].copy_from_slice(&SCM_RIGHTS.to_ne_bytes());
-        control.0[16..20].copy_from_slice(&listener.to_ne_bytes());
-    }
-    let mut header = MessageHeader {
-        name: 0,
-        name_length: 0,
-        iov: &raw mut vector,
-        iov_length: 1,
-        control: control.0.as_mut_ptr(),
-        control_length: 24,
-        flags: 0,
-    };
-    if listener.is_some() {
-        // SAFETY: a complete message borrowing live initialized storage.
-        unsafe {
-            call(
-                number::SENDMSG,
-                [
-                    arg(socket),
-                    core::ptr::from_ref(&header).addr(),
-                    0x4000,
-                    0,
-                    0,
-                    0,
-                ],
-            )
-        }?;
-        Ok(-1)
-    } else {
-        let received = loop {
-            match receive(socket, &mut header) {
-                Err(Errno(EINTR)) => continue,
-                result => break result?,
-            }
-        };
-        if received != 1
-            || header.flags & MSG_CTRUNC != 0
-            || header.control_length != 24
-            || control.0[..8] != 20_usize.to_ne_bytes()
-            || control.0[8..12] != SOL_SOCKET.to_ne_bytes()
-            || control.0[12..16] != SCM_RIGHTS.to_ne_bytes()
-        {
-            return Err(Errno(EINVAL));
-        }
-        Ok(i32::from_ne_bytes([
-            control.0[16],
-            control.0[17],
-            control.0[18],
-            control.0[19],
-        ]))
-    }
-}
-
-/// Reads the kernel's denied call, never a guest pointer. The task stays
-/// blocked until the warden terminates the tree; no syscall is continued.
-pub fn syscall_denial(listener: Fd) -> Result<(i32, bool), Errno> {
-    #[repr(C, align(8))]
-    struct Notification([u8; 80]);
-    let mut notification = Notification([0; 80]);
-    loop {
-        // SAFETY: SECCOMP_IOCTL_NOTIF_RECV writes one zero-initialized
-        // seccomp_notif. POLLIN proved a pending notification; cancellation
-        // returns ENOENT. Both supported ABIs use the same native layout.
-        match unsafe {
-            call(
-                number::IOCTL,
-                [
-                    arg(listener),
-                    0xc050_2100,
-                    notification.0.as_mut_ptr().addr(),
-                    0,
-                    0,
-                    0,
-                ],
-            )
-        } {
-            Err(Errno(EINTR)) => continue,
-            Err(error) => return Err(error),
-            Ok(_) => break,
-        }
-    }
-    let bytes = notification.0;
-    let syscall = i32::from_ne_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
-    let family = u64::from_ne_bytes([
-        bytes[32], bytes[33], bytes[34], bytes[35], bytes[36], bytes[37], bytes[38], bytes[39],
-    ]);
-    let host_ipc = usize::try_from(syscall)
-        .is_ok_and(|call| call == number::SOCKET || call == number::SOCKETPAIR)
-        && family == 1;
-    Ok((syscall, host_ipc))
 }

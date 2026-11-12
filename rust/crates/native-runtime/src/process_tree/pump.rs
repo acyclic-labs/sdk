@@ -616,7 +616,7 @@ impl<'a> Pump<'a> {
         let report = tree
             .child
             .as_mut()
-            .and_then(|child| child.syscall_report.take());
+            .and_then(|child| child.completion_report.take());
         // Cleanup errors take precedence: a capture timeout alone does not
         // describe an unresolved termination. Keep Child ownership on error.
         let result = tree
@@ -640,24 +640,6 @@ impl<'a> Pump<'a> {
                         )?;
                         match read {
                             0 => {}
-                            1 if byte == [1] || byte == [4] => {
-                                let mut number = [0; 4];
-                                process_control_attempt(
-                                    meter,
-                                    crate::NativeOperationKind::Read,
-                                    || report.read_exact(&mut number),
-                                )?;
-                                return Err(io::Error::new(
-                                    io::ErrorKind::PermissionDenied,
-                                    if byte == [4] {
-                                        crate::execution::ExecutionViolation::HostIpc
-                                    } else {
-                                        crate::execution::ExecutionViolation::Syscall {
-                                            number: i32::from_le_bytes(number),
-                                        }
-                                    },
-                                ));
-                            }
                             1 if byte == [3] && result.is_ok() => {
                                 return Err(io::Error::other(
                                     crate::execution::ExecutionIncomplete,
@@ -666,7 +648,7 @@ impl<'a> Pump<'a> {
                             1 if byte == [3] => {}
                             _ => {
                                 return Err(io::Error::other(
-                                    "sandbox syscall monitor failed; command tree terminated",
+                                    "command-tree completion report was invalid",
                                 ));
                             }
                         }

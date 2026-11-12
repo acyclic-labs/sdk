@@ -12,11 +12,6 @@ use super::record::{self, BOOT_BYTES, START_BYTES};
 use super::sys::{self, Errno, Fd, Pid};
 use core::ffi::CStr;
 
-#[cfg(target_os = "linux")]
-pub(super) type Admission = Option<Fd>;
-#[cfg(target_vendor = "apple")]
-pub(super) type Admission = ();
-
 /// Runs in the owner's direct child. On macOS it already leads its own
 /// process group; on Linux it creates that group here and later returns to
 /// `home`, the runner's group. Returns only in the program's process, which
@@ -25,9 +20,8 @@ pub(super) fn enter(
     directory: Fd,
     owner: Pid,
     #[cfg(target_os = "linux")] home: Pid,
-    #[cfg(target_os = "linux")] filtered: bool,
     #[cfg(target_os = "linux")] report: Fd,
-) -> Result<Admission, Errno> {
+) -> Result<(), Errno> {
     // An inherited host handler must not run in the warden.
     sys::set_signal(sys::SIGCHLD, false);
     // The tree's group, which this warden's PID names.
@@ -60,16 +54,12 @@ pub(super) fn enter(
         }
     };
     #[cfg(target_os = "linux")]
-    let notification = if filtered {
-        Some(match sys::notification_pair() {
-            Ok(pair) => pair,
-            Err(error) => {
-                unlink();
-                return Err(error);
-            }
-        })
-    } else {
-        None
+    let control = match sys::tree_control() {
+        Ok(control) => control,
+        Err(error) => {
+            unlink();
+            return Err(error);
+        }
     };
     // The program waits on this pipe until the warden has left the group.
     let [admission, admit] = match sys::pipe() {
@@ -86,16 +76,11 @@ pub(super) fn enter(
             sys::close(watch);
             sys::close(admit);
             #[cfg(target_os = "linux")]
-            sys::close(report);
-            admitted_by_warden(admission)?;
-            #[cfg(target_os = "linux")]
             {
-                return Ok(notification.map(|[receive, send]| {
-                    sys::close(receive);
-                    send
-                }));
+                sys::close(report);
+                sys::close(control);
             }
-            #[cfg(target_vendor = "apple")]
+            admitted_by_warden(admission)?;
             return Ok(());
         }
         Ok(program) => program,
@@ -116,23 +101,6 @@ pub(super) fn enter(
         let _ = write_full(admit, &[1]);
     }
     sys::close(admit);
-    #[cfg(target_os = "linux")]
-    let listener = notification.map_or(-1, |[receive, send]| {
-        sys::close(send);
-        let listener = match sys::notification_transfer(receive, None) {
-            Ok(listener) => listener,
-            Err(_) => {
-                // Losing the monitor must never admit unobserved guest code.
-                sys::set_signal(sys::SIGPIPE, true);
-                let _ = write_full(report, &[2]);
-                let status = drain(watch, warden, program, Some(31), report);
-                unlink();
-                exit_as(status)
-            }
-        };
-        sys::close(receive);
-        listener
-    });
     supervise(
         directory,
         record,
@@ -142,7 +110,7 @@ pub(super) fn enter(
         program,
         name,
         #[cfg(target_os = "linux")]
-        listener,
+        control,
         #[cfg(target_os = "linux")]
         report,
     )
@@ -346,24 +314,20 @@ fn supervise(
     warden: Pid,
     program: Pid,
     name: &CStr,
-    #[cfg(target_os = "linux")] listener: Fd,
+    #[cfg(target_os = "linux")] control: Fd,
     #[cfg(target_os = "linux")] report: Fd,
 ) -> ! {
     // Graceful requests to the group reach the program; the warden reports
     // the program's own outcome.
-    for signal in [
-        sys::SIGTERM,
-        sys::SIGINT,
-        sys::SIGHUP,
-        sys::SIGQUIT,
-        sys::SIGPIPE,
-    ] {
+    #[cfg(target_vendor = "apple")]
+    sys::set_signal(sys::SIGTERM, true);
+    for signal in [sys::SIGINT, sys::SIGHUP, sys::SIGQUIT, sys::SIGPIPE] {
         sys::set_signal(signal, true);
     }
     // Inherited descriptors, including the reply pipe and the program's
     // standard streams, close here.
     #[cfg(target_os = "linux")]
-    close_except([directory, record, watch, listener, report], warden);
+    close_except([directory, record, watch, control, report], warden);
     #[cfg(target_vendor = "apple")]
     close_except([directory, record, watch], warden);
     let status = await_exit(
@@ -371,9 +335,9 @@ fn supervise(
         owner,
         program,
         #[cfg(target_os = "linux")]
-        listener,
+        control,
         #[cfg(target_os = "linux")]
-        report,
+        warden,
     );
     let status = drain(
         watch,
@@ -392,13 +356,13 @@ fn supervise(
 /// Waits for the program to exit, returning its status, or for the owner to
 /// exit, returning `None`.
 #[cfg(target_os = "linux")]
-fn await_exit(watch: Fd, _owner: Pid, program: Pid, listener: Fd, report: Fd) -> Option<i32> {
+fn await_exit(watch: Fd, _owner: Pid, program: Pid, control: Fd, warden: Pid) -> Option<i32> {
     // An unreaped child's PID cannot be reused.
     let child = sys::pidfd(program).ok()?;
     let mut ready = [
         sys::PollFd::readable(watch),
         sys::PollFd::readable(child),
-        sys::PollFd::readable(listener),
+        sys::PollFd::readable(control),
     ];
     loop {
         match sys::poll(&mut ready) {
@@ -406,33 +370,37 @@ fn await_exit(watch: Fd, _owner: Pid, program: Pid, listener: Fd, report: Fd) ->
             Err(Errno(sys::EINTR)) => continue,
             Err(_) => return None,
         }
-        let [owner, child, denial] = &ready;
-        if denial.notified() {
-            // The filtered task is blocked in the kernel. Terminate the whole
-            // tree, preserving SIGSYS even if a shell would mask its child.
-            match sys::syscall_denial(listener) {
-                Ok((number, host_ipc)) => {
-                    let [a, b, c, d] = number.to_le_bytes();
-                    let _ = write_full(report, &[if host_ipc { 4 } else { 1 }, a, b, c, d]);
-                }
-                Err(_) => {
-                    let _ = write_full(report, &[2]);
-                }
-            }
-            return Some(31);
-        }
-        if child.ready() {
+        if ready[1].ready() {
             return reap(program);
         }
-        if owner.ready() {
+        if ready[0].ready() {
             return None;
         }
-        if denial.ready() {
-            ready[2] = sys::PollFd::readable(-1);
+        if ready[2].ready() {
+            let mut signal = [0; 128];
+            match sys::read(control, &mut signal) {
+                Err(Errno(sys::EINTR)) => continue,
+                Ok(128) => {}
+                _ => return None,
+            }
+            if u32::from_ne_bytes([signal[0], signal[1], signal[2], signal[3]])
+                != sys::SIGTERM as u32
+            {
+                return None;
+            }
+            // Both unreaped PIDs reserve groups belonging to this tree. A root
+            // which became its own group/session leader took its children with
+            // it. Never broadcast to an arbitrary group the root merely joined.
+            let group = sys::getpgid(program).ok();
+            let _ = sys::kill(-warden, sys::SIGTERM);
+            if group == Some(program) {
+                let _ = sys::kill(-program, sys::SIGTERM);
+            } else if group != Some(warden) {
+                let _ = sys::kill(program, sys::SIGTERM);
+            }
         }
     }
 }
-
 #[cfg(target_vendor = "apple")]
 fn await_exit(watch: Fd, owner: Pid, program: Pid) -> Option<i32> {
     match watch_exit(watch, program) {
@@ -494,10 +462,7 @@ fn drain(
             Err(Errno(sys::EINTR)) => continue,
             Err(_) => return status,
         }
-        // Killing a still-running descendant can withdraw an unreceived seccomp
-        // notification. Never report successful completion of that truncated
-        // tree, whether or not the monitor won that race. This is a lifecycle
-        // failure, not fabricated evidence of a policy denial.
+        // Never report successful completion of an unfinished command tree.
         if completed && !reported && report >= 0 {
             let _ = write_full(report, &[3]);
             reported = true;

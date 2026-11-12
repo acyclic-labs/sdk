@@ -30,7 +30,7 @@ use super::device::{NULL_DEVICE, character_device};
 
 /// Irreversibly confines only the final guest child. Every failure stops the
 /// launch before exec; there is no fallback, allocation, wait or host callback.
-pub(super) fn enter(ruleset: i32, filter: &[Instruction]) -> Result<i32, i32> {
+pub(super) fn enter(ruleset: i32, filter: &[Instruction]) -> Result<(), i32> {
     let program = Program {
         len: u16::try_from(filter.len()).map_err(|_| sys::EINVAL)?,
         filter: filter.as_ptr(),

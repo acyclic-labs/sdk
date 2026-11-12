@@ -120,7 +120,7 @@ pub(super) struct Spec {
     pub(super) argv: *const *const c_char,
     pub(super) envp: *const *const c_char,
     pub(super) boundary: Option<Boundary>,
-    pub(super) syscall_report: Fd,
+    pub(super) completion_report: Fd,
     pub(super) activity: Option<Fd>,
 }
 
@@ -289,7 +289,7 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     }
     Ok(Spec {
         reply: descriptor(1)?,
-        syscall_report: if policy.is_some() {
+        completion_report: if policy.is_some() {
             descriptor(next + 1)?
         } else {
             -1

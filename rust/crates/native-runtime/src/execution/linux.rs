@@ -445,9 +445,8 @@ const GREATER_EQUAL: u16 = 0x35;
 const JUMP: u16 = 0x05;
 const AND: u16 = 0x54;
 const RETURN: u16 = 0x06;
-const DENY: u32 = 0x7fc0_0000; // SECCOMP_RET_USER_NOTIF: observed by the warden.
+const DENY: u32 = 0x0005_0000 | libc::EPERM as u32;
 const ALLOW: u32 = 0x7fff_0000;
-const UNIX_UNAVAILABLE: u32 = 0x0005_0000 | libc::EAFNOSUPPORT as u32;
 
 const fn instruction(code: u16, jt: u8, jf: u8, k: u32) -> Instruction {
     Instruction { code, jt, jf, k }
@@ -545,7 +544,7 @@ const fn compile_filter<const N: usize>(network: FilterNetwork) -> Filter<N> {
     code.extend(&[
         instruction(LOAD, 0, 0, 4),
         instruction(EQUAL, 1, 0, arch),
-        instruction(RETURN, 0, 0, DENY), // another syscall ABI is a reported violation
+        instruction(RETURN, 0, 0, DENY), // another syscall ABI is denied
         instruction(LOAD, 0, 0, 0),
     ]);
     // Reject the x32 ABI before comparing native syscall numbers.
@@ -678,18 +677,31 @@ const fn control_filter<const N: usize>(code: &mut Filter<N>) {
 }
 
 const fn socket_filter<const N: usize>(code: &mut Filter<N>, network: FilterNetwork) {
-    // Local IPC remains unavailable. Return the socket API's ordinary error
-    // so capability probes can fall back without contacting a host service.
+    // Connected stream/seqpacket pairs cannot name a host endpoint. Datagram
+    // pairs can be retargeted by sendto/sendmsg, so they are not local authority.
+    // socket(AF_UNIX) stays closed: seccomp cannot safely inspect a later
+    // connect/bind sockaddr pointer, including abstract namespace addresses.
+    code.extend(&[
+        instruction(EQUAL, 0, 9, number(libc::SYS_socketpair)),
+        instruction(LOAD, 0, 0, 16),
+        instruction(EQUAL, 1, 0, libc::AF_UNIX as u32),
+        instruction(RETURN, 0, 0, DENY),
+        instruction(LOAD, 0, 0, 24),
+        instruction(AND, 0, 0, 0xf),
+        instruction(EQUAL, 2, 0, libc::SOCK_STREAM as u32),
+        instruction(EQUAL, 1, 0, libc::SOCK_SEQPACKET as u32),
+        instruction(RETURN, 0, 0, DENY),
+        instruction(RETURN, 0, 0, ALLOW),
+    ]);
     code.extend(&[
         instruction(EQUAL, 0, 4, number(libc::SYS_socket)),
         instruction(LOAD, 0, 0, 16),
         instruction(EQUAL, 0, 1, libc::AF_UNIX as u32),
-        instruction(RETURN, 0, 0, UNIX_UNAVAILABLE),
+        instruction(RETURN, 0, 0, DENY),
         instruction(LOAD, 0, 0, 0),
     ]);
     if matches!(network, FilterNetwork::Off) {
         verdict(code, libc::SYS_socket, DENY);
-        verdict(code, libc::SYS_socketpair, DENY);
         verdict(code, libc::SYS_connect, DENY);
         return;
     }
@@ -989,6 +1001,10 @@ const ALLOWED_SYSCALLS: &[libc::c_long] = &[
     libc::SYS_getitimer,
     libc::SYS_setitimer,
     libc::SYS_getpid,
+    // Kernel checks restrict group/session changes to this process and its
+    // eligible children. Custody follows descendants, not group membership.
+    libc::SYS_setpgid,
+    libc::SYS_setsid,
     libc::SYS_getppid,
     #[cfg(target_arch = "x86_64")]
     libc::SYS_getpgrp,

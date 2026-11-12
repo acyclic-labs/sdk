@@ -269,6 +269,12 @@ fn runner_owner_helper() {
     match std::env::var(MODE).as_deref() {
         Ok("hammer") => hammered_owner(),
         Ok("security") => security_owner(),
+        Ok("ignored-signals") => {
+            let (_root, custody) = custody();
+            let before = status(&custody);
+            ignored_signal_transition(&custody, &before);
+            retire_runner();
+        }
         Ok("filters") => filtered_owners(),
         Ok("filter-probe") => filter_probe(),
         Ok("overlap") => overlapping_owners(),
@@ -429,6 +435,11 @@ fn launch_admission_preserves_current_security_and_signal_state() {
     owner("filters");
     owner("landlock");
     owner("overlap");
+}
+
+#[test]
+fn supervised_guests_preserve_ignored_control_signals() {
+    owner("ignored-signals");
 }
 
 fn truncate_probe() {
@@ -806,37 +817,39 @@ fn assert_same_status_fingerprint(before: &str, after: &str) {
 }
 
 fn ignored_signal_transition(first_custody: &ProcessCustody, before: &str) {
-    let before_ignored = runner_pid().expect("runner before ignored signal change");
-    // Ignored dispositions survive exec, unlike installed handlers. A
-    // long-lived runner must not preserve the owner's earlier disposition.
-    // SAFETY: this isolated owner has no other signal users; save and restore
-    // the original action without installing a Rust signal handler.
-    unsafe {
-        let mut ignored: libc::sigaction = std::mem::zeroed();
-        let mut original: libc::sigaction = std::mem::zeroed();
-        ignored.sa_sigaction = libc::SIG_IGN;
-        assert_eq!(libc::sigemptyset(&raw mut ignored.sa_mask), 0);
-        assert_eq!(
-            libc::sigaction(libc::SIGUSR1, &raw const ignored, &raw mut original),
-            0
-        );
-        let direct = Command::new("/bin/cat")
-            .arg("/proc/self/status")
-            .output()
-            .expect("direct child with ignored signal");
-        let direct = String::from_utf8(direct.stdout).expect("status");
-        let observed = status(first_custody);
-        assert_ne!(field(&direct, "SigIgn:"), field(before, "SigIgn:"));
-        assert_eq!(field(&observed, "SigIgn:"), field(&direct, "SigIgn:"));
-        let ignoring_runner = runner_pid().expect("runner with current ignored signals");
-        assert_ne!(ignoring_runner, before_ignored);
-        assert_eq!(
-            libc::sigaction(libc::SIGUSR1, &raw const original, std::ptr::null_mut()),
-            0
-        );
-        let restored = status(first_custody);
-        assert_eq!(field(&restored, "SigIgn:"), field(before, "SigIgn:"));
-        assert_ne!(runner_pid(), Some(ignoring_runner));
+    for signal in [libc::SIGUSR1, libc::SIGTERM] {
+        let before_ignored = runner_pid().expect("runner before ignored signal change");
+        // Ignored dispositions survive exec, unlike installed handlers. A
+        // long-lived runner must not preserve the owner's earlier disposition.
+        // SAFETY: this isolated owner has no other signal users; save and restore
+        // the original action without installing a Rust signal handler.
+        unsafe {
+            let mut ignored: libc::sigaction = std::mem::zeroed();
+            let mut original: libc::sigaction = std::mem::zeroed();
+            ignored.sa_sigaction = libc::SIG_IGN;
+            assert_eq!(libc::sigemptyset(&raw mut ignored.sa_mask), 0);
+            assert_eq!(
+                libc::sigaction(signal, &raw const ignored, &raw mut original),
+                0
+            );
+            let direct = Command::new("/bin/cat")
+                .arg("/proc/self/status")
+                .output()
+                .expect("direct child with ignored signal");
+            let direct = String::from_utf8(direct.stdout).expect("status");
+            let observed = status(first_custody);
+            assert_ne!(field(&direct, "SigIgn:"), field(before, "SigIgn:"));
+            assert_eq!(field(&observed, "SigIgn:"), field(&direct, "SigIgn:"));
+            let ignoring_runner = runner_pid().expect("runner with current ignored signals");
+            assert_ne!(ignoring_runner, before_ignored);
+            assert_eq!(
+                libc::sigaction(signal, &raw const original, std::ptr::null_mut()),
+                0
+            );
+            let restored = status(first_custody);
+            assert_eq!(field(&restored, "SigIgn:"), field(before, "SigIgn:"));
+            assert_ne!(runner_pid(), Some(ignoring_runner));
+        }
     }
 }
 

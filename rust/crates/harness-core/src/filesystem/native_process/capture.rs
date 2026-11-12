@@ -243,13 +243,6 @@ fn result(
         Ok(Err(failure)) => {
             if failure.cleanup_completed
                 && failure.error.get_ref().is_some_and(|cause| {
-                    cause.is::<acyclic_native_runtime::execution::ExecutionViolation>()
-                })
-            {
-                return Err(Error::Unauthorized(failure.error.to_string()));
-            }
-            if failure.cleanup_completed
-                && failure.error.get_ref().is_some_and(|cause| {
                     cause.is::<acyclic_native_runtime::execution::ExecutionIncomplete>()
                 })
             {

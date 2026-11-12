@@ -351,12 +351,14 @@ fn start_inner(
         let path =
             std::path::Path::new(&directory).join(format!("{}-{sequence}.bin", std::process::id()));
         std::fs::File::create_new(path)?.write_all(&capture)?;
-        super::fuzz_runner_request(&capture);
+        let checked = super::fuzz_runner_request(&capture);
+        assert!(checked.is_ok(), "{checked:?}");
         // Mutate descriptor custody on the actual captured request, without
         // launching malformed input or creating a parallel request encoder.
         for count in 0..=9 {
             capture[0] = count;
-            super::fuzz_runner_request(&capture);
+            let checked = super::fuzz_runner_request(&capture);
+            assert!(checked.is_ok(), "{checked:?}");
         }
     }
     // Retain the original runner, including its group anchor and control
@@ -416,7 +418,8 @@ fn start_inner(
         stdout.map(Into::into),
         stderr.map(Into::into),
     );
-    child.syscall_report = report;
+    child.completion_report = report;
+    child.supervised = activity.is_none();
     Ok((child, failure.map_or(Ok(()), Err)))
 }
 

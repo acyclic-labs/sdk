@@ -35,7 +35,8 @@ pub enum ExecutionAccess {
 /// It is deliberately not represented as a hostname or address allowlist.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecutionNetwork {
-    /// No sockets, including local IPC sockets, can be created or connected.
+    /// No network sockets can be created or connected. On Linux, anonymous
+    /// Unix stream/seqpacket pairs remain available between confined processes.
     Off,
     /// No network traffic may cross the execution boundary. Communication
     /// between confined descendants may remain available. Unlike `Off`, this
@@ -44,7 +45,8 @@ pub enum ExecutionNetwork {
     /// Ordinary networking, subject to inherited host restrictions.
     On,
     /// Outbound TCP connections to these destination ports only. No listening,
-    /// UDP, raw sockets or local IPC. An empty set grants no network access.
+    /// UDP, raw sockets or host IPC. On Linux, anonymous Unix stream/seqpacket
+    /// pairs remain available. An empty set grants no network access.
     TcpPorts(BTreeSet<u16>),
 }
 
@@ -94,34 +96,6 @@ impl std::fmt::Display for ExecutionRefusal {
 }
 
 impl std::error::Error for ExecutionRefusal {}
-
-/// A running command crossed its syscall boundary; its entire tree was reaped.
-#[derive(Debug)]
-pub enum ExecutionViolation {
-    /// A forbidden syscall or syscall argument crossed the boundary.
-    Syscall {
-        /// Kernel-reported syscall number in the execution host's native ABI.
-        number: i32,
-    },
-    /// A Unix socket would acquire host IPC outside the execution domain.
-    HostIpc,
-}
-
-impl std::fmt::Display for ExecutionViolation {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Syscall { number } => write!(
-                formatter,
-                "sandbox syscall filter denied syscall {number}; command tree terminated"
-            ),
-            Self::HostIpc => formatter.write_str(
-                "sandbox syscall filter denied host IPC (Unix socket); command tree terminated",
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ExecutionViolation {}
 
 /// Root exit left unfinished or failed descendants in the command tree.
 #[derive(Debug)]

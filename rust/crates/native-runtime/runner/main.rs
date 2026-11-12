@@ -331,14 +331,9 @@ fn warden(spec: &Spec) -> ! {
     report(spec.reply, STARTED, sys::getpid());
     // Still the runner's group, which the warden returns to.
     let home = sys::getpgrp();
-    let Errno(error) = match warden::enter(
-        spec.directory,
-        spec.owner,
-        home,
-        spec.boundary.is_some(),
-        spec.syscall_report,
-    ) {
-        Ok(notification) => exec(spec, notification),
+    let Errno(error) = match warden::enter(spec.directory, spec.owner, home, spec.completion_report)
+    {
+        Ok(()) => exec(spec),
         Err(error) => error,
     };
     report(spec.reply, FAILED, error);
@@ -366,7 +361,7 @@ fn released(spec: &Spec, activity: Fd) -> ! {
         sys::close(spec.directory);
         sys::close(activity);
         if execute {
-            return Err(exec(spec, None));
+            return Err(exec(spec));
         }
         Ok(())
     })();
@@ -387,8 +382,8 @@ fn released_byte(fd: Fd) -> Result<bool, Errno> {
 
 /// In the program: sets up what the request asks for and execs. Returns the
 /// error that stopped it.
-fn exec(spec: &Spec, notification: Option<Fd>) -> Errno {
-    match prepare_program(spec, notification) {
+fn exec(spec: &Spec) -> Errno {
+    match prepare_program(spec) {
         Err(error) => error,
         // SAFETY: NUL-terminated program, argument and environment vectors.
         Ok(()) if !spec.search => unsafe { sys::execve(spec.program, spec.argv, spec.envp) },
@@ -396,7 +391,7 @@ fn exec(spec: &Spec, notification: Option<Fd>) -> Errno {
     }
 }
 
-fn prepare_program(spec: &Spec, notification: Option<Fd>) -> Result<(), Errno> {
+fn prepare_program(spec: &Spec) -> Result<(), Errno> {
     // What a fork of the owner would have inherited at this request, set
     // while the program still has the runner's privileges.
     sys::set_mask(spec.mask);
@@ -428,10 +423,11 @@ fn prepare_program(spec: &Spec, notification: Option<Fd>) -> Result<(), Errno> {
     }
     // Other ignored dispositions came from the current owner when this
     // runner was exec'd. Undo only the runner/warden's own changes: std
-    // spawn defaults SIGPIPE; the warden needed SIGCHLD to reap its children.
+    // spawn defaults SIGPIPE; the warden needed SIGCHLD to reap its children
+    // and default SIGUSR1/SIGTERM dispositions for its control events.
     sys::set_signal_checked(sys::SIGPIPE, false)?;
-    if spec.ignored & (1 << (sys::SIGCHLD - 1)) != 0 {
-        sys::set_signal_checked(sys::SIGCHLD, true)?;
+    for signal in [sys::SIGCHLD, sys::SIGUSR1, sys::SIGTERM] {
+        sys::set_signal_checked(signal, spec.ignored & (1 << (signal - 1)) != 0)?;
     }
     sys::set_signal_mask(spec.signals)?;
     if let Some(boundary) = &spec.boundary {
@@ -439,11 +435,7 @@ fn prepare_program(spec: &Spec, notification: Option<Fd>) -> Result<(), Errno> {
         // FIXED+4 is eight-byte aligned in this mapping and remapping ended
         // before spec formed this pointer. The original request stays live.
         let filter = unsafe { core::slice::from_raw_parts(boundary.filter, boundary.count) };
-        let listener = entry::enter(boundary.ruleset, filter).map_err(Errno)?;
-        let transport = notification.ok_or(Errno(sys::EINVAL))?;
-        sys::notification_transfer(transport, Some(listener))?;
-        sys::close(listener);
-        sys::close(transport);
+        entry::enter(boundary.ruleset, filter).map_err(Errno)?;
     }
     Ok(())
 }

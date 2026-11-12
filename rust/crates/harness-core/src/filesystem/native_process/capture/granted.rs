@@ -109,13 +109,12 @@ fn capture_keeps_the_host_grant_and_returns_its_original_custody()
 }
 
 #[test]
-fn syscall_denials_are_typed_even_when_shell_masks_exit()
--> std::result::Result<(), Box<dyn std::error::Error>> {
-    if std::env::var_os("ACYCLIC_GC95_PROBE").is_some() {
-        // This is a real denied syscall in a shell descendant, not an injected
-        // status or mock. A shell can otherwise mask this child with exit 0.
-        let _ = std::os::unix::net::UnixStream::connect("missing-host-service");
-        panic!("denied Unix socket creation returned to guest code");
+fn syscall_denials_return_to_guest() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("ACYCLIC_GC171_PROBE").is_some() {
+        // A denied operation must return to the guest without killing its tree.
+        let error = std::os::unix::net::UnixStream::connect("missing-host-service").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        return Ok(());
     }
     acyclic_native_runtime::initialize_native_io_services()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -126,7 +125,7 @@ fn syscall_denials_are_typed_even_when_shell_masks_exit()
     let shell = acyclic_native_runtime::platform_shell()?;
     let mut environment =
         crate::native_environment::tool_environment(acyclic_native_runtime::platform_shell)?;
-    environment.insert("ACYCLIC_GC95_PROBE".into(), "1".into());
+    environment.insert("ACYCLIC_GC171_PROBE".into(), "1".into());
     let grant = ExecutionGrant::workspace_default(
         root.path(),
         ExecutionAccess::ReadOnly,
@@ -141,20 +140,9 @@ fn syscall_denials_are_typed_even_when_shell_masks_exit()
             for (source, granted) in [
                 ("kill -31 $$", false),
                 ("kill -31 $$", true),
+                ("\"$1\" syscall_denials_return_to_guest --nocapture", true),
                 (
-                    "\"$1\" syscall_denials_are_typed_even_when_shell_masks_exit --nocapture & exit 0",
-                    true,
-                ),
-                (
-                    "\"$1\" syscall_denials_are_typed_even_when_shell_masks_exit --nocapture; exit 0",
-                    true,
-                ),
-                (
-                    "\"$1\" syscall_denials_are_typed_even_when_shell_masks_exit --nocapture | cat; exit 0",
-                    true,
-                ),
-                (
-                    "\"$1\" syscall_denials_are_typed_even_when_shell_masks_exit --nocapture & wait; exit 0",
+                    "\"$1\" syscall_denials_return_to_guest --nocapture & wait $!",
                     true,
                 ),
             ] {
@@ -207,20 +195,10 @@ fn syscall_denials_are_typed_even_when_shell_masks_exit()
                         output.stop.is_none(),
                         "guest signal misclassified as syscall denial: {output:?}"
                     );
-                } else if source.ends_with("& exit 0") {
-                    assert!(
-                        matches!(
-                            result,
-                            Err(Error::Unauthorized(_))
-                                | Err(Error::Process(crate::ProcessError::Io { .. }))
-                        ),
-                        "background root exit reported success: {result:?}"
-                    );
                 } else {
-                    assert!(
-                        matches!(result, Err(Error::Unauthorized(ref reason)) if reason.contains("host IPC")),
-                        "source={source}: {result:?}"
-                    );
+                    let output = result?.ok_or("capture interrupted")?;
+                    assert!(output.success, "source={source}: {output:?}");
+                    assert!(output.stop.is_none(), "{output:?}");
                 }
             }
         }
