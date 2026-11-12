@@ -172,7 +172,7 @@ export class Agent extends DurableObject {
   send(intent: string, text: string) { return this.host().send(intent, text); }
   read(stream: "inbox" | "conversation" | "status") { return this.host().read(stream); }
   pause(paused: boolean) { return this.host().pause(paused); }
-  cancel(intent: string) { return this.host().cancel(intent); }
+  cancel(intent: string, input: bigint, conversation: bigint) { return this.host().cancel(intent, input, conversation); }
   observeModel() { return this.lifecycle.observe(); }
   readFile(file: WasmFileRefWire) { return this.host().readFile(file); }
   wake() { return this.host().wake(); }
@@ -185,6 +185,15 @@ interface Env {
   SUITE: DurableObjectNamespace<Suite>;
   LEDGER: DurableObjectNamespace<Ledger>;
   AGENT: DurableObjectNamespace<Agent>;
+}
+
+async function briefCancellation(agent: DurableObjectStub<Agent>) {
+  const [adopted] = await agent.read("inbox");
+  if (!adopted?.value.fork_adopted?.brief) {
+    throw new Error("STEP cancellation fixture lacks its accepted adoption brief; recovery: bash scripts/qualify-cloudflare.sh");
+  }
+  const last = (await agent.read("conversation")).at(-1);
+  return { input: adopted.sequence, conversation: last ? last.sequence + 1n : 0n };
 }
 
 async function endpoint(env: Env, policy: Preset["approval_policy"], name = `protocol-${crypto.randomUUID()}`) {
@@ -375,19 +384,24 @@ export default {
       }
       await adoption.adopt(child);
       await adoption.adopt(child);
-      await adoption.cancel("adopted-control");
+      const selected = await briefCancellation(adoption);
+      await adoption.cancel("adopted-control", selected.input, selected.conversation);
       if ((await adoption.read("status")).length === 0) {
         throw new Error("STEP valid-adopt recovery failed; recovery: bash scripts/qualify-cloudflare.sh");
       }
       await env.SUITE.getByName("wake-failure").wakeIsolation();
-      return Response.json({ creation: "invalid input leaves identity available", adoption: "invalid or absent agents leave placement available; saved child runs", child, wakes: "failed delivery retains only itself" });
+      return Response.json({ creation: "invalid input leaves identity available", adoption: "invalid or absent agents leave placement available; saved child runs", child,
+        cancellation: { input: selected.input.toString(), conversation: selected.conversation.toString() }, wakes: "failed delivery retains only itself" });
     }
     if (new URL(request.url).pathname === "/adoption-replay") {
       const adoption = env.AGENT.getByName("invalid-adopt");
+      const selected = new URL(request.url).searchParams;
+      const input = BigInt(selected.get("input")!);
+      const conversation = BigInt(selected.get("conversation")!);
       // Cancellation is deliberately the first request after the full restart.
-      await adoption.cancel("cold-adopted-control");
-      await adoption.adopt(new URL(request.url).searchParams.get("path")!);
-      await adoption.cancel("adopted-control");
+      await adoption.cancel("cold-adopted-control", input, conversation);
+      await adoption.adopt(selected.get("path")!);
+      await adoption.cancel("adopted-control", input, conversation);
       if ((await adoption.read("status")).length === 0) {
         throw new Error("STEP adopted-host restart failed; recovery: bash scripts/qualify-cloudflare.sh");
       }
@@ -402,8 +416,9 @@ export default {
         if ((await observations.next()).value !== "started") {
           throw new Error("STEP guest-cancel start failed; recovery: bash scripts/qualify-cloudflare.sh");
         }
+        const selected = await briefCancellation(agent);
         const [outcome, aborted] = await Promise.all([
-          creation, observations.next(), agent.cancel("cancel-running-guest"),
+          creation, observations.next(), agent.cancel("cancel-running-guest", selected.input, selected.conversation),
         ]);
         if ("error" in outcome || aborted.value !== "aborted") {
           throw new Error(`STEP guest-cancel failed: ${JSON.stringify(outcome)}; recovery: bash scripts/qualify-cloudflare.sh`);

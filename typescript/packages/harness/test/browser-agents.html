@@ -61,7 +61,15 @@ try {
     assert(await turnText(agents, a, entries[2]) === "echo:later", "resumed turn output differs");
 
     phase("cancel keeps the agent open; archive closes it");
-    assert((await agents.cancel(a, "c1")).kind === "committed", "cancel was refused");
+    await agents.pause(a, true);
+    const pending = await agents.send(a, "cancel-me", "cancel this input");
+    assert(pending.kind === "committed", describe(pending));
+    const cancelled = await agents.cancel(a, "c1", pending.inbox, entries.at(-1).sequence + 1n);
+    assert(cancelled.kind === "committed", "cancel was refused");
+    await agents.pause(a, false);
+    await untilRecords(fixture, agents, a, "status", records =>
+      records.at(-1)?.value.phase === "idle" && records.at(-1).value.cursor > cancelled.inbox);
+    assert((await conversation(a)()).length === 3, "cancelled input ran a turn");
     assert((await agents.archive(a, "x1")).kind === "committed", "archive was refused");
     assert((await agents.send(a, "m3", "late")).kind === "closed", "archived agent accepted a message");
     await untilRecords(fixture, agents, a, "status",

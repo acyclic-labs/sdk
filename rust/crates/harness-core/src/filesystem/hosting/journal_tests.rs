@@ -457,16 +457,44 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
     for archive in [false, true] {
         let (bound, root) = binding().await?;
         let agents = bound.agents();
-        let observed = agents.state(&root).await?;
-        let cut = crate::agent::inbox_tail(&**agents.provider(), &root).await?;
         let by = Sender::Host {
             host: "query-race".into(),
         };
-        assert!(
-            matches!(agents.send(&root, &by, &InboxRecord::Cancel(crate::agent::Cancellation { conversation: 0, input: 1,
-            by: by.clone(), id: IntentId::try_from("arrived")?,
-        })).await?, Delivered::Committed { inbox } if inbox == cut)
-        );
+        let id = IntentId::try_from("pending")?;
+        let body = bound
+            .stage_text(&root, "message", &by, &id, ("query-race", "cancel me"))
+            .await?;
+        let Delivered::Committed { inbox: input } = agents
+            .send(
+                &root,
+                &by,
+                &InboxRecord::Message(crate::agent::Message {
+                    from: by.clone(),
+                    id,
+                    re: None,
+                    body: Box::new(body),
+                    attachments: None,
+                }),
+            )
+            .await?
+        else {
+            return Err("fixture input was not accepted".into());
+        };
+        let observed = agents.state(&root).await?;
+        let cut = crate::agent::inbox_tail(&**agents.provider(), &root).await?;
+        let delivered = agents
+            .send(
+                &root,
+                &by,
+                &InboxRecord::Cancel(crate::agent::Cancellation {
+                    conversation: observed.conversation_tail,
+                    input,
+                    by: by.clone(),
+                    id: IntentId::try_from("arrived")?,
+                }),
+            )
+            .await?;
+        assert!(matches!(delivered, Delivered::Committed { inbox } if inbox == cut));
         agents.drain(&root).await?;
         let progress = agents.input_progress(&root, cut).await?;
         assert!(progress.settled);
