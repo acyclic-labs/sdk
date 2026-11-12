@@ -475,6 +475,7 @@ where
                 .list_named_attributes_with_accounting(
                     cursor.as_ref(),
                     maximum_entries,
+                    Some(AttributeClass::MacResourceFork),
                     &mut accounting,
                     cancellation,
                 )

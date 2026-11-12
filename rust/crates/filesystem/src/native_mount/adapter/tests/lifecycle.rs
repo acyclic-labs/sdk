@@ -637,3 +637,131 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
     assert!(session.stop()?);
     Ok(())
 }
+
+#[test]
+fn native_attribute_listings_skip_annotation_page_reads() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::kernel::{AttributeEntry, AttributePage, BlobNode, BlobPage, Child};
+    let mut reads = Vec::new();
+    for annotation_count in [0, 16] {
+        let fs = Fs::memory();
+        let (source, _) = sources_with_fs(
+            &fs,
+            VolumeConfig {
+                profile: FilesystemProfile::Posix,
+                ..VolumeConfig::portable(Lifecycle::Ephemeral)
+            },
+            ConsistencyMode::Pinned,
+            MountPublication::CloseAndSync,
+        )?;
+        let root = source.runtime.block_on(
+            || async {
+                let value = crate::test_support::put_blob_page(
+                    fs.objects(),
+                    &BlobPage {
+                        first_offset: 0,
+                        end_offset: 0,
+                        node: BlobNode::Leaf(Vec::new()),
+                    },
+                    32,
+                )
+                .await?;
+                let mut children = Vec::new();
+                for (class, count) in [
+                    (AttributeClass::PosixXattr, 2),
+                    (AttributeClass::Annotation, annotation_count),
+                ] {
+                    for index in 0..count {
+                        let name = AttributeName::new(
+                            class,
+                            format!("user.value-{index:02}").into_bytes(),
+                        )?;
+                        let entry = AttributeEntry {
+                            name: name.clone(),
+                            value_bytes: 0,
+                            value,
+                        };
+                        let page = crate::test_support::put_attribute_page(
+                            fs.objects(),
+                            &AttributePage::Leaf(vec![entry]),
+                            32,
+                        )
+                        .await?;
+                        children.push(Child { first: name, page });
+                    }
+                }
+                crate::test_support::put_attribute_page(
+                    fs.objects(),
+                    &AttributePage::Internal(children),
+                    32,
+                )
+                .await
+            },
+            None,
+        )??;
+        let path = native_test_path("file");
+        let setup = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+        let created = source
+            .create_file(
+                &path,
+                FileMetadata {
+                    named_attributes: crate::kernel::MetadataField::Value(root),
+                    ..metadata()
+                },
+                None,
+                &setup,
+            )?
+            .lookup;
+        let attached = source.open_file(&path)?;
+        let detached = source.detach_file(&path)?;
+        let mut counts = Vec::new();
+        for kind in 0..3 {
+            let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+            let (page, allocation) = match kind {
+                0 => source.list_attributes_with_meter(&path, None, 256, &work)?,
+                1 => attached.list_attributes_with_meter(None, 256, &work)?,
+                _ => detached.list_attributes_with_meter(None, 256, &work)?,
+            };
+            assert_eq!(
+                page.names,
+                [b"user.value-00".to_vec(), b"user.value-01".to_vec()]
+            );
+            assert!(page.next_cursor.is_none());
+            counts.push(work.receipt().backend_read_operations);
+            assert!(counts[kind] > 0, "the real backing store must be read");
+            drop(page);
+            drop(allocation);
+        }
+        reads.push(counts);
+        if annotation_count != 0 {
+            let listing = source.runtime.block_on(
+                || async {
+                    source
+                        .checkout
+                        .lock()
+                        .await
+                        .list_named_attributes(
+                            created.node.file_id,
+                            None,
+                            256,
+                            WorkBudget::UNBOUNDED,
+                            source.cancellation(),
+                        )
+                        .await
+                        .map_err(|failure| failure.error)
+                },
+                None,
+            )??;
+            assert_eq!(
+                listing.value.entries.len(),
+                18,
+                "ordinary volume reads retain all annotations"
+            );
+        }
+    }
+    assert_eq!(
+        reads[0], reads[1],
+        "annotations must add no reads to path, attached or detached listings"
+    );
+    Ok(())
+}

@@ -81,6 +81,7 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     metadata: FileMetadata,
     after: Option<&AttributeName>,
     maximum_entries: u32,
+    through_class: Option<crate::kernel::AttributeClass>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(AttributeListing, KernelOwnedAllocation), FsError> {
@@ -100,7 +101,7 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 root,
                 after,
                 maximum_entries,
-                None,
+                through_class,
                 DecodeLimits::for_volume(volume.config),
                 accounting,
                 cancellation,
@@ -346,6 +347,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 file,
                 after,
                 maximum_entries,
+                None,
                 &mut accounting,
                 cancellation,
             )
@@ -358,6 +360,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         file: F,
         after: Option<&AttributeName>,
         maximum_entries: u32,
+        through_class: Option<crate::kernel::AttributeClass>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(AttributeListing, KernelOwnedAllocation), FsError> {
@@ -369,6 +372,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             metadata,
             after,
             maximum_entries,
+            through_class,
             accounting,
             cancellation,
         )
@@ -462,6 +466,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
             .list_named_attributes_with_accounting(
                 after,
                 maximum_entries,
+                None,
                 &mut accounting,
                 cancellation,
             )
@@ -473,6 +478,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
         &self,
         after: Option<&AttributeName>,
         maximum_entries: u32,
+        through_class: Option<crate::kernel::AttributeClass>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(AttributeListing, KernelOwnedAllocation), FsError> {
@@ -489,6 +495,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
             metadata,
             after,
             maximum_entries,
+            through_class,
             accounting,
             cancellation,
         )

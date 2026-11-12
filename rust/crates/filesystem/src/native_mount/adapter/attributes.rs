@@ -174,6 +174,7 @@ where
                         &path,
                         cursor.as_ref(),
                         maximum_entries,
+                        Some(AttributeClass::MacResourceFork),
                         &mut accounting,
                         cancellation,
                     )
