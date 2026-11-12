@@ -170,14 +170,17 @@ async fn selected_instructions(
     let Some(selection) = &document.instructions else {
         return Ok(Vec::new());
     };
-    let reader = instruction_reader(files, selection)?;
+    let (_custody, reader) = instruction_reader(files, selection)?;
     Ok(selection.entries(reader.as_ref()).await?)
 }
 
 fn instruction_reader(
     files: &Host,
     selection: &AnnouncedInstructions,
-) -> Result<Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>> {
+) -> Result<(
+    AuthorityRoot,
+    Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
+)> {
     let issuer = AuthorityRoot::new(
         "proof",
         [8; 32],
@@ -191,13 +194,14 @@ fn instruction_reader(
         selection.content.read_capability(&mut None)?,
     ]);
     let scope = issuer.bootstrap_scope("proof", &grants, None, &mut None)?;
-    Ok(FilesystemContentVerifier::new(
+    let reader = FilesystemContentVerifier::new(
         files.clone(),
         &issuer.verifier(&mut None)?,
         &scope,
         acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER,
         None,
-    )?)
+    )?;
+    Ok((issuer, reader))
 }
 
 async fn large_instruction_selection(
@@ -274,7 +278,7 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
         users,
         ..
     } = fixture().await?;
-    let entries = (0_u16..512)
+    let entries = (0_u16..1024)
         .map(|n| {
             let mut id = [42; 16];
             id[..2].copy_from_slice(&n.to_le_bytes());
@@ -731,7 +735,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
                 _ => None,
             })
             .collect::<String>();
-        let reader = instruction_reader(&proof_files, selection)?;
+        let (_custody, reader) = instruction_reader(&proof_files, selection)?;
         let original = reader
             .read(
                 &selection.content,
