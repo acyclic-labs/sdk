@@ -95,6 +95,29 @@ async fn pending(
 
 impl LocalWorkspace {
     pub(in crate::local) async fn defer_publication(
+        self: &Arc<Self>,
+        operation: OperationId,
+        branch: String,
+        source: acyclic_fs::GitGenerationRef,
+    ) -> Result<()> {
+        let workspace = Arc::clone(self);
+        acyclic_native_runtime::TaskSpawner::current()
+            .spawn(async move {
+                let result = workspace
+                    .enqueue_publication(operation, branch, source)
+                    .await;
+                // Publish the retry signal in the original append's completion owner,
+                // even if its caller stopped observing before the durable acknowledgement.
+                workspace
+                    .publication_debt
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                result
+            })
+            .await
+            .map_err(storage)?
+    }
+
+    async fn enqueue_publication(
         &self,
         operation: OperationId,
         branch: String,
@@ -249,6 +272,57 @@ mod tests {
         )
         .await?;
         Ok((directory, local))
+    }
+
+    #[tokio::test]
+    async fn cancelled_enqueue_retains_its_durable_publication_signal() -> Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        for checkpoint in ["task:submitted", "task:completed"] {
+            let (_directory, local) = fixture().await?;
+            let workspace = local.workspace.as_ref().unwrap();
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let head = workspace
+                .view()
+                .workspace()
+                .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(storage)?
+                .value;
+            workspace.publication_debt.store(false, SeqCst);
+            let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::seeded(89);
+            let mut enqueue = Box::pin(schedule.scope(workspace.defer_publication(
+                OperationId::new(),
+                "child".into(),
+                acyclic_fs::GitGenerationRef {
+                    workspace_id: workspace.view().workspace().id(),
+                    generation: head.id(),
+                },
+            )));
+            let paused = loop {
+                tokio::select! {
+                    result = &mut enqueue => panic!("enqueue completed before {checkpoint}: {result:?}"),
+                    boundary = boundaries.recv() => {
+                        let boundary = boundary.expect("enqueue boundary");
+                        if boundary.name == checkpoint { break boundary; }
+                        boundary.release();
+                    }
+                }
+            };
+            drop(enqueue);
+            paused.release();
+            crate::test_support::run_native_schedule(&schedule, boundaries, schedule.drained())
+                .await;
+            assert!(workspace.publication_debt.load(SeqCst), "{checkpoint}");
+            assert!(
+                LocalWorkspace::owes_publication(
+                    &workspace.filesystem,
+                    workspace.view().workspace().id(),
+                )
+                .await?,
+                "{checkpoint}"
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]

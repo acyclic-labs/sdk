@@ -188,12 +188,6 @@ impl Commands<'_> {
         self.workspace
             .defer_publication(context.operation, branch, source)
             .await?;
-        // Raised after the durable enqueue and before the guard is tried: a
-        // command holding the guard now either sees the debt at its next
-        // settlement or released the guard, which this attempt then takes.
-        self.workspace
-            .publication_debt
-            .store(true, std::sync::atomic::Ordering::SeqCst);
         let Ok(mut state) = StateArc::clone(&self.workspace.state).try_lock_owned() else {
             return Ok(());
         };

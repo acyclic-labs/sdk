@@ -23,6 +23,58 @@ fn child_executable(harness: &LocalHarness) -> Result<std::path::PathBuf> {
     std::fs::copy(std::env::current_exe().map_err(storage)?, &child).map_err(storage)?;
     Ok(child)
 }
+async fn listener_executor(
+    harness: &LocalHarness,
+    ports: Vec<u16>,
+) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
+    use acyclic_native_runtime::execution::{ExecutionAccess, ExecutionGrant, ExecutionNetwork};
+    let workspace = harness.workspace.as_ref().unwrap();
+    let mut read = vec![executable()?.parent().unwrap().to_path_buf()];
+    #[cfg(target_os = "linux")]
+    read.extend(
+        ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]
+            .map(std::path::PathBuf::from)
+            .into_iter()
+            .filter(|path| path.exists()),
+    );
+    #[cfg(target_os = "macos")]
+    read.extend(
+        ["/System/Library", "/usr", "/bin", "/lib"]
+            .map(std::path::PathBuf::from)
+            .into_iter()
+            .filter(|path| path.exists()),
+    );
+    #[cfg(windows)]
+    read.push(
+        std::env::var_os("SystemRoot")
+            .ok_or_else(|| Error::Invalid("SystemRoot is absent".into()))?
+            .into(),
+    );
+    let write = workspace
+        .mounts
+        .native_mounts()
+        .filter_map(|(_, root, mount)| (!mount.mode.read_only()).then(|| root.to_path_buf()))
+        .chain(workspace.mounts.scratch_root.iter().cloned())
+        .collect::<Vec<_>>();
+    let grant = ExecutionGrant::composed(
+        &workspace.path,
+        ExecutionAccess::WorkspaceWrite,
+        write,
+        read,
+        ExecutionNetwork::TcpPorts(ports.into_iter().collect()),
+    )
+    .map_err(storage)?;
+    Ok(workspace
+        .executor(
+            (&harness.project, &harness.files, 1 << 20),
+            harness.clock.clone(),
+            &harness.signed,
+            &harness.verifier,
+            Some(grant),
+        )
+        .await?
+        .0)
+}
 #[test]
 fn shell_job_child() {
     if let Ok(address) = std::fs::read_to_string("shell-job.exit") {
@@ -174,8 +226,11 @@ async fn foreground_deadline_retains_capture_and_publication_after_cleanup() -> 
         arguments: serde_json::json!({"command": [child_executable(&harness)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child", "--nocapture"], "timeout_ms": 30_000}),
     };
     let (schedule, boundaries) = acyclic_native_runtime::testing::Schedule::seeded(79);
+    schedule.set_unix_millis(acyclic_stream::UnixMillisClock::now_unix_millis(
+        &acyclic_stream::SystemUnixMillisClock,
+    ));
     crate::test_support::run_native_schedule(&schedule, boundaries, async {
-        let executor = &harness.harness.target(None)?.executor;
+        let executor = listener_executor(&harness, vec![listener.local_addr().map_err(storage)?.port()]).await?;
         let mut call = executor.execute(invocation, Some(context));
         let mut gate = tokio::select! {
             connection = listener.accept() => connection.map(|(socket, _)| socket).map_err(storage)?,
@@ -249,6 +304,9 @@ async fn background_startup_deadline_bounds_volume_admission() -> Result<()> {
         }),
     };
     let (schedule, boundaries) = acyclic_native_runtime::testing::Schedule::seeded(83);
+    schedule.set_unix_millis(acyclic_stream::UnixMillisClock::now_unix_millis(
+        &acyclic_stream::SystemUnixMillisClock,
+    ));
     crate::test_support::run_native_schedule(&schedule, boundaries, async {
         tokio::time::pause();
         let executor = &harness.harness.target(None)?.executor;
@@ -341,6 +399,11 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
             name: "shell".into(),
             arguments: serde_json::json!({"command": [child, "--exact", selector, "--nocapture"], "cwd": name, "background": true}),
         };
+        let mut ports = vec![listener.local_addr().map_err(storage)?.port()];
+        if let Some(exit) = &exit {
+            ports.push(exit.local_addr().map_err(storage)?.port());
+        }
+        let executor = listener_executor(&harness, ports).await?;
         eprintln!("shell job {name}: executing");
         let result = executor
             .execute(invocation.clone(), Some(context.clone()))
