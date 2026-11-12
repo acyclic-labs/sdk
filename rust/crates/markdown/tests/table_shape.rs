@@ -9,6 +9,7 @@ fn table_limit_property_detects_clipped_parse_shape() {
     streamed.push(&header);
     let stream = streamed.table.as_mut().expect("open table");
     // Restore the old coupling between parsing and visible columns.
+    stream.table.alignments.truncate((80 - 1) / 4);
     let visible = stream.table.alignments.len();
     stream.columns = visible;
     stream.header = format!("|{}\n|{}\n", "x|".repeat(visible), "---|".repeat(visible));

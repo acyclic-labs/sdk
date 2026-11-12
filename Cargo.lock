@@ -1142,7 +1142,6 @@ dependencies = [
  "acyclic-markdown",
  "acyclic-syntect",
  "libfuzzer-sys",
- "unicode-width",
 ]
 
 [[package]]

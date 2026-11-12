@@ -1,6 +1,5 @@
 use crate::{Line, Style, render, style::MUTED};
 use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 #[cfg_attr(test, derive(Clone))]
@@ -13,10 +12,8 @@ pub(crate) struct Table {
 }
 
 impl Table {
-    pub(crate) fn new(mut alignments: Vec<Alignment>, style: Style, render_width: u16) -> Self {
+    pub(crate) fn new(alignments: Vec<Alignment>, style: Style, render_width: u16) -> Self {
         let available = usize::from(render_width.max(1));
-        // Each visible column needs a content cell, two spaces and a separator.
-        alignments.truncate(available.saturating_sub(1) / 4);
         let columns = alignments.len();
         let cell_width = available.saturating_sub(3 * columns + 1) / columns.max(1);
         Self {
@@ -162,9 +159,23 @@ fn row(cells: Vec<Line>, header: bool, widths: &[usize], alignments: &[Alignment
         return Line::plain("…", MUTED);
     }
     let mut line = Line::plain("│", MUTED);
+    // Narrow tables use the consumer's normal text wrapping. Do not materialize
+    // padding for missing trailing cells when even the column furniture cannot
+    // fit: its cost would grow with rows * columns rather than source bytes.
+    let columns = if widths.first() == Some(&0) {
+        cells
+            .iter()
+            .rposition(|cell| !cell.spans.is_empty())
+            .map_or(0, |index| index + 1)
+    } else {
+        widths.len()
+    };
     let mut row = cells.into_iter();
-    for (column, &size) in widths.iter().enumerate() {
-        let cell = trim(row.next().unwrap_or_default(), size);
+    for (column, &size) in widths.iter().take(columns).enumerate() {
+        // Width bounds alignment padding, never the evidence itself. Styled
+        // unwrapped lines, including links and graphemes spanning styles, go
+        // through the same viewport layout as every other Markdown block.
+        let cell = row.next().unwrap_or_default();
         let padding = size.saturating_sub(width(&cell));
         let left = match alignments.get(column) {
             Some(Alignment::Right) => padding,
@@ -180,41 +191,6 @@ fn row(cells: Vec<Line>, header: bool, widths: &[usize], alignments: &[Alignment
         line.push("│", MUTED, None);
     }
     line
-}
-
-fn trim(mut cell: Line, size: usize) -> Line {
-    if width(&cell) <= size {
-        return cell;
-    }
-    let limit = size.saturating_sub(1);
-    let text = cell_text(&cell);
-    let mut used = 0;
-    let mut remaining = 0;
-    for (offset, cluster) in text.grapheme_indices(true) {
-        acyclic_markdown_work::record!(scan(cluster.len()));
-        #[cfg(test)]
-        crate::work::scan(cluster.len());
-        let columns = UnicodeWidthStr::width(cluster);
-        if used + columns > limit {
-            break;
-        }
-        used += columns;
-        remaining = offset + cluster.len();
-    }
-    let mut keep = 0;
-    for (index, span) in cell.spans.iter_mut().enumerate() {
-        let end = remaining.min(span.text.len());
-        remaining -= end;
-        let complete = end == span.text.len();
-        span.text.truncate(end);
-        keep = index + usize::from(end > 0);
-        if !complete {
-            break;
-        }
-    }
-    cell.spans.truncate(keep);
-    cell.push("…", Style::default(), None);
-    cell
 }
 
 #[cfg(test)]

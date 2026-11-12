@@ -238,6 +238,7 @@
         "pty-conversation",
         "pty-help",
         "pty-markdown",
+        "pty-audit-table",
         "pty-code-highlight",
         "pty-stream-delta",
         "pty-tool-cards",

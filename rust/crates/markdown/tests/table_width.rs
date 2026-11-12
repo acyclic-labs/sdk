@@ -37,13 +37,8 @@ fn bounded(lines: &[Line], input: usize, rows: usize, width: u16) -> usize {
         retained <= bound,
         "{retained} retained output bytes > {bound}: input {input}, rows {rows}, width {width}"
     );
-    for line in lines {
-        let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
-        assert!(
-            UnicodeWidthStr::width(text.as_str()) <= usize::from(width.max(1)),
-            "display width exceeds {width}: {text:?}"
-        );
-    }
+    // Markdown emits styled unwrapped lines. The shared viewport layout owns
+    // physical width; this bound proves table padding cannot amplify the input.
     retained
 }
 
@@ -154,7 +149,7 @@ fn output_property_detects_unbounded_column_width() {
 }
 
 #[test]
-fn table_trim_preserves_graphemes_across_spans() {
+fn table_evidence_preserves_graphemes_across_spans() {
     for text in [
         "❤️xx",
         "❤\u{fe0e}xx",
@@ -168,7 +163,54 @@ fn table_trim_preserves_graphemes_across_spans() {
             let mut markdown = Markdown::with_width(width);
             markdown.push(&source);
             bounded(markdown.lines(), source.len(), 1, width);
+            let shown: String = markdown
+                .lines()
+                .iter()
+                .flat_map(|line| &line.spans)
+                .map(|span| span.text.as_str())
+                .collect();
+            assert!(shown.contains(&text.replace("**", "")), "{shown:?}");
         }
+    }
+}
+
+#[test]
+fn every_audit_column_survives_a_narrow_stream_and_resize() {
+    let source = "| Candidate | Evidence | Guarantee |\n|---|---|---|\n| first | [src/a.rs:123](file:///src/a.rs#L123) | retained-final-marker |\n";
+    let mut markdown = Markdown::with_width(8);
+    for delta in source.split_inclusive('\n') {
+        markdown.push(delta);
+    }
+    for width in [8, 80, 1, 17] {
+        markdown.set_width(width);
+        assert_eq!(markdown.lines(), full(source, width));
+        let shown: String = markdown
+            .lines()
+            .iter()
+            .flat_map(|line| &line.spans)
+            .map(|span| span.text.as_str())
+            .collect();
+        for evidence in [
+            "Candidate",
+            "Evidence",
+            "Guarantee",
+            "first",
+            "src/a.rs:123",
+            "retained-final-marker",
+        ] {
+            assert!(
+                shown.contains(evidence),
+                "missing {evidence} at width {width}: {shown}"
+            );
+        }
+        assert!(
+            markdown
+                .lines()
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| span.text == "src/a.rs:123"
+                    && span.link.as_deref() == Some("file:///src/a.rs#L123"))
+        );
     }
 }
 

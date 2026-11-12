@@ -1,0 +1,15 @@
+{
+  "id": "pty-audit-table",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [
+    { "when": { "user": "audit table" }, "text": [
+      "| Candidate | Evidence | Guarantee |\n|---|---|---|\n| direct work | baseline src/ownership.rs:402 and negative-control src/proof.rs:911 | RETAINED_GUARANTEE |\n"
+    ], "hold": true }
+  ] },
+  "inputs": [{ "mode": "pty", "actions": [
+    { "when": { "contains": ["GraphCoder"], "cursor": true }, "prompt": "audit table" },
+    { "when": { "contains": ["src/ownership.rs:402", "src/proof.rs:911", "RETAINED_GUARANTEE"] }, "send": "\u0003" },
+    { "when": { "contains": ["cancelled"] }, "detach": true }
+  ], "exit": 2 }],
+  "assert": { "requests": 1 }
+}

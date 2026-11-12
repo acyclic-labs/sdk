@@ -11,7 +11,6 @@ cargo-fuzz = true
 [dependencies]
 acyclic-markdown = { path = ".." }
 libfuzzer-sys = "0.4"
-unicode-width = "0.2"
 syntect = { package = "acyclic-syntect", version = "=0.2.0", path = "../../../vendor/syntect-5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy", "test-support"] }
 
 [[bin]]

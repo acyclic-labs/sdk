@@ -2,7 +2,6 @@
 
 use acyclic_markdown::Markdown;
 use libfuzzer_sys::fuzz_target;
-use unicode_width::UnicodeWidthStr;
 
 fuzz_target!(|data: &[u8]| {
     let width = u16::from(data.first().copied().unwrap_or(80));
@@ -61,10 +60,9 @@ fuzz_target!(|data: &[u8]| {
             .map(|span| span.text.capacity())
             .sum();
         assert!(retained <= 12 * (source.len() + (rows + 1) * usize::from(width.max(1))));
-        for line in streamed.lines() {
-            let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
-            assert!(UnicodeWidthStr::width(text.as_str()) <= usize::from(width.max(1)));
-        }
+        // Markdown lines remain unwrapped, including complete table evidence.
+        // Physical width belongs to the shared viewport layout; alignment
+        // padding must still obey the source-proportional bound above.
     };
     push(&prefix, &prefix);
     for batch in body.chunks(if wide { 64 } else { 1 }) {

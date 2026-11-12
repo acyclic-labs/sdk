@@ -790,4 +790,40 @@ mod tests {
         );
         assert!(!shown.contains('…'));
     }
+
+    #[test]
+    fn audit_tables_wrap_every_column_and_keep_evidence_links() {
+        let source = "| Candidate | Evidence | Guarantee |\n|---|---|---|\n| first | [src/a.rs:123](file:///src/a.rs#L123) and src/b.rs:456 | retained-final-marker |\n";
+        let mut transcript = TranscriptRows::default();
+        transcript.push(BlockKind::Answer, source);
+        for width in [80, 17, 8, 1, 80] {
+            let rows = transcript.rows(width);
+            assert!(rows.iter().all(|row| row.width() <= usize::from(width)));
+            let shown: String = text(rows)
+                .join("")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            for evidence in [
+                "Candidate",
+                "Evidence",
+                "Guarantee",
+                "src/a.rs:123",
+                "src/b.rs:456",
+                "retained-final-marker",
+            ] {
+                assert!(
+                    shown.contains(evidence),
+                    "missing {evidence} at width {width}: {shown}"
+                );
+            }
+            assert!(
+                transcript
+                    .links
+                    .iter()
+                    .flatten()
+                    .any(|link| link.target.as_ref() == "file:///src/a.rs#L123")
+            );
+        }
+    }
 }

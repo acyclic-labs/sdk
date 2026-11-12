@@ -113,3 +113,6 @@ Search seeds `.codex/search.json` under the selected settings root (`CODEX_HOME/
 `pty-diff-folder-move` and `pty-diff-folder-replace` keep the live diff open during native shell changes, then explicitly resume and verify the same descendant removals and additions without redispatch.
 
 `pty-diff-large-restoration` restores the interior of a 1 MiB file while a small added file remains visible, then verifies the retained diff after explicit resume. The filesystem content-equality regression separately forces distinct range-write payload layouts under the unchanged item and byte budgets.
+
+`pty-audit-table` requires both source locations from an over-width audit cell
+and the final guarantee column to remain visible through normal transcript wrapping.
