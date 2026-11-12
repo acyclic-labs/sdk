@@ -137,6 +137,12 @@ async fn installed_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<InstalledDirectories, MountSourceError> {
     let mut directories = inputs.vec::<(FileId, NamespacePath)>(bindings.len())?;
     let mut index = crate::kernel::allocation::fixed_index::FixedIndex::default();
+    if bindings.is_empty() {
+        return Ok(InstalledDirectories {
+            paths: directories,
+            index,
+        });
+    }
     let mut accounting = crate::kernel::KernelAccounting::native(native, cancellation);
     for binding in bindings {
         index.get_or_try_insert_with(binding.directory_id.into_bytes(), &mut accounting, |_| {
@@ -144,15 +150,22 @@ async fn installed_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         })?;
     }
     for path in scope.paths() {
+        let mut traversable = [true, true];
         for length in 0..=path.depth() {
+            if !traversable.iter().any(|present| *present) {
+                break;
+            }
             let prefix = inputs.clone_namespace(
                 path.components()
                     .get(..length)
                     .ok_or(MountSourceError::Work(WorkError::Overflow))?,
                 base.volume_config().limits,
             )?;
-            for checkout in [base, candidate] {
-                if let Some(record) = checkout
+            for (checkout, descend) in [base, candidate].into_iter().zip(&mut traversable) {
+                if !*descend {
+                    continue;
+                }
+                let Some(record) = checkout
                     .inspector(
                         &mut crate::kernel::allocation::KernelAccounting::native(
                             native,
@@ -163,25 +176,27 @@ async fn installed_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     .lookup_no_follow(&prefix, native, cancellation)
                     .await?
                     .record
-                {
-                    let key = record.file_id.into_bytes();
-                    if matches!(index.get(key, &mut accounting)?, Some(None)) {
-                        let path = inputs
-                            .clone_namespace(prefix.components(), base.volume_config().limits)?;
-                        let slot = directories.len();
-                        let copied = crate::WorkCounters {
-                            bytes_copied: (size_of::<(FileId, NamespacePath)>()
-                                + size_of::<Option<usize>>())
-                                as u64,
-                            ..crate::WorkCounters::UNCHARGED
-                        };
-                        accounting.admit(copied)?;
-                        let entry =
-                            index.get_or_try_insert_with(key, &mut accounting, |_| Ok(None))?;
-                        directories.push((record.file_id, path));
-                        *entry = Some(slot);
-                        accounting.record_completed(copied)?;
-                    }
+                    .filter(|record| record.kind == FileKind::Directory)
+                else {
+                    *descend = false;
+                    continue;
+                };
+                let key = record.file_id.into_bytes();
+                if matches!(index.get(key, &mut accounting)?, Some(None)) {
+                    let path =
+                        inputs.clone_namespace(prefix.components(), base.volume_config().limits)?;
+                    let slot = directories.len();
+                    let copied = crate::WorkCounters {
+                        bytes_copied: (size_of::<(FileId, NamespacePath)>()
+                            + size_of::<Option<usize>>())
+                            as u64,
+                        ..crate::WorkCounters::UNCHARGED
+                    };
+                    accounting.admit(copied)?;
+                    let entry = index.get_or_try_insert_with(key, &mut accounting, |_| Ok(None))?;
+                    directories.push((record.file_id, path));
+                    *entry = Some(slot);
+                    accounting.record_completed(copied)?;
                 }
             }
             let bytes = prefix.retained_bytes();

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+
 import test from "node:test";
 import { Processes } from "./process.mjs";
 
@@ -13,8 +13,8 @@ test("configured hook records its envelope and exact allow, deny and ask respons
       const path = join(root, `${decision}.jsonl`);
       const envelope = { hook_event_name: "PreToolUse", tool_name: "write",
         tool_input: { path: "approved.txt", text: "EXACT_SUBJECT" } };
-      const result = await processes.run(process.execPath,
-        [fileURLToPath(new URL("./hook.mjs", import.meta.url)), path, decision], {}, JSON.stringify(envelope));
+      const result = await processes.run(process.env.E2E_HOOK_BINARY,
+        [path, decision], {}, JSON.stringify(envelope));
       assert.equal(result.code, 0, result.stderr);
       const response = { hookSpecificOutput: {
         permissionDecision: decision, permissionDecisionReason: "E2E approval policy",
@@ -24,13 +24,13 @@ test("configured hook records its envelope and exact allow, deny and ask respons
         ...envelope, fixture_action: decision, fixture_response: response,
       });
     }
-    const result = await processes.run(process.execPath,
-      [fileURLToPath(new URL("./hook.mjs", import.meta.url)), join(root, "stop.jsonl"), "allow"],
+    const result = await processes.run(process.env.E2E_HOOK_BINARY,
+      [join(root, "stop.jsonl"), "allow"],
       {}, JSON.stringify({ hook_event_name: "Stop" }));
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, "", "recording must not alter the model's context");
-    const context = await processes.run(process.execPath,
-      [fileURLToPath(new URL("./hook.mjs", import.meta.url)), join(root, "context.jsonl"), "context"],
+    const context = await processes.run(process.env.E2E_HOOK_BINARY,
+      [join(root, "context.jsonl"), "context"],
       {}, JSON.stringify({ hook_event_name: "Stop" }));
     assert.equal(context.code, 0, context.stderr);
     assert.equal(JSON.parse(context.stdout).hookSpecificOutput.additionalContext, "HOOK_E2E_CONTEXT");

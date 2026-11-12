@@ -2,7 +2,10 @@
   "id": "pty-diff-root-metadata",
   "workspace": {
     "kind": "plain",
+    "metadata": { "mode": 448, "modified": 1000000000 },
     "files": {
+      ".fixtures/fs.exe": { "binary_env": "E2E_FILESYSTEM_BINARY" },
+      ".fixtures/operation-0.json": "[{\"op\":\"write\",\"path\":\"d.txt\",\"text\":\"DIFF_E2E_CONTENT\\n\"},{\"op\":\"write\",\"path\":\"temporary.txt\",\"text\":\"temporary\"},{\"op\":\"remove_file\",\"path\":\"temporary.txt\"}]",
       "d.txt": "DIFF_E2E_BEFORE\n"
     }
   },
@@ -15,7 +18,7 @@
             "id": "change",
             "name": "shell",
             "arguments": {
-              "command": "node -e \"const fs=require('node:fs'); fs.chmodSync('.',0o700); fs.utimesSync('.',1000000000,1000000000); fs.writeFileSync('d.txt','DIFF_E2E_CONTENT'+String.fromCharCode(10))\""
+              "command": "./.fixtures/fs.exe .fixtures/operation-0.json"
             }
           }
         ]

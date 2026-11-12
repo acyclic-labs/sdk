@@ -205,17 +205,19 @@ impl LocalHarness {
         )
     }
 
-    /// One page of the selected checkout's changes since its first complete
-    /// import, the fork base every agent edit is measured from. Without that
-    /// complete baseline the query refuses to certify a diff. Projection, disclosure
-    /// authority and paging are the shared [`crate::hosting::DiffPages`],
-    /// which retains this checkout's projection in `diffs`.
+    /// Pin the selected checkout against its original complete import receipt.
     #[cfg(any(test, not(target_arch = "wasm32")))]
-    pub(super) async fn project_diff(
+    pub(super) async fn project_diff_selection(
         &self,
-        diffs: &crate::hosting::DiffPages,
-        page: &acyclic_harness_client::AgentPageRequest,
-    ) -> Result<Vec<crate::context::DiffFilePage>> {
+    ) -> Result<(
+        Arc<
+            crate::filesystem::FilesystemContentVerifier<
+                acyclic_fs::LocalAuthorityBackend,
+                acyclic_fs::LocalObjectBackend,
+            >,
+        >,
+        acyclic_harness_client::DiffSnapshot,
+    )> {
         let workspace = self
             .workspace
             .as_ref()
@@ -255,17 +257,17 @@ impl LocalHarness {
             .map_err(storage)?
             .value
             .id();
-        diffs
-            .page(
-                &*self.signed_reader()?,
-                &self.project,
-                (
-                    &self.files.generation_ref_id(base, None)?,
-                    &self.files.generation_ref_id(current, None)?,
-                ),
-                page,
-            )
-            .await
+        Ok((
+            self.signed_reader()?,
+            acyclic_harness_client::DiffSnapshot {
+                agent: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes(
+                    self.root.into_bytes(),
+                )),
+                volume: self.project.clone(),
+                base: self.files.generation_ref_id(base, None)?,
+                current: self.files.generation_ref_id(current, None)?,
+            },
+        ))
     }
 
     /// Publisher of this harness's prompt inputs on its private journal volume.

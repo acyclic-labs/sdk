@@ -1,6 +1,8 @@
+diff --git a/rust/crates/harness/src/hosting/diff.rs b/rust/crates/harness/src/hosting/diff.rs
+index 300403cbf5f..16194f943d5 100644
 --- a/rust/crates/harness/src/hosting/diff.rs
 +++ b/rust/crates/harness/src/hosting/diff.rs
-@@ -171,7 +171,7 @@
+@@ -41,7 +41,7 @@ impl DiffView {
                      // The smallest retry must still contain the next scalar. A
                      // byte midpoint can fall below a four-byte scalar even when
                      // that scalar and its actual wire envelope fit the credit.

@@ -2,7 +2,11 @@
   "id": "pty-approval-cancel-ctrl-c",
   "workspace": {
     "kind": "plain",
-    "files": {}
+    "files": {
+      ".fixtures/hook.exe": {
+        "binary_env": "E2E_HOOK_BINARY"
+      }
+    }
   },
   "model": {
     "steps": [
@@ -66,7 +70,6 @@
           }
         },
         {
-          "detach": true,
           "when": {
             "contains": [
               "AFTER_CANCEL_E2E_DONE",
@@ -76,7 +79,16 @@
               "failed: cancelled",
               "E2E approval policy"
             ]
-          }
+          },
+          "prompt": "/merge "
+        },
+        {
+          "when": {
+            "contains": [
+              "Merged into checkout:"
+            ]
+          },
+          "detach": true
         }
       ],
       "exit": 0
@@ -97,6 +109,6 @@
     ]
   },
   "settings": {
-    ".claude/settings.json": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}]}}"
+    ".claude/settings.json": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl ask\"}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl ask\"}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl ask\"}]}],\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl ask\"}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl ask\"}]}]}}"
   }
 }

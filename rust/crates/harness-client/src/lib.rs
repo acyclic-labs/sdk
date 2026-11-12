@@ -18,6 +18,13 @@ pub use control::{
     AgentBinding, AgentCall, AgentControls, AgentExchangeError, PreparedAgentInvocation,
 };
 
+mod diff_query;
+mod query;
+pub use query::QueryProjection;
+mod input_query;
+pub use diff_query::{DiffProjection, DiffQuery, DiffQueryEvent, DiffSnapshot, DiffSummary};
+pub use input_query::{InputPreview, InputPreviewStep, InputQuery};
+
 mod command;
 pub use command::{
     AgentCommand, AgentPageRequest, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,

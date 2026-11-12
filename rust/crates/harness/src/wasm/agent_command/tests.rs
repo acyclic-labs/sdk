@@ -111,6 +111,7 @@ fn session() -> Result<WasmStream, JsValue> {
         testing::authority(),
         None,
         Arc::new(Endpoint::default()),
+        None,
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
         None,
     );

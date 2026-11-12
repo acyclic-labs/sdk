@@ -52,6 +52,7 @@ struct Owner {
     childless: AtomicBool,
     sessions: AtomicBool,
     diff: std::sync::Mutex<Option<QueryPause>>,
+    diff_issuer: std::sync::OnceLock<AuthorityRoot>,
     admission: std::sync::Mutex<Option<QueryPause>>,
 }
 
@@ -108,12 +109,11 @@ impl Platform for Owner {
         })
     }
 
-    fn diff<'a>(
+    fn diff_source<'a>(
         &'a self,
         authorization: &'a CallAuthorization,
-        _: &'a AgentPath,
-        _: &'a AgentPageRequest,
-    ) -> BoxProviderFuture<'a, crate::Result<Vec<crate::context::DiffFilePage>>> {
+        agent: &'a AgentPath,
+    ) -> BoxProviderFuture<'a, crate::Result<DiffSource>> {
         Box::pin(async move {
             authorization
                 .principal()
@@ -133,7 +133,56 @@ impl Platform for Owner {
                     .await
                     .map_err(|_| crate::Error::Conflict("diff source owner closed".into()))?;
             }
-            Ok(Vec::new())
+            let provider = provider().map_err(|error| crate::Error::Storage(error.to_string()))?;
+            let host =
+                crate::filesystem::FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+            let owner = crate::AgentId::from_bytes([41; 16]);
+            let volume = VolumeRef::new(
+                provider.clone(),
+                "diff-control".into(),
+                VolumeClass::Project,
+                VolumeOwner::Agent(owner),
+                &mut None,
+            )?;
+            host.create_volume(&volume).await?;
+            let issuer = self.diff_issuer.get_or_init(|| {
+                AuthorityRoot::new(
+                    "diff-control",
+                    [41; 32],
+                    Authority {
+                        kind: AggregateKind::Conversation,
+                        id: "diff-control".into(),
+                    },
+                )
+            });
+            let scope = issuer.bootstrap_scope(
+                "reader",
+                &crate::Capabilities::new([
+                    volume.directory_read_capability("", &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                ]),
+                Some(owner),
+                &mut None,
+            )?;
+            let reader = crate::filesystem::FilesystemContentVerifier::new(
+                host.clone(),
+                &issuer.verifier(&mut None)?,
+                &scope,
+                64 * 1024,
+                None,
+            )?;
+            let reference =
+                crate::filesystem::workspace_ref(provider, &volume.storage_name(&mut None)?)?;
+            let generation = host.resolve(&reference, None).await?.generation;
+            Ok(DiffSource::new(
+                reader,
+                acyclic_harness_client::DiffSnapshot {
+                    agent: agent.clone(),
+                    volume,
+                    base: generation.clone(),
+                    current: generation,
+                },
+            ))
         })
     }
 }
@@ -202,9 +251,31 @@ async fn call(
 ) -> Result<std::result::Result<AgentReply, AgentControlFailure>> {
     let reply = client
         .actor_call(&invocation(namespace, command)?, 0, 1 << 20)
-        .await?;
+        .await
+        .inspect_err(|error| eprintln!("session control {command:?}: {error}"))?;
     let response = wire::InvokeActorResponse::decode(reply)?;
     Ok(decode_agent_reply(&response.body, command)?)
+}
+
+async fn diff_call(
+    client: &Client,
+    namespace: &str,
+    command: &AgentCommand,
+) -> Result<std::result::Result<AgentReply, AgentControlFailure>> {
+    let mut query = client
+        .actor_socket(
+            acyclic_harness_client::DiffProjection::Patch.open(&invocation(namespace, command)?)?,
+            0,
+        )
+        .await?;
+    while let Some(frame) = query.next().await? {
+        match frame.first() {
+            Some(1) | Some(4) => {}
+            Some(2) | Some(5) => return Ok(decode_agent_reply(&frame[1..], command)?),
+            _ => return Err("unexpected diff source frame".into()),
+        }
+    }
+    Ok(Ok(AgentReply::Diff { items: Vec::new() }))
 }
 
 #[test]
@@ -379,6 +450,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             acyclic_stream::session::testing::authority(),
             resources,
             server.clone(),
+            Some(server.clone()),
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
             None,
         );
@@ -618,6 +690,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         acyclic_stream::session::testing::authority(),
         None,
         server.clone(),
+        Some(server.clone()),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
         None,
     );
@@ -633,6 +706,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         acyclic_stream::session::testing::authority(),
         None,
         server.clone(),
+        Some(server.clone()),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
         None,
     );
@@ -816,10 +890,11 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         agent: root.clone(),
         page: Default::default(),
     };
-    assert!(matches!(
-        call(&client, "agents", &diff).await?,
-        Ok(AgentReply::Diff { items }) if items.is_empty()
-    ));
+    let empty_diff = diff_call(&client, "agents", &diff).await?;
+    assert!(
+        matches!(&empty_diff, Ok(AgentReply::Diff { items }) if items.is_empty()),
+        "the original empty source must finish normally: {empty_diff:?}"
+    );
     // The real session admits this query before its source suspends. Revoking
     // policy during that wait must refuse disclosure, including an empty result.
     let (entered, waiting) = tokio::sync::oneshot::channel();
@@ -828,7 +903,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         entered,
         release: resume,
     });
-    let query = call(&client, "agents", &diff);
+    let query = diff_call(&client, "agents", &diff);
     tokio::pin!(query);
     tokio::select! {
         _ = &mut query => return Err("query ended before its source suspended".into()),
@@ -855,7 +930,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         release: resume,
     });
     drop(release);
-    let refused = call(&client, "agents", &diff).await?;
+    let refused = diff_call(&client, "agents", &diff).await?;
     assert!(
         matches!(
             &refused,
@@ -873,7 +948,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         entered,
         release: resume,
     });
-    let query = call(&client, "agents", &diff);
+    let query = diff_call(&client, "agents", &diff);
     tokio::pin!(query);
     tokio::select! {
         _ = &mut query => return Err("query ended before its source suspended".into()),
@@ -966,18 +1041,16 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     owner.childless.store(false, Ordering::SeqCst);
     // The parent's role decides: a role it does not admit is refused the
     // same way, before anything commits.
-    for role in ["orchestrator", "planner"] {
-        let refused = AgentCommand::Spawn {
-            parent: root.clone(),
-            id: IntentId::try_from("s0")?,
-            brief: ModelContent::Text("child".into()),
-            role: role.into(),
-        };
-        assert!(matches!(
-            call(&client, "agents", &refused).await?,
-            Err(AgentControlFailure::Refused { code, .. }) if code == "spawn_refused"
-        ));
-    }
+    let refused = AgentCommand::Spawn {
+        parent: root.clone(),
+        id: IntentId::try_from("s0")?,
+        brief: ModelContent::Text("child".into()),
+        role: "planner".into(),
+    };
+    assert!(matches!(
+        call(&client, "agents", &refused).await?,
+        Err(AgentControlFailure::Refused { code, .. }) if code == "spawn_refused"
+    ));
     assert!(matches!(
         call(&client, "agents", &children).await?,
         Ok(AgentReply::Children { items, next: None }) if items.is_empty()
@@ -1123,20 +1196,25 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         call(&client, "agents", &children).await?,
         Err(AgentControlFailure::Refused { code, .. }) if code == "invalid_agent_record"
     ));
-    // Outside the admitted tree is a typed refusal.
+    // A foreign tree needs its own credential. Refuse before dispatch or any
+    // source lookup, rather than disclosing whether the foreign agent exists.
     let stranger = AgentPath::root(&AgentId::from_bytes([9; 16]));
+    let before = stream.requests();
+    let refused = call(
+        &client,
+        "agents",
+        &AgentCommand::Cancel {
+            agent: stranger,
+            id: IntentId::try_from("c1")?,
+        },
+    )
+    .await
+    .expect_err("a foreign tree needs its own original credential");
     assert!(matches!(
-        call(
-            &client,
-            "agents",
-            &AgentCommand::Cancel {
-                agent: stranger,
-                id: IntentId::try_from("c1")?,
-            }
-        )
-        .await?,
-        Err(AgentControlFailure::Refused { code, .. }) if code == "no_such_agent"
+        refused.downcast_ref::<StreamError>(),
+        Some(StreamError::AccessDenied)
     ));
+    assert_eq!(stream.requests().since(before), Default::default());
     // Another namespace never reaches dispatch, and owner denial is final.
     assert!(
         call(&client, "elsewhere", &AgentCommand::Root {})
@@ -1280,6 +1358,7 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
         acyclic_stream::session::testing::authority(),
         None,
         server.clone(),
+        Some(server.clone()),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
         None,
     );

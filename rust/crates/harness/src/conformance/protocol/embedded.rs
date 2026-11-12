@@ -199,6 +199,7 @@ pub async fn open<B: Backend + ?Sized>(
         acyclic_stream::session::testing::authority(),
         None,
         server.clone(),
+        Some(server.clone()),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
         None,
     );

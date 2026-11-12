@@ -60,10 +60,6 @@ impl Hosted {
 struct LocalUser {
     sessions: bool,
     harness: Weak<LocalHarness>,
-    /// The root's retained diff projection, which its continuation pages
-    /// read without projecting again.
-    #[cfg(any(test, not(target_arch = "wasm32")))]
-    diffs: crate::hosting::DiffPages,
 }
 
 impl LocalUser {
@@ -145,58 +141,40 @@ impl crate::hosting::Platform for LocalUser {
         Box::pin(async move { self.harness()?.prompt_attachments(key, text).await })
     }
 
-    /// The root's checkout diff, read under the tree owner's own signed
-    /// authority, the one every client of this tree is minted under: the
-    /// server rechecked this session's credential and policy for this page,
-    /// and the shared producer checks the owner's file authority before
-    /// disclosing any path or content, retained continuation pages included.
     #[cfg(any(test, not(target_arch = "wasm32")))]
-    fn diff<'a>(
+    fn diff_source<'a>(
         &'a self,
         _: &'a acyclic_stream::session::CallAuthorization,
         agent: &'a AgentPath,
-        page: &'a acyclic_harness_client::AgentPageRequest,
-    ) -> BoxProviderFuture<'a, Result<Vec<crate::context::DiffFilePage>>> {
+    ) -> BoxProviderFuture<'a, Result<crate::hosting::DiffSource>> {
         Box::pin(async move {
+            let (reader, selection) = self.diff_selection(agent).await?;
+            Ok(crate::hosting::DiffSource::new(reader, selection))
+        })
+    }
+
+    fn input_preview_source<'a>(
+        &'a self,
+        _: &'a acyclic_stream::session::CallAuthorization,
+        agent: &'a AgentPath,
+        maximum: u64,
+    ) -> BoxProviderFuture<'a, Result<crate::hosting::InputPreviewSource>> {
+        Box::pin(async move {
+            use futures::StreamExt as _;
             let local = self.harness()?;
-            if local.agents.get().map(Hosted::root) == Some(agent) {
-                return local.project_diff(&self.diffs, page).await;
-            }
-            let state = local
-                .agents()
-                .await?
-                .0
-                .state(agent)
-                .await
-                .map_err(storage)?;
-            let project = WorkspaceTable::primary_in(&state.volumes)
-                .filter(|binding| binding.role == WorkspaceRole::User)
-                .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
-            let operation = crate::filesystem::spawned_operation(agent, project.id);
-            let base = local
-                .files
-                .creation_generation(project.volume()?, operation)
-                .await?
-                .ok_or_else(|| {
-                    Error::Unsupported("selected project has no fork creation receipt".into())
-                })?;
-            let reference = crate::filesystem::workspace_ref(
-                project.volume()?.provider().clone(),
-                &project.volume()?.storage_name(&mut None)?,
-            )?;
-            let current = local.files.resolve(&reference, None).await?.generation;
-            let reader = local
+            local.agents().await?;
+            let bound = local
                 .agents
                 .get()
                 .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
                 .server
-                .bound()
-                .content_reader(agent)
-                .await
-                .map_err(storage)?;
-            self.diffs
-                .page(&*reader, project.volume()?, (&base, &current), page)
-                .await
+                .bound();
+            let source: crate::hosting::InputPreviewSource = Box::pin(
+                bound
+                    .input_preview_steps(agent.clone(), maximum)
+                    .map(|step| step.map_err(storage)),
+            );
+            Ok(source)
         })
     }
 
@@ -204,6 +182,65 @@ impl crate::hosting::Platform for LocalUser {
     /// human approver, the one a tool hook's escalation asks.
     fn approver(&self, _: &Principal) -> String {
         crate::approvals::HUMAN_APPROVER.to_owned()
+    }
+}
+
+impl LocalUser {
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    async fn diff_selection(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<(
+        Arc<
+            crate::filesystem::FilesystemContentVerifier<LocalAuthorityBackend, LocalObjectBackend>,
+        >,
+        acyclic_harness_client::DiffSnapshot,
+    )> {
+        let local = self.harness()?;
+        if local.agents.get().map(Hosted::root) == Some(agent) {
+            return local.project_diff_selection().await;
+        }
+        let state = local
+            .agents()
+            .await?
+            .0
+            .state(agent)
+            .await
+            .map_err(storage)?;
+        let project = WorkspaceTable::primary_in(&state.volumes)
+            .filter(|binding| binding.role == WorkspaceRole::User)
+            .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
+        let operation = crate::filesystem::spawned_operation(agent, project.id);
+        let base = local
+            .files
+            .creation_generation(project.volume()?, operation)
+            .await?
+            .ok_or_else(|| {
+                Error::Unsupported("selected project has no fork creation receipt".into())
+            })?;
+        let reference = crate::filesystem::workspace_ref(
+            project.volume()?.provider().clone(),
+            &project.volume()?.storage_name(&mut None)?,
+        )?;
+        let current = local.files.resolve(&reference, None).await?.generation;
+        let reader = local
+            .agents
+            .get()
+            .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+            .server
+            .bound()
+            .content_reader(agent)
+            .await
+            .map_err(storage)?;
+        Ok((
+            reader,
+            acyclic_harness_client::DiffSnapshot {
+                agent: agent.clone(),
+                volume: project.volume()?.clone(),
+                base,
+                current,
+            },
+        ))
     }
 }
 
@@ -949,8 +986,6 @@ impl LocalHarness {
         let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser {
             sessions: bound.admit_sessions().is_ok(),
             harness: Arc::downgrade(self),
-            #[cfg(any(test, not(target_arch = "wasm32")))]
-            diffs: crate::hosting::DiffPages::default(),
         });
         // A reopened root keeps the policy it was created with: the agent
         // model has no policy-update record, and replaying a creation with

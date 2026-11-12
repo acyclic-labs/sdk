@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,13 +14,17 @@ export function expand(value, bindings) {
 
 // Fixture disk latency must not block the process/event owner or serialize
 // independent files before the concurrent cases have even started.
-export async function seed(root, files = {}, io = { mkdir, readFile, writeFile }) {
+export async function seed(root, files = {}, io = { chmod, mkdir, readFile, writeFile }) {
   await Promise.all(Object.entries(files).map(async ([path, value]) => {
     assert.ok(!isAbsolute(path) && !path.split(/[\\/]/).includes(".."), `unsafe seed path ${path}`);
     const target = join(root, path);
     let bytes = value;
     if (typeof value !== "string") {
-      if (value.source !== undefined) {
+      if (value.binary_env !== undefined) {
+        const binary = process.env[value.binary_env];
+        assert.ok(binary && isAbsolute(binary), `missing absolute fixture binary ${value.binary_env}`);
+        bytes = await io.readFile(binary);
+      } else if (value.source !== undefined) {
         assert.ok(typeof value.source === "string" && !isAbsolute(value.source) &&
           !value.source.split(/[\\/]/).includes(".."), `unsafe fixture source ${value.source}`);
         // Executed support programs belong to the granted workspace fixture,
@@ -36,5 +40,6 @@ export async function seed(root, files = {}, io = { mkdir, readFile, writeFile }
     }
     await io.mkdir(dirname(target), { recursive: true });
     await io.writeFile(target, bytes);
+    if (value.binary_env !== undefined) await io.chmod(target, 0o755);
   }));
 }

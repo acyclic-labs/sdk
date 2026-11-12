@@ -95,6 +95,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
         acyclic_stream::session::testing::authority(),
         None,
         server.clone(),
+        Some(server.clone()),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
         None,
     );

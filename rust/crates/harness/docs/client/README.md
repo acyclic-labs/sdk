@@ -20,6 +20,39 @@ over this same client.
 The [committed history contract](history.md) describes paged turn selection,
 conditional file/context restoration, fork identity and current integration limits.
 
+With the `agents` or `wasm` client feature, `AgentControls::diff_query` and
+`AgentControls::input_query` open credited projections on the original actor
+socket. The local `Conversation` wrappers retain their original connection,
+including an embedded host's lifetime. Dropping a query releases its source;
+there is no server-wide page cache or transferable continuation token. Local
+and remote serving use the same command admission and current-policy fences.
+
+A diff query pins its selected agent, actual project volume, creation baseline
+and current generation. `Patch` pages continue one file on that same query;
+`Summary` carries counts without patch text. Progress means source work,
+not completion. Only normal exhaustion completes the summary. Transport,
+policy or source failures never turn a partial count into a completed total,
+and content omitted for insufficient credit is counted explicitly.
+
+An input query selects the last accepted message in its owned inbox, including
+pending follow-ups. If that inbox has no message, inherited conversation records
+supply their original inbox and exact message-admission proofs. A steering
+cursor may pass a reserved follow-up without admitting it. Conversely, a later
+hook's turn can retain an earlier cursor without its own steering proof. The
+query retains one newer ordinary message until the earlier admitting entry is
+found, without replaying overlapping inbox ranges. Only that selected file is
+read; inheritance grants no general access to the source's private volume.
+The current input projection supports staged plain text. Structured input is
+refused explicitly rather than displaying an incomplete serialized envelope.
+
+The session picker opens these previews only for its highlighted row. Keyboard
+input remains active while they load, and selecting another row releases the
+previous queries. Diff totals remain loading until completion. The cost preview
+labels its selected-agent scope, uses the shared incremental usage query and
+waits for its initial frontier before displaying an observed total. It uses the
+caller-selected price original or the admitted UI-session price file. Neither a
+prompt-summary file nor a cost-rollup file is written for the picker.
+
 Agent observation uses `AgentClient` over the shared Rust `WireSession` and the
 platform's authenticated Streams `session::Client`. Each focused agent selects
 its `AgentPath::conversation()` and `AgentPath::status()` streams with explicit
@@ -93,7 +126,7 @@ The public TS client exports actor/session views rather than `FileClient`,
 `MemoryHarnessStorage::file_query`, `LocalHarness::scratch_files` and
 `LocalHarness::project_diff` are removed. Read a settled entry's immutable file
 reference through the host's authorized content reader. Replacement filesystem
-page, cut, backfill and diff bindings remain separate integration work; the
+page, cut and backfill bindings remain separate integration work; the
 retired query adapter is not a compatibility entry point for them.
 
 The whole-client migration is in progress: internal native TaskVolume folds and

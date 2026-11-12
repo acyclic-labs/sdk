@@ -75,23 +75,31 @@ then checks both plugin and agent admission through their production entry
 points. A fresh admission must observe the edits. Reverse the patch with
 `git apply -R`; the same scenario must pass with the shared snapshot restored.
 
-# Retained workspace diff authority control
+# Live workspace diff authority control
 
 From the repository root, apply `diff-retained-authority.patch` and run:
+
+```sh
+cargo nextest run --locked -p acyclic-harness --features test-support --test main -E 'test(live_diff_queries_fence_frontiers_and_cached_patches_against_policy_changes)'
+```
+
+The unchanged test must fail at `revoked policy must stop the original query`.
+The mutation removes the current-policy disclosure fence from already compared
+patch fragments. The native frontier remains fenced, so the cached-file case
+must distinguish this defect. No cursor names an undisclosed following file.
+A compilation failure does not qualify the mutation. Reverse the production
+patch and require the same test to pass.
+
+Apply `diff-utf8-midpoint.patch` and run:
 
 ```sh
 cargo nextest run --locked -p acyclic-harness --features test-support --test main -E 'test(workspace_diff_pages_exact_changes_since_the_fork_base)'
 ```
 
-The unchanged test must fail at `retained diff pages require the requesting
-reader's authority`. A compilation failure does not qualify the mutation.
-Reverse the production patch and require the same test to pass.
-
-The same command with `diff-utf8-midpoint.patch` must fail at `a fitting
-four-byte scalar must survive page shrinking`. This plants the former raw
-byte midpoint in the actual collector, while leaving the projected filesystem
-input, cursor and exact canonical wire-credit oracle unchanged. Reverse it
-and require the same test to pass.
+It must fail at `a fitting scalar must preserve its accepted prefix and continuation`.
+This plants the former raw byte midpoint in the shared fragment pager, leaving
+the projected filesystem input and exact wire-credit oracle unchanged. Reverse
+the patch and require the same test to pass.
 
 `diff-missing-baseline.patch` restores the former production fallback that
 treated an incomplete source import as an empty diff. Apply it and run the
@@ -148,3 +156,27 @@ actor settlement, archives one child and checks its exact directory is gone.
 The idle sibling and root retain their bytes, and the archived child's actual
 conversation content remains readable. Repeating release is idempotent.
 Reverse the patch afterward; restored production must pass this same control.
+
+`input-preview-unadmitted-follow-up.patch` substitutes an inbox-prefix test
+for the committed conversation's message-admission proof. Run:
+
+```sh
+cargo nextest run --locked -p acyclic-harness --lib --features test-support -E 'test(=local::tests::agents::historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_steering_cut)' --no-tests=fail --success-output immediate
+```
+
+The real actor accepts an initial message, steering message and reserved
+follow-up before a two-step model turn. The selected turn's boundary passes
+the reserved follow-up without admitting it. A real historical session fork
+must preview the admitted steering message; the originating session can still
+preview its own accepted follow-up. The mutation must fail `an inherited
+preview must not disclose an unadmitted follow-up`. A compilation or setup
+failure does not qualify. Reverse the patch and rerun the same control.
+
+`input-preview-lost-overlap.patch` discards a newer ordinary message when the
+latest hook turn has no proof for it, losing the earlier turn's steering
+admission. Run the same command above with the exact control
+`local::tests::agents::historical_input_previews_retain_newer_steering_across_later_hook_turns`.
+It must fail `a later hook must retain the newest admitted steering message`.
+The original source record must survive across those overlapping turn proofs;
+each inbox record is read once rather than replaying every overlapping range.
+Reverse the patch and rerun that control.

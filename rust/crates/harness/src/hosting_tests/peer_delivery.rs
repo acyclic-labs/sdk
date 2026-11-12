@@ -50,6 +50,7 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         acyclic_stream::session::testing::authority(),
         None,
         server.clone(),
+        Some(server.clone()),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
         None,
     );

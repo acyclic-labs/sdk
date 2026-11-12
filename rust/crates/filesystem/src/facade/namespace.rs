@@ -84,6 +84,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         budget.finish(result, &accounting)
     }
 
+    /// Proves absence when an authored non-directory hides a descendant.
+    pub(crate) async fn lookup_optional_no_follow_with_metadata_with_accounting(
+        &mut self,
+        path: &NamespacePath,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<PathMetadataLookup>, FsError> {
+        match self
+            .lookup_no_follow_with_metadata_with_accounting(path, accounting, cancellation)
+            .await
+        {
+            Err(FsError::Path(PathLookupError::NotDirectory)) => Ok(None),
+            result => result,
+        }
+    }
     pub(crate) async fn lookup_no_follow_with_metadata_with_accounting(
         &mut self,
         path: &NamespacePath,
@@ -316,7 +331,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(crate) async fn lookup_batch_no_follow_with_accounting<const TERMINAL: bool>(
         &mut self,
         paths: &[NamespacePath],
-        selected_restore: bool,
+        allow_absent_ancestor: bool,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<
@@ -326,7 +341,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         ),
         FsError,
     > {
-        if selected_restore
+        if allow_absent_ancestor
             && (self.mode.access != AccessMode::ReadOnly
                 || self.mode.consistency != ConsistencyMode::Pinned
                 || self.tracks_observations()
@@ -349,8 +364,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     accounting,
                     cancellation,
                     Some(&self.dependencies.data_custody),
-                    if selected_restore {
-                        crate::kernel::PathBatchMode::SelectedRestore
+                    if allow_absent_ancestor {
+                        crate::kernel::PathBatchMode::Optional
                     } else {
                         crate::kernel::PathBatchMode::NoFollow
                     },

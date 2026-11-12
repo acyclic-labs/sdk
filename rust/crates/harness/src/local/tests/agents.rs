@@ -4098,6 +4098,199 @@ async fn tool_free_checkout_sessions_read_their_own_logical_context_without_moun
 }
 
 #[tokio::test]
+async fn historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_steering_cut()
+-> Result<()> {
+    historical_input_preview_case(false).await
+}
+
+#[tokio::test]
+async fn historical_input_previews_retain_newer_steering_across_later_hook_turns() -> Result<()> {
+    historical_input_preview_case(true).await
+}
+
+async fn historical_input_preview_case(later_hook: bool) -> Result<()> {
+    use crate::{
+        agent::{Delivered, InboxRecord, InputPreviewStep, IntentId, Message, Sender},
+        model::{ModelEvent, ToolCall},
+        test_support::{ScriptedEvent, ScriptedTurn},
+    };
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                "boundary".into(),
+                "example.echo".into(),
+                serde_json::json!({"text":"boundary"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ]),
+        ScriptedTurn::Text("at the selected cut".into()),
+        ScriptedTurn::Text("reserved turn".into()),
+    ]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider)?
+                .without_default_tools()
+                .tool(super::tool("example.echo"))
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect_sessions().await?;
+    let (agents, root) = harness.agents().await?;
+    agents.pause(root, true).await.map_err(agent)?;
+    let mut observed =
+        ObservedConversation::observe(Conversation::open(connection.clone()), None).await?;
+    let bound = harness
+        .agents
+        .get()
+        .ok_or_else(|| Error::Invalid("missing hosted agents".into()))?
+        .server()
+        .bound();
+    let by = Sender::Host {
+        host: "preview-cut".into(),
+    };
+    let mut sequences = Vec::new();
+    let mut reserved = None;
+    let inputs = if later_hook {
+        [
+            ("first", "INITIAL_INPUT", 0),
+            ("hook", "HOOK_INPUT", 2),
+            ("steer", "ADMITTED_STEERING_INPUT", 0),
+        ]
+    } else {
+        [
+            ("first", "INITIAL_INPUT", 0),
+            ("steer", "ADMITTED_STEERING_INPUT", 0),
+            ("reserved", "UNADMITTED_FOLLOW_UP", 1),
+        ]
+    };
+    for (name, text, kind) in inputs {
+        let id = IntentId::try_from(name).map_err(agent)?;
+        let body = bound
+            .stage_text(root, "message", &by, &id, (text, text))
+            .await
+            .map_err(agent)?;
+        if kind == 1 {
+            reserved = Some(body.clone());
+        }
+        let message = Message {
+            from: by.clone(),
+            id,
+            re: None,
+            body: Box::new(body),
+            attachments: None,
+        };
+        let input = match kind {
+            1 => InboxRecord::FollowUp(message),
+            2 => InboxRecord::Hook(crate::agent::Hook {
+                host: "preview-cut".into(),
+                id: message.id,
+                event: message.body,
+            }),
+            _ => InboxRecord::Message(message),
+        };
+        let Delivered::Committed { inbox } = agents.send(root, &by, &input).await.map_err(agent)?
+        else {
+            return Err(Error::Invalid("preview fixture input was closed".into()));
+        };
+        sequences.push(inbox);
+    }
+    agents.pause(root, false).await.map_err(agent)?;
+    let entry = observed.settled(sequences[0]).await?;
+    assert!(
+        entry
+            .steering
+            .as_ref()
+            .is_some_and(|cut| cut.through > sequences[2]),
+        "the selected prefix must include the reserved gap for this control to prove admission"
+    );
+    if later_hook {
+        observed.conversation.wait_current_input().await?;
+        let mut entries = agents
+            .provider()
+            .read(ReadRequest {
+                key: None,
+                path: root.conversation().map_err(agent)?,
+                from: 1,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(agent)?;
+        let record = entries.try_next().await.map_err(agent)?.ok_or_else(|| {
+            Error::Invalid("the settled hook published no conversation entry".into())
+        })?;
+        let hook = ConversationEntry::decode(&record.value).map_err(agent)?;
+        assert_eq!(hook.inbox, sequences[1]);
+        assert!(matches!(hook.input, TurnInput::Hook { .. }));
+        assert!(
+            hook.steering.is_none() && hook.observed_through > sequences[2],
+            "the hook must retain the earlier admission cursor without its own steering proof"
+        );
+    }
+    let branch = crate::local::sessions::fork(
+        &connection,
+        root.clone(),
+        u64::from(later_hook),
+        "preview-historical-cut",
+    )
+    .await?;
+    let branch = Conversation::open(branch);
+    let mut query = branch
+        .input_query(crate::client::AgentPageRequest::new(1, 128, None).map_err(agent)?)
+        .await
+        .map_err(agent)?;
+    let preview = loop {
+        match query.next().await.map_err(agent)? {
+            Some(InputPreviewStep::Progress) => {}
+            Some(InputPreviewStep::Selected(preview)) => break preview,
+            None => {
+                return Err(Error::Invalid(
+                    "input query ended before its selected cut".into(),
+                ));
+            }
+        }
+    };
+    assert_eq!(
+        preview.as_ref().map(|value| value.text.as_str()),
+        Some("ADMITTED_STEERING_INPUT"),
+        "{}",
+        if later_hook {
+            "a later hook must retain the newest admitted steering message"
+        } else {
+            "an inherited preview must not disclose an unadmitted follow-up"
+        }
+    );
+    if !later_hook {
+        assert!(
+            branch
+                .text(&reserved.ok_or_else(|| Error::Invalid("missing reserved body".into()))?)
+                .await
+                .is_err()
+        );
+    }
+    let mut own = observed
+        .conversation
+        .input_query(crate::client::AgentPageRequest::new(1, 128, None).map_err(agent)?)
+        .await
+        .map_err(agent)?;
+    let expected = if later_hook {
+        "ADMITTED_STEERING_INPUT"
+    } else {
+        "UNADMITTED_FOLLOW_UP"
+    };
+    assert!(
+        matches!(own.next().await.map_err(agent)?, Some(InputPreviewStep::Selected(Some(preview))) if preview.text == expected),
+        "the originating session still owns its accepted follow-up"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversation_cut()
 -> Result<()> {
     use crate::client::{AgentCommand, AgentReply};
@@ -4179,6 +4372,46 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         source[..1]
     );
     let selected_branch = Conversation::open(connection.select(branch.clone()).await?);
+    let mut input = selected_branch
+        .input_query(crate::client::AgentPageRequest::new(1, 64, None).map_err(agent)?)
+        .await
+        .map_err(agent)?;
+    let preview = loop {
+        match input.next().await.map_err(agent)? {
+            Some(crate::client::InputPreviewStep::Progress) => {}
+            Some(crate::client::InputPreviewStep::Selected(preview)) => break preview,
+            None => return Err(Error::Invalid("historical input query ended early".into())),
+        }
+    };
+    assert_eq!(
+        preview.as_ref().map(|value| value.text.as_str()),
+        Some("first decision")
+    );
+    assert!(input.next().await.map_err(agent)?.is_none());
+    let mut baseline = selected_branch
+        .diff_query(
+            crate::client::AgentPageRequest::new(2, 2048, None).map_err(agent)?,
+            crate::client::DiffProjection::Summary,
+        )
+        .await
+        .map_err(agent)?;
+    let Some(crate::client::DiffQueryEvent::Snapshot(snapshot)) =
+        baseline.next().await.map_err(agent)?
+    else {
+        return Err(Error::Invalid(
+            "missing historical fork diff snapshot".into(),
+        ));
+    };
+    assert_eq!(
+        snapshot.base, snapshot.current,
+        "a historical fork starts against its own creation cut, not the later checkout"
+    );
+    while let Some(event) = baseline.next().await.map_err(agent)? {
+        assert!(
+            matches!(event, crate::client::DiffQueryEvent::Progress),
+            "a freshly forked historical volume has no changes"
+        );
+    }
     let inherited = ConversationEntry::decode(&source[0]).map_err(agent)?;
     let shown = selected_branch.turn_at(0, &inherited).await?;
     assert_eq!(shown.prompt.as_deref(), Some("first decision"));
@@ -4345,6 +4578,197 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         3,
         "forking retained archived history cannot dispatch a model"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_diff_queries_pin_endpoints_and_keep_client_lifetimes_independent() -> Result<()> {
+    use crate::client::{AgentPageRequest, DiffProjection, DiffQueryEvent};
+    use crate::filesystem::{WorkspaceMutation, workspace_ref};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted([super::ScriptedTurn::Text("unused".into())]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .without_default_tools()
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let original = workspace_ref(
+        project.provider().clone(),
+        &project.storage_name(&mut None)?,
+    )?;
+    harness
+        .files
+        .apply(
+            &original,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: "/plan.md".into(),
+                bytes: acyclic_stream::OwnedBytes::copy_from_slice(b"base\n"),
+            }],
+            &crate::IdempotencyKey::new("diff-base")?,
+        )
+        .await?;
+    let directory_connection = harness.connect_sessions().await?;
+    let selected =
+        crate::local::sessions::create(&directory_connection, "diff-session", None).await?;
+    let conversation = Conversation::open(selected.clone());
+    let (agents, _) = harness.agents().await?;
+    let state = agents.state(selected.root()).await.map_err(agent)?;
+    let project = state
+        .volumes
+        .iter()
+        .find(|binding| binding.name == "project")
+        .ok_or_else(|| Error::Invalid("missing selected project".into()))?;
+    let workspace = workspace_ref(
+        project.volume()?.provider().clone(),
+        &project.volume()?.storage_name(&mut None)?,
+    )?;
+    harness
+        .files
+        .apply(
+            &workspace,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: "/plan.md".into(),
+                bytes: acyclic_stream::OwnedBytes::from("changed\n".repeat(32).into_bytes()),
+            }],
+            &crate::IdempotencyKey::new("diff-change")?,
+        )
+        .await?;
+    let page = || AgentPageRequest::new(2, 2048, None).map_err(agent);
+    let mut patches = conversation
+        .diff_query(page()?, DiffProjection::Patch)
+        .await
+        .map_err(agent)?;
+    let Some(DiffQueryEvent::Snapshot(first)) = patches.next().await.map_err(agent)? else {
+        return Err(Error::Invalid("missing patch snapshot".into()));
+    };
+    let first_page = loop {
+        match patches.next().await.map_err(agent)? {
+            Some(DiffQueryEvent::Page(items)) => break items,
+            Some(DiffQueryEvent::Progress) => {}
+            _ => return Err(Error::Invalid("missing first patch page".into())),
+        }
+    };
+    assert!(
+        first_page.last().is_some_and(|item| item.next.is_some()),
+        "two rows must leave a real file continuation"
+    );
+    let mut summary = conversation
+        .diff_query(page()?, DiffProjection::Summary)
+        .await
+        .map_err(agent)?;
+    let Some(DiffQueryEvent::Snapshot(second)) = summary.next().await.map_err(agent)? else {
+        return Err(Error::Invalid("missing summary snapshot".into()));
+    };
+    assert_eq!(first.current, second.current);
+    // Replacing one client releases only that original query, including when
+    // it has an unfinished file. The other client's source stays usable.
+    let mut partial = conversation
+        .diff_query(page()?, DiffProjection::Patch)
+        .await
+        .map_err(agent)?;
+    assert!(matches!(
+        partial.next().await.map_err(agent)?,
+        Some(DiffQueryEvent::Snapshot(_))
+    ));
+    loop {
+        match partial.next().await.map_err(agent)? {
+            Some(DiffQueryEvent::Page(items)) => {
+                assert!(items.last().is_some_and(|item| item.next.is_some()));
+                break;
+            }
+            Some(DiffQueryEvent::Progress) => {}
+            _ => return Err(Error::Invalid("missing partial file".into())),
+        }
+    }
+    drop(partial);
+    harness
+        .files
+        .apply(
+            &workspace,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: "/later.md".into(),
+                bytes: acyclic_stream::OwnedBytes::copy_from_slice(b"later\n"),
+            }],
+            &crate::IdempotencyKey::new("diff-later")?,
+        )
+        .await?;
+    let mut patch = String::new();
+    for item in first_page {
+        patch.push_str(&item.patch);
+    }
+    while let Some(event) = patches.next().await.map_err(agent)? {
+        match event {
+            DiffQueryEvent::Page(items) => {
+                for item in items {
+                    assert_eq!(
+                        item.path, "plan.md",
+                        "later generations cannot enter a pinned query"
+                    );
+                    patch.push_str(&item.patch);
+                }
+            }
+            DiffQueryEvent::Progress => {}
+            _ => return Err(Error::Invalid("unexpected patch query event".into())),
+        }
+    }
+    assert!(patch.contains("-base\n"));
+    assert_eq!(patch.matches("+changed\n").count(), 32);
+    let mut totals = crate::client::DiffSummary::default();
+    while let Some(event) = summary.next().await.map_err(agent)? {
+        match event {
+            DiffQueryEvent::Summary(value) => totals = value,
+            DiffQueryEvent::Progress => {}
+            _ => return Err(Error::Invalid("summary transferred patch bytes".into())),
+        }
+    }
+    assert_eq!(
+        (totals.files, totals.added, totals.removed, totals.omitted),
+        (1, 32, 1, 0)
+    );
+    let mut fresh = conversation
+        .diff_query(page()?, DiffProjection::Summary)
+        .await
+        .map_err(agent)?;
+    let mut fresh_totals = crate::client::DiffSummary::default();
+    while let Some(event) = fresh.next().await.map_err(agent)? {
+        match event {
+            DiffQueryEvent::Snapshot(snapshot) => assert_ne!(snapshot.current, first.current),
+            DiffQueryEvent::Summary(value) => fresh_totals = value,
+            DiffQueryEvent::Progress => {}
+            _ => return Err(Error::Invalid("summary transferred patch bytes".into())),
+        }
+    }
+    assert_eq!(
+        (fresh_totals.files, fresh_totals.added, fresh_totals.removed),
+        (2, 33, 1)
+    );
+    assert_eq!(
+        provider.request_count(),
+        0,
+        "query lifetime never starts a model"
+    );
+    let tree_only = harness.connect().await?;
+    let refused = tree_only
+        .controls
+        .diff_query(selected.root().clone(), page()?, DiffProjection::Summary)
+        .await;
+    match refused {
+        Err(acyclic_harness_client::AgentExchangeError::Session(StreamError::AccessDenied)) => {}
+        Ok(mut query) => assert!(matches!(
+            query.next().await,
+            Err(acyclic_harness_client::AgentExchangeError::Session(
+                StreamError::AccessDenied
+            ))
+        )),
+        Err(error) => return Err(agent(error)),
+    }
     Ok(())
 }
 

@@ -239,6 +239,7 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
         acyclic_stream::session::testing::authority(),
         Some(Arc::new(server.bound().changes()?)),
         server.clone(),
+        Some(server.clone()),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
         None,
     );

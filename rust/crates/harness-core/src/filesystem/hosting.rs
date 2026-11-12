@@ -49,6 +49,7 @@ mod directory;
 pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
 
 mod client_files;
+mod input_preview;
 mod journal;
 mod sessions;
 

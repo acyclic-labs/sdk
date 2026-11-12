@@ -3,7 +3,11 @@
   "adapter": "anthropic",
   "workspace": {
     "kind": "plain",
-    "files": {}
+    "files": {
+      ".fixtures/hook.exe": {
+        "binary_env": "E2E_HOOK_BINARY"
+      }
+    }
   },
   "model": {
     "steps": [
@@ -22,7 +26,7 @@
       },
       {
         "when": {
-          "tool_result": "tool execution failed: process: exit Some(1): E2E_HOOK_FAILURE"
+          "tool_result": "E2E_HOOK_FAILURE"
         },
         "text": [
           "HOOK_REFUSED_DONE"
@@ -32,9 +36,35 @@
   },
   "inputs": [
     {
+      "mode": "service"
+    },
+    {
       "mode": "headless",
       "text": "write approved file",
       "answer": "HOOK_REFUSED_DONE"
+    },
+    {
+      "mode": "pty",
+      "resume": true,
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder",
+              "○"
+            ]
+          },
+          "prompt": "/merge "
+        },
+        {
+          "when": {
+            "contains": [
+              "Merged into checkout:"
+            ]
+          },
+          "detach": true
+        }
+      ]
     }
   ],
   "assert": {
@@ -54,10 +84,10 @@
       "E2E_HOOK_FAILURE"
     ],
     "tool_contains": [
-      "tool execution failed: process: exit Some(1): E2E_HOOK_FAILURE"
+      "E2E_HOOK_FAILURE"
     ]
   },
   "settings": {
-    ".claude/settings.json": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" fail\"}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" fail\"}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" fail\"}]}],\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" fail\"}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" fail\"}]}]}}"
+    ".claude/settings.json": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl fail\"}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl fail\"}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl fail\"}]}],\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl fail\"}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl fail\"}]}]}}"
   }
 }

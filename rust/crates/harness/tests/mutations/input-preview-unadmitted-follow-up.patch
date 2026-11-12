@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness-core/src/filesystem/hosting/input_preview.rs b/rust/crates/harness-core/src/filesystem/hosting/input_preview.rs
+--- a/rust/crates/harness-core/src/filesystem/hosting/input_preview.rs
++++ b/rust/crates/harness-core/src/filesystem/hosting/input_preview.rs
+@@ -43,7 +43,10 @@
+                     let record = input_record(provider, &selected, end).await?;
+                     let input = InboxRecord::decode(&record.value)?;
+                     let message = match &admitted {
+-                        Some(entry) => entry.admitted_message(end, &input),
++                        Some(_) => match &input {
++                            InboxRecord::Message(message) | InboxRecord::FollowUp(message) => Some(message),
++                            _ => None,
++                        },
+                         None => match &input {
+                             InboxRecord::Message(message) | InboxRecord::FollowUp(message) => Some(message),
+                             _ => None,

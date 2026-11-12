@@ -436,7 +436,9 @@ pub enum AgentCommand {
     },
     /// Read committed generation-linked history, newest first. An initial
     /// request seeks directly to the tail; continuations visit older entries
-    /// under the same immutable opening cut.
+    /// under the same immutable opening cut. The input-preview socket
+    /// projection selects the last accepted message in this context, including
+    /// pending input, without transferring an entire transcript or message.
     History {
         /// Selected agent; cursor selection cannot retarget it.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]

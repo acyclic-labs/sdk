@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, utimes, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -125,6 +125,10 @@ async function prepare(test, gitOrigin) {
   } else await mkdir(fixture.workspace, { recursive: true });
   await mkdir(fixture.settings, { recursive: true });
   await Promise.all([seed(fixture.workspace, expand(test.workspace?.files, fixture)), seed(fixture.settings, expand(test.settings, fixture))]);
+  if (test.workspace?.metadata?.mode !== undefined) await chmod(fixture.workspace, test.workspace.metadata.mode);
+  if (test.workspace?.metadata?.modified !== undefined) {
+    await utimes(fixture.workspace, test.workspace.metadata.modified, test.workspace.metadata.modified);
+  }
   const provider = { adapter: test.adapter ?? "responses", authentication: test.authentication ?? "optional", base_url: expand(test.base_url ?? fixture.url, fixture),
     models: Object.fromEntries((test.models ?? ["tiny"]).map(model => [model, {
       capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true }
@@ -153,7 +157,8 @@ async function execute(test, prepared) {
   const begin = performance.now();
   const { fixture, artifact, seconds: preparationSeconds } = prepared;
   const captures = [], interrupted = [];
-  let result;
+  let result, service;
+  const ownerArguments = [...fixture.args];
   try {
     const operation = "00000000-0000-0000-0000-000000000001";
     const messageId = "e2e";
@@ -169,16 +174,26 @@ async function execute(test, prepared) {
         continue;
       }
       if (input.mode === "service") {
+        if (input.kill) {
+          assert.ok(service, "service kill requires its original owner");
+          service.killExecutable();
+          await service.closed;
+          service = undefined;
+          continue;
+        }
         // The service belongs to the case, rather than to a terminal whose
         // original custody owner correctly retires all of its descendants.
-        const service = await processes.startOwned(binary,
-          [...fixture.args, ...(input.endpoint ? ["serve", "127.0.0.1:0"] : ["--local-service", "--signal-ready"])],
-          { cwd: fixture.workspace, env: inputFixture.env });
+        service = await processes.startOwned(binary,
+          [...ownerArguments, ...(input.endpoint ? ["serve", "127.0.0.1:0"] : ["--local-service", "--signal-ready"])],
+          { cwd: fixture.workspace, env: inputFixture.env, scopeCapture: result => {
+            captures.push(result);
+            process.stderr.write(`service-termination: ${JSON.stringify({ case: test.id, code: result.code, signal: result.signal, stderr: result.stderr })}\n`);
+          } });
         if (input.endpoint) {
           const publication = await new Spool(service.child.stdout, service.closed,
             { transcript: join(artifact, "endpoint.jsonl") }).next(() => true);
           fixture.env.ACYCLIC_API_KEY = publication.credential;
-          fixture.args.push("--endpoint", publication.endpoint);
+          fixture.args = [...ownerArguments, "--endpoint", publication.endpoint];
           continue;
         }
         await new Promise((resolve, reject) => {
@@ -193,6 +208,12 @@ async function execute(test, prepared) {
             reject(new Error(`session service exited before readiness: ${result.stderr}`));
           }, reject);
         });
+        // The owner has already applied these choices. Attaching clients must
+        // not ask an existing service to reconfigure its host.
+        const ownerOnly = new Set(["--settings-root", "--credentials", "--approval-policy",
+          "--directory", "--workspace-mounting", "--diagnostic-records", "--diagnostic-record-bytes"]);
+        fixture.args = fixture.args.filter((argument, index, args) =>
+          !ownerOnly.has(argument) && !ownerOnly.has(args[index - 1]) && argument !== "--default-config");
         continue;
       }
       if (input.mode === "conversation") {

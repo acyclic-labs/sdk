@@ -1,6 +1,74 @@
 use super::*;
 
 #[tokio::test]
+async fn an_authored_file_hides_descendants_at_live_and_frozen_cuts() {
+    let fs = Fs::memory();
+    let root = attach(
+        &fs,
+        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    root.workspace()
+        .write_text("/file.txt", "authored")
+        .await
+        .unwrap();
+    let path = root
+        .namespace_path("/file.txt/child", accounting!())
+        .unwrap();
+    let stop = CancellationToken::new();
+    let generation = root
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    let (lookup, _allocation) = generation
+        .lookup_paths(
+            std::slice::from_ref(&path.value),
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await
+        .unwrap()
+        .value;
+    assert!(lookup.entries[0].record.is_none());
+    let mut context = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &stop);
+    let mut checkout = root
+        .checkout(crate::model::GenerationSelector::Head, &mut context)
+        .await
+        .unwrap();
+    assert!(
+        root.authored_record(&mut checkout.value, "/file.txt/child", &mut context)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    checkout.retire(&mut context).unwrap();
+    let cut = root.snapshot(accounting!()).await.unwrap();
+    assert!(
+        root.lookup_at_snapshot(cut, "/file.txt/child", accounting!())
+            .await
+            .unwrap()
+            .0
+            .is_none()
+    );
+    assert!(matches!(
+        root.stat("/file.txt/child", accounting!()).await,
+        Err(LazyWorkspaceError::NotFound)
+    ));
+    assert_eq!(
+        root.read("/file.txt", 32, accounting!())
+            .await
+            .unwrap()
+            .bytes
+            .as_slice(),
+        b"authored"
+    );
+}
+
+#[tokio::test]
 async fn observation_and_transient_inspection_pin_their_versions() {
     let fs = Fs::memory();
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"before")));

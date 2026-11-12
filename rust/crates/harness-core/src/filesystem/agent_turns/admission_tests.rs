@@ -144,9 +144,9 @@ async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result
             reader.read(&files[0], 1024, None, None)?.await?.as_ref(),
             b"inside/file"
         );
-        let outside = reader.read(&files[1], 1024, None, None);
+        let outside = async { reader.read(&files[1], 1024, None, None)?.await };
         if rooted {
-            assert!(outside.is_err(), "a root must not grant its sibling");
+            assert!(outside.await.is_err(), "a root must not grant its sibling");
             // Retained conversation references remain exact even when a
             // still-bound volume's new root no longer contains that input.
             let resumed = agent_authority(
@@ -169,7 +169,35 @@ async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result
                 b"outside/file"
             );
         } else {
-            assert_eq!(outside?.await?.as_ref(), b"outside/file");
+            assert_eq!(outside.await?.as_ref(), b"outside/file");
+            // Internal bindings grant no ambient read. A retained input still
+            // grants its exact version, without exposing the sibling file.
+            let mut internal = volumes.clone();
+            internal[1].role = WorkspaceRole::Internal;
+            let retained = agent_authority(
+                &issuer.clone().into(),
+                &TurnAdmission::LocalRoot,
+                &path,
+                &internal,
+                &files[..1],
+            )
+            .await?;
+            let reader = FilesystemContentVerifier::new(
+                host.clone(),
+                &retained.verifier,
+                &retained.scope,
+                1024,
+                None,
+            )?;
+            assert_eq!(
+                reader.read(&files[0], 1024, None, None)?.await?.as_ref(),
+                b"inside/file"
+            );
+            assert!(
+                async { reader.read(&files[1], 1024, None, None)?.await }
+                    .await
+                    .is_err()
+            );
         }
     }
     Ok(())

@@ -341,6 +341,7 @@ impl LocalHarness {
                 observation.authority,
                 Some(Arc::new(changes)),
                 server.clone(),
+                Some(server.clone()),
                 Arc::new(acyclic_stream::runtime::PlatformExecutor),
                 live.then(|| hosted.runtime.lifetime()),
             );

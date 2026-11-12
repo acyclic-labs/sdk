@@ -270,7 +270,11 @@ impl<
     ) -> Result<Option<(FileRecord, FileMetadata)>, LazyWorkspaceError> {
         let path = self.namespace_path(path, ctx)?;
         let record = checkout
-            .lookup_no_follow_with_metadata_with_accounting(&path.value, ctx, cancellation(ctx))
+            .lookup_optional_no_follow_with_metadata_with_accounting(
+                &path.value,
+                ctx,
+                cancellation(ctx),
+            )
             .await;
         path.retire(ctx)?;
         Ok(record?.map(|entry| (entry.record, entry.metadata)))

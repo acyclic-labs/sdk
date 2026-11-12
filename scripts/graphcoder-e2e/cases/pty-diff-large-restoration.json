@@ -3,6 +3,11 @@
   "workspace": {
     "kind": "plain",
     "files": {
+      ".fixtures/fs.exe": {
+        "binary_env": "E2E_FILESYSTEM_BINARY"
+      },
+      ".fixtures/operation-0.json": "[{\"op\":\"fill\",\"path\":\"large.txt\",\"byte\":121,\"count\":1048574,\"offset\":1},{\"op\":\"write\",\"path\":\"small.txt\",\"text\":\"SMALL_DIFF_E2E\\n\"}]",
+      ".fixtures/operation-1.json": "[{\"op\":\"fill\",\"path\":\"large.txt\",\"byte\":120,\"count\":1048574,\"offset\":1}]",
       "large.txt": {
         "repeat": "x",
         "count": 1048576
@@ -17,7 +22,7 @@
             "id": "change",
             "name": "shell",
             "arguments": {
-              "command": "node -e \"const fs=require('node:fs'); const f=fs.openSync('large.txt','r+'); fs.writeSync(f,Buffer.alloc(1048574,'y'),0,1048574,1); fs.closeSync(f); fs.writeFileSync('small.txt','SMALL_DIFF_E2E'+String.fromCharCode(10))\""
+              "command": "./.fixtures/fs.exe .fixtures/operation-0.json"
             }
           }
         ]
@@ -33,7 +38,7 @@
             "id": "restore",
             "name": "shell",
             "arguments": {
-              "command": "node -e \"const fs=require('node:fs'); const f=fs.openSync('large.txt','r+'); fs.writeSync(f,Buffer.alloc(1048574,'x'),0,1048574,1); fs.closeSync(f)\""
+              "command": "./.fixtures/fs.exe .fixtures/operation-1.json"
             }
           }
         ]
@@ -69,9 +74,27 @@
         },
         {
           "when": {
-            "contains": [
-              "small.txt (added)",
-              "+SMALL_DIFF_E2E"
+            "new_contains": [
+              ["small.txt (added)", "+SMALL_DIFF_E2E"],
+              ["large.txt (modified)"]
+            ]
+          },
+          "send": "\u001b[6~"
+        },
+        {
+          "when": {
+            "new_contains": [
+              ["small.txt (added)", "+SMALL_DIFF_E2E"],
+              ["large.txt (modified)"]
+            ]
+          },
+          "send": "\u001b[5~"
+        },
+        {
+          "when": {
+            "new_contains": [
+              ["small.txt (added)", "+SMALL_DIFF_E2E"],
+              ["large.txt (modified)"]
             ]
           },
           "prompt": "restore large file"

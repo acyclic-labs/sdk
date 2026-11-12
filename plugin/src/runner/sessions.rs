@@ -6,6 +6,7 @@ use acyclic_harness::{
     tui::{onboarding::Input, term::Tty},
 };
 type Failure = Box<dyn std::error::Error>;
+mod picker;
 
 #[cfg(test)]
 mod tests {
@@ -246,10 +247,18 @@ async fn select_inner(
         connection
             .require_execution(args.model.as_deref(), args.no_compaction)
             .await?;
+        let prices = args
+            .prices
+            .as_deref()
+            .map(acyclic_harness::local::read_regular_file)
+            .transpose()?
+            .map(String::from_utf8)
+            .transpose()?;
         return choose(
             connection,
             terminal,
             None,
+            prices,
             super::questions_enabled(args),
             !args.no_peer,
         )
@@ -303,9 +312,11 @@ pub async fn picker(
     connection: Connection,
     terminal: Option<Tty>,
     filter: Option<&str>,
+    prices: Option<String>,
     questions: bool,
 ) -> Result<(Connection, Option<Tty>), Failure> {
-    let (selected, terminal, _) = choose(connection, terminal, filter, questions, true).await?;
+    let (selected, terminal, _) =
+        choose(connection, terminal, filter, prices, questions, true).await?;
     sessions::selected(&selected, &OperationId::new().to_string()).await?;
     Ok((selected, terminal))
 }
@@ -314,9 +325,15 @@ async fn choose(
     connection: Connection,
     terminal: Option<Tty>,
     filter: Option<&str>,
+    prices: Option<String>,
     questions: bool,
     peer: bool,
 ) -> Result<(Connection, Option<Tty>, bool), Failure> {
+    let prices = prices
+        .as_deref()
+        .map(|text| acyclic_harness::executor::ModelPrices::from_jsonl(text.as_bytes()))
+        .transpose()?
+        .map(std::sync::Arc::new);
     let mut terminal = match terminal {
         Some(terminal) => terminal,
         None => Tty::open()?,
@@ -325,7 +342,7 @@ async fn choose(
     let mut previous = Vec::new();
     loop {
         let height = terminal.size_reader()()?.height;
-        let rows = u32::from(height.saturating_sub(9).max(1)).min(128);
+        let rows = u32::from(height.saturating_sub(12).max(1)).min(128);
         let page = sessions::page_filtered(
             &connection,
             AgentPageRequest::new(rows, 64 * 1024, cursor.clone())?,
@@ -377,14 +394,15 @@ async fn choose(
         let archive_index = choices.len();
         choices.push("Archive a session".into());
         let row_choices = choices[..visible.len()].to_vec();
-        let (owned, choice) = tokio::task::spawn_blocking(move || {
-            let choice =
-                Input::new(&mut terminal).and_then(|mut input| input.choose("Session", &choices));
-            (terminal, choice)
-        })
+        let (owned, choice) = picker::choose(
+            terminal,
+            connection.clone(),
+            visible.iter().map(|row| row.agent.clone()).collect(),
+            choices,
+            prices.clone(),
+        )
         .await?;
         terminal = owned;
-        let choice = choice?;
         if Some(choice) == next_index {
             previous.push(cursor);
             cursor = page.next;

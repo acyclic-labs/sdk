@@ -1,0 +1,30 @@
+{
+  "id": "session-picker-number-editing",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [] },
+  "inputs": [
+    { "mode": "service" },
+    { "mode": "text", "args": ["new", "Picker 01"], "environment": { "TERM": "dumb" } },
+    { "mode": "text", "args": ["new", "Picker 02"], "environment": { "TERM": "dumb" } },
+    { "mode": "text", "args": ["new", "Picker 03"], "environment": { "TERM": "dumb" } },
+    { "mode": "text", "args": ["new", "Picker 04"], "environment": { "TERM": "dumb" } },
+    { "mode": "text", "args": ["new", "Picker 05"], "environment": { "TERM": "dumb" } },
+    { "mode": "text", "args": ["new", "Picker 06"], "environment": { "TERM": "dumb" } },
+    { "mode": "text", "args": ["new", "Picker 07"], "environment": { "TERM": "dumb" } },
+    { "mode": "text", "args": ["new", "Picker 08"], "environment": { "TERM": "dumb" } },
+    { "mode": "text", "args": ["new", "Picker 09"], "environment": { "TERM": "dumb" } },
+    { "mode": "text", "args": ["new", "Picker 10"], "environment": { "TERM": "dumb" } },
+    { "mode": "text", "args": ["new", "Picker 11"], "environment": { "TERM": "dumb" } },
+    { "mode": "text", "args": ["new", "Picker 12"], "environment": { "TERM": "dumb" } },
+    { "mode": "pty", "args": ["-r"], "actions": [
+      { "when": { "contains": ["Session", "12. "] }, "send": "12" },
+      { "when": { "contains": ["Session: 12 ·"] }, "send": "\u007f" },
+      { "when": { "contains": ["Session: 1 ·"] }, "send": "\r" },
+      { "when": { "contains": ["GraphCoder"], "cursor": true }, "send": "\u0013" },
+      { "when": { "contains": ["Session", "12. "] }, "send": "\u001b[200~2\u001b[201~" },
+      { "when": { "contains": ["Session: 2 ·"] }, "send": "\r" },
+      { "when": { "contains": ["GraphCoder"], "cursor": true }, "prompt": "/quit " }
+    ] }
+  ],
+  "assert": { "requests": 0 }
+}

@@ -36,7 +36,7 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
             &mut accounting,
             cancellation,
             None,
-            crate::kernel::PathBatchMode::SelectedRestore,
+            crate::kernel::PathBatchMode::Optional,
         )
         .await
         .map(|result| result.0)
@@ -73,7 +73,7 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
             &mut accounting,
             &cancellation,
             None,
-            crate::kernel::PathBatchMode::SelectedRestore,
+            crate::kernel::PathBatchMode::Optional,
         )
         .await?;
         assert_eq!(actual.0.entries, selected.entries);
@@ -130,7 +130,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
             &mut accounting,
             cancellation,
             None,
-            crate::kernel::PathBatchMode::SelectedRestore,
+            crate::kernel::PathBatchMode::Optional,
         )
         .await
         .map(|result| result.0)
@@ -153,7 +153,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
             &mut accounting,
             cancellation,
             None,
-            crate::kernel::PathBatchMode::SelectedRestore,
+            crate::kernel::PathBatchMode::Optional,
         )
         .await
         .map(|result| result.0)
@@ -180,7 +180,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
             &mut accounting,
             cancellation,
             None,
-            crate::kernel::PathBatchMode::SelectedRestore,
+            crate::kernel::PathBatchMode::Optional,
         )
         .await
         .map(|result| result.0)

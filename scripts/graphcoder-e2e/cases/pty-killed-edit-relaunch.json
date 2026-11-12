@@ -60,6 +60,7 @@
     ]
   },
   "inputs": [
+    { "mode": "service" },
     {
       "mode": "pty",
       "killed": true,
@@ -86,6 +87,8 @@
         }
       ]
     },
+    { "mode": "service", "kill": true },
+    { "mode": "service" },
     {
       "mode": "pty",
       "resume": true,

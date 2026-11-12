@@ -2,7 +2,7 @@
 use std::io;
 use std::mem::zeroed;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
-use std::sync::OnceLock;
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Instant;
 use windows_sys::Win32::{
     Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
@@ -143,6 +143,7 @@ pub fn console_read(
     if bytes.is_empty() {
         return Ok(0);
     }
+    let _read = closed.enter()?;
     loop {
         if !closed.wait(input, deadline)? {
             return Ok(0);
@@ -188,6 +189,29 @@ pub fn console_read(
 /// Closing is permanent: an event published before wait arming stays visible.
 pub struct ConsoleClose {
     event: OwnedHandle,
+    reads: Mutex<ConsoleReads>,
+    drained: Condvar,
+}
+
+#[derive(Default)]
+struct ConsoleReads {
+    closed: bool,
+    active: usize,
+}
+
+struct ConsoleRead<'a>(&'a ConsoleClose);
+
+impl Drop for ConsoleRead<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut reads) = self.0.reads.lock() {
+            reads.active -= 1;
+            if reads.closed && reads.active == 0 {
+                self.0.drained.notify_all();
+            }
+        } else {
+            self.0.drained.notify_all();
+        }
+    }
 }
 
 impl ConsoleClose {
@@ -195,14 +219,30 @@ impl ConsoleClose {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             event: super::io::create_event().map_err(io::Error::from_raw_os_error)?,
+            reads: Mutex::new(ConsoleReads::default()),
+            drained: Condvar::new(),
         })
     }
 
-    /// Publish the original owner's terminal close fence.
+    fn enter(&self) -> io::Result<ConsoleRead<'_>> {
+        let mut reads = self.reads.lock().map_err(|_| io::ErrorKind::Other)?;
+        if reads.closed {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        reads.active += 1;
+        Ok(ConsoleRead(self))
+    }
+
+    /// Publish close and await every admitted read before ownership can pass.
     pub fn signal(&self) -> io::Result<()> {
+        let mut reads = self.reads.lock().map_err(|_| io::ErrorKind::Other)?;
+        reads.closed = true;
         // SAFETY: the owned manual-reset event remains live throughout the call.
         if unsafe { SetEvent(self.event.as_raw_handle() as HANDLE) } == 0 {
             return Err(io::Error::last_os_error());
+        }
+        while reads.active != 0 {
+            reads = self.drained.wait(reads).map_err(|_| io::ErrorKind::Other)?;
         }
         Ok(())
     }

@@ -14,9 +14,9 @@ use std::sync::Arc;
 pub(super) enum Source {
     Cost,
     Question(String),
-    Diff(Option<String>),
+    Diff(Option<diff::Continuation>),
     History(Option<String>),
-    AgentDiff(AgentPath, Option<String>),
+    AgentDiff(AgentPath, Option<diff::Continuation>),
     Wait(AgentPath),
     Merge(AgentPath, String),
     Discard(AgentPath, String),
@@ -173,7 +173,11 @@ pub(super) async fn load(
             .await?
             .with_context(Context::default())),
         Source::AgentDiff(agent, cursor) => {
-            let selected = root.select(agent.clone()).await?;
+            let selected = if cursor.is_none() {
+                root.select(agent.clone()).await?
+            } else {
+                conversation
+            };
             Ok(diff::query(selected, rows, cursor, Some(agent))
                 .await?
                 .with_context(Context::default()))
@@ -413,14 +417,17 @@ mod tests {
         receiver.await
     }
 
-    fn page(source: &Source) -> Panel {
+    fn page(source: &Source, retained: &diff::Continuation) -> Panel {
         let next = match source {
             Source::Cost => Source::Cost,
-            Source::Diff(_) => Source::Diff(Some("original-diff-cut".into())),
-            Source::History(_) => Source::History(Some("original-history-cut".into())),
-            Source::AgentDiff(agent, _) => {
-                Source::AgentDiff(agent.clone(), Some("original-diff-cut".into()))
+            Source::Diff(cursor) => {
+                Source::Diff(Some(Arc::clone(cursor.as_ref().unwrap_or(retained))))
             }
+            Source::History(_) => Source::History(Some("original-history-cut".into())),
+            Source::AgentDiff(agent, cursor) => Source::AgentDiff(
+                agent.clone(),
+                Some(Arc::clone(cursor.as_ref().unwrap_or(retained))),
+            ),
             Source::Question(_) | Source::Wait(_) | Source::Merge(..) | Source::Discard(..) => {
                 return QueryPage::new(vec![], None, false).with_context(Context::default());
             }
@@ -433,6 +440,39 @@ mod tests {
     #[tokio::test]
     async fn query_controller_retains_reads_coalesces_turns_and_ends_on_original_events()
     -> Result<(), Failure> {
+        use acyclic_harness::{
+            LocalHarness,
+            model::Model,
+            test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
+        };
+        let directory = tempfile::tempdir()?;
+        let provider = Arc::new(
+            ScriptedModelProvider::new(std::iter::empty::<ScriptedTurn>()).with_context_capacity(
+                acyclic_harness::context::ModelContextCapacity {
+                    context_tokens: 32_768,
+                    output_tokens: Some(4096),
+                },
+            ),
+        );
+        let harness = Arc::new(
+            LocalHarness::open(local_harness_config(
+                directory.path(),
+                (
+                    Model::new("scripted".into(), "test".into(), "1".into())?,
+                    provider,
+                ),
+            )?)
+            .await?,
+        );
+        let conversation = Conversation::open(harness.connect().await?);
+        let retained = Arc::new(tokio::sync::Mutex::new(
+            conversation
+                .diff_query(
+                    acyclic_harness::client::AgentPageRequest::default(),
+                    acyclic_harness::client::DiffProjection::Patch,
+                )
+                .await?,
+        ));
         for source in [Source::Diff(None), Source::History(None)] {
             let mut controller = QueryController::default();
             let mut pending = std::pin::pin!(None);
@@ -466,7 +506,7 @@ mod tests {
                 assert!(!producer.is_closed());
             }
             producer
-                .send(page(&source))
+                .send(page(&source, &retained))
                 .map_err(|_| "original consumer dropped")?;
             let result = pending.as_mut().as_pin_mut().unwrap().await;
             controller.finish(result, pending.as_mut())?;
@@ -477,7 +517,7 @@ mod tests {
             });
             assert_eq!(starts.get(), 2, "commits coalesce into one refresh");
             producer
-                .send(page(&source))
+                .send(page(&source, &retained))
                 .map_err(|_| "refresh consumer dropped")?;
             let result = pending.as_mut().as_pin_mut().unwrap().await;
             controller.finish(result, pending.as_mut())?;
@@ -497,7 +537,7 @@ mod tests {
             controller.start(8, pending.as_mut(), |_, _| read(receiver));
             controller.invalidate(Source::follows_tail);
             producer
-                .send(page(&older))
+                .send(page(&older, &retained))
                 .map_err(|_| "older consumer dropped")?;
             let result = pending.as_mut().as_pin_mut().unwrap().await;
             controller.finish(result, pending.as_mut())?;
@@ -511,7 +551,7 @@ mod tests {
                 controller.start(8, pending.as_mut(), |_, _| read(receiver));
                 if ready {
                     producer
-                        .send(page(&source))
+                        .send(page(&source, &retained))
                         .map_err(|_| "ready consumer dropped")?;
                     controller.close(pending.as_mut());
                 } else {

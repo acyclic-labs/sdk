@@ -317,6 +317,115 @@ impl Fixture {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+struct DiffReader {
+    frames: acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes>>,
+    agent: acyclic_harness::agent::AgentPath,
+    page: acyclic_harness::client::AgentPageRequest,
+    cursor: Option<acyclic_harness::client::DiffCursor>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DiffReader {
+    async fn next(&mut self) -> Result<Option<Vec<acyclic_harness::client::DiffFilePage>>> {
+        use futures::TryStreamExt as _;
+        while let Some(frame) = self.frames.try_next().await? {
+            match frame.first() {
+                Some(1) | Some(4) => {}
+                Some(2) => {
+                    let page = acyclic_harness::client::AgentPageRequest::new(
+                        self.page.items(),
+                        self.page.bytes(),
+                        self.cursor
+                            .as_ref()
+                            .map(serde_json::to_string)
+                            .transpose()
+                            .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?,
+                    )
+                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+                    let command = acyclic_harness::client::AgentCommand::Diff {
+                        agent: self.agent.clone(),
+                        page,
+                    };
+                    let reply = acyclic_harness_client::decode_agent_reply(&frame[1..], &command)
+                        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
+                        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+                    let acyclic_harness::client::AgentReply::Diff { items } = reply else {
+                        return Err(acyclic_harness::Error::Invalid(
+                            "unexpected diff reply".into(),
+                        ));
+                    };
+                    self.cursor = items.last().and_then(|item| item.next.clone());
+                    return Ok(Some(items));
+                }
+                _ => {
+                    return Err(acyclic_harness::Error::Invalid(
+                        "unexpected diff frame".into(),
+                    ));
+                }
+            }
+        }
+        assert!(self.cursor.is_none(), "query ended in the middle of a file");
+        Ok(None)
+    }
+
+    async fn collect(mut self) -> Result<Vec<acyclic_harness::client::DiffFilePage>> {
+        let mut items = Vec::new();
+        while let Some(page) = self.next().await? {
+            items.extend(page);
+        }
+        Ok(items)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Fixture {
+    fn query(
+        &self,
+        base: &acyclic_harness::resources::GenerationRef,
+        current: &acyclic_harness::resources::GenerationRef,
+        rows: u32,
+        bytes: u32,
+    ) -> DiffReader {
+        self.query_as(Arc::clone(&self.files), base, current, rows, bytes)
+    }
+
+    fn query_as(
+        &self,
+        reader: Arc<
+            FilesystemContentVerifier<
+                acyclic_fs::MemoryAuthorityBackend,
+                acyclic_fs::MemoryObjectBackend,
+            >,
+        >,
+        base: &acyclic_harness::resources::GenerationRef,
+        current: &acyclic_harness::resources::GenerationRef,
+        rows: u32,
+        bytes: u32,
+    ) -> DiffReader {
+        let agent = acyclic_harness::agent::AgentPath::root(
+            &acyclic_harness::agent::AgentId::from_bytes([1; 16]),
+        );
+        let page =
+            acyclic_harness::client::AgentPageRequest::new(rows, bytes, None).expect("page credit");
+        let source = acyclic_harness::hosting::DiffSource::new(
+            reader,
+            acyclic_harness::client::DiffSnapshot {
+                agent: agent.clone(),
+                volume: self.root.volume.clone(),
+                base: base.clone(),
+                current: current.clone(),
+            },
+        );
+        DiffReader {
+            frames: source.frames(page.clone(), acyclic_harness::client::DiffProjection::Patch),
+            agent,
+            page,
+            cursor: None,
+        }
+    }
+}
+
 /// The shared platform producer: one exact projection of the volume's changes
 /// since its fork base, paged without loss from its retained projection and
 /// disclosed only under the requesting reader's list authority.
@@ -324,9 +433,7 @@ impl Fixture {
 #[tokio::test]
 async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> {
     use acyclic_harness::client::{AgentPageRequest, AgentReply, DiffKind};
-    use acyclic_harness::hosting::DiffPages;
     let fixture = Fixture::new().await?;
-    let pages = DiffPages::default();
     for (path, text) in [
         ("kept.txt", "same\n"),
         ("edited.txt", "before\n"),
@@ -365,11 +472,11 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         .await?;
     let current = fixture.source("kept.txt").await?.generation;
     let volume = &fixture.root.volume;
-    let page = |items, cursor| AgentPageRequest::new(items, 64 * 1024, cursor).expect("page");
-
-    let whole = pages
-        .page(&fixture.files, volume, (&base, &current), &page(128, None))
+    let mut whole = fixture
+        .query(&base, &current, 128, 64 * 1024)
+        .collect()
         .await?;
+    whole.sort_by(|left, right| left.path.cmp(&right.path));
     let rows = whole
         .iter()
         .map(|file| {
@@ -394,120 +501,50 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     assert!(whole.iter().all(|file| !file.continued));
     assert_eq!(whole.last().and_then(|file| file.next.as_ref()), None);
 
-    // One row per page reassembles exactly the same projection.
-    let (mut cursor, mut page_count, mut patches) = (None, 0, std::collections::BTreeMap::new());
-    loop {
-        let fragments = pages
-            .page(&fixture.files, volume, (&base, &current), &page(1, cursor))
-            .await?;
-        assert_eq!(fragments.len(), 1);
+    // One row per frame reassembles each file without reconstructing an earlier prefix.
+    let mut query = fixture.query(&base, &current, 1, 64 * 1024);
+    let mut page_count = 0;
+    let mut patches = std::collections::BTreeMap::<String, String>::new();
+    while let Some(fragments) = query.next().await? {
         page_count += 1;
-        let fragment = &fragments[0];
-        patches
-            .entry(fragment.path.clone())
-            .or_insert_with(String::new)
-            .push_str(&fragment.patch);
-        cursor = fragment
-            .next
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .expect("cursor");
-        if cursor.is_none() {
-            break;
+        for fragment in fragments {
+            patches
+                .entry(fragment.path)
+                .or_default()
+                .push_str(&fragment.patch);
         }
     }
     assert!(page_count > whole.len());
-    assert_eq!(
-        patches,
-        whole
-            .iter()
-            .map(|file| (file.path.clone(), file.patch.clone()))
-            .collect()
-    );
-
-    // Fund one worst-case metadata envelope and one scalar. This forces the
-    // long Unicode line to split without guessing the projection digest's size.
-    // The next fragment cannot fit beside an accepted prefix; keep that prefix.
-    {
-        let mut metadata = whole[0].clone();
-        metadata.patch.clear();
-        metadata.publication.fill(u8::MAX);
-        let next = metadata.next.as_mut().expect("more files");
-        next.publication.fill(u8::MAX);
-        next.path.clone_from(&metadata.path);
-        next.offset = Some(usize::MAX);
-        let encoded = serde_json::to_vec(&AgentReply::Diff {
-            items: vec![metadata],
-        })
-        .expect("metadata envelope");
-        let bytes = u32::try_from(
-            acyclic_harness_client::encoded_agent_reply_size(encoded.len() as u64)
-                .expect("wire metadata")
-                + '🙂'.len_utf8() as u64,
-        )
-        .expect("one-fragment credit");
-        let mut cursor = None;
-        let mut actual = std::collections::BTreeMap::<String, String>::new();
-        loop {
-            let request = AgentPageRequest::new(128, bytes, cursor).expect("page");
-            let fragments = pages
-                .page(&fixture.files, volume, (&base, &current), &request)
-                .await?;
-            assert!(!fragments.is_empty());
-            for fragment in &fragments {
-                if fragment.omitted_bytes.is_none() {
-                    actual
-                        .entry(fragment.path.clone())
-                        .or_default()
-                        .push_str(&fragment.patch);
-                }
-            }
-            cursor = fragments
-                .last()
-                .and_then(|item| item.next.as_ref())
-                .map(serde_json::to_string)
-                .transpose()
-                .expect("cursor");
-            if cursor.is_none() {
-                break;
-            }
-        }
-        assert!(
-            actual.contains_key("added.txt"),
-            "small Unicode changes must remain exact"
-        );
-        for (path, patch) in actual {
-            assert_eq!(
-                patch,
-                whole
-                    .iter()
-                    .find(|item| item.path == path)
-                    .expect("same projection path")
-                    .patch
-            );
-        }
-    }
-
-    // A cursor of one projection never resumes another generation's.
-    let stale = serde_json::to_string(whole[0].next.as_ref().expect("more files")).expect("cursor");
+    let expected = whole
+        .iter()
+        .map(|file| (file.path.clone(), file.patch.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(patches, expected);
+    // Pin the query before a later publication. No request token can replace its cut.
+    let mut pinned = fixture.query(&base, &current, 1, 64 * 1024);
+    let first = pinned.next().await?.expect("first original frame");
     fixture.put("added.txt", "four\n", "later").await?;
     let later = fixture.source("kept.txt").await?.generation;
-    assert!(matches!(
-        pages
-            .page(
-                &fixture.files,
-                volume,
-                (&base, &later),
-                &page(128, Some(stale))
-            )
-            .await,
-        Err(acyclic_harness::Error::Conflict(_))
-    ));
-    // No change since the base is an empty projection.
+    let mut original = std::collections::BTreeMap::<String, String>::new();
+    for fragment in first {
+        original
+            .entry(fragment.path)
+            .or_default()
+            .push_str(&fragment.patch);
+    }
+    while let Some(items) = pinned.next().await? {
+        for fragment in items {
+            original
+                .entry(fragment.path)
+                .or_default()
+                .push_str(&fragment.patch);
+        }
+    }
+    assert_eq!(original, expected);
     assert!(
-        pages
-            .page(&fixture.files, volume, (&later, &later), &page(128, None))
+        fixture
+            .query(&later, &later, 128, 64 * 1024)
+            .collect()
             .await?
             .is_empty()
     );
@@ -536,14 +573,11 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         )
         .await?;
     let expensive_current = fixture.source("expensive.txt").await?.generation;
-    let bounded = pages
-        .page(
-            &fixture.files,
-            volume,
-            (&expensive_base, &expensive_current),
-            &AgentPageRequest::new(128, 2048, None).expect("finite computation credit"),
-        )
+    let mut bounded = fixture
+        .query(&expensive_base, &expensive_current, 128, 2048)
+        .collect()
         .await?;
+    bounded.sort_by(|left, right| left.path.cmp(&right.path));
     assert_eq!(bounded.len(), 3);
     assert_eq!(bounded[0].omitted_bytes, Some(128));
     assert!(bounded[0].patch.is_empty());
@@ -553,8 +587,10 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     ]) {
         assert_eq!(file.path, path);
         assert_eq!(file.kind, kind);
-        assert_eq!(file.omitted_bytes, Some(0));
-        assert!(file.patch.is_empty());
+        assert_eq!(
+            file.omitted_bytes, None,
+            "each file owns its admitted comparison credit"
+        );
     }
 
     // Derive exact scalar credit from real projected wire rows. Shrinking must
@@ -633,127 +669,139 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         None,
     )?;
     assert!(matches!(
-        pages
-            .page(&unlisted, volume, (&base, &current), &page(128, None))
+        fixture
+            .query_as(unlisted, &base, &current, 128, 64 * 1024)
+            .collect()
             .await,
         Err(acyclic_harness::Error::Unauthorized(_))
     ));
-    // Nor does a continuation of a projection retained for an authorized
-    // reader: every page rechecks the requesting reader's authority.
-    let first = pages
-        .page(&fixture.files, volume, (&base, &current), &page(1, None))
-        .await?;
-    let next = first[0]
-        .next
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .expect("cursor");
-    assert!(
-        matches!(
-            pages
-                .page(&unlisted, volume, (&base, &current), &page(1, next))
-                .await,
-            Err(acyclic_harness::Error::Unauthorized(_))
-        ),
-        "retained diff pages require the requesting reader's authority"
-    );
     Ok(())
 }
 
-/// A page's continuation discloses its following filename even when that file
-/// has no fragment in the returned page.
+#[cfg(not(target_arch = "wasm32"))]
+impl Fixture {
+    async fn deny_listing(
+        &self,
+        path: &str,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use acyclic_fs::{CancellationToken, WorkBudget, access::Policy};
+        let fixture = self;
+        let volume = &self.root.volume;
+        let cancel = CancellationToken::new();
+        let work = WorkBudget::UNBOUNDED;
+        let workspace = fixture
+            .filesystem
+            .open_workspace(volume.storage_name(&mut None)?, work, &cancel)
+            .await?
+            .value;
+        let mut checkout = workspace
+            .checkout(
+                acyclic_fs::model::GenerationSelector::Head,
+                acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                work,
+                &cancel,
+            )
+            .await?
+            .value;
+        let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
+        policy.version += 1;
+        let mut deny = policy.layers[0][0].clone();
+        deny.id = "hide-following-diff-file".into();
+        deny.effect = acyclic_fs::access::Effect::Deny;
+        deny.actions = [acyclic_fs::access::Action::List].into_iter().collect();
+        deny.resource.path = path.into();
+        policy.layers[0].push(deny);
+        checkout
+            .write_access_policy(
+                &serde_json::to_vec(&policy)?,
+                acyclic_fs::NamedAttributeWriteMode::Replace,
+                work,
+                &cancel,
+            )
+            .await?;
+        let committed = checkout
+            .commit::<acyclic_fs::FsError, _, _>(
+                acyclic_fs::OperationId::new(),
+                None,
+                None,
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                work,
+                &cancel,
+                |_| {
+                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    }))
+                },
+            )
+            .await?
+            .value;
+        assert!(matches!(
+            committed,
+            acyclic_fs::LivePublicationObservation::Committed { .. }
+        ));
+
+        Ok(())
+    }
+}
+
+/// Revocation fences both the native frontier and an already compared file.
+/// No continuation names the following file before that file is disclosed.
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn retained_diff_cursors_recheck_the_next_files_disclosure()
+async fn live_diff_queries_fence_frontiers_and_cached_patches_against_policy_changes()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    use acyclic_fs::{CancellationToken, WorkBudget, access::Policy};
-    use acyclic_harness::{client::AgentPageRequest, hosting::DiffPages};
-    let fixture = Fixture::new().await?;
-    let volume = &fixture.root.volume;
-    let base = fixture.source("").await?.generation;
-    // Binary files need just their headers, so one row ends at the boundary
-    // before the next file, rather than within the first file's patch.
-    fixture.put("a.txt", "\0", "first").await?;
-    fixture.put("z.txt", "\0", "following").await?;
-    let current = fixture.source("").await?.generation;
-    let pages = DiffPages::default();
-    let request = AgentPageRequest::new(1, 64 * 1024, None)?;
-    let first = pages
-        .page(&fixture.files, volume, (&base, &current), &request)
-        .await?;
-    assert_eq!(first.len(), 1);
-    assert_eq!(first[0].path, "a.txt");
-    assert_eq!(
-        first[0].next.as_ref().expect("following file").path,
-        "z.txt"
-    );
-
-    // Change the actual owner's current policy while preserving both pinned
-    // data endpoints and the producer's retained projection.
-    let cancel = CancellationToken::new();
-    let work = WorkBudget::UNBOUNDED;
-    let workspace = fixture
-        .filesystem
-        .open_workspace(volume.storage_name(&mut None)?, work, &cancel)
-        .await?
-        .value;
-    let mut checkout = workspace
-        .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
-            work,
-            &cancel,
-        )
-        .await?
-        .value;
-    let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
-    policy.version += 1;
-    let mut deny = policy.layers[0][0].clone();
-    deny.id = "hide-following-diff-file".into();
-    deny.effect = acyclic_fs::access::Effect::Deny;
-    deny.actions = [acyclic_fs::access::Action::List].into_iter().collect();
-    deny.resource.path = "z.txt".into();
-    policy.layers[0].push(deny);
-    checkout
-        .write_access_policy(
-            &serde_json::to_vec(&policy)?,
-            acyclic_fs::NamedAttributeWriteMode::Replace,
-            work,
-            &cancel,
-        )
-        .await?;
-    let committed = checkout
-        .commit::<acyclic_fs::FsError, _, _>(
-            acyclic_fs::OperationId::new(),
-            None,
-            None,
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
-            work,
-            &cancel,
-            |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                    value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
-                }))
-            },
-        )
-        .await?
-        .value;
-    assert!(matches!(
-        committed,
-        acyclic_fs::LivePublicationObservation::Committed { .. }
-    ));
-    let after = pages
-        .page(&fixture.files, volume, (&base, &current), &request)
-        .await?;
-    assert_eq!(after.len(), 1);
-    assert_eq!(after[0].path, "a.txt", "the permitted file remains visible");
-    assert!(
-        after[0].next.is_none(),
-        "diff cursor disclosed a denied following filename"
-    );
+    for cached_patch in [false, true] {
+        let fixture = Fixture::new().await?;
+        let base = fixture.source("").await?.generation;
+        fixture
+            .put(
+                "a.txt",
+                if cached_patch { "one\ntwo\n" } else { "\0" },
+                "first",
+            )
+            .await?;
+        if !cached_patch {
+            fixture.put("z.txt", "\0", "following").await?;
+        }
+        let current = fixture.source("").await?.generation;
+        let mut query = fixture.query(&base, &current, 1, 64 * 1024);
+        let first = query.next().await?.expect("first file header");
+        assert_eq!(first.len(), 1);
+        let shown = first[0].path.clone();
+        let hidden = if cached_patch {
+            shown.as_str()
+        } else if shown == "a.txt" {
+            "z.txt"
+        } else {
+            "a.txt"
+        };
+        assert_eq!(first[0].next.is_some(), cached_patch);
+        if let Some(cursor) = &first[0].next {
+            assert_eq!(cursor.path, shown, "a cursor cannot disclose the next file");
+        }
+        fixture.deny_listing(hidden).await?;
+        let error = query
+            .next()
+            .await
+            .expect_err("revoked policy must stop the original query");
+        assert_eq!(error.code(), acyclic_harness::wire::ErrorCode::Unauthorized);
+        drop(query);
+        let fresh = fixture
+            .query(&base, &current, 128, 64 * 1024)
+            .collect()
+            .await?;
+        if cached_patch {
+            assert!(fresh.is_empty());
+        } else {
+            assert_eq!(fresh.len(), 1);
+            assert_eq!(
+                fresh[0].path, shown,
+                "a fresh query still discloses the permitted file"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -764,7 +812,6 @@ async fn retained_diff_cursors_recheck_the_next_files_disclosure()
 #[tokio::test]
 async fn workspace_diff_admits_range_restoration_before_reading_content() -> Result<()> {
     use acyclic_fs::{CancellationToken, PublicationPermit, WorkBudget, WorkspaceError};
-    use acyclic_harness::{client::AgentPageRequest, hosting::DiffPages};
     let fixture = Fixture::new().await?;
     let volume = &fixture.root.volume;
     let cancel = CancellationToken::new();
@@ -827,15 +874,7 @@ async fn workspace_diff_admits_range_restoration_before_reading_content() -> Res
             .await
             .expect("range publication");
         let current = fixture.source("restored.txt").await?.generation;
-        let pages = DiffPages::default();
-        let omitted = pages
-            .page(
-                &fixture.files,
-                volume,
-                (&base, &current),
-                &AgentPageRequest::new(128, 2048, None).expect("small page"),
-            )
-            .await?;
+        let omitted = fixture.query(&base, &current, 128, 2048).collect().await?;
         assert_eq!(
             omitted.len(),
             1,
@@ -843,13 +882,9 @@ async fn workspace_diff_admits_range_restoration_before_reading_content() -> Res
         );
         assert_eq!(omitted[0].omitted_bytes, Some(length as u64));
         assert!(omitted[0].patch.is_empty());
-        let funded = pages
-            .page(
-                &fixture.files,
-                volume,
-                (&base, &current),
-                &AgentPageRequest::new(128, 64 * 1024, None).expect("funded page"),
-            )
+        let funded = fixture
+            .query(&base, &current, 128, 64 * 1024)
+            .collect()
             .await?;
         if length <= 64 * 1024 {
             assert!(

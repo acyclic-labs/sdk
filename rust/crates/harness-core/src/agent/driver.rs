@@ -392,6 +392,40 @@ pub struct ConversationEntry {
 }
 
 impl ConversationEntry {
+    /// Whether this immutable turn admitted an ordinary steering message.
+    /// Reserved follow-ups inside the cursor retain their independent turns.
+    pub(crate) fn admits_steering_message(&self, inbox: u64) -> bool {
+        self.inbox < inbox
+            && self
+                .steering
+                .as_ref()
+                .is_some_and(|cut| inbox < cut.through)
+    }
+
+    /// The exact initial message or an ordinary admitted steering message.
+    /// A prefix alone never grants a reserved follow-up's file.
+    pub(crate) fn admitted_message<'a>(
+        &self,
+        inbox: u64,
+        input: &'a super::InboxRecord,
+    ) -> Option<&'a super::Message> {
+        match input {
+            super::InboxRecord::Message(message) | super::InboxRecord::FollowUp(message)
+                if inbox == self.inbox
+                    && matches!(&self.input,
+                    TurnInput::Message { from, id, body, attachments, re }
+                    if from == &message.from && id == &message.id && body == &message.body
+                        && attachments == &message.attachments && re == &message.re) =>
+            {
+                Some(message)
+            }
+            super::InboxRecord::Message(message) if self.admits_steering_message(inbox) => {
+                Some(message)
+            }
+            _ => None,
+        }
+    }
+
     /// Exact files this immutable entry publishes to its readers. A reference
     /// to one grants no directory, later version or unselected turn.
     pub fn references_file(&self, file: &FileRef) -> bool {
@@ -515,7 +549,7 @@ struct Checkpoint {
     /// started with; a document change meanwhile belongs to the next turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     announcements: Vec<super::AnnouncedDocument>,
-    /// False only at the durable Notice selection cut, before opening the host.
+    /// Whether the original announcement delta was committed before execution.
     opened: bool,
     notices: Option<super::NoticeSelection>,
 }
@@ -1008,6 +1042,24 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             else {
                 return Ok(cancelled_open(cursor));
             };
+            if turn_announcements(agent)?.is_none() {
+                // Freeze even an empty delta before a model or tool can change
+                // its sources. The actor commit makes crash recovery reopen
+                // the same selection instead of rebuilding it from new heads.
+                return Ok(TurnStep {
+                    checkpoint: Some(encode(&Checkpoint {
+                        inbox,
+                        input,
+                        segment,
+                        announcements: announced(&open),
+                        opened: true,
+                        notices,
+                    })?),
+                    outs: Vec::new(),
+                    wait: Wait::Continue,
+                    drops: None,
+                });
+            }
             let progress = open
                 .executor
                 .execute_progress(

@@ -306,10 +306,13 @@ pub(super) fn require_structured_write(
 /// table's view composition.
 fn root_grants(volumes: &[WorkspaceEntry], external: &[FileRef]) -> Result<Vec<String>> {
     let mut grants = Vec::with_capacity(3 * volumes.len() + 2);
-    if let Some(volume) = volumes.iter().find_map(WorkspaceEntry::as_volume) {
-        grants.push(
-            crate::seed::volume(volume.provider())?.capability(VolumeOperation::Read, &mut None)?,
-        );
+    let seed = volumes
+        .iter()
+        .find_map(WorkspaceEntry::as_volume)
+        .map(|volume| crate::seed::volume(volume.provider()))
+        .transpose()?;
+    if let Some(seed) = &seed {
+        grants.push(seed.capability(VolumeOperation::Read, &mut None)?);
     }
     grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
     // Every agent may spawn, message and archive within its own subtree.
@@ -335,11 +338,17 @@ fn root_grants(volumes: &[WorkspaceEntry], external: &[FileRef]) -> Result<Vec<S
     for file in external {
         // A retained exact file can lie outside the current root on a still
         // bound volume. Its immutable conversation selection grants it alone.
-        grants.push(file.read_capability(&mut None)?);
-        if !volumes
-            .iter()
-            .any(|binding| binding.as_volume() == Some(file.volume()) && binding.root.is_empty())
+        if seed.as_ref() != Some(file.volume())
+            && !volumes.iter().any(|binding| {
+                binding.role != crate::agent::WorkspaceRole::Internal
+                    && binding.as_volume() == Some(file.volume())
+                    && binding.root.is_empty()
+            })
         {
+            // Whole-volume reads already cover retained versions. Adding
+            // redundant exact grants on reopen would change an unchanged
+            // execution's authority binding merely because it retained input.
+            grants.push(file.read_capability(&mut None)?);
             // An attachment manifest's files are copies in its own directory,
             // so one grant reaches them however many it lists.
             if file.descriptor().media_type() == crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE

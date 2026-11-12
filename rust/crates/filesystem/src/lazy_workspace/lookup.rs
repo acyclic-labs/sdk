@@ -219,7 +219,16 @@ impl<
                 )
                 .await;
             namespace.retire(ctx)?;
-            if let Some(authored) = result? {
+            let authored = match result {
+                // An authored non-directory hides every source descendant.
+                // This optional lookup proves absence; it must not fall back
+                // to the source behind that authored binding.
+                Err(crate::FsError::Path(crate::kernel::PathLookupError::NotDirectory)) => {
+                    return Ok((None, false, ctx.claim_owned(0, 0)?));
+                }
+                result => result?,
+            };
+            if let Some(authored) = authored {
                 let path = self.canonical_path(path, ctx)?;
                 return Ok((
                     Some(LazyLookup::Authored {

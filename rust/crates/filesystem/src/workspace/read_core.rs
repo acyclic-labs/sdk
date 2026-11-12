@@ -22,7 +22,7 @@ pub(super) async fn lookup_paths<
             .await?;
         let (lookup, allocation) = checkout
             .value
-            .lookup_batch_no_follow_with_accounting::<true>(paths, false, &mut scope, cancellation)
+            .lookup_batch_no_follow_with_accounting::<true>(paths, true, &mut scope, cancellation)
             .await?;
         checkout.retire(&mut scope)?;
         let allocation = workspace_allocation(allocation, &scope)?;

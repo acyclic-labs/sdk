@@ -126,7 +126,54 @@ pub struct Conversation {
     connection: Connection,
 }
 
+/// An owned diff query retains its original connection, including an embedded
+/// host's lifetime, until the client closes the query.
+pub struct WorkspaceDiff {
+    query: crate::client::DiffQuery,
+    _connection: Connection,
+}
+
+/// The original input query retains the same embedded-host lifetime.
+pub struct ConversationInput {
+    query: crate::client::InputQuery,
+    _connection: Connection,
+}
+
+impl ConversationInput {
+    /// Receive one original credited step or typed failure.
+    pub async fn next(
+        &mut self,
+    ) -> std::result::Result<Option<crate::client::InputPreviewStep>, AgentExchangeError> {
+        self.query.next().await
+    }
+}
+
+impl WorkspaceDiff {
+    /// Receive the next original credited event, or the original failure.
+    pub async fn next(
+        &mut self,
+    ) -> std::result::Result<Option<crate::client::DiffQueryEvent>, AgentExchangeError> {
+        self.query.next().await
+    }
+}
+
 impl Conversation {
+    /// Open the selected context's bounded last-input query.
+    pub async fn input_query(
+        &self,
+        page: AgentPageRequest,
+    ) -> std::result::Result<ConversationInput, AgentExchangeError> {
+        let query = self
+            .connection
+            .controls
+            .input_query(self.agent().clone(), page)
+            .await?;
+        Ok(ConversationInput {
+            query,
+            _connection: self.connection.clone(),
+        })
+    }
+
     /// Prepare a message to a named member root, without writing its inbox.
     /// This uses the connection's existing user authority and grants no new
     /// directory, file, control or child access.
@@ -188,24 +235,25 @@ impl Conversation {
         sent(self.connection.exchange(&message.command).await)
     }
 
-    /// Requests one visible diff page through this connection's authenticated
-    /// session. The cursor is returned unchanged to the same query owner; no
-    /// local filesystem or frontend-specific access bypasses the server.
+    /// Open a demand-driven diff on the original authenticated client socket.
+    /// Dropping it releases the server's immutable traversal and comparison.
     ///
     /// # Errors
-    /// The session failure, source refusal or invalid continuation.
-    pub async fn diff(&self, page: AgentPageRequest) -> Result<Vec<crate::context::DiffFilePage>> {
-        match self
+    /// The original typed admission, framing or transport failure.
+    pub async fn diff_query(
+        &self,
+        page: AgentPageRequest,
+        projection: crate::client::DiffProjection,
+    ) -> std::result::Result<WorkspaceDiff, AgentExchangeError> {
+        let query = self
             .connection
-            .execute(&AgentCommand::Diff {
-                agent: self.connection.root().clone(),
-                page,
-            })
-            .await?
-        {
-            AgentReply::Diff { items } => Ok(items),
-            _ => Err(unexpected()),
-        }
+            .controls
+            .diff_query(self.agent().clone(), page, projection)
+            .await?;
+        Ok(WorkspaceDiff {
+            query,
+            _connection: self.connection.clone(),
+        })
     }
 
     /// The conversation of `connection`'s root.

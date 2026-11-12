@@ -20,9 +20,11 @@ export function rawNeedles(actions) {
 // `raw` is the OutputWatch over the executable's raw terminal output.
 // `delta` waits, on the same frame events as every condition, for streamed
 // text to paint before its turn settles.
-export function matches(screen, raw, condition, visible, diagnostic = visible, logical = visible) {
+export function matches(screen, raw, condition, visible, diagnostic = visible, logical = visible, previous = "") {
   if (visible === undefined) ({ visible, diagnostic, logical } = screenSnapshot(screen));
   return (condition.contains ?? []).every(text => logical.includes(text))
+    && (condition.new_contains === undefined || condition.new_contains.some(group =>
+      group.every(text => logical.includes(text)) && !group.every(text => previous.includes(text))))
     && (condition.delta === undefined || (logical.includes(condition.delta) && !logical.includes(IDLE)))
     && (!condition.task_failure || expectedTaskFailure(diagnostic, condition))
     && (!condition.query_failure || queryFailure(diagnostic)?.startsWith(condition.query_failure))
@@ -69,6 +71,7 @@ export async function pty(processes, binary, fixture, input, capture) {
         }
         if (!frames.ready()) return;
         const { visible, diagnostic, logical } = screenSnapshot(screen, { completeLines: !settled });
+        const previous = snapshots.at(-1)?.logical ?? "";
         trace({ event: "frame", settled, available: frames.available(), visible });
         if (firstPaint === undefined && frames.available() && visible.includes("GraphCoder")) {
           firstPaint = performance.now() - launchStarted;
@@ -91,7 +94,7 @@ export async function pty(processes, binary, fixture, input, capture) {
           return;
         }
         if (!action || settled || !frames.available()) return;
-        if (action.reject && matches(screen, raw, action.reject, visible, diagnostic, logical)) {
+        if (action.reject && matches(screen, raw, action.reject, visible, diagnostic, logical, previous)) {
           const error = new Error(`step=await terminal action ${index}: rejected terminal state before the required observation\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
           error.code = "terminal_action_rejected";
           throw error;
@@ -99,13 +102,13 @@ export async function pty(processes, binary, fixture, input, capture) {
         if (action.after_request && !fixture.requested(action.after_request)) return;
         if (action.after_signal && !fixture.signalled?.(action.after_signal)) return;
         if (action.when.delta !== undefined && requests <= prompted) return;
-        if (!matches(screen, raw, action.when, visible, diagnostic, logical)) return;
+        if (!matches(screen, raw, action.when, visible, diagnostic, logical, previous)) return;
         if (action.when.delta !== undefined) {
           const delta = { case: fixture.id, action: index, text: action.when.delta, ms: performance.now() - requested };
           deltas.push(delta);
           process.stderr.write(`pty-delta: ${JSON.stringify(delta)}\n`);
         }
-        if (action.assert) assert.ok(matches(screen, raw, action.assert, visible, diagnostic, logical),
+        if (action.assert) assert.ok(matches(screen, raw, action.assert, visible, diagnostic, logical, previous),
           `step=assert observed terminal frame: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
         failures.accept(diagnostic, action.when, action.assert, visible);
         snapshots.push({ action: index, logical });

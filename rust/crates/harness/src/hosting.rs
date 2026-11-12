@@ -30,7 +30,12 @@ mod runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::Runtime;
 mod diff;
-pub use diff::{DIFF_FILE_BYTES, DiffPages};
+mod queries;
+pub use diff::{DIFF_FILE_BYTES, DiffSource};
+
+/// Original lazy input source; filtered work is distinct from an empty cut.
+pub type InputPreviewSource =
+    acyclic_stream::BoxProviderStream<'static, crate::Result<crate::agent::InputPreviewStep>>;
 
 use crate::{
     agent::{
@@ -152,22 +157,32 @@ pub trait Platform: ProviderPlatform + 'static {
         Box::pin(async { Ok(None) })
     }
 
-    /// A page of the selected workspace's pinned, authorized diff query.
-    /// The server has checked the session credential, current policy and agent
-    /// tree before delegation. The source must also check file read/list authority
-    /// before disclosing any path or content, including on continuation pages.
-    /// `authorization` is the original session admission, including its current
-    /// credential; a request field or cached principal cannot replace it.
-    fn diff<'a>(
+    /// Select one immutable workspace diff under the original admission.
+    /// The returned source owns its frontier for exactly the live client query.
+    fn diff_source<'a>(
         &'a self,
         authorization: &'a CallAuthorization,
         agent: &'a AgentPath,
-        page: &'a AgentPageRequest,
-    ) -> BoxProviderFuture<'a, crate::Result<Vec<crate::context::DiffFilePage>>> {
-        let _ = (authorization, agent, page);
+    ) -> BoxProviderFuture<'a, crate::Result<DiffSource>> {
+        let _ = (authorization, agent);
         Box::pin(async {
             Err(crate::Error::Unsupported(
-                "workspace diff query is unavailable".into(),
+                "workspace diff source is unavailable".into(),
+            ))
+        })
+    }
+
+    /// Select accepted input under this platform's original admission.
+    fn input_preview_source<'a>(
+        &'a self,
+        authorization: &'a CallAuthorization,
+        agent: &'a AgentPath,
+        maximum: u64,
+    ) -> BoxProviderFuture<'a, crate::Result<InputPreviewSource>> {
+        let _ = (authorization, agent, maximum);
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "input preview source is unavailable".into(),
             ))
         })
     }
@@ -509,11 +524,10 @@ where
         command: &'a AgentCommand,
         by: &'a Sender,
         approver: &'a str,
-        authorization: &'a CallAuthorization,
     ) -> BoxProviderFuture<'a, Result<AgentReply, Error>> {
         // Construct this operation before entering its poll graph. The session
         // carrier keeps the admitted command; its caller retains one owner.
-        Box::pin(self.dispatch_inner(command, by, approver, authorization))
+        Box::pin(self.dispatch_inner(command, by, approver))
     }
 
     async fn dispatch_inner(
@@ -521,7 +535,6 @@ where
         command: &AgentCommand,
         by: &Sender,
         approver: &str,
-        authorization: &CallAuthorization,
     ) -> Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
@@ -825,16 +838,9 @@ where
                     phase: settlement.phase,
                 })
             }
-            AgentCommand::Diff { agent, page } => {
-                let agent = self.within_tree(agent)?;
-                Ok(AgentReply::Diff {
-                    items: self
-                        .platform
-                        .diff(authorization, agent, page)
-                        .await
-                        .map_err(|error| Error::Turn(Box::new(error)))?,
-                })
-            }
+            AgentCommand::Diff { .. } => Err(Error::Turn(Box::new(crate::Error::Unsupported(
+                "workspace diff queries require an original actor socket".into(),
+            )))),
             AgentCommand::Usage {
                 agent,
                 input,
@@ -1856,7 +1862,7 @@ where
             };
             server.platform.admitted().await?;
             let approver = server.platform.approver(&principal);
-            let dispatch = server.dispatch(call.command(), &by, &approver, &authorization);
+            let dispatch = server.dispatch(call.command(), &by, &approver);
             #[cfg(test)]
             {
                 let bytes = std::mem::size_of_val(&dispatch);

@@ -221,7 +221,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 .ok_or(PathLookupError::KindMismatch)?
                                 .payload
                             else {
-                                if matches!(mode, PathBatchMode::SelectedRestore) {
+                                if matches!(mode, PathBatchMode::Optional) {
                                     entries[index] = PathBatchEntry {
                                         record: None,
                                         parent: None,

@@ -383,6 +383,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     }
 
     /// Resolves an ordered no-follow path batch, preserving absence and duplicates.
+    /// A non-directory prefix proves the descendant absent.
     /// Returns the canonical batch and its original result allocation. Current
     /// workspace authority is checked before the selected data is returned.
     pub async fn lookup_paths<W: crate::facade::FsWork>(

@@ -65,6 +65,7 @@ acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
 acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
+async-stream = "=0.3.6"
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 acyclic-machines-daytona = { version = "=0.2.0", path = "../machines-daytona" }

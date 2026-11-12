@@ -3,8 +3,9 @@
 #![doc = include_str!("../../docs/client/README.md")]
 
 pub use acyclic_harness_client::{
-    AgentCommand, AgentPageRequest, AgentReply, ApprovalVerdict, EventCursor, ExecutionPosition,
-    MAX_READ_BYTES,
+    AgentCommand, AgentPageRequest, AgentReply, ApprovalVerdict, DiffProjection, DiffQuery,
+    DiffQueryEvent, DiffSnapshot, DiffSummary, EventCursor, ExecutionPosition, InputPreview,
+    InputPreviewStep, InputQuery, MAX_READ_BYTES,
 };
 pub use acyclic_harness_core::preset::Preset;
 

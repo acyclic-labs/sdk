@@ -91,6 +91,89 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
 }
 
 #[tokio::test]
+async fn input_previews_pin_pending_messages_without_reading_the_whole_body() -> TestResult {
+    use crate::agent::{InputPreview, InputPreviewStep, Message};
+    use futures::StreamExt as _;
+    let (bound, root) = binding().await?;
+    let by = Sender::Host {
+        host: "preview".into(),
+    };
+    let first = IntentId::try_from("first")?;
+    let text = format!("a🙂{}", "unread".repeat(4096));
+    let file = bound
+        .stage_text(&root, "message", &by, &first, ("preview", &text))
+        .await?;
+    bound
+        .agents()
+        .send(
+            &root,
+            &by,
+            &InboxRecord::Message(Message {
+                from: by.clone(),
+                id: first,
+                re: None,
+                body: Box::new(file),
+                attachments: None,
+            }),
+        )
+        .await?;
+    bound
+        .agents()
+        .send(
+            &root,
+            &by,
+            &InboxRecord::Cancel(Control {
+                by: by.clone(),
+                id: IntentId::try_from("filtered")?,
+            }),
+        )
+        .await?;
+    let original = bound.input_preview_steps(root.clone(), 3);
+    futures::pin_mut!(original);
+    assert_eq!(
+        original.next().await.transpose()?,
+        Some(InputPreviewStep::Progress)
+    );
+    // A newer accepted prompt must not change the cut retained by the query.
+    let later = IntentId::try_from("later")?;
+    let file = bound
+        .stage_text(&root, "message", &by, &later, ("preview", "newer"))
+        .await?;
+    bound
+        .agents()
+        .send(
+            &root,
+            &by,
+            &InboxRecord::FollowUp(Message {
+                from: by.clone(),
+                id: later,
+                re: None,
+                body: Box::new(file),
+                attachments: None,
+            }),
+        )
+        .await?;
+    assert_eq!(
+        original.next().await.transpose()?,
+        Some(InputPreviewStep::Selected(Some(InputPreview {
+            text: "a".into(),
+            bytes: text.len() as u64,
+        })))
+    );
+    assert!(original.next().await.is_none());
+    let fresh = bound.input_preview_steps(root, 5);
+    futures::pin_mut!(fresh);
+    assert_eq!(
+        fresh.next().await.transpose()?,
+        Some(InputPreviewStep::Selected(Some(InputPreview {
+            text: "newer".into(),
+            bytes: 5,
+        })))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() -> TestResult {
     for archive in [false, true] {
         let (bound, root) = binding().await?;

@@ -2,7 +2,11 @@
   "id": "question-write-hook-deny",
   "workspace": {
     "kind": "plain",
-    "files": {}
+    "files": {
+      ".fixtures/hook.exe": {
+        "binary_env": "E2E_HOOK_BINARY"
+      }
+    }
   },
   "model": {
     "steps": [
@@ -29,9 +33,35 @@
   },
   "inputs": [
     {
+      "mode": "service"
+    },
+    {
       "mode": "headless",
       "answer": "RULE_E2E_DONE",
       "text": "apply deny policy"
+    },
+    {
+      "mode": "pty",
+      "resume": true,
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder",
+              "○"
+            ]
+          },
+          "prompt": "/merge "
+        },
+        {
+          "when": {
+            "contains": [
+              "Merged into checkout:"
+            ]
+          },
+          "detach": true
+        }
+      ]
     }
   ],
   "assert": {
@@ -60,7 +90,7 @@
     ]
   },
   "settings": {
-    ".claude/settings.json": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Write\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" deny\"}]}]}}"
+    ".claude/settings.json": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Write\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl deny\"}]}]}}"
   },
   "extra_args": [
     "--questions=true"

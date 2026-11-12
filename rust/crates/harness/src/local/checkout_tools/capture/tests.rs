@@ -175,6 +175,25 @@ async fn run(tools: &CheckoutTools, slot: &mut Option<Cursor>) -> Result<()> {
 }
 
 #[tokio::test]
+async fn replacing_a_captured_directory_with_a_file_preserves_publication() -> Result<()> {
+    let (directory, harness, tools) = seeded(|root| {
+        std::fs::create_dir(root.join("marker")).map_err(storage)?;
+        std::fs::write(root.join("marker/child"), b"before").map_err(storage)
+    })
+    .await?;
+    let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+    run(&tools, &mut slot).await?;
+    std::fs::remove_file(directory.path().join("marker/child")).map_err(storage)?;
+    std::fs::remove_dir(directory.path().join("marker")).map_err(storage)?;
+    std::fs::write(directory.path().join("marker"), b"replacement").map_err(storage)?;
+    run(&tools, &mut slot).await?;
+    assert_eq!(contents(&tools).await?, b"replacement");
+    drop(slot);
+    drop(tools);
+    harness.disconnect().await
+}
+
+#[tokio::test]
 async fn cursor_custody_follows_actual_capture_admission() -> Result<()> {
     let (directory, harness, tools) = fixture().await?;
     for (boundary, producer_lost, expected) in [
@@ -695,14 +714,10 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
     .await?;
     let harness = Arc::new(harness);
     let connection = harness.connect().await?;
-    let query = acyclic_harness_client::AgentCommand::Diff {
-        agent: connection.root().clone(),
-        page: acyclic_harness_client::AgentPageRequest::new(32, 64 * 1024, None)
-            .map_err(storage)?,
-    };
     let marker = directory.path().join("marker");
     let permissions = std::fs::Permissions::from_mode(0o644);
     let outcome = async {
+        let conversation = crate::local::agent_conversation::Conversation::open(connection.clone());
         assert_eq!(
             std::fs::read(&marker).unwrap_err().kind(),
             std::io::ErrorKind::PermissionDenied,
@@ -733,7 +748,14 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
         );
         // Optional display before-images cannot certify an exact empty diff.
         // Exercise the served client query with its real session credential.
-        let uncertified = connection.exchange(&query).await.map_err(storage)?;
+        let mut query = conversation
+            .diff_query(
+                acyclic_harness_client::AgentPageRequest::default(),
+                crate::client::DiffProjection::Patch,
+            )
+            .await
+            .map_err(storage)?;
+        let uncertified = query.next().await;
         assert!(
             matches!(
                 &uncertified,
@@ -806,10 +828,23 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
                 .as_ref(),
             b"before"
         );
-        assert!(matches!(
-            connection.execute(&query).await?,
-            acyclic_harness_client::AgentReply::Diff { items } if items.is_empty()
-        ));
+        let mut confirmed = conversation
+            .diff_query(
+                acyclic_harness_client::AgentPageRequest::default(),
+                crate::client::DiffProjection::Patch,
+            )
+            .await
+            .map_err(storage)?;
+        while let Some(event) = confirmed.next().await.map_err(storage)? {
+            assert!(
+                matches!(
+                    event,
+                    crate::client::DiffQueryEvent::Snapshot(_)
+                        | crate::client::DiffQueryEvent::Progress
+                ),
+                "recovered unchanged source produced a diff"
+            );
+        }
         Ok(())
     }
     .await;

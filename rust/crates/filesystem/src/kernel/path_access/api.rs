@@ -122,7 +122,7 @@ pub async fn lookup_path_refs<S: AsyncObjectStore>(
 #[derive(Clone, Copy)]
 pub(crate) enum PathBatchMode {
     NoFollow,
-    SelectedRestore,
+    Optional,
 }
 
 pub(crate) async fn lookup_path_async_with_accounting<S: AsyncObjectStore>(

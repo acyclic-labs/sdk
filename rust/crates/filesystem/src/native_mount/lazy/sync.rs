@@ -225,7 +225,11 @@ where
                 .namespace_path(path, &mut accounting)
                 .map_err(lazy_error)?;
             let lookup = candidate
-                .lookup_no_follow_with_metadata(&namespace.value, work, work.cancellation())
+                .lookup_optional_no_follow_with_metadata_with_accounting(
+                    &namespace.value,
+                    &mut accounting,
+                    work.cancellation(),
+                )
                 .await
                 .map_err(mount_engine_error)?;
             let Some(lookup) = lookup else {

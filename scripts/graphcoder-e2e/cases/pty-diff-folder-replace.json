@@ -3,6 +3,10 @@
   "workspace": {
     "kind": "plain",
     "files": {
+      ".fixtures/fs.exe": {
+        "binary_env": "E2E_FILESYSTEM_BINARY"
+      },
+      ".fixtures/operation-0.json": "[{\"op\":\"remove_file\",\"path\":\"folder/a.txt\"},{\"op\":\"remove_directory\",\"path\":\"folder\"},{\"op\":\"write\",\"path\":\"folder\",\"text\":\"REPLACED_E2E\\n\"}]",
       "folder/a.txt": "FOLDER_BASE_E2E\n"
     }
   },
@@ -34,7 +38,7 @@
             "id": "replace",
             "name": "shell",
             "arguments": {
-              "command": "node -e \"const fs=require('node:fs'); fs.unlinkSync('folder/a.txt'); fs.rmdirSync('folder'); fs.writeFileSync('folder', 'REPLACED_E2E'+String.fromCharCode(10))\""
+              "command": "./.fixtures/fs.exe .fixtures/operation-0.json"
             }
           }
         ]
@@ -47,6 +51,9 @@
     ]
   },
   "inputs": [
+    {
+      "mode": "service"
+    },
     {
       "mode": "pty",
       "actions": [
@@ -80,12 +87,33 @@
         {
           "when": {
             "contains": [
-              "folder (added)",
-              "+REPLACED_E2E",
-              "folder/a.txt (removed)",
-              "-FOLDER_BASE_E2E",
               "FOLDER_CHANGE_READY",
               "○"
+            ],
+            "new_contains": [
+              [
+                "folder (added)",
+                "+REPLACED_E2E"
+              ],
+              [
+                "folder/a.txt (removed)",
+                "-FOLDER_BASE_E2E"
+              ]
+            ]
+          },
+          "send": "\u001b[6~"
+        },
+        {
+          "when": {
+            "new_contains": [
+              [
+                "folder (added)",
+                "+REPLACED_E2E"
+              ],
+              [
+                "folder/a.txt (removed)",
+                "-FOLDER_BASE_E2E"
+              ]
             ]
           },
           "detach": true
@@ -98,11 +126,30 @@
       "actions": [
         {
           "when": {
-            "contains": [
-              "folder (added)",
-              "+REPLACED_E2E",
-              "folder/a.txt (removed)",
-              "-FOLDER_BASE_E2E"
+            "new_contains": [
+              [
+                "folder (added)",
+                "+REPLACED_E2E"
+              ],
+              [
+                "folder/a.txt (removed)",
+                "-FOLDER_BASE_E2E"
+              ]
+            ]
+          },
+          "send": "\u001b[6~"
+        },
+        {
+          "when": {
+            "new_contains": [
+              [
+                "folder (added)",
+                "+REPLACED_E2E"
+              ],
+              [
+                "folder/a.txt (removed)",
+                "-FOLDER_BASE_E2E"
+              ]
             ]
           },
           "prompt": "/merge "

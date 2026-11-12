@@ -6,7 +6,11 @@ mod console_owner;
 #[cfg(all(any(unix, windows), not(loom)))]
 mod counters;
 mod decoder;
+#[cfg(all(any(unix, windows), not(loom)))]
+mod events;
 mod frame;
+#[cfg(all(any(unix, windows), not(loom)))]
+pub use events::input_events;
 #[cfg(any(unix, loom))]
 mod lifecycle;
 mod probe;

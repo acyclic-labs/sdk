@@ -34,7 +34,7 @@ use acyclic_harness::{
     },
 };
 use acyclic_harness_client::{AgentControlFailure, AgentExchangeError, AgentReply};
-use futures::{StreamExt as _, stream::LocalBoxStream};
+use futures::StreamExt as _;
 use std::{sync::Arc, time::Instant};
 
 type Failure = Box<dyn std::error::Error>;
@@ -804,36 +804,6 @@ fn paged(effect: InputEffect, page: usize) -> InputEffect {
     }
 }
 
-/// The terminal's input batches, read on a thread of their own: the runtime's
-/// single blocking worker stays free for the agent's file work, which would
-/// otherwise wait behind a read that lasts until the next key. A full channel
-/// holds the reader back; a dropped view ends it at its next batch.
-fn terminal_events(
-    mut tty: Tty,
-) -> std::io::Result<LocalBoxStream<'static, std::io::Result<Vec<InputEvent>>>> {
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    std::thread::Builder::new()
-        .name("graphcoder-input".into())
-        .spawn(move || {
-            loop {
-                let events = tty.read_events(None);
-                let failed = events.is_err();
-                if matches!(&events, Ok(events) if events.is_empty()) {
-                    continue;
-                }
-                if sender.blocking_send(events).is_err() || failed {
-                    return;
-                }
-            }
-        })?;
-    Ok(
-        futures::stream::unfold(receiver, |mut receiver| async move {
-            receiver.recv().await.map(|events| (events, receiver))
-        })
-        .boxed_local(),
-    )
-}
-
 /// Runs the terminal view; `resume` reopens the last conversation's recent
 /// turns, paged in from the stream as they show, otherwise the view starts
 /// empty.
@@ -878,6 +848,7 @@ pub async fn run(
                     conversation.connection().clone(),
                     None,
                     None,
+                    price_file.clone(),
                     questions,
                 )
                 .await?;
@@ -939,16 +910,17 @@ async fn run_current(
     let size = tty.size_reader();
     let (tty, output) = tty.split();
     let mut terminal = FrameTerminal::new(output, size()?)?;
-    let mut keys = terminal_events(tty)?;
+    let mut keys = acyclic_harness::tui::term::input_events(tty)?;
     // Its settled turns from the tail on, its phase and, while it works, the
     // newest tool call's output or its streaming answer or reasoning. A
     // resumed view replays its newest turn, whose outcome is the session's,
     // and pages the turns before it in as it shows them.
-    let from = if resume {
-        Some(conversation.settled().await?.saturating_sub(1))
+    let replayed_through = if resume {
+        conversation.settled().await?
     } else {
-        None
+        0
     };
+    let from = resume.then_some(replayed_through.saturating_sub(1));
     let (mut events, phase) = conversation.observe_with_phase(from).await?;
     let mut view = View {
         title: session::title(&title),
@@ -1355,7 +1327,9 @@ async fn run_current(
                     overlay_top = 0;
                 }
                 view.ring &= waited;
-                if settled {
+                // The initial query already includes the selected replay prefix.
+                // Only newly settled turns can change its selected source.
+                if settled && events.seen() > replayed_through {
                     queries.invalidate(query::Source::follows_tail);
                 }
                 // A settled turn clears the output and the streamed text.
@@ -1718,18 +1692,18 @@ async fn run_current(
                                 view.back = 0;
                                 view.pending_dirty = true;
                             }
-                            InputEffect::Interrupt if queries.source().is_some() => {
-                                queries.close(query_future.as_mut());
-                                overlay_top = 0;
-                            }
                             InputEffect::Host(Action::Escape) if view.prompt.is_some() => {
                                 view.prompt = None;
                             }
-                            InputEffect::Host(Action::Escape)
+                            InputEffect::Interrupt | InputEffect::Host(Action::Escape)
                                 if matches!(queries.source(), Some(query::Source::Approval { .. })) =>
                             {
                                 view.cancelling = true;
                                 conversation.cancel().await?;
+                            }
+                            InputEffect::Interrupt if queries.source().is_some() => {
+                                queries.close(query_future.as_mut());
+                                overlay_top = 0;
                             }
                             InputEffect::Host(Action::Escape) if overlay.is_some() || queries.source().is_some() => {
                                 match ui.select(&conversation, None).await {
@@ -1751,7 +1725,6 @@ async fn run_current(
                                     conversation.cancel().await?;
                                 }
                             }
-                            InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
                             InputEffect::Quit if matches!(view.prompt, Some(Prompt::StopOrDetach)) => return view.exit().map(|()| Next::Exit),
                             InputEffect::Quit => { view.prompt = Some(Prompt::StopOrDetach); }
                             InputEffect::Scroll(rows) if queries.source().is_some() && credit != 0 => {

@@ -3,6 +3,10 @@
   "workspace": {
     "kind": "plain",
     "files": {
+      ".fixtures/fs.exe": {
+        "binary_env": "E2E_FILESYSTEM_BINARY"
+      },
+      ".fixtures/operation-0.json": "[{\"op\":\"rename\",\"from\":\"folder\",\"to\":\"moved\"}]",
       "folder/a.txt": "FOLDER_BASE_E2E\n",
       "unrelated/file-000.txt": "UNCHANGED_OUTSIDE_MOVE\n",
       "unrelated/file-001.txt": "UNCHANGED_OUTSIDE_MOVE\n",
@@ -98,7 +102,7 @@
             "id": "move",
             "name": "shell",
             "arguments": {
-              "command": "node -e \"require('node:fs').renameSync('folder', 'moved')\""
+              "command": "./.fixtures/fs.exe .fixtures/operation-0.json"
             }
           }
         ]
@@ -144,12 +148,33 @@
         {
           "when": {
             "contains": [
-              "folder/a.txt (removed)",
-              "-FOLDER_BASE_E2E",
-              "moved/a.txt (added)",
-              "+FOLDER_EDIT_E2E",
               "FOLDER_CHANGE_READY",
               "○"
+            ],
+            "new_contains": [
+              [
+                "moved/a.txt (added)",
+                "+FOLDER_EDIT_E2E"
+              ],
+              [
+                "folder/a.txt (removed)",
+                "-FOLDER_BASE_E2E"
+              ]
+            ]
+          },
+          "send": "\u001b[6~"
+        },
+        {
+          "when": {
+            "new_contains": [
+              [
+                "moved/a.txt (added)",
+                "+FOLDER_EDIT_E2E"
+              ],
+              [
+                "folder/a.txt (removed)",
+                "-FOLDER_BASE_E2E"
+              ]
             ]
           },
           "detach": true
@@ -162,11 +187,30 @@
       "actions": [
         {
           "when": {
-            "contains": [
-              "folder/a.txt (removed)",
-              "-FOLDER_BASE_E2E",
-              "moved/a.txt (added)",
-              "+FOLDER_EDIT_E2E"
+            "new_contains": [
+              [
+                "moved/a.txt (added)",
+                "+FOLDER_EDIT_E2E"
+              ],
+              [
+                "folder/a.txt (removed)",
+                "-FOLDER_BASE_E2E"
+              ]
+            ]
+          },
+          "send": "\u001b[6~"
+        },
+        {
+          "when": {
+            "new_contains": [
+              [
+                "moved/a.txt (added)",
+                "+FOLDER_EDIT_E2E"
+              ],
+              [
+                "folder/a.txt (removed)",
+                "-FOLDER_BASE_E2E"
+              ]
             ]
           },
           "prompt": "/merge "

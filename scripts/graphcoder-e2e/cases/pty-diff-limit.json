@@ -2,7 +2,7 @@
   "id": "pty-diff-limit",
   "workspace": {
     "kind": "plain",
-    "files": {}
+    "files": {".fixtures/fs.exe": {"binary_env": "E2E_FILESYSTEM_BINARY"}, ".fixtures/operation-0.json": "[{\"op\":\"fill\",\"path\":\"large.txt\",\"byte\":120,\"count\":65537}]"}
   },
   "model": {
     "steps": [
@@ -12,7 +12,7 @@
             "id": "large",
             "name": "shell",
             "arguments": {
-              "command": "node -e \"require('node:fs').writeFileSync('large.txt',Buffer.alloc(65537,'x'))\""
+              "command": "./.fixtures/fs.exe .fixtures/operation-0.json"
             }
           }
         ]

@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/filesystem/hosting/input_preview.rs b/rust/crates/harness-core/src/filesystem/hosting/input_preview.rs
+--- a/rust/crates/harness-core/src/filesystem/hosting/input_preview.rs
++++ b/rust/crates/harness-core/src/filesystem/hosting/input_preview.rs
+@@ -65,7 +65,8 @@
+                             // entry's proof arrives; do not replay overlapping
+                             // inbox ranges or silently discard the candidate.
+                             if matches!(&input, InboxRecord::Message(_)) {
+-                                deferred = Some((end, input));
++                                let _ = deferred.take();
++                                drop(input);
+                             }
+                             yield InputPreviewStep::Progress;
+                         }

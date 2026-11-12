@@ -4,6 +4,36 @@ A workspace file may use `{ "source": "capture.mjs" }` to seed an asset from
 this support directory. Programs executed by confined tools belong in the
 workspace fixture; the controller's checkout grants no implicit read authority.
 
+Executable assets use `{ "binary_env": "E2E_HOOK_BINARY" }`. Build the
+`harness-hook-fixture` binary from `harness-mock-model` and set that variable to
+its Cargo-reported executable before running hook cases. The loader copies its
+bytes into the workspace with executable permissions; hook commands use that
+workspace-relative copy. The shared Node test runner prepares this artifact for
+the hook protocol test automatically.
+
+`E2E_FILESYSTEM_BINARY` similarly selects `harness-filesystem-fixture`. Its
+workspace-local copy reads a JSON operation plan for file writes, byte-range
+fills, rename and removal, without requiring an interpreter.
+
+`workspace.metadata` seeds root `mode` and `modified` (Unix seconds) from the
+fixture owner before binding the workspace. The root-metadata case then creates
+and removes a temporary file during the turn, changing the directory timestamp
+through ordinary filesystem operations before its diff and merge assertions.
+
+A `service` input owns the server separately from terminal clients. A later
+`{ "mode": "service", "kill": true }` kills that owner and waits for its
+native close event. A following `service` input restarts it with the original
+owner arguments, so recovery cases preserve configuration across the restart.
+
+`when.new_contains` lists alternative complete text groups. A group must appear
+in the current committed frame and have been absent from the previous accepted
+action. Paging cases use it to observe each patch without assuming path order.
+
+Interactive sessions edit isolated volume forks. Cases that assert edited files
+in the original checkout issue `/merge` and wait for its receipt before exiting.
+Rendering and resumed-diff assertions precede that merge; the file assertions
+continue to verify the original checkout, without an implicit harness merge.
+
 `node scripts/qualify-topology-modes.mjs GRAPHCODER MOCK_MODEL FRESH_OUTPUT`
 runs forced single and team cases plus a generated swarm with 257 siblings
 and depth 65. Team workers settle and retire across independent root turns before the
