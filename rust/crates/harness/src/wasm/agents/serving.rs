@@ -102,6 +102,7 @@ impl WasmAgentServer {
         let manifest = field("manifest")?.dyn_into::<js_sys::Uint8Array>()?;
         let manifest = snapshot(&manifest)?;
         let on_record = field("onRecord")?.dyn_into::<Function>()?;
+        let on_interrupt = field("acceptsInterrupt")?.dyn_into::<Function>()?;
         let policy = field("policy")?.dyn_into::<Function>()?;
         let admitted = field("admitted")?.dyn_into::<Function>()?;
         let within = owner.within()?;
@@ -136,6 +137,7 @@ impl WasmAgentServer {
             .hosting(Arc::new(acyclic_actors::guest::wire::Remote::new(
                 manifest,
                 guest::call(on_record),
+                guest::interrupt(on_interrupt),
             )))
             .map_err(agent_error)?;
         let observation = WasmAgents {
@@ -563,6 +565,7 @@ const PLATFORM: &str = r#"
 export interface WasmHostingPlatform {
     manifest: Uint8Array;
     onRecord(delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal): Promise<Uint8Array>;
+    acceptsInterrupt(query: Uint8Array): boolean;
     policy(principal: Uint8Array, command: AgentCommand, signal: AbortSignal): boolean | Promise<boolean>;
     admitted(signal: AbortSignal): Promise<void>;
 }

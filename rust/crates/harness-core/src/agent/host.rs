@@ -705,6 +705,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         from: &Sender,
         record: &InboxRecord,
     ) -> Result<Delivered, Error> {
+        if let InboxRecord::Cancel(cancel) = record {
+            super::cancellation::validate(self.provider.as_ref(), to, cancel).await?;
+        }
         self.deliver(to, send(to, from, record)?).await
     }
 

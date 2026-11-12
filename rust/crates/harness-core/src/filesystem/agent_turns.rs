@@ -1596,7 +1596,8 @@ impl<'a> TurnContext<'a> {
                 Ok(SettledTurn {
                     turn: crate::agent::turn_id(agent, &entry.input).map_err(Error::from)?,
                     announcements: entry.announcements,
-                    input: crate::agent::model_input(&entry.input).map_err(Error::from)?,
+                    input: crate::agent::model_input_at(entry.inbox, &entry.input)
+                        .map_err(Error::from)?,
                     output: entry.output,
                     steering: entry.steering.map(|steering| steering.file),
                     steered: Vec::new(),
