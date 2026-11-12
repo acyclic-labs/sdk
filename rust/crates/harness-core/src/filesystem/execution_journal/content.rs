@@ -39,14 +39,6 @@ where
                 .transpose()?;
             (hold, key, path)
         };
-        self.authorize_private_content(operation, io)
-    }
-
-    pub(super) fn authorize_private_content(
-        &self,
-        operation: VolumeOperation,
-        io: Option<&PreparationIo>,
-    ) -> Result<()> {
         crate::executor::with_history_io(io, |work| {
             ContentGrant::authorize_volume(
                 &self.verifier,
@@ -211,14 +203,6 @@ where
             .map(|io| io.remaining().map(|budget| budget.bytes_encoded))
             .transpose()?
             .unwrap_or(u64::MAX);
-        self.authorize_private_content(operation, io)
-    }
-
-    pub(super) fn authorize_private_content(
-        &self,
-        operation: VolumeOperation,
-        io: Option<&PreparationIo>,
-    ) -> Result<()> {
         crate::executor::with_history_io(io, |work| {
             ContentGrant::authorize_volume(
                 &self.verifier,

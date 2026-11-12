@@ -117,7 +117,7 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
                         &CommitOutcome::Committed(receipt),
                         0,
                         &records,
-                        &observation,
+                        std::slice::from_ref(&observation),
                         &checkpoint
                     ),
                     Err(Error::Indeterminate(_))
@@ -549,7 +549,7 @@ async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() 
                         &CommitOutcome::Committed(receipt),
                         0,
                         &records,
-                        &observation,
+                        std::slice::from_ref(&observation),
                         &checkpoint
                     ),
                     Err(Error::Indeterminate(_))
