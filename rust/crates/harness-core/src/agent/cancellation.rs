@@ -35,11 +35,7 @@ pub(super) async fn validate<P: crate::store::JournalProvider + ?Sized>(
         .filter(|record| record.sequence == cancel.input)
         .ok_or(Error::Record("cancellation must name an accepted input"))?;
     let record = super::InboxRecord::decode(&record.value)?;
-    let accepted = match record {
-        super::InboxRecord::ForkAdopted(adopted) => adopted.brief.is_some(),
-        record => super::input::input(cancel.input, record).is_some(),
-    };
-    if !accepted {
+    if super::input::input(cancel.input, record).is_none() {
         return Err(Error::Record("cancellation must name an accepted input"));
     }
     Ok(())
