@@ -1,5 +1,6 @@
 //! Product projections over one original canonical invocation and socket.
 use crate::{CommandError, DiffProjection};
+pub use acyclic_harness_core::agent::InputSelection;
 use bytes::Bytes;
 
 /// The view selected before admitting the original command.
@@ -8,7 +9,7 @@ pub enum QueryProjection {
     /// Workspace changes, backed by the original Diff invocation.
     Diff(DiffProjection),
     /// Last accepted input in the selected History context.
-    Input,
+    Input(InputSelection),
 }
 
 impl QueryProjection {
@@ -20,7 +21,8 @@ impl QueryProjection {
         let kind = match self {
             Self::Diff(DiffProjection::Patch) => 0,
             Self::Diff(DiffProjection::Summary) => 1,
-            Self::Input => 2,
+            Self::Input(InputSelection::Latest) => 2,
+            Self::Input(InputSelection::Pending) => 3,
         };
         let mut bytes = Vec::with_capacity(invocation.len() + 2);
         bytes.extend_from_slice(&[1, kind]);
@@ -36,7 +38,8 @@ impl QueryProjection {
         let projection = match &bytes[..2] {
             [1, 0] => Self::Diff(DiffProjection::Patch),
             [1, 1] => Self::Diff(DiffProjection::Summary),
-            [1, 2] => Self::Input,
+            [1, 2] => Self::Input(InputSelection::Latest),
+            [1, 3] => Self::Input(InputSelection::Pending),
             _ => return Err(CommandError::Invalid),
         };
         Ok((projection, &bytes[2..]))

@@ -1,6 +1,6 @@
 //! Last-input prefixes on the same credited actor socket as other projections.
 use crate::{AgentCommand, AgentExchangeError, AgentPageRequest, CommandError};
-pub use acyclic_harness_core::agent::{InputPreview, InputPreviewStep};
+pub use acyclic_harness_core::agent::{InputPreview, InputPreviewStep, InputSelection};
 use acyclic_stream::session::ActorSocket;
 
 /// One original query. A failure closes its source and can never become EOF.
@@ -10,16 +10,23 @@ pub struct InputQuery {
     maximum: usize,
     selected: bool,
     failed: bool,
+    selection: InputSelection,
 }
 
 impl InputQuery {
-    pub(crate) fn new(socket: ActorSocket, command: AgentCommand, page: &AgentPageRequest) -> Self {
+    pub(crate) fn new(
+        socket: ActorSocket,
+        command: AgentCommand,
+        page: &AgentPageRequest,
+        selection: InputSelection,
+    ) -> Self {
         Self {
             socket: Some(socket),
             command,
             maximum: page.bytes() as usize,
             selected: false,
             failed: false,
+            selection,
         }
     }
 
@@ -65,7 +72,7 @@ impl InputQuery {
         }
         let event = match kind {
             4 if body.is_empty() => InputPreviewStep::Progress,
-            6 if body.len() >= 8 => {
+            6 if self.selection == InputSelection::Latest && body.len() >= 8 => {
                 let bytes =
                     u64::from_le_bytes(body[..8].try_into().map_err(|_| CommandError::Invalid)?);
                 let text = std::str::from_utf8(&body[8..]).map_err(|_| CommandError::Invalid)?;
@@ -77,6 +84,26 @@ impl InputQuery {
                     text: text.to_owned(),
                     bytes,
                 }))
+            }
+            8 if self.selection == InputSelection::Pending && body.len() >= 24 => {
+                let inbox =
+                    u64::from_le_bytes(body[..8].try_into().map_err(|_| CommandError::Invalid)?);
+                let offset =
+                    u64::from_le_bytes(body[8..16].try_into().map_err(|_| CommandError::Invalid)?);
+                let bytes =
+                    u64::from_le_bytes(body[16..24].try_into().map_err(|_| CommandError::Invalid)?);
+                let text = std::str::from_utf8(&body[24..]).map_err(|_| CommandError::Invalid)?;
+                if offset > bytes || text.len() as u64 > bytes - offset {
+                    return Err(CommandError::Invalid.into());
+                }
+                InputPreviewStep::Pending {
+                    inbox,
+                    offset,
+                    preview: InputPreview {
+                        text: text.to_owned(),
+                        bytes,
+                    },
+                }
             }
             7 if body.is_empty() => {
                 self.selected = true;

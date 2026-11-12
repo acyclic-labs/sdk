@@ -178,8 +178,9 @@ pub trait Platform: ProviderPlatform + 'static {
         authorization: &'a CallAuthorization,
         agent: &'a AgentPath,
         maximum: u64,
+        selection: crate::agent::InputSelection,
     ) -> BoxProviderFuture<'a, crate::Result<InputPreviewSource>> {
-        let _ = (authorization, agent, maximum);
+        let _ = (authorization, agent, maximum, selection);
         Box::pin(async {
             Err(crate::Error::Unsupported(
                 "input preview source is unavailable".into(),

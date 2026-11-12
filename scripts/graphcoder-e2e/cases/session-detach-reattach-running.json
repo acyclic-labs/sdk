@@ -47,6 +47,7 @@
           "when": {
             "contains": [
               "GraphCoder",
+              "keep running across detach",
               "DETACHED_RUNNING_E2E"
             ],
             "cursor": true
