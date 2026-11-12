@@ -22,9 +22,9 @@ Commands return JSON containing logical screen text, visible rows and cursor
 coordinates. `screen --raw` adds styled cells. Literal arguments concatenate;
 named keys include Enter, Esc, Tab, arrows, Home, End, Delete, Insert, PageUp,
 PageDown, Shift-Tab, and Ctrl-A through Ctrl-Z. Prefix `text:` to disambiguate a
-literal key name. `wait` takes exactly one of `--contains`, `--absent`, or
-`--settled`. It observes frame/state events, with a 120 second protective failure
-deadline. It never treats output silence as settlement. After a submission,
+literal key name. `wait` takes exactly one of `--contains`, `--absent`,
+`--settled`, or `--exited`. It observes frame/state events, with a 120 second
+protective failure deadline. It never treats output silence as settlement. After a submission,
 settlement sends a correlated application query through the terminal input
 decoder, ordered after the preceding keys. The application captures the root's
 existing `wait_current_input` fence and answers in a synchronized frame after
@@ -58,3 +58,9 @@ action runner and shares its transport and frame implementation.
 For continuous dogfooding, attach to the existing repo session with its owner
 state directory and `--continue`/`--agent`. Do not create another orchestrator.
 Claims and patch handoffs follow the configured work queue and review policy.
+
+Executable completion leaves the driver and its last screen readable until
+`stop`. `wait --exited` returns that screen with an `exit` object containing the
+process's code and signal. The final screen retains styled cells even after
+alternate-screen restoration. Input and settlement queries require a running
+executable; screen reads and recording remain available after completion.

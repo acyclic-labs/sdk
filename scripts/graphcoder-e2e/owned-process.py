@@ -293,7 +293,14 @@ def main():
     if cancelled:
         return 124
     result = os.waitstatus_to_exitcode(status)
-    return result if result >= 0 else 128 - result
+    if result < 0:
+        number = -result
+        if number != signal.SIGKILL:
+            signal.signal(number, signal.SIG_DFL)
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {number})
+        os.kill(os.getpid(), number)
+        raise RuntimeError("executable exit signal did not terminate its retired owner")
+    return result
 
 
 if __name__ == "__main__":

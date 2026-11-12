@@ -86,7 +86,7 @@ async function ownRun(config, { directory, socket }) {
   const processes = new Processes({ transcripts });
   const pending = new Set(), clients = new Set();
   const started = performance.now();
-  let running, painted = false, ending = false, failure, cast, framesLog, recordingStarted;
+  let running, painted = false, ending = false, failure, cast, framesLog, recordingStarted, exit, retainedScreen;
   let retire;
   const retired = new Promise(resolve => { retire = resolve; });
   let sequence = 0;
@@ -101,6 +101,13 @@ async function ownRun(config, { directory, socket }) {
   });
   const outputDecoder = new StringDecoder("utf8");
   function snapshot(raw = false) {
+    if (exit) {
+      const { cells, ...screen } = retainedScreen;
+      return { ...screen, ...(raw ? { cells } : {}), exit };
+    }
+    return capture(raw);
+  }
+  function capture(raw = false) {
     const buffer = terminal.buffer.active, screen = screenSnapshot(terminal);
     const result = { frame: sequence, at: new Date().toISOString(),
       cursor: { x: buffer.cursorX, y: buffer.cursorY }, text: screen.logical,
@@ -128,6 +135,14 @@ async function ownRun(config, { directory, socket }) {
     }
     notify();
   });
+  const screenRestore = terminal.parser.registerCsiHandler({ prefix: "?", final: "l" }, parameters => {
+    if (terminal.buffer.active.type === "alternate" && parameters.some(mode => [47, 1047, 1049].includes(mode))) {
+      // Retain the displayed cells before terminal restoration discards them.
+      // This copy happens on buffer retirement, not on every redraw.
+      retainedScreen = capture(true);
+    }
+    return false;
+  });
   function wait(condition, connection) {
     return new Promise((accept, reject) => {
       const query = condition.settled ? ++querySequence : undefined;
@@ -136,8 +151,13 @@ async function ownRun(config, { directory, socket }) {
       const cancelled = () => { cleanup(); reject(Error("waiting client disconnected")); };
       const check = () => {
         if (failure || ending) { cleanup(); reject(failure ?? Error("terminal exited")); return; }
-        if (!painted || !frames.ready()) return;
-        const text = screenSnapshot(terminal).logical;
+        if (condition.exited) {
+          if (exit) { cleanup(); accept(snapshot()); }
+          return;
+        }
+        if (condition.settled && exit) { cleanup(); reject(Error("terminal exited; read its screen or stop the driver")); return; }
+        if (!painted || (!exit && !frames.ready())) return;
+        const text = snapshot().text;
         const phase = settlementQueries.get(query);
         const settled = phase !== undefined;
         if ((condition.contains === undefined || text.includes(condition.contains))
@@ -146,7 +166,7 @@ async function ownRun(config, { directory, socket }) {
       };
       const timeout = setTimeout(() => { cleanup(); reject(Error("terminal wait exceeded protective deadline")); }, deadlineMs);
       connection.on("close", cancelled); pending.add(check); check();
-      if (query !== undefined) running.child.stdin.write(`\x1b[?7727;${query}n`);
+      if (query !== undefined && !exit) running.child.stdin.write(`\x1b[?7727;${query}n`);
     });
   }
   async function stop(replyConnection) {
@@ -155,7 +175,7 @@ async function ownRun(config, { directory, socket }) {
     running?.input.end();
     await processes.close();
     await new Promise(resolve => terminal.write("", resolve));
-    queryReplies.dispose(); frames.dispose(); terminal.dispose();
+    screenRestore.dispose(); queryReplies.dispose(); frames.dispose(); terminal.dispose();
     for (const fd of [cast, framesLog]) if (fd !== undefined) closeSync(fd);
     for (const client of clients) if (client !== replyConnection) client.end();
     server.close();
@@ -172,6 +192,7 @@ async function ownRun(config, { directory, socket }) {
         let result = {};
         if (command.action === "screen") result = snapshot(command.raw);
         else if (command.action === "keys") {
+          if (exit) throw Error("terminal exited; read its screen or stop the driver");
           const input = keys(command.keys);
           const begin = performance.now();
           await new Promise((resolve, reject) => running.child.stdin.write(input, error => error ? reject(error) : resolve()));
@@ -197,13 +218,24 @@ async function ownRun(config, { directory, socket }) {
     if (process.platform !== "win32") chmodSync(socket, 0o600);
     running = await processes.startTerminal(config.binary, config.args,
       { cwd: config.cwd, cols: config.cols, rows: config.rows });
-    terminal.onData(data => running.child.stdin.write(data));
+    terminal.onData(data => { if (!exit && !ending) running.child.stdin.write(data); });
     running.child.stdout.on("data", bytes => {
       const output = outputDecoder.write(bytes);
       if (cast !== undefined && output) writeSync(cast, JSON.stringify([(performance.now() - recordingStarted) / 1000, "o", output]) + "\n");
       frames.write(bytes).catch(fail);
     });
-    running.closed.then(() => { fail(Error("GraphCoder exited")); void stop(); }, error => { fail(error); void stop(); });
+    running.closed.then(async result => {
+      if (ending) return;
+      await new Promise(resolve => terminal.write("", resolve));
+      if (ending) return;
+      if (terminal.buffer.active.type === "alternate" || retainedScreen === undefined) retainedScreen = capture(true);
+      exit = { code: result.code, signal: result.signal };
+      notify();
+      if (!painted) {
+        process.send?.({ error: "terminal exited before first paint" });
+        await stop();
+      }
+    }, error => { fail(error); if (!painted) void stop(); }).catch(fail);
     process.on("SIGTERM", () => void stop());
     process.on("SIGINT", () => void stop());
     await retired;
@@ -239,8 +271,8 @@ export async function main(argv = process.argv.slice(2)) {
   if (action === "keys") command.keys = rest;
   else if (action === "screen") command.raw = rest.includes("--raw");
   else if (action === "wait") {
-    const { values } = parseArgs({ args: rest, options: { contains: { type: "string" }, absent: { type: "string" }, settled: { type: "boolean" } } });
-    if (Object.keys(values).length !== 1) throw Error("wait requires exactly one of --contains, --absent, --settled");
+    const { values } = parseArgs({ args: rest, options: { contains: { type: "string" }, absent: { type: "string" }, settled: { type: "boolean" }, exited: { type: "boolean" } } });
+    if (Object.keys(values).length !== 1) throw Error("wait requires exactly one of --contains, --absent, --settled, --exited");
     Object.assign(command, values);
   } else if (!["record", "stop"].includes(action)) throw Error("usage: drive start|keys|screen|wait|record|stop");
   return request(name, command);

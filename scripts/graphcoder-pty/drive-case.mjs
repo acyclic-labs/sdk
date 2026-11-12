@@ -40,6 +40,23 @@ try {
     assert.ok(Number.isFinite(Date.parse(frame.at)), "logical frames retain timestamps");
   }
   assert.equal(JSON.parse(readFileSync(record.recording, "utf8").split("\n")[0]).version, 2);
+  await main(["keys", name, "Ctrl-D"]);
+  await main(["wait", name, "--contains", "Stop or detach?"]);
+  await main(["keys", name, "Ctrl-D"]);
+  const finished = await main(["wait", name, "--exited"]);
+  assert.deepEqual(finished.exit, { code: 0, signal: null });
+  assert.ok(existsSync(first.directory + "/owner"));
+  const titleStart = screen.cells[0].findIndex(cell => cell?.text === "G");
+  const title = screen.cells[0].slice(titleStart, titleStart + 10);
+  assert.equal(title.map(cell => cell.text).join(""), "GraphCoder");
+  assert.ok(title.every(cell => cell.bold));
+  const retained = await main(["screen", name, "--raw"]);
+  assert.ok(retained.text.includes("DRIVE_ANSWER"));
+  assert.ok(retained.cells.flat().map(cell => cell?.text ?? "").join("").includes("DRIVE_ANSWER"));
+  assert.deepEqual(retained.cells[0].slice(titleStart, titleStart + 10), title);
+  assert.equal(retained.frame, finished.frame);
+  await main(["wait", name, "--contains", "DRIVE_ANSWER"]);
+  await assert.rejects(main(["keys", name, "Enter"]), /terminal exited; read its screen or stop the driver/);
   await main(["stop", name]);
   started = false;
   assert.ok(!existsSync(first.directory + "/owner"));

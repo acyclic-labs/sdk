@@ -242,7 +242,8 @@ for (const escape of ["group", ...(process.platform === "linux" ? ["session"] : 
       pids = (await new Spool(running.child.stdout, running.closed).next(event => event.pids)).pids;
       running.killExecutable();
       const result = await bounded(t, running.closed);
-      assert.equal(result.code, 128 + 9, "the owner reports the executable's SIGKILL after draining");
+      assert.equal(result.code, null);
+      assert.equal(result.signal, "SIGKILL", "the owner preserves the executable's signal after draining");
       await bounded(t, holders);
       pids = [];
     } finally {
