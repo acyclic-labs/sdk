@@ -26,21 +26,27 @@ pub(crate) fn alias(
     template: Value,
     custody: acyclic_fs::NativeCustody,
 ) -> Result<Tool> {
-    let mut identity = blake3::Hasher::new_derive_key("acyclic.harness.tool-alias.v1");
+    let mut identity = blake3::Hasher::new_derive_key("acyclic.harness.tool-alias.v2");
     for revision in [&definition.revision, &original.definition.revision] {
         identity.update(&(revision.len() as u64).to_be_bytes());
         identity.update(revision.as_bytes());
     }
-    identity.update(&crate::contract::canonical_json_bytes(&template)?);
+    let io = match &custody {
+        Some(custody) => crate::filesystem::PreparationIo::from_native_work(custody.work())?,
+        None => {
+            crate::filesystem::PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?
+        }
+    };
+    identity.update(&io.canonical_digest(&template)?);
     definition.revision = identity.finalize().to_hex().to_string();
     let arguments = Arc::new(arguments::Arguments::new(template, Vec::new())?);
-    Ok(adapted(
+    adapted(
         definition,
         Arc::clone(&original),
         original,
         arguments,
         custody,
-    ))
+    )
 }
 
 fn adapted(
@@ -48,26 +54,35 @@ fn adapted(
     capability: Arc<Tool>,
     original: Arc<Tool>,
     arguments: Arc<arguments::Arguments>,
-    custody: acyclic_fs::NativeCustody,
-) -> Tool {
-    definition
-        .output_schema
-        .clone_from(&original.definition.output_schema);
-    definition
-        .projection_schema
-        .clone_from(&original.definition.projection_schema);
+    mut custody: acyclic_fs::NativeCustody,
+) -> Result<Tool> {
+    definition.output_schema = copy_schema(&original.definition.output_schema, &mut custody)?;
+    definition.projection_schema =
+        copy_schema(&original.definition.projection_schema, &mut custody)?;
     let adapter = Arc::new(adapter::Adapter {
         arguments,
         capability,
         original,
         _custody: custody,
     });
-    Tool {
+    Ok(Tool {
         hook_names: adapter.original.hook_names,
         definition,
         executor: adapter.clone(),
         projection: adapter,
+    })
+}
+
+fn copy_schema(value: &Value, custody: &mut acyclic_fs::NativeCustody) -> Result<Value> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(custody) = custody {
+        let (value, mut allocation) = crate::tool::clone_value(value, None, custody.work())?;
+        custody.absorb(&mut allocation)?;
+        return Ok(value);
     }
+    #[cfg(target_arch = "wasm32")]
+    let _ = custody;
+    Ok(value.clone())
 }
 /// Exercises production native declarations with hostile argument values.
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
@@ -276,7 +291,7 @@ impl NativeTools {
                         original,
                         Arc::clone(arguments),
                         None,
-                    ),
+                    )?,
                     None,
                 ),
                 &mut None,
