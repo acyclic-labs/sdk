@@ -3,7 +3,7 @@ use crate::kernel::{
     CanonicalDecodeError, CanonicalInvariant, Decoder, EncodeAllocationStep, EncodeWorkStep,
     Encoder, ReadAllocationStep,
 };
-const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v3\0";
+const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v4\0";
 #[cfg(feature = "test-support")]
 #[path = "directory_cursor_fuzz.rs"]
 /// On-demand checks of the funded directory continuation codec.
@@ -46,8 +46,14 @@ impl LazyDirectoryCursor {
             decode_fields(bytes, profile, limits, &mut observe)
         })?;
         input.0.0.source.retain_decoded(&mut input.1, &mut ctx)?;
-        if let LazyDirectoryPhase::Source(Some(cursor)) = &mut input.0.2 {
-            cursor.source.retain_decoded(&mut input.1, &mut ctx)?;
+        match &mut input.0.2 {
+            LazyDirectoryPhase::Source(Some(cursor)) => {
+                cursor.source.retain_decoded(&mut input.1, &mut ctx)?;
+            }
+            LazyDirectoryPhase::Authored(Some(position)) => {
+                crate::kernel::retain_decoded_bytes(&mut position.path, &mut input.1, &mut ctx)?;
+            }
+            _ => {}
         }
         let mut directory = NamespacePath::parse_in_profile(
             &input.0.1,
@@ -82,7 +88,9 @@ fn encode_fields(
         + directory.len()
         + match &cursor.phase {
             LazyDirectoryPhase::Source(Some(source)) => source.source.encoded_len() + 8,
-            LazyDirectoryPhase::Authored(Some(name)) => 5 + name.as_bytes().len(),
+            LazyDirectoryPhase::Authored(Some(position)) => {
+                position.root.encoded_len() + 8 + position.path.len()
+            }
             _ => 0,
         };
     crate::kernel::codec::encode_owned(ctx, |observe, reserve| {
@@ -131,10 +139,11 @@ fn encode_fields(
                 encoder.u64(cursor.token);
             }
             LazyDirectoryPhase::Authored(None) => encoder.u8(2),
-            LazyDirectoryPhase::Authored(Some(name)) => {
+            LazyDirectoryPhase::Authored(Some(position)) => {
                 encoder.u8(3);
-                encoder.u8(name.encoding().tag());
-                encoder.bounded_bytes(name.as_bytes())?;
+                encoder.object(position.root);
+                encoder.bounded_bytes(position.path.as_slice())?;
+                encoder.u32(position.offset);
             }
         }
         observe(EncodeWorkStep::Completed(body))?;
@@ -172,23 +181,20 @@ fn decode_fields(
         ))),
         2 => LazyDirectoryPhase::Authored(None),
         3 => {
-            let encoding =
-                crate::kernel::NameEncoding::from_tag(decoder.u8(observe)?).map_err(|error| {
-                    CanonicalDecodeError::Invariant(CanonicalInvariant::Name(error))
-                })?;
-            if !encoding.is_admitted_in_profile(profile) {
+            let root = decoder.object(crate::ObjectKind::TreePage, observe)?;
+            let path = decoder.bounded_bytes(u32::from(limits.maximum_page_height) * 4, observe)?;
+            if path.len() % 4 != 0 || path.len() / 4 >= usize::from(limits.maximum_page_height) {
                 return Err(CanonicalDecodeError::Invariant(CanonicalInvariant::Static(
-                    "cursor name has another profile",
+                    "cursor tree path has invalid height",
                 ))
                 .into());
             }
-            let name = LogicalName::new(
-                encoding,
-                decoder.bounded_bytes(limits.maximum_component_bytes, observe)?,
-                limits.maximum_component_bytes,
-            )
-            .map_err(|error| CanonicalDecodeError::Invariant(CanonicalInvariant::Name(error)))?;
-            LazyDirectoryPhase::Authored(Some(name))
+            let offset = decoder.u32(observe)?;
+            LazyDirectoryPhase::Authored(Some(crate::kernel::PagePosition {
+                root,
+                path: acyclic_stream::OwnedBytes::from(path),
+                offset,
+            }))
         }
         tag => {
             return Err(CanonicalDecodeError::UnknownTag {

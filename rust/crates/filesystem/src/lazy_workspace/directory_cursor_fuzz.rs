@@ -108,7 +108,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
         );
         for (profile_tag, profile) in PROFILES.into_iter().enumerate() {
             for phase_tag in 0..4 {
-                let (directory, mut allocation) = NamespacePath::parse_in_profile(
+                let (directory, allocation) = NamespacePath::parse_in_profile(
                     "/retained",
                     profile,
                     limits,
@@ -121,27 +121,14 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
                         LazyDirectoryPhase::Source(Some(SourceCursor::detached(source.clone(), 11)))
                     }
                     2 => LazyDirectoryPhase::Authored(None),
-                    _ => {
-                        let encoding = crate::kernel::NameEncoding::native_for_profile(profile);
-                        let bytes = match encoding {
-                            crate::kernel::NameEncoding::WindowsUtf16Le => {
-                                "entry".encode_utf16().flat_map(u16::to_le_bytes).collect()
-                            }
-                            crate::kernel::NameEncoding::PosixBytes => b"entry-\xff".to_vec(),
-                            crate::kernel::NameEncoding::Utf8 => b"entry".to_vec(),
-                        };
-                        let name =
-                            LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
-                                .map_err(|error| {
-                                    crate::FsError::from(CanonicalDecodeError::Invariant(
-                                        CanonicalInvariant::Name(error),
-                                    ))
-                                })?;
-                        let (name, mut backing) =
-                            name.clone_with_accounting(&mut ctx, work.cancellation())?;
-                        allocation.absorb(&mut backing)?;
-                        LazyDirectoryPhase::Authored(Some(name))
-                    }
+                    _ => LazyDirectoryPhase::Authored(Some(crate::kernel::PagePosition {
+                        root: ObjectId {
+                            kind: ObjectKind::TreePage,
+                            ..generation.object_id()
+                        },
+                        path: acyclic_stream::OwnedBytes::from_static(&[0, 0, 0, 0, 1, 0, 0, 0]),
+                        offset: 11,
+                    })),
                 };
                 let cursor = LazyDirectoryCursor {
                     cut: cut.clone(),

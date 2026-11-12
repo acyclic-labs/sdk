@@ -102,27 +102,7 @@ impl SourceReference {
         allocation: &mut crate::kernel::KernelOwnedAllocation,
         ctx: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
-        if self.components.is_empty() {
-            return Ok(());
-        }
-        let bytes = std::mem::take(&mut self.components)
-            .try_into_ordinary_vec()
-            .map_err(|bytes| {
-                self.components = bytes;
-                crate::FsError::from(crate::kernel::CanonicalDecodeError::Invariant(
-                    crate::kernel::CanonicalInvariant::Static(
-                        "decoded source cut backing is shared",
-                    ),
-                ))
-            })?;
-        let capacity = bytes.capacity() as u64;
-        let guard = crate::kernel::split_allocation(allocation, capacity)?;
-        self.components = crate::kernel::Retained::from_owned(
-            crate::kernel::Owned::new(bytes, guard, capacity),
-            ctx,
-        )?
-        .into_owned_bytes((), ctx)?;
-        Ok(())
+        crate::kernel::retain_decoded_bytes(&mut self.components, allocation, ctx)
     }
     fn valid(&self) -> bool {
         let body = self.components.as_slice();

@@ -321,6 +321,56 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
             &mut ctx,
         )
         .await?;
+    // Exported directory continuations carry positions, never the last authored name.
+    for (_, seed) in acyclic_fs::lazy_workspace::codec_fuzz::seeds()? {
+        assert!(acyclic_fs::lazy_workspace::codec_fuzz::check(&seed));
+    }
+    let private_names = ["private-continuation-A", "private-continuation-B"];
+    for name in private_names {
+        parent
+            .write(
+                &format!("/{name}"),
+                acyclic_stream::OwnedBytes::from_static(b"private"),
+                FsKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut ctx,
+            )
+            .await?;
+    }
+    let directory_cut = parent.snapshot(&mut ctx).await?;
+    let mut cursor = None;
+    let mut observed = std::collections::BTreeSet::new();
+    loop {
+        let (page, _, allocation) = parent
+            .list_directory_at_snapshot(&directory_cut, "/", cursor, 1, &mut ctx)
+            .await?;
+        for entry in &page.entries {
+            assert!(observed.insert(entry.name.as_bytes().to_vec()));
+        }
+        let next = page.next;
+        drop(page.entries);
+        drop(allocation);
+        let Some(next) = next else { break };
+        let encoded = next.encode(&native)?;
+        for name in private_names {
+            assert!(
+                !encoded
+                    .0
+                    .windows(name.len())
+                    .any(|bytes| bytes == name.as_bytes())
+            );
+        }
+        next.retire(&mut ctx)?;
+        cursor = Some(acyclic_fs::LazyDirectoryCursor::decode(
+            &encoded.0,
+            acyclic_fs::FilesystemProfile::Portable,
+            VolumeLimits::default(),
+            &native,
+        )?);
+    }
+    for name in private_names {
+        assert!(observed.contains(name.as_bytes()));
+    }
     parent.hide_source_path("/ui/model", &mut ctx).await?;
     let parent_cut = parent.snapshot(&mut ctx).await?;
     let child_volume = private_volume(storage.volume().provider().clone(), &child_agent.id())?;

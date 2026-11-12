@@ -508,6 +508,32 @@ impl Retained<Vec<u8>> {
     }
 }
 
+/// Adopts freshly decoded immutable bytes before aliases can outlive the decoder.
+pub(crate) fn retain_decoded_bytes(
+    value: &mut acyclic_stream::OwnedBytes,
+    allocation: &mut KernelOwnedAllocation,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), crate::FsError> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let bytes = std::mem::take(value)
+        .try_into_ordinary_vec()
+        .map_err(|bytes| {
+            *value = bytes;
+            crate::FsError::from(super::super::CanonicalDecodeError::Invariant(
+                super::super::CanonicalInvariant::Static("decoded backing is shared"),
+            ))
+        })?;
+    let capacity = bytes.capacity() as u64;
+    let guard = crate::kernel::split_allocation(allocation, capacity)?;
+    *value = Retained::from_owned(
+        crate::kernel::Owned::new(bytes, guard, capacity),
+        accounting,
+    )?
+    .into_owned_bytes((), accounting)?;
+    Ok(())
+}
 struct RetainedBytes<B, T> {
     bytes: B,
     _custody: T,

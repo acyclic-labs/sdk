@@ -3,6 +3,7 @@
 pub mod allocation;
 #[cfg(not(target_arch = "wasm32"))]
 pub use allocation::retained::NativeAccounting;
+pub(crate) use allocation::retained::retain_decoded_bytes;
 pub use allocation::retained::{Retained, RetainedAllocation};
 pub use allocation::{KernelAccounting, KernelOwnedAllocation};
 mod attribute;
@@ -228,6 +229,8 @@ pub(crate) use path_access::{
     PathBatchMode, PathQueries, lookup_path_async_with_accounting, lookup_paths_with_accounting,
     observe_path_async_with_accounting, observe_paths_async_with_accounting,
 };
+pub use persistent_pagination::PagePosition;
+pub(crate) use persistent_point::key_at_position_with_accounting;
 pub(crate) use persistent_point::retire_allocation;
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes,
@@ -291,7 +294,7 @@ pub use transfer::{
     export_generation_batch_async, import_generation_batch_async,
 };
 pub use tree::{decode_tree_page, encode_tree_page, tree_page_id};
-pub(crate) use tree_mutation::apply_tree_mutations_with_accounting;
+pub(crate) use tree_mutation::{TreeFormat, apply_tree_mutations_with_accounting};
 pub use tree_mutation::{
     TreeMutation, TreeMutationError, TreeMutationFailure, apply_tree_mutations,
 };

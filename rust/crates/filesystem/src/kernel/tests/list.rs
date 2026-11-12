@@ -590,6 +590,54 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
                             .collect::<Vec<_>>()
                     );
                     assert_eq!(page.has_more, expected.len() > maximum as usize);
+                    assert_eq!(page.position.is_some(), page.has_more);
+                    if let Some(position) = &page.position {
+                        let resolved =
+                            crate::kernel::key_at_position_with_accounting::<TreeFormat>(
+                                &store,
+                                root,
+                                position,
+                                DecodeLimits::default(),
+                                &mut accounting,
+                                &cancel,
+                                None,
+                            )
+                            .await?;
+                        assert_eq!(
+                            Some(&resolved.value),
+                            page.values.last().map(|entry| &entry.name)
+                        );
+                        resolved.retire(&mut accounting)?;
+                        let mut forged = position.clone();
+                        forged.offset = u32::MAX;
+                        assert!(
+                            crate::kernel::key_at_position_with_accounting::<TreeFormat>(
+                                &store,
+                                root,
+                                &forged,
+                                DecodeLimits::default(),
+                                &mut accounting,
+                                &cancel,
+                                None,
+                            )
+                            .await
+                            .is_err()
+                        );
+                        forged.root.digest = Digest::from_bytes([91; 32]);
+                        assert!(
+                            crate::kernel::key_at_position_with_accounting::<TreeFormat>(
+                                &store,
+                                root,
+                                &forged,
+                                DecodeLimits::default(),
+                                &mut accounting,
+                                &cancel,
+                                None,
+                            )
+                            .await
+                            .is_err()
+                        );
+                    }
                 }
             }
         }

@@ -122,6 +122,44 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         budget.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 
+    pub(crate) async fn list_directory_after_position_with_accounting(
+        &mut self,
+        path: &NamespacePath,
+        position: &crate::kernel::PagePosition,
+        maximum_entries: u32,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(DirectoryPage, crate::kernel::KernelOwnedAllocation), FsError> {
+        let (lookup, _) = self
+            .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+            .await?;
+        let record = lookup.record.ok_or(FsError::NotFound)?;
+        let FilePayload::Directory { entries } = record.payload else {
+            return Err(FsError::NotDirectory);
+        };
+        let after = crate::kernel::key_at_position_with_accounting::<crate::kernel::TreeFormat>(
+            &self.volume.fs.inner.objects,
+            entries,
+            position,
+            DecodeLimits::for_volume(self.volume.config),
+            accounting,
+            cancellation,
+            Some(&self.dependencies.data_custody),
+        )
+        .await?;
+        let result = self
+            .list_directory_record_with_accounting(
+                record,
+                std::ops::Bound::Excluded(&after.value),
+                maximum_entries,
+                accounting,
+                cancellation,
+            )
+            .await;
+        after.retire(accounting)?;
+        result
+    }
+
     pub(crate) async fn list_directory_with_accounting(
         &mut self,
         path: &NamespacePath,

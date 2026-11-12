@@ -486,6 +486,74 @@ pub(super) async fn lookup_projected_with_accounting<F, T, C, P>(
     store: &dyn Source,
     root: ObjectId,
     compare: C,
+    project: P,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<Option<Owned<T>>, crate::FsError>
+where
+    F: Format,
+    C: Fn(&F::Key) -> std::cmp::Ordering,
+    P: FnMut(&F::Value, &mut KernelAccounting<'_>) -> Result<Owned<T>, crate::FsError>,
+{
+    lookup_selected_with_accounting::<F, T, C, P>(
+        store,
+        root,
+        PointQuery::Key(compare),
+        project,
+        limits,
+        accounting,
+        cancellation,
+        data_custody,
+    )
+    .await
+}
+
+enum PointQuery<'a, C> {
+    Key(C),
+    Position(&'a super::PagePosition),
+}
+
+/// Resolves a name-free continuation through the same authenticated point walker.
+/// Re-reading its root path keeps hidden names out of exported cursors without a registry.
+pub(crate) async fn key_at_position_with_accounting<F: Format>(
+    store: &dyn Source,
+    root: ObjectId,
+    position: &super::PagePosition,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<Owned<F::Key>, crate::FsError> {
+    lookup_selected_with_accounting::<F, _, fn(&F::Key) -> std::cmp::Ordering, _>(
+        store,
+        root,
+        PointQuery::Position(position),
+        |value, accounting| {
+            let (key, allocation) = persistent_io::clone_key::<F>(
+                F::key(value),
+                limits.maximum_name_bytes,
+                accounting,
+                data_custody,
+                0,
+            )?;
+            let bytes = F::key_owned_bytes(&key);
+            Ok(Owned::new(key, allocation, bytes))
+        },
+        limits,
+        accounting,
+        cancellation,
+        data_custody,
+    )
+    .await?
+    .ok_or_else(|| query_error(Error::InvalidRouting))
+}
+
+async fn lookup_selected_with_accounting<F, T, C, P>(
+    store: &dyn Source,
+    root: ObjectId,
+    query: PointQuery<'_, C>,
     mut project: P,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
@@ -497,6 +565,14 @@ where
     C: Fn(&F::Key) -> std::cmp::Ordering,
     P: FnMut(&F::Value, &mut KernelAccounting<'_>) -> Result<Owned<T>, crate::FsError>,
 {
+    if let PointQuery::Position(position) = &query {
+        if position.root != root
+            || position.path.len() % 4 != 0
+            || position.path.len() / 4 >= usize::from(limits.maximum_page_height)
+        {
+            return Err(query_error(Error::InvalidRouting));
+        }
+    }
     let mut scope = accounting.allocation_scope()?;
     let accounting = &mut *scope;
     accounting.check()?;
@@ -552,13 +628,24 @@ where
                     ) {
                         return Err(query_error(Error::ChildBoundsMismatch));
                     }
-                    let position = super::search::binary_search_with_accounting(
-                        values,
-                        accounting,
-                        |value| compare(F::key(value)),
-                    )?;
-                    let result = position
-                        .ok()
+                    let selected = match &query {
+                        PointQuery::Key(compare) => super::search::binary_search_with_accounting(
+                            values,
+                            accounting,
+                            |value| compare(F::key(value)),
+                        )?
+                        .ok(),
+                        PointQuery::Position(position) => {
+                            if position.path.len() / 4 != height - 1 {
+                                return Err(query_error(Error::InvalidRouting));
+                            }
+                            Some(
+                                usize::try_from(position.offset)
+                                    .map_err(|_| query_error(Error::InvalidRouting))?,
+                            )
+                        }
+                    };
+                    let result = selected
                         .and_then(|index| values.get(index))
                         .map(|value| project(value, accounting))
                         .transpose()?;
@@ -572,12 +659,31 @@ where
                     ) {
                         return Err(query_error(Error::ChildBoundsMismatch));
                     }
-                    let selected = super::search::partition_point_with_accounting(
-                        children,
-                        accounting,
-                        |child| compare(&child.first).is_le(),
-                    )?
-                    .saturating_sub(1);
+                    let selected = match &query {
+                        PointQuery::Key(compare) => super::search::partition_point_with_accounting(
+                            children,
+                            accounting,
+                            |child| compare(&child.first).is_le(),
+                        )?
+                        .saturating_sub(1),
+                        PointQuery::Position(position) => {
+                            let start = (height - 1) * 4;
+                            let bytes = position
+                                .path
+                                .get(start..start + 4)
+                                .ok_or_else(|| query_error(Error::InvalidRouting))?;
+                            let bytes: [u8; 4] = bytes
+                                .try_into()
+                                .map_err(|_| query_error(Error::InvalidRouting))?;
+                            accounting.charge(crate::WorkCounters {
+                                items_examined: 1,
+                                bytes_copied: 4,
+                                ..crate::WorkCounters::UNCHARGED
+                            })?;
+                            usize::try_from(u32::from_le_bytes(bytes))
+                                .map_err(|_| query_error(Error::InvalidRouting))?
+                        }
+                    };
                     let child = children
                         .get(selected)
                         .ok_or_else(|| query_error(Error::InvalidRouting))?;

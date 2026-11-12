@@ -19,6 +19,8 @@ pub struct DirectoryPage {
     pub entries: Vec<TreeEntry>,
     /// Whether at least one additional entry exists.
     pub has_more: bool,
+    /// Name-free address of the final returned entry, when another entry exists.
+    pub position: Option<super::PagePosition>,
     /// Exact unvisited successor object, when the authenticated traversal exposed one without widening the requested listing.
     pub next_residency: Option<ResidencyHint>,
     /// Exact backend, traversal, copy, and logical-allocation work.
@@ -81,6 +83,7 @@ fn to_page(receipt: persistent_pagination::Receipt<TreeEntry>) -> DirectoryPage 
     DirectoryPage {
         entries: receipt.values,
         has_more: receipt.has_more,
+        position: receipt.position,
         next_residency: receipt.next_request.map(|request| ResidencyHint {
             request,
             reason: ResidencyReason::DirectorySuccessor,
