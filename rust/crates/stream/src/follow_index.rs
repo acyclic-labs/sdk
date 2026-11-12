@@ -8,6 +8,11 @@ use std::{
     sync::{Arc, Weak},
 };
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static PUBLICATION_CANDIDATES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// One shared publication index per stream, with one registration per follow.
 #[derive(Default)]
 pub(crate) struct FollowIndex {
@@ -94,6 +99,8 @@ impl FollowIndex {
         Self::notify(index, |state, notifications| {
             let entries = &mut state.entries;
             let mut candidate = |id: u64, record: &Record| {
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                PUBLICATION_CANDIDATES.with(|count| count.set(count.get() + 1));
                 if let Some(entry) = entries.get_mut(&id)
                     && entry.notified != tail
                     && entry.filter.matches(&record.headers)
@@ -117,6 +124,8 @@ impl FollowIndex {
                         }
                     }
                 }
+            }
+            if let Some(record) = records.first() {
                 for &id in &state.all {
                     candidate(id, record);
                 }
@@ -380,5 +389,76 @@ mod tests {
             tree = Node::remove(tree, &(Bytes::copy_from_slice(&id.to_be_bytes()), id, 0));
         }
         assert!(tree.is_none());
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod batch_scaling {
+    use super::PUBLICATION_CANDIDATES;
+    use crate::{
+        AppendRequest, FollowRequest, IdempotencyKey, MemoryStream, StreamPath,
+        StreamProviderExt as _,
+    };
+    use acyclic_test_support::scale::{Bound, assert_scales};
+    use futures::{StreamExt as _, TryStreamExt as _};
+
+    #[tokio::test]
+    async fn unfiltered_follow_publication_visits_subscribers_once_per_batch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut measured = Vec::new();
+        for record_count in [16_u64, 128] {
+            for subscriber_count in [16_u64, 128] {
+                let stream = MemoryStream::default();
+                let path = StreamPath::new("events")?;
+                stream
+                    .append(AppendRequest {
+                        path: path.clone(),
+                        records: vec!["seed".into()],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::new("seed")?,
+                    })
+                    .await?;
+                let mut follows = Vec::new();
+                for _ in 0..subscriber_count {
+                    follows.push(stream.follow(FollowRequest::new(path.clone(), 1)).await?);
+                }
+                PUBLICATION_CANDIDATES.with(|count| count.set(0));
+                stream
+                    .append(AppendRequest {
+                        path,
+                        records: (0..record_count).map(|_| "event".into()).collect(),
+                        if_tail: Some(1),
+                        idempotency_key: IdempotencyKey::new("batch")?,
+                    })
+                    .await?;
+                let candidates = PUBLICATION_CANDIDATES.with(std::cell::Cell::get);
+                assert_eq!(candidates, subscriber_count);
+                for follow in follows {
+                    let records: Vec<_> = crate::records_only(follow)
+                        .take(usize::try_from(record_count)?)
+                        .try_collect()
+                        .await?;
+                    assert_eq!(records.len(), usize::try_from(record_count)?);
+                    for (index, record) in records.iter().enumerate() {
+                        assert_eq!(record.sequence, u64::try_from(index)? + 1);
+                        assert_eq!(record.value.as_ref(), b"event");
+                    }
+                }
+                measured.push((record_count, subscriber_count, candidates));
+            }
+        }
+        for pair in measured.chunks_exact(2) {
+            assert_scales(
+                Bound::Linear,
+                (pair[0].1, pair[0].2),
+                (pair[1].1, pair[1].2),
+            );
+        }
+        for index in 0..2 {
+            let small = measured[index];
+            let large = measured[index + 2];
+            assert_scales(Bound::Constant, (small.0, small.2), (large.0, large.2));
+        }
+        Ok(())
     }
 }
