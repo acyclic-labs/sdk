@@ -1,11 +1,11 @@
 //! `local::Runtime`: the single-node Actors host over any Stream provider.
 //!
-//! One dispatcher owns one follow of the state root's activation log, one
-//! ready index and one timer. A dormant actor owns no task, timer, follow or
+//! Each assigned scheduling shard owns one activation follow and checkpoint.
+//! The host owns one ready index and timer. A dormant actor owns no task, timer, follow or
 //! socket: only its registration and one bounded state cut. The activation log
 //! is also the wake set: a producer that writes an actor's subscription appends
 //! [`Store::activation`] for that actor in the same commit, and the dispatcher's
-//! one follow wakes it. A delivery reads its inputs with bounded finite reads.
+//! assigned shard follow wakes it. A delivery reads its inputs with bounded finite reads.
 use super::ready::{ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store};
 use acyclic_stream::StreamProviderExt as _;
@@ -33,7 +33,7 @@ use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 pub use limits::RuntimeLimits;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap, hash_map::RandomState},
+    collections::{BTreeMap, BTreeSet, HashMap, hash_map::RandomState},
     convert::Infallible,
     future::poll_fn,
     hash::BuildHasher,
@@ -133,8 +133,8 @@ fn terminal(error: &Error) -> bool {
 }
 
 enum Event {
-    Created(Record),
-    Dispatched(Result<Snapshot, Error>),
+    Created(u8, Record),
+    Dispatched(u8, Result<Snapshot, Error>),
     Work(Work<ActorReference>),
     Done(Result<(), (ActorReference, Error)>),
     Rearm(Option<u64>),
@@ -153,6 +153,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     /// Discovery scope only. Per-actor placement, not this filter, grants
     /// ownership when several hosts share the same state root.
     scope: Option<(AccountId, NamespaceId)>,
+    scheduling_shards: BTreeSet<u8>,
     handler: Arc<dyn Handler>,
     clock: Arc<dyn Clock>,
     ready: ReadySet<ActorReference>,
@@ -171,6 +172,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         Self {
             store,
             scope: None,
+            scheduling_shards: (u8::MIN..=u8::MAX).collect(),
             handler,
             clock,
             ready: ReadySet::default(),
@@ -200,11 +202,22 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         self
     }
 
+    /// Select the stable scheduling partitions assigned by placement before
+    /// starting this host. Local single-node hosts own all partitions by
+    /// default. This routing assignment never grants a per-actor epoch.
+    #[must_use]
+    pub fn with_scheduling_shards(mut self, shards: impl IntoIterator<Item = u8>) -> Self {
+        self.scheduling_shards = shards.into_iter().collect();
+        self
+    }
+
     /// Whether an actor belongs to this runtime's discovery scope.
     pub fn includes(&self, actor: &ActorReference) -> bool {
-        self.scope.as_ref().is_none_or(|(account, namespace)| {
-            actor.account() == account && actor.namespace() == namespace
-        })
+        self.scheduling_shards
+            .contains(&super::scheduling_shard(actor))
+            && self.scope.as_ref().is_none_or(|(account, namespace)| {
+                actor.account() == account && actor.namespace() == namespace
+            })
     }
 
     /// The shared store.
@@ -470,7 +483,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .map_err(Error::CompletionFailed)
     }
 
-    /// Host forever: follow the root's activation log to discover actors
+    /// Host forever: follow assigned scheduling shards to wake admitted actors
     /// created by any commit, deliver concurrently across actors, and fire
     /// alarms from one timer. Per-actor failures go to `report`; the input
     /// stays queued. Creating this future claims its completion producer;
@@ -500,30 +513,47 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     ) -> Result<Infallible, Error> {
         let mut completions = completions?;
         let mut completing = Completions::default();
-        let mut completion_tail = 0;
+        let mut completion_tail = BTreeMap::new();
         let mut failure = None;
-        let root = self.store.root().clone();
         let provider = self.store.provider();
-        let (dispatch_store, dispatch_actor) = self.dispatcher_store()?;
-        let dispatcher = self.dispatcher(&dispatch_store, &dispatch_actor).await?;
         // Placement admits resident work explicitly. Never rebuild ownership
         // by enumerating every dormant actor under the state root.
-        let from = dispatcher
-            .state()
-            .and_then(|state| state.cursor("activation"))
-            .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
-        let mut created = acyclic_stream::records_only(
-            provider
-                .follow(acyclic_stream::FollowRequest::new(root, from))
-                .await?,
-        );
-        let mut dispatcher = Some(dispatcher);
-        let mut dispatching: Option<BoxProviderFuture<'_, std::result::Result<Snapshot, Error>>> =
-            None;
+        if self.scheduling_shards.is_empty() {
+            return Err(Error::Invalid(
+                "dispatcher has no assigned scheduling shards",
+            ));
+        }
+        let mut seen = BTreeMap::new();
+        let mut stores = BTreeMap::new();
+        let mut dispatchers = BTreeMap::new();
+        let mut created = futures::stream::SelectAll::new();
+        for &shard in &self.scheduling_shards {
+            let (store, actor) = self.dispatcher_store(shard)?;
+            let dispatcher = self.dispatcher(&store, &actor, shard).await?;
+            let from = dispatcher
+                .state()
+                .and_then(|state| state.cursor("activation"))
+                .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
+            stores.insert(shard, store);
+            dispatchers.insert(shard, Some(dispatcher));
+            seen.insert(shard, from);
+            completion_tail.insert(shard, from);
+            let records = acyclic_stream::records_only(
+                provider
+                    .follow(acyclic_stream::FollowRequest::new(
+                        self.store.scheduling_path(shard)?,
+                        from,
+                    ))
+                    .await?,
+            );
+            created.push(records.map(move |record| (shard, record)));
+        }
+        let mut dispatching: FuturesUnordered<
+            BoxProviderFuture<'_, (u8, Result<Snapshot, Error>)>,
+        > = FuturesUnordered::new();
         // The activation log is also every producer's wake entry: the cursor
         // only bounds restart replay, so consecutive entries coalesce into one
         // checkpoint in flight at the latest seen end.
-        let mut seen = from;
         let mut running = FuturesUnordered::new();
         let mut timer: Option<(u64, BoxProviderFuture<'static, Result<(), ClockError>>)> = None;
         let mut next_class = 0;
@@ -549,16 +579,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             }
                         }
                         1 => {
-                            if let Some(checkpoint) = dispatching.as_mut()
-                                && let Poll::Ready(result) = checkpoint.poll_unpin(context)
+                            if let Poll::Ready(Some((shard, result))) =
+                                dispatching.poll_next_unpin(context)
                             {
-                                return Poll::Ready(Event::Dispatched(result));
+                                return Poll::Ready(Event::Dispatched(shard, result));
                             }
                             match created.poll_next_unpin(context) {
-                                Poll::Ready(Some(Ok(record))) => {
-                                    return Poll::Ready(Event::Created(record));
+                                Poll::Ready(Some((shard, Ok(record)))) => {
+                                    return Poll::Ready(Event::Created(shard, record));
                                 }
-                                Poll::Ready(Some(Err(error))) => {
+                                Poll::Ready(Some((_, Err(error)))) => {
                                     return Poll::Ready(Event::Failed(error));
                                 }
                                 Poll::Ready(None) => {
@@ -602,8 +632,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 if !completing.is_empty()
                     && running.is_empty()
-                    && dispatching.is_none()
-                    && seen >= completion_tail
+                    && dispatching.is_empty()
+                    && completion_tail
+                        .iter()
+                        .all(|(shard, tail)| seen.get(shard).is_some_and(|cursor| cursor >= tail))
                 {
                     return Poll::Ready(Event::Idle);
                 }
@@ -612,23 +644,24 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .await;
             steps += 1;
             match event {
-                Event::Created(record) => {
+                Event::Created(shard, record) => {
                     // Activation is a wake hint, not a placement command.
                     // Do not discover or register another node's actors.
                     if let Ok(actor) = ActorReference::decode(record.value.as_ref())
+                        && super::scheduling_shard(&actor) == shard
                         && self.includes(&actor)
                         && self.slot(&actor).is_some()
                     {
                         self.track(actor)?;
                     }
-                    seen = record
+                    let cursor = record
                         .sequence
                         .checked_add(1)
                         .ok_or(Error::Invalid("activation cursor overflow"))?;
+                    seen.insert(shard, cursor);
                 }
-                Event::Dispatched(result) => {
-                    dispatching = None;
-                    dispatcher = Some(result?);
+                Event::Dispatched(shard, result) => {
+                    dispatchers.insert(shard, Some(result?));
                 }
                 Event::Work(work) => {
                     let execution: BoxProviderFuture<'_, _> = Box::pin(self.execute(work));
@@ -654,12 +687,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::Idle => {
                     // No delivery can publish while this owner captures the cut.
                     // A newly observed prefix resumes the SAME activation follow.
-                    completion_tail = match provider.tail(self.store.root().clone()).await {
-                        Ok(tail) => tail,
-                        Err(error) if error.category() == StreamError::NotFound => 0,
-                        Err(error) => return Err(error.into()),
-                    };
-                    if seen >= completion_tail
+                    for &shard in &self.scheduling_shards {
+                        let tail = match provider.tail(self.store.scheduling_path(shard)?).await {
+                            Ok(tail) => tail,
+                            Err(error) if error.category() == StreamError::NotFound => 0,
+                            Err(error) => return Err(error.into()),
+                        };
+                        completion_tail.insert(shard, tail);
+                    }
+                    if completion_tail
+                        .iter()
+                        .all(|(shard, tail)| seen.get(shard).is_some_and(|cursor| cursor >= tail))
                         && self.ready.counts().1 == 0
                         && timer
                             .as_ref()
@@ -670,18 +708,22 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                 }
             }
-            if dispatching.is_none()
-                && let Some(previous) = dispatcher.take_if(|previous| {
+            for (&shard, previous) in &mut dispatchers {
+                let cursor = seen[&shard];
+                if let Some(previous) = previous.take_if(|previous| {
                     previous
                         .state()
                         .and_then(|state| state.cursor("activation"))
-                        .is_some_and(|cursor| cursor < seen)
-                })
-            {
-                let store = &dispatch_store;
-                dispatching = Some(Box::pin(async move {
-                    self.advance_dispatcher(store, previous, seen).await
-                }));
+                        .is_some_and(|confirmed| confirmed < cursor)
+                }) {
+                    let store = &stores[&shard];
+                    dispatching.push(Box::pin(async move {
+                        (
+                            shard,
+                            self.advance_dispatcher(store, previous, cursor).await,
+                        )
+                    }));
+                }
             }
         }
     }

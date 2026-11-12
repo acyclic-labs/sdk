@@ -327,7 +327,8 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
             terminal,
             wake: self
                 .store
-                .activation_record(&self.paths.actor(&record.name)?),
+                .activation_record(&self.paths.actor(&record.name)?)
+                .map_err(|error| Error::Storage(error.to_string()))?,
             grant: Arc::clone(&self.grant),
             devices: self.devices.subscribe(),
         });

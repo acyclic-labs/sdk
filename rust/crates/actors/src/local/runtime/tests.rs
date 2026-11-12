@@ -23,6 +23,7 @@ mod retry;
 
 mod conditional;
 mod placement;
+mod scheduling;
 
 fn root() -> Result<StreamPath, StreamError> {
     StreamPath::new("harness/actors")
@@ -49,12 +50,12 @@ async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() ->
     let source = actor("cursor-input")?;
     let mut inputs = PreparedPublish::foreign(key("dispatcher/inputs")?);
     for _ in 0..7 {
-        inputs.join(runtime.store().activation(&source))?;
+        inputs.join(runtime.store().activation(&source)?)?;
     }
     runtime.store().submit(inputs).await?;
-    let (store, actor) = runtime.dispatcher_store()?;
+    let (store, actor) = runtime.dispatcher_store(0)?;
     let before = provider.requests();
-    let opened = runtime.dispatcher(&store, &actor).await?;
+    let opened = runtime.dispatcher(&store, &actor, 0).await?;
     assert_eq!(
         provider.requests().since(before).control(),
         1,
@@ -499,7 +500,7 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
                     escrow: None,
                 },
             )?,
-            store.activation(&address),
+            store.activation(&address)?,
         ] {
             create.join(effect)?;
         }
@@ -1026,7 +1027,7 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
                     escrow: None,
                 },
             )?,
-            store.activation(address),
+            store.activation(address)?,
         ] {
             prepared.join(effect)?;
         }
@@ -1129,16 +1130,15 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
     };
     let mut task = if precreated { None } else { Some(launch()) };
     if let Some(task) = task.as_mut() {
-        let (dispatcher_store, dispatcher) = runtime.dispatcher_store()?;
+        let (dispatcher_store, dispatcher) = runtime.dispatcher_store(0)?;
         let path = dispatcher_store.path(&dispatcher)?;
         tokio::select! {
             stopped = task => return Err(format!("host stopped before dispatcher publication: {stopped:?}").into()),
             ready = first_record(&observer, path) => { ready?; },
         }
-        assert_eq!(
-            provider.tail(root()?).await?,
-            0,
-            "starting a host must not append a synthetic activation"
+        assert!(
+            matches!(provider.tail(root()?).await, Err(StreamError::NotFound)),
+            "starting a host must not append a synthetic root activation"
         );
     }
     for index in 0..count {
@@ -1161,7 +1161,7 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
                     escrow: None,
                 },
             )?,
-            store.activation(&address),
+            store.activation(&address)?,
         ] {
             prepared.join(effect)?;
         }
@@ -1247,7 +1247,7 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
                 escrow: None,
             },
         )?,
-        store.activation(&address),
+        store.activation(&address)?,
     ] {
         prepared.join(effect)?;
     }
@@ -1291,7 +1291,7 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
             ),
         )?,
     )?;
-    fork.join(store.activation(&child))?;
+    fork.join(store.activation(&child)?)?;
     store.submit(fork).await?;
     let inherited = store.load(&child).await?;
     assert!(matches!(
@@ -1337,7 +1337,7 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
             ),
         )?,
     )?;
-    fork.join(store.activation(&child))?;
+    fork.join(store.activation(&child)?)?;
     store.submit(fork).await?;
     let inherited = store.load(&child).await?;
     assert!(matches!(
@@ -1417,7 +1417,7 @@ async fn spawn_with<P: StreamProvider + ?Sized>(
                 escrow: None,
             },
         )?,
-        store.activation(&address),
+        store.activation(&address)?,
     ] {
         prepared.join(effect)?;
     }
@@ -1673,7 +1673,7 @@ async fn ordinary_inputs_rotate_through_all_subscriptions_across_batches() -> Te
                 escrow: None,
             },
         )?,
-        store.activation(&address),
+        store.activation(&address)?,
     ] {
         create.join(effect)?;
     }

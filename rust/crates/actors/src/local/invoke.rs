@@ -201,7 +201,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         records: vec![invocation.record(&snapshot.path)?],
                     }],
                 ))?;
-                publication.join(self.activation(invocation.actor()))?;
+                publication.join(self.activation(invocation.actor())?)?;
                 for effect in joined(&input)? {
                     publication.join(effect)?;
                 }

@@ -462,7 +462,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             &child_owner,
             Branch::unfunded(inbox(&child_owner)?),
         )?,
-        store.activation(&child_owner),
+        store.activation(&child_owner)?,
     ] {
         fork.join(effect)?;
     }
