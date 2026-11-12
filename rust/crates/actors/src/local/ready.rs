@@ -500,6 +500,17 @@ impl<K: Ord + Clone> ReadySet<K> {
             .collect()
     }
 
+    /// End `key`'s failure mark once a checkpoint committed its last carried
+    /// wake: a released key is no longer this host's to carry.
+    pub fn forget(&self, key: &K) {
+        self.core
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failed
+            .remove(key);
+    }
+
     /// Exact retained registration and ready counts, independent of actor heaps.
     pub fn counts(&self) -> (usize, usize) {
         let index = self
