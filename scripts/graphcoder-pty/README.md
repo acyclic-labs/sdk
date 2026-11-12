@@ -8,6 +8,7 @@ node scripts/graphcoder-pty/drive.mjs start --name sdk --cols 120 --rows 40 -- -
 node scripts/graphcoder-pty/drive.mjs record sdk
 node scripts/graphcoder-pty/drive.mjs keys sdk 'Explain this repository' Enter
 node scripts/graphcoder-pty/drive.mjs wait sdk --contains 'repository'
+node scripts/graphcoder-pty/drive.mjs resize sdk --cols 80 --rows 24
 node scripts/graphcoder-pty/drive.mjs screen sdk
 node scripts/graphcoder-pty/drive.mjs wait sdk --settled
 node scripts/graphcoder-pty/drive.mjs stop sdk
@@ -47,7 +48,7 @@ processes.
 The deterministic real-binary regression is:
 
 ```sh
-node scripts/graphcoder-e2e/run.mjs /path/graphcoder /path/harness-mock-model pty-driver
+node scripts/graphcoder-e2e/run.mjs /path/graphcoder /path/harness-mock-model pty-driver pty-driver-resize
 ```
 
 Windows uses the same ConPTY adapter and requires `E2E_PROCESS_HOST` and
@@ -64,3 +65,5 @@ Executable completion leaves the driver and its last screen readable until
 process's code and signal. The final screen retains styled cells even after
 alternate-screen restoration. Input and settlement queries require a running
 executable; screen reads and recording remain available after completion.
+
+`resize NAME --cols N --rows N` resizes the same live native terminal and headless screen. It acknowledges the native operation; use `wait` for the resulting application frame. It preserves the attached process and custody, and records asciicast resize events. Dimensions must fit positive native coordinates. Completed terminals refuse resize.

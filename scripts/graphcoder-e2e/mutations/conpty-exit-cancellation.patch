@@ -1,0 +1,13 @@
+diff --git a/scripts/graphcoder-conpty.cs b/scripts/graphcoder-conpty.cs
+--- a/scripts/graphcoder-conpty.cs
++++ b/scripts/graphcoder-conpty.cs
+@@ -119,9 +119,5 @@ public static class GraphcoderConPty {
+             Require(selected <= 1, "wait for child or terminal control");
+             bool exited = selected == 0;
+-            if (exited && !CancelIoEx(pipe.SafePipeHandle, IntPtr.Zero)) {
+-                int error = Marshal.GetLastWin32Error();
+-                if (error != 1168) throw new Win32Exception(error, "cancel terminal control"); // Already completed.
+-            }
+             try {
+                 if (write) { pipe.EndWrite(operation); return exited ? -1 : bytes.Length - offset; }
+                 int count = pipe.EndRead(operation);

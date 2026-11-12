@@ -3,17 +3,19 @@ import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { once } from "node:events";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { Processes, Spool, OutputWatch } from "./process.mjs";
 import { alive } from "./orphan-check.mjs";
+import { Terminal } from "../graphcoder-pty/screen.mjs";
 
 const fixture = fileURLToPath(new URL("./terminal-fixture.py", import.meta.url));
 const posix = { skip: process.platform === "win32", timeout: 5000 };
 // Output after this call that contains `text`; registered in the same tick as
 // the input that prompts it.
-const shown = async (running, text) => {
+const shown = async (running, text, source = running.child.stdout) => {
   const watch = new OutputWatch([text]);
-  const output = running.child.stdout.iterator({ destroyOnReturn: false });
+  const output = source.iterator({ destroyOnReturn: false });
   try {
     for (;;) {
       const next = await output.next();
@@ -75,6 +77,43 @@ test("real ConPTY forwards native argv, raw input, output and the exit code", co
     assert.deepEqual(record.args, args);
     assert.equal(record.input, "pong\r");
   } finally { await processes.close(); }
+});
+
+test("ConPTY joins idle and partial resize reads when the child exits before its control peer", conpty, async t => {
+  for (const partial of [false, true]) {
+    const processes = new Processes(), server = createServer();
+    const endpoint = `\\\\.\\pipe\\acyclic-terminal-exit-${randomUUID()}`;
+    let peer;
+    try {
+      const connected = once(server, "connection");
+      server.listen(endpoint);
+      await once(server, "listening");
+      const running = await processes.startOwned(process.env.E2E_CONPTY_HOST, [process.execPath, "-e", `
+        process.stdin.setRawMode(true);
+        process.stdin.once('data', () => { process.stdout.write('drained-before-exit'); process.exit(7); });
+        process.stdin.resume(); process.stdout.write('ready>');
+      `], { scopeInheritInput: true, env: { ...process.env, E2E_PTY_CONTROL: endpoint } });
+      const ready = shown(running, "ready>");
+      [peer] = await bounded(t, connected);
+      // Keep the original peer connected until physical completion. Closing it
+      // first would hide the synchronous-read shutdown deadlock.
+      const eof = finished(peer, { readable: true, writable: false, cleanup: true });
+      eof.catch(() => {});
+      peer.resume();
+      await bounded(t, ready);
+      if (partial) peer.write(Buffer.from([80]));
+      running.input.write("quit\r");
+      const result = await bounded(t, running.closed);
+      assert.equal(result.code, 7, result.stderr);
+      assert.equal(result.completion.process_tree_retired, true);
+      assert.match(result.stdout, /drained-before-exit/);
+      await bounded(t, eof);
+    } finally {
+      peer?.destroy();
+      await processes.close();
+      await new Promise(resolve => server.close(resolve));
+    }
+  }
 });
 
 test("ConPTY refuses launches outside admitted native custody", conpty, async t => {
@@ -264,4 +303,54 @@ test("terminal owner death fails the run and hangs up its executable", posix, as
     assert.equal(result.signal, "SIGKILL", "wrapper death must not report the executable's success");
     await bounded(t, executable);
   } finally { await processes.close(); }
+});
+
+test("live terminal resize preserves the root and changes native dimensions, unlike screen-only resize", {
+  skip: process.platform === "win32" && (!process.env.E2E_CONPTY_HOST || !process.env.E2E_PROCESS_HOST),
+  timeout: 10000,
+}, async t => {
+  const processes = new Processes(), server = createServer();
+  const screen = new Terminal({ cols: 80, rows: 24 });
+  let socket;
+  try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const connected = once(server, "connection");
+    const program = `
+      process.stdin.setRawMode(true); process.stdin.resume();
+      if (process.platform !== "win32") for (const fd of [3,4]) {
+        require("node:fs").writeSync(fd, "PRESERVED_FD_" + fd);
+        require("node:fs").closeSync(fd);
+      }
+      const socket = require('node:net').connect(${server.address().port}, '127.0.0.1');
+      const report = () => socket.write(JSON.stringify({pid:process.pid, cols:process.stdout.columns, rows:process.stdout.rows})+'\\n');
+      socket.on('connect', report); socket.on('data', report); process.stdout.on('resize', report);
+    `;
+    const running = await processes.startTerminal(process.execPath, ["-e", program],
+      process.platform === "win32" ? {} : { stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"] });
+    if (process.platform !== "win32") await bounded(t, Promise.all([3, 4].map(fd =>
+      shown(running, `PRESERVED_FD_${fd}`, running.child.stdio[fd]))));
+    [socket] = await bounded(t, connected);
+    const reports = new Spool(socket, running.closed);
+    const first = await bounded(t, reports.next(event => event.cols === 80 && event.rows === 24));
+    const owner = running.child.pid;
+    // A headless-only resize cannot prove delivery to the native terminal.
+    screen.resize(51, 17);
+    const unchanged = reports.next(event => event.pid === first.pid);
+    socket.write("probe");
+    assert.deepEqual(await bounded(t, unchanged), first);
+    for (const [cols, rows] of [[51, 17], [120, 40], [80, 24]]) {
+      const resized = reports.next(event => event.cols === cols && event.rows === rows);
+      await bounded(t, running.resize(cols, rows, screen));
+      assert.deepEqual(await bounded(t, resized), { ...first, cols, rows });
+      assert.equal(running.child.pid, owner);
+      assert.equal(screen.cols, cols); assert.equal(screen.rows, rows);
+    }
+    await assert.rejects(async () => running.resize(0, 24, screen), /positive native coordinates/);
+    assert.equal(screen.cols, 80); assert.equal(screen.rows, 24);
+  } finally {
+    socket?.destroy(); screen.dispose();
+    await processes.close();
+    await new Promise(resolve => server.close(resolve));
+  }
 });

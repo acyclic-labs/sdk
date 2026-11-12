@@ -120,3 +120,8 @@ and the final guarantee column to remain visible through normal transcript wrapp
 `pty-command-capabilities` requires a direct-tool restriction before Enter,
 retains the refused command in the editor, and opens working command help
 without submitting a model request.
+
+
+GC-158: `pty-driver-resize` narrows, widens and restores the same shipping TUI, proving complete editable Unicode input, stable root identity, cursor bounds, actual reflow and resize recordings with zero model requests. Native terminal coverage includes a screen-only negative control. The existing conversation-driver case remains unchanged.
+
+On Windows, `node --test --test-name-pattern='ConPTY joins idle and partial resize reads' scripts/graphcoder-e2e/terminal.test.mjs` keeps the original control peer connected until the child and its output retire. Run with the compiled `E2E_CONPTY_HOST` and admitted `E2E_PROCESS_HOST`. For its negative control, apply `mutations/conpty-exit-cancellation.patch` in a temporary source copy, compile that copy, and select it as `E2E_CONPTY_HOST`: the same test must fail at its deadline. Restore the production executable and require the test to pass. This removes cancellation of the original pending operation; closing the peer early would conceal the regression.

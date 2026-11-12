@@ -170,9 +170,12 @@ async function execute(test, prepared) {
       const input = expand(raw, fixture);
       const inputFixture = { ...fixture, env: { ...fixture.env, ...input.environment } };
       if (input.mode === "drive") {
+        // Transport scratch belongs to the suite lease, outside the nested
+        // application profile whose temporary path can exceed AF_UNIX coordinates.
+        const entry = input.scenario === "resize" ? "resize-case.mjs" : "drive-case.mjs";
         result = await processes.runOwned(process.execPath,
-          [fileURLToPath(new URL("../graphcoder-pty/drive-case.mjs", import.meta.url)), binary, JSON.stringify(fixture.args)],
-          { cwd: fixture.workspace, env: inputFixture.env });
+          [fileURLToPath(new URL(`../graphcoder-pty/${entry}`, import.meta.url)), binary, JSON.stringify(fixture.args)],
+          { cwd: fixture.workspace, env: { ...inputFixture.env, E2E_SCRATCH_ROOT: dirname(scratch) } });
         executionSucceeded(result);
         captures.push(result);
         continue;

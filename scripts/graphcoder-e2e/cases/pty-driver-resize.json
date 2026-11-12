@@ -1,0 +1,7 @@
+{
+  "id": "pty-driver-resize",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [] },
+  "inputs": [{ "mode": "drive", "scenario": "resize" }],
+  "assert": { "requests": 0 }
+}

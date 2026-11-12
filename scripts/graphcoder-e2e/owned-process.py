@@ -168,13 +168,17 @@ def write_all(fd, data):
         data = data[written:]
 
 
-def relay(root, terminal):
+def relay(root, terminal, resize=None):
     """Wait for the root, relaying terminal I/O; True when control cancels.
 
     Without a terminal any control readiness cancels. With one, control bytes
     are terminal input and only EOF cancels. A root of None ends at terminal EOF.
     """
-    ready = Readiness(root, [0] if terminal is None else [0, terminal])
+    sources = [0] if terminal is None else [0, terminal]
+    if resize is not None:
+        sources.append(resize)
+    ready = Readiness(root, sources)
+    dimensions = b""
     output = terminal is not None
     try:
         while True:
@@ -190,6 +194,20 @@ def relay(root, terminal):
                     output = False
             if exited:
                 return False
+            if resize is not None and resize in readable:
+                data = os.read(resize, 4 - len(dimensions))
+                if not data:
+                    ready.remove(resize)
+                    resize = None
+                else:
+                    dimensions += data
+                    if len(dimensions) == 4:
+                        cols, rows = struct.unpack("<HH", dimensions)
+                        if not 0 < cols <= 32767 or not 0 < rows <= 32767:
+                            raise ValueError("terminal dimensions must fit positive native coordinates")
+                        fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+                        write_all(resize, dimensions)
+                        dimensions = b""
             if 0 in readable:
                 data = os.read(0, 65536)
                 if terminal is None or not data:
@@ -209,6 +227,9 @@ def spawn(command, terminal):
                 with open(os.devnull, "rb") as empty:
                     os.dup2(empty.fileno(), 0)
             else:
+                resize = os.environ.pop("E2E_PTY_CONTROL_FD", None)
+                if resize is not None:
+                    os.close(int(resize))
                 master, slave = terminal
                 os.setsid()
                 fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
@@ -238,7 +259,8 @@ def main():
     if command[0] == "--pty":
         # Opened before setsid, so this owner never acquires it as a terminal.
         terminal = os.openpty()
-        fcntl.ioctl(terminal[1], termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        fcntl.ioctl(terminal[1], termios.TIOCSWINSZ, struct.pack("HHHH", int(os.environ.get("E2E_PTY_ROWS", "24")),
+            int(os.environ.get("E2E_PTY_COLS", "80")), 0, 0))
         command = command[1:]
     lease = None
     if command[0] == "--mount-root":
@@ -273,7 +295,8 @@ def main():
     cancelled = True
     try:
         try:
-            cancelled = relay(root, master)
+            cancelled = relay(root, master, int(os.environ["E2E_PTY_CONTROL_FD"])
+                              if terminal is not None and "E2E_PTY_CONTROL_FD" in os.environ else None)
         finally:
             # The drain reaps the root, after which its pid may be reused.
             signal.signal(signal.SIGTERM, signal.SIG_IGN)

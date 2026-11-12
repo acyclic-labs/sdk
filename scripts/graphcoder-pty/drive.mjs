@@ -109,7 +109,7 @@ async function ownRun(config, { directory, socket }) {
   }
   function capture(raw = false) {
     const buffer = terminal.buffer.active, screen = screenSnapshot(terminal);
-    const result = { frame: sequence, at: new Date().toISOString(),
+    const result = { frame: sequence, at: new Date().toISOString(), cols: terminal.cols, rows: terminal.rows,
       cursor: { x: buffer.cursorX, y: buffer.cursorY }, text: screen.logical,
       visible: screen.visible };
     if (raw) result.cells = Array.from({ length: terminal.rows }, (_, y) =>
@@ -121,6 +121,9 @@ async function ownRun(config, { directory, socket }) {
           dim: !!c.isDim(), invisible: !!c.isInvisible(), strikethrough: !!c.isStrikethrough() } : null;
       }));
     return result;
+  }
+  function exitedError() {
+    return Error(`terminal exited; read its screen or stop the driver; exit=${JSON.stringify(exit)}\n${snapshot().text}\nNative terminal after restoration:\n${screenText(terminal)}`);
   }
   function notify() { for (const check of [...pending]) check(); }
   function fail(error) { failure ??= error; notify(); }
@@ -155,7 +158,7 @@ async function ownRun(config, { directory, socket }) {
           if (exit) { cleanup(); accept(snapshot()); }
           return;
         }
-        if (condition.settled && exit) { cleanup(); reject(Error("terminal exited; read its screen or stop the driver")); return; }
+        if (condition.settled && exit) { cleanup(); reject(exitedError()); return; }
         if (!painted || (!exit && !frames.ready())) return;
         const text = snapshot().text;
         const phase = settlementQueries.get(query);
@@ -192,11 +195,17 @@ async function ownRun(config, { directory, socket }) {
         let result = {};
         if (command.action === "screen") result = snapshot(command.raw);
         else if (command.action === "keys") {
-          if (exit) throw Error("terminal exited; read its screen or stop the driver");
+          if (exit) throw exitedError();
           const input = keys(command.keys);
           const begin = performance.now();
           await new Promise((resolve, reject) => running.child.stdin.write(input, error => error ? reject(error) : resolve()));
           result = { input_written_ms: performance.now() - begin };
+        } else if (command.action === "resize") {
+          if (exit) throw exitedError();
+          await running.resize(command.cols, command.rows, terminal, (cols, rows) => {
+            if (cast !== undefined) writeSync(cast, JSON.stringify([(performance.now() - recordingStarted) / 1000, "r", `${cols}x${rows}`]) + "\n");
+          });
+          result = { cols: terminal.cols, rows: terminal.rows };
         } else if (command.action === "wait") result = await wait(command, connection);
         else if (command.action === "record") {
           if (cast === undefined) {
@@ -270,11 +279,15 @@ export async function main(argv = process.argv.slice(2)) {
   const command = { action };
   if (action === "keys") command.keys = rest;
   else if (action === "screen") command.raw = rest.includes("--raw");
+  else if (action === "resize") {
+    const { values } = parseArgs({ args: rest, options: { cols: { type: "string" }, rows: { type: "string" } } });
+    command.cols = Number(values.cols); command.rows = Number(values.rows);
+  }
   else if (action === "wait") {
     const { values } = parseArgs({ args: rest, options: { contains: { type: "string" }, absent: { type: "string" }, settled: { type: "boolean" }, exited: { type: "boolean" } } });
     if (Object.keys(values).length !== 1) throw Error("wait requires exactly one of --contains, --absent, --settled, --exited");
     Object.assign(command, values);
-  } else if (!["record", "stop"].includes(action)) throw Error("usage: drive start|keys|screen|wait|record|stop");
+  } else if (!["record", "stop"].includes(action)) throw Error("usage: drive start|keys|resize|screen|wait|record|stop");
   return request(name, command);
 }
 if (process.argv[1] && resolve(process.argv[1]) === file) {

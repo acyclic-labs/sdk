@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { main } from "./drive.mjs";
 
@@ -67,3 +67,26 @@ for (const mode of ["restore", "active", ...(process.platform === "win32" ? [] :
     }
   });
 }
+
+test("live resize records the new dimensions before their native redraw", async () => {
+  const name = `resize-${randomUUID()}`;
+  let started = false;
+  const program = String.raw`
+    process.stdin.setRawMode(true); process.stdin.resume();
+    const paint = () => process.stdout.write('\x1b[?2026h\x1b[2J\x1b[HGraphCoder SIZE:' + process.stdout.columns + 'x' + process.stdout.rows + '\x1b[?2026l');
+    process.stdout.on('resize', paint); paint();
+  `;
+  try {
+    await main(["start", "--name", name, "--binary", process.execPath, "--cols", "100", "--rows", "30", "--", "-e", program]);
+    started = true;
+    const recording = await main(["record", name]);
+    await main(["resize", name, "--cols", "52", "--rows", "24"]);
+    await main(["wait", name, "--contains", "SIZE:52x24"]);
+    const events = readFileSync(recording.recording, "utf8").trimEnd().split("\n").slice(1).map(JSON.parse);
+    const resize = events.findIndex(event => event[1] === "r" && event[2] === "52x24");
+    const paint = events.findIndex(event => event[1] === "o" && event[2].includes("SIZE:52x24"));
+    assert.ok(resize >= 0 && paint > resize, "new-size redraw preceded the recording's resize boundary");
+  } finally {
+    if (started) await main(["stop", name]);
+  }
+});

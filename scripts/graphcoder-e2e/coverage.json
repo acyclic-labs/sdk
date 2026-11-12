@@ -8,6 +8,7 @@
       "cases": [
         "pty-status-line",
         "pty-driver",
+        "pty-driver-resize",
         "pty-status-priced",
         "session-cost-rollup",
         "usage-durable-on-provider-error",

@@ -2,10 +2,12 @@ using System;
 using System.ComponentModel;
 using System.IO;
 using System.Net;
+using System.IO.Pipes;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using Microsoft.Win32.SafeHandles;
 
 public static class GraphcoderConPty {
     static string recovery;
@@ -39,12 +41,15 @@ public static class GraphcoderConPty {
     [StructLayout(LayoutKind.Sequential)] struct ProcessInfo { public IntPtr process, thread; public uint processId, threadId; }
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool CreatePipe(out IntPtr read, out IntPtr write, IntPtr security, uint size);
     [DllImport("kernel32.dll")] static extern int CreatePseudoConsole(Coord size, IntPtr input, IntPtr output, uint flags, out IntPtr console);
+    [DllImport("kernel32.dll")] static extern int ResizePseudoConsole(IntPtr console, Coord size);
     [DllImport("kernel32.dll")] static extern void ClosePseudoConsole(IntPtr console);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, uint flags, ref IntPtr size);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute, IntPtr value, IntPtr size, IntPtr previous, IntPtr returned);
     [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessW(string application, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string directory, ref StartupInfoEx startup, out ProcessInfo process);
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForMultipleObjects(uint count, IntPtr[] handles, bool all, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool CancelIoEx(SafePipeHandle handle, IntPtr overlapped);
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint exit);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool ReadFile(IntPtr handle, byte[] bytes, uint size, out uint read, IntPtr overlapped);
@@ -103,12 +108,51 @@ public static class GraphcoderConPty {
             }
         }
     }
+    // Only this thread issues pipe I/O: child exit cannot race a new operation
+    // past cancellation. Always join the original operation before disposal.
+    static int TransferResize(NamedPipeClientStream pipe, IntPtr process, byte[] bytes, int offset, bool write) {
+        IAsyncResult operation = write ? pipe.BeginWrite(bytes, offset, bytes.Length - offset, null, null)
+            : pipe.BeginRead(bytes, offset, bytes.Length - offset, null, null);
+        using (WaitHandle ready = operation.AsyncWaitHandle) {
+            uint selected = WaitForMultipleObjects(2, new [] { process, ready.SafeWaitHandle.DangerousGetHandle() }, false, UInt32.MaxValue);
+            Require(selected <= 1, "wait for child or terminal control");
+            bool exited = selected == 0;
+            if (exited && !CancelIoEx(pipe.SafePipeHandle, IntPtr.Zero)) {
+                int error = Marshal.GetLastWin32Error();
+                if (error != 1168) throw new Win32Exception(error, "cancel terminal control"); // Already completed.
+            }
+            try {
+                if (write) { pipe.EndWrite(operation); return exited ? -1 : bytes.Length - offset; }
+                int count = pipe.EndRead(operation);
+                return exited ? -1 : count;
+            } catch (IOException) { if (exited) return -1; throw; }
+        }
+    }
+    static void PumpResize(NamedPipeClientStream pipe, IntPtr process, IntPtr console) {
+        try {
+            byte[] bytes = new byte[4];
+            while (true) {
+                int offset = 0;
+                while (offset < bytes.Length) {
+                    int count = TransferResize(pipe, process, bytes, offset, false);
+                    if (count <= 0) return;
+                    offset += count;
+                }
+                ushort cols = BitConverter.ToUInt16(bytes, 0), rows = BitConverter.ToUInt16(bytes, 2);
+                if (cols == 0 || cols > 32767 || rows == 0 || rows > 32767) throw new ArgumentException("terminal dimensions must fit positive native coordinates");
+                int result = ResizePseudoConsole(console, new Coord { X = (short)cols, Y = (short)rows });
+                if (result != 0) throw new COMException("ResizePseudoConsole", result);
+                if (TransferResize(pipe, process, bytes, 0, true) < 0) return;
+            }
+        } catch (IOException) { } // The original peer closed its control channel.
+    }
     static int Run(string binary, StringBuilder command) {
         if (!Path.IsPathRooted(binary)) throw new ArgumentException("ConPTY executable must be absolute");
         IntPtr inRead = IntPtr.Zero, inWrite = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
         IntPtr console = IntPtr.Zero, attributes = IntPtr.Zero;
         ProcessInfo process = new ProcessInfo(); bool attributeInitialized = false, rootExited = false;
         Thread outputThread = null;
+        NamedPipeClientStream resize = null;
         string step = "terminal-create";
         try {
             Require(CreatePipe(out inRead, out inWrite, IntPtr.Zero, 0), "CreatePipe input");
@@ -175,13 +219,22 @@ public static class GraphcoderConPty {
                 } catch (Exception error) { Refuse("input", error); Environment.Exit(125); }
             });
             inputThread.IsBackground = true; inputThread.Start();
+            string resizeEndpoint = Environment.GetEnvironmentVariable("E2E_PTY_CONTROL");
+            if (!String.IsNullOrEmpty(resizeEndpoint)) {
+                const string prefix = @"\\.\pipe\";
+                if (!resizeEndpoint.StartsWith(prefix, StringComparison.Ordinal)) throw new ArgumentException("terminal control must be a local named pipe");
+                resize = new NamedPipeClientStream(".", resizeEndpoint.Substring(prefix.Length), PipeDirection.InOut, PipeOptions.Asynchronous);
+                resize.Connect();
+            }
             step = "child-wait";
             Console.Error.WriteLine("conpty-host primitive=CreatePseudoConsole process-attribute=PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE child-process-id=" + process.processId);
+            if (resize != null) PumpResize(resize, process.process, console);
             Require(WaitForSingleObject(process.process, UInt32.MaxValue) == 0, "WaitForSingleObject");
             rootExited = true;
             uint exit; Require(GetExitCodeProcess(process.process, out exit), "GetExitCodeProcess");
             step = "terminal-drain";
             // Drain concurrently while closing; ClosePseudoConsole can wait for its output reader.
+            if (resize != null) { resize.Dispose(); resize = null; }
             ClosePseudoConsole(console); console = IntPtr.Zero;
             outputThread.Join();
             return unchecked((int)exit);
@@ -197,6 +250,7 @@ public static class GraphcoderConPty {
                 Refuse("incomplete-transport", new IOException("native owner must retire the admitted child"));
                 Environment.Exit(125);
             }
+            if (resize != null) resize.Dispose();
             if (console != IntPtr.Zero) ClosePseudoConsole(console);
             if (attributeInitialized) DeleteProcThreadAttributeList(attributes);
             if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);

@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { terminalResize, terminalSize } from "./terminal-resize.mjs";
 import { randomUUID } from "node:crypto";
 import { closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, readSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +15,8 @@ import { Lines } from "./lines.mjs";
 import { decodeCompletion } from "../../typescript/packages/sdk/native/process-completion.mjs";
 import { transcript } from "./transcript.mjs";
 import { listenProcessControl } from "../../typescript/packages/sdk/native/process.mjs";
+
+const nativePipe = () => `\\\\.\\pipe\\acyclic-process-${randomUUID()}`;
 
 export async function schedule(items, platform, execute) {
   if (platform !== "win32") return Promise.all(items.map(execute));
@@ -73,7 +77,7 @@ export class Processes {
   #start(program, args, options = {}, selectedReport, endpoint) {
     if (this.stopping) throw new Error("suite process scope is closed (deadline or cleanup)");
     const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReport = false, scopeOperation,
-      scopeCapture, scopeCleanup, ...spawnOptions } = options;
+      scopeCapture, scopeCleanup, scopeTerminalControl, ...spawnOptions } = options;
     if (scopeOperation !== undefined && (typeof scopeOperation !== "string"
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(scopeOperation))) {
       throw new Error("step=process-progress-operation; recovery=pass the original opaque operation UUID as scopeOperation");
@@ -109,9 +113,19 @@ export class Processes {
       if (stdoutFd !== undefined) closeSync(stdoutFd);
       throw new SpoolEnded("spool", `transcript admission: ${error.message}; recovery command: provide Processes({transcripts: writableFreshDirectory}) before launching`, error);
     }
+    if (scopeTerminalControl !== undefined || (report && !endpoint)) {
+      const stdio = Array.isArray(spawnOptions.stdio) ? [...spawnOptions.stdio]
+        : Array(3).fill(spawnOptions.stdio ?? "pipe");
+      if (report && !endpoint) stdio[3] = "pipe";
+      if (scopeTerminalControl !== undefined) {
+        while (stdio.length <= scopeTerminalControl) stdio.push("ignore");
+        stdio[scopeTerminalControl] = "pipe";
+      }
+      spawnOptions.stdio = stdio;
+    }
     try {
       child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions,
-        env, ...(report && !endpoint ? { stdio: ["pipe", "pipe", "pipe", "pipe"] } : {}),
+        env,
       });
     } catch (error) {
       closeSync(stdoutFd); closeSync(stderrFd);
@@ -233,7 +247,7 @@ export class Processes {
     return { ...owned, killExecutable: () => owned.child.kill("SIGUSR1") };
   }
   async #startInputOwned(program, args, options, start) {
-    const endpoint = `\\\\.\\pipe\\acyclic-process-${randomUUID()}`;
+    const endpoint = nativePipe();
     let control, failure;
     control = await listenProcessControl(endpoint, cause => {
       failure ??= Object.assign(new Error("step=process-control; recovery=retain the original cancellation endpoint and process completion", { cause }),
@@ -250,7 +264,7 @@ export class Processes {
     const invocation = randomUUID(), receipt = join(resolve(this.transcripts), `${invocation}.completion`);
     const owned = start(host, ["--completion", receipt, "--invocation", invocation,
       ...(control ? ["--control", control.endpoint, "--inherit-input"] : []), "--", program, ...args],
-      { ...spawnOptions, scopeTreeControl: control?.stop ?? true, scopeCleanup: control?.close,
+      { ...spawnOptions, scopeTreeControl: control?.stop ?? true, scopeCleanup: async () => { try { await control?.close(); } finally { await spawnOptions.scopeCleanup?.(); } },
         scopeCapture: async result => {
           let completion;
           try { completion = decodeCompletion(readFileSync(receipt, "utf8"), invocation, result); }
@@ -281,15 +295,18 @@ export class Processes {
   // Windows, or a PTY whose root leads its own session under the POSIX owner.
   startTerminal(binary, args, options = {}) {
     const { cols = 80, rows = 24, ...ownedOptions } = options;
-    assert.ok([cols, rows].every(value => Number.isSafeInteger(value) && value > 0 && value <= 32767),
-      "terminal dimensions must fit positive native coordinates");
+    terminalSize(cols, rows);
     options = ownedOptions;
     const env = { ...(options.env ?? process.env), TERM: "xterm-256color",
       E2E_PTY_COLS: String(cols), E2E_PTY_ROWS: String(rows) };
     const start = options.scopeReport ? this.startReportedOwned.bind(this) : this.startOwned.bind(this);
-    if (process.platform !== "win32") return start("/bin/sh", ["-c",
-      'stty cols "$E2E_PTY_COLS" rows "$E2E_PTY_ROWS" || exit; exec "$@"', "pty", binary, ...args],
-      { ...options, env, scopePty: true });
+    if (process.platform !== "win32") {
+      const fd = Math.max(4, Array.isArray(options.stdio) ? options.stdio.length : 0);
+      const running = start(binary, args, { ...options, env: { ...env, E2E_PTY_CONTROL_FD: String(fd) },
+        scopePty: true, scopeTerminalControl: fd });
+      const terminal = running => ({ ...running, resize: terminalResize(running.child.stdio[fd], running.closed) });
+      return running instanceof Promise ? running.then(terminal) : terminal(running);
+    }
     const host = env.E2E_CONPTY_HOST;
     assert.ok(host && isAbsolute(host), "cross-build the ConPTY host and set E2E_CONPTY_HOST");
     // Kill only the shipping executable, as POSIX custody does: the ConPTY and
@@ -299,8 +316,34 @@ export class Processes {
       announced.catch(() => {});
       return { ...running, killExecutable: () => announced.then(pid => process.kill(pid)) };
     };
-    const running = start(host, [binary, ...args], { ...options, env, scopeInheritInput: true });
-    return running instanceof Promise ? running.then(terminal) : terminal(running);
+    return this.#admit((async () => {
+      const server = createServer();
+      const endpoint = nativePipe();
+      let accepted;
+      const connected = new Promise(resolve => server.on("connection", stream => {
+        if (accepted) { stream.destroy(); return; }
+        accepted = stream; resolve(stream);
+      }));
+      await new Promise((resolve, reject) => { server.once("error", reject); server.listen(endpoint, resolve); });
+      const cleanup = async () => {
+        accepted?.destroy();
+        await new Promise(resolve => server.close(resolve));
+        await options.scopeCleanup?.();
+      };
+      try {
+        const running = terminal(await start(host, [binary, ...args], { ...options,
+          env: { ...env, E2E_PTY_CONTROL: endpoint }, scopeInheritInput: true, scopeCleanup: cleanup }));
+        // A refused launch retains its original completion instead of waiting
+        // for a terminal adapter that never connected.
+        const resize = Promise.race([connected, running.closed.then(() => { throw Error("terminal exited before resize admission"); })])
+          .then(stream => terminalResize(stream, running.closed));
+        resize.catch(() => {});
+        return { ...running, resize: async (cols, rows, screen, onResize) => {
+          terminalSize(cols, rows);
+          return (await resize)(cols, rows, screen, onResize);
+        } };
+      } catch (error) { await cleanup(); throw error; }
+    })());
   }
   async runOwned(program, args, options, input = "") {
     assert.equal(input, "", "external acceptance commands receive empty stdin");
