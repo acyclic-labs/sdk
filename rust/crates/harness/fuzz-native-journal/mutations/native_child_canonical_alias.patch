@@ -1,8 +1,7 @@
 diff --git a/rust/crates/harness/src/local/host_owner/agents.rs b/rust/crates/harness/src/local/host_owner/agents.rs
-index 6d44180b589..35725834386 100644
 --- a/rust/crates/harness/src/local/host_owner/agents.rs
 +++ b/rust/crates/harness/src/local/host_owner/agents.rs
-@@ -532,18 +532,6 @@ fn snapshot(agent: &AgentState, inbox: u64) -> OperationId {
+@@ -512,18 +512,6 @@ fn snapshot(agent: &AgentState, inbox: u64) -> OperationId {
  
  /// Spawned session `reference` of `parent`: the spawn intent names it.
  pub(crate) fn child(parent: &AgentPath, reference: &str) -> Result<AgentPath> {
@@ -19,5 +18,5 @@ index 6d44180b589..35725834386 100644
 -        return Ok(child);
 -    }
      super::super::host_workspace::child_reference(reference)?;
-     let intent = IntentId::try_from(reference).map_err(storage)?;
      parent
+         .child(&AgentId::derive(&parent.id(), reference))
