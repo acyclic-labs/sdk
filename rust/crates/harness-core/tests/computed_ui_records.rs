@@ -205,6 +205,7 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
         agent::{AgentId, IntentId, create_root, spawn},
         ui::{StreamUiProvider, View},
     };
+    use acyclic_stream::testing::Counted;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -227,7 +228,7 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
             self.lost.fetch_add(1, Ordering::SeqCst);
         }
     }
-    let streams = Arc::new(MemoryStream::default());
+    let streams = Arc::new(Counted::new(MemoryStream::default()));
     let root = create_root(
         &IntentId::try_from("watched".to_owned())?,
         adoption(AgentId::from_bytes([9; 16])),
@@ -248,9 +249,13 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
         .map_err(|(error, _)| error)?;
     let baseline = native.live_allocation_bytes();
     let sink = Arc::new(Sink::default());
+    let before = streams.requests();
     let watch = source
         .watch(sink.clone(), &native, &cancellation)?
         .ok_or("missing watch")?;
+    let opening = streams.requests().since(before);
+    assert_eq!(opening.control(), 1, "one joint starting cut");
+    assert_eq!(opening.data(), 3, "one subscription per input");
     assert_eq!(
         sink.changes.lock().unwrap().len(),
         6,

@@ -67,15 +67,43 @@ pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
                 return;
             };
             let run = async {
-                let [conversation, status, children] = paths;
-                let mut conversation = open(&*streams, conversation, &original).await?;
-                let mut status = open(&*streams, status, &original).await?;
-                let mut children = open(&*streams, children, &original).await?;
                 let cancellation = original.cancellation();
                 let mut ctx = KernelAccounting::NativeOriginal {
                     work: &original,
                     cancellation: &cancellation,
                 };
+                // One starting cut avoids replaying history. The existing
+                // multi-path request captures all inputs without a cache.
+                let heads = {
+                    let _paths = RetainedAllocation::claim(
+                        std::mem::size_of_val(&paths) as u64,
+                        1,
+                        &mut ctx,
+                    )?;
+                    native_result(
+                        streams
+                            .native_heads(
+                                HeadsRequest {
+                                    at: None,
+                                    at_least: RevisionCut::default(),
+                                    paths: paths.iter().cloned().collect(),
+                                    retained: HeadSet::new(),
+                                    durable_through: None,
+                                    projection: HeadProjection::Tail,
+                                    children: None,
+                                    limit: paths.len() as u32,
+                                },
+                                original.runtime_meter(),
+                            )
+                            .await,
+                        &original,
+                    )?
+                };
+                let [conversation, status, children] = paths;
+                let mut conversation = open(&*streams, conversation, &heads, 0, &original).await?;
+                let mut status = open(&*streams, status, &heads, 1, &original).await?;
+                let mut children = open(&*streams, children, &heads, 2, &original).await?;
+                drop(heads);
                 // Changes preceding the opening cuts invalidate earlier observations.
                 for input in [Affected::Conversation, Affected::Status, Affected::Children] {
                     delivery.0.changed(&input, &mut ctx)?;
@@ -107,30 +135,14 @@ pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
 async fn open<P: NativeStreamProvider + ?Sized>(
     streams: &P,
     path: StreamPath,
+    heads: &NativeStreamOutput<Heads>,
+    index: usize,
     original: &NativeMaterializationWork,
 ) -> Result<NativeStreamOutput<NativeRecordStream>, DemandError> {
-    let heads = native_result(
-        streams
-            .native_heads(
-                HeadsRequest {
-                    at: None,
-                    at_least: RevisionCut::default(),
-                    paths: [path.clone()].into(),
-                    retained: HeadSet::new(),
-                    durable_through: None,
-                    projection: HeadProjection::Tail,
-                    children: None,
-                    limit: 1,
-                },
-                original.runtime_meter(),
-            )
-            .await,
-        original,
-    )?;
     let from = heads
         .value()
         .heads
-        .first()
+        .get(index)
         .and_then(Option::as_ref)
         .map_or(0, |head| head.tail);
     let cancellation = original.cancellation();
