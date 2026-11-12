@@ -53,6 +53,12 @@ impl<'a> PathQueries<'a> {
             Self::Borrowed(paths) => paths.len(),
         }
     }
+    fn range(self, range: std::ops::Range<usize>) -> Self {
+        match self {
+            Self::Owned(paths) => Self::Owned(&paths[range]),
+            Self::Borrowed(paths) => Self::Borrowed(&paths[range]),
+        }
+    }
     pub(super) fn get(self, index: usize) -> &'a NamespacePath {
         match self {
             Self::Owned(paths) => &paths[index],
@@ -110,6 +116,9 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                 let cache =
                     OperationReadCache::new(store, cache_entries, accounting, data_custody)?;
                 let count = paths.len();
+                let chunk_size = usize::try_from(config.limits.maximum_paths_per_batch)
+                    .map_err(|_| WorkError::Overflow)?;
+                let scratch_count = count.min(chunk_size);
                 let limits = DecodeLimits::for_volume(config);
                 let mut dependencies = reserve_slots::<Dependency>(
                     if observe {
@@ -124,14 +133,21 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                 )?;
                 let mut entries = reserve_slots::<PathBatchEntry>(count, accounting, data_custody)?;
                 let mut current =
-                    reserve_slots::<Option<FileRecord>>(count, accounting, data_custody)?;
-                let mut done = reserve_slots::<u8>(count, accounting, data_custody)?;
-                let mut active = reserve_slots::<ActivePath>(count, accounting, data_custody)?;
-                let mut names = reserve_slots::<LogicalName>(count, accounting, data_custody)?;
-                let mut query_indices = reserve_slots::<usize>(count, accounting, data_custody)?;
-                let mut pending = reserve_slots::<PendingBinding>(count, accounting, data_custody)?;
-                let mut file_ids =
-                    reserve_slots::<crate::foundation::FileId>(count, accounting, data_custody)?;
+                    reserve_slots::<Option<FileRecord>>(scratch_count, accounting, data_custody)?;
+                let mut done = reserve_slots::<u8>(scratch_count, accounting, data_custody)?;
+                let mut active =
+                    reserve_slots::<ActivePath>(scratch_count, accounting, data_custody)?;
+                let mut names =
+                    reserve_slots::<LogicalName>(scratch_count, accounting, data_custody)?;
+                let mut query_indices =
+                    reserve_slots::<usize>(scratch_count, accounting, data_custody)?;
+                let mut pending =
+                    reserve_slots::<PendingBinding>(scratch_count, accounting, data_custody)?;
+                let mut file_ids = reserve_slots::<crate::foundation::FileId>(
+                    scratch_count,
+                    accounting,
+                    data_custody,
+                )?;
                 entries.value.resize(
                     count,
                     PathBatchEntry {
@@ -140,8 +156,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                         resolved_components: 0,
                     },
                 );
-                current.value.resize(count, None);
-                done.value.resize(count, 0);
                 let root = {
                     let (root, _root_guard) =
                         crate::kernel::file_table::lookup_file_record_async_with_accounting(
@@ -156,132 +170,145 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                         .await?;
                     root.ok_or(PathLookupError::MissingRootRecord)?
                 };
-                for index in 0..count {
-                    let is_root = examine_item(accounting, None, || paths.get(index).is_root())?;
-                    if is_root {
-                        entries.value[index].record = Some(root);
-                        done.value[index] = 1;
-                        if observe && capture_terminal {
-                            let expected =
+                // Only returned entries and observations grow with the request.
+                // Every traversal frontier reuses this volume's paid chunk.
+                for start in (0..count).step_by(chunk_size) {
+                    let end = count.min(start.saturating_add(chunk_size));
+                    let paths = paths.range(start..end);
+                    let count = paths.len();
+                    let entries = &mut entries.value[start..end];
+                    current.value.clear();
+                    current.value.resize(count, None);
+                    done.value.clear();
+                    done.value.resize(count, 0);
+                    for index in 0..count {
+                        let is_root =
+                            examine_item(accounting, None, || paths.get(index).is_root())?;
+                        if is_root {
+                            entries[index].record = Some(root);
+                            done.value[index] = 1;
+                            if observe && capture_terminal {
+                                let expected =
                                 crate::kernel::probe::capture_file_record_state_with_accounting(
                                     root,
                                     accounting,
                                     Some(cancellation),
                                     data_custody,
                                 )?;
-                            dependencies.value.push(Dependency {
-                                region: DependencyRegion::FileRecord(root.file_id),
-                                expected,
-                            });
+                                dependencies.value.push(Dependency {
+                                    region: DependencyRegion::FileRecord(root.file_id),
+                                    expected,
+                                });
+                            }
+                        } else {
+                            current.value[index] = Some(root);
                         }
-                    } else {
-                        current.value[index] = Some(root);
                     }
-                }
-                let maximum_depth = (0..count)
-                    .map(|index| paths.get(index).depth())
-                    .max()
-                    .unwrap_or(0);
-                for depth in 0..maximum_depth {
-                    pending.value.clear();
-                    active.value.clear();
-                    for index in 0..count {
-                        let finished = examine_item(accounting, None, || {
-                            done.value[index] != 0 || paths.get(index).depth() <= depth
-                        })?;
-                        if finished {
-                            continue;
-                        }
-                        let FilePayload::Directory { entries: directory } = current.value[index]
-                            .ok_or(PathLookupError::KindMismatch)?
-                            .payload
-                        else {
-                            if matches!(mode, PathBatchMode::SelectedRestore) {
-                                entries.value[index] = PathBatchEntry {
-                                    record: None,
-                                    parent: None,
-                                    resolved_components: usize_to_u64(depth),
-                                };
-                                done.value[index] = 1;
+                    let maximum_depth = (0..count)
+                        .map(|index| paths.get(index).depth())
+                        .max()
+                        .unwrap_or(0);
+                    for depth in 0..maximum_depth {
+                        pending.value.clear();
+                        active.value.clear();
+                        for index in 0..count {
+                            let finished = examine_item(accounting, None, || {
+                                done.value[index] != 0 || paths.get(index).depth() <= depth
+                            })?;
+                            if finished {
                                 continue;
                             }
-                            return Err(PathLookupError::NotDirectory.into());
-                        };
-                        active.value.push(ActivePath {
-                            path_index: index,
-                            directory,
-                        });
-                    }
-                    sort_active(&mut active.value, accounting)?;
-                    let mut cursor = 0;
-                    while cursor < active.value.len() {
-                        let directory = active.value[cursor].directory;
-                        let start = cursor;
-                        cursor += 1;
-                        while cursor < active.value.len() {
-                            let same_directory = examine_item(accounting, None, || {
-                                active.value[cursor].directory == directory
-                            })?;
-                            if !same_directory {
-                                break;
-                            }
-                            cursor += 1;
-                        }
-                        names.value.clear();
-                        query_indices.value.clear();
-                        let mut copied_bytes = 0_u64;
-                        for item in &active.value[start..cursor] {
-                            query_indices.value.push(item.path_index);
-                            let (name, guard) = copy_name(
-                                &paths.get(item.path_index).components()[depth],
-                                accounting,
-                                data_custody,
-                            )?;
-                            let copied = crate::kernel::file_read::ReadOwned {
-                                value: name,
-                                custody: guard,
+                            let FilePayload::Directory { entries: directory } = current.value
+                                [index]
+                                .ok_or(PathLookupError::KindMismatch)?
+                                .payload
+                            else {
+                                if matches!(mode, PathBatchMode::SelectedRestore) {
+                                    entries[index] = PathBatchEntry {
+                                        record: None,
+                                        parent: None,
+                                        resolved_components: usize_to_u64(depth),
+                                    };
+                                    done.value[index] = 1;
+                                    continue;
+                                }
+                                return Err(PathLookupError::NotDirectory.into());
                             };
-                            copied_bytes = copied_bytes
-                                .checked_add(usize_to_u64(copied.value.retained_bytes()))
-                                .ok_or(WorkError::Overflow)?;
-                            let crate::kernel::file_read::ReadOwned {
-                                value: name,
-                                custody: mut guard,
-                            } = copied;
-                            let owner = if observe {
-                                &mut dependencies.custody
-                            } else {
-                                &mut names.custody
-                            };
-                            if let Err(error) = absorb_allocation(owner, &mut guard) {
-                                drop(name);
-                                return Err(error);
-                            }
-                            names.value.push(name);
-                        }
-                        let (bindings, bindings_guard) =
-                            crate::kernel::read::lookup_tree_entries_async_with_accounting(
-                                &cache,
+                            active.value.push(ActivePath {
+                                path_index: index,
                                 directory,
-                                &names.value,
-                                limits,
-                                accounting,
-                                cancellation,
-                                data_custody,
-                            )
-                            .await?;
-                        let bindings = ReadOwned {
-                            value: bindings,
-                            custody: bindings_guard,
-                        };
-                        for ((index, binding), name) in query_indices
-                            .value
-                            .iter()
-                            .zip(bindings.value.iter())
-                            .zip(names.value.drain(..))
-                        {
-                            if observe {
-                                let expected = match binding {
+                            });
+                        }
+                        sort_active(&mut active.value, accounting)?;
+                        let mut cursor = 0;
+                        while cursor < active.value.len() {
+                            let directory = active.value[cursor].directory;
+                            let start = cursor;
+                            cursor += 1;
+                            while cursor < active.value.len() {
+                                let same_directory = examine_item(accounting, None, || {
+                                    active.value[cursor].directory == directory
+                                })?;
+                                if !same_directory {
+                                    break;
+                                }
+                                cursor += 1;
+                            }
+                            names.value.clear();
+                            query_indices.value.clear();
+                            let mut copied_bytes = 0_u64;
+                            for item in &active.value[start..cursor] {
+                                query_indices.value.push(item.path_index);
+                                let (name, guard) = copy_name(
+                                    &paths.get(item.path_index).components()[depth],
+                                    accounting,
+                                    data_custody,
+                                )?;
+                                let copied = crate::kernel::file_read::ReadOwned {
+                                    value: name,
+                                    custody: guard,
+                                };
+                                copied_bytes = copied_bytes
+                                    .checked_add(usize_to_u64(copied.value.retained_bytes()))
+                                    .ok_or(WorkError::Overflow)?;
+                                let crate::kernel::file_read::ReadOwned {
+                                    value: name,
+                                    custody: mut guard,
+                                } = copied;
+                                let owner = if observe {
+                                    &mut dependencies.custody
+                                } else {
+                                    &mut names.custody
+                                };
+                                if let Err(error) = absorb_allocation(owner, &mut guard) {
+                                    drop(name);
+                                    return Err(error);
+                                }
+                                names.value.push(name);
+                            }
+                            let (bindings, bindings_guard) =
+                                crate::kernel::read::lookup_tree_entries_async_with_accounting(
+                                    &cache,
+                                    directory,
+                                    &names.value,
+                                    limits,
+                                    accounting,
+                                    cancellation,
+                                    data_custody,
+                                )
+                                .await?;
+                            let bindings = ReadOwned {
+                                value: bindings,
+                                custody: bindings_guard,
+                            };
+                            for ((index, binding), name) in query_indices
+                                .value
+                                .iter()
+                                .zip(bindings.value.iter())
+                                .zip(names.value.drain(..))
+                            {
+                                if observe {
+                                    let expected = match binding {
                                 Some(binding) => {
                                     crate::kernel::probe::capture_directory_name_state_with_accounting(
                                         binding,
@@ -292,94 +319,96 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 }
                                 None => DependencyState::Absent,
                             };
-                                dependencies.value.push(Dependency {
-                                    region: DependencyRegion::DirectoryName {
-                                        directory_id: current.value[*index]
-                                            .ok_or(PathLookupError::KindMismatch)?
-                                            .file_id,
-                                        name,
-                                    },
-                                    expected,
-                                });
+                                    dependencies.value.push(Dependency {
+                                        region: DependencyRegion::DirectoryName {
+                                            directory_id: current.value[*index]
+                                                .ok_or(PathLookupError::KindMismatch)?
+                                                .file_id,
+                                            name,
+                                        },
+                                        expected,
+                                    });
+                                }
+                                if let Some(binding) = binding {
+                                    pending.value.push(PendingBinding {
+                                        path_index: *index,
+                                        file_id: binding.file_id,
+                                        kind: binding.kind,
+                                    });
+                                } else {
+                                    entries[*index] = PathBatchEntry {
+                                        record: None,
+                                        parent: current.value[*index],
+                                        resolved_components: usize_to_u64(depth),
+                                    };
+                                    done.value[*index] = 1;
+                                }
                             }
-                            if let Some(binding) = binding {
-                                pending.value.push(PendingBinding {
-                                    path_index: *index,
-                                    file_id: binding.file_id,
-                                    kind: binding.kind,
-                                });
-                            } else {
-                                entries.value[*index] = PathBatchEntry {
-                                    record: None,
-                                    parent: current.value[*index],
-                                    resolved_components: usize_to_u64(depth),
-                                };
-                                done.value[*index] = 1;
+                            drop_bindings(bindings, accounting)?;
+                            if !observe {
+                                retire_name_bytes(&mut names.custody, accounting, copied_bytes)?;
                             }
                         }
-                        drop_bindings(bindings, accounting)?;
-                        if !observe {
-                            retire_name_bytes(&mut names.custody, accounting, copied_bytes)?;
+                        if pending.value.is_empty() {
+                            continue;
                         }
-                    }
-                    if pending.value.is_empty() {
-                        continue;
-                    }
-                    file_ids.value.clear();
-                    file_ids
-                        .value
-                        .extend(pending.value.iter().map(|binding| binding.file_id));
-                    let (records, records_guard) =
-                        crate::kernel::file_table::lookup_file_records_async_with_accounting(
-                            &cache,
-                            generation.file_table,
-                            &file_ids.value,
-                            limits,
-                            accounting,
-                            cancellation,
-                            data_custody,
-                        )
-                        .await?;
-                    let records = ReadOwned {
-                        value: records,
-                        custody: records_guard,
-                    };
-                    for (binding, record) in pending.value.iter().zip(records.value.iter().copied())
-                    {
-                        let record = record.ok_or(PathLookupError::KindMismatch)?;
-                        if record.kind != binding.kind {
-                            return Err(PathLookupError::KindMismatch.into());
-                        }
-                        let next_depth = depth + 1;
-                        if next_depth == paths.get(binding.path_index).depth() {
-                            if observe && capture_terminal {
-                                let expected =
+                        file_ids.value.clear();
+                        file_ids
+                            .value
+                            .extend(pending.value.iter().map(|binding| binding.file_id));
+                        let (records, records_guard) =
+                            crate::kernel::file_table::lookup_file_records_async_with_accounting(
+                                &cache,
+                                generation.file_table,
+                                &file_ids.value,
+                                limits,
+                                accounting,
+                                cancellation,
+                                data_custody,
+                            )
+                            .await?;
+                        let records = ReadOwned {
+                            value: records,
+                            custody: records_guard,
+                        };
+                        for (binding, record) in
+                            pending.value.iter().zip(records.value.iter().copied())
+                        {
+                            let record = record.ok_or(PathLookupError::KindMismatch)?;
+                            if record.kind != binding.kind {
+                                return Err(PathLookupError::KindMismatch.into());
+                            }
+                            let next_depth = depth + 1;
+                            if next_depth == paths.get(binding.path_index).depth() {
+                                if observe && capture_terminal {
+                                    let expected =
                                 crate::kernel::probe::capture_file_record_state_with_accounting(
                                     record,
                                     accounting,
                                     Some(cancellation),
                                     data_custody,
                                 )?;
-                                dependencies.value.push(Dependency {
-                                    region: DependencyRegion::FileRecord(record.file_id),
-                                    expected,
-                                });
+                                    dependencies.value.push(Dependency {
+                                        region: DependencyRegion::FileRecord(record.file_id),
+                                        expected,
+                                    });
+                                }
+                                entries[binding.path_index] = PathBatchEntry {
+                                    record: Some(record),
+                                    parent: current.value[binding.path_index],
+                                    resolved_components: usize_to_u64(next_depth),
+                                };
+                                done.value[binding.path_index] = 1;
+                                current.value[binding.path_index] = None;
+                            } else {
+                                current.value[binding.path_index] = Some(record);
                             }
-                            entries.value[binding.path_index] = PathBatchEntry {
-                                record: Some(record),
-                                parent: current.value[binding.path_index],
-                                resolved_components: usize_to_u64(next_depth),
-                            };
-                            done.value[binding.path_index] = 1;
-                            current.value[binding.path_index] = None;
-                        } else {
-                            current.value[binding.path_index] = Some(record);
                         }
+                        drop_slots(records, accounting)?;
                     }
-                    drop_slots(records, accounting)?;
-                }
-                if done.value.contains(&0) {
-                    return Err(PathLookupError::KindMismatch.into());
+                    if done.value.contains(&0) {
+                        return Err(PathLookupError::KindMismatch.into());
+                    }
                 }
                 let retained_allocation_bytes = usize_to_u64(entries.value.capacity())
                     .checked_mul(size_of::<PathBatchEntry>() as u64)
