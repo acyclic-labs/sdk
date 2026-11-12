@@ -250,7 +250,7 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
 }
 
 #[tokio::test]
-async fn transport_identity_follows_without_any_authorization() -> tests::TestResult {
+async fn request_metadata_reaches_unary_sessions_and_resumed_streams() -> tests::TestResult {
     use futures::StreamExt as _;
     use wire::stream_service_server::StreamServiceServer;
     let memory = Arc::new(crate::MemoryStream::default());
@@ -271,6 +271,7 @@ async fn transport_identity_follows_without_any_authorization() -> tests::TestRe
                 tokio::spawn(async move {
                     // Both services observe every RPC's metadata.
                     let observe = move |request: Request<()>| {
+                        assert_eq!(request.metadata().get("x-cloud-account").unwrap(), "account-fixture");
                         admitted.fetch_add(1, Ordering::SeqCst);
                         if request.metadata().contains_key("authorization") {
                             seen.fetch_add(1, Ordering::SeqCst);
@@ -308,11 +309,24 @@ async fn transport_identity_follows_without_any_authorization() -> tests::TestRe
         let home = home.clone();
         Box::pin(async move { Ok(home) })
     });
-    let client = Arc::new(Client::from_authenticated_channel(
+    let client = Client::from_authenticated_channel(
         channel,
         CredentialProvider::transport_identity(),
         route,
-    ));
+    );
+    for (key, value) in [
+        ("invalid key", "value"),
+        ("x-data-bin", "value"),
+        ("x-data", "bad\nvalue"),
+        ("x-data", "\u{e9}"),
+    ] {
+        assert!(matches!(
+            client.clone().with_request_metadata([(key, value)]),
+            Err(ConnectError::InvalidMetadata)
+        ));
+    }
+    let client = Arc::new(client.with_request_metadata([("x-cloud-account", "account-fixture")])?);
+    client.inspect_idempotency(IdempotencyKey::unique()).await?;
     // The memory server admits sessions in-band; a platform server admits
     // trust paths by the channel's transport identity instead.
     client
@@ -336,6 +350,20 @@ async fn transport_identity_follows_without_any_authorization() -> tests::TestRe
         .map_err(|error| format!("record: {error:?}"))?;
     assert_eq!(first.value.as_ref(), b"record");
     assert_eq!(tail, 1);
+    drop(records);
+    crate::Stream::new(memory.clone(), path)?
+        .append("resumed", IdempotencyKey::unique())
+        .await?;
+    let mut resumed = source.follow(path, 1).await?;
+    assert_eq!(
+        resumed
+            .next()
+            .await
+            .expect("resumed record")?
+            .value
+            .as_ref(),
+        b"resumed"
+    );
     assert!(requests.load(Ordering::SeqCst) > 0);
     assert_eq!(headers.load(Ordering::SeqCst), 0);
     // Negative control: a bearer client over the same server is observed.

@@ -50,15 +50,17 @@ impl Client {
                     return crate::session::Client::connector(
                         self.channel.clone(),
                         self.authorization.clone(),
+                        self.metadata.clone(),
                         self.credential.clone(),
                         connect.clone(),
                         crate::query_sync::Arc::clone(&self.revisions),
                     )
                     .into_pool();
                 }
-                crate::session::Client::open(
+                crate::session::Client::open_with_metadata(
                     self.channel.clone(),
                     self.authorization.clone(),
+                    self.metadata.clone(),
                     self.credential.clone(),
                     self.session_ca.clone(),
                     self.session_verifier.clone(),

@@ -8,7 +8,6 @@ use futures::{
 };
 use std::future::Future as _;
 use tonic::{
-    Request,
     metadata::{Ascii, MetadataValue},
     transport::Channel as TransportChannel,
 };
@@ -16,6 +15,7 @@ use tonic::{
 struct Grpc {
     channel: TransportChannel,
     authorization: Option<MetadataValue<Ascii>>,
+    metadata: grpc::RequestMetadata,
     credential: Option<grpc::CredentialProvider>,
 }
 
@@ -99,14 +99,30 @@ impl futures::Stream for Input {
     }
 }
 
+#[cfg(test)]
 pub(super) fn endpoint(
     channel: TransportChannel,
     authorization: Option<MetadataValue<Ascii>>,
     credential: Option<grpc::CredentialProvider>,
 ) -> Endpoint {
+    endpoint_with_metadata(
+        channel,
+        authorization,
+        grpc::RequestMetadata::default(),
+        credential,
+    )
+}
+
+pub(super) fn endpoint_with_metadata(
+    channel: TransportChannel,
+    authorization: Option<MetadataValue<Ascii>>,
+    metadata: grpc::RequestMetadata,
+    credential: Option<grpc::CredentialProvider>,
+) -> Endpoint {
     std::sync::Arc::new(Grpc {
         channel,
         authorization,
+        metadata,
         credential,
     })
 }
@@ -136,21 +152,17 @@ impl transport::Transport for Grpc {
             } else {
                 (None, None)
             };
-            let mut request = Request::new(Input {
-                source,
-                lease: lease.clone(),
-                admission: None,
-                failed,
-                ended: false,
-            });
-            if let Some(lease) = &lease {
-                request.extensions_mut().insert(lease.clone());
-            }
-            if let Some(authorization) = authorization {
-                request
-                    .metadata_mut()
-                    .insert("authorization", authorization);
-            }
+            let request = self.metadata.request(
+                Input {
+                    source,
+                    lease: lease.clone(),
+                    admission: None,
+                    failed,
+                    ended: false,
+                },
+                authorization,
+                lease.clone(),
+            );
             let mut service = wire::stream_session_service_client::StreamSessionServiceClient::new(
                 acyclic_auth::channel::guard(self.channel.clone()),
             );
@@ -183,9 +195,30 @@ impl transport::Transport for Grpc {
 }
 
 impl Client {
+    #[cfg(test)]
     pub(crate) fn open(
         channel: TransportChannel,
         authorization: Option<MetadataValue<Ascii>>,
+        credential: Option<grpc::CredentialProvider>,
+        ca: Option<std::sync::Arc<[u8]>>,
+        verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
+        revisions: crate::query_sync::Arc<crate::RevisionTracker>,
+    ) -> Self {
+        Self::open_with_metadata(
+            channel,
+            authorization,
+            grpc::RequestMetadata::default(),
+            credential,
+            ca,
+            verifier,
+            revisions,
+        )
+    }
+
+    pub(crate) fn open_with_metadata(
+        channel: TransportChannel,
+        authorization: Option<MetadataValue<Ascii>>,
+        metadata: grpc::RequestMetadata,
         credential: Option<grpc::CredentialProvider>,
         ca: Option<std::sync::Arc<[u8]>>,
         verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
@@ -202,7 +235,14 @@ impl Client {
                 .map_err(transport::Failure::from)
             })
         });
-        Self::connector(channel, authorization, credential, connect, revisions)
+        Self::connector(
+            channel,
+            authorization,
+            metadata,
+            credential,
+            connect,
+            revisions,
+        )
     }
 
     #[cfg(test)]
@@ -215,6 +255,7 @@ impl Client {
         Self::connector(
             channel,
             authorization,
+            grpc::RequestMetadata::default(),
             credential,
             connect,
             Default::default(),
@@ -224,16 +265,30 @@ impl Client {
     pub(crate) fn connector(
         channel: TransportChannel,
         authorization: Option<MetadataValue<Ascii>>,
+        metadata: grpc::RequestMetadata,
         credential: Option<grpc::CredentialProvider>,
         connect: Connect,
         revisions: crate::query_sync::Arc<crate::RevisionTracker>,
     ) -> Self {
-        let home = endpoint(channel, authorization.clone(), credential.clone());
+        let home = endpoint_with_metadata(
+            channel,
+            authorization.clone(),
+            metadata.clone(),
+            credential.clone(),
+        );
         let connect: std::sync::Arc<transport::Connect> = std::sync::Arc::new(move |node| {
             let connect = connect.clone();
             let authorization = authorization.clone();
+            let metadata = metadata.clone();
             let credential = credential.clone();
-            Box::pin(async move { Ok(endpoint(connect(node).await?, authorization, credential)) })
+            Box::pin(async move {
+                Ok(endpoint_with_metadata(
+                    connect(node).await?,
+                    authorization,
+                    metadata,
+                    credential,
+                ))
+            })
         });
         Self::tracking(
             home,
