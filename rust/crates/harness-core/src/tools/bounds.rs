@@ -36,7 +36,7 @@ pub(super) fn operands(
 /// Other results proceed intact to the shared model projection and spill path.
 pub(super) fn result(name: &str, result: ToolResult, maximum: u64) -> Result<ToolResult> {
     if name == super::shell::PLATFORM.name {
-        // The complete presentation, including its retained-log footer, fits
+        // The complete presentation, including its retained-log notice, fits
         // the shared window so it never needs a second output spill.
         let maximum = maximum.min(crate::tool::output::VIEW_BYTES);
         if let Value::Object(fields) = result.value {
@@ -68,7 +68,7 @@ fn shell(mut fields: Map<String, Value>, maximum: usize) -> Result<Value> {
         .and_then(Value::as_u64)
         .unwrap_or_default();
     // Reserve the largest omission counter up front; shortening output cannot
-    // grow its footer past this allowance. The result is bounded by its actual
+    // grow its notice past this allowance. The result is bounded by its actual
     // text projection rather than a second JSON rendering of canonical fields.
     fields.insert("omitted_bytes".into(), Value::from(u64::MAX));
     let base = super::shell::presentation(&fields);

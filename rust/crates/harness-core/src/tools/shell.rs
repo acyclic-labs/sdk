@@ -125,20 +125,16 @@ pub(super) fn presentation(fields: &serde_json::Map<String, serde_json::Value>) 
         .get("stderr")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    let mut text = format!("Exit code: {exit}\n{stdout}{stderr}");
-    if let Some(message) = fields
-        .get("stop")
-        .and_then(|stop| stop.get("message"))
-        .and_then(serde_json::Value::as_str)
-    {
-        let _ = write!(text, "\n{message}");
-    }
+    let mut text = format!("Exit code: {exit}");
     if let Some(omitted) = fields
         .get("omitted_bytes")
         .and_then(serde_json::Value::as_u64)
         .filter(|omitted| *omitted > 0)
     {
-        let _ = write!(text, "\n[{omitted} bytes omitted from this preview");
+        let _ = write!(
+            text,
+            "\n[{omitted} earlier bytes omitted; stdout tail then stderr tail follow"
+        );
         if let Some(spill) = fields.get("spill").and_then(serde_json::Value::as_str) {
             let _ = write!(text, "; complete output: {spill}");
         } else if let (Some(volume), Some(directory)) = (
@@ -153,6 +149,14 @@ pub(super) fn presentation(fields: &serde_json::Map<String, serde_json::Value>) 
             );
         }
         text.push(']');
+    }
+    let _ = write!(text, "\n{stdout}{stderr}");
+    if let Some(message) = fields
+        .get("stop")
+        .and_then(|stop| stop.get("message"))
+        .and_then(serde_json::Value::as_str)
+    {
+        let _ = write!(text, "\n{message}");
     }
     text
 }
