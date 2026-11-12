@@ -61,11 +61,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> AgentInter
         }
         let head = self.head().await?;
         for (path, file) in files {
-            let grant = ContentGrant::verify_read(
-                &self.grant.copy_verifier(&mut None)?,
-                self.grant.policy_scope(),
-                &file,
-            )?;
+            let grant =
+                ContentGrant::verify_read(self.grant.verifier(), self.grant.policy_scope(), &file)?;
             let original = self
                 .host
                 .read_content(&file, &grant, file.descriptor().byte_length(), None)
