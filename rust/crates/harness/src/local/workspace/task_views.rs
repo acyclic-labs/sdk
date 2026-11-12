@@ -316,7 +316,15 @@ impl LocalWorkspace {
                     workspace.mounted = Some(mounted);
                 }
                 WorkspaceMounting::Physical => {
-                    workspace.path = workspace.physical_task_source(selected).await?;
+                    // An auxiliary binding does not fork its primary volume.
+                    // Reuse the admitted checkout when the project is unchanged;
+                    // distinct project forks still need their own materialization.
+                    workspace.path =
+                        if workspace.view().workspace().id() == self.view().workspace().id() {
+                            self.path.clone()
+                        } else {
+                            workspace.physical_task_source(selected).await?
+                        };
                     workspace.identity =
                         acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
                 }

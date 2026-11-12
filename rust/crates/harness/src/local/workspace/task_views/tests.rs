@@ -99,6 +99,21 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         ));
     }
     std::fs::write(second.path.join("shared.txt"), b"shared").map_err(storage)?;
+    assert_eq!(
+        second.path, workspace.path,
+        "primary binding copied the admitted checkout"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("shared.txt")).map_err(storage)?,
+        b"shared",
+        "a bound task's write did not reach the admitted checkout"
+    );
+    assert!(
+        !workspace
+            .physical_task_path(workspace.view().workspace().id())
+            .exists(),
+        "an unchanged primary volume acquired a redundant physical copy"
+    );
     release
         .send(())
         .map_err(|_| Error::Conflict("physical binding owner stopped".into()))?;
