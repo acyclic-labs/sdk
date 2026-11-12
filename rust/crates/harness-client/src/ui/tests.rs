@@ -277,7 +277,7 @@ async fn ui_default_projection() -> TestResult {
         listing_limit: 2,
         ..ReaderPolicy::default()
     })?;
-    let mut driver = Driver::new(memory);
+    let mut driver = Driver::new(Arc::clone(&memory));
     driver.attach(&mut reader, 0);
     let index = UiPath::new("index.md")?;
     wait(
@@ -412,6 +412,51 @@ async fn ui_default_projection() -> TestResult {
         view.affected(Affected::Status),
         &["index.md", "status.md", "glyph"]
     );
+    // A real followed record supplies multibyte text. Byte ranges may split a
+    // scalar, cross formatting writes, be reversed, or extend beyond EOF.
+    reader.set_follow(selected.status()?, true);
+    append(
+        &memory,
+        selected.status()?,
+        status(Phase::WaitingUser {
+            path: "réponse.md".into(),
+        })
+        .encode()?,
+    )
+    .await?;
+    let tail = memory.head(selected.status()?).await?.tail;
+    wait(&mut reader, &mut driver, Vec::new(), |r| {
+        let stream = selected.status().expect("status");
+        r.cache().tail(&stream) == Some(tail) && r.cache().record(&stream, tail - 1).is_some()
+    })
+    .await;
+    let cut = ReaderCut {
+        reader: &reader,
+        agent: &selected,
+        file: &lookup,
+    };
+    let path = UiPath::new("status.md")?;
+    let expected = "Waiting for your reply: [réponse.md](réponse.md)\n";
+    assert_eq!(view.project(&cut, &path)?, expected);
+    for from in 0..expected.len() + 2 {
+        for to in 0..expected.len() + 2 {
+            let start = from.min(expected.len());
+            let end = to.min(expected.len()).max(start);
+            assert_eq!(
+                view.bytes(&cut, &path, from..to)?,
+                &expected.as_bytes()[start..end]
+            );
+        }
+    }
+    let mut storage = [0; 1];
+    let error = view
+        .write(
+            &cut,
+            &path,
+            &mut std::io::Cursor::new(storage.as_mut_slice()),
+        )
+        .expect_err("caller output capacity must be respected");
+    assert!(matches!(error, Error::Output(error) if error.kind() == std::io::ErrorKind::WriteZero));
     Ok(())
 }
 

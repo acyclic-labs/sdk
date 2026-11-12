@@ -1389,11 +1389,13 @@ where
                 };
                 let provider = agents.provider();
                 let request = HeadsRequest {
+                    at: None,
                     retained: Default::default(),
                     durable_through: None,
                     projection: HeadProjection::Watermarks,
                     paths: Default::default(),
                     children: Some(ChildrenPageRequest {
+                        offset: 0,
                         tail_stream: None,
                         parent: Some(parent),
                         after,
@@ -1458,6 +1460,7 @@ where
                     // Observe its actual canonical path, at or after the page's
                     // creation cut, in one bounded view for the returned rows.
                     let request = HeadsRequest {
+                        at: None,
                         retained: Default::default(),
                         durable_through: None,
                         projection: HeadProjection::History,

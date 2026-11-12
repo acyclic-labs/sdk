@@ -144,7 +144,7 @@ where
         // The normal repository entry point validates both the current view
         // identity and the operation lease before exposing its branch catalog.
         let catalog = repository
-            .run(GitCommand::Branch { create: None }, current, self)
+            .run(GitCommand::Branch { create: None }, current.clone(), self)
             .await
             .map_err(super::errors::run_error::<S>)?;
         let GitCommandOutput::Branches { branches, .. } = catalog else {

@@ -4,6 +4,221 @@ use futures::StreamExt as _;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[tokio::test]
+async fn input_revisions_follow_only_own_history_membership_and_grafts_across_replay() -> Result {
+    async fn put(provider: &dyn crate::StreamProvider, path: &str) -> Result<u64> {
+        match provider
+            .append(AppendRequest {
+                path: StreamPath::new(path)?,
+                records: vec![Bytes::from_static(b"input").into()],
+                if_tail: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await?
+        {
+            crate::AppendOutcome::Committed(receipt) => Ok(receipt.revision.index),
+            _ => Err("unconditional append conflicted".into()),
+        }
+    }
+    async fn observe(provider: &dyn crate::StreamProvider, paths: &[&str]) -> Result<crate::Heads> {
+        Ok(provider
+            .heads(crate::HeadsRequest {
+                at: None,
+                paths: paths
+                    .iter()
+                    .map(StreamPath::new)
+                    .collect::<std::result::Result<_, _>>()?,
+                retained: Default::default(),
+                durable_through: None,
+                projection: crate::HeadProjection::Tail,
+                children: None,
+                limit: paths.len().try_into()?,
+                at_least: Default::default(),
+            })
+            .await?)
+    }
+    fn indexes(view: &crate::Heads) -> Vec<Option<u64>> {
+        view.heads
+            .iter()
+            .map(|head| head.as_ref().map(|head| head.changed_at))
+            .collect()
+    }
+    for local in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let memory = Arc::new(crate::MemoryStream::default());
+        let provider: Arc<dyn crate::StreamProvider> = if local {
+            Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?)
+        } else {
+            memory.clone()
+        };
+        let created = put(&*provider, "stable/source").await?;
+        let initial = observe(&*provider, &["stable", "stable/source"]).await?;
+        assert_eq!(indexes(&initial), vec![Some(created); 2]);
+        let membership = put(&*provider, "stable/source/kids/a/status").await?;
+        let paths = [
+            "stable/source",
+            "stable/source/kids",
+            "stable/source/kids/a/status",
+        ];
+        let before = observe(&*provider, &paths).await?;
+        assert_eq!(indexes(&before), vec![Some(membership); 3]);
+        let progress = put(&*provider, paths[2]).await?;
+        let after = observe(&*provider, &paths).await?;
+        assert_eq!(
+            indexes(&after),
+            vec![Some(membership), Some(membership), Some(progress)]
+        );
+        put(&*provider, "unrelated/volume/commit").await?;
+        assert_eq!(observe(&*provider, &paths).await?.heads, after.heads);
+        let added = put(&*provider, "stable/source/kids/b/status").await?;
+        let source = observe(&*provider, &paths).await?;
+        assert_eq!(
+            indexes(&source),
+            vec![Some(membership), Some(added), Some(progress)]
+        );
+        let fork = provider
+            .fork(crate::ForkRequest {
+                source: StreamPath::new("stable/source")?,
+                destination: StreamPath::new("stable/child")?,
+                at_tail: Some(0),
+                exclude: Vec::new(),
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await?;
+        let children = [
+            "stable/child",
+            "stable/child/kids",
+            "stable/child/kids/a/status",
+        ];
+        let inherited = observe(&*provider, &children).await?;
+        assert_eq!(indexes(&inherited), vec![Some(fork.revision.index); 3]);
+        assert_eq!(observe(&*provider, &paths).await?.heads, source.heads);
+        let child_progress = put(&*provider, children[2]).await?;
+        let child_member = put(&*provider, "stable/child/kids/c/status").await?;
+        let child = observe(&*provider, &children).await?;
+        assert_eq!(
+            indexes(&child),
+            vec![
+                Some(fork.revision.index),
+                Some(child_member),
+                Some(child_progress)
+            ]
+        );
+        let nested = provider
+            .fork(crate::ForkRequest {
+                source: StreamPath::new("stable/source")?,
+                destination: StreamPath::new("stable/child/grandchild")?,
+                at_tail: Some(0),
+                exclude: Vec::new(),
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await?;
+        let selected = [
+            "stable/child/grandchild/kids/a/status",
+            "stable/child/kids",
+            "missing",
+        ];
+        let pinned = observe(&*provider, &selected).await?;
+        assert_eq!(
+            indexes(&pinned),
+            vec![Some(nested.revision.index), Some(child_member), None]
+        );
+        put(&*provider, paths[2]).await?;
+        assert_eq!(observe(&*provider, &selected).await?.heads, pinned.heads);
+        // The exact same derived input indexes survive both snapshot restore
+        // and the Local log/reopen path; no persisted-format side table exists.
+        let reopened: Arc<dyn crate::StreamProvider> = if local {
+            drop(provider);
+            Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?)
+        } else {
+            let encoded = memory.encode_state().await;
+            let restored = crate::MemoryStream::default();
+            restored.restore_state(&encoded).await?;
+            Arc::new(restored)
+        };
+        let replayed = observe(&*reopened, &selected).await?;
+        assert_eq!(replayed.heads, pinned.heads);
+        let late = reopened
+            .head(StreamPath::new(paths[2])?)
+            .await?
+            .last
+            .ok_or("missing latest row")?;
+        let historical_request = crate::HeadsRequest {
+            at: Some(crate::Revision {
+                index: before.snapshot.index,
+                ..replayed.snapshot.clone()
+            }),
+            at_least: crate::RevisionCut::of(replayed.applied.clone()),
+            paths: [
+                StreamPath::new(paths[2])?,
+                StreamPath::new("stable/source/kids/b/status")?,
+            ]
+            .into_iter()
+            .collect(),
+            retained: [crate::RetainedRecord {
+                commit_id: late.commit_id,
+                path: StreamPath::new(paths[2])?,
+                sequence: late.sequence,
+            }]
+            .into(),
+            children: Some(crate::ChildrenPageRequest {
+                parent: Some(StreamPath::new("stable/source/kids")?),
+                after: None,
+                offset: 0,
+                hierarchy_version: None,
+                limit: 1,
+                tail_stream: Some(StreamPath::new("status")?),
+            }),
+            limit: 4,
+            projection: crate::HeadProjection::Tail,
+            durable_through: None,
+        };
+        let historical = reopened.heads(historical_request.clone()).await?;
+        historical.validate_for(&historical_request)?;
+        assert_eq!(historical.snapshot.index, before.snapshot.index);
+        assert_eq!(historical.applied, replayed.applied);
+        assert_eq!(historical.heads[0], before.heads[2]);
+        assert!(historical.heads[1].is_none());
+        assert!(
+            historical.retained[0].record.is_none(),
+            "a future publication leaked into an old cut"
+        );
+        let page = historical
+            .children
+            .as_ref()
+            .ok_or("missing old membership")?;
+        assert_eq!(page.children.len(), 1);
+        assert_eq!(page.children[0].path.as_str(), "stable/source/kids/a");
+        assert_eq!(page.children[0].tail, Some(1));
+        assert!(page.next_after.is_none());
+        let mut foreign = historical_request.clone();
+        foreign.at.as_mut().ok_or("cut")?.incarnation ^= 1;
+        assert_eq!(
+            reopened.heads(foreign).await,
+            Err(StreamError::RevisionForeign)
+        );
+        let mut future = historical_request;
+        future.at.as_mut().ok_or("cut")?.index = replayed.applied.index + 1;
+        assert_eq!(reopened.heads(future).await, Err(StreamError::Unavailable));
+        let wire = crate::wire_codec::heads_to_wire(replayed.clone())?;
+        assert_eq!(
+            crate::wire_codec::heads_from_response(wire.clone())?,
+            replayed
+        );
+        let mut impossible = wire;
+        impossible.heads[0]
+            .head
+            .as_mut()
+            .ok_or("missing head")?
+            .changed_at = replayed.snapshot.index + 1;
+        assert_eq!(
+            crate::wire_codec::heads_from_response(impossible),
+            Err(StreamError::InvalidResponse)
+        );
+    }
+    Ok(())
+}
+
 fn path() -> StreamPath {
     StreamPath::new("revisions").unwrap()
 }

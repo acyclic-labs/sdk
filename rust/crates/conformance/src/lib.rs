@@ -111,6 +111,7 @@ mod tests {
 
         let stream_children = stream_provider
             .children_page(acyclic_stream::ChildrenPageRequest {
+                offset: 0,
                 tail_stream: None,
                 parent: None,
                 limit: 8,

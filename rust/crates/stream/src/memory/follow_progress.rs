@@ -11,7 +11,7 @@ impl MemoryStream {
         (
             crate::Revision,
             crate::StreamSelection,
-            watch::Receiver<u64>,
+            crate::change::Subscription,
             HistoryCursor,
         ),
         StreamError,
@@ -22,11 +22,9 @@ impl MemoryStream {
         let selection = follow_selection(snapshot.as_ref(), from, anchor, bootstrap_head, until)?;
         let (from, anchor) = (selection.from, selection.preceding);
         let tail = snapshot.as_ref().map_or(0, |path| path.tail);
-        let registration = state
-            .signals
-            .subscribe_with(path.clone(), || Signals::new(tail))?;
+        let registration = state.signals.subscribe_with(path.clone(), Signals::new)?;
         let signals = registration.value();
-        let changed = signals.changed.subscribe();
+        let changed = signals.changed.subscribe()?;
         drop(state);
         let mut cursor =
             HistoryCursor::initial(snapshot.as_ref(), from, anchor, when_absent).await?;
@@ -171,7 +169,7 @@ struct MemoryProgress {
     cursor: HistoryCursor,
     anchor: Option<CommitId>,
     filter: crate::FollowFilter,
-    changed: watch::Receiver<u64>,
+    changed: crate::change::Subscription,
 }
 impl crate::snapshot::Snapshot for Box<MemoryProgress> {
     type Output = Option<crate::FollowUpdate>;

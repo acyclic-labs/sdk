@@ -24,19 +24,19 @@ impl GitCompatState {
             .as_ref()
             .and_then(|bisect| bisect.current)
             .or(current.head);
-        let tree = head.and_then(|id| self.commits.get(&id).map(|commit| commit.workspace_tree));
+        let tree = head.and_then(|id| self.commits.get(&id).map(|commit| &commit.workspace_tree));
         Some(GitStatus {
             branch: current.name.clone(),
             head,
-            workspace,
             dirty: match tree {
-                Some(head) if head == workspace => GitDirtyState::Clean,
+                Some(head) if head == &workspace => GitDirtyState::Clean,
                 Some(GitTreeRef::Lazy(_)) | None if matches!(workspace, GitTreeRef::Lazy(_)) => {
                     GitDirtyState::Unknown
                 }
                 _ => GitDirtyState::Dirty,
             },
             all_changes_staged: true,
+            workspace,
         })
     }
 }

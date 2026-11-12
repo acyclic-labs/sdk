@@ -55,19 +55,21 @@ impl MemoryStream {
         StreamError,
     > {
         let state = self.state.write().await;
-        let snapshot = state.paths.get(path).cloned();
+        let snapshot = self.observe_follow(|| state.paths.get(path).cloned())?;
         let revision = self.revisions.at(state.decision);
         let selection = follow_selection(snapshot.as_ref(), from, anchor, bootstrap_head, until)?;
         let (from, anchor) = (selection.from, selection.preceding);
         let tail = snapshot.as_ref().map_or(0, |path| path.tail);
-        let registration = state
-            .signals
-            .subscribe_with(path.clone(), || Signals::new(tail))?;
+        let registration = state.signals.subscribe_with(path.clone(), Signals::new)?;
         let signals = registration.value();
         let interest = crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)?;
         drop(state);
         let mut cursor =
             HistoryCursor::initial(snapshot.as_ref(), from, anchor, when_absent).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            cursor = cursor.with_native_work(self.work.clone());
+        }
         cursor.registration = Some(registration);
         cursor.end = selection.end;
         Ok((revision, selection, interest, cursor))
@@ -82,7 +84,7 @@ impl MemoryStream {
     ) -> Result<Option<Record>, StreamError> {
         if cursor.end.is_none() {
             let state = self.state.read().await;
-            let snapshot = state.paths.get(path).cloned();
+            let snapshot = cursor.observe(|| state.paths.get(path).cloned())?;
             drop(state);
             let path = snapshot.as_ref();
             if !cursor.observe_creation(path, *anchor).await? {
@@ -139,6 +141,17 @@ impl MemoryStream {
             )
             .await?;
         let anchor = selection.preceding;
+        #[cfg(not(target_arch = "wasm32"))]
+        let allocation = self
+            .work
+            .as_ref()
+            .map(|work| {
+                work.record(acyclic_native_runtime::ReadAllocation::new(
+                    &work.meter,
+                    std::mem::size_of::<MemoryFollow>(),
+                ))
+            })
+            .transpose()?;
         let state = Box::new(MemoryFollow {
             provider: self.clone(),
             path,
@@ -147,46 +160,58 @@ impl MemoryStream {
             cursor,
             anchor,
             done: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            _allocation: allocation,
         });
-        Ok(crate::Opened::new(
-            snapshot,
-            selection,
-            stream::unfold(state, |mut state| async move {
-                if state.done || state.cursor.finished() {
-                    return None;
-                }
-                let result = loop {
+        let cursor = stream::unfold(state, |mut state| async move {
+            if state.done || state.cursor.finished() {
+                return None;
+            }
+            let result = loop {
+                #[cfg(loom)]
+                let retain_pending = state.provider.retain_pending_read;
+                let (next, record) = crate::snapshot::read(
+                    state,
                     #[cfg(loom)]
-                    let retain_pending = state.provider.retain_pending_read;
-                    let (next, record) = crate::snapshot::read(
-                        state,
-                        #[cfg(loom)]
-                        retain_pending,
-                    )
-                    .await;
-                    state = next;
-                    match record {
-                        Ok(Some(record)) => break Ok(crate::FollowUpdate::Record(record)),
-                        Err(error) => break Err(error),
-                        Ok(None) => {
-                            if state.cursor.finished() {
-                                return None;
-                            }
-                            if state.interest.changed.changed().await.is_err() {
-                                break Err(if state.anchor.is_some() {
-                                    StreamError::PrefixNotRetained
-                                } else {
-                                    StreamError::Unavailable
-                                });
-                            }
+                    retain_pending,
+                )
+                .await;
+                state = next;
+                match record {
+                    Ok(Some(record)) => break Ok(crate::FollowUpdate::Record(record)),
+                    Err(error) => break Err(error),
+                    Ok(None) => {
+                        if state.cursor.finished() {
+                            return None;
+                        }
+                        if state.interest.changed.changed().await.is_err() {
+                            break Err(if state.anchor.is_some() {
+                                StreamError::PrefixNotRetained
+                            } else {
+                                StreamError::Unavailable
+                            });
                         }
                     }
-                };
-                state.done = result.is_err();
-                Some((result, state))
-            })
-            .boxed(),
-        ))
+                }
+            };
+            state.done = result.is_err();
+            Some((result, state))
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let cursor = crate::native::boxed_stream(cursor, self.work.as_ref())?;
+        #[cfg(target_arch = "wasm32")]
+        let cursor = cursor.boxed();
+        Ok(crate::Opened::new(snapshot, selection, cursor))
+    }
+}
+
+impl MemoryStream {
+    fn observe_follow<T>(&self, lookup: impl FnOnce() -> T) -> Result<T, StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            return work.record(inspect(&work.meter, lookup));
+        }
+        Ok(lookup())
     }
 }
 
@@ -198,9 +223,21 @@ struct MemoryFollow {
     cursor: HistoryCursor,
     anchor: Option<CommitId>,
     done: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 impl crate::snapshot::Snapshot for Box<MemoryFollow> {
     type Output = Option<Record>;
+    fn caller_retains_pending(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.provider.work.is_some()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
+    }
     async fn read(&mut self) -> Result<Self::Output, StreamError> {
         let state = &mut **self;
         state

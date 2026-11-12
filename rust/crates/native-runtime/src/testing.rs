@@ -407,6 +407,14 @@ pub(crate) fn enter_task_poll<T>(poll: impl FnOnce() -> T) -> T {
     CURRENT.sync_scope(Context::simulation(), poll)
 }
 
+pub(crate) fn accept_retained_future() -> Option<Active> {
+    Context::simulation().map(|context| context.accept("task"))
+}
+
+pub(crate) fn poll_retained_future<T>(active: Option<&Active>, poll: impl FnOnce() -> T) -> T {
+    CURRENT.sync_scope(active.map(|active| active.0.clone()), poll)
+}
+
 pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
 where
     F: Future + Send + 'static,

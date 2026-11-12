@@ -47,6 +47,7 @@ impl<P: StreamProvider + ?Sized + 'static> NameIndex<P> {
     /// rather than resolving a different name.
     pub async fn resolve(&self, name: &str) -> Result<Option<AgentPath>, Error> {
         let request = HeadsRequest {
+            at: None,
             paths: [self.path(name)?].into_iter().collect(),
             retained: Default::default(),
             durable_through: None,

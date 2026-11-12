@@ -80,7 +80,7 @@ impl<
                     .await?;
             }
             LazyLookup::Source { source, node } => {
-                self.populate_source_node(transaction, path, *source, *node, maximum, ctx)
+                self.populate_source_node(transaction, path, source.clone(), *node, maximum, ctx)
                     .await?;
             }
         }
@@ -224,8 +224,8 @@ impl<
                         let text = Owned::new(text, allocation, bytes);
                         let result =
                             async {
-                                let source = self.source.reference();
-                                match self.source_lookup(source, &text.value, ctx).await? {
+                                let source = self.source_reference(ctx).await?;
+                                match self.source_lookup(&source, &text.value, ctx).await? {
                                     Some(node) if node.kind == SourceNodeKind::Directory => {
                                         self.populate_source_node(
                                             transaction,

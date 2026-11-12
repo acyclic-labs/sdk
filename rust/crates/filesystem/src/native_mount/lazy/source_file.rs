@@ -206,10 +206,14 @@ where
                 }
                 let mut accounting =
                     crate::kernel::KernelAccounting::native(work, work.cancellation());
-                let source = self.lazy.source_reference();
+                let source = self
+                    .lazy
+                    .source_reference(&mut accounting)
+                    .await
+                    .map_err(lazy_error)?;
                 let node = match self
                     .lazy
-                    .source_lookup(source, &self.path, &mut accounting)
+                    .source_lookup(&source, &self.path, &mut accounting)
                     .await
                 {
                     Ok(node) => node,

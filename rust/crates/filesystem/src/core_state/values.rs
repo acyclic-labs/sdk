@@ -45,10 +45,16 @@ pub(super) trait Logged: Clone + Serialize + DeserializeOwned + Send + 'static {
     fn key(id: Self::Id) -> RecordKey;
     fn into_value(self) -> RecordValue;
     fn from_value(value: RecordValue) -> Option<Self>;
+    fn retain_decoded(
+        &mut self,
+        _allocation: &mut crate::NativeAllocation,
+    ) -> Result<(), LocalCoreStateStoreError> {
+        Ok(())
+    }
 }
 
 macro_rules! logged {
-    ($type:ty, $id:ty, $variant:ident, |$key:ident| $record:expr) => {
+    ($type:ty, $id:ty, $variant:ident, |$key:ident| $record:expr $(, $retain:path)?) => {
         impl Logged for $type {
             type Id = $id;
 
@@ -66,6 +72,12 @@ macro_rules! logged {
                     _ => None,
                 }
             }
+            $(fn retain_decoded(
+                &mut self,
+                allocation: &mut crate::NativeAllocation,
+            ) -> Result<(), LocalCoreStateStoreError> {
+                $retain(self, allocation)
+            })?
         }
     };
 }
@@ -118,9 +130,13 @@ logged!(ContextChildIndex, (), ChildIndex, |_id| {
 logged!(WorkspaceLineageRecord, WorkspaceId, Lineage, |id| {
     RecordKey::Lineage(id)
 });
-logged!(LazyWorkspaceState, WorkspaceId, LazyWorkspace, |id| {
-    RecordKey::LazyWorkspace(id)
-});
+logged!(
+    LazyWorkspaceState,
+    WorkspaceId,
+    LazyWorkspace,
+    |id| RecordKey::LazyWorkspace(id),
+    native_records::retain_decoded_lazy
+);
 
 /// Complete after-images of the records one commit changes; `None` records an absence.
 #[derive(Debug, Default, Deserialize)]

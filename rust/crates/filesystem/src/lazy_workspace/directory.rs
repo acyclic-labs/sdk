@@ -76,7 +76,7 @@ impl LazyDirectoryCursor {
         })();
         match phase {
             Ok(phase) => Ok(Self {
-                cut: self.cut,
+                cut: self.cut.clone(),
                 directory: owned.value,
                 phase,
                 allocation: owned.allocation,
@@ -136,14 +136,19 @@ impl<
     /// Lists one frozen authored/source cut.
     pub async fn list_directory_at_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         path: &str,
         cursor: Option<LazyDirectoryCursor>,
         maximum: u32,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryPage, bool, KernelOwnedAllocation), LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx).await?;
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        self.validate_snapshot(&cut, ctx).await?;
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
         let mut checkout = self
             .checkout(
                 crate::model::GenerationSelector::Exact(cut.authored_generation),
@@ -203,7 +208,7 @@ impl<
         let cut = LazySnapshotRef::new(
             self.workspace.id(),
             checkout.generation_id(),
-            state.source,
+            state.source.clone(),
             state.overlay,
             state.shadows,
         );
@@ -251,7 +256,7 @@ impl<
                 && let Some(authored) = authored
             {
                 used = true;
-                let source = self.source_lookup(state.source, path, ctx).await?;
+                let source = self.source_lookup(&state.source, path, ctx).await?;
                 let replaces = match source {
                     None => true,
                     Some(node) => {
@@ -283,15 +288,12 @@ impl<
                 match phase {
                     LazyDirectoryPhase::Source(cursor) => {
                         used = true;
-                        if state.source != self.source.reference() {
-                            return Err(LazyWorkspaceError::StaleSource);
-                        }
                         let bytes = std::mem::size_of::<LazyWorkspaceError>() as u64;
                         let guard = ctx.claim_owned(bytes, 1)?;
                         let mut failure =
                             Owned::new(Box::<LazyWorkspaceError>::new_uninit(), guard, bytes);
                         let fetched = accounted!(ctx, |work, cancel| self.source.list_page(
-                            state.source,
+                            state.source.clone(),
                             &directory.value,
                             cursor,
                             maximum,

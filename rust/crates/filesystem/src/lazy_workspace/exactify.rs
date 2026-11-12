@@ -30,19 +30,19 @@ impl<
             // replacement for an authored deletion that still masks them.
             _ if self.tombstoned(cut.overlay, root, ctx).await? => None,
             _ => self
-                .source_lookup(cut.source, root, ctx)
+                .source_lookup(&cut.source, root, ctx)
                 .await?
-                .map(|node| (cut.source, node)),
+                .map(|node| (cut.source.clone(), node)),
         };
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
-        let (paths, _) = self.enumerate_paths(root, cut, &state, ctx).await?;
+        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source.clone(), cut.overlay, cut.shadows);
+        let (paths, _) = self.enumerate_paths(root, &cut, &state, ctx).await?;
         let start = crate::Generation {
             workspace: self.workspace.clone(),
             id: cut.authored_generation,
             publication_closure: None,
         };
         let (generation, overlay) = self
-            .exactify_into(root, cut, paths, start, permit, ctx)
+            .exactify_into(root, &cut, paths, start, permit, ctx)
             .await?;
         if let Some((source, node)) = observation {
             let state = self.state(ctx).await?;
@@ -78,29 +78,30 @@ impl<
     /// source-derived identity that materializing any view of the cut binds,
     /// which is what a merge base of two such views needs.
     ///
-    /// A cut leaves unobserved files live, so the source as it is now is not
-    /// the cut's content: an in-place edit after the fork would read as the
-    /// base and erase itself from a merge. Only the witness's observation
-    /// pins what the forked side started from. A path it never observed, or
-    /// whose source has since changed version, has no recoverable base, and
-    /// the result is `None`. Reads stay pinned to the observed version, so a
-    /// change racing this call fails it rather than supplying a base.
+    /// A provider may be unable to retain historical bytes, so the source as
+    /// it is now is not the cut's content: an in-place edit after the fork
+    /// would read as the base and erase itself from a merge. The witness's
+    /// observation pins what the forked side started from. A path it never
+    /// observed, or whose observed version is no longer available, has no
+    /// recoverable base, and the result is `None`. Reads stay pinned to the
+    /// observed version, so a change racing this call fails it rather than
+    /// supplying a base.
     ///
     /// The scratch fork is named by the pinned cut and path set, so a retry
     /// resumes it and a different observation never reuses it.
     pub async fn exactify_cut(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         paths: &[String],
         witness: &Self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<crate::Generation<A, O>>, LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx).await?;
+        self.validate_snapshot(&cut, ctx).await?;
         let witnessed = witness.state(ctx).await?;
-        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut) {
+        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut.clone()) {
             return Ok(None);
         }
-        let live = self.source.reference();
+        let live = self.source_reference(ctx).await?;
         let mut overlay = cut.overlay;
         for path in paths {
             let Some(LazyOverlayChange::Observe { source, node, .. }) =
@@ -110,7 +111,7 @@ impl<
             };
             if node.kind != SourceNodeKind::RegularFile
                 || self
-                    .source_lookup(live, path, ctx)
+                    .source_lookup(&live, path, ctx)
                     .await?
                     .is_none_or(|current| {
                         current.version != node.version
@@ -143,7 +144,7 @@ impl<
     /// Missing original source versions refuse instead of inventing a delta.
     pub async fn exactify_observed_base(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         paths: &[String],
         witness: &Self,
         ctx: &mut KernelAccounting<'_>,
@@ -265,11 +266,11 @@ impl<
     /// authored replacement. Reuse the shared paged, accounted subtree walk.
     async fn deleted_base_paths(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         tombstones: &[(String, SourceVersion)],
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Owned<Vec<String>>, LazyWorkspaceError> {
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source.clone(), cut.overlay, cut.shadows);
         let mut paths = Owned::allocate(0, ctx)?;
         let result = async {
             let mut expanded: Option<&str> = None;
@@ -347,7 +348,7 @@ impl<
 
     async fn exactify_cut_overlay(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         paths: &[String],
         overlay: LazyOverlayId,
         ctx: &mut KernelAccounting<'_>,
@@ -355,7 +356,7 @@ impl<
         let pinned = LazySnapshotRef::new(
             cut.workspace_id,
             cut.authored_generation,
-            cut.source,
+            cut.source.clone(),
             overlay,
             cut.shadows,
         );
@@ -422,13 +423,13 @@ impl<
     pub(super) async fn exactify_into(
         &self,
         root: &str,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         mut paths: Owned<Vec<String>>,
         start: crate::Generation<A, O>,
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(crate::Generation<A, O>, LazyOverlayId), LazyWorkspaceError> {
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source.clone(), cut.overlay, cut.shadows);
         let workspace = &start.workspace;
         paths
             .value
@@ -479,7 +480,6 @@ impl<
                         .inspect_unauthored(
                             &mut transaction.checkout,
                             path,
-                            Some(cut),
                             InspectBasis {
                                 state: Some(&state),
                                 retain_pinned_observation: true,
@@ -541,7 +541,7 @@ impl<
     /// Materializes an immutable cut in a deterministic scratch fork.
     pub async fn exactify_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         destination: &str,
         key: IdempotencyKey,
         ctx: &mut KernelAccounting<'_>,
@@ -563,7 +563,7 @@ impl<
     pub(super) async fn enumerate_paths(
         &self,
         root: &str,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         state: &LazyWorkspaceState,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Owned<Vec<String>>, bool), LazyWorkspaceError> {
@@ -583,7 +583,6 @@ impl<
                 .inspect_unauthored(
                     &mut checkout.value,
                     paths.value.first().ok_or(LazyWorkspaceError::Concurrent)?,
-                    Some(cut),
                     InspectBasis {
                         state: Some(state),
                         retain_pinned_observation: true,

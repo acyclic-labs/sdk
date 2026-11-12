@@ -43,9 +43,14 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
         .as_ref()
         .and_then(|bisect| bisect.current)
         .or(current.head);
-    let head_workspace_tree =
-        visible_head.and_then(|id| state.commits.get(&id).map(|commit| commit.workspace_tree));
-    let head_tree = visible_head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
+    let head_workspace_tree = visible_head.and_then(|id| {
+        state
+            .commits
+            .get(&id)
+            .map(|commit| commit.workspace_tree.clone())
+    });
+    let head_tree =
+        visible_head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree.clone()));
     Ok(match command {
         GitCommand::MergeContinue | GitCommand::MergeAbort => {
             return Err(GitCompatError::InvalidState);
@@ -84,11 +89,11 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
             author,
             authored_at_seconds,
         } => {
-            if head_workspace_tree == Some(workspace) {
+            if head_workspace_tree.as_ref() == Some(&workspace) {
                 return Err(GitCompatError::NothingToCommit);
             }
             let action = GitFilesystemAction::CaptureCommit {
-                workspace_tree: workspace,
+                workspace_tree: workspace.clone(),
                 head_tree,
                 head_workspace_tree: Box::new(head_workspace_tree),
                 tracked_paths: current.tracked_paths.clone(),
@@ -169,14 +174,14 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
             let id = resolve_object::<E>(state, source.as_deref())?;
             let commit = state.commits.get(&id).ok_or(GitCompatError::InvalidState)?;
             GitCommandOutput::Action(GitFilesystemAction::RestorePaths {
-                tree: commit.tree,
+                tree: commit.tree.clone(),
                 paths: expand_pathspecs(&paths, &commit.tracked_paths),
             })
         }
         GitCommand::Reset { target, mode } => {
             let id = resolve_object::<E>(state, Some(&target))?;
             let commit = state.commits.get(&id).ok_or(GitCompatError::InvalidState)?;
-            let tree = commit.tree;
+            let tree = commit.tree.clone();
             let target_tracked_paths = commit.tracked_paths.clone();
             match mode {
                 GitResetMode::Soft | GitResetMode::Mixed => {
@@ -250,8 +255,8 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
             if state
                 .commits
                 .values()
-                .map(|commit| commit.workspace_tree)
-                .chain(state.stash.iter().copied())
+                .map(|commit| &commit.workspace_tree)
+                .chain(state.stash.iter())
                 .any(|tree| tree.workspace_id() == retired)
             {
                 state.retired_workspaces.insert(retired);
@@ -300,11 +305,14 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
             let tree = state
                 .stash
                 .last()
-                .copied()
+                .cloned()
                 .ok_or(GitCompatError::UnknownObject("stash@{0}".to_owned()))?;
             prepare_transition(
                 state,
-                GitFilesystemAction::RestoreGeneration { tree, paths: None },
+                GitFilesystemAction::RestoreGeneration {
+                    tree: tree.clone(),
+                    paths: None,
+                },
                 GitPendingMutation::StashPop { tree },
             )
         }
@@ -318,8 +326,8 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
                 .parents
                 .first()
                 .and_then(|parent| state.commits.get(parent));
-            let base = parent.map(|commit| commit.tree);
-            let source = Some(record.tree);
+            let base = parent.map(|commit| commit.tree.clone());
+            let source = Some(record.tree.clone());
             let paths = parent.map_or_else(
                 || record.tracked_paths.clone(),
                 |parent| {
@@ -357,8 +365,8 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
                 .parents
                 .first()
                 .and_then(|parent| state.commits.get(parent));
-            let base = Some(record.tree);
-            let source = parent.map(|commit| commit.tree);
+            let base = Some(record.tree.clone());
+            let source = parent.map(|commit| commit.tree.clone());
             let paths = parent.map_or_else(
                 || record.tracked_paths.clone(),
                 |parent| {
@@ -420,7 +428,7 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
                 Some(object) => {
                     let id = resolve_object::<E>(state, Some(&object))?;
                     let commit = state.commits.get(&id).ok_or(GitCompatError::InvalidState)?;
-                    commit.tree
+                    commit.tree.clone()
                 }
                 None => workspace,
             };
@@ -501,7 +509,7 @@ fn show_file<E: std::error::Error + 'static>(
         return Err(GitCompatError::UnknownObject(format!("{revision}:{path}")));
     }
     Ok(GitFilesystemAction::ShowFile {
-        tree: commit.tree,
+        tree: commit.tree.clone(),
         path: path.to_owned(),
         offset,
     })

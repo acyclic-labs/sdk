@@ -514,6 +514,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &owned
         };
         reference.validate(&mut Some(&mut io.history_io()))?;
+        if reference.as_resource().version().is_some() {
+            return Err(
+                io.invalid("authored generation reader does not accept a namespace snapshot")
+            );
+        }
         if reference.as_resource().provider() != &self.provider {
             return Err(io.invalid("resource belongs to another Filesystem provider"));
         }

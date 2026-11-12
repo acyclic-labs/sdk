@@ -1,6 +1,8 @@
 //! Canonical authenticated filesystem page formats and sparse algorithms.
 
 pub mod allocation;
+#[cfg(not(target_arch = "wasm32"))]
+pub use allocation::retained::NativeAccounting;
 pub use allocation::retained::{Retained, RetainedAllocation};
 pub use allocation::{KernelAccounting, KernelOwnedAllocation};
 mod attribute;
@@ -72,6 +74,7 @@ mod regular_mutation;
 mod retention;
 mod search;
 pub(crate) mod serde_decode;
+pub use serde_decode::MetadataDecodeError;
 pub(crate) mod sort;
 #[cfg(any(
     test,

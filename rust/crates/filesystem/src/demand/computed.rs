@@ -4,6 +4,8 @@ use crate::facade::FsWork;
 use crate::kernel::{KernelAccounting, KernelOwnedAllocation, OwnedSourceChunk};
 use std::sync::Arc;
 
+const VERSION_DOMAIN: &[u8] = b"acyclic:computed:node:v2";
+
 /// Immutable inputs to a view. The generation is a volume content address;
 /// the sequence is a committed stream cut, never a wall-clock timestamp.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -14,6 +16,33 @@ pub struct ViewCut {
     pub generation: [u8; 32],
 }
 
+/// The exact demand whose immutable inputs a provider prepares.
+#[derive(Clone, Copy)]
+pub enum ViewQuery<'a> {
+    /// Metadata for one path.
+    Lookup(&'a NamespacePath),
+    /// One directory page, including the provider's original continuation.
+    Directory {
+        /// Selected directory.
+        path: &'a NamespacePath,
+        /// Complete private continuation, including its original custody.
+        cursor: Option<&'a SourceCursor>,
+        /// Result page bound, never a directory size limit.
+        maximum_entries: u32,
+    },
+    /// Only the selected byte range.
+    Range {
+        /// Selected file.
+        path: &'a NamespacePath,
+        /// First byte.
+        offset: u64,
+        /// Maximum returned bytes.
+        length: u64,
+    },
+    /// Pin backing for repeated reads of one file, without scanning history.
+    Open(&'a NamespacePath),
+}
+
 /// Read-only backing for a view. Implementations supply their stream/cache
 /// snapshot lazily and start a follow only when `watch` is requested.
 pub trait ViewProvider: Send + Sync {
@@ -21,14 +50,27 @@ pub trait ViewProvider: Send + Sync {
     type Snapshot: Send + Sync + 'static;
     /// Committed record delivered by the backing stream's follow.
     type Record: Send + Sync;
-    /// Stable provider identity and current stream position.
-    fn reference(&self) -> SourceReference;
-    /// Resolves the requested cut without enumerating unrelated records.
+    /// Stable namespace identity, without capturing a cut or doing IO.
+    fn identity(&self) -> [u8; 16];
+    /// Captures the complete provider cut on the caller's original ledger.
+    fn reference(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> impl Future<Output = Result<SourceReference, DemandError>> + Send;
+    /// Decode cut metadata without IO or enumerating records.
+    fn cut(
+        &self,
+        source: &SourceReference,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<ViewCut, DemandError>;
+    /// Prepare only the selected inputs. A stale version or cursor is rejected
+    /// before this future starts; all IO retains the original ledger.
     fn snapshot(
         &self,
         source: SourceReference,
+        query: ViewQuery<'_>,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(ViewCut, Self::Snapshot), DemandError>;
+    ) -> impl Future<Output = Result<Self::Snapshot, DemandError>> + Send;
     /// One follow from the subscription's cut. No subscription means no task.
     fn watch(
         &self,
@@ -84,6 +126,17 @@ pub trait View: Send + Sync + 'static {
         length: u64,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, DemandError>;
+    /// Immutable link bytes. Ordinary file-only views refuse this operation.
+    fn link(
+        &self,
+        _cut: ViewCut,
+        _snapshot: &Self::Snapshot,
+        _path: &NamespacePath,
+        _maximum_bytes: u64,
+        _accounting: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, DemandError> {
+        Err(DemandError::InvalidRequest)
+    }
     /// Emit invalidations directly into the existing filesystem sink.
     fn affected(
         &self,
@@ -106,36 +159,39 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
         Self { view, provider }
     }
 
-    fn provider_source(&self, source: SourceReference) -> Result<SourceReference, DemandError> {
-        let current = self.reference();
-        if source.identity != current.identity {
+    fn provider_source(&self, source: &SourceReference) -> Result<SourceReference, DemandError> {
+        if source.identity != self.identity() {
             return Err(DemandError::StaleSource);
         }
         Ok(SourceReference {
-            identity: self.provider.reference().identity,
-            epoch: source.epoch,
+            identity: self.provider.identity(),
+            ..source.clone()
         })
     }
 
     fn version(
         &self,
+        source: &SourceReference,
         cut: ViewCut,
         path: &NamespacePath,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SourceVersion, DemandError> {
-        self.version_names(cut, path.components().iter(), ctx)
+        self.version_names(source, cut, path.components().iter(), ctx)
     }
 
     fn version_names<'a>(
         &self,
+        source: &SourceReference,
         cut: ViewCut,
         names: impl Iterator<Item = &'a crate::kernel::LogicalName> + Clone,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SourceVersion, DemandError> {
         let mut hash = blake3::Hasher::new();
-        let bytes = 48
+        let bytes = VERSION_DOMAIN.len() as u64
+            + 48
             + 8
             + 32
+            + source.encoded_len() as u64
             + names
                 .clone()
                 .map(|name| 9 + name.as_bytes().len() as u64)
@@ -144,10 +200,14 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
             bytes_hashed: bytes,
             ..WorkCounters::UNCHARGED
         })?;
+        hash.update(VERSION_DOMAIN);
         hash.update(&self.view.identity());
-        hash.update(&self.provider.reference().identity);
+        hash.update(&self.provider.identity());
         hash.update(&cut.sequence.to_le_bytes());
         hash.update(&cut.generation);
+        source.encode(|part| {
+            hash.update(part);
+        });
         for name in names {
             hash.update(&[name.encoding().tag()]);
             hash.update(&(name.as_bytes().len() as u64).to_le_bytes());
@@ -156,18 +216,22 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
         Ok(SourceVersion(*hash.finalize().as_bytes()))
     }
 
-    fn selected(
+    async fn selected(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
+        query: ViewQuery<'_>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(ViewCut, P::Snapshot), DemandError> {
-        let selected = self.provider.snapshot(self.provider_source(source)?, ctx)?;
-        if self.version(selected.0, path, ctx)? != expected {
+        let provider_source = self.provider_source(source)?;
+        let cut = self.provider.cut(&provider_source, ctx)?;
+        if self.version(source, cut, path, ctx)? != expected {
             return Err(DemandError::StaleVersion);
         }
-        Ok(selected)
+        let snapshot = self.provider.snapshot(provider_source, query, ctx).await?;
+        ctx.check()?;
+        Ok((cut, snapshot))
     }
 }
 
@@ -177,17 +241,23 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
     fn overlay(&self, _: &[crate::kernel::LogicalName]) -> SourceOverlay {
         SourceOverlay::Defaults
     }
-    fn reference(&self) -> SourceReference {
-        let source = self.provider.reference();
+    fn identity(&self) -> [u8; 16] {
         let mut hash = blake3::Hasher::new();
         hash.update(&self.view.identity());
-        hash.update(&source.identity);
+        hash.update(&self.provider.identity());
         let mut identity = [0; 16];
         identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-        SourceReference {
-            identity,
-            epoch: source.epoch,
-        }
+        identity
+    }
+    async fn reference(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
+        ctx.check()?;
+        Ok(SourceReference {
+            identity: self.identity(),
+            ..self.provider.reference(ctx).await?
+        })
     }
 
     async fn lookup<W: FsWork + Send>(
@@ -198,17 +268,22 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
         cancellation: &CancellationToken,
     ) -> W::Output<Option<SourceNode>, DemandError> {
         let mut ctx = work.accounting(cancellation);
-        let result = (|| {
+        let result = async {
             ctx.check()?;
-            let (cut, snapshot) = self
+            let provider_source = self.provider_source(&source)?;
+            let cut = self.provider.cut(&provider_source, &mut ctx)?;
+            let snapshot = self
                 .provider
-                .snapshot(self.provider_source(source)?, &mut ctx)?;
+                .snapshot(provider_source, ViewQuery::Lookup(path), &mut ctx)
+                .await?;
+            ctx.check()?;
             let mut node = self.view.lookup(cut, &snapshot, path, &mut ctx)?;
             if let Some(node) = &mut node {
-                node.version = self.version(cut, path, &mut ctx)?;
+                node.version = self.version(&source, cut, path, &mut ctx)?;
             }
             Ok(node)
-        })();
+        }
+        .await;
         work.finish(result, &ctx)
     }
 
@@ -222,15 +297,14 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
         cancellation: &CancellationToken,
     ) -> W::Output<SourceDirectoryPage, DemandError> {
         let mut ctx = work.accounting(cancellation);
-        let result = (|| {
+        let result = async {
             ctx.check()?;
             if maximum_entries == 0 {
                 return Err(DemandError::InvalidRequest);
             }
-            let (cut, snapshot) = self
-                .provider
-                .snapshot(self.provider_source(source)?, &mut ctx)?;
-            let version = self.version(cut, directory, &mut ctx)?;
+            let provider_source = self.provider_source(&source)?;
+            let cut = self.provider.cut(&provider_source, &mut ctx)?;
+            let version = self.version(&source, cut, directory, &mut ctx)?;
             ctx.charge(WorkCounters {
                 bytes_hashed: 48,
                 ..WorkCounters::UNCHARGED
@@ -243,13 +317,24 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
             let continuation = SourceReference {
                 identity,
                 epoch: source.epoch,
+                components: source.components.clone(),
             };
-            if cursor
-                .as_ref()
-                .is_some_and(|cursor| cursor.source != continuation)
-            {
-                return Err(DemandError::StaleCursor);
-            }
+            let cursor = cursor
+                .map(|cursor| cursor.unroute(&continuation))
+                .transpose()?;
+            let snapshot = self
+                .provider
+                .snapshot(
+                    provider_source,
+                    ViewQuery::Directory {
+                        path: directory,
+                        cursor: cursor.as_ref(),
+                        maximum_entries,
+                    },
+                    &mut ctx,
+                )
+                .await?;
+            ctx.check()?;
             let mut page =
                 self.view
                     .nodes(cut, &snapshot, directory, cursor, maximum_entries, &mut ctx)?;
@@ -260,6 +345,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
                 Arc::get_mut(&mut page.entries.backing).ok_or(DemandError::InvalidRequest)?;
             for entry in &mut entries.value {
                 entry.node.version = self.version_names(
+                    &source,
                     cut,
                     directory
                         .components()
@@ -269,11 +355,9 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
                 )?;
             }
             page.version = version;
-            if let Some(next) = &mut page.next {
-                next.source = continuation;
-            }
-            Ok(page)
-        })();
+            page.routed(&continuation, &mut ctx)
+        }
+        .await;
         work.finish(result, &ctx)
     }
 
@@ -288,12 +372,25 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
         cancellation: &CancellationToken,
     ) -> W::Output<OwnedSourceChunk, DemandError> {
         let mut ctx = work.accounting(cancellation);
-        let result = (|| {
+        let result = async {
             ctx.check()?;
-            let (cut, snapshot) = self.selected(source, path, expected, &mut ctx)?;
+            let (cut, snapshot) = self
+                .selected(
+                    &source,
+                    path,
+                    expected,
+                    ViewQuery::Range {
+                        path,
+                        offset,
+                        length,
+                    },
+                    &mut ctx,
+                )
+                .await?;
             self.view
                 .bytes(cut, &snapshot, path, offset, length, &mut ctx)
-        })();
+        }
+        .await;
         work.finish(result, &ctx)
     }
 
@@ -306,9 +403,11 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
         cancellation: &CancellationToken,
     ) -> W::Output<Box<dyn DemandFile>, DemandError> {
         let mut ctx = work.accounting(cancellation);
-        let result = (|| {
+        let result = async {
             ctx.check()?;
-            let (cut, snapshot) = self.selected(source, path, expected, &mut ctx)?;
+            let (cut, snapshot) = self
+                .selected(&source, path, expected, ViewQuery::Open(path), &mut ctx)
+                .await?;
             let node = self
                 .view
                 .lookup(cut, &snapshot, path, &mut ctx)?
@@ -328,21 +427,41 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
                 allocation,
                 bytes,
             }) as Box<dyn DemandFile>)
-        })();
+        }
+        .await;
         work.finish(result, &ctx)
     }
 
     async fn read_link<W: FsWork + Send>(
         &self,
-        _: SourceReference,
-        _: &NamespacePath,
-        _: SourceVersion,
-        _: u64,
+        source: SourceReference,
+        path: &NamespacePath,
+        expected: SourceVersion,
+        maximum_bytes: u64,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<OwnedSourceChunk, DemandError> {
-        let ctx = work.accounting(cancellation);
-        work.finish(Err(DemandError::InvalidRequest), &ctx)
+        let mut ctx = work.accounting(cancellation);
+        let result = async {
+            ctx.check()?;
+            let (cut, snapshot) = self
+                .selected(
+                    &source,
+                    path,
+                    expected,
+                    ViewQuery::Range {
+                        path,
+                        offset: 0,
+                        length: maximum_bytes,
+                    },
+                    &mut ctx,
+                )
+                .await?;
+            self.view
+                .link(cut, &snapshot, path, maximum_bytes, &mut ctx)
+        }
+        .await;
+        work.finish(result, &ctx)
     }
 
     fn watch<W: FsWork + Send>(
