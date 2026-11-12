@@ -128,7 +128,6 @@ async fn lost_caller_discards_its_whole_view_and_keeps_the_acknowledged_head() -
                 process_custody: None,
             },
             0,
-            std::time::Instant::now(),
         )?;
         assert_ne!(view, scratch.destination);
         assert_eq!(prepared.cwd, std::fs::canonicalize(&view).map_err(storage)?);
@@ -206,6 +205,74 @@ async fn lost_caller_discards_its_whole_view_and_keeps_the_acknowledged_head() -
         Ok(((), claims))
     })
     .await?;
+    Ok(())
+}
+
+// Concurrent commands on one volume never serialize at admission. While the
+// first command is inside its scope, holding its own view, a second command
+// enters, writes and hands back; only then does the first leave. The negative
+// control admits each command behind one exclusive per-volume guard, the
+// shape this replaced: the second command finds it held.
+#[tokio::test]
+async fn concurrent_commands_never_serialize_at_admission() -> Result<()> {
+    for serialized in [false, true] {
+        let root = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        let harness = open(root.path(), state.path()).await?;
+        let mounts = &harness.workspace().unwrap().mounts;
+        let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
+        let gate = tokio::sync::Mutex::new(());
+        let admit = || {
+            if !serialized {
+                return Ok(None);
+            }
+            gate.try_lock()
+                .map(Some)
+                .map_err(|_| Error::Conflict("admission is serialized".into()))
+        };
+        let (entered, first_inside) = tokio::sync::oneshot::channel();
+        let (finished, second_finished) = tokio::sync::oneshot::channel::<Result<()>>();
+        let first = async {
+            let _admitted = admit()?;
+            native_scope(mounts, async move |claims| {
+                entered
+                    .send(())
+                    .map_err(|_| Error::Conflict("second command dropped".into()))?;
+                // Stay inside this scope until the second command's whole
+                // lifetime, hand-back included, has ended.
+                let second = second_finished.await.map_err(storage)?;
+                Ok((second, claims))
+            })
+            .await
+        };
+        let second = async {
+            first_inside.await.map_err(storage)?;
+            let result = async {
+                let _admitted = admit()?;
+                native_scope(mounts, async |claims| {
+                    write_projected(&home(&claims)?.join("second"), b"second")?;
+                    Ok(((), claims))
+                })
+                .await
+            }
+            .await;
+            finished
+                .send(result)
+                .map_err(|_| Error::Conflict("first command dropped".into()))
+        };
+        let (first, second) = futures::join!(first, second);
+        second?;
+        let second_inside_first = first?;
+        if serialized {
+            assert!(
+                matches!(&second_inside_first, Err(Error::Conflict(message)) if message.contains("serialized")),
+                "the negative control did not serialize: {second_inside_first:?}"
+            );
+        } else {
+            second_inside_first?;
+            assert_eq!(published(scratch, "/second").await?, b"second");
+        }
+    }
     Ok(())
 }
 
