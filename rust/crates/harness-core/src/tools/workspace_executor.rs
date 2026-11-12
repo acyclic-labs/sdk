@@ -33,6 +33,31 @@ fn target(
     invocation: &ToolInvocation,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<Workspace> {
+    if invocation.name == "fs"
+        && let Some(command) = invocation
+            .arguments
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: command.len() as u64,
+                ..Default::default()
+            })?;
+        }
+        if super::command::has_prefix(command, [&["grep", "--scope"], &["git", "grep", "--scope"]])?
+        {
+            let filesystem = context.task().harness.filesystem.as_ref().ok_or_else(|| {
+                boundary(
+                    work,
+                    crate::wire::ErrorCode::Unsupported,
+                    "scope search has no filesystem binding",
+                )
+            })?;
+            return Ok(Workspace::Filesystem(Arc::clone(filesystem)));
+        }
+    }
     if let Some(target) = &context.execution_target {
         return Ok(Workspace::Target(Arc::clone(target)));
     }

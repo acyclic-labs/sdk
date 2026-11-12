@@ -1014,6 +1014,7 @@ impl LocalHarness {
                 None => turns,
             };
             turns
+                .with_filesystem_tools()
                 .with_approvers(self.approval_models.clone())
                 .with_goals(self.goal_continuations)
         };

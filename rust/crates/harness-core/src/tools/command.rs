@@ -4,15 +4,51 @@ use crate::{Error, Result};
 pub fn parse_command(command: &str) -> Result<Vec<String>> {
     let mut arguments = Vec::new();
     let mut word = String::new();
+    visit(command, |character| match character {
+        Some(character) => word.push(character),
+        None => arguments.push(std::mem::take(&mut word)),
+    })?;
+    Ok(arguments)
+}
+
+/// Compare decoded argument prefixes without allocating a second argument list.
+pub(super) fn has_prefix<const N: usize>(command: &str, prefixes: [&[&str]; N]) -> Result<bool> {
+    let mut matched = [true; N];
+    let mut word = 0;
+    let mut offset = 0;
+    visit(command, |character| {
+        for (prefix, matched) in prefixes.iter().zip(&mut matched) {
+            if let Some(expected) = prefix.get(word) {
+                *matched &= match character {
+                    Some(character) => expected.chars().nth(offset) == Some(character),
+                    None => expected.chars().count() == offset,
+                };
+            }
+        }
+        if character.is_some() {
+            offset += 1;
+        } else {
+            word += 1;
+            offset = 0;
+        }
+    })?;
+    Ok(prefixes
+        .iter()
+        .zip(matched)
+        .any(|(prefix, matched)| matched && word >= prefix.len()))
+}
+
+fn visit(command: &str, mut emit: impl FnMut(Option<char>)) -> Result<()> {
     let mut quote = None;
     let mut escaped = false;
     let mut started = false;
+    let mut words = 0;
     for character in command.chars() {
         if character == '\0' {
             return Err(Error::Invalid("fs command contains NUL".into()));
         }
         if escaped {
-            word.push(character);
+            emit(Some(character));
             escaped = false;
         } else if character == '\\' && quote != Some('\'') {
             escaped = true;
@@ -21,20 +57,21 @@ pub fn parse_command(command: &str) -> Result<Vec<String>> {
             if character == delimiter {
                 quote = None;
             } else {
-                word.push(character);
+                emit(Some(character));
             }
         } else if matches!(character, '\'' | '"') {
             quote = Some(character);
             started = true;
         } else if character.is_whitespace() {
             if started {
-                arguments.push(std::mem::take(&mut word));
+                emit(None);
+                words += 1;
                 started = false;
             }
         } else if matches!(character, ';' | '|' | '&' | '<' | '>' | '`') {
             return Err(Error::Invalid("fs accepts one facade command".into()));
         } else {
-            word.push(character);
+            emit(Some(character));
             started = true;
         }
     }
@@ -42,12 +79,13 @@ pub fn parse_command(command: &str) -> Result<Vec<String>> {
         return Err(Error::Invalid("unterminated fs command argument".into()));
     }
     if started {
-        arguments.push(word);
+        emit(None);
+        words += 1;
     }
-    if arguments.is_empty() {
+    if words == 0 {
         return Err(Error::Invalid("fs command is empty".into()));
     }
-    Ok(arguments)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -72,6 +110,20 @@ mod tests {
                 format!("\"{}\"", argument.replace('\\', "\\\\").replace('"', "\\\""))
             }).collect::<Vec<_>>().join(" ");
             prop_assert_eq!(parse_command(&command).unwrap(), arguments);
+        }
+
+        #[test]
+        fn routing_and_execution_decode_the_same_quoted_prefix(
+            prefix in prop::sample::select(vec![vec!["grep", "--scope"], vec!["git", "grep", "--scope"], vec!["grep", "--volume"], vec!["status"]]),
+            operand in r"[^\x00]{0,64}",
+            quote in any::<bool>(),
+        ) {
+            let command = prefix.iter().map(|word| if quote { format!("'{word}'") } else { word.to_string() }).chain([
+                format!("\"{}\"", operand.replace('\\', "\\\\").replace('"', "\\\"")),
+            ]).collect::<Vec<_>>().join(" ");
+            let args = parse_command(&command).unwrap();
+            let args = if args.first().is_some_and(|arg| arg == "git") { &args[1..] } else { &args[..] };
+            prop_assert_eq!(has_prefix(&command, [&["grep", "--scope"], &["git", "grep", "--scope"]]).unwrap(), args.starts_with(&["grep".into(), "--scope".into()]));
         }
 
         #[test]
