@@ -55,7 +55,7 @@ fn result<'a>(request: &'a crate::model::ModelRequest, id: &str) -> Result<&'a s
 
 fn echoed(request: &crate::model::ModelRequest, id: &str, expected: &str) -> Result<()> {
     let value = result(request, id)?;
-    assert_eq!(value["exit_code"], 0, "{value}");
+    assert_eq!(value["exit_code"], 0, "{id}: {value}");
     let stdout = value["stdout"]
         .as_str()
         .ok_or_else(|| Error::Invalid(format!("program stdout is absent: {value}")))?;
@@ -133,6 +133,7 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
         assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
         let requests = provider.requests();
         assert_eq!(requests.len(), first + 3);
+        assert_eq!(result(&requests[first + 1], "author")?, "authored");
         let prefix = |request: &crate::model::ModelRequest| -> Result<_> {
             let system: Vec<_> = request
                 .messages
