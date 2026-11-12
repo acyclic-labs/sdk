@@ -1269,17 +1269,18 @@ mod tests {
                 };
                 let bytes = encode_agent_reply(&Ok(reply), &command)?;
                 let mut inflated_envelope = Envelope::decode(bytes.as_slice())?;
-                let Some(envelope::Value::Reply(inflated_body)) = &mut inflated_envelope.value
-                else {
+                let Some(envelope::Value::Reply(inflated_body)) = &inflated_envelope.value else {
                     return Err("usage envelope lost its reply".into());
                 };
                 let mut inflated: serde_json::Value = serde_json::from_slice(inflated_body)?;
                 inflated["page"]["tools"]["started"] = (visited + 1).into();
-                *inflated_body = serde_json::to_vec(&inflated)?;
+                inflated_envelope.value =
+                    Some(envelope::Value::Reply(serde_json::to_vec(&inflated)?));
                 assert!(decode_agent_reply(&inflated_envelope.encode_to_vec(), &command).is_err());
                 inflated["page"]["tools"]["started"] = 0.into();
                 inflated["page"]["tools"]["feedback"] = serde_json::json!({"slow": 1});
-                *inflated_body = serde_json::to_vec(&inflated)?;
+                inflated_envelope.value =
+                    Some(envelope::Value::Reply(serde_json::to_vec(&inflated)?));
                 assert!(decode_agent_reply(&inflated_envelope.encode_to_vec(), &command).is_err());
                 assert!(matches!(decode_agent_reply(&bytes, &command)?,
                     Ok(AgentReply::Usage { page: Some(page), .. }) if page.end == end));
