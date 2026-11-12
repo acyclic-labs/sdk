@@ -469,6 +469,41 @@ impl LocalHarness {
         if child_project == parent_project {
             return Ok(());
         }
+        let child = root.spawned_project_view(&child_project).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let state = child.state(&mut accounting).await.map_err(storage)?;
+        let origin = state
+            .fork_origin
+            .ok_or_else(|| Error::Conflict("child has no fork origin".into()))?;
+        let name = child_project.storage_name(&mut None)?;
+        let initial = root
+            .filesystem
+            .workspace_for_creation_operation(
+                &name,
+                child.workspace().volume_config(),
+                origin.operation_id,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value
+            .ok_or_else(|| Error::Conflict("child has no creating generation".into()))?;
+        let baseline = acyclic_fs::LazySnapshotRef::new(
+            child.workspace().id(),
+            initial.id(),
+            origin.snapshot.source,
+            origin.snapshot.overlay,
+            origin.snapshot.shadows,
+        );
+        if !child
+            .has_authored_changes_since(baseline, &mut accounting)
+            .await
+            .map_err(storage)?
+        {
+            return Ok(());
+        }
         let issuer = self
             .root_authority
             .as_ref()
@@ -508,7 +543,6 @@ impl LocalHarness {
                 &verifier,
             )
             .await?;
-        let child = root.spawned_project_view(&child_project).await?;
         let branch = format!("agents/{}", agent.path.id());
         acyclic_fs::GitCompatRepository::new(
             parent_workspace.view().workspace().id(),

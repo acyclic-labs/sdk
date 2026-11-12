@@ -545,6 +545,12 @@ impl Pool {
             Some(Body::Closed(closed)) => {
                 let error =
                     original_error.unwrap_or_else(|| StreamError::from_session_close(&closed.code));
+                // A resumable subscription retains its application cursor. A
+                // temporarily unavailable producer is a disconnected transport,
+                // not a terminal result of the subscription.
+                if error.category() == StreamError::Unavailable && route.resumable() {
+                    return self.reconnect(node);
+                }
                 if let Some(input) = &route.input {
                     input.0.close(error.clone());
                 }

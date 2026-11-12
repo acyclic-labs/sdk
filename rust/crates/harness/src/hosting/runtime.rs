@@ -30,8 +30,8 @@ impl Runtime {
                     tracing::error!(?actor, %error, "actor delivery failed");
                     // The retained cause names the failing actor: a tree's
                     // failure is diagnosable from this one line.
-                    failure.send_replace(Some(format!("{error} (actor {actor:?})")));
-                }) => { failure.send_replace(Some(error.to_string())); }
+                    failure.send_replace(Some(format!("{} (actor {actor:?})", cause_chain(error))));
+                }) => { failure.send_replace(Some(cause_chain(&error))); }
                 _ = failed.changed() => {}
             }
             // The lifetime closes after cancellation drops the active delivery.
@@ -83,11 +83,41 @@ impl Runtime {
     }
 }
 
+fn cause_chain(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        use std::fmt::Write as _;
+        let _ = write!(message, "; caused by: {cause}");
+        source = cause.source();
+    }
+    message
+}
+
 fn retained_failure(failure: &watch::Receiver<Option<String>>) -> Error {
     Error::Storage(failure.borrow().as_ref().map_or_else(
         || "Actors runtime completion producer closed".into(),
         Clone::clone,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_runtime_failure_preserves_nested_causes() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("provider operation failed")]
+        struct ProviderFailure(#[source] std::io::Error);
+        let diagnostic = cause_chain(&ProviderFailure(std::io::Error::from(
+            std::io::ErrorKind::ConnectionReset,
+        )));
+        let (_, failure) = watch::channel(Some(diagnostic));
+        let retained = retained_failure(&failure).to_string();
+        assert!(retained.contains("provider operation failed"));
+        assert!(retained.contains("caused by: connection reset"));
+    }
 }
 
 impl Drop for Runtime {

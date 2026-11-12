@@ -18,7 +18,7 @@ where
     ) -> crate::Result<GitFilesystemResult> {
         let source = self.workspace(source).await?;
         let plan = self
-            .plan_join_at(&source, source_generation, rebase)
+            .plan_join_at(&source, source_generation, rebase, operation, target_tree)
             .await?;
 
         let options = ApplyOptions {
@@ -253,19 +253,13 @@ where
         .map_err(Error::from)
     }
 
-    async fn plan_join(
-        &self,
-        source: &ManagedWorkspace<P, O>,
-        rebase: bool,
-    ) -> crate::Result<acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>> {
-        self.plan_join_at(source, None, rebase).await
-    }
-
     async fn plan_join_at(
         &self,
         source: &ManagedWorkspace<P, O>,
         generation: Option<acyclic_fs::GenerationId>,
         rebase: bool,
+        operation: OperationId,
+        target_tree: GitTreeRef,
     ) -> crate::Result<acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>> {
         let mut builder = source.join_into(&self.current).git_metadata();
         if rebase {
@@ -273,30 +267,26 @@ where
         }
         super::helpers::prepared(
             async {
-                let planned = match generation {
-                    Some(generation) => {
-                        let source = self.join_generation(source, generation).await?;
-                        let target = self
-                            .current
+                let source = match generation {
+                    Some(generation) => self.join_generation(source, generation).await?,
+                    None => {
+                        source
                             .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
                             .await
                             .map_err(|failure| Error::from(failure.error))?
-                            .value;
-                        builder
-                            .plan_at(
-                                &source,
-                                &target,
-                                WorkBudget::UNBOUNDED,
-                                &CancellationToken::new(),
-                            )
-                            .await
-                    }
-                    None => {
-                        builder
-                            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                            .await
+                            .value
                     }
                 };
+                let target = self.generation(target_tree).await?;
+                let planned = builder
+                    .plan_for_replay_at(
+                        &source,
+                        &target,
+                        IdempotencyKey::from_bytes(operation.into_bytes()),
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await;
                 planned
                     .map(|receipt| receipt.value)
                     .map_err(|failure| Error::from(failure.error))

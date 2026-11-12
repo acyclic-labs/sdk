@@ -1,6 +1,38 @@
 use super::*;
 
 #[tokio::test]
+async fn observations_need_no_publication_but_source_deletions_do() {
+    let fs = Fs::memory();
+    let root = attach(
+        &fs,
+        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let cut = root.snapshot(accounting!()).await.unwrap();
+    let (lookup, allocation) = root.lookup("/read", accounting!()).await.unwrap();
+    root.retire_lookup((lookup, allocation), accounting!())
+        .unwrap();
+    assert!(
+        !root
+            .has_authored_changes_since(cut, accounting!())
+            .await
+            .unwrap()
+    );
+    root.remove("/removed", None, accounting!()).await.unwrap();
+    assert_eq!(
+        root.head(accounting!()).await.unwrap().id(),
+        cut.authored_generation
+    );
+    assert!(
+        root.has_authored_changes_since(cut, accounting!())
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn tombstones_distinguish_deletion_from_hiding() {
     let fs = Fs::memory();
     let root = attach(

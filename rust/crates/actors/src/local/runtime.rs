@@ -15,6 +15,7 @@ mod dispatcher;
 mod interrupt;
 mod limits;
 mod pause;
+mod transport;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Transition, Trigger};
 #[cfg(test)]
@@ -516,11 +517,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .state()
             .and_then(|state| state.cursor("activation"))
             .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
-        let mut created = acyclic_stream::records_only(
-            provider
-                .follow(acyclic_stream::FollowRequest::new(root, from))
-                .await?,
-        );
+        let mut created = transport::follow(Arc::clone(provider), root, from);
         let mut dispatcher = Some(dispatcher);
         let mut dispatching: Option<BoxProviderFuture<'_, std::result::Result<Snapshot, Error>>> =
             None;

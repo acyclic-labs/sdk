@@ -162,6 +162,50 @@ async fn completed_source_cut_survives_pending_join_recovery() -> TestResult {
         .workspace()
         .write_text("/unfinished", "unfinished\n")
         .await?;
+    let interrupted = super::super::run_with_guard(
+        Workspace {
+            access: &crate::filesystem::local_owner_workspace_access("test")?,
+            filesystem: &filesystem,
+            store: &store,
+            view: (&main).into(),
+            root: Path::new("."),
+            repository: main.id(),
+            lease: None,
+            checkout: None,
+            author: "test",
+            authored_at_seconds: 1,
+            request: Some(acyclic_fs::GitRequest {
+                merge_source: None,
+                ..request.clone()
+            }),
+        },
+        &["merge".into(), "child".into()],
+        || async {
+            if let Some(pending) = GitCompatRepository::new(main.id(), store.clone())
+                .pending_transition()
+                .await?
+            {
+                if main
+                    .operation_generation(
+                        IdempotencyKey::from_bytes(pending.id.operation_id().into_bytes()),
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(|failure| Error::from(failure.error))?
+                    .value
+                    .is_some()
+                {
+                    return Err(Error::Storage(
+                        "publication acknowledgement interrupted".into(),
+                    ));
+                }
+            }
+            Ok(())
+        },
+    )
+    .await;
+    assert!(matches!(interrupted, Err(Error::Storage(_))));
     execute_request(
         &filesystem,
         &store,

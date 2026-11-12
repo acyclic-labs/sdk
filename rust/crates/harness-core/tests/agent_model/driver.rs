@@ -124,6 +124,7 @@ struct Script {
     failure: Mutex<Option<CoreError>>,
     operations: Mutex<Vec<OperationId>>,
     effects: Mutex<Vec<TurnEffect>>,
+    settlement_failure: Mutex<Option<CoreError>>,
 }
 
 impl TurnEffects for Script {
@@ -200,6 +201,18 @@ impl Executor for Script {
 struct Host(Arc<Script>, Option<Arc<Goal>>);
 
 impl TurnHost for Host {
+    fn settle<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        Box::pin(async move {
+            match self.0.settlement_failure.lock().expect("lock").take() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        })
+    }
     fn open_control<'a>(
         &'a self,
         _: &'a AgentState,
@@ -810,6 +823,60 @@ impl TurnGoal for Goal {
 
 fn ready() -> ExecutionProgress<TurnOutput> {
     ExecutionProgress::Ready(TurnOutput::new("worked".into(), Default::default(), 1))
+}
+
+#[tokio::test]
+async fn completed_answer_commits_before_workspace_settlement_failure() -> Result {
+    let path = AgentPath::root(&id(1));
+    let (script, driver) = driver(vec![ready()]);
+    *script.settlement_failure.lock().expect("lock") =
+        Some(CoreError::Conflict("workspace publication refused".into()));
+    let completed = step(
+        &driver,
+        &path,
+        Some(AgentState::adopted(path.clone(), &adopted(id(1)))?),
+        (1, 0),
+        Wake::Inbox {
+            sequence: 1,
+            record: request("answer")?.0,
+        },
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    let entry = completed
+        .outs
+        .iter()
+        .find_map(|out| match out {
+            Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes)),
+            _ => None,
+        })
+        .ok_or("completion omitted the durable answer")??;
+    assert_eq!(entry.outcome, TurnOutcome::Completed);
+    assert_eq!(completed.state.conversation_tail, 1);
+    let resumed = step(
+        &driver,
+        &path,
+        Some(completed.state),
+        (2, 0),
+        Wake::Alarm,
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert!(matches!(
+        resumed.state.phase,
+        Phase::Done {
+            outcome: AgentOutcome::Failed { .. }
+        }
+    ));
+    assert_eq!(resumed.state.conversation_tail, 1);
+    assert!(
+        !resumed
+            .outs
+            .iter()
+            .any(|out| matches!(out, Out::Conversation(_)))
+    );
+    assert_eq!(script.operations.lock().expect("lock").len(), 1);
+    Ok(())
 }
 
 /// The goal continuation a step sent its own agent, if any.
