@@ -320,6 +320,66 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .expect_err("guest read host data through the persisted policy");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         }
+        // Input references enter committed inboxes and can be inherited. The
+        // journal policy admits their bytes, while the scope selects exactly
+        // the original published file, never the entire journal.
+        let input = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/message.txt",
+                b"accepted input",
+                "text/plain",
+                "message.txt",
+                4096,
+                &crate::IdempotencyKey::new("accepted-input")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        let selected = root.bootstrap_scope(
+            "input-reader",
+            &Capabilities::new([input.read_capability(&mut None)?]),
+            Some(owner),
+            &mut None,
+        )?;
+        let selected_reader =
+            FilesystemContentVerifier::new(host.clone(), &guest.verifier, &selected, 4096, None)?;
+        let replacement = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/message.txt",
+                b"later input",
+                "text/plain",
+                "message.txt",
+                4096,
+                &crate::IdempotencyKey::new("later-input")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        assert_eq!(
+            selected_reader
+                .read(&input, 4096, None, None)?
+                .await?
+                .as_ref(),
+            b"accepted input"
+        );
+        for file in [&replacement, &control] {
+            let denied = async { selected_reader.read(file, 4096, None, None)?.await }
+                .await
+                .expect_err("an input reference granted another journal file or version");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        }
+        let denied = async {
+            selected_reader
+                .read(&input, 4096, Some(&Capabilities::default()), None)?
+                .await
+        }
+        .await
+        .expect_err("input publication bypassed the caller ceiling");
+        assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         let guest_write = ContentGrant::verify(
             &guest.verifier,
             &guest.scope,

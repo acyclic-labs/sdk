@@ -40,6 +40,13 @@ credential backend. Automatically temporary stores retain memory custody
 through their existing resource ownership anchor. Shipping-binary fixtures
 explicitly select private-file custody under their own scratch directory.
 
+The agent journal's persisted policy permits read-only consumption of published
+`inputs/` files, conversation documents and tool results. Reading an input still
+requires its original file grant and the caller's ceiling; an exact reference
+does not grant another version or file. Input publication grants no directory
+listing or writes. Other journal control data requires host custody even when
+the caller holds a broad journal capability.
+
 CustodyFailure preserves the operation and CustodyCause, including native
 numeric statuses. Apple interaction-not-allowed is
 InteractionRequired(-25308); it cannot distinguish a locked keychain from an
