@@ -533,7 +533,7 @@ fn can_write_volume(
         crate::core::volume_operation_granted_with_work(
             &scope.grants,
             volume,
-            VolumeOperation::Write,
+            crate::conversation::VolumeOperation::Write,
             work,
         )
     })
