@@ -145,7 +145,7 @@ async function prepare(test, gitOrigin) {
   });
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
   const selection = ["--workspace", fixture.workspace, "--catalog", fixture.catalog,
-    ...(test.first_run ? [] : ["--model", "morph/morph-kimik31"])];
+    ...(test.first_run ? [] : ["--model", test.selected_model ?? "morph/morph-kimik31"])];
   const extra = expand(test.extra_args ?? [], fixture);
   fixture.clientArgs = [...selection, ...extra];
   fixture.args = [...selection, "--settings-root", fixture.settings,
