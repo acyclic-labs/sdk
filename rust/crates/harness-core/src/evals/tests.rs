@@ -220,5 +220,33 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
             .await?
             .is_none()
     );
+    let current = source.reference(&mut accounting(&work)).await?;
+    assert!(
+        matches!(
+            source
+                .lookup(current, &path("/00000000000000000002.json"), &work, &cancel)
+                .await,
+            Err(DemandError::StaleSource)
+        ),
+        "a missing original descriptor must not fall back to current context"
+    );
+    streams
+        .append(AppendRequest {
+            path: agent.history()?,
+            records: vec![b"{\"version\":99}".to_vec().into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let current = source.reference(&mut accounting(&work)).await?;
+    assert!(
+        matches!(
+            source
+                .lookup(current, &path("/00000000000000000002.json"), &work, &cancel)
+                .await,
+            Err(DemandError::InvalidRequest)
+        ),
+        "a malformed original descriptor must not produce a case"
+    );
     Ok(())
 }
