@@ -92,9 +92,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 return Ok(None);
             };
             let generation = publication.generation();
-            let bytes = publication
-                .evidence()
-                .ok_or_else(|| io.invalid("conditional publication has no original evidence"))?;
+            let bytes = super::publication::publication_evidence(publication.evidence(), Some(io))?;
             let receipt: ChangeReceipt = io.decode_json(bytes)?;
             if receipt.0 != 1 {
                 return Err(io.invalid("unsupported conditional publication receipt"));
@@ -357,7 +355,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 access::require(&view.0, action, change.path(), io)?;
             }
             let generation = if let Some(prior) = prior {
-                if prior.evidence() != Some(receipt.as_ref()) {
+                if super::publication::publication_evidence(prior.evidence(), Some(io))?
+                    != receipt.as_ref()
+                {
                     return Err(stock_boundary(
                         Some(io),
                         crate::wire::ErrorCode::Conflict,

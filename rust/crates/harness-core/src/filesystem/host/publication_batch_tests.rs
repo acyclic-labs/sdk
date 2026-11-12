@@ -745,6 +745,84 @@ impl PublicationCase<'_> {
             Err(error) if error.code() == crate::wire::ErrorCode::Conflict
         ));
         assert_eq!(self.host.resolve(workspace, None).await?, before);
+        if class.is_none() {
+            // An older publisher committed its operation without authority
+            // evidence. Its workspace receipt is opaque user data now: neither
+            // recovery nor a retry may read it or spend the operation again.
+            let old_key = IdempotencyKey::new("workspace-file-publication")?;
+            self.host
+                .apply(
+                    workspace,
+                    None,
+                    &[
+                        WorkspaceMutation::CreateDirectory {
+                            path: "/.system/harness-uploads".into(),
+                        },
+                        WorkspaceMutation::PutFile {
+                            path: "/.system/harness-uploads/old".into(),
+                            bytes: acyclic_stream::OwnedBytes::from_static(b"opaque old receipt"),
+                        },
+                        WorkspaceMutation::PutFile {
+                            path: "/legacy-target".into(),
+                            bytes: acyclic_stream::OwnedBytes::from_static(b"original old bytes"),
+                        },
+                    ],
+                    &old_key,
+                )
+                .await?;
+            let before = self.host.resolve(workspace, None).await?;
+            assert!(matches!(
+                self.put("legacy-target", b"reapplied", &old_key, None).await,
+                Err(error) if error.code() == crate::wire::ErrorCode::Unsupported
+            ));
+            assert!(matches!(
+                self.host.content_for_operation_record_io(PublicationLookup {
+                    volume: self.volume,
+                    key: &old_key,
+                    expected_path: Some("legacy-target"),
+                    maximum_bytes: 64,
+                    internal_class: None,
+                    purpose: PublicationPurpose::Content,
+                    scope: self.read.policy_scope(),
+                    ceiling: None,
+                }, self.io).await,
+                Err(error) if error.code() == crate::wire::ErrorCode::Unsupported
+            ));
+            let access = crate::conversation::ContentAccess {
+                ceiling: None,
+                io: self.io,
+            };
+            assert!(matches!(
+                self.host.observe_changes(self.volume, self.write, &old_key, 4096, access)?.await,
+                Err(error) if error.code() == crate::wire::ErrorCode::Unsupported
+            ));
+            let changes = [crate::conversation::ContentChange::CreateAbsent {
+                path: "legacy-target",
+                bytes: b"reapplied",
+                media_type: "text/plain",
+                display_name: "legacy-target",
+            }];
+            assert!(matches!(
+                self.host.put_changes(self.volume, self.write, &changes, &old_key, 64, access, None)?.await,
+                Err(error) if error.code() == crate::wire::ErrorCode::Unsupported
+            ));
+            assert_eq!(self.host.resolve(workspace, None).await?, before);
+            for (path, expected) in [
+                ("/legacy-target", b"original old bytes".as_slice()),
+                (
+                    "/.system/harness-uploads/old",
+                    b"opaque old receipt".as_slice(),
+                ),
+            ] {
+                assert_eq!(
+                    self.host
+                        .read(workspace, None, path, 64, None)
+                        .await?
+                        .as_ref(),
+                    expected
+                );
+            }
+        }
         Ok(())
     }
 }

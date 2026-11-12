@@ -417,7 +417,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )?),
             };
             if let Some(prior) = prior {
-                if prior.evidence() != Some(receipt_bytes.as_ref()) {
+                if host::publication_evidence(prior.evidence(), io)? != receipt_bytes.as_ref() {
                     return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Conflict,

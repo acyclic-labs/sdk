@@ -52,13 +52,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         else {
             return Ok(None);
         };
-        let bytes = binding.evidence().ok_or_else(|| {
-            stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Storage,
-                "content workspace binding has no original evidence",
-            )
-        })?;
+        let bytes = super::publication::publication_evidence(binding.evidence(), Some(io))?;
         if bytes.len() != SELECTION_BYTES || bytes[0] != 1 {
             return Err(stock_boundary(
                 Some(io),

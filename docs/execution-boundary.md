@@ -8,6 +8,14 @@ session rather than migrate or reinterpret their pending work. The existing
 stream identity is retained so incompatible pending debt cannot be hidden by
 opening a different journal. Idempotency identities include the payload version.
 
+Filesystem content publications and routing bind their original versioned
+receipts to the authority operation. The former workspace-file receipt format
+has no authority evidence and is unsupported. Recovering or retrying such an
+operation returns `Unsupported`, leaves its original files and operation intact,
+and never reapplies its effects. Start fresh host state rather than migrate or
+read a legacy receipt path. Versioned publications retain their original-cut
+recovery and changed-request refusal guarantees.
+
 The composed mount table distinguishes physical directories, independent native
 projections and logical-only volumes. No-FUSE physical mode keeps auxiliary
 volumes available through filesystem tools; it does not advertise nonexistent

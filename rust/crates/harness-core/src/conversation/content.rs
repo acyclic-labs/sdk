@@ -549,6 +549,10 @@ impl serde::Serialize for ContentChanges {
 /// Owner-bound, bounded publication on the caller's existing ledger.
 /// A supplied caller ceiling only restricts the authenticated writer. Filesystem
 /// providers intersect it with persisted policy through their shared decision.
+/// Filesystem receipts and routing use versioned authority evidence. Operations
+/// from the earlier workspace-file format are refused as `Unsupported`, without
+/// reading their receipt paths or reapplying their effects. Start fresh host
+/// state; persisted publication formats have no migration or compatibility reader.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// Publishes a finite source under the same identity as `stage_once`.
     /// EOF certifies the complete content. A source error or cancellation must

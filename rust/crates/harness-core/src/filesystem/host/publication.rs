@@ -1,6 +1,21 @@
 use super::*;
 use std::marker::PhantomData;
 
+/// Workspace-file receipts are an unsupported persisted format. Refuse their
+/// original operation rather than reading a user path or applying it again.
+pub(in crate::filesystem) fn publication_evidence<'a>(
+    evidence: Option<&'a [u8]>,
+    io: Option<&PreparationIo>,
+) -> Result<&'a [u8]> {
+    evidence.ok_or_else(|| {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "unsupported workspace-file publication format; start fresh host state",
+        )
+    })
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(in crate::filesystem) enum PublicationPurpose {
     WriteReceipt,
@@ -67,9 +82,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         else {
             return Ok(None);
         };
-        let receipt = publication
-            .evidence()
-            .ok_or_else(|| io.invalid("upload publication has no original evidence"))?;
+        let receipt = publication_evidence(publication.evidence(), Some(io))?;
         let original = publication.generation();
         let recorded = decode_publication_receipt(receipt, io)?;
         recorded.0.0.validate(&mut Some(&mut io.history_io()))?;
