@@ -157,27 +157,7 @@ pub fn local_harness_config(
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
     // Store opening supplies temporary state only when no explicit root was selected.
     let policy = crate::approvals::ApprovalPolicy::accept_all("graphcoder-default");
-    let initial = format!("{}/{}", model.0.provider, model.0.name);
-    let selected = initial.clone();
-    let models = std::sync::Arc::new(crate::model::ModelResolver::new(
-        initial,
-        move |selection| {
-            if selection == selected {
-                return Ok(model.clone());
-            }
-            if !["morph/morph-kimik31", "morph/morph-dsv41flash"].contains(&selection) {
-                return Err(crate::Error::NotFound(format!("fixture model {selection}")));
-            }
-            let (provider, name) = selection
-                .split_once('/')
-                .ok_or_else(|| crate::Error::Invalid("fixture model key".into()))?;
-            let mut chosen = model.0.clone();
-            chosen.provider = provider.into();
-            chosen.name = name.into();
-            Ok((chosen, model.1.clone()))
-        },
-    ));
-    let config = crate::LocalHarnessConfig::resolving(workspace, models, None)
+    let config = crate::LocalHarnessConfig::new(workspace, model)
         .hermetic()
         .approval_policy(policy);
     #[cfg(any(test, not(target_arch = "wasm32")))]

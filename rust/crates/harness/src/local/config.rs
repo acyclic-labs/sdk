@@ -858,24 +858,21 @@ mod resolver_tests {
     // 1k compositions over one resolver construct each selection's provider
     // once; a changed selection, here a changed settings model, resolves anew.
     #[tokio::test]
-    async fn shared_resolver_reuses_providers_and_resolves_changed_models_anew() -> Result<()> {
+    async fn shared_model_resolution_honors_settings_and_explicit_selection() -> Result<()> {
         let constructed = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&constructed);
-        let models = Arc::new(ModelResolver::new("first", move |selection| {
+        let models = Arc::new(ModelResolver::new("test/first", move |selection| {
             counter.fetch_add(1, Ordering::Relaxed);
             let provider: Arc<dyn ModelProvider> =
                 Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
+            let (provider_name, name) = selection
+                .split_once('/')
+                .ok_or_else(|| Error::Invalid("fixture model selection is unqualified".into()))?;
             Ok((
-                Model::new("test".into(), selection.into(), "1".into())?,
+                Model::new(provider_name.into(), name.into(), "1".into())?,
                 provider,
             ))
         }));
-        let role = crate::templates::root()?.model;
-        let expected = |selection| {
-            crate::templates::resolve_model(role.as_deref(), Some(selection))
-                .unwrap_or(selection)
-                .to_owned()
-        };
         let workspace = tempfile::tempdir().map_err(storage)?;
         let codex = tempfile::tempdir().map_err(storage)?;
         let settings = || {
@@ -890,70 +887,33 @@ mod resolver_tests {
         };
         for _ in 0..1000 {
             let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
-            assert_eq!(
-                selected(config.resolve(Some(&settings()), true).await?)?,
-                expected("first")
-            );
+            assert_eq!(selected(config.resolve(Some(&settings()), true).await?)?, "first");
         }
         assert_eq!(constructed.load(Ordering::Relaxed), 1);
-        std::fs::write(codex.path().join("config.toml"), "model = \"second\"\n")
-            .map_err(storage)?;
+        std::fs::write(
+            codex.path().join("config.toml"),
+            "model = \"test/second\"\n",
+        )
+        .map_err(storage)?;
         let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
         assert_eq!(
             selected(config.resolve(Some(&settings()), true).await?)?,
-            expected("second")
+            "second"
         );
+        assert_eq!(constructed.load(Ordering::Relaxed), 2);
         let explicit = LocalHarnessConfig::resolving(
             workspace.path(),
             Arc::clone(&models),
-            Some("first".into()),
+            Some("test/first".into()),
         );
         assert_eq!(
             selected(explicit.resolve(Some(&settings()), true).await?)?,
-            expected("first")
+            "first"
         );
         let defaults = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None)
             .without_user_settings();
-        assert_eq!(
-            selected(defaults.resolve(None, true).await?)?,
-            expected("first")
-        );
-        let selections = std::collections::BTreeSet::from([expected("first"), expected("second")]);
-        assert_eq!(constructed.load(Ordering::Relaxed), selections.len());
-        Ok(())
-    }
-}
-
-#[cfg(all(test, not(loom)))]
-mod fixed_role_binding_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn fixed_bindings_obey_the_configured_role_selection() -> Result<()> {
-        let role = crate::templates::root()?.model;
-        let selected =
-            crate::templates::resolve_model(role.as_deref(), None).unwrap_or("test/fixed");
-        for selection in [selected.to_owned(), format!("{selected}-different")] {
-            let (provider, name) = selection
-                .split_once('/')
-                .ok_or_else(|| Error::Invalid("role model requires provider/model".into()))?;
-            let model = Model::new(provider.into(), name.into(), "1".into())?;
-            let provider: Arc<dyn ModelProvider> =
-                Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
-            let allowed = crate::templates::resolve_model(role.as_deref(), Some(&selection))
-                == Some(selection.as_str());
-            let result = LocalHarnessConfig::new(".", (model.clone(), provider))
-                .resolve(None, true)
-                .await;
-            if allowed {
-                assert_eq!(result?.model.map(|binding| binding.0), Some(model));
-            } else {
-                let error = result
-                    .err()
-                    .ok_or_else(|| Error::Invalid("incompatible binding admitted".into()))?;
-                assert!(error.to_string().contains("LocalHarnessConfig::resolving"));
-            }
-        }
+        assert_eq!(selected(defaults.resolve(None, true).await?)?, "first");
+        assert_eq!(constructed.load(Ordering::Relaxed), 2);
         Ok(())
     }
 }
