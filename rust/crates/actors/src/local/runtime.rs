@@ -8,7 +8,7 @@
 //! [`Store::activation`] for that actor in the same commit, and the dispatcher's
 //! assigned shard follow wakes it. A delivery reads its inputs with bounded finite reads.
 use super::ready::{ReadySet, Registration, Work};
-use super::{Error, PreparedPublish, Snapshot, State, Store};
+use super::{Error, PreparedPublish, Snapshot, State, Store, scheduling};
 use acyclic_stream::StreamProviderExt as _;
 mod clock;
 mod completion;
@@ -135,8 +135,8 @@ fn terminal(error: &Error) -> bool {
 }
 
 enum Event {
-    Created(u8, Record),
-    Dispatched(u8, Result<Snapshot, Error>),
+    Created(u16, Record),
+    Dispatched(u16, Result<Snapshot, Error>),
     Work(Work<ActorReference>),
     Done(Result<(), (ActorReference, Error)>),
     Rearm(Option<u64>),
@@ -156,7 +156,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     /// Discovery scope only. Per-actor placement, not this filter, grants
     /// ownership when several hosts share the same state root.
     scope: Option<(AccountId, NamespaceId)>,
-    scheduling_shards: BTreeSet<u8>,
+    scheduling_shards: BTreeSet<u16>,
     handler: Arc<dyn Handler>,
     clock: Arc<dyn Clock>,
     ready: ReadySet<ActorReference>,
@@ -176,9 +176,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// One runtime per state root and handler package.
     pub fn new(store: Store<P>, handler: Arc<dyn Handler>, clock: Arc<dyn Clock>) -> Self {
         Self {
+            scheduling_shards: (0..store.scheduling_shards()).collect(),
             store,
             scope: None,
-            scheduling_shards: (u8::MIN..=u8::MAX).collect(),
             handler,
             clock,
             ready: ReadySet::default(),
@@ -224,7 +224,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// starting this host. Local single-node hosts own all partitions by
     /// default. This routing assignment never grants a per-actor epoch.
     #[must_use]
-    pub fn with_scheduling_shards(mut self, shards: impl IntoIterator<Item = u8>) -> Self {
+    pub fn with_scheduling_shards(mut self, shards: impl IntoIterator<Item = u16>) -> Self {
         self.scheduling_shards = shards.into_iter().collect();
         self
     }
@@ -232,7 +232,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Whether an actor belongs to this runtime's discovery scope.
     pub fn includes(&self, actor: &ActorReference) -> bool {
         self.scheduling_shards
-            .contains(&super::scheduling_shard(actor))
+            .contains(&self.store.scheduling_shard(actor))
             && self.scope.as_ref().is_none_or(|(account, namespace)| {
                 actor.account() == account && actor.namespace() == namespace
             })
@@ -591,6 +591,23 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         }
         let actors: Vec<_> = assigned.iter().map(|(_, actor)| actor.clone()).collect();
         let loaded = assigned[0].0.load_all(&actors).await?;
+        // Each shard's earliest pending deadline window past its consumed
+        // watermark: one bounded children page per assigned shard.
+        let mut consumed = BTreeMap::new();
+        let mut windows = BTreeSet::new();
+        let earliest =
+            futures::future::try_join_all(self.scheduling_shards.iter().zip(&loaded).map(
+                |(&shard, dispatcher)| {
+                    self.store
+                        .next_window(shard, dispatcher::deadline_cursor(dispatcher))
+                },
+            ))
+            .await?;
+        for ((&shard, dispatcher), next) in self.scheduling_shards.iter().zip(&loaded).zip(earliest)
+        {
+            consumed.insert(shard, dispatcher::deadline_cursor(dispatcher));
+            windows.extend(next.map(|window| (window, shard)));
+        }
         for ((&shard, (store, _)), dispatcher) in
             self.scheduling_shards.iter().zip(assigned).zip(loaded)
         {
@@ -606,7 +623,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             created.push(records.map(move |record| (shard, record)));
         }
         let mut dispatching: FuturesUnordered<
-            BoxProviderFuture<'_, (u8, Result<Snapshot, Error>)>,
+            BoxProviderFuture<'_, (u16, Result<Snapshot, Error>)>,
         > = FuturesUnordered::new();
         // The activation log is also every producer's wake entry: the cursor
         // only bounds restart replay, so consecutive entries coalesce into one
@@ -667,7 +684,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         3 => {
                             // Read the deadline after installing the waiter: an earlier
                             // alarm installed concurrently wakes us to rearm.
-                            let next = self.ready.next_deadline();
+                            let opens = windows
+                                .first()
+                                .map(|&(window, _)| scheduling::window_start(window));
+                            let next = match (self.ready.next_deadline(), opens) {
+                                (Some(resident), Some(opens)) => Some(resident.min(opens)),
+                                (resident, opens) => resident.or(opens),
+                            };
                             if next != timer.as_ref().map(|(deadline, _)| *deadline) {
                                 return Poll::Ready(Event::Rearm(next));
                             }
@@ -711,7 +734,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     // local placement owner hosts its shard's actors on demand;
                     // under external placement only admitted residents wake.
                     if let Ok(actor) = ActorReference::decode(record.value.as_ref())
-                        && super::scheduling_shard(&actor) == shard
+                        && self.store.scheduling_shard(&actor) == shard
                         && self.includes(&actor)
                     {
                         if self.places {
@@ -743,8 +766,41 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::Due(result) => {
                     result?;
                     timer = None;
-                    self.ready
-                        .wake_due(self.clock.now_unix_ms(), self.limits.work);
+                    let now = self.clock.now_unix_ms();
+                    self.ready.wake_due(now, self.limits.work);
+                    // An opened window wakes its dormant actors, page by page;
+                    // each delivery installs its exact committed deadline.
+                    while let Some(&(window, shard)) = windows.first()
+                        && scheduling::window_start(window) <= now
+                    {
+                        windows.pop_first();
+                        let mut entry = Some(0);
+                        while let Some(from) = entry {
+                            let (actors, next) =
+                                self.store.window_actors(shard, window, from).await?;
+                            for actor in actors {
+                                if self.store.scheduling_shard(&actor) == shard
+                                    && self.includes(&actor)
+                                {
+                                    if self.places {
+                                        self.track(actor.clone())?;
+                                    }
+                                    self.wake(&actor);
+                                }
+                            }
+                            entry = next;
+                        }
+                        let from = window
+                            .checked_add(1)
+                            .ok_or(Error::Invalid("alarm window overflow"))?;
+                        consumed.insert(shard, from);
+                        windows.extend(
+                            self.store
+                                .next_window(shard, from)
+                                .await?
+                                .map(|next| (next, shard)),
+                        );
+                    }
                 }
                 Event::Failed(error) => return Err(error.into()),
                 Event::Completion(completion) => completing.insert(completion),
@@ -798,24 +854,33 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // finished: every seen entry was delivered to quiescence, so a
             // restart replays exactly the entries that may still own work.
             // A failed delivery keeps its entries for the next incarnation.
-            // A pending alarm also owns work: its activation stays replayable.
-            if !running.is_empty()
-                || self.ready.counts().1 != 0
-                || self.ready.next_deadline().is_some()
-                || failure.is_some()
-            {
+            // A pending alarm lives in its deadline window, so the activation
+            // cursor never waits for it. The window watermark passes only
+            // windows whose wakes were delivered, never the current window
+            // (an alarm armed now with a future deadline lands at or after
+            // it), and never a resident deadline that has not fired yet; it
+            // moves back only for a resident alarm armed already past due.
+            if !running.is_empty() || self.ready.counts().1 != 0 || failure.is_some() {
                 continue;
             }
+            let bound = scheduling::window(
+                self.ready
+                    .next_deadline()
+                    .unwrap_or(u64::MAX)
+                    .min(self.clock.now_unix_ms()),
+            );
             for (&shard, previous) in &mut dispatchers {
                 let cursor = seen[&shard];
-                if let Some(previous) =
-                    previous.take_if(|previous| dispatcher::activation_cursor(previous) < cursor)
-                {
+                let deadline = consumed[&shard].min(bound);
+                if let Some(previous) = previous.take_if(|previous| {
+                    dispatcher::activation_cursor(previous) < cursor
+                        || dispatcher::deadline_cursor(previous) != deadline
+                }) {
                     let store = &stores[&shard];
                     dispatching.push(Box::pin(async move {
                         (
                             shard,
-                            self.advance_dispatcher(store, previous, shard, cursor)
+                            self.advance_dispatcher(store, previous, shard, cursor, deadline)
                                 .await,
                         )
                     }));

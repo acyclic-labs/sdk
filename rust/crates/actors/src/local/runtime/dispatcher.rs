@@ -1,13 +1,14 @@
-//! Each stable scheduling shard checkpoints its activation cursor as a small
-//! actor in a separate state root. Opening reads it; the first advance creates
-//! it, so an idle shard costs one head read and never a write.
+//! Each stable scheduling shard checkpoints its activation cursor and its
+//! consumed deadline-window watermark as a small actor in a separate root.
+//! Opening reads it; the first advance creates it, so an idle shard costs one
+//! head read and never a write.
 //! Placement commands, not a root child scan, admit resident execution.
 use super::*;
 use crate::local::Subscription;
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
-    pub(super) fn dispatcher_store(&self, shard: u8) -> Result<(Store<P>, ActorReference), Error> {
-        let name = format!("dispatcher-{shard:02x}");
+    pub(super) fn dispatcher_store(&self, shard: u16) -> Result<(Store<P>, ActorReference), Error> {
+        let name = format!("dispatcher-{shard:04x}");
         let actor = match &self.scope {
             None => ActorReference::new(b"runtime", b"dispatch", name.as_bytes()),
             Some((account, namespace)) => ActorReference::new(
@@ -30,8 +31,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self,
         store: &Store<P>,
         previous: Snapshot,
-        shard: u8,
+        shard: u16,
         seen: u64,
+        deadline: u64,
     ) -> Result<Snapshot, Error> {
         let mut state = match previous.state() {
             Some(state) => state.clone(),
@@ -44,24 +46,38 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 checkpoint: None,
                 alarm: Default::default(),
                 paused: false,
-                subscriptions: BTreeMap::from([(
-                    "activation".into(),
-                    Subscription {
-                        path: self.store.scheduling_path(shard)?,
-                        cursor: 0,
-                    },
-                )])
-                .into(),
+                subscriptions: ["activation", "deadline"]
+                    .into_iter()
+                    .map(|name| {
+                        Ok((
+                            name.into(),
+                            Subscription {
+                                path: self.store.scheduling_path(shard)?,
+                                cursor: 0,
+                            },
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, Error>>()?
+                    .into(),
             },
         };
-        let subscription = state
-            .subscriptions
-            .get_mut("activation")
-            .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
-        if subscription.cursor >= seen {
+        let mut advanced = false;
+        // The activation cursor only advances; the window watermark may
+        // return to a window holding an alarm armed already past due.
+        for (name, cursor, regresses) in [("activation", seen, false), ("deadline", deadline, true)]
+        {
+            let subscription = state
+                .subscriptions
+                .get_mut(name)
+                .ok_or(Error::Invalid("dispatcher has no scheduling cursor"))?;
+            if subscription.cursor < cursor || (regresses && subscription.cursor != cursor) {
+                subscription.cursor = cursor;
+                advanced = true;
+            }
+        }
+        if !advanced {
             return Ok(previous);
         }
-        subscription.cursor = seen;
         // Competing dispatchers can observe different activation suffixes
         // from the same state cut. Bind the key to the proposed cursor so
         // their CAS conflict is not misclassified as changed request bytes.
@@ -69,7 +85,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             &previous,
             state,
             Vec::new(),
-            key(&previous, &format!("dispatch/{seen}"))?,
+            key(&previous, &format!("dispatch/{seen}/{deadline}"))?,
         )?;
         // Conflict returns the original conditional result. Unknown retains
         // the exact publication and participant custody in the returned error.
@@ -80,10 +96,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 }
 
-/// The confirmed cursor of a shard checkpoint; zero before its creation.
+/// The confirmed activation cursor of a shard checkpoint; zero before creation.
 pub(super) fn activation_cursor(snapshot: &Snapshot) -> u64 {
+    cursor(snapshot, "activation")
+}
+
+/// The first deadline window not yet delivered; zero before creation.
+pub(super) fn deadline_cursor(snapshot: &Snapshot) -> u64 {
+    cursor(snapshot, "deadline")
+}
+
+fn cursor(snapshot: &Snapshot, name: &str) -> u64 {
     snapshot
         .state()
-        .and_then(|state| state.cursor("activation"))
+        .and_then(|state| state.cursor(name))
         .unwrap_or(0)
 }

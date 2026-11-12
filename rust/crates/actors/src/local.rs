@@ -19,7 +19,7 @@ pub use crate::guest::Subscription;
 pub use runtime::{
     Clock, ClockControl, ClockError, ControlledClock, Runtime, RuntimeLimits, SystemClock,
 };
-pub use scheduling::scheduling_shard;
+pub use scheduling::DEFAULT_SCHEDULING_SHARDS;
 mod sockets;
 pub use sockets::Sockets;
 #[cfg(feature = "test-support")]
@@ -581,6 +581,7 @@ pub struct Store<P: StreamProvider + ?Sized> {
     provider: Arc<P>,
     root: StreamPath,
     composer: Option<Arc<dyn Composer>>,
+    scheduling_shards: std::num::NonZeroU16,
 }
 impl<P: StreamProvider + ?Sized> Store<P> {
     /// Retain the caller's admitted provider session. Actor state lives at
@@ -590,6 +591,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             provider,
             root,
             composer: None,
+            scheduling_shards: DEFAULT_SCHEDULING_SHARDS,
         }
     }
 
@@ -632,7 +634,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         actor: &ActorReference,
     ) -> Result<(StreamPath, acyclic_stream::OwnedBytes), Error> {
         Ok((
-            self.scheduling_path(scheduling_shard(actor))?,
+            self.scheduling_path(self.scheduling_shard(actor))?,
             actor.encode().into(),
         ))
     }
@@ -1201,6 +1203,18 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 Some(self.activation(&self.actor(&previous.path)?)?),
             ),
         };
+        // Arming (or inheriting into an own write) a deadline files the actor
+        // in its shard's deadline window in this same commit, so a restarted host
+        // finds every pending alarm without reading actor states.
+        let armed = state
+            .alarm
+            .pending()
+            .filter(|deadline| {
+                previous.overlaid()
+                    || previous.state().and_then(|state| state.alarm.pending()) != Some(*deadline)
+            })
+            .map(|deadline| self.deadline(&self.actor(&previous.path)?, deadline))
+            .transpose()?;
         let encoded = state.encode();
         let mut prepared = PreparedPublish {
             own: Some(previous.path.clone()),
@@ -1224,7 +1238,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 idempotency_key: key,
             },
         };
-        for effect in created.into_iter().chain(effects) {
+        for effect in created.into_iter().chain(armed).chain(effects) {
             prepared.join(effect)?;
         }
         Ok(prepared)
