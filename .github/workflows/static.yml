@@ -24,3 +24,5 @@ jobs:
           persist-credentials: false
       - name: Check lockfile and manifests without compiling
         run: node scripts/check-cargo-lock.mjs
+      - name: Check Cargo publication inventory without compiling
+        run: node scripts/publish-cargo-crates.mjs check

@@ -2,11 +2,57 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { publicationDependencyErrors, registryArchiveMatches } from "./publish-cargo-crates.mjs";
+
+test("publication check rejects a newly publishable workspace crate until its inventory is updated", () => {
+  const repository = mkdtempSync(join(tmpdir(), "acyclic-cargo-inventory-"));
+  const cargo = args => {
+    const result = spawnSync("cargo", args, { cwd: repository, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const workspace = members => {
+    writeFileSync(join(repository, "Cargo.toml"),
+      `[workspace]\nmembers = ${JSON.stringify(members)}\nresolver = "3"\n`);
+    cargo(["generate-lockfile", "--offline"]);
+  };
+  const crate = name => {
+    mkdirSync(join(repository, name, "src"), { recursive: true });
+    writeFileSync(join(repository, name, "Cargo.toml"),
+      `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2024"\n`);
+    writeFileSync(join(repository, name, "src", "lib.rs"), "");
+  };
+  const inventory = names => writeFileSync(join(repository, "release", "cargo-crates.json"), JSON.stringify(names));
+  const check = () => spawnSync(process.execPath, ["scripts/publish-cargo-crates.mjs", "check"],
+    { cwd: repository, encoding: "utf8" });
+  try {
+    mkdirSync(join(repository, "scripts"));
+    mkdirSync(join(repository, "release"));
+    for (const name of ["publish-cargo-crates.mjs", "registry-publication.mjs"]) {
+      copyFileSync(resolve("scripts", name), join(repository, "scripts", name));
+    }
+    writeFileSync(join(repository, "release", "cargo-equivalent-archives.json"), "{}");
+    crate("alpha");
+    workspace(["alpha"]);
+    inventory(["alpha"]);
+    assert.equal(check().status, 0);
+
+    // Real Cargo discovers the added publishable crate without a Rust build.
+    crate("beta");
+    workspace(["alpha", "beta"]);
+    const missing = check();
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /must contain every publishable local crate exactly once/);
+    inventory(["alpha", "beta"]);
+    const repaired = check();
+    assert.equal(repaired.status, 0, repaired.stderr);
+  } finally {
+    rmSync(repository, { recursive: true, force: true });
+  }
+});
 
 test("pinned Cargo archives require identical inputs and an ancestor source", async t => {
   const repository = mkdtempSync(join(tmpdir(), "acyclic-cargo-equivalence-"));

@@ -17,6 +17,9 @@ There is no staging registry or `next` promotion step.
    the exact qualified source bundle and publishes crates in the order defined
    by [`cargo-crates.json`](cargo-crates.json).
 
+SDK Static checks the Cargo publication list against workspace metadata on every
+pull request. Add publishable crates to the list before their dependents.
+
 Both publishers are idempotent. npm requires identical registry integrity.
 The npm publisher also verifies that `latest` points at the release version,
 including on a retry after an exact archive was already published. If it does
