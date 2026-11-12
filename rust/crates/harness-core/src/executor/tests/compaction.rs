@@ -562,7 +562,7 @@ async fn malformed_provider_accounting_rejects_before_projection_or_model_public
 fn accounting_wire_rejects_unknown_negative_and_out_of_range_counts() -> Result<()> {
     let valid = json!({
         "capacity": {"context_tokens": 65_536, "output_tokens": 4_096},
-        "count": {"request_digest": vec![0_u8; 32], "input_tokens": 110, "fixed_tokens": 100, "message_tokens": [10]}
+        "count": {"request_digest": vec![0_u8; 32], "input_tokens": 110, "message_count": 1}
     });
     assert!(serde_json::from_value::<ContextAccounting>(valid.clone()).is_ok());
     for path in ["capacity", "count"] {
@@ -570,13 +570,17 @@ fn accounting_wire_rejects_unknown_negative_and_out_of_range_counts() -> Result<
         unknown[path]["unknown"] = json!(true);
         assert!(serde_json::from_value::<ContextAccounting>(unknown).is_err());
     }
-    for invalid in [json!(-1), json!(4_294_967_296_u64), json!(0.5), Value::Null] {
-        let mut fixed = valid.clone();
-        fixed["count"]["fixed_tokens"] = invalid.clone();
-        assert!(serde_json::from_value::<ContextAccounting>(fixed).is_err());
-        let mut message = valid.clone();
-        message["count"]["message_tokens"][0] = invalid;
-        assert!(serde_json::from_value::<ContextAccounting>(message).is_err());
+    for invalid in [
+        json!(-1),
+        json!(18_446_744_073_709_551_616_f64),
+        json!(0.5),
+        Value::Null,
+    ] {
+        for field in ["input_tokens", "message_count"] {
+            let mut count = valid.clone();
+            count["count"][field] = invalid.clone();
+            assert!(serde_json::from_value::<ContextAccounting>(count).is_err());
+        }
     }
     Ok(())
 }

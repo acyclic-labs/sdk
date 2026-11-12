@@ -523,7 +523,7 @@ impl StockExecution<'_> {
             )
         })?;
         let reference = if purpose == ModelPurpose::Response {
-            self.stage_response_request(journal, input, step, &request_key, request)
+            self.stage_response_request(journal, input, step, request)
                 .await?
         } else {
             transcript::stage_request(journal, input.operation_id, &request_key, request, None, io)

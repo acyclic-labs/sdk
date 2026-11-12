@@ -86,8 +86,9 @@ impl<'a> StockExecution<'a> {
             .and_then(|start| prior.get(start..))
             .ok_or_else(|| self.invalid_working_cut())?;
         let previous = self
-            .previous_request_projection(journal, input.operation_id, retained.step)
-            .await?;
+            .response_projection(journal, input.operation_id, retained.step)
+            .await?
+            .ok_or_else(|| self.invalid_working_cut())?;
         let projection =
             ResponseProjection::continuation_metadata(journal, &previous, self.io).await?;
         self.synchronize_working_cut(
@@ -117,12 +118,12 @@ impl<'a> StockExecution<'a> {
         )))
     }
 
-    async fn previous_request_projection(
+    pub(super) async fn response_projection(
         &self,
         journal: &dyn ExecutionJournal,
         operation: OperationId,
         step: u32,
-    ) -> Result<FileRef> {
+    ) -> Result<Option<FileRef>> {
         let (_, records) = self
             .model_records(journal, operation, step, ModelPurpose::Response)
             .await?;
@@ -140,14 +141,12 @@ impl<'a> StockExecution<'a> {
                 return Err(self.invalid_working_cut());
             }
         }
-        if prepared.is_none() {
+        if prepared.is_none() && compacted.is_some() {
             return Err(self.invalid_working_cut());
         }
-        crate::model::clone_file(
-            compacted
-                .or(prepared)
-                .ok_or_else(|| self.invalid_working_cut())?,
-            self.io,
-        )
+        compacted
+            .or(prepared)
+            .map(|reference| crate::model::clone_file(reference, self.io))
+            .transpose()
     }
 }

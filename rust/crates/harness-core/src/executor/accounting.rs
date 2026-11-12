@@ -1,5 +1,41 @@
 use super::*;
 
+/// Durable admission needs the bound total, not the provider's per-message
+/// planning weights. Repeating those weights would itself be quadratic history.
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContextCount {
+    pub(super) request_digest: [u8; 32],
+    pub(super) input_tokens: u64,
+    message_count: u64,
+}
+
+impl From<crate::context::ModelTokenCount> for ContextCount {
+    fn from(count: crate::context::ModelTokenCount) -> Self {
+        Self {
+            request_digest: count.request_digest,
+            input_tokens: count.input_tokens,
+            message_count: count.message_tokens.len() as u64,
+        }
+    }
+}
+
+impl ContextCount {
+    pub(super) fn validate(
+        &self,
+        request: &crate::model::PreparedModelRequest,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<u64> {
+        crate::context::validate_token_count(
+            self.request_digest,
+            self.message_count,
+            self.input_tokens,
+            request,
+            work,
+        )
+    }
+}
+
 pub(super) fn stock_context_capacity(
     provider: &dyn ModelProvider,
     model: &Model,
@@ -104,7 +140,7 @@ impl StockExecution<'_> {
         {
             Ok(count) => {
                 with_history_io(self.io, |work| count.validate(prepared, work))?;
-                Some(count)
+                Some(count.into())
             }
             Err(Error::ModelContextOverflow) if !self.single_request => None,
             Err(error) => return Err(error),

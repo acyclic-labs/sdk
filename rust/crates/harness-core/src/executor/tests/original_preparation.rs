@@ -100,7 +100,7 @@ impl StockExecution<'_> {
             }
             Some(ContextAccounting {
                 capacity,
-                count: Some(count),
+                count: Some(count.into()),
             })
         } else {
             None
@@ -130,9 +130,9 @@ impl StockExecution<'_> {
             journal,
             input.operation_id,
             &projection_key,
-            &projection,
-            &stored_request,
+            (&projection, &stored_request),
             accounting.as_ref(),
+            None,
             self.io,
         )
         .await?;

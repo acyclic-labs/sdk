@@ -56,15 +56,18 @@ pub async fn stage_context_projection(
         journal,
         operation,
         key,
-        &crate::executor::ResponseProjection {
-            context,
-            steering: None,
-            canonical: None,
-            checkpoint: None,
-            working: None,
-            accounting: None,
-        },
-        prepared,
+        (
+            &crate::executor::ResponseProjection {
+                context,
+                steering: None,
+                canonical: None,
+                checkpoint: None,
+                working: None,
+                accounting: None,
+            },
+            prepared,
+        ),
+        None,
         None,
         None,
     )

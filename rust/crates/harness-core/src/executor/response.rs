@@ -63,13 +63,20 @@ impl StockExecution<'_> {
             .map(|boundary| boundary.prepared_snapshot(input.operation_id, step))
             .transpose()?
             .flatten();
+        let previous = match step.checked_sub(1) {
+            Some(step) => {
+                self.response_projection(journal, input.operation_id, step)
+                    .await?
+            }
+            None => None,
+        };
         let reference = transcript::stage_projection(
             journal,
             input.operation_id,
             &projection_key,
-            &projection,
-            &prepared,
+            (&projection, &prepared),
             accounting.as_ref(),
+            previous.as_ref(),
             self.io,
         )
         .await?;

@@ -676,7 +676,7 @@ pub(crate) struct ContextAccounting {
     pub(crate) capacity: crate::context::ModelContextCapacity,
     /// `None` records a typed provider context-overflow refusal for this projection.
     /// It never supplies an estimated admission count.
-    pub(crate) count: Option<crate::context::ModelTokenCount>,
+    pub(crate) count: Option<accounting::ContextCount>,
 }
 
 /// Validated retained model artifacts without provider dispatch.

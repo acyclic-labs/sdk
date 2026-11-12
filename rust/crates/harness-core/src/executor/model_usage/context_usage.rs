@@ -1,5 +1,4 @@
-//! Bounded accounting projection of the versioned context record. The request
-//! header precedes the projection and can contain arbitrarily large tool schemas.
+//! Bounded accounting projection of the versioned context metadata record.
 use super::*;
 use crate::executor::json::{JsonBounds, JsonSpans, SpanEvent, SpanKind};
 
@@ -245,26 +244,28 @@ mod tests {
                     context_tokens: 65_536,
                     output_tokens: None,
                 },
-                count: Some(ModelTokenCount::from_upper_bounds(
-                    prepared.request_digest(),
-                    7,
-                    vec![1],
-                )),
+                count: Some(
+                    ModelTokenCount::from_upper_bounds(prepared.request_digest(), 7, vec![1])
+                        .into(),
+                ),
             };
             let reference = transcript::stage_projection(
                 journal.as_ref(),
                 crate::OperationId::new(),
                 "deep-projection",
-                &ResponseProjection {
-                    context,
-                    steering: None,
-                    canonical: None,
-                    checkpoint: None,
-                    working: None,
-                    accounting: None,
-                },
-                &prepared,
+                (
+                    &ResponseProjection {
+                        context,
+                        steering: None,
+                        canonical: None,
+                        checkpoint: None,
+                        working: None,
+                        accounting: None,
+                    },
+                    &prepared,
+                ),
                 Some(&accounting),
+                None,
                 Some(&io),
             )
             .await?;

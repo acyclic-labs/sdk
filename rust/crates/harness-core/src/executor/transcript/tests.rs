@@ -5,7 +5,7 @@ async fn initial_request(
     prepared: &crate::model::PreparedModelRequest,
 ) -> Result<FileRef> {
     let file = stage_request(journal, OperationId::new(), "seed", prepared, None, None).await?;
-    assert_eq!(file.descriptor().media_type(), "application/json");
+    assert_eq!(file.descriptor().media_type(), REQUEST_MEDIA);
     assert_eq!(
         load_model_request(journal, &file, Limits::default(), None)
             .await?

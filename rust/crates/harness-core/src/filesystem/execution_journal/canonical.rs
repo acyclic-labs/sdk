@@ -272,9 +272,9 @@ mod tests {
             &journal,
             input.operation_id,
             "unprovable-canonical",
-            &projected,
-            &prepared,
+            (&projected, &prepared),
             projected.accounting.as_ref(),
+            None,
             None,
         )
         .await?;
