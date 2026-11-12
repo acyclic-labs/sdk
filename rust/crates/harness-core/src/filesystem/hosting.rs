@@ -1257,12 +1257,22 @@ where
         for binding in &request.fresh {
             if let Some(volume) = binding.as_volume() {
                 authority.authorize_volume(volume).map_err(turn)?;
+                if let TurnAdmission::Admitted { scope, .. } = &self.admission {
+                    self.volumes
+                        .authorize_volume_creation(scope, volume)
+                        .map_err(turn)?;
+                }
             }
         }
         let journal =
             crate::conversation::journal_volume(self.volumes.provider.clone(), &request.agent)
                 .map_err(turn)?;
         authority.authorize_host_volume(&journal).map_err(turn)?;
+        if let TurnAdmission::Admitted { scope, .. } = &self.admission {
+            self.volumes
+                .authorize_volume_creation(scope, &journal)
+                .map_err(turn)?;
+        }
         if request
             .fresh
             .iter()
@@ -1278,10 +1288,12 @@ where
     ///
     /// Before any IO it verifies the caller's admission for the root (the
     /// [`agent_authority`] check turns make: authentic, live, this audience
-    /// and agent, and writing the private volume) and that the admission
+    /// and agent, and bound to the private owner) and that the admission
     /// writes every fresh volume; a read-only or mismatched admission is
     /// refused here, having read and written nothing. Retained volumes keep
-    /// exactly the access the admission grants them. Then it prepares the one
+    /// exactly the access the admission grants them. A retained private writer
+    /// is checked against its real persisted policy before preparing storage;
+    /// this reads policy metadata, never its file contents. Then it prepares the one
     /// sealed commit creating the fresh volumes and the root. Preparation
     /// performs no stream IO; it writes the fresh volumes' initial objects to
     /// the object store, held unpublished by the returned commit.
@@ -1319,6 +1331,16 @@ where
         questions: Option<bool>,
     ) -> Result<Prepared, Error> {
         self.admit_root(&request)?;
+        if let TurnAdmission::Admitted { scope, .. } = &self.admission {
+            for binding in &request.retained {
+                if binding.role == crate::agent::WorkspaceRole::Private {
+                    self.volumes
+                        .authorize_retained_writer(scope, binding.volume()?)
+                        .await
+                        .map_err(turn)?;
+                }
+            }
+        }
         if self.turns.templates().is_some() {
             self.volumes.seed_layer().await.map_err(turn)?;
         }

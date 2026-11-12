@@ -199,6 +199,7 @@ pub(in crate::filesystem) use directory::DirectoryListing;
 mod import;
 mod volume_access;
 pub use import::VolumeImportPlan;
+mod creation_authority;
 mod journal_policy;
 mod volumes;
 mod workspaces;
