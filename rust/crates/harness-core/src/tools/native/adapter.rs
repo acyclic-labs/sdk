@@ -18,6 +18,7 @@ pub(super) struct Adapter {
     pub(super) capability: Arc<Tool>,
     /// The canonical tool that runs it: the capability's own, or a variant.
     pub(super) original: Arc<Tool>,
+    pub(super) _custody: acyclic_fs::NativeCustody,
 }
 
 impl Adapter {
