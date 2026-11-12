@@ -2,7 +2,7 @@
 mod watch;
 use super::{Affected, Children, Cut, Error, FilesystemCut, View, project::page_number};
 use crate::{
-    agent::{AgentPath, AgentRecord, AgentStream, ConversationEntry, StatusRecord},
+    agent::{AgentPath, AgentRecord, AgentStream, ConversationEntry, InboxRecord, StatusRecord},
     conversation::ContentResidencyVerifier,
     filesystem::PreparationIo,
 };
@@ -85,6 +85,7 @@ pub struct StreamUiCut {
     identity: [u8; 16],
     agent: Retained<AgentPath>,
     status: Option<Retained<StatusRecord>>,
+    adoption: Option<Retained<InboxRecord>>,
     tail: Option<u64>,
     turns: Retained<Vec<PreparedTurn>>,
     page: Option<(u32, bool)>,
@@ -102,6 +103,7 @@ impl StreamUiCut {
             agent: RetainedAllocation::claim(agent.as_str().len() as u64, 1, ctx)?
                 .into_value(agent.clone()),
             status: None,
+            adoption: None,
             tail: None,
             page: None,
             turns: Retained::allocate(0, ctx)?,
@@ -111,6 +113,20 @@ impl StreamUiCut {
     }
 }
 impl Cut for StreamUiCut {
+    fn role(&self) -> super::Result<Cow<'_, str>> {
+        let Some(InboxRecord::ForkAdopted(adopted)) = self.adoption.as_deref() else {
+            return Err(Error::Pending);
+        };
+        if adopted.agent != self.agent.id() {
+            return Err(Error::Pending);
+        }
+        adopted
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.role())
+            .map(Cow::Borrowed)
+            .ok_or(Error::Pending)
+    }
     fn agent(&self) -> &AgentPath {
         &self.agent
     }
@@ -159,6 +175,7 @@ enum Inputs<'a> {
     Reference,
     Conversation,
     Status,
+    Role,
     Children(u32),
     Child(&'a str),
 }
@@ -198,7 +215,7 @@ where
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<NativeStreamOutput<Heads>, DemandError> {
         let count = match inputs {
-            Inputs::Reference => 3,
+            Inputs::Reference => 4,
             Inputs::Conversation => 2,
             Inputs::Children(_) => 0,
             _ => 1,
@@ -233,12 +250,14 @@ where
                 add(AgentStream::Status)?;
                 add(AgentStream::Conversation)?;
                 add(AgentStream::Membership)?;
+                add(AgentStream::Inbox)?;
             }
             Inputs::Conversation => {
                 add(AgentStream::Status)?;
                 add(AgentStream::Conversation)?;
             }
             Inputs::Status => add(AgentStream::Status)?,
+            Inputs::Role => add(AgentStream::Inbox)?,
             Inputs::Child(id) => paths.push(native_path(
                 &[self.agent.as_str(), "/children/", id],
                 original,
@@ -262,7 +281,7 @@ where
             count as u32
         };
         let projection = match inputs {
-            Inputs::Conversation | Inputs::Status => HeadProjection::History,
+            Inputs::Conversation | Inputs::Status | Inputs::Role => HeadProjection::History,
             _ => HeadProjection::Tail,
         };
         native_result(
@@ -314,6 +333,57 @@ where
             _ => 0,
         };
         let mut cut = StreamUiCut::empty(self.identity, &self.agent, ctx)?;
+        if path == "role" {
+            let heads = self
+                .heads(Inputs::Role, Some(at.clone()), original, ctx)
+                .await?;
+            let Some(head) = heads.value().heads.first().and_then(Option::as_ref) else {
+                return Ok(cut);
+            };
+            // The inherited prefix belongs to the parent; the child's adoption
+            // is the first record after its primitive fork origin.
+            let from = head
+                .origin
+                .as_ref()
+                .map_or(0, |origin| origin.inherited.forked_at);
+            if from >= head.tail {
+                return Ok(cut);
+            }
+            let _floor = RetainedAllocation::claim(std::mem::size_of::<Revision>() as u64, 1, ctx)?;
+            let mut records = native_result(
+                self.streams
+                    .native_read(
+                        ReadRequest {
+                            path: native_path(
+                                &self.agent.stream_parts(AgentStream::Inbox),
+                                original,
+                            )?,
+                            from,
+                            limit: 1,
+                            key: None,
+                            at_least: RevisionCut::of(at),
+                        },
+                        original.runtime_meter(),
+                    )
+                    .await,
+                original,
+            )?;
+            let record = native_result(
+                records
+                    .value_mut()
+                    .next()
+                    .await
+                    .ok_or(DemandError::StaleSource)?,
+                original,
+            )?;
+            if record.value().sequence != from {
+                return Err(DemandError::StaleSource);
+            }
+            cut.adoption = Some(
+                InboxRecord::decode_accounted(&record.value().value, ctx).map_err(record_error)?,
+            );
+            return Ok(cut);
+        }
         let child_page = match path {
             "children" if matches!(query, ViewQuery::Directory { .. }) => {
                 Some(u32::try_from(cursor >> 32).map_err(|_| DemandError::InvalidRequest)?)
@@ -617,6 +687,7 @@ where
             )?,
             native_path(&self.agent.stream_parts(AgentStream::Status), &original)?,
             native_path(&self.agent.stream_parts(AgentStream::Membership), &original)?,
+            native_path(&self.agent.stream_parts(AgentStream::Inbox), &original)?,
         ];
         watch::start(Arc::clone(&self.streams), paths, original, sink, ctx).map(Some)
     }

@@ -68,6 +68,8 @@ pub enum Affected {
     Status,
     /// Direct children changed.
     Children,
+    /// The inbox containing the agent's own adoption changed.
+    Role,
 }
 
 /// Stateless default projection. Page size chunks work; it never limits history
@@ -493,6 +495,7 @@ impl View {
             Affected::Conversation => &["index.md", "turns"],
             Affected::Status => &["index.md", "status.md", "glyph"],
             Affected::Children => &["children"],
+            Affected::Role => &["role"],
         }
     }
 }

@@ -1,4 +1,6 @@
 //! Integration behaviour tests.
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+mod native_cut_custody;
 #[cfg(loom)]
 use acyclic_fs::NativeMountError;
 #[cfg(all(
