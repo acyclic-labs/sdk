@@ -1208,6 +1208,9 @@ mod completion_tests {
         drop(busy);
         let source = completion.await?;
         assert_eq!(source.generation, captured.id());
-        local.disconnect().await
+        Arc::try_unwrap(local)
+            .map_err(|_| Error::Conflict("completion retained the harness owner".into()))?
+            .disconnect()
+            .await
     }
 }
