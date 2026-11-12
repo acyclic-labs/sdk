@@ -24,7 +24,7 @@ pub use skills::discover_skills;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub use skills::discover_skills_at;
-pub use skills::{SkillCallFields, SkillMetadata, parse_skill_metadata};
+pub use skills::{SkillCallFields, SkillMetadata, SkillSummary, parse_skill_metadata};
 mod frontmatter;
 #[doc(hidden)]
 pub use frontmatter::{frontmatter_end, parse_frontmatter, parse_frontmatter_with_body};

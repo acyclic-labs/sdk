@@ -2,7 +2,7 @@ use super::TestResult;
 use acyclic_harness::{
     LocalHarness, LocalHarnessConfig,
     agent::{AgentOutcome, Phase, TurnOutcome},
-    context::{CompactionPolicy, ModelContextCapacity, SkillMetadata},
+    context::{CompactionPolicy, ModelContextCapacity, SkillSummary},
     local::{
         Event,
         agent_conversation::{Conversation, Sent},
@@ -98,12 +98,12 @@ fn provider(turns: usize) -> Arc<ScriptedModelProvider> {
     )
 }
 
-fn catalog(provider: &ScriptedModelProvider, index: usize) -> TestResult<Vec<SkillMetadata>> {
+fn catalog(provider: &ScriptedModelProvider, index: usize) -> TestResult<Vec<SkillSummary>> {
     let requests = provider.requests();
     let request = requests.get(index).ok_or("missing provider request")?;
     for message in &request.messages {
         if let ModelContent::Text(text) = &message.content
-            && let Ok(skills) = serde_json::from_str::<Vec<SkillMetadata>>(text)
+            && let Ok(skills) = serde_json::from_str::<Vec<SkillSummary>>(text)
             && !skills.is_empty()
         {
             return Ok(skills);
@@ -429,7 +429,7 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
             .filter(|notice| notice.kind == acyclic_harness::context::CONTEXT_CHANGED)
             .filter_map(|notice| notice.body.get("skill"))
             .filter(|skill| skill["name"] == "greet2")
-            .map(|skill| serde_json::from_value::<SkillMetadata>(skill.clone()))
+            .map(|skill| serde_json::from_value::<SkillSummary>(skill.clone()))
             .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(changed.len(), expected, "request {index}");
         assert!(
