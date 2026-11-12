@@ -434,7 +434,6 @@ impl<'a> CaptureBatch<'a> {
             prior_metadata = Some(prior);
             canonical_metadata = preserve_unobserved_metadata(canonical_metadata, prior);
             if let Some(baseline) = self.baseline {
-                let physical = crate::WorkspaceMetadata::from_engine(physical_metadata(metadata));
                 let materialized = match &baseline.store {
                     Some(store) => {
                         store
@@ -447,15 +446,7 @@ impl<'a> CaptureBatch<'a> {
                             .await?
                     }
                     None => None,
-                }
-                .filter(|known| match (physical.created_ns, known.created_ns) {
-                    (Some(now), Some(before)) => now == before,
-                    (None, None) => physical
-                        .changed_ns
-                        .zip(known.changed_ns)
-                        .is_some_and(|(now, before)| now == before),
-                    _ => false,
-                });
+                };
                 baseline.restore_canonical_stamps(
                     self.source_root.identity(),
                     prior,

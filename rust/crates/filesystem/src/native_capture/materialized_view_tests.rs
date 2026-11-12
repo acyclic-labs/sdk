@@ -3,6 +3,18 @@ use super::*;
 #[tokio::test]
 async fn materialized_baseline_ignores_host_defaults_and_keeps_content_edits()
 -> Result<(), Box<dyn std::error::Error>> {
+    check_materialized_metadata().await
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn materialized_baseline_survives_publication_without_birth_times()
+-> Result<(), Box<dyn std::error::Error>> {
+    let _statx = crate::native_host::stat_probe::StatxOptions::enter(false, true);
+    check_materialized_metadata().await
+}
+
+async fn check_materialized_metadata() -> Result<(), Box<dyn std::error::Error>> {
     let state = tempfile::tempdir()?;
     let host = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
