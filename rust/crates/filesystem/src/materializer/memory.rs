@@ -9,7 +9,7 @@ pub enum StoreError {
     #[error("journal changed")]
     Conflict(Journal),
     #[error(transparent)]
-    Copy(#[from] sdk::MaterializationJournalCopyError),
+    NativeWork(#[from] sdk::MaterializationJournalCopyError),
 }
 impl MaterializationJournalStore for Store {
     type Error = StoreError;
