@@ -17,6 +17,54 @@ fn code(id: &str, source: &str) -> ScriptedTurn {
     ])
 }
 
+fn program_code(id: &str, source: &str) -> ScriptedTurn {
+    code(
+        id,
+        &format!(
+            r#"
+        import {{list}} from 'acyclic';
+        const names = [];
+        for await (const entry of list('volume:///home/tools')) {{
+            if ('description' in entry || 'inputSchema' in entry) throw new Error('eager manifest listing');
+            names.push(entry.name);
+        }}
+        if (!names.includes('echo') || !names.includes('unselected')) throw new Error('program names missing');
+        {source}
+    "#
+        ),
+    )
+}
+
+fn result<'a>(request: &'a crate::model::ModelRequest, id: &str) -> Result<&'a serde_json::Value> {
+    let content = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id, content, ..
+            } if call_id == id => Some(content),
+            _ => None,
+        })
+        .ok_or_else(|| Error::NotFound(format!("program result {id}")))?;
+    match content {
+        crate::model::ToolResultContent::Json { value } => Ok(value),
+        other => Err(Error::Invalid(format!("program result {id}: {other:?}"))),
+    }
+}
+
+fn echoed(request: &crate::model::ModelRequest, id: &str, expected: &str) -> Result<()> {
+    let value = result(request, id)?;
+    assert_eq!(value["exit_code"], 0, "{value}");
+    let stdout = value["stdout"]
+        .as_str()
+        .ok_or_else(|| Error::Invalid(format!("program stdout is absent: {value}")))?;
+    let actual: serde_json::Value =
+        serde_json::from_str(stdout).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(actual, json!({"text": expected}));
+    Ok(())
+}
+
 #[tokio::test]
 async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell_permissions()
 -> Result<()> {
@@ -67,16 +115,17 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
                 }, 'absent');
                 await write('volume:///home/tools/echo/main.sh', 'cat', 'absent');
                 await write('volume:///home/tools/echo/main.ps1', '[Console]::Out.Write([Console]::In.ReadToEnd())', 'absent');
+                await write('volume:///home/tools/unselected/program.ts', "throw new Error('unselected program was evaluated');", 'absent');
                 export default 'authored';
             "#),
-            code("invoke", if denied {
-                "export default await (async () => { try { await tools.echo({text: 'program-value'}); throw new Error('unexpected execution'); } catch (error) { if (error.class !== 'denied') throw error; return 'denied-program'; } })();"
+            program_code("invoke", if denied {
+                "export default await (async () => { try { await tools.echo({text: 'program-value-🦀'}); throw new Error('unexpected execution'); } catch (error) { if (error.class !== 'denied') throw error; return 'denied-program'; } })();"
             } else {
-                "export default await tools.echo({text: 'program-value'});"
+                "export default await tools.echo({text: 'program-value-🦀'});"
             }),
             ScriptedTurn::Text("done".into()),
         ]);
-        let conversation = Conversation::open(connection.select(worker).await?);
+        let conversation = Conversation::open(connection.select(worker.clone()).await?);
         let mut observed = ObservedConversation::observe(conversation, None).await?;
         let entry = observed
             .send("author-and-call", "Write and call a program")
@@ -99,15 +148,88 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
             requests[first].model_tools().collect::<Vec<_>>(),
             requests[first + 1].model_tools().collect::<Vec<_>>()
         );
-        let output = request_text(&harness, &requests[first + 2]).await?;
-        assert!(
-            output.contains(if denied {
-                "denied-program"
+        if denied {
+            assert_eq!(result(&requests[first + 2], "invoke")?, "denied-program");
+        } else {
+            echoed(&requests[first + 2], "invoke", "program-value-🦀")?;
+        }
+        let forked_first = provider.request_count();
+        provider.extend([
+            program_code("inherited-call", if denied {
+                "export default await (async () => { try { await tools.echo({text: 'child-value'}); throw new Error('unexpected execution'); } catch (error) { if (error.class !== 'denied') throw error; return 'denied-child-program'; } })();"
             } else {
-                "program-value"
+                "export default await tools.echo({text: 'child-value'});"
             }),
-            "{output}"
+            ScriptedTurn::Text("child done".into()),
+        ]);
+        let AgentReply::Spawned { agent: child, .. } = connection
+            .execute(&AgentCommand::Fork {
+                continuation: None,
+                parent: worker,
+                id: crate::agent::IntentId::try_from("program-reader")
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+                at: 1,
+                brief: ModelContent::Text("Call the inherited program".into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("program fork did not open".into()));
+        };
+        agents::settled(&harness, &child).await?;
+        let requests = provider.requests();
+        assert_eq!(requests.len(), forked_first + 2);
+        assert_eq!(
+            requests[first].model_tools().collect::<Vec<_>>(),
+            requests[forked_first].model_tools().collect::<Vec<_>>()
         );
+        if denied {
+            assert_eq!(
+                result(&requests[forked_first + 1], "inherited-call")?,
+                "denied-child-program"
+            );
+        } else {
+            echoed(&requests[forked_first + 1], "inherited-call", "child-value")?;
+        }
+        if !denied {
+            provider.extend([
+                code("replace-parent-program", r#"
+                    import {write} from 'acyclic';
+                    await write('volume:///home/tools/echo/main.sh', 'printf parent-changed', 'any');
+                    await write('volume:///home/tools/echo/main.ps1', "[Console]::Out.Write('parent-changed')", 'any');
+                    export default 'replaced';
+                "#),
+                ScriptedTurn::Text("parent changed".into()),
+            ]);
+            assert!(
+                observed
+                    .send("replace-program", "Replace the parent program")
+                    .await?
+                    .outcome
+                    .is_completed()
+            );
+            provider.extend([
+                program_code(
+                    "call-frozen-program",
+                    "export default await tools.echo({text: 'frozen-child-value'});",
+                ),
+                ScriptedTurn::Text("child still isolated".into()),
+            ]);
+            let conversation = Conversation::open(connection.select(child).await?);
+            let mut inherited = ObservedConversation::observe(conversation, None).await?;
+            assert!(
+                inherited
+                    .send("call-frozen-program", "Call your inherited program again")
+                    .await?
+                    .outcome
+                    .is_completed()
+            );
+            let last = provider
+                .requests()
+                .pop()
+                .ok_or_else(|| Error::Invalid("child request is absent".into()))?;
+            echoed(&last, "call-frozen-program", "frozen-child-value")?;
+        }
     }
     Ok(())
 }
