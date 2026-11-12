@@ -177,7 +177,7 @@ impl Alarm {
 
 /// One committed state/cursor/alarm tuple. Fields cannot be forged by callers.
 /// Its only durable form is [`State::encode`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct State {
     epoch: u64,
     placement_branch: Option<CommitId>,

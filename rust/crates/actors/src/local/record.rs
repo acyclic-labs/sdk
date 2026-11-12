@@ -7,6 +7,81 @@ use acyclic_stream::StreamPath;
 use prost::Message as _;
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Work {
+    pub(super) entries: usize,
+    pub(super) copied_bytes: usize,
+    pub(super) encoded_bytes: usize,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static WORK: std::cell::Cell<Work> = const { std::cell::Cell::new(Work { entries: 0, copied_bytes: 0, encoded_bytes: 0 }) };
+}
+
+#[cfg(test)]
+pub(super) fn work() -> Work {
+    WORK.with(std::cell::Cell::get)
+}
+
+fn copy_string(value: &str) -> String {
+    #[cfg(test)]
+    WORK.with(|work| {
+        let mut current = work.get();
+        current.copied_bytes += value.len();
+        work.set(current);
+    });
+    value.to_owned()
+}
+
+fn visit_entry() {
+    #[cfg(test)]
+    WORK.with(|work| {
+        let mut current = work.get();
+        current.entries += 1;
+        work.set(current);
+    });
+}
+
+// The original clone boundary is counted, not a reconstruction of its size in
+// a test. Bytes and StreamPath retain backing; owned strings physically copy.
+impl Clone for State {
+    fn clone(&self) -> Self {
+        Self {
+            epoch: self.epoch,
+            placement_branch: self.placement_branch,
+            escrow: self.escrow,
+            checkpoint: self.checkpoint.as_ref().map(|checkpoint| Checkpoint {
+                codec: CodecIdentity {
+                    name: copy_string(&checkpoint.codec.name),
+                    version: copy_string(&checkpoint.codec.version),
+                },
+                bytes: checkpoint.bytes.clone(),
+            }),
+            subscriptions: self
+                .subscriptions
+                .iter()
+                .map(|(id, subscription)| {
+                    visit_entry();
+                    (copy_string(id), subscription.clone())
+                })
+                .collect(),
+            alarm: self.alarm.clone(),
+            paused: self.paused,
+            metadata: self
+                .metadata
+                .iter()
+                .map(|(key, value)| {
+                    visit_entry();
+                    (copy_string(key), value.clone())
+                })
+                .collect(),
+            journal_tail: self.journal_tail,
+        }
+    }
+}
+
 /// Framing bytes one record adds beyond its variable fields, at most: tags,
 /// lengths and the fixed integers and flags.
 pub const STATE_RECORD_OVERHEAD: usize =
@@ -73,18 +148,19 @@ impl State {
             epoch: self.epoch,
             escrow: self.escrow.map(crate::escrow::Escrow::encode),
             checkpoint: self.checkpoint.as_ref().map(|checkpoint| CheckpointRecord {
-                codec: checkpoint.codec.name.clone(),
-                version: checkpoint.codec.version.clone(),
+                codec: copy_string(&checkpoint.codec.name),
+                version: copy_string(&checkpoint.codec.version),
                 bytes: checkpoint.bytes.clone(),
             }),
             subscriptions: self
                 .subscriptions
                 .iter()
                 .map(|(id, subscription)| {
+                    visit_entry();
                     (
-                        id.clone(),
+                        copy_string(id),
                         SubscriptionRecord {
-                            path: subscription.path.as_str().to_owned(),
+                            path: copy_string(subscription.path.as_str()),
                             cursor: subscription.cursor,
                         },
                     )
@@ -97,7 +173,10 @@ impl State {
             metadata: self
                 .metadata
                 .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
+                .map(|(key, value)| {
+                    visit_entry();
+                    (copy_string(key), value.clone())
+                })
                 .collect(),
             journal_tail: self.journal_tail,
             placement_branch: self
@@ -107,6 +186,12 @@ impl State {
         let mut record = Vec::with_capacity(STATE_FORMAT_V2.len() + payload.encoded_len());
         record.extend_from_slice(STATE_FORMAT_V2);
         payload.encode_raw(&mut record);
+        #[cfg(test)]
+        WORK.with(|work| {
+            let mut current = work.get();
+            current.encoded_bytes += record.len();
+            work.set(current);
+        });
         record
     }
 
@@ -183,6 +268,73 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Full-state export necessarily encodes all selected state. Keep this as
+    /// the positive byte-counter control for delta-publication scaling proofs;
+    /// a successful export test is not a claim that publication is incremental.
+    #[test]
+    fn full_export_exposes_original_copied_and_encoded_state_bytes() -> Result<(), Error> {
+        fn measure(population: usize) -> Result<Work, Error> {
+            let mut state = State {
+                epoch: 1,
+                placement_branch: None,
+                escrow: None,
+                checkpoint: None,
+                subscriptions: BTreeMap::new(),
+                alarm: Alarm::default(),
+                paused: false,
+                metadata: BTreeMap::new(),
+                journal_tail: 0,
+            };
+            for index in 0..population {
+                let id = format!("entry-{index:08x}");
+                state
+                    .metadata
+                    .insert(id.clone(), bytes::Bytes::from_static(b"retained-value"));
+                state.subscriptions.insert(
+                    id,
+                    Subscription {
+                        path: StreamPath::new(format!("input/{index:08x}"))?,
+                        cursor: 0,
+                    },
+                );
+            }
+            let before = work();
+            let copied = state.clone();
+            let encoded = copied.encode();
+            let after = work();
+            let measured = Work {
+                entries: after.entries - before.entries,
+                copied_bytes: after.copied_bytes - before.copied_bytes,
+                encoded_bytes: after.encoded_bytes - before.encoded_bytes,
+            };
+            assert_eq!(
+                measured.encoded_bytes,
+                encoded.len(),
+                "count the original encoded output"
+            );
+            assert_eq!(
+                measured.entries,
+                4 * population,
+                "clone and encode each visit both original maps"
+            );
+            assert_eq!(State::decode(&encoded)?, state);
+            let key = "entry-00000000";
+            assert_eq!(
+                copied.metadata[key].as_ptr(),
+                state.metadata[key].as_ptr(),
+                "Bytes clone must not be charged as a payload copy"
+            );
+            Ok(measured)
+        }
+        let small = measure(256)?;
+        let large = measure(4_096)?;
+        assert!(small.copied_bytes > 0 && small.encoded_bytes > 0);
+        assert_eq!(large.entries, 16 * small.entries);
+        assert_eq!(large.copied_bytes, 16 * small.copied_bytes);
+        assert!(large.encoded_bytes > 10 * small.encoded_bytes);
+        Ok(())
+    }
 
     #[test]
     fn a_state_record_round_trips_with_raw_checkpoint_bytes_within_its_bound() {
