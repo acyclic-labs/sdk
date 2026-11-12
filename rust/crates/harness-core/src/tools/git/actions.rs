@@ -374,16 +374,9 @@ where
         tree: &GitTreeRef,
     ) -> Result<GitFilesystemResult, Error> {
         let generation = self.generation(tree).await?;
-        let result = grep_git_generation(
-            &generation,
-            pattern,
-            path,
-            100_000,
-            16 * 1024 * 1024,
-            100_000,
-        )
-        .await
-        .map_err(Error::from)?;
+        let result = grep_git_generation(&generation, pattern, path, None, None, None)
+            .await
+            .map_err(Error::from)?;
         Ok(GitFilesystemResult::Data {
             kind: "grep".to_owned(),
             value: serde_json::to_value(result).map_err(json_error)?,
