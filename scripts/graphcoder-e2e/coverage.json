@@ -237,6 +237,7 @@
       "cases": [
         "pty-conversation",
         "pty-help",
+        "pty-command-capabilities",
         "pty-markdown",
         "pty-audit-table",
         "pty-code-highlight",

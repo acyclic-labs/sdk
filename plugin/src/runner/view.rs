@@ -39,6 +39,7 @@ use std::{sync::Arc, time::Instant};
 
 type Failure = Box<dyn std::error::Error>;
 use acyclic_harness::completion::Exit;
+mod capabilities;
 mod diff;
 mod query;
 mod session;
@@ -720,7 +721,7 @@ impl View {
     /// The commands and keys, from the same catalog completion uses.
     fn help(catalog: &CommandCatalog, input: &PromptInput) -> Vec<Line<'static>> {
         let mut lines = vec![Line::raw("Commands")];
-        for command in catalog.commands() {
+        for command in capabilities::commands(catalog) {
             let aliases = command
                 .aliases
                 .iter()
@@ -1119,7 +1120,11 @@ async fn run_current(
             panel.wrap(Screen::default().areas(area, &input).overlay_columns());
         }
         let (areas, page) = {
-            let status = Line::raw(view.status());
+            let status = Line::raw(
+                capabilities::selected(&ui.catalog, input.editor.text())
+                    .filter(|_| view.prompt.is_none())
+                    .map_or_else(|| view.status(), str::to_owned),
+            );
             let mut header = view.header();
             header
                 .spans
@@ -1628,23 +1633,28 @@ async fn run_current(
                                     && (view.approval_status.is_none() || approval_reviewed != view.approval_status)
                                 {
                                     view.notice = refusal("Review the complete approval action before deciding (PgDn: more)");
-                                    input.editor = Editor::new(&text);
+                                    input.editor.set_text(&text, now);
                                     continue;
                                 }
                                 match view.approval_answer(&text) {
                                     Ok(Some((id, binding, approved))) => {
                                         if let Err(error) = conversation.decide_with_binding(&id, binding, approved).await {
                                             view.notice = refusal(error);
-                                            input.editor = Editor::new(&text);
+                                            input.editor.set_text(&text, now);
                                         }
                                         continue;
                                     }
                                     Err(reason) => {
                                         view.notice = refusal(reason);
-                                        input.editor = Editor::new(&text);
+                                        input.editor.set_text(&text, now);
                                         continue;
                                     }
                                     Ok(None) => {}
+                                }
+                                if let Some(reason) = capabilities::selected(&ui.catalog, &text) {
+                                    view.notice = Some(reason.into());
+                                    input.editor.set_text(&text, now);
+                                    continue;
                                 }
                                 match ui.catalog.resolve(&text, u64::MAX) {
                                     Ok(None) => {}
@@ -1695,7 +1705,7 @@ async fn run_current(
                                     }
                                     Err(error) => {
                                         view.notice = refusal(error);
-                                        input.editor = Editor::new(&text);
+                                        input.editor.set_text(&text, now);
                                         continue;
                                     }
                                 }
@@ -1709,7 +1719,7 @@ async fn run_current(
                                     let command = reply.command(conversation.agent().clone(), acyclic_harness::agent::IntentId::try_from(acyclic_harness::OperationId::new().to_string())?, blocks)?;
                                     match conversation.connection().execute(&command).await {
                                         Ok(_) => { queries.close(query_future.as_mut()); }
-                                        Err(error) => { view.notice = refusal(error); input.editor = Editor::new(&text); }
+                                        Err(error) => { view.notice = refusal(error); input.editor.set_text(&text, now); }
                                     }
                                     continue;
                                 }
@@ -1727,7 +1737,7 @@ async fn run_current(
                                     Ok(inbox) => inbox,
                                     Err(error) => {
                                         view.notice = refusal(error);
-                                        input.editor = Editor::new(&text);
+                                        input.editor.set_text(&text, now);
                                         unsent = Some((id, text));
                                         continue;
                                     }

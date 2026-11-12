@@ -1,0 +1,13 @@
+{
+  "id": "pty-command-capabilities",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [] },
+  "inputs": [{ "mode": "pty", "actions": [
+    { "when": { "contains": ["GraphCoder"], "cursor": true }, "send": "/sh git --no-optional-locks status --short" },
+    { "when": { "contains": ["Direct tools unavailable here", "/sh git --no-optional-locks status --short"], "cursor": true }, "send": "\r" },
+    { "when": { "contains": ["Direct tools unavailable here", "/sh git --no-optional-locks status --short"], "cursor": true }, "send": "\u0015/shortcuts \r" },
+    { "when": { "contains": ["Help", "/compact", "Summarize the current context"] }, "send": "\u001b" },
+    { "when": { "contains": ["GraphCoder"], "absent": ["Summarize the current context"], "cursor": true }, "detach": true }
+  ] }],
+  "assert": { "requests": 0 }
+}

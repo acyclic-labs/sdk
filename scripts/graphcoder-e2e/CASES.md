@@ -116,3 +116,7 @@ Search seeds `.codex/search.json` under the selected settings root (`CODEX_HOME/
 
 `pty-audit-table` requires both source locations from an over-width audit cell
 and the final guarantee column to remain visible through normal transcript wrapping.
+
+`pty-command-capabilities` requires a direct-tool restriction before Enter,
+retains the refused command in the editor, and opens working command help
+without submitting a model request.

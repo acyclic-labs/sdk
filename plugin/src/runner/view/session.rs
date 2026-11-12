@@ -171,7 +171,8 @@ impl Session {
     /// Completion consumes the same validated, normalized descriptors as
     /// dispatch and help. Shipped defaults are never written to the volume.
     pub fn complete(&self, input: &mut PromptInput) -> Result<(), Failure> {
-        let commands = serde_json::to_vec(&self.catalog.commands().collect::<Vec<_>>())?;
+        let commands =
+            serde_json::to_vec(&capabilities::commands(&self.catalog).collect::<Vec<_>>())?;
         input.completion.set_file(COMMANDS, Some(&commands))?;
         input.refresh_completions();
         Ok(())
