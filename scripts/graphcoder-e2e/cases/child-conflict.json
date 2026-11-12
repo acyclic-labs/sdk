@@ -317,6 +317,7 @@
     ]
   },
   "inputs": [
+    { "mode": "service" },
     {
       "mode": "headless",
       "text": "PARENT_E2E_TASK",

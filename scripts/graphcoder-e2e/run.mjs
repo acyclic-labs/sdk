@@ -176,6 +176,9 @@ async function execute(test, prepared) {
         const service = await processes.startOwned(binary,
           [...fixture.args, ...(input.endpoint ? ["serve", "127.0.0.1:0"] : ["--local-service", "--signal-ready"])],
           { cwd: fixture.workspace, env: inputFixture.env });
+        // Retain the owner failure too; its stdout is readiness, not client output.
+        void service.closed.then(capture => captures.push({ ...capture, stdout: "" }),
+          error => fixture.fail(error));
         if (input.endpoint) {
           const publication = await new Spool(service.child.stdout, service.closed,
             { transcript: join(artifact, "endpoint.jsonl") }).next(() => true);
