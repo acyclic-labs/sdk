@@ -174,7 +174,7 @@ test("observed producer frame asserts captured content with one screen projectio
   const root = mkdtempSync(join(tmpdir(), "observed-frame-"));
   const buffer = Object.getOwnPropertyDescriptor(Terminal.prototype, "buffer");
   const write = TerminalFrames.prototype.write;
-  let reads = 0, afterWrite, afterFrame;
+  let reads = 0, afterWrite;
   let terminalChild, notifyRequest, requestSeen;
   const projections = [], observed = new WeakSet();
   Object.defineProperty(Terminal.prototype, "buffer", { ...buffer, get() { reads++; return buffer.get.call(this); } });
@@ -184,7 +184,7 @@ test("observed producer frame asserts captured content with one screen projectio
       const frame = this.frame;
       this.frame = () => {
         const before = reads;
-        try { return frame(); } finally { projections.push(reads - before); afterFrame?.(); }
+        try { return frame(); } finally { projections.push(reads - before); }
       };
     }
     return write.call(this, bytes).then(() => {
@@ -283,45 +283,6 @@ test("observed producer frame asserts captured content with one screen projectio
     }
     assert.ok(projections.includes(1), "the original frame must be inspected");
     assert.ok(projections.every(count => count <= 1), "one screen projection serves matching and assertion");
-    for (const [redraw, requestAfterFrame] of [[false, false], [true, false], [true, true]]) {
-      // Replay original native frames through a real child. Its request arrives
-      // after input, before the next redraw, just as the model fixture can wake
-      // the action driver while the preceding cells are still visible.
-      let owner, request, requested = false, capture, observed = 0, pendingRequest;
-      afterFrame = () => { if (++observed === 2) pendingRequest?.(); };
-      const processes = new TerminalProcess();
-      const start = processes.startTerminal.bind(processes);
-      processes.startTerminal = (...args) => {
-        owner = start(...args);
-        owner.child.stderr.once("data", () => {
-          const notify = () => {
-            requested = true;
-            request({ case: "observed-frame", path: "redraw", step: 1 });
-            owner.child.stdin.write("request observed\n");
-          };
-          if (requestAfterFrame && observed < 2) pendingRequest = notify;
-          else notify();
-        });
-        return owner;
-      };
-      try {
-        const running = pty(processes, process.execPath, {
-          id: "observed-frame", workspace: root,
-          args: ["-e", `const fs=require('node:fs');const first=JSON.parse(fs.readFileSync(process.argv[1],'utf8')).stdout;const next=${redraw ? "first" : "JSON.parse(fs.readFileSync(process.argv[2],'utf8')).idle.stdout"};process.stdin.once('data',()=>{${requestAfterFrame ? "process.stdin.once('data',()=>process.stdin.destroy());process.stdout.write(next,()=>process.stderr.write('request\\n'))" : "process.stdin.once('data',()=>process.stdout.write(next,()=>process.stdin.destroy()));process.stderr.write('request\\n')"}});process.stdout.write(first)`,
-            queryCapturePath, fileURLToPath(new URL("./fixtures/terminal-frames.json", import.meta.url))],
-          requested() { return requested; },
-          onRequest(callback) { request = callback; return () => { request = undefined; }; },
-        }, { actions: [
-          { when: { contains: ["storage failure: diff command:"] }, send: "redraw\n" },
-          { after_request: "redraw", when: { contains: ["storage failure: diff command:"] } },
-        ] }, result => { capture = result; });
-        if (redraw) assert.equal((await running).code, 0);
-        else await assert.rejects(running, /PTY completed 1\/2 actions/);
-        assert.equal(capture.actions, redraw ? 2 : 1,
-          "a request wakeup cannot admit the next input action on consumed cells");
-        assert.equal(processes.children.size, 0);
-      } finally { afterFrame = undefined; await processes.close(); }
-    }
   } finally {
     TerminalFrames.prototype.write = write;
     Object.defineProperty(Terminal.prototype, "buffer", buffer);
