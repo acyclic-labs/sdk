@@ -83,6 +83,7 @@ async fn reservation_rejection_preserves_due_grants_and_original_fence() -> Test
             )?;
             let ticket = store.enqueue_invoke(&invocation).await?;
             let delivery = Delivery {
+                request: crate::guest::RequestId::new(1),
                 actor: actor.clone(),
                 epoch: state.epoch(),
                 trigger: Trigger::Record {
@@ -115,6 +116,7 @@ async fn reservation_rejection_preserves_due_grants_and_original_fence() -> Test
             // The actual alarm transition is the eager-cleanup negative
             // control: performing it before refusal changes the original book.
             let alarm = Delivery {
+                request: crate::guest::RequestId::new(2),
                 record: None,
                 trigger: Trigger::Alarm {
                     generation: 1,
