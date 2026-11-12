@@ -134,7 +134,8 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                 let mut entries = reserve_slots::<PathBatchEntry>(count, accounting, data_custody)?;
                 let mut current =
                     reserve_slots::<Option<FileRecord>>(scratch_count, accounting, data_custody)?;
-                let mut done = reserve_slots::<u8>(scratch_count, accounting, data_custody)?;
+                let mut remaining =
+                    reserve_slots::<usize>(scratch_count, accounting, data_custody)?;
                 let mut active =
                     reserve_slots::<ActivePath>(scratch_count, accounting, data_custody)?;
                 let mut names =
@@ -177,14 +178,12 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     let entries = &mut entries.value[start..end];
                     current.value.clear();
                     current.value.resize(count, None);
-                    done.value.clear();
-                    done.value.resize(count, 0);
+                    remaining.value.clear();
                     for index in 0..count {
                         let is_root =
                             examine_item(accounting, None, || paths.get(index).is_root())?;
                         if is_root {
                             entries[index].record = Some(root);
-                            done.value[index] = 1;
                             if observe && capture_terminal {
                                 let expected =
                                 crate::kernel::probe::capture_file_record_state_with_accounting(
@@ -200,22 +199,15 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                             }
                         } else {
                             current.value[index] = Some(root);
+                            remaining.value.push(index);
                         }
                     }
-                    let maximum_depth = (0..count)
-                        .map(|index| paths.get(index).depth())
-                        .max()
-                        .unwrap_or(0);
-                    for depth in 0..maximum_depth {
+                    let mut depth = 0;
+                    while !remaining.value.is_empty() {
                         pending.value.clear();
                         active.value.clear();
-                        for index in 0..count {
-                            let finished = examine_item(accounting, None, || {
-                                done.value[index] != 0 || paths.get(index).depth() <= depth
-                            })?;
-                            if finished {
-                                continue;
-                            }
+                        for index in remaining.value.drain(..) {
+                            examine_item(accounting, None, || ())?;
                             let FilePayload::Directory { entries: directory } = current.value
                                 [index]
                                 .ok_or(PathLookupError::KindMismatch)?
@@ -227,7 +219,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                         parent: None,
                                         resolved_components: usize_to_u64(depth),
                                     };
-                                    done.value[index] = 1;
                                     continue;
                                 }
                                 return Err(PathLookupError::NotDirectory.into());
@@ -337,7 +328,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                         parent: current.value[index],
                                         resolved_components: usize_to_u64(depth),
                                     };
-                                    done.value[index] = 1;
                                 }
                             }
                             drop_bindings(bindings, accounting)?;
@@ -394,16 +384,14 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                     parent: current.value[binding.path_index],
                                     resolved_components: usize_to_u64(next_depth),
                                 };
-                                done.value[binding.path_index] = 1;
                                 current.value[binding.path_index] = None;
                             } else {
                                 current.value[binding.path_index] = Some(record);
+                                remaining.value.push(binding.path_index);
                             }
                         }
                         drop_slots(records, accounting)?;
-                    }
-                    if done.value.contains(&0) {
-                        return Err(PathLookupError::KindMismatch.into());
+                        depth += 1;
                     }
                 }
                 let retained_allocation_bytes = usize_to_u64(entries.value.capacity())
@@ -414,7 +402,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                 drop_slots(pending, accounting)?;
                 drop_slots(names, accounting)?;
                 drop_slots(active, accounting)?;
-                drop_slots(done, accounting)?;
+                drop_slots(remaining, accounting)?;
                 drop_slots(current, accounting)?;
                 let ReadOwned {
                     value: dependencies,

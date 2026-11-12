@@ -381,3 +381,97 @@ async fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
     assert!(failure.work.backend_read_operations > 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn finished_batch_paths_add_only_linear_work_beside_a_deep_lookup()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_test_support::scale::{Bound, assert_scales};
+
+    let mut measured = Vec::new();
+    for size in [16_u64, 128] {
+        let store = MemoryObjectStore::default();
+        let metadata = put_file_metadata(&store, metadata()).await?;
+        let name = LogicalName::new(NameEncoding::Utf8, b"child".to_vec())?;
+        let id = |index: u64| FileId::from_bytes(u128::from(index + 1).to_be_bytes());
+        let mut records = Vec::new();
+        for index in 0..=size {
+            let entries = if index == size {
+                Vec::new()
+            } else {
+                vec![TreeEntry {
+                    name: name.clone(),
+                    file_id: id(index + 1),
+                    kind: FileKind::Directory,
+                }]
+            };
+            let entries = put_tree_page(&store, &TreePage::Leaf(entries), 8).await?;
+            records.push(FileRecord {
+                bindings: None,
+                file_id: id(index),
+                kind: FileKind::Directory,
+                link_count: 1,
+                metadata,
+                payload: FilePayload::Directory { entries },
+            });
+        }
+        let file_table = put_file_table_page(&store, &FileTablePage::Leaf(records), 256).await?;
+        let generation = GenerationRoot {
+            volume_id: VolumeId::from_bytes([17; 16]),
+            root_file_id: id(0),
+            file_table,
+            parents: Vec::new(),
+            required_features: 0,
+        };
+        let deep = NamespacePath::new(vec![name; usize::try_from(size)?], config().limits)?;
+        let cancellation = CancellationToken::new();
+        let single = lookup_paths(
+            &store,
+            &generation,
+            std::slice::from_ref(&deep),
+            config(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        let root = NamespacePath::new(Vec::new(), config().limits)?;
+        let mut paths = vec![root; usize::try_from(size)?];
+        paths.insert(paths.len() / 2, deep);
+        let batch = lookup_paths(
+            &store,
+            &generation,
+            &paths,
+            config(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        assert_eq!(batch.entries[paths.len() / 2], single.entries[0]);
+        for (path, entry) in paths.iter().zip(&batch.entries) {
+            if path.is_root() {
+                assert_eq!(entry.record.map(|record| record.file_id), Some(id(0)));
+                assert_eq!(entry.resolved_components, 0);
+            }
+        }
+        assert_eq!(batch.work.page_reads, single.work.page_reads);
+        assert_eq!(
+            batch.work.backend_read_operations,
+            single.work.backend_read_operations
+        );
+        let additional = batch
+            .work
+            .items_examined
+            .checked_sub(single.work.items_examined)
+            .ok_or("batch work omitted the deep lookup")?;
+        assert!(
+            additional > 0,
+            "original item counter must observe root queries"
+        );
+        assert!(
+            additional <= 8 * size + 16,
+            "finished paths were revisited: {additional}"
+        );
+        measured.push((size, additional));
+    }
+    assert_scales(Bound::Linear, measured[0], measured[1]);
+    Ok(())
+}
