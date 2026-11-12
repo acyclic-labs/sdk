@@ -5,6 +5,8 @@ use acyclic_fs::{CancellationToken, MountOptions, WorkBudget};
 use acyclic_stream::BoxProviderFuture;
 
 #[cfg(all(test, not(loom)))]
+mod concurrency_tests;
+#[cfg(all(test, not(loom)))]
 mod tests;
 
 pub(super) fn view_options(
