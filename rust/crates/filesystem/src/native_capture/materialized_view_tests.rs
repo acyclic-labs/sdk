@@ -83,38 +83,6 @@ async fn check_materialized_metadata() -> Result<(), Box<dyn std::error::Error>>
             assert!(checkout.has_pending_mutations());
         }
     }
-    crate::restore_checkout_host_path(
-        &mut reader,
-        Path::new("file-0"),
-        crate::HostPathReplacement::Atomic,
-        &materialization,
-        crate::performance::work_budget(100_000, 64 * 1024 * 1024),
-        &cancellation,
-    )
-    .await?;
-    let mut restored = workspace
-        .checkout(
-            crate::model::GenerationSelector::Head,
-            crate::model::CheckoutMode::tracking_transaction(),
-            budget,
-            &cancellation,
-        )
-        .await?
-        .value;
-    let recaptured = capture_baseline(
-        &mut restored,
-        &options,
-        &CapturePolicy::default(),
-        budget,
-        &cancellation,
-    )
-    .await?
-    .value;
-    assert_eq!(
-        recaptured.changed_paths, 0,
-        "restored defaults belong to the final root"
-    );
-    assert!(!restored.has_pending_mutations());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -201,6 +169,73 @@ async fn check_materialized_metadata() -> Result<(), Box<dyn std::error::Error>>
     .value;
     assert_eq!(receipt.changed_paths, 1);
     assert!(checkout.has_pending_mutations());
+    let previous_entries = std::fs::read_dir(host.path())?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    crate::restore_checkout_host_path(
+        &mut reader,
+        Path::new("file-3"),
+        crate::HostPathReplacement::Atomic,
+        &materialization,
+        crate::performance::work_budget(100_000, 64 * 1024 * 1024),
+        &cancellation,
+    )
+    .await?;
+    let mut restored = workspace
+        .checkout(
+            crate::model::GenerationSelector::Head,
+            crate::model::CheckoutMode::tracking_transaction(),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let selected = host_path_to_namespace(
+        Path::new("file-3"),
+        reader.volume_config().profile,
+        reader.volume_config().limits,
+    )?;
+    let recaptured = capture_paths(&mut restored, &[selected], &options, budget, &cancellation)
+        .await?
+        .value;
+    assert_eq!(
+        recaptured.changed_paths, 0,
+        "restored defaults belong to the final root"
+    );
+    assert!(!restored.has_pending_mutations());
+    let added = std::fs::read_dir(host.path())?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|name| !previous_entries.contains(name))
+        .collect::<Vec<_>>();
+    assert_eq!(added.len(), 1, "restore retains one process-safe lock file");
+    let complete = capture_baseline(
+        &mut restored,
+        &options,
+        &CapturePolicy::default(),
+        budget,
+        &cancellation,
+    )
+    .await?
+    .value;
+    assert_eq!(
+        complete.changed_paths, 1,
+        "full capture preserves new files"
+    );
+    let added = host_path_to_namespace(
+        Path::new(&added[0]),
+        reader.volume_config().profile,
+        reader.volume_config().limits,
+    )?;
+    assert!(
+        restored
+            .lookup_no_follow(&added, budget, &cancellation)
+            .await?
+            .value
+            .record
+            .is_some()
+    );
     let other = tempfile::tempdir()?;
     options.materialized_view = Some(NativeViewBaseline::new(
         capture_root_identity(other.path())?,
