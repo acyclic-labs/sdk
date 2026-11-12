@@ -43,6 +43,20 @@ impl WasmMachinesWorkspace {
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 impl WasmMachinesWorkspace {
+    pub(super) async fn admit(
+        owner: &super::WasmAgentAuthority,
+        providers: &super::WasmAgentProviders,
+        source: &JsValue,
+        request: u64,
+    ) -> Result<Self, JsValue> {
+        owner.issuer.verifier(&mut None).map_err(super::js_error)?;
+        let admit =
+            js_sys::Reflect::get(source, &"admit".into())?.dyn_into::<js_sys::Function>()?;
+        let admitted = admit.call1(source, &js_sys::BigInt::from(request).into())?;
+        let admitted =
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&admitted)).await?;
+        Self::open(owner, providers, admitted).await
+    }
     /// Binds a trusted `machines:/` grant and copies the selected workspace when
     /// the provider has no native attachment capability.
     /// The source is supplied by authenticated platform admission, never by
@@ -241,6 +255,12 @@ const SOURCE: &str = r#"
 /** Trusted projection of the ORIGINAL resource admission, never guest config.
  * The authority passed to open and this source must belong to the same caller,
  * Machine incarnation, selected volume and invocation lifetime. */
+export interface WasmMachinesWorkspaceAdmission {
+    /** Host resolves this opaque request id to its actor and original attempt.
+     * Called within onRecord; the returned Machine is retained only by that attempt. */
+    admit(requestId: bigint): WasmMachinesWorkspaceSource | Promise<WasmMachinesWorkspaceSource>;
+}
+
 export interface WasmMachinesWorkspaceSource {
     /** Canonical harness.v2.ProviderRef protobuf. */
     readonly provider: Uint8Array;
