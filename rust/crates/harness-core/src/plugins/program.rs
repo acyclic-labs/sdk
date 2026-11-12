@@ -28,7 +28,10 @@ impl LoadedProgram {
     /// # Errors
     /// Refuses a non-shell capability or an unsupported command form.
     pub fn bind(self, shell: std::sync::Arc<crate::tool::Tool>) -> Result<crate::tool::Tool> {
-        let shell = std::sync::Arc::new(shell.executor.capability().unwrap_or(&shell).clone());
+        let shell = match shell.executor.capability() {
+            Some(capability) => std::sync::Arc::new(capability.clone()),
+            None => shell,
+        };
         if shell.definition.name != crate::tools::shell::PLATFORM.name {
             return Err(Error::Invalid(
                 "programs require the canonical shell capability".into(),
