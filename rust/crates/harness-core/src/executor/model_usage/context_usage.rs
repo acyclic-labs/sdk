@@ -149,7 +149,7 @@ impl Header {
                     }
                     SpanEvent::End {
                         depth: 4,
-                        kind: SpanKind::Scalar,
+                        kind: SpanKind::String,
                         start,
                         end,
                     } if fields.projection && fields.accounting && fields.count_kind => {
@@ -197,7 +197,7 @@ mod tests {
     use proptest::prelude::*;
 
     #[tokio::test]
-    async fn usage_reads_the_original_projection_with_deep_tool_schemas() -> Result<()> {
+    async fn usage_round_trips_every_accounting_state_with_deep_schemas() -> Result<()> {
         use crate::{
             context::{Context, ModelContextCapacity, ModelTokenCount},
             executor::{ContextAccounting, ResponseProjection, transcript},
@@ -250,58 +250,67 @@ mod tests {
                 continue;
             }
             let prepared = prepared?;
-            let context = Context {
-                messages: prepared.request().messages.clone(),
-                metadata: Default::default(),
-                current_input_index: Some(0),
-            };
-            let accounting = ContextAccounting {
-                capacity: ModelContextCapacity {
-                    context_tokens: 65_536,
-                    output_tokens: None,
-                },
-                count: InputAccounting::Counted(
+            for count in [
+                Some(InputAccounting::Counted(
                     ModelTokenCount::from_upper_bounds(prepared.request_digest(), 7, vec![1])
                         .into(),
-                ),
-            };
-            let reference = transcript::stage_projection(
-                journal.as_ref(),
-                crate::OperationId::new(),
-                "deep-projection",
-                (
-                    &ResponseProjection {
-                        context,
-                        steering: None,
-                        canonical: None,
-                        checkpoint: None,
-                        working: None,
-                        accounting: None,
-                    },
-                    &prepared,
-                ),
-                Some(&accounting),
+                )),
+                Some(InputAccounting::Overflow),
+                Some(InputAccounting::Unavailable),
                 None,
-                Some(&io),
-            )
-            .await?;
-            assert_eq!(
-                read(journal.as_ref(), &reference).await?,
-                ContextUsage::Counted {
-                    input_tokens: 8,
-                    capacity_tokens: 65_536,
-                }
-            );
-            // The same original record remains recoverable through the saved
-            // projection reader, rather than only through the usage projection.
-            let (retained, _) = transcript::load_projection(
-                journal.as_ref(),
-                &reference,
-                Limits::default(),
-                Some(&io),
-            )
-            .await?;
-            assert_eq!(retained.context.messages, prepared.request().messages);
+            ] {
+                let expected = match &count {
+                    Some(InputAccounting::Counted(_)) => ContextUsage::Counted {
+                        input_tokens: 8,
+                        capacity_tokens: 65_536,
+                    },
+                    Some(InputAccounting::Overflow | InputAccounting::Unavailable) | None => {
+                        ContextUsage::Unavailable
+                    }
+                };
+                let accounting = count.map(|count| ContextAccounting {
+                    capacity: ModelContextCapacity {
+                        context_tokens: 65_536,
+                        output_tokens: None,
+                    },
+                    count,
+                });
+                let reference = transcript::stage_projection(
+                    journal.as_ref(),
+                    crate::OperationId::new(),
+                    "deep-projection",
+                    (
+                        &ResponseProjection {
+                            context: Context {
+                                messages: prepared.request().messages.clone(),
+                                metadata: Default::default(),
+                                current_input_index: Some(0),
+                            },
+                            steering: None,
+                            canonical: None,
+                            checkpoint: None,
+                            working: None,
+                            accounting: None,
+                        },
+                        &prepared,
+                    ),
+                    accounting.as_ref(),
+                    None,
+                    Some(&io),
+                )
+                .await?;
+                assert_eq!(read(journal.as_ref(), &reference).await?, expected);
+                // The same original record remains recoverable through the saved
+                // projection reader, rather than only through the usage projection.
+                let (retained, _) = transcript::load_projection(
+                    journal.as_ref(),
+                    &reference,
+                    Limits::default(),
+                    Some(&io),
+                )
+                .await?;
+                assert_eq!(retained.context.messages, prepared.request().messages);
+            }
         }
         Ok(())
     }
