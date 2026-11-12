@@ -194,8 +194,8 @@ include!("lib/receipt.rs");
 mod changes;
 mod record_headers;
 pub use changes::{
-    ChangeEntryRef, READER_FORMATS, WRITER_FORMAT, changes_chunk_len, changes_encoded_len,
-    decode_changes, is_changes,
+    ChangeEntryRef, READER_FORMATS, WRITER_FORMAT, changes_chunk_len, changes_context,
+    changes_encoded_len, decode_changes, is_changes,
 };
 pub use record_headers::{
     MAX_RECORD_KEY_BYTES, RecordAttribute, RecordAttributeIter, RecordAttributes, RecordHeaders,

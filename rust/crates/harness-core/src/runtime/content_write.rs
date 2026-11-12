@@ -130,10 +130,9 @@ impl<'a> SummaryDestination<'a> {
     }
 }
 
-pub(super) enum ContentPublication<'a> {
+pub(super) enum ContentPublication {
     PathBound,
     OperationBound,
-    Replacement(&'a FileRef),
 }
 
 impl TaskContext {
@@ -358,7 +357,7 @@ impl TaskContext {
         bytes: &[u8],
         media_type: &str,
         display_name: &str,
-        publication: ContentPublication<'_>,
+        publication: ContentPublication,
         scope: &RuntimeScope,
         io: Option<&ContentIo>,
     ) -> Result<(FileRef, u64)> {
@@ -380,12 +379,8 @@ impl TaskContext {
         let content = binding.ok_or_else(|| {
             content_error(io, ErrorCode::Unsupported, "content publisher is not bound")
         })?;
-        let source = match publication {
-            ContentPublication::Replacement(source) => Some(source),
-            _ => None,
-        };
         let (writer, volume, relative) =
-            publication_destination(Some(content), scope, source, path, io)?;
+            publication_destination(Some(content), scope, None, path, io)?;
         crate::tool::question::authorize_publication(volume, &relative, bytes, scope, io)?;
         if !content.reader.supports_read(volume, io)? {
             return Err(content_error(
@@ -396,29 +391,6 @@ impl TaskContext {
         }
         writer.supports_stage(io)?;
         let output = match publication {
-            ContentPublication::Replacement(source) => {
-                self.authorize_file_read(
-                    source,
-                    scope,
-                    scope.grants(),
-                    super::content_read::ReadExtent::Body,
-                    io,
-                )?;
-                if source.volume() != volume || source.path() != relative.as_ref() {
-                    return Err(content_error(
-                        io,
-                        ErrorCode::Unauthorized,
-                        "source differs from the owner-bound destination",
-                    ));
-                }
-                content
-                    .reader
-                    .verify(source, source.descriptor().byte_length(), io)?
-                    .await?;
-                writer
-                    .stage_at(operation_id, source, bytes, Some(scope.grants()), io)?
-                    .await?
-            }
             ContentPublication::OperationBound => {
                 writer
                     .stage_once(

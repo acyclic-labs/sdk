@@ -288,6 +288,7 @@ impl Handler for Package {
                 ]);
             }
             Ok(Transition {
+                pause: false,
                 response: invocation.is_some().then_some(bytes),
                 checkpoint: Checkpoint {
                     codec: codec(),
@@ -764,6 +765,7 @@ impl Handler for Held {
                 return Err(guest("late old failure"));
             }
             Ok(Transition {
+                pause: false,
                 response: Some(Bytes::from_static(b"accepted")),
                 checkpoint: Checkpoint {
                     codec: codec(),

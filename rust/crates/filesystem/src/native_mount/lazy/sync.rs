@@ -29,6 +29,7 @@ struct PreparedPublication<'a, A: 'static, O: 'static, E> {
 }
 
 struct PublicationState<'a, F> {
+    operation: Option<crate::OperationId>,
     permit: crate::PublicationPermit,
     work: &'a crate::NativeMaterializationWork,
     cancellation: &'a CancellationToken,
@@ -51,6 +52,7 @@ where
         cancellation: &CancellationToken,
         acknowledged: &mut Option<crate::NativePublicationSnapshot>,
         before_publication: &mut F,
+        operation: Option<crate::OperationId>,
         selected: Option<(
             crate::LazySnapshotRef,
             &crate::SelectedImportPlan,
@@ -66,6 +68,7 @@ where
         let result = self
             .apply_publication(
                 &mut PublicationState {
+                    operation,
                     permit,
                     work,
                     cancellation,
@@ -139,7 +142,11 @@ where
         let mut input = adapter::InputBuffers::new(&mut input_carrier)?;
         let (removals, captured_records) = self.removal_inputs(&mut input)?;
         let dirty = self.dirty_detached_records(work).await?;
-        if removals.is_empty() && dirty.value.is_empty() && selected.is_none() {
+        if removals.is_empty()
+            && dirty.value.is_empty()
+            && selected.is_none()
+            && publication.operation.is_none()
+        {
             return self.publish_clean(publication, accounting).await;
         }
         let PreparedPublication {
@@ -155,6 +162,7 @@ where
                 &dirty.value,
                 captured_records,
                 (selected, selected_proof),
+                publication.operation,
                 &mut input,
                 accounting,
             )

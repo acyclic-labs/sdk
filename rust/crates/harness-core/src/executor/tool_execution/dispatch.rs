@@ -171,6 +171,9 @@ impl<'io> StockExecution<'io> {
                 .await
             {
                 Ok(ExecutionProgress::Ready(result)) => Some(Ok(Some(result))),
+                Ok(ExecutionProgress::Controlled(control)) => {
+                    return Ok(ToolInvocationOutcome::Controlled(control));
+                }
                 Ok(ExecutionProgress::Pending(operation)) => {
                     return Ok(ToolInvocationOutcome::Pending(operation));
                 }

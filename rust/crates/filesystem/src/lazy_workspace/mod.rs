@@ -119,7 +119,8 @@ pub use error::LazyWorkspaceError;
 pub use lookup::{LazyLookup, LazyStat};
 pub use model::{
     LazyOverlay, LazyOverlayChange, LazyOverlayId, LazyShadow, LazyShadowId, LazySnapshotId,
-    LazySnapshotRef, LazyWorkspaceState, PendingLazyRemove, PendingLazyRemoveKind,
+    LazySnapshotRef, LazySourceRecord, LazyStoredRecord, LazyWorkspaceState, PendingLazyRemove,
+    PendingLazyRemoveKind,
 };
 pub use store::{LazyWorkspaceStore, MemoryLazyWorkspaceStore};
 pub(crate) use work::retained_directory_page_bytes;

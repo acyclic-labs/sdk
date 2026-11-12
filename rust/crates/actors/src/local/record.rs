@@ -16,6 +16,32 @@ pub const STATE_RECORD_OVERHEAD: usize =
 // Version 1 of the `ACS` domain keeps funding in its host-owned field, so guest
 // metadata is never promoted into funding authority by the state reader.
 const STATE_FORMAT_V1: &[u8] = b"\xffACS\x01";
+/// Host-owned admission fields projected without allocating the checkpoint,
+/// subscriptions or metadata. Authenticate the original actor path separately
+/// and fence its original record when publishing a dependent dispatch.
+#[derive(Clone, Copy, PartialEq, Eq, prost::Message)]
+pub struct AdmissionState {
+    /// Original placement epoch; this projection grants no placement authority.
+    #[prost(uint64, tag = "1")]
+    pub epoch: u64,
+    /// Admission is closed while true; accepted work may still settle.
+    #[prost(bool, tag = "7")]
+    pub paused: bool,
+}
+
+fn payload(record: &[u8]) -> Result<&[u8], Error> {
+    acyclic_stream::persistence::header(record, &STATE_FORMAT_V1[..4], &STATE_FORMAT_V1[4..])
+        .map_err(Into::into)
+}
+
+impl AdmissionState {
+    /// Borrow the original versioned state envelope and project its admission
+    /// fields with the same protobuf field semantics as the full state reader.
+    pub fn from_record(record: &[u8]) -> Result<Self, Error> {
+        Self::decode(payload(record)?)
+            .map_err(|_| Error::Invalid("malformed actor admission record"))
+    }
+}
 /// Framing bytes each subscription adds beyond its id and path, at most.
 pub const SUBSCRIPTION_OVERHEAD: usize = 32;
 /// Framing bytes each metadata entry adds beyond its key and value, at most.
@@ -159,11 +185,7 @@ impl State {
 
     /// The state a durable record holds.
     pub fn decode(record: &[u8]) -> Result<Self, Error> {
-        let record = acyclic_stream::persistence::header(
-            record,
-            &STATE_FORMAT_V1[..4],
-            &STATE_FORMAT_V1[4..],
-        )?;
+        let record = payload(record)?;
         let record =
             Record::decode(record).map_err(|_| Error::Invalid("malformed actor state record"))?;
         let mut subscriptions = BTreeMap::new();
@@ -357,10 +379,27 @@ mod tests {
         };
         let record = state.encode();
         assert_eq!(State::decode(&record).expect("decodes"), state);
+        let mut admission = None;
+        let allocations = acyclic_test_support::measure(|| {
+            admission = Some(AdmissionState::from_record(&record).expect("admission projects"));
+        });
+        assert_eq!(
+            (allocations.count_total, allocations.bytes_total),
+            (0, 0),
+            "admission materialized the unrelated checkpoint or metadata"
+        );
+        assert_eq!(
+            admission.expect("projected"),
+            AdmissionState {
+                epoch: state.epoch,
+                paused: state.paused
+            }
+        );
         // Neither an old writer ignoring new fields nor an unversioned input
         // can silently replace this actor's committed metadata and journal cut.
         assert!(Record::decode(record.as_slice()).is_err());
         assert!(State::decode(&record[STATE_FORMAT_V1.len()..]).is_err());
+        assert!(AdmissionState::from_record(&record[STATE_FORMAT_V1.len()..]).is_err());
         for version in [0, 2, u8::MAX] {
             let mut obsolete = record.clone();
             obsolete[STATE_FORMAT_V1.len() - 1] = version;

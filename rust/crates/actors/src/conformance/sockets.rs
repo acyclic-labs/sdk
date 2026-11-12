@@ -208,6 +208,7 @@ impl Handler for SocketPackage {
             );
             journal.published += 1;
             Ok(Transition {
+                pause: false,
                 response,
                 participant: None,
                 checkpoint: Checkpoint {

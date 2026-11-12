@@ -5,11 +5,107 @@ use acyclic_stream::{
     AppendOutcome, AppendRequest, HeadProjection, HeadsRequest, StreamProviderExt as _,
 };
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum Entry {
-    Created { version: u32 },
-    Root { version: u32, agent: AgentPath },
+use crate::client_files::{SessionDirectory, SessionDirectoryEntry as Entry};
+
+pub(super) fn directory_path(within: &ActorReference) -> Result<acyclic_stream::StreamPath, Error> {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.root-directory.v1");
+    for part in [
+        within.account().as_bytes(),
+        within.namespace().as_str().as_bytes(),
+        within.id().as_bytes(),
+    ] {
+        hasher.update(&(part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    acyclic_stream::StreamPath::new(format!(
+        "harness/session-directory/{}",
+        hasher.finalize().to_hex()
+    ))
+    .map_err(Error::Stream)
+}
+
+pub(super) struct DirectoryFile(pub(super) acyclic_stream::StreamPath);
+
+impl<P: acyclic_stream::StreamProvider + ?Sized> crate::client_files::FileView<P>
+    for DirectoryFile
+{
+    fn identity(&self) -> &'static str {
+        "session-directory/v1"
+    }
+
+    fn source(
+        &self,
+        _: &AgentPath,
+        root: crate::client_files::FileRoot,
+        path: &str,
+    ) -> crate::Result<Option<acyclic_stream::StreamPath>> {
+        Ok((matches!(root, crate::client_files::FileRoot::Private {})
+            && path == "status/session-directory.json")
+            .then(|| self.0.clone()))
+    }
+
+    fn read<'a>(
+        &'a self,
+        provider: &'a P,
+        _: &'a AgentPath,
+        paths: &'a [&'a str],
+        source: &'a acyclic_stream::StreamPath,
+        through: u64,
+        at_least: acyclic_stream::RevisionCut,
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Vec<crate::client_files::QueryFile>>>
+    {
+        Box::pin(async move {
+            use futures::TryStreamExt as _;
+            if source != &self.0 || paths != ["status/session-directory.json"] {
+                return Err(crate::Error::Invalid(
+                    "session directory file source differs".into(),
+                ));
+            }
+            if through == 0 {
+                return Ok(Vec::new());
+            }
+            let mut records = provider
+                .read(acyclic_stream::ReadRequest {
+                    path: source.clone(),
+                    from: 0,
+                    limit: 1,
+                    key: None,
+                    at_least,
+                })
+                .await
+                .map_err(crate::Error::from)?;
+            let record = records
+                .try_next()
+                .await
+                .map_err(crate::Error::from)?
+                .ok_or_else(|| {
+                    crate::Error::Invalid("session directory creation is absent".into())
+                })?;
+            if record.sequence != 0
+                || !matches!(
+                    serde_json::from_slice::<Entry>(&record.value),
+                    Ok(Entry::Created { version: 1 })
+                )
+            {
+                return Err(crate::Error::Invalid(
+                    "invalid session directory creation".into(),
+                ));
+            }
+            Ok(vec![crate::client_files::QueryFile {
+                path: paths[0].to_owned(),
+                input: crate::supervision::Position {
+                    stream: source.clone(),
+                    sequence: 0,
+                },
+                text: serde_json::to_string(&SessionDirectory {
+                    version: 1,
+                    source: source.clone(),
+                })
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+                media_type: "application/json".into(),
+            }])
+        })
+    }
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bound<P, O> {
@@ -48,21 +144,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         Ok(())
     }
 
-    fn session_directory(&self) -> Result<acyclic_stream::StreamPath, Error> {
-        let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.root-directory.v1");
-        for part in [
-            self.within.account().as_bytes(),
-            self.within.namespace().as_str().as_bytes(),
-            self.within.id().as_bytes(),
-        ] {
-            hasher.update(&(part.len() as u64).to_le_bytes());
-            hasher.update(part);
-        }
-        acyclic_stream::StreamPath::new(format!(
-            "harness/session-directory/{}",
-            hasher.finalize().to_hex()
-        ))
-        .map_err(Error::Stream)
+    pub(super) fn session_directory(&self) -> Result<acyclic_stream::StreamPath, Error> {
+        directory_path(&self.within)
     }
 
     /// Scope-directory entries created atomically with their independent roots.

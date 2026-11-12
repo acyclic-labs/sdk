@@ -18,12 +18,22 @@ use acyclic_stream::{CommitId, CommitRequest, IdempotencyKey, StreamPath, wire, 
 use bytes::Bytes;
 
 /// Fixed key of the encoded effect commit; publication supplies its own key.
-const EFFECTS_KEY: &[u8] = b"acyclic.actors.transition.v1";
+const EFFECTS_KEY: &[u8] = b"acyclic.actors.transition.v3";
 const MANIFEST_DOMAIN: &[u8] = b"\xffAMNF";
 const DELIVERY_DOMAIN: &[u8] = b"\xffADLV";
 const TRANSITION_DOMAIN: &[u8] = b"\xffATRN";
 const INTERRUPT_DOMAIN: &[u8] = b"\xffAINT";
 const VERSION: &[u8] = b"\x01";
+
+// Manifest and delivery envelopes retain v1. Transition v3 joins atomic
+// admission closure and subscription changes; older transitions are refused.
+fn version(domain: &[u8]) -> &'static [u8] {
+    if domain == TRANSITION_DOMAIN {
+        b"\x03"
+    } else {
+        VERSION
+    }
+}
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct InterruptQuery {
@@ -74,7 +84,7 @@ struct DeliveryWire {
     epoch: u64,
     #[prost(uint64, tag = "3")]
     now_unix_ms: u64,
-    #[prost(oneof = "TriggerWire", tags = "4, 5")]
+    #[prost(oneof = "TriggerWire", tags = "4, 5, 11")]
     trigger: Option<TriggerWire>,
     #[prost(message, optional, tag = "6")]
     record: Option<wire::Record>,
@@ -143,6 +153,20 @@ enum TriggerWire {
     Record(RecordTrigger),
     #[prost(message, tag = "5")]
     Alarm(AlarmTrigger),
+    #[prost(message, tag = "11")]
+    KeyedRecord(KeyedRecordTrigger),
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct KeyedRecordTrigger {
+    #[prost(string, tag = "1")]
+    subscription: String,
+    #[prost(uint64, tag = "2")]
+    from: u64,
+    #[prost(uint64, tag = "3")]
+    sequence: u64,
+    #[prost(bytes = "bytes", tag = "4")]
+    key: Bytes,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -174,6 +198,8 @@ struct TransitionWire {
     participant: Option<ParticipantWire>,
     #[prost(bytes = "bytes", optional, tag = "9")]
     response: Option<Bytes>,
+    #[prost(bool, tag = "11")]
+    pause: bool,
     #[prost(message, repeated, tag = "10")]
     subscriptions: Vec<SubscriptionChangeWire>,
 }
@@ -264,7 +290,7 @@ fn canonical<M: prost::Message + Default>(
     let bytes = acyclic_auth::format::header(
         bytes,
         domain,
-        VERSION,
+        version(domain),
         || invalid(field),
         || GuestError::UnsupportedFormat,
     )?;
@@ -276,9 +302,10 @@ fn canonical<M: prost::Message + Default>(
 }
 
 fn encode(value: &impl prost::Message, domain: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(domain.len() + VERSION.len() + value.encoded_len());
+    let version = version(domain);
+    let mut bytes = Vec::with_capacity(domain.len() + version.len() + value.encoded_len());
     bytes.extend_from_slice(domain);
-    bytes.extend_from_slice(VERSION);
+    bytes.extend_from_slice(version);
     value.encode_raw(&mut bytes);
     bytes
 }
@@ -373,6 +400,17 @@ pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> V
                     subscription: subscription.clone(),
                     sequence: *sequence,
                 }),
+                Trigger::KeyedRecord {
+                    subscription,
+                    from,
+                    sequence,
+                    key,
+                } => TriggerWire::KeyedRecord(KeyedRecordTrigger {
+                    subscription: subscription.clone(),
+                    from: *from,
+                    sequence: *sequence,
+                    key: key.clone(),
+                }),
                 Trigger::Alarm {
                     generation,
                     now_unix_ms,
@@ -434,6 +472,22 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
             subscription,
             sequence,
         },
+        TriggerWire::KeyedRecord(KeyedRecordTrigger {
+            subscription,
+            from,
+            sequence,
+            key,
+        }) => {
+            if sequence < from || key.len() > acyclic_stream::MAX_RECORD_KEY_BYTES {
+                return Err(invalid("indexed trigger"));
+            }
+            Trigger::KeyedRecord {
+                subscription,
+                from,
+                sequence,
+                key,
+            }
+        }
         TriggerWire::Alarm(AlarmTrigger {
             generation,
             now_unix_ms,
@@ -477,6 +531,7 @@ pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError>
     };
     Ok(encode(
         &TransitionWire {
+            pause: transition.pause,
             response: transition.response.clone(),
             checkpoint: Some(checkpoint_wire(&transition.checkpoint)),
             alarm: Some(match transition.alarm {
@@ -527,6 +582,7 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
         return Err(invalid("effects"));
     }
     Ok(Transition {
+        pause: wire.pause,
         response: wire.response,
         checkpoint: checkpoint(wire.checkpoint.ok_or_else(|| invalid("checkpoint"))?),
         alarm,
@@ -608,6 +664,7 @@ mod tests {
     fn transition() -> Result<Transition, Box<dyn std::error::Error>> {
         let path = StreamPath::new("agents/a/inbox")?;
         Ok(Transition {
+            pause: false,
             response: Some(Bytes::new()),
             checkpoint: Checkpoint {
                 codec: CodecIdentity {
@@ -693,7 +750,8 @@ mod tests {
         assert_eq!(decode_transition(&encode_transition(&empty)?)?, empty);
         // An unknown field the host would otherwise ignore.
         let mut unknown = bytes.clone();
-        unknown.extend_from_slice(&[0x78, 0x01]);
+        // The greatest legal protobuf field number is outside this schema.
+        unknown.extend_from_slice(&[0xf8, 0xff, 0xff, 0xff, 0x0f, 0x01]);
         assert!(decode_transition(&unknown).is_err());
         // A subscription change names its id and exactly one canonical change.
         for change in [
@@ -738,13 +796,16 @@ mod tests {
             }),
         ];
         for (domain, decode) in formats {
-            for version in [0, 2, u8::MAX] {
+            for refused in [0, 1, 2, u8::MAX] {
+                if [refused] == version(domain) {
+                    continue;
+                }
                 let mut bytes = domain.to_vec();
-                bytes.push(version);
+                bytes.push(refused);
                 assert_eq!(decode(&bytes), Err(GuestError::UnsupportedFormat));
             }
             let mut current = domain.to_vec();
-            current.extend_from_slice(VERSION);
+            current.extend_from_slice(version(domain));
             assert!(matches!(decode(&current), Err(GuestError::Decode(_))));
         }
     }

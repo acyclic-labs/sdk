@@ -408,7 +408,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let record = delivered.ok_or(Error::Invalid("invocation input is missing"))?;
         if state_path != previous.path
             || self.actor(&previous.path)? != *invocation.actor()
-            || !matches!(trigger, Trigger::Record { subscription, sequence } if subscription == invocation.subscription() && *sequence == record.sequence)
+            || trigger.record_position() != Some((invocation.subscription(), record.sequence))
         {
             return if !matches!(outcome, Some(Ok(_))) {
                 Ok(None)

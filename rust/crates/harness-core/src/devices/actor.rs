@@ -423,6 +423,7 @@ impl<P: StreamProvider + ?Sized + 'static> Handler for TargetActor<P> {
                 .await
                 .map_err(guest)?;
             Ok(Transition {
+                pause: false,
                 response,
                 participant: Some(Participant {
                     kind: HANDOVER.into(),
