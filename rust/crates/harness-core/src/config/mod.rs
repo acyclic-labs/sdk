@@ -20,6 +20,8 @@
 //! layered fold, including absent roots, pinned generations and its refusal.
 
 mod plugin;
+mod program;
+pub use program::{ProgramEntry, ProgramManifest};
 pub mod policy;
 mod types;
 #[cfg(not(target_arch = "wasm32"))]
@@ -179,6 +181,8 @@ pub fn typescript() -> &'static str {
             PluginEntry,
             PluginSource,
             PluginManifest,
+            ProgramManifest,
+            ProgramEntry,
             AfterSource,
             Start,
             Event,
