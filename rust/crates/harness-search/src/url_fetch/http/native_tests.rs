@@ -12,6 +12,63 @@ fn work(budget: WorkBudget, cancellation: &CancellationToken) -> Result<NativeMa
 }
 
 #[tokio::test]
+async fn api_fetch_identifies_the_client_and_preserves_http_error_details() -> Result<()> {
+    FetchRequest {
+        url: "https://api.example.com/projects/sample/items?state=open".into(),
+    }
+    .validate()?;
+    for native in [false, true] {
+        for status in [200, 304, 401, 403, 404, 429, 503] {
+            let body = if status == 304 {
+                ""
+            } else if status == 200 {
+                "[]"
+            } else {
+                r#"{"message":"API rate limit exceeded","documentation_url":"https://api.example.com/docs"}"#
+            };
+            let (url, server) = serve(
+                status,
+                "Content-Type: application/json\r\n",
+                body.as_bytes().to_vec(),
+                Framing::Length,
+            )
+            .await?;
+            let request = FetchRequest {
+                url: format!("{url}projects/sample/items?state=open"),
+            };
+            let work = work(budget(), &CancellationToken::new())?;
+            let baseline = work.live_allocation_bytes();
+            let provider = HttpFetch::new()?;
+            let (response, held) = if native {
+                let (response, held) = provider.fetch_with_native_work(&request, &work)?.await?;
+                (response, Some(held))
+            } else {
+                (provider.fetch(&request).await?, None)
+            };
+            assert_eq!(response.status, status);
+            assert_eq!(response.content, body);
+            assert_eq!(response.source_url, request.url);
+            let sent = joined(server).await?.to_ascii_lowercase();
+            assert!(sent.starts_with("get /projects/sample/items?state=open http/1.1\r\n"));
+            assert!(sent.contains(concat!(
+                "user-agent: acyclic-harness/",
+                env!("CARGO_PKG_VERSION"),
+                "\r\n"
+            )));
+            assert!(!sent.contains("authorization:"));
+            if let Some(held) = &held {
+                assert!(held.work().shares_ledger(&work));
+                assert_eq!(held.bytes(), super::super::response_bytes(&response)?);
+            }
+            drop(response);
+            drop(held);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_fetch_retains_exact_source_content_in_the_original_ledger() -> Result<()> {
     let work = work(budget(), &CancellationToken::new())?;
     let baseline = work.live_allocation_bytes();
@@ -151,7 +208,6 @@ async fn native_fetch_one_byte_budget_cannot_read_a_complete_http_frame() -> Res
 #[tokio::test]
 async fn native_fetch_protocol_body_and_size_rejections_release_all_custody() -> Result<()> {
     for (status, headers, body, framing) in [
-        (404, "", b"private-nonce".to_vec(), Framing::Length),
         (200, "", vec![0xff], Framing::Length),
         (
             200,

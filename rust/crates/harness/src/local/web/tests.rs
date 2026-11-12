@@ -265,8 +265,17 @@ async fn expected_fetch_refusals_continue_the_model_turn() -> Result<()> {
                 None,
             ),
             2 => {
-                let (url, server) = serve_response(503, "", "private-provider-body".into()).await?;
-                (url, "fetch HTTP request rejected", Some(server))
+                let (url, server) = serve_response(
+                    200,
+                    "Content-Encoding: gzip\r\n",
+                    "private-provider-body".into(),
+                )
+                .await?;
+                (
+                    url,
+                    "fetch response uses unsupported content encoding",
+                    Some(server),
+                )
             }
             3 => {
                 let (url, server) =
@@ -366,36 +375,47 @@ async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() ->
     let assert_contract = published_web_contract("url_fetch")?;
     let body = "exact 東京 \u{10437} 🦀\r\n& raw source";
     let mut cases = Vec::new();
-    for redirect in [false, true] {
+    for (redirect, status) in [
+        (false, 200),
+        (true, 200),
+        (false, 403),
+        (false, 429),
+        (false, 503),
+    ] {
         let (url, final_url, server) = if redirect {
             same_origin_redirect(302, body.into()).await?
         } else {
-            let (url, server) = serve(body.into()).await?;
+            let (url, server) = serve_response(status, "", body.into()).await?;
             (url.clone(), url, server)
         };
-        cases.push((url, final_url, Some(server)));
+        cases.push((url, final_url, Some(server), status));
     }
     let directory = tempfile::tempdir().map_err(crate::local::storage)?;
-    let provider = model(cases.iter().enumerate().flat_map(|(index, (url, _, _))| {
-        [
-            ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                    format!("exact-fetch-{index}"),
-                    "url_fetch".into(),
-                    json!({"url":url}),
-                ))),
-                ScriptedEvent::Event(ModelEvent::Completed {
-                    metadata: json!({}),
-                }),
-            ]),
-            ScriptedTurn::Text("source read".into()),
-        ]
-    }));
+    let provider = model(
+        cases
+            .iter()
+            .enumerate()
+            .flat_map(|(index, (url, _, _, _))| {
+                [
+                    ScriptedTurn::Events(vec![
+                        ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                            format!("exact-fetch-{index}"),
+                            "url_fetch".into(),
+                            json!({"url":url}),
+                        ))),
+                        ScriptedEvent::Event(ModelEvent::Completed {
+                            metadata: json!({}),
+                        }),
+                    ]),
+                    ScriptedTurn::Text("source read".into()),
+                ]
+            }),
+    );
     let config = config(directory.path(), provider.clone())
         .await?
         .web_tools();
     let local = Arc::new(LocalHarness::open(config).await?);
-    for (index, (url, final_url, server)) in cases.iter_mut().enumerate() {
+    for (index, (url, final_url, server, status)) in cases.iter_mut().enumerate() {
         assert_eq!(run(&local, "read the exact source").await?, "source read");
         assert_eq!(provider.request_count(), (index + 1) * 2);
         let value = tool_result(&provider, &format!("exact-fetch-{index}"), "url_fetch");
@@ -405,7 +425,7 @@ async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() ->
         );
         assert_eq!(value["source_url"], url.as_str());
         assert_eq!(value["final_url"], final_url.as_str());
-        assert_eq!(value["status"], 200);
+        assert_eq!(value["status"], *status);
         assert_contract(&value);
         server
             .take()
@@ -414,7 +434,7 @@ async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() ->
             .map_err(crate::local::storage)??;
     }
     let requests = provider.requests();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), cases.len() * 2);
     for request in &requests {
         assert_eq!(request.tools.len(), 1);
         assert!(request.tools.iter().any(|tool| tool.name == "url_fetch"));

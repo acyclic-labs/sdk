@@ -51,6 +51,10 @@ pub(super) async fn send(
         .header(http::header::HOST, host_header)
         .header(http::header::CONNECTION, "close")
         .header(http::header::ACCEPT_ENCODING, "identity")
+        .header(
+            http::header::USER_AGENT,
+            concat!("acyclic-harness/", env!("CARGO_PKG_VERSION")),
+        )
         .body(Empty::<bytes::Bytes>::new())
         .map_err(|_| super::rejection(work, "cannot construct fetch request"))?;
     let result = if endpoint.scheme() == "https" {
@@ -142,9 +146,6 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
             let mut held = crate::tool::edit::allocation(work, std::mem::size_of::<String>())?;
             let location = copy_text(location, &mut held)?;
             return Ok(Response::Redirect(location, held));
-        }
-        if !status.is_success() {
-            return Err(super::rejection(work, "fetch HTTP request rejected"));
         }
         if response
             .headers()

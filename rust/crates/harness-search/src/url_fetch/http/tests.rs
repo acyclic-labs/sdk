@@ -324,12 +324,8 @@ async fn fetch_enforces_the_one_mebibyte_cap_for_length_chunked_and_close_delimi
 }
 
 #[tokio::test]
-async fn fetch_rejects_http_errors_non_utf8_and_encoded_bodies() -> Result<()> {
+async fn fetch_rejects_non_utf8_and_encoded_bodies() -> Result<()> {
     for (status, headers, body) in [
-        (401, "", b"private-nonce".to_vec()),
-        (404, "", Vec::new()),
-        (500, "", Vec::new()),
-        (304, "Location: /not-a-redirect\r\n", Vec::new()),
         (200, "", vec![0xff, 0xfe]),
         (200, "Content-Encoding: gzip\r\n", b"private-nonce".to_vec()),
     ] {
