@@ -53,7 +53,7 @@ impl Cut for ReaderCut<'_> {
         &self,
         source: &acyclic_harness_core::agent::Diagnostic,
         from: u64,
-    ) -> Result<acyclic_harness_core::agent::DiagnosticRead> {
+    ) -> Result<Cow<'_, acyclic_harness_core::agent::DiagnosticRead>> {
         if source.agent != *self.agent {
             return Err(Error::Invalid("diagnostic belongs to another cut"));
         }
@@ -68,7 +68,7 @@ impl Cut for ReaderCut<'_> {
                 .ok_or(Error::Pending)?;
             bytes.extend_from_slice(range.take_chunk(sequence, original)?);
         }
-        Ok(range.finish(bytes)?)
+        Ok(Cow::Owned(range.finish(bytes)?))
     }
     fn children(&self, page: u32) -> Result<Option<Children<'_>>> {
         self.agent

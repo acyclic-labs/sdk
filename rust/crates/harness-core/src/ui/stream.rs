@@ -1,6 +1,9 @@
 //! Stream-backed inputs to the same UI View used by reader clients.
 mod watch;
-use super::{Affected, Children, Cut, Error, FilesystemCut, View, project::page_number};
+use super::{
+    Affected, Children, Cut, Error, FilesystemCut, View,
+    project::{ROOT_NODES, diagnostic_path, page_number},
+};
 use crate::{
     agent::{AgentPath, AgentRecord, AgentStream, ConversationEntry, InboxRecord, StatusRecord},
     conversation::ContentResidencyVerifier,
@@ -85,6 +88,7 @@ pub struct StreamUiCut {
     identity: [u8; 16],
     agent: Retained<AgentPath>,
     status: Option<Retained<StatusRecord>>,
+    diagnostic: Option<Retained<crate::agent::DiagnosticRead>>,
     adoption: Option<Retained<InboxRecord>>,
     tail: Option<u64>,
     turns: Retained<Vec<PreparedTurn>>,
@@ -103,6 +107,7 @@ impl StreamUiCut {
             agent: RetainedAllocation::claim(agent.as_str().len() as u64, 1, ctx)?
                 .into_value(agent.clone()),
             status: None,
+            diagnostic: None,
             adoption: None,
             tail: None,
             page: None,
@@ -138,6 +143,21 @@ impl Cut for StreamUiCut {
     }
     fn tail(&self) -> Option<u64> {
         self.tail
+    }
+    fn diagnostic(
+        &self,
+        source: &crate::agent::Diagnostic,
+        from: u64,
+    ) -> super::Result<Cow<'_, crate::agent::DiagnosticRead>> {
+        let selected = super::project::diagnostic_source(self)?;
+        if *selected != *source {
+            return Err(Error::Invalid("diagnostic differs from the selected cut"));
+        }
+        self.diagnostic
+            .as_deref()
+            .filter(|page| page.start == from)
+            .map(Cow::Borrowed)
+            .ok_or(Error::Pending)
     }
     fn turn(&self, sequence: u64) -> super::Result<Cow<'_, str>> {
         let index = self
@@ -441,15 +461,21 @@ where
             return Ok(cut);
         }
         let root_directory = path.is_empty() && matches!(query, ViewQuery::Directory { .. });
+        let root_names = || {
+            ROOT_NODES
+                .iter()
+                .skip(usize::try_from(cursor).unwrap_or(usize::MAX))
+                .take(maximum as usize)
+                .map(|(name, _)| *name)
+        };
+        let diagnostic = path == "diagnostics" || path.starts_with("diagnostics/");
         let turns = path == "index.md"
             || path.starts_with("turns/")
             || (path == "turns" && matches!(query, ViewQuery::Directory { .. }))
-            || (root_directory && cursor == 0 && maximum > 0);
+            || (root_directory && root_names().any(|name| name == "index.md"));
         let status = matches!(path, "status.md" | "glyph")
-            || (root_directory
-                && [1, 8]
-                    .into_iter()
-                    .any(|entry| cursor <= entry && cursor + u64::from(maximum) > entry));
+            || diagnostic
+            || (root_directory && root_names().any(|name| matches!(name, "status.md" | "glyph")));
         if !status && !turns {
             return Ok(cut);
         }
@@ -474,6 +500,79 @@ where
         {
             cut.status =
                 Some(StatusRecord::decode_accounted(&record.value, ctx).map_err(record_error)?);
+        }
+        if diagnostic {
+            let selected = match super::project::diagnostic_source(&cut) {
+                Ok(selected) => selected,
+                Err(Error::Invalid(_)) => return Ok(cut),
+                Err(cause) => return Err(cause.into()),
+            };
+            let digest = blake3::Hash::from_bytes(selected.digest).to_hex();
+            let from = if matches!(query, ViewQuery::Directory { .. })
+                && path.strip_prefix("diagnostics/") == Some(digest.as_str())
+            {
+                Some(0)
+            } else {
+                diagnostic_path(path)
+                    .ok()
+                    .and_then(|(actual, from)| (actual == selected.digest).then_some(from))
+            };
+            if let Some(from) = from {
+                let mut range = selected.range(from, acyclic_stream::MAX_RECORD_BYTES as u64);
+                let allocation = RetainedAllocation::claim(
+                    range.capacity() as u64,
+                    u64::from(range.capacity() > 0),
+                    ctx,
+                )?;
+                let mut bytes = Vec::with_capacity(range.capacity());
+                if range.records() > 0 {
+                    let _floor =
+                        RetainedAllocation::claim(std::mem::size_of::<Revision>() as u64, 1, ctx)?;
+                    let mut records = native_result(
+                        self.streams
+                            .native_read(
+                                ReadRequest {
+                                    path: native_path(
+                                        &[
+                                            self.agent.as_str(),
+                                            "/diagnostics/",
+                                            self.agent.id_text(),
+                                            "/",
+                                            digest.as_str(),
+                                        ],
+                                        original,
+                                    )?,
+                                    from: range.first(),
+                                    limit: range.records(),
+                                    key: None,
+                                    at_least: RevisionCut::of(at.clone()),
+                                },
+                                original.runtime_meter(),
+                            )
+                            .await,
+                        original,
+                    )?;
+                    while !range.complete() {
+                        let record = native_result(
+                            records
+                                .value_mut()
+                                .next()
+                                .await
+                                .ok_or(DemandError::StaleSource)?,
+                            original,
+                        )?;
+                        let chunk = range.take_record(record.value()).map_err(Error::from)?;
+                        ctx.charge(WorkCounters {
+                            bytes_copied: chunk.len() as u64,
+                            ..WorkCounters::UNCHARGED
+                        })?;
+                        bytes.extend_from_slice(chunk);
+                    }
+                }
+                let page = range.finish(bytes).map_err(Error::from)?;
+                drop(selected);
+                cut.diagnostic = Some(allocation.into_value(page));
+            }
         }
         if !turns {
             return Ok(cut);

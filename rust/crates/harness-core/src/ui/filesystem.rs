@@ -35,7 +35,20 @@ impl<C: FilesystemCut> FilesystemView<C> {
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<SourceNode>, DemandError> {
-        let (kind, length) = if directory(path) {
+        let diagnostic_directory = path
+            .strip_prefix("diagnostics/")
+            .filter(|name| !name.contains('/'));
+        if let Some(digest) = diagnostic_directory {
+            let source = match super::project::diagnostic_source(cut) {
+                Ok(source) => source,
+                Err(Error::Invalid(_)) => return Ok(None),
+                Err(cause) => return Err(error(cause)),
+            };
+            if digest != blake3::Hash::from_bytes(source.digest).to_hex().as_str() {
+                return Ok(None);
+            }
+        }
+        let (kind, length) = if directory(path) || diagnostic_directory.is_some() {
             (SourceNodeKind::Directory, None)
         } else if let Some(id) = child_id(path) {
             if cut.child_ui(id).map_err(error)?.is_none() {
@@ -197,7 +210,11 @@ impl<C: FilesystemCut> acyclic_fs::demand::View for FilesystemView<C> {
                 cancel,
             )?;
             let bytes = path.logical_owned_bytes();
-            let changes = [SourceChange::Entry(path)];
+            let changes = [if directory(relative) {
+                SourceChange::Name(path)
+            } else {
+                SourceChange::Entry(path)
+            }];
             let result = sink.source_changed(&changes, ctx);
             drop(changes);
             ctx.release_owned(&mut allocation, bytes)?;
@@ -212,7 +229,10 @@ fn child_id(path: &str) -> Option<&str> {
         .filter(|id| !id.contains('/') && *id != "pages")
 }
 fn directory(path: &str) -> bool {
-    matches!(path, "" | "turns" | "children" | "children/pages")
+    matches!(
+        path,
+        "" | "turns" | "children" | "children/pages" | "diagnostics"
+    )
 }
 fn error(cause: Error) -> DemandError {
     match cause {

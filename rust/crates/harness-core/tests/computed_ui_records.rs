@@ -902,7 +902,8 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
         [
             SourceChange::Entry(namespace("/index.md")),
             SourceChange::Entry(namespace("/status.md")),
-            SourceChange::Entry(namespace("/glyph"))
+            SourceChange::Entry(namespace("/glyph")),
+            SourceChange::Name(namespace("/diagnostics"))
         ]
     );
     sink.changes.lock().unwrap().clear();
@@ -932,7 +933,7 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
     streams.commit(child.request).await?;
     assert_eq!(
         *sink.changes.lock().unwrap(),
-        [SourceChange::Entry(namespace("/children"))]
+        [SourceChange::Name(namespace("/children"))]
     );
     assert_eq!(sink.lost.load(Ordering::SeqCst), 0);
     watch.stop_accepted_cleanup()?;
@@ -1262,5 +1263,176 @@ async fn stream_ui_uses_frozen_inputs_and_direct_child_navigation() -> Result {
     assert!(std::str::from_utf8(&output.bytes)?.contains("reply/étude.md"));
     // Neither status nor navigation is allowed to read conversation files:
     // NoContent's default read refuses rather than supplying fixture bytes.
+    Ok(())
+}
+
+#[tokio::test]
+async fn computed_diagnostic_navigation_pages_root_and_preserves_utf8_and_frozen_source() -> Result
+{
+    use acyclic_harness_core::{
+        agent::{AgentId, AgentOutcome, Diagnostic, IntentId, create_root},
+        ui::{StreamUiProvider, View},
+    };
+    use acyclic_stream::CommitOutcome;
+    use std::sync::Arc;
+    let streams = Arc::new(MemoryStream::default());
+    let root = create_root(
+        &IntentId::try_from("diagnostic-root".to_owned())?,
+        adoption(AgentId::from_bytes([31; 16])),
+    )?;
+    let agent = root.child;
+    assert!(matches!(
+        streams.commit(root.request).await?,
+        CommitOutcome::Committed(_)
+    ));
+    let original = format!(
+        "{}é🙂complete suffix",
+        "x".repeat(acyclic_stream::MAX_RECORD_BYTES - 1)
+    );
+    let diagnostic = Diagnostic {
+        agent: agent.clone(),
+        digest: *blake3::hash(original.as_bytes()).as_bytes(),
+        bytes: original.len() as u64,
+    };
+    for chunk in original.as_bytes().chunks(acyclic_stream::MAX_RECORD_BYTES) {
+        streams
+            .append(AppendRequest {
+                path: diagnostic.path()?,
+                records: vec![chunk.to_vec().into()],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    let mut failed = status("unused.md");
+    failed.phase = Phase::Done {
+        outcome: AgentOutcome::FailedDiagnostic {
+            diagnostic: diagnostic.clone(),
+        },
+    };
+    streams
+        .append(AppendRequest {
+            path: agent.status()?,
+            records: vec![failed.encode()?.into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let source = StreamUiProvider::new(
+        streams.clone(),
+        Arc::new(NoContent),
+        agent.clone(),
+        View::new(2)?,
+        [31; 16],
+        navigation,
+    )
+    .into_source();
+    let cancellation = CancellationToken::new();
+    let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut ctx = KernelAccounting::NativeOriginal {
+        work: &native,
+        cancellation: &cancellation,
+    };
+    let frozen = source.reference(&mut ctx).await?;
+    let mut cursor = None;
+    let mut names = Vec::new();
+    loop {
+        let page = source
+            .list_page(
+                frozen.clone(),
+                &namespace("/"),
+                cursor,
+                1,
+                &native,
+                &cancellation,
+            )
+            .await?;
+        assert_eq!(page.entries.len(), 1);
+        names.push(page.entries[0].name.clone());
+        cursor = page.next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(names.len(), 10);
+    assert_eq!(
+        names.last().map(|name| name.as_bytes()),
+        Some(b"glyph".as_slice())
+    );
+    let digest = blake3::Hash::from_bytes(diagnostic.digest).to_hex();
+    let directory = namespace(&format!("/diagnostics/{digest}"));
+    for path in [namespace("/diagnostics"), directory.clone()] {
+        let page = source
+            .list_page(frozen.clone(), &path, None, 1, &native, &cancellation)
+            .await?;
+        assert_eq!(page.entries.len(), 1);
+    }
+    let mut from = 0;
+    let mut complete = String::new();
+    loop {
+        let path = namespace(&format!("/diagnostics/{digest}/{from}.md"));
+        let node = source
+            .lookup(frozen.clone(), &path, &native, &cancellation)
+            .await?
+            .ok_or("diagnostic page")?;
+        let output = source
+            .read_range(
+                frozen.clone(),
+                &path,
+                node.version,
+                0,
+                u64::MAX,
+                &native,
+                &cancellation,
+            )
+            .await?;
+        let markdown = std::str::from_utf8(&output.bytes)?;
+        complete.push_str(
+            &markdown
+                .lines()
+                .filter_map(|line| line.strip_prefix("    "))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let Some(next) = markdown.split("[Next diagnostic page](").nth(1) else {
+            break;
+        };
+        from = next
+            .split(".md)")
+            .next()
+            .ok_or("diagnostic continuation")?
+            .parse()?;
+    }
+    assert_eq!(complete, original);
+    let forged = namespace(&format!("/diagnostics/{}", "0".repeat(64)));
+    assert!(
+        source
+            .lookup(frozen.clone(), &forged, &native, &cancellation)
+            .await?
+            .is_none()
+    );
+    streams
+        .append(AppendRequest {
+            path: agent.status()?,
+            records: vec![status("later.md").encode()?.into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let old_page = namespace(&format!("/diagnostics/{digest}/0.md"));
+    assert!(
+        source
+            .lookup(frozen, &old_page, &native, &cancellation)
+            .await?
+            .is_some()
+    );
+    let current = source.reference(&mut ctx).await?;
+    assert!(
+        source
+            .lookup(current, &old_page, &native, &cancellation)
+            .await?
+            .is_none()
+    );
     Ok(())
 }
