@@ -164,30 +164,24 @@ pub async fn announcement_message(
 ) -> crate::Result<crate::model::ModelContent> {
     use crate::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
     let mut parts = Vec::new();
-    let file_part = |file: &crate::conversation::FileRef| ModelContentPart::File {
-        file: file.clone(),
-        policy: FileProjectionPolicy::BoundedFull,
-    };
     for document in documents {
-        parts.push(file_part(&document.file));
-        if let Some(instructions) = &document.instructions {
+        for file in std::iter::once(&document.file).chain(
+            document
+                .instructions
+                .iter()
+                .map(|selection| &selection.content),
+        ) {
             // Retain the immutable selection's identity without requiring the
             // aggregate body to fit a single file/render allowance.
             parts.push(ModelContentPart::File {
-                file: instructions.content.clone(),
+                file: file.clone(),
                 policy: FileProjectionPolicy::Reference,
             });
             let bytes = reader
-                .read(
-                    &instructions.content,
-                    instructions.content.descriptor().byte_length(),
-                    None,
-                    None,
-                )?
+                .read(file, file.descriptor().byte_length(), None, None)?
                 .await?;
-            let text = std::str::from_utf8(&bytes).map_err(|_| {
-                crate::Error::Invalid("workspace instructions are not UTF-8".into())
-            })?;
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|_| crate::Error::Invalid("announcement is not UTF-8".into()))?;
             parts.extend(
                 ModelContent::bounded_text(text, render_bytes)?
                     .parts()

@@ -266,6 +266,102 @@ fn tree(source: &WorkspaceEntry, path: &AgentPath) -> WorkspaceEntry {
     }
 }
 
+#[tokio::test]
+async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> Result {
+    let Fixture {
+        files,
+        issuer,
+        users,
+        ..
+    } = fixture().await?;
+    let entries = (0_u16..512)
+        .map(|n| {
+            let mut id = [42; 16];
+            id[..2].copy_from_slice(&n.to_le_bytes());
+            WorkspaceEntry {
+                id: EntryId::from_bytes(id),
+                name: format!("repository-{n}"),
+                ..users[0].clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    let exposures = entries
+        .iter()
+        .map(|entry| WorkspaceExposure {
+            entry: entry.id,
+            paths: BTreeMap::new(),
+        })
+        .collect();
+    let document =
+        WorkspaceAnnouncement::new(&WorkspaceTable::new(entries)?, None::<&Roster>, exposures)?;
+    let (bytes, digest) = document.canonical();
+    let limits = acyclic_harness_core::conversation::Limits {
+        render_bytes: 64 * 1024,
+        file_bytes: 64 * 1024,
+        ..Default::default()
+    };
+    assert!(bytes.len() as u64 > limits.render_bytes);
+    let volume = users[0].volume()?;
+    let grants = Capabilities::new([
+        volume.capability(VolumeOperation::Write, &mut None)?,
+        volume.capability(VolumeOperation::Read, &mut None)?,
+    ]);
+    let scope = issuer.bootstrap_scope("large-document", &grants, None, &mut None)?;
+    let verifier = issuer.verifier(&mut None)?;
+    let grant = ContentGrant::verify(
+        &verifier,
+        &scope,
+        volume,
+        VolumeOperation::Write,
+        bytes.len() as u64,
+        &mut None,
+    )?;
+    let file = files
+        .put_content(
+            volume,
+            &grant,
+            "workspaces.json",
+            bytes,
+            "application/json",
+            "workspaces.json",
+            bytes.len() as u64,
+            &acyclic_harness_core::IdempotencyKey::new("large-document")?,
+            None,
+            ContentAccess::default(),
+        )
+        .await?;
+    let reader = FilesystemContentVerifier::new(
+        files,
+        &verifier,
+        &scope,
+        acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
+    let delta = announcement_message(
+        &[AnnouncedDocument {
+            kind: AnnouncementKind::Workspaces,
+            digest,
+            file: file.clone(),
+            instructions: None,
+        }],
+        reader.as_ref(),
+        Some(limits.render_bytes),
+    )
+    .await?;
+    delta.validate_limits(limits, &mut None)?;
+    assert_eq!(delta.file_refs().collect::<Vec<_>>(), vec![&file]);
+    let rendered = delta
+        .parts()
+        .iter()
+        .filter_map(|part| match part {
+            ModelContentPart::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    assert_eq!(rendered.as_bytes(), bytes);
+    Ok(())
+}
+
 async fn change(
     stream: &MemoryStream,
     path: &AgentPath,
@@ -628,6 +724,8 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             .content
             .parts()
             .iter()
+            .skip_while(|part| !matches!(part, ModelContentPart::File {file, ..} if *file == selection.content))
+            .skip(1)
             .filter_map(|part| match part {
                 ModelContentPart::Text { text, .. } => Some(text.as_str()),
                 _ => None,
