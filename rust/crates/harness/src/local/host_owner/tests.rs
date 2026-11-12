@@ -682,38 +682,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         file: serde_json::from_value(failed["events"].clone()).map_err(storage)?,
         label: Some("original native log".into()),
     });
-    let overhead = serde_json::to_vec(&agents::Event::Complete {
-        operation: final_claim.operation,
-        outcome: crate::Outcome::Succeeded(output.clone()),
-        events: None,
-    })
-    .map_err(storage)?
-    .len();
-    output.text = "s".repeat(agents::MAXIMUM_BYTES as usize - overhead);
-    assert_eq!(
-        serde_json::to_vec(&agents::Event::Complete {
-            operation: final_claim.operation,
-            outcome: crate::Outcome::Succeeded(output.clone()),
-            events: None,
-        })
-        .map_err(storage)?
-        .len(),
-        agents::MAXIMUM_BYTES as usize
-    );
-    let mut oversized = output.clone();
-    oversized.text.push('x');
-    assert!(matches!(
-        fixture
-            .session(
-                "child",
-                SessionAction::Complete {
-                    claim: final_claim.clone(),
-                    outcome: crate::Outcome::Succeeded(oversized),
-                }
-            )
-            .await,
-        Err(Error::Invalid(_))
-    ));
+    output.text = "答".repeat(44_000);
     let outcome = crate::Outcome::Succeeded(output);
     let expected = serde_json::to_value(&outcome).map_err(storage)?;
     let completed = fixture
