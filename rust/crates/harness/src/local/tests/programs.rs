@@ -89,7 +89,7 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
                 }],
             });
         }
-        let harness = Arc::new(LocalHarness::open(config).await?);
+        let harness = Arc::new(super::open_scripted(config).await?);
         let connection = harness.connect().await?;
         let AgentReply::Spawned { agent: worker, .. } = connection
             .execute(&AgentCommand::Spawn {
