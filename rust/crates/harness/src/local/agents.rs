@@ -130,7 +130,10 @@ impl crate::hosting::Platform for LocalUser {
         &'a self,
         text: &'a str,
     ) -> BoxProviderFuture<'a, Result<Option<String>>> {
-        Box::pin(async move { self.harness()?.resolve_prompt_command(text).await })
+        match self.harness() {
+            Ok(local) => local.resolve_prompt_command(text),
+            Err(error) => Box::pin(std::future::ready(Err(error))),
+        }
     }
 
     fn attachments<'a>(
@@ -138,7 +141,10 @@ impl crate::hosting::Platform for LocalUser {
         key: &'a [u8],
         text: Option<&'a str>,
     ) -> BoxProviderFuture<'a, Result<Option<crate::conversation::FileRef>>> {
-        Box::pin(async move { self.harness()?.prompt_attachments(key, text).await })
+        match self.harness() {
+            Ok(local) => local.prompt_attachments(key, text),
+            Err(error) => Box::pin(std::future::ready(Err(error))),
+        }
     }
 
     #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -254,17 +260,20 @@ impl TurnContext for LocalContext {
         agent: &'a AgentState,
         turn: OperationId,
     ) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let local = self
-                .0
-                .upgrade()
-                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
-            #[cfg(any(test, not(target_arch = "wasm32")))]
-            local.merge_completed_workspace(agent, turn).await?;
-            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+        let Some(local) = self.0.upgrade() else {
+            return Box::pin(std::future::ready(Err(Error::Unsupported(
+                "local harness is closed".into(),
+            ))));
+        };
+        #[cfg(any(test, not(target_arch = "wasm32")))]
+        {
+            local.merge_completed_workspace(agent, turn)
+        }
+        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+        {
             let _ = (local, agent, turn);
-            Ok(())
-        })
+            Box::pin(std::future::ready(Ok(())))
+        }
     }
 
     fn prepare<'a>(
@@ -448,120 +457,126 @@ impl LocalHarness {
     /// The shared workspace command engine owns capture, merge, conflict
     /// projection and physical/native reconciliation under the parent's lock.
     #[cfg(any(test, not(target_arch = "wasm32")))]
-    async fn merge_completed_workspace(&self, agent: &AgentState, turn: OperationId) -> Result<()> {
-        let (Some(parent), Some(root)) = (&agent.parent, &self.workspace) else {
-            return Ok(());
-        };
-        let hosted = self
-            .agents
-            .get()
-            .ok_or_else(|| Error::Unsupported("agent hosting is closed".into()))?;
-        let parent = hosted.agents().state(parent).await.map_err(storage)?;
-        let project = |state: &AgentState| {
-            WorkspaceTable::primary_in(&state.volumes)
-                .filter(|binding| binding.role == WorkspaceRole::User)
-                .and_then(|binding| binding.as_volume())
-                .cloned()
-                .ok_or_else(|| Error::Invalid("agent has no project volume".into()))
-        };
-        let child_project = project(agent)?;
-        let parent_project = project(&parent)?;
-        if child_project == parent_project {
-            return Ok(());
-        }
-        let issuer = self
-            .root_authority
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("agent signing custody is closed".into()))?;
-        let authority = crate::filesystem::agent_authority(
-            &issuer.clone().into(),
-            &crate::filesystem::TurnAdmission::LocalRoot,
-            &parent.path,
-            &parent.volumes,
-            &[],
-        )
-        .await?;
-        // The base checkout belongs to the task; a bound child checkout
-        // belongs to its conversation. Keep each workspace's original
-        // audience and the parent's exact volume grants and identity.
-        let (signed, verifier) = if parent_project == self.project {
-            (
-                issuer.bootstrap_scope(
-                    "child-completion",
-                    &authority.grants,
-                    Some(crate::AgentId::from_bytes(parent.path.id_bytes())),
-                    &mut None,
-                )?,
-                issuer.verifier(&mut None)?,
-            )
-        } else {
-            (authority.scope, authority.verifier)
-        };
-        let owner = super::workspace::owner::AgentOwner(parent.path.clone());
-        let parent_workspace = self
-            .project_workspace(
-                root,
+    fn merge_completed_workspace<'a>(
+        self: Arc<Self>,
+        agent: &'a AgentState,
+        turn: OperationId,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let (Some(parent), Some(root)) = (&agent.parent, &self.workspace) else {
+                return Ok(());
+            };
+            let hosted = self
+                .agents
+                .get()
+                .ok_or_else(|| Error::Unsupported("agent hosting is closed".into()))?;
+            let parent = hosted.agents().state(parent).await.map_err(storage)?;
+            let project = |state: &AgentState| {
+                WorkspaceTable::primary_in(&state.volumes)
+                    .filter(|binding| binding.role == WorkspaceRole::User)
+                    .and_then(|binding| binding.as_volume())
+                    .cloned()
+                    .ok_or_else(|| Error::Invalid("agent has no project volume".into()))
+            };
+            let child_project = project(agent)?;
+            let parent_project = project(&parent)?;
+            if child_project == parent_project {
+                return Ok(());
+            }
+            let issuer = self
+                .root_authority
+                .as_ref()
+                .ok_or_else(|| Error::Unsupported("agent signing custody is closed".into()))?;
+            let authority = crate::filesystem::agent_authority(
+                &issuer.clone().into(),
+                &crate::filesystem::TurnAdmission::LocalRoot,
                 &parent.path,
-                &parent_project,
                 &parent.volumes,
-                &signed,
-                &verifier,
+                &[],
             )
             .await?;
-        let child = root.spawned_project_view(&child_project).await?;
-        let branch = format!("agents/{}", agent.path.id());
-        acyclic_fs::GitCompatRepository::new(
-            parent_workspace.view().workspace().id(),
-            parent_workspace.store.clone(),
-        )
-        .register_branch_workspace(branch.clone(), child.workspace().id(), None, false)
-        .await
-        .map_err(storage)?;
-        let (capture_options, capture_policy) =
-            super::checkout_tools::capture::configuration(&parent_workspace)?;
-        let commands = super::workspace::git::Commands {
-            workspace: &parent_workspace,
-            signed: &signed,
-            verifier: &verifier,
-            clock: &*self.clock,
-            capture_options: &capture_options,
-            capture_policy: &capture_policy,
-        };
-        let scope = crate::runtime::RuntimeScope::new(authority.grants, Default::default())?;
-        let source = child
-            .workspace()
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
+            // The base checkout belongs to the task; a bound child checkout
+            // belongs to its conversation. Keep each workspace's original
+            // audience and the parent's exact volume grants and identity.
+            let (signed, verifier) = if parent_project == self.project {
+                (
+                    issuer.bootstrap_scope(
+                        "child-completion",
+                        &authority.grants,
+                        Some(crate::AgentId::from_bytes(parent.path.id_bytes())),
+                        &mut None,
+                    )?,
+                    issuer.verifier(&mut None)?,
+                )
+            } else {
+                (authority.scope, authority.verifier)
+            };
+            let owner = super::workspace::owner::AgentOwner(parent.path.clone());
+            let parent_workspace = self
+                .project_workspace(
+                    root,
+                    &parent.path,
+                    &parent_project,
+                    &parent.volumes,
+                    &signed,
+                    &verifier,
+                )
+                .await?;
+            let child = root.spawned_project_view(&child_project).await?;
+            let branch = format!("agents/{}", agent.path.id());
+            acyclic_fs::GitCompatRepository::new(
+                parent_workspace.view().workspace().id(),
+                parent_workspace.store.clone(),
             )
+            .register_branch_workspace(branch.clone(), child.workspace().id(), None, false)
             .await
-            .map_err(storage)?
-            .value;
-        let mut state = crate::sync::owned::lock_owned(super::workspace::StateArc::clone(
-            &parent_workspace.state,
-        ))
-        .await;
-        parent_workspace
-            .defer_publication(
-                turn,
-                branch,
-                acyclic_fs::GitGenerationRef {
-                    workspace_id: child.workspace().id(),
-                    generation: source.id(),
-                },
-            )
-            .await?;
-        commands
-            .drain_publications(
-                &super::workspace::git::CommandContext {
-                    owner: &owner,
-                    operation: turn,
-                    scope: &scope,
-                    request: None,
-                },
-                &mut state,
-            )
-            .await
+            .map_err(storage)?;
+            let (capture_options, capture_policy) =
+                super::checkout_tools::capture::configuration(&parent_workspace)?;
+            let commands = super::workspace::git::Commands {
+                workspace: &parent_workspace,
+                signed: &signed,
+                verifier: &verifier,
+                clock: &*self.clock,
+                capture_options: &capture_options,
+                capture_policy: &capture_policy,
+            };
+            let scope = crate::runtime::RuntimeScope::new(authority.grants, Default::default())?;
+            let source = child
+                .workspace()
+                .head(
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map_err(storage)?
+                .value;
+            let mut state = crate::sync::owned::lock_owned(super::workspace::StateArc::clone(
+                &parent_workspace.state,
+            ))
+            .await;
+            parent_workspace
+                .defer_publication(
+                    turn,
+                    branch,
+                    acyclic_fs::GitGenerationRef {
+                        workspace_id: child.workspace().id(),
+                        generation: source.id(),
+                    },
+                )
+                .await?;
+            commands
+                .drain_publications(
+                    &super::workspace::git::CommandContext {
+                        owner: &owner,
+                        operation: turn,
+                        scope: &scope,
+                        request: None,
+                    },
+                    &mut state,
+                )
+                .await
+        })
     }
     /// Bind a committed project using the same adapter for turns and human
     /// filesystem actions. Only an action needing native access binds a view.
