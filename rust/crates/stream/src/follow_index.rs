@@ -410,6 +410,14 @@ mod batch_scaling {
     use acyclic_test_support::scale::{Bound, assert_scales};
     use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
 
+    #[derive(Default)]
+    struct WakeCount(std::sync::atomic::AtomicUsize);
+
+    impl std::task::Wake for WakeCount {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
     #[tokio::test]
     async fn unfiltered_follow_publication_visits_subscribers_once_per_batch()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -428,7 +436,16 @@ mod batch_scaling {
                     .await?;
                 let mut follows = Vec::new();
                 for _ in 0..subscriber_count {
-                    follows.push(stream.follow(FollowRequest::new(path.clone(), 1)).await?);
+                    let mut follow = stream.follow(FollowRequest::new(path.clone(), 1)).await?;
+                    let wakes = std::sync::Arc::new(WakeCount::default());
+                    let waker = std::task::Waker::from(wakes.clone());
+                    let mut context = std::task::Context::from_waker(&waker);
+                    assert!(
+                        futures::Stream::poll_next(std::pin::Pin::new(&mut follow), &mut context)
+                            .is_pending()
+                    );
+                    assert_eq!(wakes.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+                    follows.push((follow, wakes));
                 }
                 PUBLICATION_CANDIDATES.with(|count| count.set(0));
                 stream
@@ -441,11 +458,13 @@ mod batch_scaling {
                     .await?;
                 let candidates = PUBLICATION_CANDIDATES.with(std::cell::Cell::get);
                 assert_eq!(candidates, subscriber_count);
-                for follow in follows {
+                for (follow, wakes) in follows {
+                    assert!(wakes.0.load(std::sync::atomic::Ordering::Relaxed) > 0);
                     let records: Vec<_> = crate::records_only(follow)
                         .take(usize::try_from(record_count)?)
                         .try_collect()
-                        .await?;
+                        .now_or_never()
+                        .ok_or("appended batch did not wake its parked follow")??;
                     assert_eq!(records.len(), usize::try_from(record_count)?);
                     for (index, record) in records.iter().enumerate() {
                         assert_eq!(record.sequence, u64::try_from(index)? + 1);
