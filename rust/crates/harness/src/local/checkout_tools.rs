@@ -78,16 +78,28 @@ async fn serialized<T, R>(
     command(lock_owned(StateArc::clone(state)).await).await
 }
 
-/// Runs the entire serialized call under its admission deadline, including
-/// preparation and publication after acquiring the checkout guard.
 async fn serialized_until<T, R>(
     state: &StateArc<AsyncMutex<T>>,
     deadline_unix_ms: Option<u64>,
     clock: &dyn acyclic_stream::UnixMillisClock,
     command: impl AsyncFnOnce(OwnedMutexGuard<T>) -> Result<R>,
 ) -> Result<R> {
+    let guard = observe_until(deadline_unix_ms, clock, async {
+        Ok(lock_owned(StateArc::clone(state)).await)
+    })
+    .await?;
+    command(guard).await
+}
+
+/// Bounds observation without taking completion ownership. A detached task
+/// retains its accepted effects through cleanup and publication.
+async fn observe_until<R>(
+    deadline_unix_ms: Option<u64>,
+    clock: &dyn acyclic_stream::UnixMillisClock,
+    completion: impl std::future::Future<Output = Result<R>>,
+) -> Result<R> {
     let Some(deadline) = deadline_unix_ms else {
-        return serialized(state, command).await;
+        return completion.await;
     };
     let timeout = || {
         Error::process_io(std::io::Error::new(
@@ -99,7 +111,7 @@ async fn serialized_until<T, R>(
         return Err(timeout());
     }
     let alarm = std::pin::pin!(acyclic_native_runtime::WallAlarm::wait(deadline).map_err(storage)?);
-    let command = std::pin::pin!(serialized(state, command));
+    let command = std::pin::pin!(completion);
     match futures::future::select(alarm, command).await {
         futures::future::Either::Right((result, _)) => {
             // A producer may finish a synchronous native step in the same
@@ -217,6 +229,7 @@ impl CheckoutTools {
 }
 
 struct PreparedCommand {
+    control: Option<acyclic_native_runtime::ProcessControl>,
     admitted: std::time::Instant,
     deadline_unix_ms: Option<u64>,
     invocation: ToolInvocation,
@@ -228,6 +241,7 @@ struct PreparedCommand {
 }
 
 struct ShellCommand<'a> {
+    control: acyclic_native_runtime::ProcessControl,
     invocation: &'a ToolInvocation,
     context: &'a ToolContext,
     shell: Option<crate::tools::ShellInput>,
@@ -246,6 +260,7 @@ impl CheckoutTools {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ToolResult>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let PreparedCommand {
+                control,
                 admitted,
                 deadline_unix_ms,
                 invocation,
@@ -298,6 +313,9 @@ impl CheckoutTools {
                     } else {
                         self.shell_checkout(
                             ShellCommand {
+                                control: control.ok_or_else(|| {
+                                    Error::Invalid("shell control is absent".into())
+                                })?,
                                 invocation: &invocation,
                                 context,
                                 shell,
@@ -330,6 +348,7 @@ impl CheckoutTools {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ToolResult>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let ShellCommand {
+                control,
                 invocation,
                 context,
                 shell,
@@ -385,6 +404,7 @@ impl CheckoutTools {
                                 execution_grant,
                                 started,
                                 admitted,
+                                control,
                             ),
                             maximum,
                             state,
@@ -627,7 +647,24 @@ impl ToolExecutor for CheckoutTools {
                 .filter(|timeout| *timeout != 0)
                 .map(|timeout| admitted_unix_ms.saturating_add(u64::from(timeout)));
             let (started, launched) = tokio::sync::oneshot::channel();
+            let expiry = match (deadline_unix_ms, self.expiry_unix_ms) {
+                (Some(deadline), Some(expiry)) => Some(deadline.min(expiry)),
+                (deadline, expiry) => deadline.or(expiry),
+            };
+            let control = shell
+                .as_ref()
+                .map(|_| acyclic_native_runtime::ProcessControl::open(expiry))
+                .transpose()
+                .map_err(storage)?;
+            // Stopping observation stops execution, while the original task
+            // keeps its guard and volume claims through final publication.
+            let _stop = if background {
+                None
+            } else {
+                control.clone().map(shell::StopOnDrop)
+            };
             let command = PreparedCommand {
+                control,
                 admitted,
                 deadline_unix_ms,
                 invocation,
@@ -637,7 +674,7 @@ impl ToolExecutor for CheckoutTools {
                 maximum,
                 started: background.then_some(started),
             };
-            if !background {
+            if command.shell.is_none() {
                 return self.run_checkout_command(command, context)?.await;
             }
             let tools = self.clone();
@@ -653,6 +690,12 @@ impl ToolExecutor for CheckoutTools {
                 result
             });
             tokio::pin!(task);
+            if !background {
+                return observe_until(deadline_unix_ms, self.clock.as_ref(), async {
+                    task.await.map_err(storage)?
+                })
+                .await;
+            }
             tokio::select! {
                 result = &mut task => result.map_err(storage)?,
                 result = launched => {
@@ -804,29 +847,40 @@ mod deadline_tests {
     }
 
     #[test]
-    fn admitted_call_deadline_covers_preparation_waits_and_late_success() -> Result<()> {
+    fn admitted_deadline_releases_observation_but_retains_completion() -> Result<()> {
         use acyclic_native_runtime::testing::{Schedule, seeded_runtime};
         let runtime = seeded_runtime(73).map_err(storage)?;
         let (schedule, _) = Schedule::seeded(73);
         runtime.block_on(schedule.scope(async {
             tokio::time::pause();
             let state = StateArc::new(AsyncMutex::new(()));
-            let preparation = StateArc::new(AsyncMutex::new(()));
-            let _owner = lock_owned(StateArc::clone(&preparation)).await;
             let clock = acyclic_stream::SystemUnixMillisClock;
             for late_success in [false, true] {
-                let entered = std::sync::atomic::AtomicBool::new(false);
+                let preparation = StateArc::new(AsyncMutex::new(()));
+                let owner = lock_owned(StateArc::clone(&preparation)).await;
+                let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let deadline = acyclic_stream::UnixMillisClock::now_unix_millis(&clock) + 20;
-                let result = serialized_until(&state, Some(deadline), &clock, async |_| {
-                    entered.store(true, std::sync::atomic::Ordering::SeqCst);
-                    if late_success {
-                        // A native producer can finish its current poll after
-                        // the deadline, before the alarm waiter is polled again.
-                        schedule.set_unix_millis(deadline);
-                    } else {
-                        let _preparation = lock_owned(StateArc::clone(&preparation)).await;
-                    }
-                    Ok(())
+                let (finished, completion) = tokio::sync::oneshot::channel();
+                let worker_state = StateArc::clone(&state);
+                let worker_entered = Arc::clone(&entered);
+                let worker_schedule = schedule.clone();
+                let task = acyclic_native_runtime::TaskSpawner::current().spawn(async move {
+                    let result =
+                        serialized_until(&worker_state, Some(deadline), &clock, async |_| {
+                            worker_entered.store(true, std::sync::atomic::Ordering::SeqCst);
+                            if late_success {
+                                worker_schedule.set_unix_millis(deadline);
+                            } else {
+                                let _preparation = lock_owned(preparation).await;
+                            }
+                            Ok(())
+                        })
+                        .await;
+                    let _ = finished.send(());
+                    result
+                });
+                let result = observe_until(Some(deadline), &clock, async {
+                    task.await.map_err(storage)?
                 })
                 .await;
                 assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
@@ -834,8 +888,15 @@ mod deadline_tests {
                     timed_out(&result),
                     "admitted call did not time out: {result:?}"
                 );
+                if !late_success {
+                    assert!(
+                        StateArc::clone(&state).try_lock_owned().is_err(),
+                        "timeout dropped the completion owner"
+                    );
+                }
+                drop(owner);
+                completion.await.map_err(storage)?;
                 assert!(StateArc::clone(&state).try_lock_owned().is_ok());
-                assert!(acyclic_stream::UnixMillisClock::now_unix_millis(&clock) >= deadline);
             }
             Ok(())
         }))
