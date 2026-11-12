@@ -233,11 +233,9 @@ async fn unchanged_edge<S: AsyncObjectStore>(
         super::super::persistent_point::lookup_projected_with_accounting::<BindingFormat, _, _, _>(
             store,
             record.bindings.ok_or(FsError::InvalidDiff)?,
-            super::super::persistent_point::PointQuery::Key(
-                |edge: &<BindingFormat as super::super::persistent_btree::Format>::Key| {
-                    edge.parent.cmp(&parent).then_with(|| edge.name.cmp(name))
-                },
-            ),
+            super::super::persistent_point::PointQuery::Key(|edge: &Binding| {
+                edge.parent.cmp(&parent).then_with(|| edge.name.cmp(name))
+            }),
             |_, accounting| Ok(Owned::new((), accounting.claim_owned(0, 0)?, 0)),
             DecodeLimits::for_volume(config),
             accounting,
