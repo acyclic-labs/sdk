@@ -32,6 +32,63 @@ pub(super) struct Binding<'a> {
     pub(super) workspace: Option<Arc<LocalWorkspace>>,
 }
 
+impl<'a> Binding<'a> {
+    /// The same selected volumes for turn preparation and read-only queries.
+    pub(super) fn for_agent(
+        agent: &'a crate::agent::AgentState,
+        reader: &'a dyn ContentResidencyVerifier,
+        verifier: AuthorityVerifier,
+        scope: &'a Scope,
+        workspace: Option<Arc<LocalWorkspace>>,
+    ) -> Result<Self> {
+        let volume = |role| {
+            agent
+                .volumes
+                .iter()
+                .find(|binding| binding.role == role)
+                .and_then(|binding| binding.as_volume())
+                .ok_or_else(|| Error::Invalid("agent has no selected context volume".into()))
+        };
+        Ok(Self {
+            project: crate::agent::WorkspaceTable::primary_in(&agent.volumes)
+                .and_then(|binding| binding.as_volume())
+                .ok_or_else(|| Error::Invalid("agent has no project volume".into()))?,
+            scratch: volume(crate::agent::WorkspaceRole::Home)?,
+            journal: volume(crate::agent::WorkspaceRole::Private)?,
+            reader,
+            verifier,
+            scope,
+            workspace,
+        })
+    }
+}
+
+impl LocalHarness {
+    /// Read-only consumers select the same lazy task view as turn preparation,
+    /// without preparing an executor or mounting a new workspace.
+    pub(in crate::local) async fn context_workspace(
+        &self,
+        project: &VolumeRef,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+    ) -> Result<Option<Arc<LocalWorkspace>>> {
+        let Some(workspace) = &self.workspace else {
+            return Ok(None);
+        };
+        if project == &self.project {
+            return Ok(Some(Arc::clone(workspace)));
+        }
+        let view = workspace.spawned_project_view(project).await?;
+        let authority = crate::filesystem::NativeMountAuthority::admitted(
+            verifier.clone(),
+            scope.copy(&mut None)?,
+        );
+        Ok(Some(
+            workspace.context_task_view(view, project, &authority)?,
+        ))
+    }
+}
+
 pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(domain);

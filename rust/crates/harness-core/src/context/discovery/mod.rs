@@ -50,7 +50,7 @@ pub use publication::{
 #[doc(hidden)]
 pub use source::{
     DiscoveryEntry, DiscoveryKind, DiscoveryPage, DiscoverySource, InstructionReader,
-    PROJECT_SKILL_ROOTS, SkillCatalog, SkillPrefix, SkillReader, VolumeDiscovery,
+    PROJECT_SKILL_ROOTS, SkillCatalog, SkillPrefix, SkillReader, SkillSnapshot, VolumeDiscovery,
     capture_instructions, discover_layered_skills, discover_skills_from,
 };
 

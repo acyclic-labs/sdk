@@ -19,7 +19,7 @@ struct Fixture {
     volume: VolumeRef,
     grant: ContentGrant,
     sources: Arc<NativeSkills>,
-    skills: Vec<crate::context::SkillMetadata>,
+    skills: crate::context::SkillSnapshot,
 }
 
 async fn fixture() -> Result<Fixture> {

@@ -116,7 +116,7 @@ proptest! {
     ) {
         let mut work = DiscoveryWork { entries: a, directories, limits: ContextDiscoveryLimits { entries: bound, directories: directory_bound, ..Default::default() } };
         let used = DiscoveryWork { entries: b, directories: used_directories, limits: ContextDiscoveryLimits { entries: u32::MAX, directories: u32::MAX, ..Default::default() } };
-        let catalog = SkillCatalog::capture(Vec::new(), used, DiscoveryWork::default())?;
+        let catalog = SkillCatalog::capture(Vec::new().into(), used, DiscoveryWork::default())?;
         let result = catalog.reuse(&mut work);
         let entries = u64::from(a) + u64::from(b);
         let total_directories = u64::from(directories) + u64::from(used_directories);

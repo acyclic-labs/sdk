@@ -133,16 +133,17 @@ impl crate::hosting::Platform for LocalUser {
         Box::pin(async move { self.harness()?.resolve_prompt_command(text).await })
     }
 
-    fn project_directory_source<'a>(
+    fn directory_source<'a>(
         &'a self,
         _: &'a acyclic_stream::session::CallAuthorization,
         agent: &'a AgentPath,
+        target: acyclic_harness_client::DirectoryTarget,
         path: &'a str,
         rows: u32,
     ) -> BoxProviderFuture<'a, Result<crate::hosting::DirectorySource>> {
         Box::pin(async move {
             self.harness()?
-                .project_directory_source(agent, path, rows)
+                .directory_source(agent, target, path, rows)
                 .await
         })
     }
@@ -705,36 +706,15 @@ impl LocalHarness {
         content: &'a crate::runtime::ContentBindings,
     ) -> BoxProviderFuture<'a, Result<TurnBindings<'a>>> {
         Box::pin(async move {
-            let project = WorkspaceTable::primary_in(&agent.volumes)
-                .and_then(|binding| binding.as_volume())
-                .ok_or_else(|| Error::Invalid("agent has no project volume".into()))?;
-            let scratch = agent
-                .volumes
-                .iter()
-                .find(|binding| binding.role == WorkspaceRole::Home)
-                .and_then(|binding| binding.as_volume())
-                .ok_or_else(|| Error::Invalid("agent has no home volume".into()))?;
             let verifier = issuer.verifier(&mut None)?;
-            #[cfg(any(test, not(target_arch = "wasm32")))]
-            let journal = agent
-                .volumes
-                .iter()
-                .find(|binding| binding.role == WorkspaceRole::Private)
-                .and_then(|binding| binding.as_volume())
-                .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
-            let context = super::context::Binding {
-                project,
-                scratch,
-                #[cfg(any(test, not(target_arch = "wasm32")))]
-                journal,
-                reader: content.reader.as_ref(),
-                #[cfg(any(test, not(target_arch = "wasm32")))]
-                verifier: verifier.clone(),
-                #[cfg(any(test, not(target_arch = "wasm32")))]
+            let context = super::context::Binding::for_agent(
+                agent,
+                content.reader.as_ref(),
+                verifier.clone(),
                 scope,
-                #[cfg(any(test, not(target_arch = "wasm32")))]
-                workspace: self.workspace.clone(),
-            };
+                self.workspace.clone(),
+            )?;
+            let (project, scratch) = (context.project, context.scratch);
             if project == &self.project
                 && scratch == &self.scratch
                 && agent.volumes.iter().any(|binding| {
@@ -780,18 +760,9 @@ impl LocalHarness {
                 });
             }
             #[cfg(any(test, not(target_arch = "wasm32")))]
-            let context = if let Some(workspace) = &self.workspace {
-                let view = workspace.spawned_project_view(project).await?;
-                let authority = crate::filesystem::NativeMountAuthority::admitted(
-                    verifier.clone(),
-                    scope.copy(&mut None)?,
-                );
-                super::context::Binding {
-                    workspace: Some(workspace.context_task_view(view, project, &authority)?),
-                    ..context
-                }
-            } else {
-                context
+            let context = super::context::Binding {
+                workspace: self.context_workspace(project, scope, &verifier).await?,
+                ..context
             };
             let writer = crate::filesystem::FilesystemContentPublisher::new(
                 Arc::clone(&self.files),

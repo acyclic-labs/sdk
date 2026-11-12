@@ -6,9 +6,10 @@ use acyclic_harness::{
         commands::{PROMPT_DIRECTORIES, validate_name},
     },
     conversation::PrivateDirectoryEntryKind,
-    local::agent_conversation::ProjectDirectory,
+    local::agent_conversation::DirectoryQuery,
     tui::{CompletionKind, PromptInput, QueryController, QueryPage},
 };
+use acyclic_harness_client::DirectoryTarget;
 use std::{collections::VecDeque, pin::Pin, sync::Arc};
 use tokio::sync::Mutex;
 
@@ -122,8 +123,8 @@ impl State {
 }
 
 struct Reader {
-    directories: VecDeque<String>,
-    current: Option<ProjectDirectory>,
+    directories: VecDeque<(DirectoryTarget, String)>,
+    current: Option<(DirectoryTarget, DirectoryQuery)>,
     prefix: String,
 }
 
@@ -137,7 +138,10 @@ impl Reader {
                 } else {
                     format!("{parent}/")
                 };
-                (prefix, VecDeque::from([parent.to_owned()]))
+                (
+                    prefix,
+                    VecDeque::from([(DirectoryTarget::Project, parent.to_owned())]),
+                )
             }
             CompletionKind::Command => {
                 let (parent, _) = query.rsplit_once(':').unwrap_or(("", query));
@@ -150,16 +154,18 @@ impl Reader {
                     format!("{parent}:")
                 };
                 let parent = parent.replace(':', "/");
-                let roots = PROMPT_DIRECTORIES
+                let mut roots: VecDeque<_> = PROMPT_DIRECTORIES
                     .into_iter()
                     .map(|root| {
-                        if parent.is_empty() {
+                        let path = if parent.is_empty() {
                             root.to_owned()
                         } else {
                             format!("{root}/{parent}")
-                        }
+                        };
+                        (DirectoryTarget::Project, path)
                     })
                     .collect();
+                roots.push_back((DirectoryTarget::Skills, String::new()));
                 (prefix, roots)
             }
             CompletionKind::Theme => return Err("themes use the followed command catalogue".into()),
@@ -184,20 +190,22 @@ pub(super) async fn load(
     };
     let mut selected = reader.lock().await;
     if selected.current.is_none()
-        && let Some(path) = selected.directories.pop_front()
+        && let Some((target, path)) = selected.directories.pop_front()
     {
-        selected.current = Some(
+        selected.current = Some((
+            target,
             conversation
-                .project_directory(
+                .directory_query(
+                    target,
                     path,
                     AgentPageRequest::new(rows, MAX_READ_BYTES.try_into()?, None)?,
                 )
                 .await?,
-        );
+        ));
     }
-    let entries = match selected.current.as_mut() {
-        Some(query) => query.next().await?,
-        None => None,
+    let (target, entries) = match selected.current.as_mut() {
+        Some((target, query)) => (Some(*target), query.next().await?),
+        None => (None, None),
     };
     let mut names = Vec::new();
     if let Some(page) = entries {
@@ -214,14 +222,18 @@ pub(super) async fn load(
                     if directory { "/" } else { "" }
                 ),
                 CompletionKind::Command => {
-                    let Some(name) = (if directory {
+                    let Some(name) = (if target == Some(DirectoryTarget::Skills) || directory {
                         Some(entry.name.as_str())
                     } else {
                         entry.name.strip_suffix(".md")
                     }) else {
                         continue;
                     };
-                    let name = format!("{}{name}", selected.prefix);
+                    let name = if target == Some(DirectoryTarget::Skills) {
+                        name.to_owned()
+                    } else {
+                        format!("{}{name}", selected.prefix)
+                    };
                     if validate_name(&name).is_err() {
                         continue;
                     }

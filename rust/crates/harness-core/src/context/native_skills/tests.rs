@@ -69,7 +69,7 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
 
     let mut records = RetainedBatch::default();
     let mut paths = Vec::new();
-    for skill in &skills {
+    for skill in skills.iter() {
         let digest = hex::encode(skill.source.generation.as_resource().key());
         let path = sources.directory.join(format!("{digest}.json"));
         let record = retained::decode_records(&std::fs::read(&path).map_err(storage)?, &digest)?

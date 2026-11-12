@@ -34,7 +34,9 @@ where
                 QueryProjection::Directory,
                 AgentCommand::Directory {
                     agent,
-                    target: acyclic_harness_client::DirectoryTarget::Project,
+                    target:
+                        acyclic_harness_client::DirectoryTarget::Project
+                        | acyclic_harness_client::DirectoryTarget::Skills,
                     generation: None,
                     page,
                     ..
@@ -112,8 +114,8 @@ where
                     }), selection,
                 ).await.map(|source| input_frames(source, page.clone())),
                 QueryProjection::Directory => {
-                    if let AgentCommand::Directory { path, .. } = command {
-                        self.server.platform.project_directory_source(&authorization, agent, path, page.items()).await
+                    if let AgentCommand::Directory { target, path, .. } = command {
+                        self.server.platform.directory_source(&authorization, agent, *target, path, page.items()).await
                         .map(|source| directory_frames(source, page.clone()))
                     } else {
                         Err(crate::Error::Invalid("directory projection has no directory command".into()))

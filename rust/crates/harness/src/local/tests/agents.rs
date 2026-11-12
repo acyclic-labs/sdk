@@ -57,6 +57,11 @@ async fn project_directory_queries_pin_pages_and_keep_consumers_independent() ->
                     path: "/names/c.md".into(),
                     bytes: acyclic_stream::OwnedBytes::from_static(b"c"),
                 },
+                WorkspaceMutation::CreateDirectory { path: "/.agents/skills/directory-label".into() },
+                WorkspaceMutation::PutFile {
+                    path: "/.agents/skills/directory-label/SKILL.md".into(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"---\nname: actual-name\ndescription: Metadata differs from the directory\n---\nPRIVATE_SKILL_BODY"),
+                },
             ],
             &crate::IdempotencyKey::new("directory-query-base")?,
         )
@@ -64,11 +69,19 @@ async fn project_directory_queries_pin_pages_and_keep_consumers_independent() ->
     let client = conversation(&harness).await?;
     let page = || AgentPageRequest::new(1, 256, None).map_err(agent);
     let mut first = client
-        .project_directory("names".into(), page()?)
+        .directory_query(
+            crate::client::DirectoryTarget::Project,
+            "names".into(),
+            page()?,
+        )
         .await
         .map_err(agent)?;
     let mut retained = client
-        .project_directory("names".into(), page()?)
+        .directory_query(
+            crate::client::DirectoryTarget::Project,
+            "names".into(),
+            page()?,
+        )
         .await
         .map_err(agent)?;
     let first_page = first
@@ -107,7 +120,11 @@ async fn project_directory_queries_pin_pages_and_keep_consumers_independent() ->
     assert_eq!(names, ["a.md", "b.md", "c.md"]);
     assert!(retained.next().await.map_err(agent)?.is_none());
     let mut fresh = client
-        .project_directory("names".into(), page()?)
+        .directory_query(
+            crate::client::DirectoryTarget::Project,
+            "names".into(),
+            page()?,
+        )
         .await
         .map_err(agent)?;
     let mut names = Vec::new();
@@ -115,10 +132,30 @@ async fn project_directory_queries_pin_pages_and_keep_consumers_independent() ->
         names.extend(entries.entries.into_iter().map(|entry| entry.name));
     }
     assert_eq!(names, ["a.md", "b.md", "c.md", "later.md"]);
+    let mut skills = client
+        .directory_query(
+            crate::client::DirectoryTarget::Skills,
+            String::new(),
+            page()?,
+        )
+        .await
+        .map_err(agent)?;
+    let mut names = Vec::new();
+    while let Some(page) = skills.next().await.map_err(agent)? {
+        assert!(page.entries.len() <= 1);
+        names.extend(page.entries.into_iter().map(|entry| entry.name));
+    }
+    assert!(names.iter().any(|name| name == "actual-name"));
+    assert!(
+        !names
+            .iter()
+            .any(|name| name == "directory-label" || name.contains("PRIVATE_SKILL_BODY"))
+    );
     // Negative controls: insufficient original byte credit and a foreign root
     // must fail, never look like a successful empty directory.
     let mut tiny = client
-        .project_directory(
+        .directory_query(
+            crate::client::DirectoryTarget::Project,
             "names".into(),
             AgentPageRequest::new(1, 2, None).map_err(agent)?,
         )
@@ -133,7 +170,12 @@ async fn project_directory_queries_pin_pages_and_keep_consumers_independent() ->
     let foreign = AgentPath::root(&crate::agent::AgentId::from_bytes([91; 16]));
     match connection
         .controls
-        .directory_query(foreign, "names".into(), page()?)
+        .directory_query(
+            foreign,
+            crate::client::DirectoryTarget::Project,
+            "names".into(),
+            page()?,
+        )
         .await
     {
         Err(acyclic_harness_client::AgentExchangeError::Session(StreamError::AccessDenied)) => {}

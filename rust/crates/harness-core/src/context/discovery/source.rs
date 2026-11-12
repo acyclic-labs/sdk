@@ -221,15 +221,18 @@ impl DiscoveryWork {
     }
 }
 
+/// One immutable metadata selection, shared with paged consumers without cloning it.
+pub type SkillSnapshot = Arc<[SkillMetadata]>;
+
 /// A cached catalog cannot yield metadata without charging the shared discovery budget.
 #[doc(hidden)]
 pub struct SkillCatalog {
-    skills: Vec<SkillMetadata>,
+    skills: SkillSnapshot,
     usage: DiscoveryWork,
 }
 impl SkillCatalog {
     pub fn capture(
-        skills: Vec<SkillMetadata>,
+        skills: SkillSnapshot,
         mut work: DiscoveryWork,
         before: DiscoveryWork,
     ) -> Result<Self> {
@@ -240,13 +243,13 @@ impl SkillCatalog {
             usage: work.since(before)?,
         })
     }
-    pub fn reuse(&self, work: &mut DiscoveryWork) -> Result<Option<Vec<SkillMetadata>>> {
+    pub fn reuse(&self, work: &mut DiscoveryWork) -> Result<Option<SkillSnapshot>> {
         work.limits.validate()?;
         if self.usage.limits.header_bytes != work.limits.header_bytes {
             return Ok(None);
         }
         work.include(self.usage)?;
-        Ok(Some(self.skills.clone()))
+        Ok(Some(Arc::clone(&self.skills)))
     }
 }
 

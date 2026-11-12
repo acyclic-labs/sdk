@@ -1,5 +1,5 @@
 use super::*;
-use crate::context::{ContextRoot, DiscoveryWork, SkillCatalog, SkillMetadata};
+use crate::context::{ContextRoot, DiscoveryWork, SkillCatalog, SkillMetadata, SkillSnapshot};
 
 /// A catalog and the identity of the layer stack it was discovered over.
 type Catalog = Option<([u8; 32], SkillCatalog)>;
@@ -49,17 +49,36 @@ impl LocalHarness {
         generation: Option<&'a crate::resources::GenerationRef>,
         work: &'a mut DiscoveryWork,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
-        crate::conversation::BoundedContentFuture::new(None, || {
-            self.discover_skills(binding, generation, work)
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let snapshots = self
+                .discover_skill_snapshots(binding, generation, work)
+                .await?;
+            Ok(snapshots
+                .iter()
+                .flat_map(|skills| skills.iter().cloned())
+                .collect())
         })
     }
 
-    async fn discover_skills(
+    /// The same source selections, borrowed by bounded consumers rather than
+    /// materialized again as a second complete metadata catalogue.
+    pub(in crate::local) fn bound_skill_snapshots<'a>(
+        &'a self,
+        binding: &'a Binding<'a>,
+        generation: Option<&'a crate::resources::GenerationRef>,
+        work: &'a mut DiscoveryWork,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillSnapshot>>> {
+        crate::conversation::BoundedContentFuture::new(None, || {
+            self.discover_skill_snapshots(binding, generation, work)
+        })
+    }
+
+    async fn discover_skill_snapshots(
         &self,
         binding: &Binding<'_>,
         generation: Option<&crate::resources::GenerationRef>,
         work: &mut DiscoveryWork,
-    ) -> Result<Vec<SkillMetadata>> {
+    ) -> Result<Vec<SkillSnapshot>> {
         let mut skills = Vec::new();
         #[cfg(any(test, not(target_arch = "wasm32")))]
         let sources = self.bound_skill_sources(binding)?;
@@ -82,17 +101,37 @@ impl LocalHarness {
                 )));
             }
             let view = selected.as_ref().unwrap_or_else(|| workspace.view());
-            skills = sources.catalog(&workspace.path, view, work)?.await?;
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let admitted = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let io = crate::filesystem::PreparationIo::from_native_work(&admitted)?;
+            self.authorize_checkout_context(
+                workspace,
+                view.workspace(),
+                &io,
+                (&binding.verifier, binding.scope),
+            )
+            .await?;
+            skills.push(sources.catalog(&workspace.path, view, work)?.await?);
+            self.authorize_checkout_context(
+                workspace,
+                view.workspace(),
+                &io,
+                (&binding.verifier, binding.scope),
+            )
+            .await?;
         }
         if !native_project {
             #[cfg(any(test, not(target_arch = "wasm32")))]
             if let Some(sources) = sources {
-                skills = sources.user_catalog(work)?.await?;
+                skills.push(sources.user_catalog(work)?.await?);
             }
-            skills.extend(self.volume_skills(binding, generation, work, false).await?);
+            skills.push(self.volume_skills(binding, generation, work, false).await?);
         }
-        skills.extend(self.volume_skills(binding, None, work, true).await?);
-        crate::context::validate_skill_catalog(&skills, &mut None)?;
+        skills.push(self.volume_skills(binding, None, work, true).await?);
         Ok(skills)
     }
 
@@ -123,7 +162,7 @@ impl LocalHarness {
         generation: Option<&crate::resources::GenerationRef>,
         work: &mut DiscoveryWork,
         private: bool,
-    ) -> Result<Vec<SkillMetadata>> {
+    ) -> Result<SkillSnapshot> {
         use crate::layers::{SEED, stack_digest};
         let volume = if private {
             binding.scratch
@@ -218,7 +257,8 @@ impl LocalHarness {
             }
             skills
         };
-        let catalog = SkillCatalog::capture(skills.clone(), *work, before)?;
+        let skills: SkillSnapshot = skills.into();
+        let catalog = SkillCatalog::capture(Arc::clone(&skills), *work, before)?;
         let mut cache = crate::sync::owned::lock_owned(self.skill_cache.clone()).await;
         let slot = if private {
             &mut cache.private

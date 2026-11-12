@@ -3,7 +3,7 @@
 use crate::context::native_discovery::LazyDiscovery;
 use crate::context::{
     ContextRoot, DiscoveryPage, DiscoverySource, DiscoveryWork, PROJECT_SKILL_ROOTS,
-    PinnedContextPath, SkillCatalog, SkillMetadata, SkillPrefix, SkillReader, discover_skills_from,
+    PinnedContextPath, SkillCatalog, SkillPrefix, SkillReader, SkillSnapshot, discover_skills_from,
 };
 use crate::conversation::VolumeRef;
 use crate::{Error, Result};
@@ -504,7 +504,7 @@ impl NativeSkills {
         root: &'a Path,
         view: &'a View,
         bounds: &'a mut DiscoveryWork,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, SkillSnapshot>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             bounds.limits.validate()?;
             let before = *bounds;
@@ -523,7 +523,8 @@ impl NativeSkills {
             {
                 return Ok(skills);
             }
-            let (generation, mut skills) = self.owned_user_catalog(bounds)?.await?;
+            let (generation, skills) = self.owned_user_catalog(bounds)?.await?;
+            let mut skills = skills.as_ref().to_vec();
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
             let native = NativeDemandSource::open(
                 std::borrow::Cow::Borrowed(root),
@@ -561,7 +562,8 @@ impl NativeSkills {
                     .await?,
                 );
             }
-            let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
+            let skills: SkillSnapshot = skills.into();
+            let catalog = SkillCatalog::capture(Arc::clone(&skills), *bounds, before)?;
             drop(scan);
             records.publish(self.directory.clone()).await?;
             // An unwatchable user source must not enter either catalog cache.
@@ -574,7 +576,7 @@ impl NativeSkills {
     pub fn user_catalog<'a>(
         &'a self,
         bounds: &'a mut DiscoveryWork,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, SkillSnapshot>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             Ok(self.owned_user_catalog(bounds)?.await?.1)
         })
@@ -583,8 +585,7 @@ impl NativeSkills {
     fn owned_user_catalog<'a>(
         &'a self,
         bounds: &'a mut DiscoveryWork,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, (Option<u64>, Vec<SkillMetadata>)>>
-    {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (Option<u64>, SkillSnapshot)>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             bounds.limits.validate()?;
             let before = *bounds;
@@ -597,7 +598,7 @@ impl NativeSkills {
             }
             let (generation, mut skills) = self.source_user_catalog(bounds)?.await?;
             let mut records = RetainedBatch::default();
-            for skill in &mut skills {
+            for skill in Arc::make_mut(&mut skills) {
                 if skill.source.root.volume == self.journal {
                     continue;
                 }
@@ -624,7 +625,7 @@ impl NativeSkills {
                 skill.source =
                     records.retain(&self.journal, RetainedSource::Native(Box::new(source)))?;
             }
-            let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
+            let catalog = SkillCatalog::capture(Arc::clone(&skills), *bounds, before)?;
             records.publish(self.directory.clone()).await?;
             *cached = generation.map(|generation| (generation, catalog));
             Ok((generation, skills))
@@ -639,8 +640,7 @@ impl NativeSkills {
     fn source_user_catalog<'a>(
         &'a self,
         bounds: &'a mut DiscoveryWork,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, (Option<u64>, Vec<SkillMetadata>)>>
-    {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (Option<u64>, SkillSnapshot)>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             bounds.limits.validate()?;
             let before = *bounds;
@@ -692,7 +692,8 @@ impl NativeSkills {
                     discover_skills_from(&mut scan, "", "SKILL.md", bounds, None, false).await?,
                 );
             }
-            let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
+            let skills: SkillSnapshot = skills.into();
+            let catalog = SkillCatalog::capture(Arc::clone(&skills), *bounds, before)?;
             records.publish(self.directory.clone()).await?;
             *cached = generation.map(|generation| (generation, catalog));
             Ok((generation, skills))
@@ -1064,10 +1065,10 @@ mod binding_tests {
         )
         .await
         .map_err(storage)?;
-        let names = |skills: Vec<SkillMetadata>| {
+        let names = |skills: SkillSnapshot| {
             skills
-                .into_iter()
-                .map(|skill| skill.name)
+                .iter()
+                .map(|skill| skill.name.clone())
                 .collect::<Vec<_>>()
         };
         let listed = names(sources.user_catalog(&mut DiscoveryWork::default())?.await?);
@@ -1161,6 +1162,24 @@ mod binding_tests {
         let bound = sources.for_volume(child.clone());
         let mut parent_work = DiscoveryWork::default();
         let parent_skills = sources.user_catalog(&mut parent_work)?.await?;
+        let snapshot = SkillCatalog::capture(
+            Arc::clone(&parent_skills),
+            parent_work,
+            DiscoveryWork::default(),
+        )?;
+        let mut reused = DiscoveryWork::default();
+        let shared = acyclic_test_support::measure(|| {
+            let selected = snapshot.reuse(&mut reused).unwrap().unwrap();
+            assert!(Arc::ptr_eq(&selected, &parent_skills));
+        });
+        assert_eq!((shared.count_total, shared.bytes_total), (0, 0));
+        let copied = acyclic_test_support::measure(|| {
+            std::hint::black_box(parent_skills.as_ref().to_vec());
+        });
+        assert!(
+            copied.bytes_total > shared.bytes_total,
+            "materializing a second catalogue misses the same allocation floor"
+        );
         let pages = sources.user_pages.load(std::sync::atomic::Ordering::SeqCst);
         assert!(
             pages > 0,

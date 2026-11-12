@@ -426,10 +426,11 @@ impl AgentControls {
     pub async fn directory_query(
         &self,
         agent: acyclic_harness_core::agent::AgentPath,
+        target: crate::DirectoryTarget,
         path: String,
         page: crate::AgentPageRequest,
     ) -> Result<crate::DirectoryQuery, AgentExchangeError> {
-        if page.cursor().is_some() {
+        if target == crate::DirectoryTarget::Private || page.cursor().is_some() {
             return Err(CommandError::Invalid.into());
         }
         let page = crate::AgentPageRequest::new(
@@ -439,7 +440,7 @@ impl AgentControls {
         )?;
         let command = AgentCommand::Directory {
             agent,
-            target: crate::DirectoryTarget::Project,
+            target,
             path,
             generation: None,
             page,

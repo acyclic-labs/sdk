@@ -637,6 +637,8 @@ pub enum DirectoryTarget {
     Private,
     /// The selected agent's project, through a source-owned query socket.
     Project,
+    /// Callable names from the selected agent's original skill metadata.
+    Skills,
 }
 
 /// A file an agent's turns produced, as a frontend names it.
@@ -796,9 +798,12 @@ impl AgentCommand {
                 page,
                 ..
             } => {
-                if *target == DirectoryTarget::Project
+                if *target != DirectoryTarget::Private
                     && (generation.is_some() || page.cursor().is_some())
                 {
+                    return Err(CommandError::Invalid);
+                }
+                if *target == DirectoryTarget::Skills && !path.is_empty() {
                     return Err(CommandError::Invalid);
                 }
                 if generation.is_none() && page.cursor().is_some() {

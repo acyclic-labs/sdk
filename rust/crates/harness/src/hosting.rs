@@ -197,14 +197,15 @@ pub trait Platform: ProviderPlatform + 'static {
 
     /// A project directory at the selected agent's original read authority.
     /// The source owns its native or volume cursor until its consumer closes.
-    fn project_directory_source<'a>(
+    fn directory_source<'a>(
         &'a self,
         authorization: &'a CallAuthorization,
         agent: &'a AgentPath,
+        target: acyclic_harness_client::DirectoryTarget,
         path: &'a str,
         rows: u32,
     ) -> BoxProviderFuture<'a, crate::Result<DirectorySource>> {
-        let _ = (authorization, agent, path, rows);
+        let _ = (authorization, agent, target, path, rows);
         Box::pin(async {
             Err(crate::Error::Unsupported(
                 "project directory source is unavailable".into(),

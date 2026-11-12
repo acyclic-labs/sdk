@@ -25,12 +25,60 @@ fn entries(page: Vec<crate::context::DiscoveryEntry>) -> Vec<PrivateDirectoryEnt
 }
 
 impl LocalHarness {
-    pub(in crate::local) async fn project_directory_source(
+    async fn skill_directory_source(
         self: &Arc<Self>,
         agent: &AgentPath,
+        rows: u32,
+    ) -> Result<crate::hosting::DirectorySource> {
+        let (agents, _) = self.agents().await?;
+        let state = agents.state(agent).await.map_err(storage)?;
+        let bound = self
+            .agents
+            .get()
+            .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+            .server()
+            .bound();
+        let (scope, verifier) = bound.volume_scope(agent).await.map_err(storage)?;
+        let reader = bound.content_reader(agent).await.map_err(storage)?;
+        let mut binding =
+            Binding::for_agent(&state, reader.as_ref(), verifier.clone(), &scope, None)?;
+        binding.workspace = self
+            .context_workspace(binding.project, &scope, &verifier)
+            .await?;
+        let snapshots = self
+            .bound_skill_snapshots(
+                &binding,
+                None,
+                &mut crate::context::DiscoveryWork::default(),
+            )?
+            .await?;
+        Ok(Box::pin(async_stream::try_stream! {
+            let mut names = snapshots.iter().flat_map(|snapshot| snapshot.iter()).peekable();
+            while names.peek().is_some() {
+                let mut entries = Vec::new();
+                for skill in names.by_ref().take(rows as usize) {
+                    entries.push(PrivateDirectoryEntry { name: skill.name.clone(), kind: PrivateDirectoryEntryKind::File });
+                }
+                yield acyclic_harness_client::DirectoryQueryPage { entries, has_more: names.peek().is_some() };
+            }
+        }))
+    }
+
+    pub(in crate::local) async fn directory_source(
+        self: &Arc<Self>,
+        agent: &AgentPath,
+        target: acyclic_harness_client::DirectoryTarget,
         path: &str,
         rows: u32,
     ) -> Result<crate::hosting::DirectorySource> {
+        if target == acyclic_harness_client::DirectoryTarget::Skills {
+            return self.skill_directory_source(agent, rows).await;
+        }
+        if target != acyclic_harness_client::DirectoryTarget::Project {
+            return Err(Error::Invalid(
+                "private directories use their immutable volume generation".into(),
+            ));
+        }
         self.agents().await?;
         let bound = self
             .agents
@@ -39,12 +87,24 @@ impl LocalHarness {
             .server()
             .bound();
         let path = path.to_owned();
+        let state = self.agents().await?.0.state(agent).await.map_err(storage)?;
+        let project = WorkspaceTable::primary_in(&state.volumes)
+            .filter(|entry| entry.role == WorkspaceRole::User)
+            .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
         #[cfg(any(test, not(target_arch = "wasm32")))]
-        if self.checkout_context
-            && self.agents.get().map(|host| host.root()) == Some(agent)
-            && let Some(workspace) = self.workspace.clone()
-        {
+        if self.checkout_context && self.workspace.is_some() {
             let (scope, verifier) = bound.volume_scope(agent).await.map_err(storage)?;
+            let workspace = self
+                .context_workspace(project.volume()?, &scope, &verifier)
+                .await?
+                .ok_or_else(|| Error::Invalid("selected native context view is absent".into()))?;
+            let path = if project.root.is_empty() {
+                path
+            } else if path.is_empty() {
+                project.root.clone()
+            } else {
+                format!("{}/{path}", project.root)
+            };
             let local = Arc::clone(self);
             return Ok(Box::pin(async_stream::try_stream! {
                 let (selected, pending) = workspace.selected_view().await?;
@@ -75,10 +135,6 @@ impl LocalHarness {
                 }
             }));
         }
-        let state = self.agents().await?.0.state(agent).await.map_err(storage)?;
-        let project = WorkspaceTable::primary_in(&state.volumes)
-            .filter(|entry| entry.role == WorkspaceRole::User)
-            .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
         let root = ContextRoot {
             volume: project.volume()?.clone(),
             directory: project.root.clone(),

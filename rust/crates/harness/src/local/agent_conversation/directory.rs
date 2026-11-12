@@ -4,12 +4,12 @@ use crate::{Result, conversation::PrivateDirectoryPage, resources::GenerationRef
 use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
 
 /// The query and the original connection which serves its pinned selection.
-pub struct ProjectDirectory {
+pub struct DirectoryQuery {
     query: acyclic_harness_client::DirectoryQuery,
     _connection: super::Connection,
 }
 
-impl ProjectDirectory {
+impl DirectoryQuery {
     /// Consume original source progress; an empty page is not completion.
     pub async fn next(
         &mut self,
@@ -92,18 +92,19 @@ impl Conversation {
         }
     }
 
-    /// Names in one project directory at its original source selection.
-    pub async fn project_directory(
+    /// Names in one filesystem-driven namespace at its original selection.
+    pub async fn directory_query(
         &self,
+        target: acyclic_harness_client::DirectoryTarget,
         path: String,
         page: AgentPageRequest,
-    ) -> std::result::Result<ProjectDirectory, acyclic_harness_client::AgentExchangeError> {
+    ) -> std::result::Result<DirectoryQuery, acyclic_harness_client::AgentExchangeError> {
         let query = self
             .connection
             .controls
-            .directory_query(self.agent().clone(), path, page)
+            .directory_query(self.agent().clone(), target, path, page)
             .await?;
-        Ok(ProjectDirectory {
+        Ok(DirectoryQuery {
             query,
             _connection: self.connection.clone(),
         })

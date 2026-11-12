@@ -5,18 +5,26 @@
     "files": {
       "AGENTS.md": "AGENTS_E2E_INSTRUCTION\n",
       "CLAUDE.md": "CLAUDE_E2E_INSTRUCTION\n",
-      ".agents/skills/inventory/SKILL.md": "---\nname: inventory\ndescription: Report the supplied instruction and skill inventory\n---\nSKILL_E2E_BODY\n$ARGUMENTS\n"
+      ".agents/skills/directory-label/SKILL.md": "---\nname: inventory\ndescription: Report the supplied instruction and skill inventory\n---\nSKILL_E2E_BODY\n$ARGUMENTS\n"
     }
   },
   "model": {
     "steps": [
       {
-        "when": {"contains": "SKILL_E2E_BODY"},
-        "text": ["INVENTORY_E2E_DONE"]
+        "when": {
+          "contains": "SKILL_E2E_BODY"
+        },
+        "text": [
+          "INVENTORY_E2E_DONE"
+        ]
       },
       {
-        "when": {"contains": "SKILL_E2E_BODY"},
-        "text": ["INVENTORY_E2E_PTY_DONE"]
+        "when": {
+          "contains": "SKILL_E2E_BODY"
+        },
+        "text": [
+          "INVENTORY_E2E_PTY_DONE"
+        ]
       }
     ]
   },
@@ -30,11 +38,42 @@
       "mode": "pty",
       "actions": [
         {
-          "when": {"contains": ["GraphCoder"], "cursor": true},
-          "prompt": "/inventory Report the exact instruction and skill markers supplied in your context."
+          "send": "\u001b[200~/inven\u001b[201~",
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          }
         },
         {
-          "when": {"contains": ["INVENTORY_E2E_PTY_DONE", "\u25cb"]},
+          "send": "\t",
+          "when": {
+            "contains": [
+              "Completions",
+              "/inventory"
+            ]
+          }
+        },
+        {
+          "send": "Report the exact instruction and skill markers supplied in your context.\r",
+          "when": {
+            "absent": [
+              "Completions"
+            ],
+            "contains": [
+              "/inventory "
+            ],
+            "cursor": true
+          }
+        },
+        {
+          "when": {
+            "contains": [
+              "INVENTORY_E2E_PTY_DONE",
+              "○"
+            ]
+          },
           "detach": true
         }
       ]
@@ -48,6 +87,8 @@
       "SKILL_E2E_BODY",
       "Report the exact instruction and skill markers supplied in your context."
     ],
-    "model_absent": ["$ARGUMENTS"]
+    "model_absent": [
+      "$ARGUMENTS"
+    ]
   }
 }
