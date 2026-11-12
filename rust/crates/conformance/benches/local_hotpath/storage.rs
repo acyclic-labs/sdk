@@ -383,7 +383,7 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) 
                             escrow: None,
                         },
                     )?,
-                    store.activation(&actor),
+                    store.activation(&actor)?,
                 ] {
                     creation.join(effect)?;
                 }
@@ -427,7 +427,7 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) 
                 escrow: None,
             },
         )?,
-        store.activation(&address),
+        store.activation(&address)?,
     ] {
         creation.join(effect)?;
     }
@@ -457,7 +457,7 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) 
                 records: vec![payload.clone().into()],
             }],
         ))?;
-        input.join(store.activation(&address))?;
+        input.join(store.activation(&address)?)?;
         store.submit(input).await?;
         let mut records = inbox.read(sequence, 1).await?;
         let original = records.try_next().await?.ok_or("actor input missing")?;

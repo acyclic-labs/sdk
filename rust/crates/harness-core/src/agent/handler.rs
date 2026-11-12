@@ -189,8 +189,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
     }
 
     /// The same-commit effect that wakes `actor` after a write to its inbox.
-    pub(super) fn wake(&self, actor: &ActorReference) -> CommitEffect {
-        self.store.activation(actor)
+    pub(super) fn wake(&self, actor: &ActorReference) -> Result<CommitEffect, Error> {
+        self.store
+            .activation(actor)
+            .map_err(|error| Error::Actor(Box::new(error)))
     }
 
     /// The effects that create `agent`'s actor, dormant until its trigger:
@@ -230,7 +232,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             self.store.create(None, actor, creation)
         }
         .map_err(|_| Error::Record("agent actor state cannot be created"))?;
-        Ok([state, self.wake(actor)])
+        Ok([state, self.wake(actor)?])
     }
 
     /// One commit creating root agent `adopted.agent` as an actor in `within`'s
@@ -640,7 +642,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         for agent in woken {
             effects.push(
                 self.agents
-                    .wake(&Agents::<P>::actor(&delivery.actor, &agent)?),
+                    .wake(&Agents::<P>::actor(&delivery.actor, &agent)?)
+                    .map_err(guest)?,
             );
         }
         let alarm = step.alarm;

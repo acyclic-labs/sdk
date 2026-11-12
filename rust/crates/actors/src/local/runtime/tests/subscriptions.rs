@@ -26,7 +26,7 @@ async fn observers<P: StreamProvider>(
                 escrow: None,
             },
         )?)?;
-        publication.join(store.activation(address))?;
+        publication.join(store.activation(address)?)?;
         store.submit(publication).await?;
     }
     Ok((store, actors, observed))

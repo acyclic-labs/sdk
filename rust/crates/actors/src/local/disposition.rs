@@ -410,7 +410,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     }],
                 }],
             ))?;
-            prepared.join(self.activation(actor))?;
+            prepared.join(self.activation(actor)?)?;
         }
         Ok(prepared)
     }

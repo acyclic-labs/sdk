@@ -41,7 +41,7 @@ pub fn create<P: acyclic_stream::StreamProvider + ?Sized>(
                 escrow: None,
             },
         )?,
-        store.activation(actor),
+        store.activation(actor)?,
     ];
     Ok([
         state,

@@ -4,13 +4,14 @@ use super::*;
 use crate::local::Subscription;
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
-    pub(super) fn dispatcher_store(&self) -> Result<(Store<P>, ActorReference), Error> {
+    pub(super) fn dispatcher_store(&self, shard: u8) -> Result<(Store<P>, ActorReference), Error> {
+        let name = format!("dispatcher-{shard:02x}");
         let actor = match &self.scope {
-            None => ActorReference::new(b"runtime", b"dispatch", b"all"),
+            None => ActorReference::new(b"runtime", b"dispatch", name.as_bytes()),
             Some((account, namespace)) => ActorReference::new(
                 account.as_bytes(),
                 namespace.as_str().as_bytes(),
-                b"dispatcher",
+                name.as_bytes(),
             ),
         }
         .map_err(|_| Error::Invalid("invalid dispatcher identity"))?;
@@ -27,6 +28,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self,
         store: &Store<P>,
         actor: &ActorReference,
+        shard: u8,
     ) -> Result<Snapshot, Error> {
         let snapshot = store.load(actor).await?;
         if snapshot.state().is_some() {
@@ -44,7 +46,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             subscriptions: BTreeMap::from([(
                 "activation".into(),
                 Subscription {
-                    path: self.store.root().clone(),
+                    path: self.store.scheduling_path(shard)?,
                     cursor: 0,
                 },
             )]),

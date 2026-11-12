@@ -249,7 +249,7 @@ async fn placed(
                 escrow: None,
             },
         )?,
-        store.activation(&actor),
+        store.activation(&actor)?,
     ] {
         create.join(effect)?;
     }
@@ -349,7 +349,7 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
             .await?
             .ok_or("accepted input lost its retry identity")?;
         assert_eq!(accepted.idempotency_key, operation);
-        let activation = reopened.activation(&actor);
+        let activation = reopened.activation(&actor)?;
         let mut mutations = vec![CommitMutation::Append {
             path: input,
             records: vec![invocation.record(&reopened.path(&actor)?)?],

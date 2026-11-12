@@ -1401,7 +1401,9 @@ mod tests {
             store
                 .create(None, &actor, acyclic_actors::local::Creation::default())
                 .map_err(|error| Error::Storage(error.to_string()))?,
-            store.activation(&actor),
+            store
+                .activation(&actor)
+                .map_err(|error| Error::Storage(error.to_string()))?,
         ];
         let request = acyclic_stream::CommitRequest {
             deadline_unix_millis: None,

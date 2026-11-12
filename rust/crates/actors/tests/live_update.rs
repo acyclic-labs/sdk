@@ -457,7 +457,7 @@ async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
                 Ok(Route {
                     state: store.path(&actor)?,
                     inbox: path(format!("proof/inbox/{index}"))?,
-                    activation: store.activation(&actor),
+                    activation: store.activation(&actor)?,
                     actor,
                     pin,
                 })
@@ -482,7 +482,7 @@ async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
                     escrow: None,
                 },
             )?,
-            store.activation(&route.actor),
+            store.activation(&route.actor)?,
         ] {
             creation.join(effect)?;
         }
@@ -818,7 +818,7 @@ async fn late_reply<P: StreamProvider + 'static>(provider: Arc<P>, fail: bool) -
                 escrow: None,
             },
         )?,
-        store.activation(&actor),
+        store.activation(&actor)?,
     ] {
         creation.join(effect)?;
     }
