@@ -251,10 +251,7 @@ impl LocalWorkspace {
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(all(test, not(loom)))]
             mount_advances: std::sync::atomic::AtomicUsize::new(0),
-            state: StateArc::new(AsyncMutex::new(State::new(
-                view.workspace().id(),
-                Arc::clone(&mounts),
-            ))),
+            state: StateArc::new(AsyncMutex::new(State::new(view.workspace().id()))),
             mounts: Arc::clone(&mounts),
             binding: None,
             binding_owner: None,
@@ -303,7 +300,13 @@ impl LocalWorkspace {
                 .as_ref()
                 .map(|_| Arc::clone(&workspace.mounts));
             workspace.binding_owner = binding_owner;
-            let (active, pending) = workspace.selected_view().await?;
+            let reuse_primary = self.mounting == WorkspaceMounting::Physical
+                && workspace.view().workspace().id() == self.view().workspace().id();
+            let (active, pending) = if reuse_primary {
+                (None, None)
+            } else {
+                workspace.selected_view().await?
+            };
             let selected = active.as_ref().unwrap_or_else(|| workspace.view());
             let initial_view = selected.workspace().id();
             // A physical view stays unmounted: its commands, file tools and
@@ -316,25 +319,38 @@ impl LocalWorkspace {
                     workspace.mounted = Some(mounted);
                 }
                 WorkspaceMounting::Physical => {
-                    workspace.path = workspace.physical_task_source(selected).await?;
+                    // An auxiliary binding does not fork its primary volume.
+                    // Reuse the admitted checkout when the project is unchanged;
+                    // distinct project forks still need their own materialization.
+                    workspace.path = if reuse_primary {
+                        self.path.clone()
+                    } else {
+                        workspace.physical_task_source(selected).await?
+                    };
                     workspace.identity =
                         acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
                 }
             }
             workspace.mounts = workspace.mounts_at(&workspace.path).await?;
             workspace.context_line = workspace.mounts.context_line();
-            reconciliation::recover_pending(
-                &workspace,
-                active.as_ref().unwrap_or_else(|| workspace.view()),
-                pending,
-                &|| owner.verify(),
-            )
-            .await?;
-            workspace.state = StateArc::new(AsyncMutex::new(State {
-                active,
-                initialized: true,
-                ..State::new(initial_view, Arc::clone(&workspace.mounts))
-            }));
+            if reuse_primary {
+                // CheckoutTools owns recovery and initialization under this
+                // original guard, including its branch and capture cursor.
+                workspace.state = StateArc::clone(&self.state);
+            } else {
+                reconciliation::recover_pending(
+                    &workspace,
+                    active.as_ref().unwrap_or_else(|| workspace.view()),
+                    pending,
+                    &|| owner.verify(),
+                )
+                .await?;
+                workspace.state = StateArc::new(AsyncMutex::new(State {
+                    active,
+                    initialized: true,
+                    ..State::new(initial_view)
+                }));
+            }
             let workspace = Arc::new(workspace);
             Ok(workspace)
         })
@@ -369,7 +385,6 @@ impl LocalWorkspace {
         let id = view.workspace().id();
         if id == state.initial_view {
             state.workspace = None;
-            state.mounts = Arc::clone(&self.mounts);
             return Ok(self.clone());
         }
         if let Some(workspace) = self.cached_selected_workspace(state) {
@@ -407,10 +422,7 @@ impl LocalWorkspace {
             binding_owner: self.binding_owner.clone(),
             bindings: self.bindings.clone(),
             // This cached physical handle must not retain its owning cache.
-            state: StateArc::new(AsyncMutex::new(State::new(
-                view.workspace().id(),
-                Arc::clone(&mounts),
-            ))),
+            state: StateArc::new(AsyncMutex::new(State::new(view.workspace().id()))),
             identity: served_identity(&mounted)?,
             path,
             fresh: false,
@@ -426,7 +438,6 @@ impl LocalWorkspace {
             mount_authority: self.mount_authority.clone(),
         });
         owner.verify().await?;
-        state.mounts = mounts;
         state.workspace = Some((id, workspace.clone()));
         Ok(workspace)
     }

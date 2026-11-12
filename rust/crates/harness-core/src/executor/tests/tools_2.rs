@@ -216,6 +216,12 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
         || Error::Unauthorized("file tool requires original source read grant".into());
     let missing: fn() -> Error = || Error::NotFound("src/lib.rs".into());
     let invalid: fn() -> Error = || Error::Invalid("tool arguments are malformed".into());
+    let process: fn() -> Error = || {
+        Error::Process(crate::ProcessError::NotFound {
+            exit_code: None,
+            message: "cwd missing-cwd does not exist".into(),
+        })
+    };
     let unavailable: fn() -> Error = || Error::ModelDiagnostic {
         code: crate::wire::ErrorCode::Unavailable,
         message: "tool reply producer was lost".into(),
@@ -261,6 +267,10 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
             (
                 refused,
                 Some("tool execution failed: tool rejected: original read grant is absent"),
+            ),
+            (
+                process,
+                Some("tool execution failed: cwd missing-cwd does not exist"),
             ),
             // Negative control: a harness fault never settles as a model-visible result.
             (storage, None),

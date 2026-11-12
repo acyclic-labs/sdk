@@ -1,0 +1,32 @@
+{
+  "id": "explicit-session-keeps-checkout-unchanged",
+  "workspace": { "kind": "plain", "files": { "seed.txt": "original" } },
+  "physical": true,
+  "model": {
+    "steps": [
+      {
+        "when": { "user": "write in the explicit session" },
+        "tools": [{
+          "id": "write",
+          "name": "shell",
+          "arguments": {
+            "command": ["node", "-e", "const fs=require('node:fs');fs.writeFileSync('seed.txt','isolated');fs.writeFileSync('private.txt','session only');process.stdout.write('SESSION_WRITE_OK')"]
+          }
+        }]
+      },
+      { "when": { "tool_result": "SESSION_WRITE_OK" }, "text": ["SESSION_ISOLATED"] }
+    ]
+  },
+  "inputs": [{
+    "mode": "headless",
+    "extra_args": ["--new-session"],
+    "text": "write in the explicit session",
+    "answer": "SESSION_ISOLATED"
+  }],
+  "assert": {
+    "requests": 2,
+    "files": { "seed.txt": "original" },
+    "absent_files": ["private.txt"]
+  },
+  "adapter": "responses"
+}

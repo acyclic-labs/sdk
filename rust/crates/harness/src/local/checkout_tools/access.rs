@@ -21,7 +21,7 @@ impl CheckoutTools {
             .unwrap_or_else(|| self.workspace.view());
         require_mount_access(
             view.workspace(),
-            &state.mounts,
+            &workspace.mounts,
             &self.signed,
             context.effective_scope().grants(),
             surface,

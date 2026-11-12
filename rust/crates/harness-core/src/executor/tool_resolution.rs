@@ -81,7 +81,7 @@ impl StockExecution<'_> {
         reason: ToolFailureKind,
         error: Error,
     ) -> Result<crate::model::ToolResultContent> {
-        if error.is_native_failure() {
+        if !error.is_tool_failure() || error.leaves_effect_uncertain() {
             return Err(error);
         }
         self.settle_tool_failure(journal, operation_id, step, call_id, reason, error)
@@ -89,7 +89,8 @@ impl StockExecution<'_> {
     }
 
     /// Records `error` as the call's failure. Callers pass only a definitive cause the model
-    /// can act on: a schema violation split from schema failures, or a non-native error.
+    /// can act on, including a settled process failure. Native accounting and uncertain
+    /// effects retain their original custody instead of becoming model feedback.
     pub(super) async fn settle_tool_failure(
         &self,
         journal: &dyn ExecutionJournal,

@@ -50,7 +50,6 @@ pub(in crate::local) struct State {
     pub(in crate::local) initial_view: acyclic_fs::WorkspaceId,
     pub(in crate::local) workspace: Option<(acyclic_fs::WorkspaceId, Arc<LocalWorkspace>)>,
     pub(in crate::local) watcher: Option<capture::Cursor>,
-    pub(in crate::local) mounts: Arc<workspace::Mounts>,
     pub(in crate::local) initialized: bool,
     /// Calls of this process whose launch or tree cleanup did not complete:
     /// their process may still run, so reconciliation leaves them unknown.
@@ -58,16 +57,12 @@ pub(in crate::local) struct State {
 }
 
 impl State {
-    pub(in crate::local) fn new(
-        initial_view: acyclic_fs::WorkspaceId,
-        mounts: Arc<workspace::Mounts>,
-    ) -> Self {
+    pub(in crate::local) fn new(initial_view: acyclic_fs::WorkspaceId) -> Self {
         Self {
             active: None,
             initial_view,
             workspace: None,
             watcher: None,
-            mounts,
             initialized: false,
             unsettled: Default::default(),
         }
@@ -236,7 +231,7 @@ impl CheckoutTools {
                 if reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await? {
                     state.watcher = None;
                 }
-                workspace::volumes::sync(&state.mounts).await?;
+                workspace::volumes::sync(&workspace.mounts).await?;
                 if let Some(parsed) = fs {
                     self.fs(parsed, context, &mut state, &workspace).await
                 } else {
@@ -315,7 +310,7 @@ impl CheckoutTools {
                 None
             };
             let files = output::Output::open(context, request).await?;
-            let mounts = Arc::clone(&state.mounts);
+            let mounts = Arc::clone(&workspace.mounts);
             let (result, mut state, mut files) =
                 workspace::volumes::native_scope(&mounts, async |claims| {
                     let (result, mut state, files, claims) = self
