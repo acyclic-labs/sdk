@@ -414,20 +414,31 @@ async fn publication_needs_no_write_authority_in_the_checkout_parent() -> TestRe
 #[tokio::test]
 async fn recovery_name_collision_preserves_authored_data_before_publication() -> TestResult {
     for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
-        let fixture = Fixture::new().await?;
-        let operation = OperationId::new();
-        let publication = fixture.publication(operation)?;
-        std::fs::create_dir(publication.directory())?;
-        let sentinel = publication.directory().join("authored");
-        std::fs::write(&sentinel, "user-owned")?;
-        assert!(
-            fixture
-                .publish(adapter, operation, &fixture.from)
-                .await
-                .is_err()
-        );
-        assert!(!fixture.root.join("note").exists());
-        assert_eq!(std::fs::read_to_string(sentinel)?, "user-owned");
+        for populated in [false, true] {
+            let fixture = Fixture::new().await?;
+            let operation = OperationId::new();
+            let publication = fixture.publication(operation)?;
+            std::fs::create_dir(publication.directory())?;
+            let sentinel = publication.directory().join("authored");
+            if populated {
+                std::fs::write(&sentinel, "user-owned")?;
+            }
+            for _ in 0..2 {
+                assert!(
+                    fixture
+                        .publish(adapter, operation, &fixture.from)
+                        .await
+                        .is_err()
+                );
+                assert!(!fixture.root.join("note").exists());
+                assert!(publication.directory().is_dir());
+                if populated {
+                    assert_eq!(std::fs::read_to_string(&sentinel)?, "user-owned");
+                } else {
+                    assert_eq!(std::fs::read_dir(publication.directory())?.count(), 0);
+                }
+            }
+        }
     }
     Ok(())
 }
