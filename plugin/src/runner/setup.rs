@@ -70,7 +70,6 @@ const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a term
 
 pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Option<Tty>, Failure> {
     let selected = selection(args, registry)?;
-    args.model = Some(selected.clone());
     if !registry.needs_credentials(&selected)? {
         return Ok(None);
     }

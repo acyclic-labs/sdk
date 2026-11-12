@@ -26,6 +26,16 @@ storage; use `off` to disable text diagnostics. `--default-config` ignores the
 environment model and `ACYCLIC_CATALOG` selection. `ACYCLIC_CATALOG` selects the
 provider catalog when `--catalog` is absent; neither variable contains credentials.
 
+Use `--home-file VOLUME_PATH=HOST_FILE` to initialize non-secret private home
+configuration before the first model call or child-role selection. Repeat the
+option for several files, for example `--home-file agent.ts=./settings.ts` and
+`--home-file templates/worker/AGENT.md=./worker.md`. Paths on the left are
+relative to the home volume. Initialization publishes the supplied files
+atomically, fills only absent files, and records one stable receipt. Later home
+edits and deletions survive reopening even when the supplied source changes.
+Existing sessions keep their configured files. Provider credentials belong in
+the credential configuration, never in home files.
+
 ## Native host workspace coordination
 
 Claude Code, Codex, Pi, OpenCode and Antigravity run their own sessions, providers, tools, permissions
