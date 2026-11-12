@@ -337,7 +337,7 @@ impl CommandResolution {
                     layout.into(),
                 ))
             }
-            Self::Sdk { .. } => Ok(publish_request(
+            Self::Sdk { .. } | Self::View { .. } => Ok(publish_request(
                 CommandFileRoot::Session,
                 serde_json::to_value(self).map_err(codec)?,
             )),
