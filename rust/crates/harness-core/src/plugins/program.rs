@@ -17,6 +17,43 @@ pub struct LoadedProgram {
     pub run: HookRun,
 }
 
+impl LoadedProgram {
+    /// Binds an authored tool to the host's ordinary shell capability. Every
+    /// invocation is canonicalized before permission and approval checks, so
+    /// authorship cannot widen the execution grant. Arguments travel as JSON
+    /// stdin, separately from executable argv and the pinned script source.
+    ///
+    /// # Errors
+    /// Refuses a non-shell capability or an unsupported command form.
+    pub fn bind(self, shell: std::sync::Arc<crate::tool::Tool>) -> Result<crate::tool::Tool> {
+        let shell = std::sync::Arc::new(shell.executor.capability().unwrap_or(&shell).clone());
+        if shell.definition.name != crate::tools::shell::PLATFORM.name {
+            return Err(Error::Invalid(
+                "programs require the canonical shell capability".into(),
+            ));
+        }
+        let HookRun::Shell { command, .. } = self.run else {
+            return Err(Error::Invalid("program has no pinned shell source".into()));
+        };
+        let argv = if cfg!(windows) {
+            vec![
+                "pwsh",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &command,
+            ]
+        } else {
+            vec!["sh", "-c", &command]
+        };
+        crate::tools::native::alias(
+            self.definition,
+            shell,
+            serde_json::json!({"command": {"argv": argv, "stdin": {"$json": "@arguments"}}}),
+        )
+    }
+}
+
 /// Loads one named program, without scanning sibling manifests or entries.
 /// Directory listings therefore need only names; descriptions and schemas are
 /// materialized when the consumer selects a name. `tree` must retain a single

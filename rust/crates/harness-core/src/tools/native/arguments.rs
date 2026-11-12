@@ -4,11 +4,13 @@
 //!
 //! A template is JSON. `"$name"` is the native argument `name` and `"$@call_id"`
 //! the model's call ID. `"$@operation_id"` is the runtime-owned operation UUID,
-//! stable through execution and reconciliation. Four single-key operators compute values:
+//! stable through execution and reconciliation. Five operators compute values:
 //! `{"$one_based": name}` (a 1-based line, made 0-based),
 //! `{"$through": [first, last]}` (the count of an inclusive 1-based span; an
 //! absent `first` is line 1), `{"$case": name, "$default": value, value: template, ...}`
-//! and `{"$if": name, "then": template, "else": template}`. Every other value is
+//! `{"$if": name, "then": template, "else": template}`, and `{"$json": name}`
+//! (an argument encoded as JSON text). `@arguments` names the complete original
+//! argument object. Every other value is
 //! literal. An absent argument leaves its member out, and an object whose
 //! references are all absent is itself absent.
 use crate::{Error, Result, tool::ToolInvocation};
@@ -65,6 +67,27 @@ type Call<'a> = (
     acyclic_fs::NativeWork<'a>,
 );
 
+/// Stream JSON into the outer string serializer instead of retaining a second
+/// encoded copy outside the caller's original argument-allocation owner.
+struct JsonText<'a>(&'a Value);
+
+impl std::fmt::Display for JsonText<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct Writer<'a, 'b>(&'a mut std::fmt::Formatter<'b>);
+        impl std::io::Write for Writer<'_, '_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let text = std::str::from_utf8(bytes).map_err(std::io::Error::other)?;
+                self.0.write_str(text).map_err(std::io::Error::other)?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        serde_json::to_writer(Writer(formatter), self.0).map_err(|_| std::fmt::Error)
+    }
+}
+
 fn examine(work: acyclic_fs::NativeWork<'_>) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
@@ -106,6 +129,7 @@ enum Resolved<'a> {
     Text(&'a str),
     Operation(&'a crate::OperationId),
     Number(u64),
+    Json(&'a Value),
     Object(&'a Map<String, Value>, Call<'a>),
 }
 
@@ -126,6 +150,7 @@ impl Serialize for Resolved<'_> {
             Self::Text(value) => value.serialize(serializer),
             Self::Operation(value) => value.serialize(serializer),
             Self::Number(value) => value.serialize(serializer),
+            Self::Json(value) => serializer.collect_str(&JsonText(value)),
             Self::Object(members, call) => {
                 let mut map = serializer.serialize_map(None)?;
                 // The original resolve already validated and charged this
@@ -146,6 +171,7 @@ impl Serialize for Resolved<'_> {
 
 fn field<'a>((fields, invocation, _): &Call<'a>, name: &str) -> Option<Resolved<'a>> {
     match name {
+        "@arguments" => Some(Resolved::Value(&invocation.arguments)),
         "@call_id" => Some(Resolved::Text(&invocation.call_id)),
         "@operation_id" => Some(Resolved::Operation(&invocation.operation_id)),
         _ => fields
@@ -180,7 +206,7 @@ fn reference(template: &Value) -> Option<&str> {
 fn operator(members: &Map<String, Value>) -> Option<&str> {
     members.keys().find_map(|key| {
         key.strip_prefix('$')
-            .filter(|key| ["one_based", "through", "case", "if"].contains(key))
+            .filter(|key| ["one_based", "through", "case", "if", "json"].contains(key))
     })
 }
 
@@ -202,6 +228,15 @@ fn resolve<'a>(template: &'a Value, call: &Call<'a>) -> Result<Option<Resolved<'
     };
     let name = |key: &str| members.get(key).and_then(Value::as_str).unwrap_or_default();
     match operator(members) {
+        Some("json") => match field(call, name("$json")) {
+            Some(Resolved::Value(value)) => Ok(Some(Resolved::Json(value))),
+            None => Ok(None),
+            _ => Err(invalid(
+                call.2,
+                "JSON source is not an argument",
+                format_args!("JSON source is not an argument"),
+            )),
+        },
         Some("one_based") => Ok(
             line(call, name("$one_based"))?.map(|line| Resolved::Number(line.saturating_sub(1)))
         ),
@@ -290,6 +325,7 @@ fn check(template: &Value) -> Result<()> {
         Value::Object(members) => {
             let names = |key: &str| members.get(key).is_some_and(Value::is_string);
             let shape_ok = match operator(members) {
+                Some("json") => members.len() == 1 && names("$json"),
                 Some("one_based") => members.len() == 1 && names("$one_based"),
                 Some("through") => {
                     members.len() == 1

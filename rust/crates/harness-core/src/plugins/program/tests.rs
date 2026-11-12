@@ -77,6 +77,44 @@ async fn program_revision_pins_imports_and_entries_without_reading_siblings() ->
 }
 
 #[tokio::test]
+async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Result<()> {
+    let tree = Files::program("tools/count");
+    let registry = crate::tools::defaults()?;
+    let shell = Arc::new(
+        registry
+            .get(crate::tools::shell::PLATFORM.name, None, None)?
+            .unwrap()
+            .clone(),
+    );
+    let tool = load_program(&tree, "tools/count").await?.bind(shell)?;
+    let arguments = serde_json::json!({"text": "$(touch injected); ' \" \\ \n 🦀", "nested": [null, {"__proto__": "data"}]});
+    let call = crate::tool::ToolInvocation {
+        operation_id: crate::OperationId::new(),
+        call_id: "authored-call".into(),
+        name: "count".into(),
+        arguments: arguments.clone(),
+    };
+    let canonical = tool.executor.canonical(&call, None)?.unwrap();
+    let input: crate::tools::ShellInput = serde_json::from_value(canonical.invocation.arguments)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    input.validate()?;
+    let (_, argv, stdin) = input.command.prepare(&crate::tools::shell::PLATFORM)?;
+    assert!(
+        !argv
+            .iter()
+            .any(|argument| argument.contains("touch injected"))
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&stdin.unwrap())
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        arguments
+    );
+    assert_eq!(canonical.invocation.operation_id, call.operation_id);
+    assert_eq!(canonical.invocation.call_id, call.call_id);
+    Ok(())
+}
+
+#[tokio::test]
 async fn tool_and_hook_programs_use_the_existing_runner_and_owner_check() -> Result<()> {
     for root in ["tools/count", "hooks/count"] {
         let tree = Files::program(root);
