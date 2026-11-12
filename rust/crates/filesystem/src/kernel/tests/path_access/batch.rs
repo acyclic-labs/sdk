@@ -433,45 +433,58 @@ async fn finished_batch_paths_add_only_linear_work_beside_a_deep_lookup()
             &cancellation,
         )
         .await?;
-        let root = NamespacePath::new(Vec::new(), config().limits)?;
-        let mut paths = vec![root; usize::try_from(size)?];
-        paths.insert(paths.len() / 2, deep);
-        let batch = lookup_paths(
-            &store,
-            &generation,
-            &paths,
-            config(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-        assert_eq!(batch.entries[paths.len() / 2], single.entries[0]);
-        for (path, entry) in paths.iter().zip(&batch.entries) {
-            if path.is_root() {
-                assert_eq!(entry.record.map(|record| record.file_id), Some(id(0)));
-                assert_eq!(entry.resolved_components, 0);
+        for root_count in [16_u64, 128] {
+            let root = NamespacePath::new(Vec::new(), config().limits)?;
+            let mut paths = vec![root; usize::try_from(root_count)?];
+            paths.insert(paths.len() / 2, deep.clone());
+            let batch = lookup_paths(
+                &store,
+                &generation,
+                &paths,
+                config(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+            assert_eq!(batch.entries[paths.len() / 2], single.entries[0]);
+            for (path, entry) in paths.iter().zip(&batch.entries) {
+                if path.is_root() {
+                    assert_eq!(entry.record.map(|record| record.file_id), Some(id(0)));
+                    assert_eq!(entry.resolved_components, 0);
+                }
             }
+            assert_eq!(batch.work.page_reads, single.work.page_reads);
+            assert_eq!(
+                batch.work.backend_read_operations,
+                single.work.backend_read_operations
+            );
+            let additional = batch
+                .work
+                .items_examined
+                .checked_sub(single.work.items_examined)
+                .ok_or("batch work omitted the deep lookup")?;
+            assert!(
+                additional > 0,
+                "original item counter must observe root queries"
+            );
+            assert!(
+                additional <= 8 * root_count + 16,
+                "finished paths were revisited: {additional}"
+            );
+            measured.push((size, root_count, additional));
         }
-        assert_eq!(batch.work.page_reads, single.work.page_reads);
-        assert_eq!(
-            batch.work.backend_read_operations,
-            single.work.backend_read_operations
-        );
-        let additional = batch
-            .work
-            .items_examined
-            .checked_sub(single.work.items_examined)
-            .ok_or("batch work omitted the deep lookup")?;
-        assert!(
-            additional > 0,
-            "original item counter must observe root queries"
-        );
-        assert!(
-            additional <= 8 * size + 16,
-            "finished paths were revisited: {additional}"
-        );
-        measured.push((size, additional));
     }
-    assert_scales(Bound::Linear, measured[0], measured[1]);
+    for pair in measured.chunks_exact(2) {
+        assert_scales(
+            Bound::Linear,
+            (pair[0].1, pair[0].2),
+            (pair[1].1, pair[1].2),
+        );
+    }
+    for root_index in 0..2 {
+        let shallow = measured[root_index];
+        let deep = measured[root_index + 2];
+        assert_scales(Bound::Constant, (shallow.0, shallow.2), (deep.0, deep.2));
+    }
     Ok(())
 }
