@@ -605,9 +605,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
             acyclic_differential::record(("read", reference.descriptor().byte_length()));
-            let bytes =
-                read_generation(generation, &path, Some(reference.descriptor().byte_length()), io)
-                    .await?;
+            let bytes = read_generation(
+                generation,
+                &path,
+                Some(reference.descriptor().byte_length()),
+                io,
+            )
+            .await?;
             crate::executor::with_history_io(io, |work| {
                 reference.descriptor().verify(&bytes, work)
             })?;
