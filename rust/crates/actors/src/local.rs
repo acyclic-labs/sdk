@@ -454,7 +454,7 @@ impl PreparedPublish {
     }
     /// Add one effect. Hard effects join the canonical hard publication;
     /// soft effects apply or skip their entire mutation group together.
-    /// Guest effects cannot mutate the host's failure subtree.
+    /// Guest effects cannot mutate host-owned failure or placement records.
     pub fn join(&mut self, effect: CommitEffect) -> Result<(), Error> {
         if self
             .own
@@ -464,10 +464,10 @@ impl PreparedPublish {
                 effect
                     .mutations
                     .iter()
-                    .any(|mutation| disposition::targets_failures(mutation, owner))
+                    .any(|mutation| disposition::targets_host_records(mutation, owner))
             })
         {
-            return Err(Error::Invalid("effect changes the host's failures"));
+            return Err(Error::Invalid("effect changes the host's control records"));
         }
         self.join_host(effect)
     }
@@ -844,7 +844,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 if let Some(paused) = paused {
                     state.paused = paused;
                 }
-                self.submit_retained(self.prepare(previous, state, effects, key)?)
+                let mut prepared = self.prepare(previous, state, Vec::new(), key)?;
+                for effect in effects {
+                    prepared.join_host(effect)?;
+                }
+                self.submit_retained(prepared)
                     .await?
                     .ok_or(Error::Invalid("claim receipt has no state"))
             }
@@ -1062,12 +1066,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                                 .is_some_and(|owner| {
                                     request.mutations()
                                         .filter(|mutation| {
-                                            disposition::targets_failures(mutation, owner)
+                                            disposition::targets_host_records(mutation, owner)
                                         })
                                         .count()
                                         != original.mutations()
                                             .filter(|mutation| {
-                                                disposition::targets_failures(mutation, owner)
+                                                disposition::targets_host_records(mutation, owner)
                                             })
                                             .count()
                                 })

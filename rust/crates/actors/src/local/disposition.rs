@@ -13,24 +13,32 @@ const DIRECTORY: &str = ".failures";
 
 /// A fork replaces its destination subtree; appends write one exact stream.
 /// Compare borrowed components so admission adds no allocation or provider IO.
-pub(super) fn targets_failures(mutation: &CommitMutation, owner: &StreamPath) -> bool {
+pub(super) fn targets_host_records(mutation: &CommitMutation, owner: &StreamPath) -> bool {
     let path = mutation.path();
     if matches!(mutation, CommitMutation::Fork { .. }) && super::covers(path, owner) {
         return true;
     }
-    path.as_str()
+    let relative = path
+        .as_str()
         .strip_prefix(owner.as_str())
-        .and_then(|suffix| suffix.strip_prefix('/'))
-        .and_then(|suffix| suffix.strip_prefix(DIRECTORY))
-        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+        .and_then(|suffix| suffix.strip_prefix('/'));
+    [DIRECTORY, "placement"].into_iter().any(|reserved| {
+        relative
+            .and_then(|suffix| suffix.strip_prefix(reserved))
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+    })
 }
 
 pub(super) fn fork_exclusions() -> Result<Vec<acyclic_stream::RelativePath>, Error> {
-    Ok(vec![acyclic_stream::RelativePath::new(DIRECTORY)?])
+    Ok(vec![
+        acyclic_stream::RelativePath::new(DIRECTORY)?,
+        acyclic_stream::RelativePath::new("placement")?,
+    ])
 }
 
 pub(super) fn is_fork_exclusion(exclude: &[acyclic_stream::RelativePath]) -> bool {
-    matches!(exclude, [path] if path.as_str() == DIRECTORY)
+    matches!(exclude, [failure, placement]
+        if failure.as_str() == DIRECTORY && placement.as_str() == "placement")
 }
 
 fn status_path(path: &StreamPath) -> Result<StreamPath, Error> {
