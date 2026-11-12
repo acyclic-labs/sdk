@@ -228,10 +228,13 @@ fn require_attribute_mode(
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-    /// Reads ordered named attributes with their owned names and values.
+    /// Reads ordered named attributes through an optional inclusive class bound.
+    /// Values beyond the bound are never read. Ordered classes let native
+    /// projection stop before application annotations without scanning them.
     pub async fn read_named_attributes<W: FsWork>(
         &self,
         root: ObjectId,
+        through_class: Option<crate::kernel::AttributeClass>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Vec<(AttributeName, acyclic_stream::OwnedBytes)>, crate::FsError> {
@@ -267,7 +270,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                     .map(usize_to_u64)
                     .ok_or(WorkError::Overflow)?;
                 attributes.allocation.absorb(&mut allocation)?;
+                let mut reached_bound = false;
                 for entry in listing.entries.drain(..) {
+                    if through_class.is_some_and(|bound| entry.name.class() > bound) {
+                        reached_bound = true;
+                        accounting.release_owned(
+                            &mut attributes.allocation,
+                            usize_to_u64(entry.name.retained_bytes()),
+                        )?;
+                        continue;
+                    }
                     attributes.ensure_for_push(usize::MAX, &mut accounting)?;
                     let read = read_blob_range_with_accounting(
                         &self.volume.fs.inner.objects,
@@ -292,7 +304,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                     attributes.value.push((entry.name, read.bytes));
                     accounting.record_completed(copied)?;
                 }
-                let has_more = listing.has_more;
+                let has_more = listing.has_more && !reached_bound;
                 drop(listing);
                 accounting.release_owned(&mut attributes.allocation, retired)?;
                 if !has_more {

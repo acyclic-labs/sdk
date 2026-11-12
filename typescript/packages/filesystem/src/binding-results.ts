@@ -58,7 +58,7 @@ export function copyNamedAttributePage(value: {
   work: WorkCounters): NamedAttributePage {
   return { entries: value.entries.map(entry => {
     if (entry.attributeClass !== "posix-xattr" && entry.attributeClass !== "windows-stream" &&
-        entry.attributeClass !== "mac-resource-fork") {
+        entry.attributeClass !== "mac-resource-fork" && entry.attributeClass !== "annotation") {
       throw new TypeError("named attribute result has an invalid class");
     }
     return { attributeClass: entry.attributeClass, name: new Uint8Array(entry.name) };
