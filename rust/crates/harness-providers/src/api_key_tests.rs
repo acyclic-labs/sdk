@@ -131,7 +131,7 @@ impl Responses {
         assert_eq!(body["store"], false);
         assert_eq!(body["stream"], true);
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
-        assert_eq!(body["max_output_tokens"], 64);
+        assert!(body.get("max_output_tokens").is_none());
         assert_eq!(body["tools"][0]["name"], "echo");
         let step = self.sent.fetch_add(1, Ordering::SeqCst);
         let fixture = match step {
@@ -250,7 +250,6 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 projection_schema: json!({"type":"object"}),
             }],
             sampling: Default::default(),
-            max_output_tokens: Some(64),
         };
         let operation_id = acyclic_harness_core::OperationId::new();
         let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;

@@ -37,7 +37,6 @@ pub struct BoundTools<'a> {
     bindings: Vec<ToolBinding<'a>>,
     profile: [u8; 32],
     prefix: [u8; 32],
-    max_output_tokens: Option<u32>,
     sampling: crate::model::ModelSampling,
     model_key: &'a str,
     // The vector retires before its original reservation.
@@ -68,12 +67,9 @@ impl<'a> AgentProfile<'a> {
             reasoning: self.prefix().reasoning,
             sampling: self.prefix().sampling,
             cache: self.prefix().cache,
-            max_output_tokens: self.overlay().max_output_tokens,
             capacity: crate::context::ModelContextCapacity {
                 context_tokens: self.prefix().capacity.budget_tokens,
-                output_tokens: capacity
-                    .output_tokens
-                    .map(|hard| hard.min(self.prefix().capacity.budget_tokens)),
+                output_tokens: capacity.output_tokens,
             },
             overlay_effort: self.overlay().effort,
         })
@@ -99,7 +95,6 @@ impl<'a> AgentProfile<'a> {
             bindings,
             profile: self.digest(),
             prefix: self.prefix_digest(),
-            max_output_tokens: self.overlay().max_output_tokens,
             sampling: self.prefix().sampling,
             model_key: self.prefix().key,
             _custody: custody,
@@ -161,7 +156,6 @@ impl<'a> BoundTools<'a> {
             .strip_prefix(&request.model.provider)
             .and_then(|suffix| suffix.strip_prefix('/'));
         if selected != Some(request.model.name.as_str())
-            || request.max_output_tokens != self.max_output_tokens
             || request.sampling != self.sampling
             || request.tools.len() != self.bindings.len()
             || request

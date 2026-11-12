@@ -23,7 +23,6 @@ pub struct Scenario {
     pub discovery: Option<super::discovery::Discovery>,
     pub capacity: Option<ModelContextCapacity>,
     pub compaction: Option<CompactionPolicy>,
-    pub max_output_tokens: Option<u32>,
     pub message_tokens: Option<u32>,
     #[serde(default)]
     pub recoveries: Vec<ScriptedReconciliation>,

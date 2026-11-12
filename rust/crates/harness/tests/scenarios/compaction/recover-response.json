@@ -1,6 +1,6 @@
-{"compaction":{"config":{"response_reserve_tokens":10}},"turns":[[{"type":"event","kind":"content",
+{"compaction":{"config":{}},"turns":[[{"type":"event","kind":"content",
   "delta":"partial-"},{"type":"error","error":"offline"}]],"replay":true,"expect":{"text":"partial-restored",
-  "request_count":1,"reconciliation_count":1,"requests":[{"max_output_tokens":null,"messages":[{"role":"assistant",
+  "request_count":1,"reconciliation_count":1,"requests":[{"messages":[{"role":"assistant",
   "content":{"kind":"file"}},{"role":"system","content":"keep instructions"},{"role":"user",
   "content":"current request"}]}],"events":[{"kind":"context_compacted"},{"kind":"model_started",
   "purpose":"response"}],

@@ -55,15 +55,10 @@ pub struct Sampling {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub top_p: Option<f64>,
-    /// Most output tokens per call; positive.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub max_output_tokens: Option<u32>,
 }
 
 impl Sampling {
-    /// Selects model sampling only when a sampling knob was supplied. An output
-    /// cap alone leaves the immutable profile's sampling in force.
+    /// Selects model sampling when a sampling value was supplied.
     pub fn model_sampling(self) -> Option<crate::model::ModelSampling> {
         (self.temperature.is_some() || self.top_p.is_some()).then_some(
             crate::model::ModelSampling {

@@ -16,7 +16,6 @@ fn request(count: usize) -> Result<ModelRequest> {
         messages: (0..count).map(|_| text("retained text")).collect(),
         tools: Vec::new(),
         sampling: Default::default(),
-        max_output_tokens: Some(1),
     })
 }
 

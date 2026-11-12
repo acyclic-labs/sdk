@@ -214,7 +214,6 @@ pub(super) struct EncodingPrefix {
 #[derive(Serialize)]
 struct Envelope<'a> {
     compose_tools: bool,
-    max_output_tokens: Option<u32>,
     messages: &'a [ModelMessage],
     model: &'a Model,
     #[serde(skip_serializing_if = "crate::model::ModelSampling::is_default")]
@@ -229,7 +228,6 @@ impl<'a> Envelope<'a> {
             summary: request.summary,
             compose_tools: request.compose_tools,
             sampling: request.sampling,
-            max_output_tokens: request.max_output_tokens,
             messages,
             model: &request.model,
             tools: &request.tools,

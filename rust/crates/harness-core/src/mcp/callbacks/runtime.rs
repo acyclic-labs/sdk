@@ -1,6 +1,7 @@
 use super::*;
 
-/// Concrete recorded model/interaction adapter.
+/// Concrete recorded model/interaction adapter. Sampling bounds must cover the
+/// model's published maximum; smaller bounds cannot be honored by uncapped generation.
 pub struct McpRuntimeCallbacks {
     executor: StockExecutor,
     journal: Arc<dyn ExecutionJournal>,
@@ -105,6 +106,15 @@ impl McpRuntimeCallbacks {
                 "MCP sampling lacks model:generate".into(),
             ));
         }
+        let maximum = self.executor.context_capacity()?.output_tokens.filter(|n| *n != 0)
+            .ok_or_else(|| Error::Unsupported(
+                "MCP maxTokens requires a known model maximum; select a model with published output capacity".into(),
+            ))?;
+        if u64::from(params.max_tokens) < u64::from(maximum) {
+            return Err(Error::Unsupported(format!(
+                "MCP maxTokens cannot be honored by uncapped generation; request at least the model's published maximum of {maximum} tokens"
+            )));
+        }
         if request
             .message
             .pointer("/params/tools")
@@ -114,7 +124,6 @@ impl McpRuntimeCallbacks {
                 "MCP sampling tool projection was not selected by this host".into(),
             ));
         }
-        let max_tokens = params.max_tokens;
         self.pin(operation, request).await?;
         let (input, prior) = sampling_messages(
             params,
@@ -137,7 +146,6 @@ impl McpRuntimeCallbacks {
         let executor = self
             .executor
             .clone()
-            .with_max_output_tokens(max_tokens)?
             .with_context_stage(stage)?
             .with_task_context(context.task(), operation)?;
         let events = executor

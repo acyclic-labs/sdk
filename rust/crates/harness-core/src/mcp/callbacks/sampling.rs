@@ -8,9 +8,6 @@ pub(super) async fn sampling_messages(
     image: Option<&NativeMediaPolicy>,
     audio: Option<&NativeMediaPolicy>,
 ) -> Result<(ModelContent, Vec<ModelMessage>)> {
-    if params.max_tokens == 0 {
-        return Err(Error::Invalid("MCP sampling token bound is zero".into()));
-    }
     let mut messages = Vec::new();
     // Server-supplied system prompt remains external user content.
     if let Some(prompt) = params.system_prompt {

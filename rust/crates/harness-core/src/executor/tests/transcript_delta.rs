@@ -10,7 +10,6 @@ fn request(messages: &[ModelMessage]) -> Result<crate::model::PreparedModelReque
             messages: messages.to_vec(),
             tools: Vec::new(),
             sampling: Default::default(),
-            max_output_tokens: None,
         },
         Limits::default(),
         None,
@@ -181,7 +180,7 @@ fn recovered_requests_must_match_the_selected_header() -> Result<()> {
     let execution = StockExecution::ordinary(&executor);
     let tools = execution.request_tools()?;
     execution.validate_response_request(&prepared, &tools)?;
-    for field in ["model", "tools", "output", "composition", "summary"] {
+    for field in ["model", "tools", "composition", "summary"] {
         let mut changed = prepared.request().clone();
         match field {
             "composition" => changed.compose_tools = true,
@@ -195,7 +194,7 @@ fn recovered_requests_must_match_the_selected_header() -> Result<()> {
                 output_schema: json!({"type": "object"}),
                 projection_schema: crate::tool::json_projection_schema(json!({"type": "object"})),
             }),
-            _ => changed.max_output_tokens = Some(512),
+            _ => unreachable!(),
         }
         // Every mutation is an independently valid request. Reusing admitted
         // bytes without checking the selected header accepts these controls.

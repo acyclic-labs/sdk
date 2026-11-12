@@ -32,43 +32,8 @@ fn scripted(path: &'static str, steps: Vec<Step>) -> Arc<Scripted> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Budgets {
     Automatic,
-    SampledKnown,
-    PreparedUnknown,
+
     AutomaticUnknown,
-}
-
-struct OutputContext {
-    grants: acyclic_harness::filesystem::Grants,
-    output: bool,
-}
-
-impl acyclic_harness::filesystem::TurnContext for OutputContext {
-    fn prepare<'a>(
-        &'a self,
-        executor: (acyclic_harness::executor::StockExecutor, Limits),
-        agent: &'a acyclic_harness::agent::AgentState,
-        turn: acyclic_harness::OperationId,
-        input: &'a ModelContent,
-        authority: &'a TurnAuthority,
-    ) -> BoxProviderFuture<'a, acyclic_harness::Result<acyclic_harness::executor::StockExecutor>>
-    {
-        Box::pin(async move {
-            let executor = acyclic_harness::filesystem::TurnContext::prepare(
-                &self.grants,
-                executor,
-                agent,
-                turn,
-                input,
-                authority,
-            )
-            .await?;
-            if self.output {
-                executor.with_max_output_tokens(1024)
-            } else {
-                Ok(executor)
-            }
-        })
-    }
 }
 
 async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestResult<bool> {
@@ -127,8 +92,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     // still admits the full real tool prefix.
     model.capacity.context_tokens = 16_384;
     model.capacity.output_tokens = match budgets {
-        Budgets::SampledKnown => Some(8192),
-        Budgets::PreparedUnknown | Budgets::AutomaticUnknown => None,
+        Budgets::AutomaticUnknown => None,
         _ => Some(1024),
     };
     spec.models.insert("luna".into(), model);
@@ -143,28 +107,14 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         let tools = acyclic_harness::tools::registry(&selected, |_| false, Vec::new())?;
         let limits = Limits::default();
         let grants = acyclic_harness::tools::call_grants(&tools, selected.iter().map(String::as_str))?;
-        let compaction = if matches!(budgets, Budgets::SampledKnown | Budgets::PreparedUnknown) {
-            Some(CompactionPolicy::Capacity(CapacityCompaction {
-                response_reserve_tokens: 1024,
-            }))
-        } else {
-            None
-        };
+        let compaction = None;
         let executors = acyclic_harness::filesystem::StockExecutors::new(
             (root.model().clone(), root), tools, (limits, compaction),
-            Arc::new(OutputContext {
-                grants: acyclic_harness::filesystem::Grants(grants),
-                output: matches!(budgets, Budgets::PreparedUnknown | Budgets::AutomaticUnknown),
-            }),
+            Arc::new(acyclic_harness::filesystem::Grants(grants)),
         ).with_models(Arc::new(ModelResolver::new("recorded/model", {
             let routes = routes.clone();
             move |selection| routes.resolve(selection)
         }).with_binding(routes.resolve("workers/luna")?)?)).with_agent_tools(&selected).with_templates();
-        let executors = if budgets == Budgets::SampledKnown {
-            executors.with_sampling(acyclic_harness::config::Sampling {
-                max_output_tokens: Some(1024), ..Default::default()
-            })
-        } else { executors };
         Ok(Arc::new(executors))
     };
     let stream = Arc::new(MemoryStream::default());
@@ -499,11 +449,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
 async fn role_models_route_across_providers_and_resume_with_stable_prefixes() -> TestResult {
     assert!(run_roles(Adapter::Responses, false, Budgets::Automatic).await?);
     assert!(run_roles(Adapter::Gemini, false, Budgets::Automatic).await?);
-    for budgets in [
-        Budgets::SampledKnown,
-        Budgets::PreparedUnknown,
-        Budgets::AutomaticUnknown,
-    ] {
+    for budgets in [Budgets::AutomaticUnknown] {
         assert!(run_roles(Adapter::Responses, false, budgets).await?);
     }
     assert!(

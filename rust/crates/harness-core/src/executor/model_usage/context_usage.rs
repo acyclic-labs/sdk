@@ -53,6 +53,7 @@ struct Fields {
     accounting: bool,
     capacity_section: Option<bool>,
     input: bool,
+    count_kind: bool,
     capacity: Option<u32>,
     result: Option<ContextUsage>,
 }
@@ -114,6 +115,8 @@ impl Header {
                         start,
                         end,
                     } if fields.projection && fields.accounting => {
+                        fields.count_kind = fields.capacity_section == Some(false)
+                            && token(start, end) == Some(br#""kind""#);
                         fields.input = match fields.capacity_section {
                             Some(true) => token(start, end) == Some(br#""context_tokens""#),
                             Some(false) => token(start, end) == Some(br#""input_tokens""#),
@@ -143,6 +146,20 @@ impl Header {
                     {
                         fields.result = Some(ContextUsage::Unavailable);
                         return Ok(true);
+                    }
+                    SpanEvent::End {
+                        depth: 4,
+                        kind: SpanKind::Scalar,
+                        start,
+                        end,
+                    } if fields.projection && fields.accounting && fields.count_kind => {
+                        if matches!(
+                            token(start, end),
+                            Some(b"\"unavailable\"" | b"\"overflow\"")
+                        ) {
+                            fields.result = Some(ContextUsage::Unavailable);
+                            return Ok(true);
+                        }
                     }
                     SpanEvent::End {
                         depth: 4,
@@ -221,7 +238,6 @@ mod tests {
                     }],
                     tools: vec![tool],
                     sampling: Default::default(),
-                    max_output_tokens: None,
                 },
                 Limits::default(),
                 Some(&io),
@@ -244,7 +260,7 @@ mod tests {
                     context_tokens: 65_536,
                     output_tokens: None,
                 },
-                count: Some(
+                count: InputAccounting::Counted(
                     ModelTokenCount::from_upper_bounds(prepared.request_digest(), 7, vec![1])
                         .into(),
                 ),
@@ -294,11 +310,18 @@ mod tests {
         #[test]
         fn accounting_header_is_independent_of_the_unread_context(
             input_tokens in any::<u64>(), capacity_tokens in 1..=u32::MAX,
-            header_bytes in 0..8192usize, page in 1..128usize, accounting_mode in 0u8..3,
+            header_bytes in 0..8192usize, page in 1..128usize, accounting_mode in 0u8..4,
         ) {
+            let count = match accounting_mode {
+                1 => InputAccounting::Counted(crate::context::ModelTokenCount {
+                    request_digest: [0; 32], input_tokens, fixed_tokens: 0, message_tokens: vec![],
+                }.into()),
+                2 => InputAccounting::Overflow,
+                _ => InputAccounting::Unavailable,
+            };
             let accounting = (accounting_mode != 0).then(|| serde_json::json!({
                 "capacity": {"context_tokens": capacity_tokens, "output_tokens": null},
-                "count": (accounting_mode == 1).then(|| serde_json::json!({"fixed_tokens": 0, "input_tokens": input_tokens, "message_tokens": []})),
+                "count": count,
             }));
             let record = serde_json::json!({
                 "$version": 1,

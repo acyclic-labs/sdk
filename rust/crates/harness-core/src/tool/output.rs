@@ -369,7 +369,6 @@ mod checks {
             ],
             tools: vec![definition],
             sampling: Default::default(),
-            max_output_tokens: Some(1),
         };
         PreparedModelRequest::prepare(request, crate::conversation::Limits::default(), None)?;
         Ok(())

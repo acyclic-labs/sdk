@@ -230,7 +230,7 @@ mod tests {
         ] {
             let key = format!("gemini/{name}");
             let role = RoleFile::parse(&format!(
-                "---\nversion: 1\nname: worker\nmodel: {key}\ncontext: fork\nmay_spawn: []\nmax_output_tokens: 64\n---\n"
+                "---\nversion: 1\nname: worker\nmodel: {key}\ncontext: fork\nmay_spawn: []\n---\n"
             ))?;
             for effort in [None, Some("low"), Some("medium"), Some("high")] {
                 let reasoning = effort.map_or_else(
@@ -369,7 +369,7 @@ mod tests {
         let approvals = ApprovalPolicy::default().bind()?;
         let agent = AgentOverride::parse(empty, &approvals)?;
         let role = RoleFile::parse(
-            "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\nmax_output_tokens: 64\n---\n",
+            "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\n---\n",
         )?;
         for (adapter, reasoning, pointer) in [
             (Adapter::Responses, "effort", "/reasoning/effort"),
@@ -470,7 +470,6 @@ mod tests {
             // while discarding configuration the caller expected to apply.
             let mut restored = serde_json::to_value(&retained).unwrap();
             restored["options"] = json!({
-                "max_output_tokens": 65,
                 "tools": [],
                 "reasoning_effort": "low",
             });
@@ -577,7 +576,7 @@ mod tests {
                 }
             }
             let adaptive_role = RoleFile::parse(
-                "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\neffort: adaptive\nmax_output_tokens: 64\n---\n",
+                "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\neffort: adaptive\n---\n",
             )?;
             let adaptive = resolve(&model, &adaptive_role, &project, &agent)?;
             let (fresh, _) = crate::tests::provider(adapter, 200);
@@ -597,7 +596,7 @@ mod tests {
                     ModelContent, ModelContentPart, ModelMessage, ModelRole, PreparedModelRequest,
                 };
                 let fixed_role = RoleFile::parse(
-                    "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\neffort: low\nmax_output_tokens: 64\n---\n",
+                    "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\neffort: low\n---\n",
                 )?;
                 let fixed = resolve(&model, &fixed_role, &project, &agent)?;
                 let (fresh, _) = crate::tests::provider(adapter, 200);
@@ -697,18 +696,13 @@ mod tests {
                 }]);
                 assert!(PreparedModelRequest::prepare(invalid, Default::default(), None).is_err());
             }
-            let mut wrong_request = prepared.request().clone();
-            wrong_request.max_output_tokens = Some(65);
-            assert!(crate::projection::body(&provider, &wrong_request).is_err());
             let (mut unknown, _) = crate::tests::provider(adapter, 200);
             unknown.capacity.output_tokens = None;
             let (request, _) = crate::tests::request(&unknown)?;
-            let mut request = request.request().clone();
-            // An explicit admitted reservation works without an advertised
-            // output limit; omitting it cannot invent a provider capacity.
-            assert!(crate::projection::body(&unknown, &request).is_ok());
-            request.max_output_tokens = None;
-            assert!(crate::projection::body(&unknown, &request).is_err());
+            assert_eq!(
+                crate::projection::body(&unknown, request.request()).is_ok(),
+                adapter != Adapter::Anthropic
+            );
             let ephemeral = family.replace("cache: automatic", "cache: ephemeral");
             let ephemeral = ModelProfile::parse(
                 &ephemeral,
@@ -766,7 +760,7 @@ mod tests {
                     })
                 );
                 let reviewer = RoleFile::parse(
-                    "---\nversion: 1\nname: reviewer\nmodel: fixture/model\ncontext: fresh\nmay_spawn: []\nmax_output_tokens: 64\n---\n",
+                    "---\nversion: 1\nname: reviewer\nmodel: fixture/model\ncontext: fresh\nmay_spawn: []\n---\n",
                 )?;
                 let reviewer = resolve(&model, &reviewer, &project, &agent)?;
                 assert_ne!(profile.digest(), reviewer.digest());

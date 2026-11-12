@@ -13,7 +13,6 @@ pub(super) fn key(request: &ModelRequest) -> Result<[u8; 32]> {
         compose_tools,
         tools,
         sampling,
-        max_output_tokens,
     } = request;
     #[derive(Serialize)]
     struct Request<'a> {
@@ -23,7 +22,6 @@ pub(super) fn key(request: &ModelRequest) -> Result<[u8; 32]> {
         compose_tools: bool,
         tools: &'a [crate::tool::ToolDefinition],
         sampling: &'a ModelSampling,
-        max_output_tokens: Option<u32>,
     }
     crate::executor::json::serialized_json_digest(&(
         "model-request-replay-v1",
@@ -34,7 +32,6 @@ pub(super) fn key(request: &ModelRequest) -> Result<[u8; 32]> {
             compose_tools: *compose_tools,
             tools,
             sampling,
-            max_output_tokens: *max_output_tokens,
         },
     ))
 }

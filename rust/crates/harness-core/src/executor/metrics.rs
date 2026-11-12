@@ -164,7 +164,6 @@ impl Table {
                 ("temperature", Float64),
                 ("top_p", Float64),
                 ("seed", Int64),
-                ("max_output_tokens", UInt32),
                 ("completed", Boolean),
                 ("input_tokens", UInt64),
                 ("cached_tokens", UInt64),
@@ -310,7 +309,7 @@ macro_rules! columns {
 
 columns! {
     typed {
-    UInt32Array: u32 => [step, max_output_tokens, binding_version, core, numa];
+    UInt32Array: u32 => [step, binding_version, core, numa];
     UInt64Array: u64 => [inbox, input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens,
         latency_ns, ttft_ns, price_effective_at, token_nano_units, cache_ttl_seconds, cache_messages,
         logical_value_bytes, physical_copied_bytes, physical_shared_bytes,
@@ -669,7 +668,6 @@ fn model_call<'a>(
         row.top_p = sampling.top_p;
         row.seed = sampling.seed;
     }
-    row.max_output_tokens = usage.max_output_tokens;
     row.completed = Some(usage.completed);
     row.input_tokens = usage.tokens.input;
     row.cached_tokens = usage.tokens.cached;

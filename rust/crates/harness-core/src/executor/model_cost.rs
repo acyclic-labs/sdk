@@ -761,7 +761,6 @@ mod tests {
             model: "generated-model".into(),
             agent_path: Some("/selected-agent".into()),
             sampling: None,
-            max_output_tokens: None,
             tokens,
             started_at: None,
             completed_at: None,
@@ -1069,12 +1068,11 @@ mod tests {
             // The old dispatch/provider-only comparison accepted substituted
             // agent or pinned request observations. Each must refuse before
             // replacing any installed contribution, without retaining a row.
-            for field in 0..3 {
+            for field in 0..2 {
                 let mut foreign = row.clone();
                 match field {
                     0 => foreign.agent_path = None,
-                    1 => foreign.sampling = Some(crate::model::ModelSampling::default()),
-                    _ => foreign.max_output_tokens = Some(1),
+                    _ => foreign.sampling = Some(crate::model::ModelSampling::default()),
                 }
                 prop_assert!(row.dispatch == foreign.dispatch
                     && row.purpose == foreign.purpose

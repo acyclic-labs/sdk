@@ -59,8 +59,7 @@ fn defaults_merge_from_root_to_family_and_keep_case_overrides() -> super::TestRe
     std::fs::write(
         temp.path().join("_defaults.json"),
         r#"{
-        "prompt":"root", "turns":["root"], "capacity":{"context_tokens":60,"output_tokens":10},
-        "max_output_tokens":10, "expect":{"text":"root","request_count":1},
+        "prompt":"root", "turns":["root"], "capacity":{"context_tokens":60,"output_tokens":10}, "expect":{"text":"root","request_count":1},
         "seed":{"a":"root","b":"kept"},
         "platforms":{
             "unix":{"turns":["unix program"]},
@@ -76,10 +75,7 @@ fn defaults_merge_from_root_to_family_and_keep_case_overrides() -> super::TestRe
     }"#,
     )?;
     let path = family.join("case.json");
-    std::fs::write(
-        &path,
-        r#"{"max_output_tokens":null,"expect":{"text":"case"}}"#,
-    )?;
+    std::fs::write(&path, r#"{"expect":{"text":"case"}}"#)?;
     let case = Scenario::load(temp.path(), &path)?;
     assert_eq!(case.prompt.as_deref(), Some("family"));
     assert_eq!(
@@ -91,7 +87,6 @@ fn defaults_merge_from_root_to_family_and_keep_case_overrides() -> super::TestRe
         }]),
         "scenario loading must select the current platform program"
     );
-    assert_eq!(case.max_output_tokens, None);
     assert_eq!(case.expect.text.as_deref(), Some("case"));
     assert_eq!(case.expect.request_count, Some(1));
     assert_eq!(case.seed.get("a").map(String::as_str), Some("family"));

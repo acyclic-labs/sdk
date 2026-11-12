@@ -163,7 +163,6 @@ async fn check_projection(
             }],
             tools: vec![],
             sampling: Default::default(),
-            max_output_tokens: Some(64),
         },
         Limits::default(),
         None,

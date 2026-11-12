@@ -1,5 +1,22 @@
 use super::*;
 
+impl InputAccounting {
+    /// Verified input size, a real overflow, or provider-admitted unknown size.
+    pub(super) fn input_tokens(
+        &self,
+        request: &crate::model::PreparedModelRequest,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<u64>> {
+        match self {
+            Self::Counted(count) => {
+                with_history_io(io, |work| count.validate(request, work)).map(Some)
+            }
+            Self::Overflow => Err(Error::ModelContextOverflow),
+            Self::Unavailable => Ok(None),
+        }
+    }
+}
+
 /// Durable admission needs the bound total, not the provider's per-message
 /// planning weights. Repeating those weights would itself be quadratic history.
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
@@ -140,9 +157,12 @@ impl StockExecution<'_> {
         {
             Ok(count) => {
                 with_history_io(self.io, |work| count.validate(prepared, work))?;
-                Some(count.into())
+                InputAccounting::Counted(count.into())
             }
-            Err(Error::ModelContextOverflow) if !self.single_request => None,
+            Err(Error::ModelContextOverflow) if !self.single_request => InputAccounting::Overflow,
+            // No tokenizer means the generation endpoint admits its own input.
+            // Never generate a throwaway completion to obtain a prompt count.
+            Err(Error::ModelTokenCountUnavailable) => InputAccounting::Unavailable,
             Err(error) => return Err(error),
         };
         Ok(ContextAccounting { capacity, count })
@@ -163,14 +183,7 @@ impl StockExecution<'_> {
     pub(super) fn model_capacity(&self) -> Result<crate::context::ModelContextCapacity> {
         let capacity =
             stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
-        if !self.single_request
-            && let crate::context::CompactionPolicy::Capacity(policy) = self.compaction_policy()?
-        {
-            policy.validate(capacity, self.output_tokens())?;
-        } else {
-            capacity.validate()?;
-            capacity.output_reservation(self.output_tokens())?;
-        }
+        capacity.validate()?;
         Ok(capacity)
     }
 
@@ -179,19 +192,8 @@ impl StockExecution<'_> {
         &self,
         capacity: crate::context::ModelContextCapacity,
     ) -> Result<u64> {
-        if self.single_request {
-            let output = capacity.output_reservation(self.output_tokens())?;
-            return Ok(u64::from(capacity.context_tokens - output));
-        }
-        match self.compaction_policy()? {
-            crate::context::CompactionPolicy::Capacity(policy) => {
-                policy.input_ceiling(capacity, self.output_tokens())
-            }
-            crate::context::CompactionPolicy::Disabled => {
-                let output = capacity.output_reservation(self.output_tokens())?;
-                Ok(u64::from(capacity.context_tokens - output))
-            }
-        }
+        capacity.validate()?;
+        Ok(u64::from(capacity.context_tokens))
     }
 
     pub(super) fn sampling(&self) -> Result<crate::model::ModelSampling> {
@@ -205,11 +207,6 @@ impl StockExecution<'_> {
                 )
             })
             .copied()
-    }
-
-    pub(super) fn output_budget(&self) -> Result<Option<u32>> {
-        self.model_capacity()?;
-        Ok(self.output_tokens())
     }
 
     /// A fresh summary dispatch consumes the same request that passed capacity
@@ -233,13 +230,20 @@ impl StockExecution<'_> {
         let capacity =
             stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
         capacity.validate()?;
-        let output = capacity.output_reservation(executor.output_tokens())?;
         let mut prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &mut prepared)
             .await?;
-        let ceiling = u64::from(capacity.context_tokens - output);
+        let ceiling = u64::from(capacity.context_tokens);
         let count =
-            stock_count_tokens(self.stock.provider.as_ref(), &prepared, ceiling, self.io).await?;
+            match stock_count_tokens(self.stock.provider.as_ref(), &prepared, ceiling, self.io)
+                .await
+            {
+                Ok(count) => count,
+                Err(Error::ModelTokenCountUnavailable) => {
+                    return Ok(Some(prepared));
+                }
+                Err(error) => return Err(error),
+            };
         let count = with_history_io(self.io, |work| count.validate(&prepared, work))?;
         if count > ceiling {
             return Err(stock_boundary(

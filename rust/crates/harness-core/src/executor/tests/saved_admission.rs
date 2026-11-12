@@ -16,7 +16,6 @@ async fn save_unaccounted_request(
         "executor": version,
         "input": input,
         "model": executor.model,
-        "max_output_tokens": executor.max_output_tokens,
         "context": [],
         "tools": [],
         "limits": executor.limits,
@@ -91,11 +90,11 @@ async fn save_unaccounted_request(
 async fn disabled_compaction_dispatches_fresh_and_saved_requests_without_accounting() -> Result<()>
 {
     for saved in [false, true] {
-        for (capacity, output, length, fault) in [
-            (100, 1_024, 10, None),
-            (131_072, 8_192, 10, None),
-            (4_096, 1_024, 5_000, None),
-            (131_072, 1_024, 10, Some(AccountingFault::Digest)),
+        for (capacity, length, fault) in [
+            (100, 10, None),
+            (131_072, 10, None),
+            (4_096, 5_000, None),
+            (131_072, 10, Some(AccountingFault::Digest)),
         ] {
             let journal = Journal::default();
             let (provider, counts) =
@@ -105,8 +104,7 @@ async fn disabled_compaction_dispatches_fresh_and_saved_requests_without_account
                 provider.clone(),
                 ContextPipeline::default(),
                 ToolRegistry::default(),
-            )
-            .with_max_output_tokens(output)?;
+            );
             let input = TurnInput {
                 operation_id: OperationId::new(),
                 max_steps: None,
@@ -158,8 +156,7 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
-    )
-    .with_max_output_tokens(1_024)?;
+    );
     let input = TurnInput {
         operation_id: OperationId::new(),
         max_steps: None,
@@ -223,8 +220,7 @@ async fn saved_single_inference_keeps_its_capacity_binding() -> Result<()> {
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
-    )
-    .with_max_output_tokens(1_024)?;
+    );
     let input = TurnInput {
         operation_id: OperationId::new(),
         max_steps: Some(1),

@@ -331,7 +331,6 @@ mod tests {
                 projection_schema: serde_json::json!({}),
             }],
             sampling: Default::default(),
-            max_output_tokens: Some(32),
         };
         assert!(top_level_only(&request.messages, &mut 10_000).is_ok());
         PreparedModelRequest::prepare(request.clone(), Limits::default(), None).unwrap();

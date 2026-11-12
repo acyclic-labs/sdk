@@ -168,7 +168,6 @@ impl StockExecution<'_> {
         policy: &crate::context::CapacityCompaction,
         message_limit: Option<usize>,
     ) -> Result<(usize, usize)> {
-        let ceiling = policy.input_ceiling(capacity, self.output_tokens())?;
         let (through, maximum) = crate::context::plan_compaction_budget(
             policy,
             context,
@@ -184,11 +183,14 @@ impl StockExecution<'_> {
             self.stock.limits,
             self.io,
         )?;
-        let mandatory_count =
-            stock_count_tokens(self.stock.provider.as_ref(), &mandatory, ceiling, self.io).await?;
-        let mandatory_count =
-            with_history_io(self.io, |work| mandatory_count.validate(&mandatory, work))?;
-        if policy.needs_compaction(capacity, mandatory_count, self.output_tokens())? {
+        let mandatory_accounting = self.response_accounting(&mandatory).await?;
+        let Some(mandatory_count) = mandatory_accounting
+            .count
+            .input_tokens(&mandatory, self.io)?
+        else {
+            return Ok((through, maximum));
+        };
+        if policy.needs_compaction(capacity, mandatory_count)? {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,
@@ -265,32 +267,28 @@ impl StockExecution<'_> {
                 "automatic compaction is disabled",
             ));
         };
-        let ceiling = policy.input_ceiling(capacity, self.output_tokens())?;
-        let count =
-            match stock_count_tokens(self.stock.provider.as_ref(), request, ceiling, self.io).await
-            {
-                Ok(count) => count,
-                Err(Error::ModelContextOverflow) => return Ok(false),
-                Err(error) => return Err(error),
-            };
-        let final_count = with_history_io(self.io, |work| count.validate(request, work))?;
-        if policy.needs_compaction(capacity, final_count, self.output_tokens())? {
-            return Ok(false);
+        let accounting = self.response_accounting(request).await?;
+        match accounting.count.input_tokens(request, self.io) {
+            Ok(Some(final_count)) => {
+                if policy.needs_compaction(capacity, final_count)? {
+                    return Ok(false);
+                }
+                request.retain_context_window(crate::context::ContextWindow {
+                    input_tokens: final_count,
+                    capacity_tokens: capacity.context_tokens,
+                })?;
+            }
+            Ok(None) => {}
+            Err(Error::ModelContextOverflow) => return Ok(false),
+            Err(error) => return Err(error),
         }
-        request.retain_context_window(crate::context::ContextWindow {
-            input_tokens: final_count,
-            capacity_tokens: capacity.context_tokens,
-        })?;
         self.publish_compacted_context(
             journal,
             input,
             step,
             (compacted, request),
             compaction,
-            &ContextAccounting {
-                capacity,
-                count: Some(count.into()),
-            },
+            &accounting,
         )
         .await?;
         Ok(true)

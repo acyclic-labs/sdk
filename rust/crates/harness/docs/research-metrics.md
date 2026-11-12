@@ -4,7 +4,7 @@
 adapters. It is off by default. Provider adapters use the core's unified setting;
 ordinary builds omit first-delta timing and HTTP identity capture. Sampling is a
 normal request contract, independent of research capture: `sampling.temperature`,
-`sampling.top_p`, `sampling.seed` and `max_output_tokens` participate in the
+`sampling.top_p` and `sampling.seed` participate in the
 original request digest and survive request continuations and recovery. An absent
 sampling value delegates to the provider. A seed is a hint, not a determinism
 guarantee; protocols without a seed field refuse it.

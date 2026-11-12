@@ -242,7 +242,7 @@ proptest! {
         let executor = uncompacted_executor(
             Model::new("test".into(), "reads".into(), "1".into()).unwrap(),
             provider.clone(), ContextPipeline::default(), ToolRegistry::default(),
-        ).with_max_output_tokens(64).unwrap();
+        );
         let mut parent = input(count, &text);
         parent.input = ModelContent::Text("different input".into());
         let journal = Checks::default();

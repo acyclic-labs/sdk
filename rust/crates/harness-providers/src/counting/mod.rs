@@ -1,6 +1,4 @@
 //! Verified provider admission, independent of usage-calibrated planning weights.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod reported_usage_tests;
 pub(crate) mod wire;
 use crate::{HttpRequest, ResolvedModel, dispatch, projection};
 use acyclic_harness_core::{Error, Result, context::ModelTokenCount};
@@ -21,42 +19,14 @@ pub(crate) fn specification<'a>(
     config: &'a crate::ProviderSpec,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<&'a wire::TokenCounterSpec> {
-    // Compatible Chat providers need no separate tokenizer route. A bounded
-    // completion reports the verified prompt count on the generation origin.
-    static CHAT_USAGE: std::sync::LazyLock<wire::TokenCounterSpec> =
-        std::sync::LazyLock::new(|| wire::TokenCounterSpec {
-            path: "chat/completions".into(),
-            adapter: crate::Adapter::Chat,
-            response_field: wire::TokenCountField::PromptTokens,
-            framing_tokens: 0,
-        });
     let spec = config
         .token_counter
         .as_ref()
-        .or_else(|| (config.adapter == crate::Adapter::Chat).then(|| &*CHAT_USAGE))
-        .ok_or_else(|| {
-            let reason = "configure a verified input token counter for this endpoint";
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.is_some() {
-                return Error::NativeBoundary {
-                    code: acyclic_harness_core::wire::ErrorCode::Unsupported,
-                    reason,
-                };
-            }
-            Error::Unsupported(reason.into())
-        })?;
+        .ok_or(Error::ModelTokenCountUnavailable)?;
     if spec.adapter != config.adapter {
         return Err(boundary(
             work,
             "token counter dialect differs from generation",
-        ));
-    }
-    if spec.response_field == wire::TokenCountField::PromptTokens
-        && spec.adapter != crate::Adapter::Chat
-    {
-        return Err(boundary(
-            work,
-            "reported prompt usage requires the Chat adapter",
         ));
     }
     Ok(spec)
@@ -64,7 +34,10 @@ pub(crate) fn specification<'a>(
 
 /// Admission for one request: a locally proven upper bound when it is within
 /// `ceiling`, so no count request precedes generation, otherwise the
-/// endpoint's verified count. The only guarantee admission buys is that the
+/// endpoint's verified count. Without a count endpoint, retain a bound anchored
+/// on reported usage even above the ceiling so compaction still sees pressure.
+/// Otherwise the generation endpoint admits its own unknown input size.
+/// The only guarantee admission buys is that the
 /// caller compacts before the window overflows, and a bound within the ceiling
 /// already proves the caller need not compact.
 pub(crate) async fn count(
@@ -94,7 +67,7 @@ pub(crate) async fn count(
         .bound(request)
         .map_err(|_| boundary(work, "usage bound encoding failed"))?
         .and_then(|tokens| tokens.checked_add(framing))
-        .filter(|tokens| *tokens <= ceiling)
+        .filter(|tokens| *tokens <= ceiling || provider.config.token_counter.is_none())
     {
         return local(provider, request, bound, work);
     }

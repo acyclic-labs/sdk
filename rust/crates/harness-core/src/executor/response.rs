@@ -253,32 +253,20 @@ impl StockExecution<'_> {
                     "compacted context differs from its admission",
                 ));
             }
-            if policy.needs_compaction(
-                final_accounting.capacity,
-                with_history_io(self.io, |work| {
-                    final_accounting
-                        .count
-                        .as_ref()
-                        .ok_or(Error::ModelContextOverflow)?
-                        .validate(&request, work)
-                })?,
-                self.output_tokens(),
-            )? {
-                return Err(stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Storage,
-                    "retained compacted context exceeds selected capacity",
-                ));
-            }
             let mut request = request;
-            request.retain_context_window(crate::context::ContextWindow {
-                input_tokens: final_accounting
-                    .count
-                    .as_ref()
-                    .ok_or(Error::ModelContextOverflow)?
-                    .input_tokens,
-                capacity_tokens: final_accounting.capacity.context_tokens,
-            })?;
+            if let Some(input_tokens) = final_accounting.count.input_tokens(&request, self.io)? {
+                if policy.needs_compaction(final_accounting.capacity, input_tokens)? {
+                    return Err(stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Storage,
+                        "retained compacted context exceeds selected capacity",
+                    ));
+                }
+                request.retain_context_window(crate::context::ContextWindow {
+                    input_tokens,
+                    capacity_tokens: final_accounting.capacity.context_tokens,
+                })?;
+            }
             return Ok(Some(request));
         }
         Ok(None)
@@ -323,6 +311,16 @@ impl StockExecution<'_> {
                 "selected capacity differs from captured accounting",
             ));
         }
+        if self.single_request && !prepared.request().tools.is_empty() {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Unauthorized,
+                "single inference request declares invocable tools",
+            ));
+        }
+        if matches!(accounting.count, InputAccounting::Unavailable) {
+            return Ok(prepared);
+        }
         let input_tokens = accounting
             .count
             .as_ref()
@@ -330,23 +328,11 @@ impl StockExecution<'_> {
             .transpose()?;
         if self.single_request {
             let input_tokens = input_tokens.ok_or(Error::ModelContextOverflow)?;
-            let output = accounting
-                .capacity
-                .output_reservation(self.output_tokens())?;
-            if input_tokens.saturating_add(u64::from(output))
-                > u64::from(accounting.capacity.context_tokens)
-            {
+            if input_tokens > u64::from(accounting.capacity.context_tokens) {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Invalid,
                     "model request exceeds selected model capacity",
-                ));
-            }
-            if !prepared.request().tools.is_empty() {
-                return Err(stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "single inference request declares invocable tools",
                 ));
             }
             let mut prepared = prepared;
@@ -376,9 +362,7 @@ impl StockExecution<'_> {
             return Ok(retained);
         }
         let token_pressure = match input_tokens {
-            Some(tokens) => {
-                policy.needs_compaction(accounting.capacity, tokens, self.output_tokens())?
-            }
+            Some(tokens) => policy.needs_compaction(accounting.capacity, tokens)?,
             None => true,
         };
         let selected_base = step == 0 && input.selected_context.is_some();

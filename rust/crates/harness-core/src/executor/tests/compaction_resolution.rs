@@ -68,7 +68,7 @@ async fn compaction_policy_matrix_resolves_through_the_task_writer() -> Result<(
                 let executor = executor(&context, operation, policy.clone())?;
                 let mut execution = StockExecution::ordinary(&executor);
                 if summary {
-                    execution.summary = Some((ContextPipeline::default(), Some(64)));
+                    execution.summary = Some(ContextPipeline::default());
                 }
                 let expected = match (summary, policy) {
                     (true, _) => &CompactionPolicy::Disabled,

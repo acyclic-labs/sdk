@@ -725,11 +725,6 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
             Some("effort"),
         ),
         (
-            "export default (base) => ({ ...base, sampling: { maxOutputTokens: 8192 } });",
-            AdmissionStatus::Rejected,
-            Some("requested output exceeds selected model capacity"),
-        ),
-        (
             "export default { model: 'other/model' };",
             AdmissionStatus::Rejected,
             Some("bound by its host"),
@@ -750,10 +745,6 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
             harness.root,
             harness.agent.clone().expect("the configured model"),
             None,
-            (
-                &crate::context::CompactionPolicy::Disabled,
-                &Some(crate::context::CompactionPolicy::Disabled),
-            ),
             harness.clock.as_ref(),
         )
         .await;
@@ -836,7 +827,6 @@ async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts()
     };
     let mut harness = Arc::new(LocalHarness::open(config()?).await?);
     for (sampling, expected) in [
-        ("{maxOutputTokens: 256}", AdmissionStatus::Applied),
         ("{temperature: 0.25}", AdmissionStatus::Applied),
         ("{temperature: 0.75}", AdmissionStatus::Rejected),
     ] {
@@ -858,25 +848,6 @@ async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts()
         });
         let record = admission(&harness, "agent.ts", &version).await?;
         assert_eq!(record.status, expected);
-        if sampling == "{maxOutputTokens: 256}" {
-            let sampling = harness.sampling.expect("applied output cap");
-            assert_eq!(sampling.max_output_tokens, Some(256));
-            assert_eq!(
-                crate::model::ModelSampling::admit(
-                    sampling.model_sampling(),
-                    Some(binding.sampling()),
-                )?,
-                binding.sampling(),
-            );
-            let mut observed = super::ObservedConversation::open(&harness).await?;
-            observed.send("profile-output", "reply").await?;
-            let requests = provider.1.requests();
-            let request = requests
-                .last()
-                .expect("the accepted settings reach the model");
-            assert_eq!(request.sampling, binding.sampling());
-            assert_eq!(request.max_output_tokens, Some(256));
-        }
         if expected == AdmissionStatus::Rejected {
             assert_eq!(harness.sampling, None);
             assert!(

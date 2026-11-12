@@ -120,7 +120,6 @@ mod tests {
                     model: "model".into(),
                     agent_path: None,
                     sampling: None,
-                    max_output_tokens: None,
                     tokens: if completed {
                         crate::executor::ModelTokenUsage {
                             input: Some(3),

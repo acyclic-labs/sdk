@@ -74,7 +74,6 @@ impl StockExecution<'_> {
                 skip_serializing_if = "crate::model::ModelSampling::is_default"
             )]
             sampling: crate::model::ModelSampling,
-            max_output_tokens: Option<u32>,
             context: &'a [Value],
             tools: &'a [crate::tool::ToolDefinition],
             limits: Limits,
@@ -127,7 +126,6 @@ impl StockExecution<'_> {
                 input,
                 model: &self.stock.model,
                 sampling: self.sampling()?,
-                max_output_tokens: self.output_tokens(),
                 context: &contracts,
                 tools: &tools,
                 limits: self.stock.limits,

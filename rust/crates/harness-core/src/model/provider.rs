@@ -331,17 +331,14 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// Admission for one request and its per-message compaction planning
     /// weights. `input_tokens` is a locally proven upper bound when one is
     /// within `ceiling`, so no count request precedes generation; otherwise it
-    /// is the provider's verified count. A ceiling of zero always counts.
+    /// is the provider's verified count when a count endpoint exists. Without
+    /// one, a usage-anchored bound still reports pressure above the ceiling.
     fn count_tokens<'a>(
         &'a self,
         _: &'a PreparedModelRequest,
         _ceiling: u64,
     ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "selected model token counting is unavailable".into(),
-            ))
-        })
+        Box::pin(async { Err(Error::ModelTokenCountUnavailable) })
     }
     /// Borrows one admitted request and emits ordered events. The stream cannot
     /// outlive that admission; after dropping it the caller can continue the

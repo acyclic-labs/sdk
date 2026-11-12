@@ -27,7 +27,6 @@ async fn segmented_projection_recovers_accounting_and_checkpoint_with_original_c
             messages: context.messages.clone(),
             tools: Vec::new(),
             sampling: Default::default(),
-            max_output_tokens: None,
         },
         Limits::default(),
         None,
@@ -38,14 +37,18 @@ async fn segmented_projection_recovers_accounting_and_checkpoint_with_original_c
                 context_tokens: 65_536,
                 output_tokens: Some(4_096),
             },
-            count: counted.then(|| {
-                crate::context::ModelTokenCount::from_upper_bounds(
-                    prepared.request_digest(),
-                    0,
-                    vec![128],
+            count: if counted {
+                InputAccounting::Counted(
+                    crate::context::ModelTokenCount::from_upper_bounds(
+                        prepared.request_digest(),
+                        0,
+                        vec![128],
+                    )
+                    .into(),
                 )
-                .into()
-            }),
+            } else {
+                InputAccounting::Overflow
+            },
         };
         let expected_accounting =
             serde_json::to_value(&accounting).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -184,7 +187,6 @@ async fn projection_append_writes_only_new_content_and_metadata_reads_skip_histo
                     messages: messages(0).collect(),
                     tools: Vec::new(),
                     sampling: Default::default(),
-                    max_output_tokens: Some(4096),
                 },
                 Limits::default(),
                 None,
@@ -235,7 +237,7 @@ async fn projection_append_writes_only_new_content_and_metadata_reads_skip_histo
                 context_tokens: u32::MAX,
                 output_tokens: Some(4096),
             },
-            count: Some(
+            count: InputAccounting::Counted(
                 crate::context::ModelTokenCount::from_upper_bounds(
                     prepared.request_digest(),
                     1,

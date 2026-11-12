@@ -161,7 +161,6 @@ async fn fixture() -> Result<Fixture> {
         ToolRegistry::default(),
     )
     .with_compaction_policy(CompactionPolicy::Disabled)
-    .with_max_output_tokens(32)?
     .summarize(
         storage.journal().as_ref(),
         OperationId::new(),

@@ -47,8 +47,8 @@ fn sequence(operations: &[(bool, u8, Option<u8>, bool)]) {
     for &(reload, mask, proposed, counted) in operations {
         let proposed = if reload { proposed } else { None };
         let candidate = proposed.unwrap_or(retained_default);
-        // Independent oracle: the default's model survives and its endpoint can count input.
-        let expected = mask & (1 << candidate) != 0 && counted;
+        // Independent oracle: the default's model survives, independently of an input tokenizer.
+        let expected = mask & (1 << candidate) != 0;
         let before = serde_json::to_vec(registry.catalog()["fixture"].as_ref()).unwrap();
         let spec = counted_specification(mask, counted);
         let result = if reload {
@@ -258,7 +258,7 @@ fn codex_login_route_remains_a_countable_default_without_a_counter() {
     openai.token_counter = None;
     for (authentication, accepted) in [
         (Authentication::ApiKeyOrCodexLogin, true),
-        (Authentication::ApiKey, false),
+        (Authentication::ApiKey, true),
     ] {
         openai.authentication = authentication;
         let mut registry = Registry::new(Credentials::explicit(BTreeMap::new()))
@@ -310,7 +310,7 @@ fn credential_sequence(case: u8, operations: &[(bool, Option<u8>)]) {
     // an API key; its local counter exists only on the native Responses route.
     let selected_login = login && !key && case / 32 == 2;
     let valid_route = !selected_login || (builtin && responses);
-    let accepted = valid_route && (counter || selected_login || !responses);
+    let accepted = valid_route;
     for &(reload, proposed) in operations {
         let before = catalog_snapshot(&registry);
         let default_before = registry.default_model().to_owned();

@@ -80,10 +80,10 @@ file authorization, request projection or execution in JavaScript.
 
 Custom model providers can use the exported `ModelRequest`, `ModelContextCapacity`,
 `ModelTokenCount` and compaction policy types directly at that callback boundary.
-After `initializeModelProviders()`, `defaultCompactionPolicy`,
-`validateCapacityCompaction` and `validateModelTokenCount` use Rust's existing
-policy and exact-request accounting checks, including the selected finite output
-ceiling. These helpers grant no file or model-option authority.
+After `initializeModelProviders()`, `defaultCompactionPolicy` and
+`validateModelTokenCount` use Rust's context-window policy and exact-request
+accounting checks. Generation has no harness output-token budget. These helpers
+grant no file or model-option authority.
 
 For declarative model contracts, call `initializeModelContent()`. The exported
 `validateModelContent`, `validateModelMessages`, `validateUserInput`,
