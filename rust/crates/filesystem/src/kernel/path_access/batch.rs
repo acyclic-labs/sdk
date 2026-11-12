@@ -139,8 +139,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     reserve_slots::<ActivePath>(scratch_count, accounting, data_custody)?;
                 let mut names =
                     reserve_slots::<LogicalName>(scratch_count, accounting, data_custody)?;
-                let mut query_indices =
-                    reserve_slots::<usize>(scratch_count, accounting, data_custody)?;
                 let mut pending =
                     reserve_slots::<PendingBinding>(scratch_count, accounting, data_custody)?;
                 let mut file_ids = reserve_slots::<crate::foundation::FileId>(
@@ -255,10 +253,8 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 cursor += 1;
                             }
                             names.value.clear();
-                            query_indices.value.clear();
                             let mut copied_bytes = 0_u64;
                             for item in &active.value[start..cursor] {
-                                query_indices.value.push(item.path_index);
                                 let (name, guard) = copy_name(
                                     &paths.get(item.path_index).components()[depth],
                                     accounting,
@@ -301,12 +297,12 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 value: bindings,
                                 custody: bindings_guard,
                             };
-                            for ((index, binding), name) in query_indices
-                                .value
+                            for ((item, binding), name) in active.value[start..cursor]
                                 .iter()
                                 .zip(bindings.value.iter())
                                 .zip(names.value.drain(..))
                             {
+                                let index = item.path_index;
                                 if observe {
                                     let expected = match binding {
                                 Some(binding) => {
@@ -321,7 +317,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                             };
                                     dependencies.value.push(Dependency {
                                         region: DependencyRegion::DirectoryName {
-                                            directory_id: current.value[*index]
+                                            directory_id: current.value[index]
                                                 .ok_or(PathLookupError::KindMismatch)?
                                                 .file_id,
                                             name,
@@ -331,17 +327,17 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 }
                                 if let Some(binding) = binding {
                                     pending.value.push(PendingBinding {
-                                        path_index: *index,
+                                        path_index: index,
                                         file_id: binding.file_id,
                                         kind: binding.kind,
                                     });
                                 } else {
-                                    entries[*index] = PathBatchEntry {
+                                    entries[index] = PathBatchEntry {
                                         record: None,
-                                        parent: current.value[*index],
+                                        parent: current.value[index],
                                         resolved_components: usize_to_u64(depth),
                                     };
-                                    done.value[*index] = 1;
+                                    done.value[index] = 1;
                                 }
                             }
                             drop_bindings(bindings, accounting)?;
@@ -416,7 +412,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                 // Scratch dies before guards; output arrays keep their exact guards.
                 drop_slots(file_ids, accounting)?;
                 drop_slots(pending, accounting)?;
-                drop_slots(query_indices, accounting)?;
                 drop_slots(names, accounting)?;
                 drop_slots(active, accounting)?;
                 drop_slots(done, accounting)?;

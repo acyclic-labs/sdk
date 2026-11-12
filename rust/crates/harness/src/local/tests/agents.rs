@@ -2344,7 +2344,7 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
         ScriptedTurn::Text("writer settled".into()),
         call(
             "shell",
-            serde_json::json!({"command":"pwd", "cwd":"missing-cwd-gc65"}),
+            serde_json::json!({"command":"pwd", "cwd":"missing-cwd"}),
         ),
         call(
             "read",
@@ -2422,7 +2422,7 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
     ));
     assert!(
         matches!(refused, crate::model::ToolResultContent::Error { message }
-        if message == "tool execution failed: cwd missing-cwd-gc65 does not exist")
+        if message == "tool execution failed: cwd missing-cwd does not exist")
     );
     let result = request
         .messages
