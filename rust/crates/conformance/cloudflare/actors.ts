@@ -185,7 +185,7 @@ export class Actor extends DurableObject<Env> {
       const stream = WasmStream.connectProvider(streamLedgerPort(ledger, key(configuration.address)));
       try {
         this.host = WasmActorHost.open(stream, root, configuration.address, this.package.manifest(),
-          (delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => this.package.onRecord(delivery, signal, interrupt), (query: Uint8Array) => this.package.acceptsInterrupt(query), 1, 64);
+          (delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => this.package.onRecord(delivery, signal, interrupt), (query: Uint8Array, signal: AbortSignal) => this.package.acceptsInterrupt(query, signal), 1, 64);
       } finally { stream.free(); }
     }
     return { host: this.host, ledger, address: configuration.address };

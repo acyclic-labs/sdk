@@ -79,7 +79,7 @@ function ownerState(env, name) {
       const stream = WasmStream.connectProvider(streamLedgerPort(env.streams, name));
       try {
         host = WasmActorHost.open(stream, root, address, package_.manifest(),
-          (delivery, signal, interrupt) => package_.onRecord(delivery, signal, interrupt), query => package_.acceptsInterrupt(query), 1, 64);
+          (delivery, signal, interrupt) => package_.onRecord(delivery, signal, interrupt), (query, signal) => package_.acceptsInterrupt(query, signal), 1, 64);
       } finally { stream.free(); }
     }
     return host;

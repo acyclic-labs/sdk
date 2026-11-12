@@ -59,12 +59,14 @@ pub(super) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static
         .as_ref()
         .map(|turn| turn.inbox)
         .or_else(|| state.queued.front().map(|queued| queued.inbox));
-    if !settled
+    let pending_from = state.overflow.unwrap_or(cursor);
+    if input.is_none()
+        && !settled
         && !state.closed
-        && cursor < inbox
-        && matches!(phase, Phase::Idle | Phase::WaitingUser { .. })
+        && pending_from < inbox
+        && matches!(&state.phase, Phase::Idle | Phase::WaitingUser { .. })
     {
-        let mut sequence = cursor;
+        let mut sequence = pending_from;
         'accepted: while sequence < inbox {
             // Chunking bounds each read, never the accepted pending range.
             let limit = (inbox - sequence).min(64) as u32;
@@ -88,6 +90,7 @@ pub(super) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static
                     .ok_or(Error::Record("accepted inbox input is unavailable"))?;
                 let record = super::InboxRecord::decode(&original.value)?;
                 let wakes = match record {
+                    _ if !state.input_pending(cursor, sequence) => false,
                     record if state.already_steered(sequence, &record) => false,
                     super::InboxRecord::ForkAdopted(adopted) => adopted.brief.is_some(),
                     record => super::input::input(sequence, record).is_some(),

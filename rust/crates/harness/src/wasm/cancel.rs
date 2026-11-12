@@ -57,6 +57,18 @@ pub(super) struct Listening {
 }
 
 impl Listening {
+    /// Drop the operation when its owning host abandons the call.
+    pub(super) async fn run<T>(
+        signal: &JsValue,
+        operation: impl std::future::Future<Output = T>,
+    ) -> Result<T, JsValue> {
+        let (operation, handle) = futures::future::abortable(operation);
+        let _listening = Self::abort(signal, move || handle.abort())?;
+        operation
+            .await
+            .map_err(|_| JsValue::from_str("operation was aborted"))
+    }
+
     pub(super) fn abort(
         signal: &JsValue,
         mut abort: impl FnMut() + 'static,
