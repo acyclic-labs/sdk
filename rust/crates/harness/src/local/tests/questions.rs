@@ -146,7 +146,9 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
             json!({"path":"volume:///private/ui/color.md","content":ASK}),
         ),
         ScriptedTurn::Text("Worker reports ambiguity to its parent.".into()),
+        ScriptedTurn::Text("Parent received worker result.".into()),
         ScriptedTurn::Text("Nested orchestrator ready.".into()),
+        ScriptedTurn::Text("Parent received orchestrator result.".into()),
     ]);
     let config = question_config(
         directory.path(),
@@ -172,7 +174,14 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
         return Err(Error::Invalid("worker spawn".into()));
     };
     super::agents::settled(&harness, &worker).await?;
-    let requests = provider.requests();
+    // Child results wake their parent through the ordinary inbox. Settle that
+    // input before spawning again, rather than sharing a racing script cursor.
+    super::agents::settled(&harness, &root).await?;
+    let all_requests = provider.requests();
+    let requests: Vec<_> = all_requests
+        .iter()
+        .filter(|request| request.model.name == "morph-dsv41flash")
+        .collect();
     assert_eq!(requests.len(), 2);
     assert!(
         requests
@@ -181,6 +190,7 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
     );
     let transcript = request_text(&harness, &requests[1]).await?;
     assert!(transcript.contains("tool execution failed"), "{transcript}");
+    let child_request = all_requests.len();
     let AgentReply::Spawned { agent: child, .. } = connection
         .execute(&spawn(root, "orchestrator", "orchestrator")?)
         .await?
@@ -190,13 +200,13 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
     super::agents::settled(&harness, &child).await?;
     let requests = provider.requests();
     assert!(
-        requests[2]
+        requests[child_request]
             .tools
             .iter()
             .any(|tool| tool.name == "ask_question")
     );
     assert_eq!(requests[0].model.name, "morph-dsv41flash");
-    assert_eq!(requests[2].model.name, "morph-kimik31");
+    assert_eq!(requests[child_request].model.name, "morph-kimik31");
     Ok(())
 }
 #[tokio::test]
