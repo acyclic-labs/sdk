@@ -141,7 +141,8 @@
         "pty-manual-compaction",
         "compaction-background",
         "context-agent-rewrite",
-        "context-auto-rewrite"
+        "context-auto-rewrite",
+        "context-bound-protective"
       ]
     },
     "A9": {
