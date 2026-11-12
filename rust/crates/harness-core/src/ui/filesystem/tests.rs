@@ -332,7 +332,7 @@ async fn computed_ui_defaults_overlay_and_fork_use_the_real_filesystem() -> Test
     let expected = View::new(2)?.project(&snapshot, &"status.md")?;
     let source = Arc::new(Routed::new(
         Empty,
-        LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255)?,
+        LogicalName::new(NameEncoding::Utf8, b"ui".to_vec())?,
         computed(snapshot),
         VolumeLimits::default(),
     ));

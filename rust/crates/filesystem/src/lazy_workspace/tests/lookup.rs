@@ -48,7 +48,7 @@ async fn an_authored_file_hides_descendants_at_live_and_frozen_cuts() {
     checkout.retire(&mut context).unwrap();
     let cut = root.snapshot(accounting!()).await.unwrap();
     assert!(
-        root.lookup_at_snapshot(cut, "/file.txt/child", accounting!())
+        root.lookup_at_snapshot(&cut, "/file.txt/child", accounting!())
             .await
             .unwrap()
             .0
