@@ -71,6 +71,38 @@ async fn materialized_baseline_ignores_host_defaults_and_keeps_content_edits()
             assert!(checkout.has_pending_mutations());
         }
     }
+    crate::restore_checkout_host_path(
+        &mut reader,
+        Path::new("file-0"),
+        crate::HostPathReplacement::Atomic,
+        &materialization,
+        crate::performance::work_budget(100_000, 64 * 1024 * 1024),
+        &cancellation,
+    )
+    .await?;
+    let mut restored = workspace
+        .checkout(
+            crate::model::GenerationSelector::Head,
+            crate::model::CheckoutMode::tracking_transaction(),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let recaptured = capture_baseline(
+        &mut restored,
+        &options,
+        &CapturePolicy::default(),
+        budget,
+        &cancellation,
+    )
+    .await?
+    .value;
+    assert_eq!(
+        recaptured.changed_paths, 0,
+        "restored defaults belong to the final root"
+    );
+    assert!(!restored.has_pending_mutations());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;

@@ -684,7 +684,12 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         .await?;
         let (stage_path, stage_allocation) = prepared.stage_path;
         let materialize_options = MaterializeOptions {
-            materialized_view: options.materialized_view.clone(),
+            materialized_view: options.materialized_view.as_ref().map(|baseline| {
+                baseline.for_root(
+                    baseline.root_identity.unwrap_or(prepared.root.identity()),
+                    baseline.read_only,
+                )
+            }),
             destination: stage_path,
             expected_root_identity: Some(prepared.stage_root.identity()),
             maximum_directory_entries: options.maximum_directory_entries,

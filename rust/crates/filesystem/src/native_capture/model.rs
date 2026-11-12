@@ -1,6 +1,6 @@
 use super::*;
 
-/// A native view may have host-generated timestamps that are not SDK metadata.
+/// Host-generated defaults of one materialized view, distinct from authored metadata.
 #[derive(Clone, Debug)]
 pub struct NativeViewBaseline {
     pub(crate) root_identity: Option<NativeRootIdentity>,

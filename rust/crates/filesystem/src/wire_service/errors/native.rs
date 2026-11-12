@@ -103,5 +103,45 @@ fn capture_code(error: &crate::CaptureError) -> Code {
         E::RootChanged | E::RescanRequired { .. } | E::DirtyCheckout => Code::FailedPrecondition,
         E::UnsupportedKind => Code::Unimplemented,
         E::Kernel(error) => filesystem_code(error),
+        E::Baseline(error) => core_state_code(error),
+    }
+}
+
+fn core_state_code(error: &crate::LocalCoreStateStoreError) -> Code {
+    use crate::LocalCoreStateStoreError as E;
+    match error {
+        E::DurabilityPoisoned => Code::Unavailable,
+        E::Io(error) => io_code(error),
+        E::OwnershipConflict(_) | E::MaterializationInProgress => Code::FailedPrecondition,
+        E::Json(_) | E::Integrity | E::Corrupt(_) => Code::DataLoss,
+        E::LazyWork(error) => lazy_code(error),
+    }
+}
+
+fn lazy_code(error: &crate::LazyWorkspaceError) -> Code {
+    use crate::LazyWorkspaceError as E;
+    match error.semantic_error() {
+        E::WorkspaceCause(error) => workspace_code(error),
+        E::Filesystem(error) => filesystem_code(error),
+        E::NamespacePath(error) => namespace_code(error),
+        E::Demand(error) => kernel::demand_code(error),
+        E::Store(_) | E::NativeLedgerMismatch | E::NativeRecordContextTransaction(_, _) => {
+            Code::Internal
+        }
+        E::Concurrent | E::StaleSource | E::StaleCursor | E::StaleIdentity => Code::Aborted,
+        E::NotFound => Code::NotFound,
+        E::NotDirectory | E::NotRegularFile | E::InvalidPageBound => Code::InvalidArgument,
+        E::TooLarge => Code::ResourceExhausted,
+        E::UnsupportedNode => Code::Unimplemented,
+        E::Cancelled => Code::Cancelled,
+        E::OriginalSnapshotUnavailable
+        | E::NativeRecordOwnershipConflict(_, _)
+        | E::NativeRecordMaterializationInProgress => Code::FailedPrecondition,
+        E::SourcePageCleanup { primary, .. } => lazy_code(primary),
+        E::NativeWork(error) => native_code(error),
+        E::NativeRecordIo(error, _) => io_code(error),
+        E::NativeRecordJson(_, _) | E::NativeRecordCorrupt(_, _) | E::NativeRecordIntegrity => {
+            Code::DataLoss
+        }
     }
 }
