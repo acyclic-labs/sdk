@@ -1,6 +1,143 @@
 use super::*;
 
 #[tokio::test]
+async fn conservative_admission_never_launches_an_unrequested_summary() -> Result<()> {
+    let (provider, _) = counted_model(
+        65_536,
+        None,
+        [
+            tool_turn([echo_call("next", json!({}))]),
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::Content {
+                    delta: "answer".into(),
+                }),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: json!({"usage":{"prompt_tokens":15_000,"completion_tokens":1}}),
+                }),
+            ]),
+        ],
+        [],
+    );
+    // The 58k byte bound admits this request but previously started an
+    // automatic summary despite the provider's roughly 15k actual input.
+    let source = crate::context::Context {
+        messages: vec![
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("old".repeat(10_000)),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("answer".repeat(4_666)),
+            },
+        ],
+        ..Default::default()
+    };
+    let executor = StockExecutor::new(
+        Model::new("fixture".into(), "reported-usage".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+            "history",
+            "1",
+            Arc::new(source),
+            crate::context::ContextPlacement::Prepend,
+        )) as Arc<dyn crate::context::ContextStage>]),
+        echo_tools(
+            Arc::new(FakeTool(AtomicUsize::new(0))),
+            json!(true),
+            json!(true),
+            json!(true),
+        )?,
+    )
+    .with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new(["model:generate", "tool:call:example.echo"]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        max_steps: None,
+        input: ModelContent::Text("question".into()),
+        selected_context: None,
+    };
+    let output = executor.execute(input.clone(), journal.as_ref()).await?;
+    assert_eq!(output.text, "answer");
+    assert_eq!(output.steps, 2);
+    assert_eq!(executor.execute(input, journal.as_ref()).await?, output);
+    assert_eq!(provider.requests().len(), 2);
+    assert!(provider.requests().iter().all(|request| !request.summary));
+    Ok(())
+}
+
+#[tokio::test]
+async fn length_cut_summary_retains_original_usage_without_publishing_a_rewrite() -> Result<()> {
+    let (provider, _) = counted_model(
+        65_536,
+        None,
+        [ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::Content {
+                delta: "unfinished".into(),
+            }),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({"finish_reason":"length","usage":{"prompt_tokens":15_000,"completion_tokens":8192}}),
+            }),
+        ])],
+        [],
+    );
+    let executor = StockExecutor::new(
+        Model::new("fixture".into(), "summary".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let journal = Journal::default();
+    let source = crate::context::Context {
+        messages: vec![ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("source".into()),
+        }],
+        ..Default::default()
+    };
+    let operation = OperationId::new();
+    for _ in 0..2 {
+        assert!(
+            matches!(executor.summarize(&journal, operation, source.clone(),
+            ModelContent::Text("summarize".into())).await,
+            Err(Error::Invalid(reason)) if reason == "summary reached its output-token limit; request a shorter summary")
+        );
+    }
+    assert_eq!(
+        provider.requests().len(),
+        1,
+        "replay must not redispatch a cut summary"
+    );
+    assert!(
+        journal
+            .1
+            .lock()
+            .unwrap()
+            .keys()
+            .all(|key| !key.ends_with(":output"))
+    );
+    let records = journal.0.lock().unwrap();
+    assert!(records.iter().any(|record| matches!(
+        &record.event,
+        ExecutionEvent::Model { usage: Some(_), .. }
+            | ExecutionEvent::ModelInline { usage: Some(_), .. }
+    )));
+    assert!(
+        !records
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn incomplete_summaries_reconcile_until_completion_without_redispatch() -> Result<()> {
     for prefix in ["", "first-"] {
         let observed = if prefix.is_empty() {

@@ -46,7 +46,6 @@ mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;
 use accounting::*;
-mod background_compaction;
 mod binding;
 mod compaction;
 mod composition;

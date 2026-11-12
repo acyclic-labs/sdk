@@ -430,9 +430,6 @@ impl StockExecution<'_> {
                             "summary source or instruction differs from retained admission".into(),
                         ));
                     }
-                } else {
-                    self.restore_background(journal, input, step, prior_messages, &recorded)
-                        .await?;
                 }
                 recorded
             }

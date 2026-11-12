@@ -381,62 +381,6 @@ impl StockExecution<'_> {
                 .is_some_and(|maximum| prepared.request().messages.len() > maximum);
         if !possible_message_pressure && !token_pressure {
             let input_tokens = input_tokens.ok_or(Error::ModelContextOverflow)?;
-            // Preparation borrows the next response's capacity credit. It does
-            // not rewrite the current request, or impose a retention threshold.
-            let reserve = accounting
-                .capacity
-                .output_reservation(self.output_tokens())?;
-            if self.background_available().await
-                && input
-                    .max_steps
-                    .is_none_or(|maximum| step.saturating_add(1) < maximum)
-                && input_tokens.saturating_add(u64::from(reserve))
-                    > policy.input_ceiling(accounting.capacity, self.output_tokens())?
-                && prepared.request().messages.len() > 1
-            {
-                projection.context.messages =
-                    crate::model::clone_messages(&prepared.request().messages, self.io)?;
-                // Choose an immutable source without another provider count on
-                // the worker's critical path. The summary has its own admission.
-                let source = if selected_base
-                    || projection.working.is_some()
-                    || journal.working_checkpoint_authority().is_some()
-                {
-                    let (_, context, _) = self
-                        .response_base(journal, input, step, prior_messages)
-                        .await?;
-                    CompactionSource::Base { context }
-                } else {
-                    CompactionSource::Projected
-                };
-                let context = match &source {
-                    CompactionSource::Projected => &projection.context,
-                    CompactionSource::Base { context } => context,
-                };
-                let stage_messages = projection
-                    .context
-                    .messages
-                    .len()
-                    .saturating_sub(context.messages.len());
-                let limit = self.compaction_message_limit(selected_base, stage_messages);
-                if let Some((through, _)) = with_history_io(self.io, |work| {
-                    policy.try_projection_budget(
-                        context,
-                        limit,
-                        context.messages.len().saturating_sub(1),
-                        work,
-                    )
-                })? {
-                    // Startup declarations alone are not worker history. Wait
-                    // for an existing response that the summary can preserve.
-                    if context.messages[..through]
-                        .iter()
-                        .any(|message| message.role == ModelRole::Assistant)
-                    {
-                        self.queue_background(context, through, step).await?;
-                    }
-                }
-            }
             let mut prepared = prepared;
             prepared.retain_context_window(crate::context::ContextWindow {
                 input_tokens,

@@ -8,7 +8,6 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) single_request: bool,
     /// Serializes journal transitions shared by response and summary producers.
     pub(in crate::executor) journal_writes: JournalWrites<'a>,
-    pub(in crate::executor) background: crate::executor::background_compaction::Background<'a>,
     /// Resolved on first use, after `context` and `io` are fixed.
     pub(in crate::executor) compaction: once_cell::sync::OnceCell<ResolvedCompaction<'a>>,
     pub(in crate::executor) records:
@@ -69,7 +68,6 @@ impl<'a> StockExecution<'a> {
             summary: None,
             single_request: false,
             journal_writes: JournalWrites::default(),
-            background: Default::default(),
             compaction: once_cell::sync::OnceCell::new(),
             records: tokio::sync::Mutex::new(Default::default()),
             working_tail: tokio::sync::Mutex::new(Default::default()),
