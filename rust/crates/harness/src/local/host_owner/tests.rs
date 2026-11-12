@@ -281,9 +281,12 @@ async fn native_event_log_keeps_late_usage_and_resume_after_recovery() -> Result
             "../host_process/fixtures/pi-assistant-error.jsonl"
         ));
         native_events::check_native_event_resume(claude.strip_suffix(b"\n").unwrap_or(claude));
-        // Mutate the captured representation: malformed UTF-8 and one oversized
-        // frame must not consume the next unchanged captured resume event.
-        let mut damaged = vec![0xff; super::super::host_process::EVENT_LINE_BYTES + 1];
+        // Valid JSON whitespace across several read pages retains the captured
+        // identity. Malformed UTF-8 must not consume the following valid event.
+        let mut large = vec![b' '; 9 * 8192];
+        large.extend_from_slice(claude);
+        native_events::check_native_event_resume(&large);
+        let mut damaged = vec![0xff; 9 * 8192];
         damaged.push(b'\n');
         damaged.extend_from_slice(claude);
         native_events::check_native_event_resume(&damaged);
