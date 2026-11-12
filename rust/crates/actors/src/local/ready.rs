@@ -1,7 +1,9 @@
 //! Shared, coalescing wake registration. Only running work owns a future.
 use acyclic_stream::query_sync::SyncMutex;
+mod registry;
+use registry::{Id, Registry};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     sync::{Arc, Weak},
     task::{Context, Poll, Wake, Waker},
 };
@@ -10,12 +12,12 @@ struct Entry<K> {
     key: K,
     phase: Phase,
     alarm: super::Alarm,
-    due: Option<(u64, u64, u64)>,
+    due: Option<(u64, Id, u64)>,
 }
 enum Phase {
     Queued {
-        previous: Option<u64>,
-        next: Option<u64>,
+        previous: Option<Id>,
+        next: Option<Id>,
     },
     Running {
         notified: bool,
@@ -24,18 +26,18 @@ enum Phase {
 }
 struct Index<K> {
     next: u64,
-    entries: BTreeMap<u64, Entry<K>>,
-    first: Option<u64>,
-    last: Option<u64>,
+    entries: Registry<K>,
+    first: Option<Id>,
+    last: Option<Id>,
     ready_count: usize,
     waiter: Option<Waker>,
-    due: BTreeSet<(u64, u64, u64)>,
+    due: BTreeSet<(u64, Id, u64)>,
 }
 impl<K> Default for Index<K> {
     fn default() -> Self {
         Self {
             next: 0,
-            entries: BTreeMap::new(),
+            entries: Registry::default(),
             first: None,
             last: None,
             ready_count: 0,
@@ -45,7 +47,7 @@ impl<K> Default for Index<K> {
     }
 }
 impl<K> Index<K> {
-    fn notify(&mut self, id: u64) -> Option<Waker> {
+    fn notify(&mut self, id: Id) -> Option<Waker> {
         match self.entries.get_mut(&id).map(|entry| &mut entry.phase) {
             Some(Phase::Running { notified }) => {
                 *notified = true;
@@ -55,7 +57,7 @@ impl<K> Index<K> {
             Some(Phase::Queued { .. }) | None => None,
         }
     }
-    fn enqueue(&mut self, id: u64) -> Option<Waker> {
+    fn enqueue(&mut self, id: Id) -> Option<Waker> {
         let previous = self.last;
         if let Some(entry) = self.entries.get_mut(&id) {
             entry.phase = Phase::Queued {
@@ -78,7 +80,7 @@ impl<K> Index<K> {
         self.ready_count += 1;
         self.waiter.take()
     }
-    fn unlink(&mut self, previous: Option<u64>, next: Option<u64>) {
+    fn unlink(&mut self, previous: Option<Id>, next: Option<Id>) {
         if let Some(id) = previous {
             if let Some(Entry {
                 phase: Phase::Queued { next: link, .. },
@@ -105,7 +107,7 @@ impl<K> Index<K> {
     }
 }
 impl<K: Clone> Index<K> {
-    fn take(&mut self) -> Option<(u64, K)> {
+    fn take(&mut self) -> Option<(Id, K)> {
         let id = self.first?;
         let next = match self.entries.get(&id)?.phase {
             Phase::Queued { next, .. } => next,
@@ -121,7 +123,9 @@ struct Core<K> {
     index: SyncMutex<Index<K>>,
 }
 
-/// One process-wide ready index. Idle entries own no task, future or timer.
+/// One process-wide ready index. Direct-address queue bookkeeping is O(1);
+/// slot growth is amortized O(1). Alarm insertion/removal separately pays
+/// O(log A) for A armed deadlines. Idle entries own no task, future or timer.
 pub struct ReadySet<K> {
     core: Arc<Core<K>>,
 }
@@ -138,13 +142,13 @@ impl<K> Default for ReadySet<K> {
 /// Exclusive lifetime of one subscription registration. Old wakers cannot revive it.
 pub struct Registration<K> {
     core: Arc<Core<K>>,
-    id: u64,
+    id: Id,
 }
 
 /// Running work retains notifications until its final durable-tail recheck completes.
 pub struct Work<K> {
     core: Arc<Core<K>>,
-    id: u64,
+    id: Id,
     key: K,
 }
 
@@ -162,7 +166,7 @@ impl<K: Clone> ReadySet<K> {
             .checked_add(1)
             .ok_or(super::Error::Invalid("wake registration exhausted"))?;
         index.next = id;
-        index.entries.insert(
+        let id = index.entries.insert(
             id,
             Entry {
                 key,
@@ -299,7 +303,7 @@ impl<K: Clone> ReadySet<K> {
 }
 
 impl<K> Core<K> {
-    fn notify(&self, id: u64) {
+    fn notify(&self, id: Id) {
         let mut index = self
             .index
             .lock()
@@ -311,7 +315,7 @@ impl<K> Core<K> {
         }
     }
 
-    fn finish(&self, id: u64) {
+    fn finish(&self, id: Id) {
         let mut index = self
             .index
             .lock()
@@ -332,7 +336,7 @@ impl<K> Core<K> {
 
 struct Notifier<K> {
     core: Weak<Core<K>>,
-    id: u64,
+    id: Id,
 }
 impl<K: Send + Sync + 'static> Wake for Notifier<K> {
     fn wake(self: Arc<Self>) {
@@ -456,7 +460,8 @@ impl<K> Drop for Registration<K> {
             .index
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(entry) = index.entries.remove(&self.id) {
+        let retired = index.entries.remove(&self.id);
+        if let Some(entry) = &retired {
             if let Some(due) = entry.due {
                 index.due.remove(&due);
             }
@@ -464,6 +469,8 @@ impl<K> Drop for Registration<K> {
                 index.unlink(previous, next);
             }
         }
+        drop(index);
+        drop(retired);
     }
 }
 impl<K> Work<K> {
