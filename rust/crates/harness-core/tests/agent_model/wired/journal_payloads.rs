@@ -66,7 +66,7 @@ async fn interrupted_streams_keep_live_reply_on_the_journal() -> Result {
         &private.volume()?.storage_name(&mut None)?,
     )?;
     assert!(
-        matches!(files.stat(&workspace, None, "tools").await, Err(error)
+        matches!(files.stat(&workspace, None, "/tools").await, Err(error)
         if error.code() == acyclic_harness_core::wire::ErrorCode::NotFound)
     );
     assert_eq!(model.requests().len(), 1);
@@ -136,11 +136,11 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
         )
     };
     files
-        .stat(&workspace(&journal)?, None, &effect_path)
+        .stat(&workspace(&journal)?, None, &format!("/{effect_path}"))
         .await?;
     for hidden in [payload.path(), effect_path.as_str()] {
         let missing = files
-            .stat(&workspace(private.volume()?)?, None, hidden)
+            .stat(&workspace(private.volume()?)?, None, &format!("/{hidden}"))
             .await;
         assert!(matches!(missing, Err(error)
             if error.code() == acyclic_harness_core::wire::ErrorCode::NotFound));
@@ -229,7 +229,7 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
     let output = reopened.outputs.stage(operation, b"{}").await?;
     assert_eq!(output.volume(), &journal);
     files
-        .stat(&workspace(private.volume()?)?, None, "ui/title")
+        .stat(&workspace(private.volume()?)?, None, "/ui/title")
         .await?;
     assert!(model.requests().is_empty());
     Ok(())
