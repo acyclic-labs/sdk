@@ -4,9 +4,58 @@ use acyclic_native_runtime::signing_key::{MemorySigningStore, SigningCustody};
 
 #[tokio::test]
 async fn temporary_state_retires_signing_custody_after_its_resources() -> Result<()> {
+    // Child-local environment proves both ambient refusals without mutating
+    // the test runner's environment or selecting a real credential backend.
+    if std::env::var_os("ACYCLIC_TEMPORARY_SIGNING_CHILD").is_none() {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        for policy in ["invalid", "native"] {
+            let output = std::process::Command::new(std::env::current_exe().map_err(storage)?)
+                .args([
+                    "--exact",
+                    "local::tests::signing::temporary_state_retires_signing_custody_after_its_resources",
+                    "--nocapture",
+                ])
+                .env("ACYCLIC_TEMPORARY_SIGNING_CHILD", "1")
+                .env("ACYCLIC_SIGNING_CUSTODY", policy)
+                .env("ACYCLIC_SIGNING_CUSTODY_DIRECTORY", directory.path().join("unused"))
+                .output()
+                .map_err(storage)?;
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .map_err(storage)?
+                .count(),
+            0
+        );
+        return Ok(());
+    }
     let workspace = tempfile::tempdir().map_err(storage)?;
-    let config = crate::test_support::local_harness_config(workspace.path(), (model()?, text()))?
-        .prepare_state()?;
+    let configured = || -> Result<LocalHarnessConfig> {
+        Ok(
+            crate::test_support::local_harness_config(workspace.path(), (model()?, text()))?
+                .without_default_tools(),
+        )
+    };
+    let explicit = configured()?
+        .state_directory(workspace.path().with_extension("explicit"))
+        .state_refusals();
+    assert!(
+        matches!(explicit.as_slice(), [Error::Storage(_)]),
+        "explicit ambient custody must still be checked: {explicit:?}"
+    );
+    let allocations = crate::local::config::TEMPORARY_STATES.get();
+    let refusals = configured()?.preflight();
+    assert!(refusals.is_empty(), "{refusals:?}");
+    let refusals = LocalHarness::doctor(configured()?).await;
+    assert!(refusals.is_empty(), "{refusals:?}");
+    assert_eq!(crate::local::config::TEMPORARY_STATES.get(), allocations);
+    let config = configured()?.prepare_state()?;
     let store = config
         .signing_store
         .clone()

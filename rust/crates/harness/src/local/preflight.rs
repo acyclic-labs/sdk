@@ -41,7 +41,10 @@ impl LocalHarnessConfig {
                 failures.push(Error::Invalid(format!("state directory: {error}; recovery: select a user data directory outside the checkout (XDG_DATA_HOME on Linux, LOCALAPPDATA on Windows)")));
             }
         }
-        if !self.without_user_settings && self.signing_store.is_none() {
+        if (!self.hermetic || self.state_directory.is_some())
+            && !self.without_user_settings
+            && self.signing_store.is_none()
+        {
             failures.extend(
                 acyclic_native_runtime::signing_key::SigningCustody::Configured
                     .validate()
