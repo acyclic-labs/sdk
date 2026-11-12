@@ -58,7 +58,7 @@ pub enum ModelEvent {
 
 /// Compact recovery facts carried by the original ordered model stream.
 /// An unfinished start remains visible when cancellation or timer failure wins.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelWait {

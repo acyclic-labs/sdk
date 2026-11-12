@@ -1114,6 +1114,18 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
     );
     assert!(matches!(waits[0], crate::model::ModelWait::Started { .. }));
     assert!(matches!(waits[1], crate::model::ModelWait::Finished { .. }));
+    let first = records
+        .iter()
+        .find(|record| matches!(record.event, ExecutionEvent::ModelWait { .. }))
+        .expect("the original wait is a typed journal record");
+    let page = futures::executor::block_on(super::super::usage_page(
+        &journal,
+        input.operation_id,
+        "agents/fixture",
+        first.sequence - 1,
+    ))?;
+    assert_eq!((page.waits.started, page.waits.completed), (1, 1));
+    assert_eq!(page.waits.elapsed_ns(), Some(2_000_000_000));
     let replay = futures::executor::block_on(executor.execute(input, &journal))?;
     assert_eq!(replay, output);
     assert_eq!(provider.requests().len(), 1);

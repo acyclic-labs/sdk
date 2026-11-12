@@ -810,7 +810,26 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
 
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
-    let provider = text();
+    let provider = super::scripted([super::ScriptedTurn::Events(vec![
+        crate::test_support::ScriptedEvent::Event(crate::model::ModelEvent::Wait(
+            crate::model::ModelWait::Started {
+                cause: Some(crate::ModelTransportFailure::Status(429)),
+                delay: std::time::Duration::from_secs(2),
+                retry_after: true,
+            },
+        )),
+        crate::test_support::ScriptedEvent::Event(crate::model::ModelEvent::Wait(
+            crate::model::ModelWait::Finished {
+                elapsed: std::time::Duration::from_millis(2007),
+            },
+        )),
+        crate::test_support::ScriptedEvent::Event(crate::model::ModelEvent::Content {
+            delta: "done".into(),
+        }),
+        crate::test_support::ScriptedEvent::Event(crate::model::ModelEvent::Completed {
+            metadata: serde_json::Value::Null,
+        }),
+    ])]);
     let harness = Arc::new(
         super::open_scripted(
             volume_config(directory.path(), project, provider.clone())?
@@ -894,6 +913,12 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     }
     assert_eq!(inspection.snapshot().usage.calls, 1);
     assert_eq!(inspection.snapshot().usage.completed, 1);
+    assert_eq!(inspection.snapshot().waits.started, 1);
+    assert_eq!(inspection.snapshot().waits.completed, 1);
+    assert_eq!(
+        inspection.snapshot().waits.elapsed_ns(),
+        Some(2_007_000_000)
+    );
     assert_eq!(inspection.snapshot().model, Some(("scripted", "test")));
     assert_eq!(inspection.snapshot().open_children, Some(0));
     assert_eq!(
@@ -1620,9 +1645,16 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
     let provider = super::scripted([
         completed(100, 20),
         completed(200, 30),
-        ScriptedTurn::Events(vec![ScriptedEvent::Interrupted {
-            error: "priced provider failure".into(),
-        }]),
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::Wait(crate::model::ModelWait::Started {
+                cause: Some(crate::ModelTransportFailure::Connect),
+                delay: std::time::Duration::from_secs(2),
+                retry_after: false,
+            })),
+            ScriptedEvent::Interrupted {
+                error: "priced provider failure".into(),
+            },
+        ]),
     ]);
     let directory = tempfile::tempdir().map_err(agent)?;
     let harness = Arc::new(
@@ -1714,6 +1746,11 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
     assert_eq!(durable.token_nano_units.known, 400);
     assert_eq!(durable.token_nano_units.unknown, 1);
     assert_eq!(durable.token_nano_units.value(), None);
+    while live.waits().started == 0 {
+        live.advance().await?;
+    }
+    assert_eq!((live.waits().started, live.waits().completed), (1, 0));
+    assert_eq!(live.waits().elapsed_ns(), None);
     Ok(())
 }
 

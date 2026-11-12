@@ -3,7 +3,7 @@ use super::{Conversation, UsageQuery};
 use crate::{
     Result,
     agent::{AgentPath, AgentRecord as _, Phase, StatusRecord},
-    executor::{ContextUsage, ModelUsageTotals, ToolUsage, UsageTotal},
+    executor::{ContextUsage, ModelUsageTotals, ToolUsage, UsageTotal, WaitUsage},
 };
 use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply};
 use acyclic_stream::{FollowFilter, FollowRequest, RecordStream, StreamError, wire};
@@ -39,6 +39,9 @@ pub struct Inspection<'a> {
     /// Tool admissions, successful settlements, failure classes and original
     /// publication intervals, consumed at the same usage frontier.
     pub tools: &'a ToolUsage,
+    /// Original recovery waits from the same bounded usage frontier. Elapsed
+    /// time covers completed timers; unfinished starts are explicit.
+    pub waits: WaitUsage,
     /// Whether bounded initial usage replay has reached its live frontier.
     pub synchronized: bool,
     /// Direct open-child count at the usage query's actor cut.
@@ -124,6 +127,7 @@ impl InspectQuery {
             providers: self.usage.providers(),
             model_time_ns: self.usage.model_time_ns(),
             tools: self.usage.tools(),
+            waits: self.usage.waits(),
             synchronized: self.usage.synchronized(),
             open_children: self.usage.open_children(),
             context: self.usage.context(),

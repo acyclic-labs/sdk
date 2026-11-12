@@ -433,6 +433,7 @@ impl ModelUsageRecord {
 /// zero sum and zero unknowns; it is distinct from one unpriced call.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct UsageTotal {
     /// Sum of known contributions, which is only a partial sum when unknown > 0.
     pub known: u64,
@@ -454,7 +455,8 @@ impl UsageTotal {
         (self.unknown == 0).then_some(self.known)
     }
 
-    fn combine(self, other: Self) -> Result<Self, ModelPriceError> {
+    /// Combine disjoint subtotals without discarding unknown coverage.
+    pub fn combine(self, other: Self) -> Result<Self, ModelPriceError> {
         Ok(Self {
             known: self
                 .known

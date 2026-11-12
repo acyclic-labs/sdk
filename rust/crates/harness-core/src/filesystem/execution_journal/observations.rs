@@ -412,6 +412,8 @@ where
         }
         if let ExecutionEvent::ModelInline { event, .. } = event {
             self.authorize_inline_event(event, VolumeOperation::Write, io)?;
+        } else if matches!(event, ExecutionEvent::ModelWait { .. }) {
+            self.authorize_model_observation(VolumeOperation::Write, io)?;
         }
         let model = self
             .verify_event_refs_with_io(operation_id, event, io)

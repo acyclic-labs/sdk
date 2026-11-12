@@ -273,6 +273,8 @@ pub struct ModelUsagePage {
     pub items: Vec<ModelUsageRecord>,
     /// Compact tool observations from exactly this same source page.
     pub tools: ToolUsage,
+    /// Original wait facts from exactly this same bounded source page.
+    pub waits: super::WaitUsage,
     /// Last context preparation in this page; absence preserves the prior cut.
     pub context: Option<ContextUsage>,
     /// Exclusive original journal position after every visited observation,
@@ -300,9 +302,11 @@ pub async fn usage_page(
     let (end, next) = super::event_page::page_continuation(after, records.len(), PAGE)?;
     let mut items = Vec::new();
     let mut tools = ToolUsage::default();
+    let mut waits = super::WaitUsage::default();
     let mut context = None;
     for record in records {
         tools.observe(journal, operation, &record).await?;
+        waits.observe(operation, &record)?;
         if let ExecutionEvent::ContextPrepared { projection, .. }
         | ExecutionEvent::ContextCompacted { projection, .. } = &record.event
         {
@@ -332,6 +336,7 @@ pub async fn usage_page(
     Ok(ModelUsagePage {
         items,
         tools,
+        waits,
         context,
         end,
         next,

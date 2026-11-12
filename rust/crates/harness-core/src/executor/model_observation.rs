@@ -5,6 +5,7 @@ pub(crate) fn matches_turn(event: &ExecutionEvent, step: u32, purpose: ModelPurp
     matches!(event,
         ExecutionEvent::Model { step: recorded, purpose: recorded_purpose, .. }
         | ExecutionEvent::ModelInline { step: recorded, purpose: recorded_purpose, .. }
+        | ExecutionEvent::ModelWait { step: recorded, purpose: recorded_purpose, .. }
         if *recorded == step && *recorded_purpose == purpose)
 }
 
@@ -51,8 +52,30 @@ pub(crate) async fn append(
     original: Option<&PreparationIo>,
 ) -> Result<ModelObservationReceipt> {
     validate_journal(journal, original)?;
-    let maximum = journal.inline_model_event_bytes();
     let (step, purpose) = turn;
+    if let ModelEvent::Wait(observation) = model {
+        if usage.is_some() {
+            return Err(stock_boundary(
+                original,
+                crate::wire::ErrorCode::Invalid,
+                "wait observation cannot carry terminal usage",
+            ));
+        }
+        return commit(
+            journal,
+            operation,
+            key,
+            &ExecutionEvent::ModelWait {
+                step,
+                purpose,
+                observation: *observation,
+            },
+            model,
+            original,
+        )
+        .await;
+    }
+    let maximum = journal.inline_model_event_bytes();
     let usage = if let Some(usage) = usage {
         let key = with_history_io(original, |work| {
             preparation_format(format_args!("{key}:usage"), work)
@@ -124,6 +147,7 @@ pub(crate) async fn load(
     io: Option<&PreparationIo>,
 ) -> Result<Option<ModelEvent>> {
     let model = match event {
+        ExecutionEvent::ModelWait { observation, .. } => Some(ModelEvent::Wait(*observation)),
         ExecutionEvent::Model { event, .. } => Some(retain_preparation(
             load_json::<ModelEvent>(journal, event, io).await?,
         )?),

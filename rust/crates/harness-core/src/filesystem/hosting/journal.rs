@@ -46,6 +46,7 @@ impl Projection for Usage {
         ModelUsagePage {
             items: Vec::new(),
             tools: Default::default(),
+            waits: Default::default(),
             context: None,
             end: after,
             next: None,

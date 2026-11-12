@@ -55,6 +55,7 @@ impl ExecutionEvent {
             | Self::ModelStarted { step, .. }
             | Self::Model { step, .. }
             | Self::ModelInline { step, .. }
+            | Self::ModelWait { step, .. }
             | Self::ModelStopped { step, .. }
             | Self::ToolStarted { step, .. }
             | Self::ToolCompleted { step, .. }
@@ -131,6 +132,15 @@ impl ExecutionEvent {
                 purpose: *purpose,
                 event: text(event)?,
                 usage: usage.as_ref().map(file).transpose()?,
+            },
+            ModelWait {
+                step,
+                purpose,
+                observation,
+            } => ModelWait {
+                step: *step,
+                purpose: *purpose,
+                observation: *observation,
             },
             ModelStopped {
                 step,

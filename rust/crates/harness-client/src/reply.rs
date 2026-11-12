@@ -780,6 +780,11 @@ fn validate_reply(
                         && page
                             .tools
                             .observations()
+                            .and_then(|tools| {
+                                page.waits
+                                    .observations()
+                                    .and_then(|waits| tools.checked_add(waits))
+                            })
                             .is_some_and(|tools| tools <= visited - page.items.len() as u64)
                         && page
                             .next
@@ -1262,6 +1267,7 @@ mod tests {
                     page: Some(ModelUsagePage {
                         items: vec![],
                         tools: Default::default(),
+                        waits: Default::default(),
                         context: None,
                         end,
                         next: (visited == 32).then_some(end),
@@ -1279,6 +1285,11 @@ mod tests {
                 assert!(decode_agent_reply(&inflated_envelope.encode_to_vec(), &command).is_err());
                 inflated["page"]["tools"]["started"] = 0.into();
                 inflated["page"]["tools"]["feedback"] = serde_json::json!({"slow": 1});
+                inflated_envelope.value =
+                    Some(envelope::Value::Reply(serde_json::to_vec(&inflated)?));
+                assert!(decode_agent_reply(&inflated_envelope.encode_to_vec(), &command).is_err());
+                inflated["page"]["tools"]["feedback"] = serde_json::json!({});
+                inflated["page"]["waits"]["started"] = (visited + 1).into();
                 inflated_envelope.value =
                     Some(envelope::Value::Reply(serde_json::to_vec(&inflated)?));
                 assert!(decode_agent_reply(&inflated_envelope.encode_to_vec(), &command).is_err());

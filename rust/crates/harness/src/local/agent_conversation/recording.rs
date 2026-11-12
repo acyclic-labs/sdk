@@ -138,6 +138,9 @@ async fn observe(
             ));
         }
         ExecutionEvent::ModelInline { event, .. } => calls.event(event.as_bytes().to_vec())?,
+        ExecutionEvent::ModelWait { observation, .. } => calls.event(
+            crate::contract::canonical_json_bytes(&ModelEvent::Wait(*observation))?,
+        )?,
         ExecutionEvent::Model { .. } => {
             calls.event(payload(ExecutionPayloadField::Event).await?)?
         }

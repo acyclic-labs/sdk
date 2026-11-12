@@ -6,7 +6,7 @@ use acyclic_harness_core::{
     Error, Result,
     executor::{
         ContextUsage, ModelCostEstimate, ModelPrices, ModelPurpose, ModelUsageProjection,
-        ModelUsageRecord, ModelUsageTotals, ToolUsage, UsageTotal,
+        ModelUsageRecord, ModelUsageTotals, ToolUsage, UsageTotal, WaitUsage,
     },
 };
 use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
@@ -24,6 +24,7 @@ pub struct UsageQuery {
     providers: BTreeMap<String, ModelUsageTotals>,
     model_time_ns: UsageTotal,
     tools: ToolUsage,
+    waits: WaitUsage,
     context: Option<ContextUsage>,
     model: Option<(String, String)>,
     open_children: Option<u64>,
@@ -64,6 +65,7 @@ impl UsageQuery {
             providers: BTreeMap::new(),
             model_time_ns: UsageTotal::default(),
             tools: ToolUsage::default(),
+            waits: WaitUsage::default(),
             context: None,
             synchronized: false,
             closed: false,
@@ -95,6 +97,11 @@ impl UsageQuery {
     /// Original tool facts from the same bounded source pages as model usage.
     pub fn tools(&self) -> &ToolUsage {
         &self.tools
+    }
+
+    /// Original wait starts, finishes and measured elapsed time at this frontier.
+    pub const fn waits(&self) -> WaitUsage {
+        self.waits
     }
 
     /// Latest original verified response occupancy, independent of cumulative usage.
@@ -177,6 +184,7 @@ impl UsageQuery {
         let synchronized = self.synchronized || (!settled && page.next.is_none());
         let changed = !page.items.is_empty()
             || !page.tools.is_empty()
+            || !page.waits.is_empty()
             || page.context.is_some()
             || self.open_children != Some(open_children)
             || synchronized != self.synchronized;
@@ -190,6 +198,11 @@ impl UsageQuery {
             None
         } else {
             Some(self.tools.merged(&page.tools)?)
+        };
+        let waits = if page.waits.is_empty() {
+            None
+        } else {
+            Some(self.waits.merged(page.waits)?)
         };
         if !page.items.is_empty() {
             // Stage the summaries before installing this page's contributions.
@@ -252,6 +265,9 @@ impl UsageQuery {
         }
         if let Some(tools) = tools {
             self.tools = tools;
+        }
+        if let Some(waits) = waits {
+            self.waits = waits;
         }
         if let Some(context) = page.context {
             self.context = Some(context);

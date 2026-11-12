@@ -41,6 +41,11 @@ impl StockExecution<'_> {
                         purpose: ModelPurpose::Response,
                         ..
                     }
+                    | ExecutionEvent::ModelWait {
+                        step: recorded,
+                        purpose: ModelPurpose::Response,
+                        ..
+                    }
                     | ExecutionEvent::ContextPrepared { step: recorded, .. }
                     | ExecutionEvent::ContextCompacted { step: recorded, .. } => *recorded == step,
                     ExecutionEvent::ConversationItem { .. }
@@ -50,6 +55,7 @@ impl StockExecution<'_> {
                     | ExecutionEvent::ModelStarted { .. }
                     | ExecutionEvent::Model { .. }
                     | ExecutionEvent::ModelInline { .. }
+                    | ExecutionEvent::ModelWait { .. }
                     | ExecutionEvent::ModelStopped { .. } => false,
                 },
             )
@@ -78,6 +84,7 @@ impl StockExecution<'_> {
                 ExecutionEvent::ModelStarted { step: event_step, purpose: event_purpose, .. }
                 | ExecutionEvent::Model { step: event_step, purpose: event_purpose, .. }
                 | ExecutionEvent::ModelInline { step: event_step, purpose: event_purpose, .. }
+                | ExecutionEvent::ModelWait { step: event_step, purpose: event_purpose, .. }
                 | ExecutionEvent::ModelStopped { step: event_step, purpose: event_purpose, .. }
                 if *event_step == step && *event_purpose == purpose)
                     || matches!(event, ExecutionEvent::ContextPrepared { step: event_step, .. }

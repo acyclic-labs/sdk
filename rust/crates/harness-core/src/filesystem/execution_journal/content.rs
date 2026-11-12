@@ -231,6 +231,14 @@ where
                 "inline model observation exceeds its bound",
             ));
         }
+        self.authorize_model_observation(operation, io)
+    }
+
+    pub(super) fn authorize_model_observation(
+        &self,
+        operation: VolumeOperation,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         crate::executor::with_history_io(io, |work| {
             ContentGrant::authorize_volume(
                 &self.verifier,
@@ -280,10 +288,15 @@ where
                 } => [Some(result), Some(projection), None],
                 ExecutionEvent::Started { .. }
                 | ExecutionEvent::ModelInline { .. }
+                | ExecutionEvent::ModelWait { .. }
                 | ExecutionEvent::ModelStopped { .. }
                 | ExecutionEvent::ToolFailed { .. } => [None, None, None],
             };
             let mut model = match event {
+                ExecutionEvent::ModelWait { observation, .. } => {
+                    self.authorize_model_observation(VolumeOperation::Read, io)?;
+                    Some(ModelEvent::Wait(*observation))
+                }
                 ExecutionEvent::ModelInline { event, .. } => {
                     self.authorize_inline_event(event, VolumeOperation::Read, io)?;
                     Some(crate::executor::retain_preparation(decode_json::<

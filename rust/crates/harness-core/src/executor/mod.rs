@@ -83,6 +83,8 @@ pub use model_usage::{
 };
 mod tool_usage;
 pub use tool_usage::ToolUsage;
+mod wait_usage;
+pub use wait_usage::WaitUsage;
 pub(crate) mod phase;
 #[cfg(test)]
 pub(crate) use model_observation::append as append_model_event;
@@ -385,6 +387,16 @@ pub enum ExecutionEvent {
         /// Absent on nonterminal observations and unmeasured journal adapters.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire | null"))]
         usage: Option<FileRef>,
+    },
+    /// One allocation-free transport observation in the original model stream.
+    /// No payload object, encoded event string or summary record is stored.
+    ModelWait {
+        /// Zero-based executor step.
+        step: u32,
+        /// Admitted response or summary attempt.
+        purpose: ModelPurpose,
+        /// Exact original observation, without remote error text.
+        observation: crate::model::ModelWait,
     },
     /// The local model producer stopped after invocation cancellation.
     ModelStopped {

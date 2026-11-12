@@ -270,6 +270,7 @@ where
             ExecutionEvent::ModelStarted { step, purpose, .. }
             | ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
+            | ExecutionEvent::ModelWait { step, purpose, .. }
             | ExecutionEvent::ModelStopped { step, purpose, .. } => {
                 load(&mut summary.models, &reader, roots[2], (*step, *purpose)).await?;
             }
@@ -331,6 +332,7 @@ where
             ExecutionEvent::ModelStarted { step, purpose, .. }
             | ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
+            | ExecutionEvent::ModelWait { step, purpose, .. }
             | ExecutionEvent::ModelStopped { step, purpose, .. } => {
                 let key = (*step, *purpose);
                 let value = summary.models.get(&key, io)?.ok_or_else(|| corrupt(io))?;

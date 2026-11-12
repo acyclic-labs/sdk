@@ -14,7 +14,16 @@ an unfinished start rather than fabricating a successful wait. Recovery events
 do not enter assistant context, reset output or accumulate in the active model
 attempt. Generation waits no longer publish a duplicate text log or native wait
 report. Token-count requests still use their existing future-based recovery
-reporting; inspection wait totals are not yet projected.
+reporting.
+
+Waits occupy typed original journal records, without an encoded event string or
+payload object. `acyclic inspect` projects their starts, successful finishes and
+measured elapsed nanoseconds through its existing bounded usage pages. This adds
+no payload reads, earlier-history scans or per-call state. Unfinished starts are
+explicit: when starts and finishes differ, the elapsed subtotal omits unfinished
+timers. Durations outside the nanosecond counter's representation remain unknown.
+Model call duration includes recovery waits; these values overlap and must not be
+added together as disjoint elapsed time.
 
 ## Live session inspection
 

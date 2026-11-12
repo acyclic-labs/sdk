@@ -83,6 +83,7 @@ impl ExecutionSummary {
             }
             ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
+            | ExecutionEvent::ModelWait { step, purpose, .. }
             | ExecutionEvent::ModelStopped { step, purpose, .. } => self
                 .models
                 .get(&(*step, *purpose), io)?
@@ -149,7 +150,8 @@ impl ExecutionSummary {
         }
         self.require_next(event, io)?;
         if let ExecutionEvent::Model { step, purpose, .. }
-        | ExecutionEvent::ModelInline { step, purpose, .. } = event
+        | ExecutionEvent::ModelInline { step, purpose, .. }
+        | ExecutionEvent::ModelWait { step, purpose, .. } = event
         {
             self.models
                 .get(&(*step, *purpose), io)?
@@ -260,7 +262,8 @@ impl ExecutionSummary {
                 }
             }
             ExecutionEvent::Model { step, purpose, .. }
-            | ExecutionEvent::ModelInline { step, purpose, .. } => {
+            | ExecutionEvent::ModelInline { step, purpose, .. }
+            | ExecutionEvent::ModelWait { step, purpose, .. } => {
                 let state = self
                     .models
                     .get_mut(&(*step, *purpose), io)?
