@@ -28,7 +28,6 @@ pub async fn verify_model_contents_with_summary_authorization<
     io: Option<&PreparationIo>,
     context: Option<&crate::runtime::TaskContext>,
 ) -> Result<()> {
-    tracing::trace!(target: "acyclic_harness::read_profile", phase = "content:begin");
     for content in contents.clone() {
         validate_model_content_limits(content, limits, scope, io)?;
     }
@@ -72,7 +71,6 @@ pub async fn verify_model_contents_with_summary_authorization<
     if RELEASE && let Some(io) = io {
         io.release(owned)?;
     }
-    tracing::trace!(target: "acyclic_harness::read_profile", phase = "content:end");
     result
 }
 

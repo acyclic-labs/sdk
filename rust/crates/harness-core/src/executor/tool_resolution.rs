@@ -99,13 +99,6 @@ impl StockExecution<'_> {
         reason: ToolFailureKind,
         error: Error,
     ) -> Result<crate::model::ToolResultContent> {
-        tracing::warn!(
-            %operation_id,
-            call_id,
-            ?reason,
-            cause = ?error,
-            "tool call failed; returning the failure to the model"
-        );
         let cause = with_history_io(self.io, |work| ToolFailureCause::of(&error, work))?;
         self.settle_tool_cause(journal, operation_id, step, call_id, reason, cause)
             .await
