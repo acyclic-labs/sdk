@@ -114,14 +114,7 @@ async fn assert_request(
         .first()
         .ok_or_else(|| Error::NotFound("model request".into()))?;
     assert_eq!(request.tools, manifest.tools);
-    let conventions: Vec<String> =
-        serde_json::from_str(acyclic_harness::context::DEFAULT_CONVENTIONS_JSON)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(manifest.conventions, conventions);
-    for (message, expected) in request.messages.iter().zip(&conventions) {
-        assert_eq!(message.role, ModelRole::System);
-        assert_eq!(message.content, ModelContent::Text(expected.clone()));
-    }
+    assert!(manifest.conventions.is_empty());
     let text = serde_json::to_string(request).map_err(|e| Error::Invalid(e.to_string()))?;
     assert!(text.contains("SELECTED BODY"));
     assert!(!text.contains("UNSELECTED BODY"));
