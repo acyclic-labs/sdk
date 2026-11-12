@@ -36,7 +36,6 @@ impl EnvironmentFacts {
             ("os", Some(self.os.as_str())),
             ("current_date", Some(self.current_date.as_str())),
             ("timezone", Some(self.timezone.as_str())),
-            ("model", Some(self.model.as_str())),
         ];
         let mut buffer = arrayvec::ArrayString::new();
         for line in include_str!("environment.txt")
@@ -223,7 +222,7 @@ mod tests {
             Ok(())
         })?;
         assert!(!text.contains("<cwd>"));
-        assert!(text.contains("<model>model</model>"));
+        assert!(!text.contains("<model>"));
         Ok(())
     }
 
