@@ -75,6 +75,21 @@ async fn fixture_with_files(
         (limits, CompactionPolicy::Disabled),
         Arc::new(Tasks(harness)),
     )
+    .with_models(Arc::new(acyclic_harness_core::model::ModelResolver::new(
+        "test/text",
+        {
+            let model = model.clone();
+            move |selection| {
+                let (provider, name) = selection.split_once('/').ok_or_else(|| {
+                    acyclic_harness_core::Error::Invalid("expected provider/model".into())
+                })?;
+                Ok((
+                    Model::new(provider.into(), name.into(), "1".into())?,
+                    model.clone(),
+                ))
+            }
+        },
+    )))
     .with_agent_tools(&[
         "spawn".into(),
         "send".into(),
@@ -160,7 +175,7 @@ async fn automatic_self_send_is_refused_without_stopping_the_actor() -> Result {
 }
 
 #[tokio::test]
-async fn same_node_peers_return_committed_receipts_and_preserve_reply_attribution() -> Result {
+async fn peer_send_returns_acceptance_before_receiver_execution() -> Result {
     let peer = AgentPath::root(&id(82));
     let (agents, stream, root, model, files) = fixture_with_files(
         vec![
@@ -169,6 +184,7 @@ async fn same_node_peers_return_committed_receipts_and_preserve_reply_attributio
                 json!({"agent": peer.as_str(), "message": "Hello peer"}),
             ),
             ScriptedTurn::Text("sent".into()),
+            ScriptedTurn::Text("no follow-up work".into()),
         ],
         0,
     )
@@ -190,6 +206,12 @@ async fn same_node_peers_return_committed_receipts_and_preserve_reply_attributio
         &mut None,
     )?;
     files.create_volume(&volume).await?;
+    files
+        .create_volume(&acyclic_harness_core::conversation::journal_volume(
+            volume.provider().clone(),
+            &peer.id(),
+        )?)
+        .await?;
     let mut adoption = adopted(peer.id());
     adoption.volumes = vec![WorkspaceEntry::initial_volume(
         WorkspaceRole::Private,
@@ -197,7 +219,17 @@ async fn same_node_peers_return_committed_receipts_and_preserve_reply_attributio
         volume,
     )];
     agents.create(&intent("peer"), adoption).await?;
-    deliver(&agents, &root, requested("start", &root)).await?;
+    let sender = deliver(&agents, &root, requested("start", &root)).await?;
+    assert_eq!(
+        sender.phase,
+        Phase::Idle,
+        "sender requests: {:?}",
+        model.requests()
+    );
+    assert!(matches!(
+        answer(&*stream, &root, 0).await?.outcome,
+        TurnOutcome::Completed
+    ));
     let records = super::super::values(&*stream, peer.inbox()?).await?;
     assert_eq!(records.len(), 2);
     let InboxRecord::Message(message) = InboxRecord::decode(&records[1])? else {
@@ -222,14 +254,32 @@ async fn same_node_peers_return_committed_receipts_and_preserve_reply_attributio
             _ => None,
         })
         .collect();
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["kind"], "delivered");
-    assert_eq!(results[0]["inbox"], 1);
-    assert_eq!(results[0]["id"], message.id.as_str());
-    assert!(
-        results[0].get("status").is_none(),
-        "provisional result reached the model"
+    assert_eq!(
+        agents.state(&peer).await?.conversation_tail,
+        0,
+        "the receiver has not executed yet"
     );
+    let observes =
+        |request: &acyclic_harness_core::model::ModelRequest, sender: &AgentPath| {
+            request.messages.iter().flat_map(|message| message.content.parts()).any(|part|
+            matches!(part, ModelContentPart::Notices { notices } if notices.iter().any(|notice|
+                notice.kind == "peer.message" && notice.source == sender.as_str())))
+        };
+    assert!(requests.iter().all(|request| !observes(request, &root)));
+    assert!(
+        !results.is_empty(),
+        "the sender did not observe its receipt"
+    );
+    for result in results {
+        assert_eq!(result["kind"], "accepted");
+        assert_eq!(result["inbox"], 1);
+        assert_eq!(result["id"], message.id.as_str());
+        assert!(
+            result.get("status").is_none(),
+            "provisional result reached the model"
+        );
+    }
+    let before_receiver = model.request_count();
 
     model.extend([
         call(
@@ -237,8 +287,22 @@ async fn same_node_peers_return_committed_receipts_and_preserve_reply_attributio
             json!({"agent": root.as_str(), "message": "Hello back", "re": message.id.as_str()}),
         ),
         ScriptedTurn::Text("answered".into()),
+        ScriptedTurn::Text("no follow-up work".into()),
     ]);
     agents.drain(&peer).await?;
+    let receiver = agents.state(&peer).await?;
+    assert_eq!(
+        receiver.phase,
+        Phase::Idle,
+        "receiver requests: {:?}",
+        model.requests()
+    );
+    let reply_turn = answer(&*stream, &peer, 0).await?;
+    assert!(
+        matches!(&reply_turn.outcome, TurnOutcome::Completed),
+        "reply turn: {:?}",
+        reply_turn.outcome
+    );
     let records = super::super::values(&*stream, root.inbox()?).await?;
     let InboxRecord::Message(reply) =
         InboxRecord::decode(records.last().ok_or("peer reply missing")?)?
@@ -251,16 +315,31 @@ async fn same_node_peers_return_committed_receipts_and_preserve_reply_attributio
         agents.reply(&peer, &message.id, 1).await?,
         Reply::Answered { .. }
     ));
-    model.extend([ScriptedTurn::Text("conversation complete".into())]);
+    let receiver_requests = model.requests();
+    assert!(
+        receiver_requests[before_receiver..]
+            .iter()
+            .any(|request| observes(request, &root))
+    );
+    let before_reply = model.request_count();
+    model.extend([
+        ScriptedTurn::Text("conversation complete".into()),
+        ScriptedTurn::Text("no follow-up work".into()),
+    ]);
     agents.drain(&root).await?;
     let requests = model.requests();
-    for (request, sender) in [(&requests[2], &root), (&requests[4], &peer)] {
-        assert!(request.messages.iter().flat_map(|message| message.content.parts()).any(|part|
-            matches!(part, ModelContentPart::Notices { notices } if notices.iter().any(|notice|
-                notice.kind == "peer.message" && notice.source == sender.as_str()))));
-    }
+    assert!(
+        requests[before_reply..]
+            .iter()
+            .any(|request| observes(request, &peer))
+    );
+    let completed = model.request_count();
     deliver(&agents, &root, requested("start", &root)).await?;
-    assert_eq!(model.requests().len(), 5);
+    assert_eq!(
+        model.request_count(),
+        completed,
+        "an exact replay executed the sender again"
+    );
     assert_eq!(inbox_tail(&*stream, &peer).await?, 2);
     Ok(())
 }

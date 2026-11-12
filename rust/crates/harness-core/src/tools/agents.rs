@@ -717,7 +717,7 @@ async fn peer_grant_allowed(
 fn sent_result(sent: crate::agent::SentMessage) -> ToolResult {
     let value = match sent.delivery {
         crate::agent::Delivered::Committed { inbox } => json!({
-            "kind": "delivered", "sent": sent.to, "id": sent.id, "inbox": inbox,
+            "kind": "accepted", "sent": sent.to, "id": sent.id, "inbox": inbox,
         }),
         crate::agent::Delivered::Closed => json!({
             "kind": "rejected", "sent": sent.to, "id": sent.id, "reason": "closed",
@@ -875,7 +875,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "send",
             definition::<SendAgentInput>(
                 "send",
-                "Queue a message for your parent, an open child (by name or path), a peer session (by path), or a sibling your spawn granted (by name or path); steering arrives at the next model boundary after in-flight tools settle, and follow-up starts a later turn",
+                "Return an accepted inbox receipt after durably queuing a message for your parent, an open child (by name or path), a peer session (by path), or a sibling your spawn granted (by name or path); steering arrives at the next model boundary after in-flight tools settle, and follow-up starts a later turn",
             )?,
         ),
         (

@@ -392,7 +392,7 @@ async fn run_inner(
         None
     };
     let mut registry = setup::registry(&args)?;
-    let terminal = setup::first_run(&mut args, &mut registry)?;
+    let terminal = setup::first_run(&mut args, &mut registry).await?;
     // Only the serving owner opens its configuration. Attaching clients forward
     // initial inputs instead of reading and constructing them a second time.
     if let Some(directory) = service {

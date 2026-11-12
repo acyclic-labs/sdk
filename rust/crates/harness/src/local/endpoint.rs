@@ -113,6 +113,13 @@ impl Connection {
     fn command_failure(&self, command: &AgentCommand, error: AgentExchangeError) -> Error {
         if error.code() == "unavailable" {
             self.stream_failure(error)
+        } else if matches!(
+            error,
+            AgentExchangeError::Control(
+                acyclic_harness_client::AgentControlFailure::Refused { .. }
+            )
+        ) {
+            Error::Refused(format!("{} command: {error}", command.kind()))
         } else {
             exchange(format_args!("{} command: {error}", command.kind()))
         }

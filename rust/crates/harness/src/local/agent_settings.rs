@@ -36,6 +36,32 @@ pub(super) struct Tree<'a> {
 }
 
 impl Tree<'_> {
+    pub(super) async fn model_selection(&self, base: &str) -> Result<String> {
+        let home = self.home(config::AGENT).await?;
+        let layers = [
+            Layer {
+                name: "seed",
+                generation: "",
+                bytes: crate::seed::file(config::AGENT),
+            },
+            Layer {
+                name: "home",
+                generation: home.as_ref().map_or("", |(version, _)| version),
+                bytes: home.as_ref().map(|(_, bytes)| bytes.as_ref()),
+            },
+        ];
+        let (value, _) = config::compose(
+            config::AGENT,
+            &layers,
+            self,
+            serde_json::json!({"model": base}),
+        )
+        .await?;
+        let settings: AgentConfig = serde_json::from_value(value)
+            .map_err(|error| Error::Invalid(format!("{}: {error}", config::AGENT)))?;
+        Ok(settings.model)
+    }
+
     async fn home(&self, path: &str) -> Result<Option<(String, acyclic_stream::OwnedBytes)>> {
         Ok(self
             .volumes
@@ -78,8 +104,9 @@ impl config::Tree for Tree<'_> {
 pub(super) async fn admit(
     tree: &Tree<'_>,
     agent: AgentId,
-    started: (Model, Arc<dyn ModelProvider>),
+    started: Option<(Model, Arc<dyn ModelProvider>)>,
     resolve: Resolve<'_>,
+    base_model: Option<&str>,
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<Settings> {
     let seed = Layer {
@@ -89,7 +116,7 @@ pub(super) async fn admit(
     };
     let home = tree.home(config::AGENT).await?;
     let Some((version, bytes)) = home else {
-        return settle(&[seed], tree, started, resolve)
+        return settle(&[seed], tree, started, resolve, base_model)
             .await
             .map_err(Refused::seed);
     };
@@ -105,13 +132,30 @@ pub(super) async fn admit(
         tree.volumes,
         agent,
         (config::AGENT, &version),
-        settle(&layers, tree, started, resolve).await,
+        settle(&layers, tree, started, resolve, base_model).await,
         clock,
     )
     .await
 }
 
 impl<'a> Tree<'a> {
+    pub(super) fn pinned(
+        volumes: &'a Volumes<'a>,
+        generation: crate::resources::GenerationRef,
+    ) -> Result<Self> {
+        let read = ContentGrant::verify_directory_read(
+            volumes.verifier,
+            volumes.signed,
+            volumes.home,
+            "",
+            &mut None,
+        )?;
+        Ok(Self {
+            volumes,
+            read,
+            generation,
+        })
+    }
     pub(super) async fn new(volumes: &'a Volumes<'a>) -> Result<Self> {
         let read = ContentGrant::verify_directory_read(
             volumes.verifier,
@@ -311,17 +355,23 @@ impl From<Error> for Refused {
 async fn settle(
     layers: &[Layer<'_>],
     tree: &dyn config::Tree,
-    started: (Model, Arc<dyn ModelProvider>),
+    started: Option<(Model, Arc<dyn ModelProvider>)>,
     resolve: Resolve<'_>,
+    base_model: Option<&str>,
 ) -> std::result::Result<Settings, Refused> {
-    let selection = format!("{}/{}", started.0.provider, started.0.name);
+    let selection = started
+        .as_ref()
+        .map(|(model, _)| format!("{}/{}", model.provider, model.name));
+    let base = base_model.or(selection.as_deref()).ok_or_else(|| {
+        Refused::Operation(Error::Invalid("startup model selection is absent".into()))
+    })?;
     let invalid =
         |error: String| Refused::Settings(AdmissionStatus::Invalid, Error::Invalid(error));
     let (value, _) = config::compose_result(
         config::AGENT,
         layers,
         tree,
-        serde_json::json!({ "model": selection }),
+        serde_json::json!({ "model": base }),
     )
     .await?
     .map_err(Refused::evaluated)?;
@@ -351,14 +401,14 @@ async fn settle(
             "replay is chosen when the session starts, not here",
         ));
     }
-    let unchanged_model = settings.model == selection;
-    let model = if unchanged_model {
-        started
-    } else {
-        let resolve = resolve.ok_or_else(|| {
-            rejected("this session's model is bound by its host and cannot be changed here")
-        })?;
-        resolve(&settings.model).map_err(Refused::selection)?
+    let model = match started.filter(|_| selection.as_deref() == Some(settings.model.as_str())) {
+        Some(started) => started,
+        None => {
+            let resolve = resolve.ok_or_else(|| {
+                rejected("this session's model is bound by its host and cannot be changed here")
+            })?;
+            resolve(&settings.model).map_err(Refused::selection)?
+        }
     };
     if let Some(sampling) = settings.sampling {
         crate::model::ModelSampling::admit(
@@ -434,7 +484,7 @@ mod tests {
                 prefix,
                 &mut None,
             )?;
-            let result = settle(&layers, &tree, harness.agent()?.clone(), None).await;
+            let result = settle(&layers, &tree, Some(harness.agent()?.clone()), None, None).await;
             match (prefix, result) {
                 ("", Ok(settings)) => assert_eq!(
                     settings.sampling.and_then(|sampling| sampling.temperature),
@@ -516,7 +566,8 @@ mod tests {
         let settings = admit(
             &original,
             harness.root,
-            harness.agent()?.clone(),
+            Some(harness.agent()?.clone()),
+            None,
             None,
             clock,
         )
@@ -536,7 +587,8 @@ mod tests {
         let settings = admit(
             &current,
             harness.root,
-            harness.agent()?.clone(),
+            Some(harness.agent()?.clone()),
+            None,
             None,
             clock,
         )

@@ -22,10 +22,27 @@ pub(super) struct Session {
     price_source: Option<FileDescriptor>,
     open_view: Option<String>,
     pub tree: Option<bool>,
+    pub feedback: Vec<String>,
+    pub feedback_page: QueryPage<()>,
+    pending_feedback: Option<PendingFeedback>,
+}
+
+struct PendingFeedback {
+    report: String,
+    operation: OperationId,
+    change: ClientFileChange,
 }
 
 const COMMANDS: &str = "commands/commands.json";
 const PRICES: &str = "prices.jsonl";
+const FEEDBACK: &str = "feedback.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeedbackFile {
+    version: u32,
+    reports: Vec<String>,
+}
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,7 +52,7 @@ struct CommandFile {
 }
 
 fn paths() -> Vec<String> {
-    ["layout.json", COMMANDS, PRICES]
+    ["layout.json", COMMANDS, PRICES, FEEDBACK]
         .into_iter()
         .map(str::to_owned)
         .chain(
@@ -59,12 +76,35 @@ impl Session {
             price_source: None,
             open_view: None,
             tree: None,
+            feedback: Vec::new(),
+            feedback_page: QueryPage::new(acyclic_harness::tui::Feedback::lines(&[]), None, false),
+            pending_feedback: None,
         };
         session.project()?;
         Ok(session)
     }
 
     pub fn project(&mut self) -> Result<(), Failure> {
+        let feedback = match self.snapshot.files.get(FEEDBACK).and_then(Option::as_ref) {
+            Some(file) => {
+                let document: FeedbackFile = serde_json::from_str(&file.text)?;
+                if document.version != 1 {
+                    return Err(
+                        format!("unsupported {FEEDBACK} version {}", document.version).into(),
+                    );
+                }
+                document.reports
+            }
+            None => Vec::new(),
+        };
+        if feedback != self.feedback {
+            self.feedback_page = QueryPage::new(
+                acyclic_harness::tui::Feedback::lines(&feedback),
+                None,
+                false,
+            );
+            self.feedback = feedback;
+        }
         let source = self.snapshot.files.get(PRICES).and_then(Option::as_ref);
         if source.map(|file| file.file.descriptor()) != self.price_source.as_ref() {
             let prices = match source {
@@ -139,6 +179,85 @@ impl Session {
 
     pub fn open_view(&self) -> Option<&str> {
         self.open_view.as_deref()
+    }
+
+    pub async fn save_feedback(
+        &mut self,
+        conversation: &Conversation,
+        report: &str,
+    ) -> Result<(), Failure> {
+        if self.pending_feedback.is_none() {
+            self.prepare_feedback(conversation, report).await?;
+        }
+        let pending = self
+            .pending_feedback
+            .as_ref()
+            .ok_or("feedback request absent")?;
+        if pending.report != report {
+            return Err(
+                "Retry the unchanged feedback submission before starting another report.".into(),
+            );
+        }
+        let published = conversation
+            .publish_client_files(
+                conversation.client_session(),
+                pending.operation,
+                vec![pending.change.clone()],
+            )
+            .await;
+        if let Err(error) = published {
+            if matches!(error, acyclic_harness::Error::Refused(_)) {
+                self.pending_feedback = None;
+            }
+            return Err(error.into());
+        }
+        let snapshot = conversation
+            .client_files(conversation.client_session(), paths(), None)
+            .await?;
+        self.snapshot = snapshot;
+        self.project()?;
+        self.pending_feedback = None;
+        Ok(())
+    }
+
+    pub fn feedback_draft(&self) -> Option<&str> {
+        self.pending_feedback
+            .as_ref()
+            .map(|pending| pending.report.as_str())
+    }
+
+    async fn prepare_feedback(
+        &mut self,
+        conversation: &Conversation,
+        report: &str,
+    ) -> Result<(), Failure> {
+        // Preparation does not advance the displayed snapshot. A failed edit
+        // leaves the original file follow responsible for other UI changes.
+        let snapshot = conversation
+            .client_files(conversation.client_session(), vec![FEEDBACK.into()], None)
+            .await?;
+        let source = snapshot.files.get(FEEDBACK).and_then(Option::as_ref);
+        let mut document = match source {
+            Some(file) => serde_json::from_str::<FeedbackFile>(&file.text)?,
+            None => FeedbackFile {
+                version: 1,
+                reports: Vec::new(),
+            },
+        };
+        if document.version != 1 {
+            return Err(format!("unsupported {FEEDBACK} version {}", document.version).into());
+        }
+        document.reports.push(report.to_owned());
+        self.pending_feedback = Some(PendingFeedback {
+            report: report.to_owned(),
+            operation: OperationId::new(),
+            change: ClientFileChange {
+                path: FEEDBACK.into(),
+                expected: source.map(|file| file.file.clone()),
+                text: serde_json::to_string(&document)?,
+            },
+        });
+        Ok(())
     }
 
     /// Retain an explicitly selected original price file in this session's
@@ -366,6 +485,186 @@ mod tests {
         test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
     };
     use futures::TryFutureExt as _;
+
+    #[tokio::test]
+    async fn feedback_survives_reopen_and_follows_other_writers() -> Result<(), Failure> {
+        let directory = tempfile::tempdir()?;
+        let harness = Arc::new(
+            LocalHarness::open(local_harness_config(
+                directory.path(),
+                (
+                    Model::new("scripted".into(), "test".into(), "1".into())?,
+                    Arc::new(ScriptedModelProvider::new(
+                        std::iter::empty::<ScriptedTurn>(),
+                    )),
+                ),
+            )?)
+            .await?,
+        );
+        let connection = harness.connect().await?;
+        let conversation = Arc::new(Conversation::open(connection.clone()));
+        let mut writer = Session::open(&conversation).await?;
+        let mut reader = Session::open(&conversation).await?;
+        let mut stale = Session::open(&conversation).await?;
+        let mut conflicting = Session::open(&conversation).await?;
+        let displayed = conflicting.layout_digest();
+        let original_generation = conflicting.snapshot.generation.clone();
+        conflicting
+            .prepare_feedback(&conversation, "An edit lost its source.")
+            .await?;
+        writer
+            .prepare_feedback(&conversation, "A command returned no explanation.")
+            .await?;
+        let pending = writer
+            .pending_feedback
+            .as_ref()
+            .ok_or("pending feedback absent")?;
+        let (snapshot, ()) = futures::try_join!(
+            follow(
+                Arc::clone(&conversation),
+                reader.snapshot.generation.clone()
+            )
+            .map_err(Failure::from),
+            conversation
+                .publish_client_files(
+                    conversation.client_session(),
+                    pending.operation,
+                    vec![pending.change.clone()]
+                )
+                .map_ok(|_| ())
+                .map_err(Failure::from),
+        )?;
+        // The publication committed, but its caller has not consumed a result
+        // or refreshed its view. Resend the exact retained request.
+        writer
+            .save_feedback(&conversation, "A command returned no explanation.")
+            .await?;
+        reader.snapshot = snapshot;
+        reader.project()?;
+        assert_eq!(reader.feedback, ["A command returned no explanation."]);
+        let file = reader.snapshot.files[FEEDBACK]
+            .as_ref()
+            .ok_or("feedback absent")?;
+        assert_eq!(
+            file.file.volume().class(),
+            acyclic_harness::conversation::VolumeClass::SessionShared
+        );
+        assert_eq!(serde_json::from_str::<FeedbackFile>(&file.text)?.version, 1);
+        reader
+            .select(&conversation, Some(&CommandQuery::Diff))
+            .await?;
+        assert!(
+            conflicting
+                .save_feedback(&conversation, "An edit lost its source.")
+                .await
+                .is_err()
+        );
+        assert_eq!(conflicting.snapshot.generation, original_generation);
+        assert_eq!(conflicting.layout_digest(), displayed);
+        conflicting.snapshot = follow(Arc::clone(&conversation), original_generation).await?;
+        conflicting.project()?;
+        let mut previous = displayed;
+        let mut overlay = None;
+        let mut queries = QueryController::<query::Source, query::Context>::default();
+        let mut future = std::pin::pin!(None::<std::future::Ready<()>>);
+        assert!(
+            apply_session_layout(
+                &conflicting,
+                &mut previous,
+                &mut overlay,
+                &mut queries,
+                future.as_mut(),
+                &PromptInput::default()
+            )
+            .is_some()
+        );
+        assert!(matches!(queries.source(), Some(query::Source::Diff(None))));
+        conflicting
+            .save_feedback(&conversation, "A new report after a rejected edit.")
+            .await?;
+        // A second writer starts from an older view but preserves the first report.
+        stale
+            .save_feedback(
+                &conversation,
+                "The result was difficult to read.\nMore detail.",
+            )
+            .await?;
+        drop(writer);
+        drop(reader);
+        drop(stale);
+        drop(conflicting);
+        drop(conversation);
+        let reopened = Conversation::open(connection);
+        let mut session = Session::open(&reopened).await?;
+        assert_eq!(
+            session.feedback,
+            [
+                "A command returned no explanation.",
+                "A new report after a rejected edit.",
+                "The result was difficult to read.\nMore detail."
+            ]
+        );
+        use acyclic_harness::tui::ratatui::{buffer::Buffer, widgets::Widget};
+        let area = Rect::new(0, 0, 80, 18);
+        let mut buffer = Buffer::empty(area);
+        session.feedback_page.wrap(area.width - 2);
+        acyclic_harness::tui::Feedback(
+            &PromptInput::default().theme,
+            &session.feedback_page.lines,
+            0,
+        )
+        .render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("A command returned no explanation."));
+        assert!(rendered.contains("The result was difficult to read."));
+        // One long report spans multiple pages; the shared scroll primitive
+        // reaches its final wrapped rows and the older report afterward.
+        session
+            .save_feedback(
+                &reopened,
+                &format!("{}\nlast detail", "long report detail ".repeat(100)),
+            )
+            .await?;
+        session.feedback_page.wrap(38);
+        let mut top = 0;
+        while !session.feedback_page.page_boundary(&mut top, -8, 8) {}
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 10));
+        acyclic_harness::tui::Feedback(
+            &PromptInput::default().theme,
+            &session.feedback_page.lines,
+            top,
+        )
+        .render(buffer.area, &mut buffer);
+        let bottom = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(bottom.contains("A command returned no explanation."));
+        let detail = session
+            .feedback_page
+            .lines
+            .iter()
+            .position(|line| line.to_string() == "last detail")
+            .ok_or("wrapped report tail absent")?;
+        acyclic_harness::tui::Feedback(
+            &PromptInput::default().theme,
+            &session.feedback_page.lines,
+            detail,
+        )
+        .render(buffer.area, &mut buffer);
+        let detail = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(detail.contains("last detail"));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn session_files_resume_reopen_and_version_refusal() -> Result<(), Failure> {

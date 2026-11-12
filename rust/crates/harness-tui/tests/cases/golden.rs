@@ -202,6 +202,7 @@ fn frame_config(
         theme.token(acyclic_harness_tui::config::Token::Attention),
     )];
     let (rows, links, code) = transcript.presentation();
+    let feedback_rows = acyclic_harness_tui::Feedback::lines(&[]);
     let screen = Screen {
         header: Line::raw("○ GraphCoder · project · main"),
         transcript: rows,
@@ -215,6 +216,7 @@ fn frame_config(
         plans: if view == "panels" { &plans } else { &[] },
         reasoning: if view == "reasoning" { &reasoning } else { &[] },
         feedback: view == "feedback",
+        feedback_rows: &feedback_rows,
         notifications: if view == "notification" {
             &notifications
         } else {

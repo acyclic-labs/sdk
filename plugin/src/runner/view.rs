@@ -303,14 +303,13 @@ struct View {
     /// answer goes to it. A prompt opens only from a submission no prompt
     /// took, so a second never opens over the first.
     prompt: Option<Prompt>,
+    feedback_scroll: usize,
     /// A command's result or refusal, until the next prompt.
     notice: Option<String>,
     /// Original waiting-status identity of the action displayed by the pager.
     approval_status: Option<u64>,
     /// Exact immutable action whose final rows were painted.
     approval_shown: Option<acyclic_harness_client::PendingApproval>,
-    /// Reports saved in this session.
-    reports: Vec<String>,
 }
 
 impl View {
@@ -1186,6 +1185,18 @@ async fn run_current(
                 ..Screen::default()
             };
             let area = Rect::from((Position::ORIGIN, size));
+            if feedback {
+                let viewport = screen.areas(area, &input).transcript;
+                ui.feedback_page.wrap(viewport.width.saturating_sub(2));
+                view.feedback_scroll = view.feedback_scroll.min(
+                    ui.feedback_page
+                        .lines
+                        .len()
+                        .saturating_sub(usize::from(viewport.height.saturating_sub(2))),
+                );
+                screen.feedback_rows = &ui.feedback_page.lines;
+                screen.feedback_scroll = view.feedback_scroll;
+            }
             let scroll = screen.tail_scroll(area, &input).saturating_sub(back);
             let mut areas = screen.areas(area, &input);
             let panel = overlay.is_some() || queries.source().is_some();
@@ -1495,11 +1506,21 @@ async fn run_current(
                                 // it takes this answer, never the approval.
                                 match view.prompt.take() {
                                     Some(Prompt::Feedback) => {
-                                        view.reports.push(text);
-                                        view.notice = Some(format!(
-                                            "Feedback saved locally ({} this session)",
-                                            view.reports.len()
-                                        ));
+                                        let saved = ui.save_feedback(&conversation, &text).await;
+                                        files_changed = true;
+                                        match saved {
+                                            Ok(()) => {
+                                                view.notice = Some(format!(
+                                                    "Feedback saved to feedback.json ({} this session)",
+                                                    ui.feedback.len()
+                                                ));
+                                            }
+                                            Err(error) => {
+                                                view.notice = Some(format!("Feedback save not confirmed: {error}"));
+                                                view.prompt = Some(Prompt::Feedback);
+                                                input.editor = Editor::new(ui.feedback_draft().unwrap_or(&text));
+                                            }
+                                        }
                                         continue;
                                     }
                                     Some(Prompt::StopOrDetach) => {
@@ -1676,6 +1697,7 @@ async fn run_current(
                                     }
                                     Ok(Some(CommandResolution::Select { query: CommandQuery::Feedback })) => {
                                         view.prompt = Some(Prompt::Feedback);
+                                        view.feedback_scroll = 0;
                                         continue;
                                     }
                                     Ok(Some(CommandResolution::Confirm { request })) => {
@@ -1769,6 +1791,9 @@ async fn run_current(
                             }
                             InputEffect::Quit if matches!(view.prompt, Some(Prompt::StopOrDetach)) => return view.exit().map(|()| Next::Exit),
                             InputEffect::Quit => { view.prompt = Some(Prompt::StopOrDetach); }
+                            InputEffect::Scroll(rows) if matches!(view.prompt, Some(Prompt::Feedback)) => {
+                                ui.feedback_page.page_boundary(&mut view.feedback_scroll, rows, areas.transcript.height.saturating_sub(2));
+                            }
                             InputEffect::Scroll(rows) if queries.source().is_some() && credit != 0 => {
                                 queries.scroll(&mut overlay_top, rows, areas.overlay_rows(0),
                                     query_future.as_mut(), query::Source::newest);
