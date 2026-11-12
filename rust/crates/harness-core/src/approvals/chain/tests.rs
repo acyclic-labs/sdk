@@ -13,7 +13,7 @@ impl ApprovalFiles for Files {
     fn read<'a>(
         &'a self,
         path: &'a str,
-        bound: u64,
+        bound: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<Option<Vec<u8>>>> {
         Box::pin(async move {
             self.0
@@ -31,7 +31,7 @@ impl ApprovalFiles for Files {
         &'a self,
         path: &'a str,
         bytes: Vec<u8>,
-        bound: u64,
+        bound: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<ApprovalCreate>> {
         Box::pin(async move {
             super::super::files::check_bound(bytes.len(), bound)?;
@@ -115,7 +115,7 @@ async fn agent_reviews_escalate_in_order_and_external_files_never_grant_authorit
             &files,
             &request.review_path(&expected.principal),
             serde_json::to_vec(&expected).unwrap(),
-            4096,
+            Some(4096),
         )
         .await?;
     }
@@ -241,7 +241,7 @@ async fn dispatch_creation_has_one_winner_and_never_replaces_conflicting_bytes()
             &files,
             "approvals/request/reviews/model.json",
             b"dispatch".to_vec(),
-            4096,
+            Some(4096),
         )
     };
     let (first, second) = futures::join!(create(), create());
@@ -251,14 +251,14 @@ async fn dispatch_creation_has_one_winner_and_never_replaces_conflicting_bytes()
             &files,
             "approvals/request/reviews/model.json",
             b"changed".to_vec(),
-            4096
+            Some(4096)
         )
         .await
         .is_err()
     );
     assert_eq!(
         files
-            .read("approvals/request/reviews/model.json", 4096)
+            .read("approvals/request/reviews/model.json", Some(4096))
             .await?,
         Some(b"dispatch".to_vec())
     );

@@ -32,7 +32,7 @@ async fn waiting_reads_cover_media_and_effective_paths_and_can_be_dropped() -> R
                         "tool:call:read".into(),
                     ]),
                     Limits {
-                        file_bytes: 4096,
+                        file_bytes: Some(4096),
                         render_bytes: Some(4096),
                         ..Limits::default()
                     },
@@ -174,7 +174,7 @@ impl ContentResidencyVerifier for AdvanceAfterSelection {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a GenerationRef>,
-        maximum: u64,
+        maximum: Option<u64>,
         access: ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<
@@ -237,7 +237,7 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                 });
                 content.reader = reader.clone();
                 let limits = Limits {
-                    file_bytes: 4096,
+                    file_bytes: Some(4096),
                     render_bytes: Some(4096),
                     ..Limits::default()
                 };

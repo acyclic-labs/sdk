@@ -106,7 +106,7 @@ impl ContextManifest {
             let message = skill
                 .invoke_observed(
                     reader,
-                    remaining.map_or(limits.file_bytes, |maximum| limits.file_bytes.min(maximum)),
+                    remaining.into_iter().chain(limits.file_bytes).min(),
                     io,
                 )
                 .await?;
@@ -137,7 +137,15 @@ impl ContextManifest {
         let metadata = BTreeMap::from([(key, reference)]);
         for source in &manifest.sources {
             reader
-                .verify(source, limits.file_bytes, content_io)?
+                .verify(
+                    source,
+                    limits
+                        .file_bytes
+                        .map_or(source.descriptor().byte_length(), |maximum| {
+                            maximum.min(source.descriptor().byte_length())
+                        }),
+                    content_io,
+                )?
                 .await?;
         }
         let context = Context {

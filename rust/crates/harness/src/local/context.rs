@@ -162,7 +162,7 @@ impl LocalHarness {
                         "inputs",
                         &path,
                         None,
-                        crate::conversation::MAX_EXACT_JS_INTEGER,
+                        None,
                         crate::conversation::ContentAccess::default(),
                     )?
                     .await?;
@@ -323,7 +323,12 @@ impl LocalHarness {
     ) -> Result<ContextManifest> {
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
-        let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
+        let maximum = self
+            .limits
+            .file_bytes
+            .map_or(limits.instruction_bytes, |maximum| {
+                maximum.min(limits.instruction_bytes)
+            });
         let mut work = crate::context::DiscoveryWork {
             limits: ContextDiscoveryLimits {
                 instruction_bytes: maximum,
@@ -502,8 +507,7 @@ impl LocalHarness {
         }
         // The manifest's own encoding bounds it: it lists files already
         // admitted under the content bounds, so it takes no content bound.
-        let publisher =
-            self.input_publisher_with_limit(crate::conversation::MAX_EXACT_JS_INTEGER)?;
+        let publisher = self.input_publisher_with_limit(None)?;
         let operation = publication_operation(b"acyclic.local.mention-manifest/v1\0", key);
         if let Some(manifest) = self.observe_manifest(operation, &*publisher).await? {
             return Ok(Some(manifest));
@@ -552,7 +556,7 @@ impl LocalHarness {
             .observe_staged_once(
                 operation,
                 None,
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                None,
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;

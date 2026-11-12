@@ -20,7 +20,7 @@ fn refusals_cannot_hide_fatal_errors_or_bypass_original_work_and_output_limits()
     ] {
         let code = error.code();
         assert_eq!(
-            rejection(error, 4096, None)
+            rejection(error, Some(4096), None)
                 .expect_err("fatal failure became a tool result")
                 .code(),
             code
@@ -30,7 +30,7 @@ fn refusals_cannot_hide_fatal_errors_or_bypass_original_work_and_output_limits()
         code: ErrorCode::Invalid,
         reason: "fetch HTTP request rejected",
     };
-    assert!(rejection(invalid(), 1, None).is_err());
+    assert!(rejection(invalid(), Some(1), None).is_err());
     for cancelled in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
         let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
@@ -43,8 +43,8 @@ fn refusals_cannot_hide_fatal_errors_or_bypass_original_work_and_output_limits()
         if cancelled {
             cancellation.cancel();
         }
-        let error =
-            rejection(invalid(), 4096, Some(&work)).expect_err("refusal bypassed original work");
+        let error = rejection(invalid(), Some(4096), Some(&work))
+            .expect_err("refusal bypassed original work");
         assert!(error.is_native_failure(), "{error:?}");
         if cancelled {
             assert_eq!(error.code(), ErrorCode::Cancelled);

@@ -44,7 +44,7 @@ async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> 
         MEMORY_VOLUME_KEY.set(Some(KEY));
         let filesystem = Fs::memory();
         let changes = filesystem.stream_provider();
-        new_memory_content(agent, 4096, filesystem, changes)
+        new_memory_content(agent, filesystem, changes)
             .await
             .unwrap()
     };

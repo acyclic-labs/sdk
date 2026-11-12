@@ -114,7 +114,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
         fn read<'a>(
             &'a self,
             path: &'a str,
-            maximum: u64,
+            maximum: Option<u64>,
         ) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
             Box::pin(async move {
                 if path.ends_with("/request.json") {
@@ -133,7 +133,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
             &'a self,
             path: &'a str,
             bytes: Vec<u8>,
-            maximum: u64,
+            maximum: Option<u64>,
         ) -> BoxFuture<'a, Result<crate::approvals::ApprovalCreate>> {
             self.files.create(path, bytes, maximum)
         }
@@ -160,7 +160,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
                 .expect("approval actor namespace"),
             AgentPath::root(&agent),
             (OperationId::new(), 0),
-            65_536,
+            Some(65_536),
         ),
     );
     let reads = Arc::new(Reads {
@@ -177,7 +177,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
         None,
         Default::default(),
         Limits {
-            file_bytes: 65_536,
+            file_bytes: Some(65_536),
             ..Limits::default()
         },
     )?;
@@ -226,7 +226,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
         &storage.volume,
         storage.internal_files.clone(),
         crate::preset::Preset::graphcoder().approval_policy,
-        65_536,
+        Some(65_536),
     )?;
     reopened.verify(id, *operation_id, *action_digest).await?;
     assert!(!owner.yielded());
@@ -465,7 +465,7 @@ async fn an_exact_human_rule_replays_and_keeps_agent_policy_and_action_scope() -
             None,
             Default::default(),
             Limits {
-                file_bytes: 65_536,
+                file_bytes: Some(65_536),
                 ..Limits::default()
             },
         )?;
@@ -515,7 +515,7 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
         fn read<'a>(
             &'a self,
             path: &'a str,
-            maximum: u64,
+            maximum: Option<u64>,
         ) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
             self.files.read(path, maximum)
         }
@@ -523,7 +523,7 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
             &'a self,
             path: &'a str,
             bytes: Vec<u8>,
-            maximum: u64,
+            maximum: Option<u64>,
         ) -> BoxFuture<'a, Result<ApprovalCreate>> {
             Box::pin(async move {
                 if path.starts_with("approvals/rules/") && self.fail.swap(false, Ordering::AcqRel) {
@@ -545,7 +545,7 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
         None,
         Default::default(),
         Limits {
-            file_bytes: 65_536,
+            file_bytes: Some(65_536),
             ..Limits::default()
         },
     )?;
@@ -572,7 +572,7 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
     );
     let bytes = storage
         .internal_files
-        .read(&path, 65_536)
+        .read(&path, Some(65_536))
         .await?
         .ok_or_else(|| Error::NotFound("original rule decision".into()))?;
     assert_eq!(

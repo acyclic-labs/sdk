@@ -93,7 +93,7 @@ proptest! {
             else { record.metadata["marker"] = marker; }
         }
         input::check(&serde_json::to_vec(&record).unwrap());
-        let limits = Limits {file_bytes, render_bytes:Some(render_bytes), ..Limits::default()};
+        let limits = Limits {file_bytes:Some(file_bytes), render_bytes:Some(render_bytes), ..Limits::default()};
         let admitted = record.invocation.validate_recorded(&record.metadata, limits, None).is_ok();
         if reserved.is_some() { prop_assert!(!admitted); }
         let work = acyclic_fs::NativeMaterializationWork::new(

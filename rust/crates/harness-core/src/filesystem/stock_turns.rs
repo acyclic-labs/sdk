@@ -329,10 +329,7 @@ impl TurnExecutors for StockExecutors {
             let (model, provider) = self.selected(agent)?;
             let native = self.native.get(&model, || provider.native_tools(&model))?;
             let provider = provider
-                .bind_content(
-                    authority.content.reader.clone(),
-                    Some(self.limits.file_bytes),
-                )
+                .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
                 .unwrap_or(provider);
             let directive = match (self.templates, &agent.profile) {
                 (true, Some(creation)) => Some(

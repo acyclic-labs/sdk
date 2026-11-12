@@ -54,7 +54,7 @@ async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result
                 name.as_bytes(),
                 "text/plain",
                 "file",
-                1024,
+                Some(1024),
                 &crate::IdempotencyKey::new(name)?,
                 None,
                 Default::default(),
@@ -255,7 +255,7 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
         admission: TurnAdmission::LocalRoot,
         agent: agent.clone(),
         volumes: volumes.clone(),
-        maximum_bytes: 64 * 1024,
+        maximum_bytes: Some(64 * 1024),
     };
     let first = agent
         .child(&AgentId::from_bytes([203; 16]))
@@ -433,7 +433,7 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
             TurnAdmission::LocalRoot,
             Arc::new(NoDispatch),
             TurnLimits {
-                maximum_bytes: 64 * 1024,
+                maximum_bytes: Some(64 * 1024),
                 history_turns: 8,
             },
             Default::default(),

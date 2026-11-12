@@ -122,7 +122,7 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    stock.limits.file_bytes = 11;
+    stock.limits.file_bytes = Some(11);
     let input = TurnInput {
         max_steps: None,
         operation_id: OperationId::new(),
@@ -790,7 +790,7 @@ async fn usage_times_keep_dispatch_boundaries_across_wall_jumps_and_replay() -> 
 #[test]
 fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
     let limits = Limits {
-        file_bytes: 4,
+        file_bytes: Some(4),
         ..Limits::default()
     };
     let mut admission = ModelEventAdmission::default();
@@ -827,7 +827,7 @@ fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
 #[test]
 fn completed_message_is_bounded_before_admission() -> Result<()> {
     let limits = Limits {
-        file_bytes: 4,
+        file_bytes: Some(4),
         ..Limits::default()
     };
     for text in ["", "λ λ"] {

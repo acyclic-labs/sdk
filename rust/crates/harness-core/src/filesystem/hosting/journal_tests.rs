@@ -51,7 +51,7 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
         Turns {
             executors: Arc::new(NoTurns),
             limits: TurnLimits {
-                maximum_bytes: 65_536,
+                maximum_bytes: Some(65_536),
                 history_turns: 8,
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,

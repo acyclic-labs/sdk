@@ -28,7 +28,7 @@ async fn published(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
             body,
             "text/plain",
             "file.txt",
-            u64::MAX,
+            Some(u64::MAX),
             &IdempotencyKey::new("publish")?,
             None,
             crate::conversation::ContentAccess::default(),

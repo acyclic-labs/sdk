@@ -66,7 +66,7 @@ async fn terminal(harness: &LocalHarness, directory: &str) -> Result<serde_json:
                 &grant,
                 &format!("{directory}/result.json"),
                 None,
-                1 << 20,
+                Some(1 << 20),
                 Default::default(),
             )
             .await?

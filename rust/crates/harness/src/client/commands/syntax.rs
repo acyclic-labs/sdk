@@ -2,8 +2,14 @@ use crate::{Error, Result};
 
 // Splitting returns borrowed UTF-8 slices. Composer bounds apply equally to
 // chat, known commands and unknown slash commands, before any provider I/O.
-pub(super) fn split(input: &str, maximum_bytes: u64) -> Result<Option<(&str, &str)>> {
-    if maximum_bytes == 0 || input.len() as u64 > maximum_bytes {
+pub(super) fn split(
+    input: &str,
+    maximum_bytes: impl Into<Option<u64>>,
+) -> Result<Option<(&str, &str)>> {
+    if maximum_bytes
+        .into()
+        .is_some_and(|maximum| maximum == 0 || input.len() as u64 > maximum)
+    {
         return Err(Error::Invalid("command input exceeds byte bound".into()));
     }
     let Some(command) = input.trim_start().strip_prefix('/') else {

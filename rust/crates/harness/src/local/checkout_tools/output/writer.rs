@@ -22,9 +22,14 @@ impl Writer {
     }
 
     pub(super) async fn open(context: &ToolContext, request: Vec<u8>) -> Result<Self> {
-        let maximum = usize::try_from(context.effective_scope().limits().file_bytes)
-            .unwrap_or(usize::MAX)
-            .min(OUTPUT_BATCH_BYTES);
+        let maximum = context
+            .effective_scope()
+            .limits()
+            .file_bytes
+            .and_then(|maximum| usize::try_from(maximum).ok())
+            .map_or(OUTPUT_BATCH_BYTES, |maximum| {
+                maximum.min(OUTPUT_BATCH_BYTES)
+            });
         if maximum == 0 {
             return Err(Error::Storage("tool output has no file budget".into()));
         }

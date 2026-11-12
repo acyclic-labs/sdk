@@ -106,8 +106,12 @@ impl FileTool {
             .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
                 maximum.min(crate::tool::output::VIEW_BYTES)
             })
-            .saturating_add(3)
-            .min(context.effective_scope().limits().file_bytes);
+            .saturating_add(3);
+        let window = context
+            .effective_scope()
+            .limits()
+            .file_bytes
+            .map_or(window, |maximum| maximum.min(window));
         let window = super::window::Window::first(
             context,
             input,

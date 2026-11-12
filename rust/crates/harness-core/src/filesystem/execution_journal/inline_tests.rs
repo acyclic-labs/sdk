@@ -363,7 +363,7 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
             payload.as_bytes(),
             "text/plain",
             "request.json",
-            u64::MAX,
+            Some(u64::MAX),
             &crate::IdempotencyKey("internal-file:approval-test".into()),
             crate::filesystem::InternalContentClass::Interaction,
             None,

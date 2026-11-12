@@ -25,7 +25,7 @@ async fn racing_read(protected: bool, range: bool, revoke: bool) -> Result<(), B
             contents.as_bytes(),
             "text/plain",
             "blob",
-            65536,
+            Some(65536),
             &IdempotencyKey::new("coarse-blob")?,
             None,
             acyclic_harness::conversation::ContentAccess::default(),

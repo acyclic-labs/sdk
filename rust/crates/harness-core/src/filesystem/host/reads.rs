@@ -11,7 +11,7 @@ struct SkillRead<'a> {
     grant: &'a ContentGrant,
     path: &'a str,
     source_generation: &'a GenerationRef,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     access: crate::conversation::ContentAccess<'a, 'a>,
 }
 
@@ -253,7 +253,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         access: crate::conversation::ContentAccess<'_, '_>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
@@ -264,7 +264,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 grant,
                 path,
                 expected_generation,
-                maximum_bytes,
+                maximum_bytes.into(),
                 crate::conversation::ContentAccess { ceiling, io },
             )
             .await?
@@ -288,7 +288,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'_, '_>,
     ) -> Result<
         Option<(
@@ -370,7 +370,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let requested = (requested, requested_hold);
-        let bytes = read_generation_if_present(&generation, &requested.0, Some(maximum_bytes), io)
+        let bytes = read_generation_if_present(&generation, &requested.0, maximum_bytes, io)
             .await
             .map_err(path_read_refusal)?;
         let selected = if let Some(bytes) = bytes {
