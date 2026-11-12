@@ -8,6 +8,12 @@ use std::{
     sync::{Arc, Weak},
 };
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static PUBLICATION_CANDIDATES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static FILTER_EVALUATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// One shared publication index per stream, with one registration per follow.
 #[derive(Default)]
 pub(crate) struct FollowIndex {
@@ -21,6 +27,7 @@ struct Entry {
     filter: FollowFilter,
     changed: watch::Sender<u64>,
     notified: u64,
+    examined: Option<(u64, u64)>,
 }
 
 pub(crate) struct FollowInterest {
@@ -62,6 +69,7 @@ impl FollowIndex {
                 filter,
                 changed,
                 notified: tail,
+                examined: None,
             },
         );
         state.next = id;
@@ -94,12 +102,19 @@ impl FollowIndex {
         Self::notify(index, |state, notifications| {
             let entries = &mut state.entries;
             let mut candidate = |id: u64, record: &Record| {
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                PUBLICATION_CANDIDATES.with(|count| count.set(count.get() + 1));
                 if let Some(entry) = entries.get_mut(&id)
                     && entry.notified != tail
-                    && entry.filter.matches(&record.headers)
+                    && entry.examined != Some((tail, record.sequence))
                 {
-                    entry.notified = tail;
-                    notifications.push((entry.changed.clone(), tail));
+                    entry.examined = Some((tail, record.sequence));
+                    #[cfg(all(test, not(target_arch = "wasm32")))]
+                    FILTER_EVALUATIONS.with(|count| count.set(count.get() + 1));
+                    if entry.filter.matches(&record.headers) {
+                        entry.notified = tail;
+                        notifications.push((entry.changed.clone(), tail));
+                    }
                 }
             };
             for record in records {
@@ -117,6 +132,8 @@ impl FollowIndex {
                         }
                     }
                 }
+            }
+            if let Some(record) = records.first() {
                 for &id in &state.all {
                     candidate(id, record);
                 }
@@ -380,5 +397,194 @@ mod tests {
             tree = Node::remove(tree, &(Bytes::copy_from_slice(&id.to_be_bytes()), id, 0));
         }
         assert!(tree.is_none());
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod batch_scaling {
+    use super::PUBLICATION_CANDIDATES;
+    use crate::{
+        AppendRequest, FollowRequest, IdempotencyKey, MemoryStream, StreamPath,
+        StreamProviderExt as _,
+    };
+    use acyclic_test_support::scale::{Bound, assert_scales};
+    use futures::{StreamExt as _, TryStreamExt as _};
+
+    #[derive(Default)]
+    struct WakeCount(std::sync::atomic::AtomicUsize);
+
+    impl std::task::Wake for WakeCount {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    fn park(follow: &mut crate::FollowStream) -> std::sync::Arc<WakeCount> {
+        let wakes = std::sync::Arc::new(WakeCount::default());
+        let waker = std::task::Waker::from(wakes.clone());
+        let mut context = std::task::Context::from_waker(&waker);
+        {
+            let mut waiting = std::pin::pin!(tokio::task::unconstrained(follow.next()));
+            assert!(std::future::Future::poll(waiting.as_mut(), &mut context).is_pending());
+        }
+        assert_eq!(wakes.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+        wakes
+    }
+    #[tokio::test]
+    async fn unfiltered_follow_publication_visits_subscribers_once_per_batch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut measured = Vec::new();
+        for record_count in [16_u64, 128] {
+            for subscriber_count in [16_u64, 128] {
+                let stream = MemoryStream::default();
+                let path = StreamPath::new("events")?;
+                stream
+                    .append(AppendRequest {
+                        path: path.clone(),
+                        records: vec!["seed".into()],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::new("seed")?,
+                    })
+                    .await?;
+                let mut follows = Vec::new();
+                for _ in 0..subscriber_count {
+                    let mut follow = stream.follow(FollowRequest::new(path.clone(), 1)).await?;
+                    let wakes = park(&mut follow);
+                    follows.push((follow, wakes));
+                }
+                PUBLICATION_CANDIDATES.with(|count| count.set(0));
+                stream
+                    .append(AppendRequest {
+                        path,
+                        records: (0..record_count).map(|_| "event".into()).collect(),
+                        if_tail: Some(1),
+                        idempotency_key: IdempotencyKey::new("batch")?,
+                    })
+                    .await?;
+                let candidates = PUBLICATION_CANDIDATES.with(std::cell::Cell::get);
+                assert_eq!(candidates, subscriber_count);
+                for (follow, wakes) in follows {
+                    assert!(wakes.0.load(std::sync::atomic::Ordering::Relaxed) > 0);
+                    let records: Vec<_> = crate::records_only(follow)
+                        .take(usize::try_from(record_count)?)
+                        .try_collect()
+                        .await?;
+                    assert_eq!(records.len(), usize::try_from(record_count)?);
+                    for (index, record) in records.iter().enumerate() {
+                        assert_eq!(record.sequence, u64::try_from(index)? + 1);
+                        assert_eq!(record.value.as_ref(), b"event");
+                    }
+                }
+                measured.push((record_count, subscriber_count, candidates));
+            }
+        }
+        for pair in measured.chunks_exact(2) {
+            assert_scales(
+                Bound::Linear,
+                (pair[0].1, pair[0].2),
+                (pair[1].1, pair[1].2),
+            );
+        }
+        for index in 0..2 {
+            let small = measured[index];
+            let large = measured[index + 2];
+            assert_scales(Bound::Constant, (small.0, small.2), (large.0, large.2));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejected_filtered_candidates_are_evaluated_once_per_record()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::FILTER_EVALUATIONS;
+        use crate::{AppendRecord, Attribute, FollowFilter, RecordHeaders, wire};
+
+        let mut measured = Vec::new();
+        for key_count in [16_u64, 128] {
+            for subscriber_count in [16_u64, 128] {
+                let stream = MemoryStream::default();
+                let path = StreamPath::new("filtered-events")?;
+                stream
+                    .append(AppendRequest {
+                        path: path.clone(),
+                        records: vec!["seed".into()],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::new("seed")?,
+                    })
+                    .await?;
+                let filter = FollowFilter::new(wire::SessionFilter {
+                    keys: vec![],
+                    attributes: vec![],
+                    all_of: vec![wire::SessionFilterClause {
+                        keys: vec![wire::KeyRange {
+                            start: b"a".as_slice().into(),
+                            end: b"z".as_slice().into(),
+                        }],
+                        attributes: vec![wire::AttributeMatch {
+                            name: "owner".into(),
+                            any_of: vec![b"allowed".as_slice().into()],
+                        }],
+                        all_keys: true,
+                        projection_key: None,
+                    }],
+                })?;
+                let mut follows = Vec::new();
+                for _ in 0..subscriber_count {
+                    let mut request = FollowRequest::new(path.clone(), 1);
+                    request.filter = filter.clone();
+                    let mut follow = stream.follow(request).await?;
+                    let wakes = park(&mut follow);
+                    follows.push((follow, wakes));
+                }
+                let mut records = Vec::new();
+                for owner in ["denied", "allowed"] {
+                    let headers = RecordHeaders::new(
+                        (0..key_count)
+                            .map(|index| format!("key-{index:03}").into())
+                            .collect(),
+                        vec![Attribute {
+                            name: "owner".into(),
+                            value: owner.into(),
+                        }],
+                    )?;
+                    records.push(AppendRecord {
+                        value: owner.into(),
+                        headers,
+                    });
+                }
+                FILTER_EVALUATIONS.with(|count| count.set(0));
+                stream
+                    .append(AppendRequest {
+                        path,
+                        records,
+                        if_tail: Some(1),
+                        idempotency_key: IdempotencyKey::new("batch")?,
+                    })
+                    .await?;
+                let evaluations = FILTER_EVALUATIONS.with(std::cell::Cell::get);
+                assert_eq!(evaluations, 2 * subscriber_count);
+                for (follow, wakes) in follows {
+                    assert!(wakes.0.load(std::sync::atomic::Ordering::Relaxed) > 0);
+                    let delivered: Vec<_> =
+                        crate::records_only(follow).take(1).try_collect().await?;
+                    assert_eq!(delivered.len(), 1);
+                    assert_eq!(delivered[0].sequence, 2);
+                    assert_eq!(delivered[0].value.as_ref(), b"allowed");
+                }
+                measured.push((key_count, subscriber_count, evaluations));
+            }
+        }
+        for pair in measured.chunks_exact(2) {
+            assert_scales(
+                Bound::Linear,
+                (pair[0].1, pair[0].2),
+                (pair[1].1, pair[1].2),
+            );
+        }
+        for index in 0..2 {
+            let small = measured[index];
+            let large = measured[index + 2];
+            assert_scales(Bound::Constant, (small.0, small.2), (large.0, large.2));
+        }
+        Ok(())
     }
 }
