@@ -46,7 +46,7 @@ impl CheckoutTools {
         };
         let invocation = native_process::shell::prepare(
             input,
-            &workspace.mounts,
+            claims.mounts(),
             invocation,
             self.clock.now_unix_millis() / 1000,
             admitted,

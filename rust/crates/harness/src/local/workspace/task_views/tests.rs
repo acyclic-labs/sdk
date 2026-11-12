@@ -642,7 +642,9 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
             .ok_or_else(|| Error::NotFound("original binding".into()))?
     ));
     drop(reused);
-    let entered = source.enter(false).await?;
+    let entered = source
+        .enter_with_options(source.options.clone().unwrap())
+        .await?;
     let native = source.native().await;
     assert!(
         native.is_some(),
