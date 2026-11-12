@@ -46,6 +46,10 @@ pub struct Screen<'a> {
     pub overlay_title: &'a str,
     /// The followed layout selects the local feedback input form.
     pub feedback: bool,
+    /// Saved reports projected from the session's original feedback file.
+    pub feedback_rows: &'a [Line<'a>],
+    /// First shown row in the feedback page, independent of the transcript.
+    pub feedback_scroll: usize,
     /// The borrowed rows are an anchored window with further source below it.
     pub hidden_tail: bool,
     /// Source-byte extent of the selected window and full source length. Some
@@ -438,7 +442,10 @@ impl Screen<'_> {
         let thinking = self.thinking_line(input, &areas, transcript_scroll, now_ms);
         areas.animation = thinking.is_some() && !input.editor.settings().reduced_motion;
         if self.feedback {
-            frame.render_widget(crate::Feedback(&input.theme), areas.transcript);
+            frame.render_widget(
+                crate::Feedback(&input.theme, self.feedback_rows, self.feedback_scroll),
+                areas.transcript,
+            );
         } else {
             let count = self.reasoning.len()
                 + self.transcript_len()

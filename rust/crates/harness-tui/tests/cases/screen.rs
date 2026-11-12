@@ -435,9 +435,11 @@ mod display_text;
 #[test]
 fn feedback_owns_the_viewport_while_a_task_is_busy() -> Result<(), Box<dyn std::error::Error>> {
     let transcript = vec![Line::from("retained transcript"); 40];
+    let feedback_rows = acyclic_harness_tui::Feedback::lines(&[]);
     let screen = Screen {
         transcript: &transcript,
         feedback: true,
+        feedback_rows: &feedback_rows,
         ..Screen::default()
     };
     let mut input = PromptInput::default();
