@@ -3,7 +3,106 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
+/// An original publication and its caller-supplied evidence, recovered together.
+/// The evidence aliases the durable record and retains its original allocation.
+/// It is not a workspace file and never appears in a directory or checkout.
+pub struct OperationPublication<A: 'static, O: 'static> {
+    generation: Generation<A, O>,
+    evidence: Option<Bytes>,
+    // Backing drops before this credit. Funded provider bytes retain their
+    // own original owner instead of acquiring a second allocation lease.
+    _allocation: Option<crate::kernel::RetainedAllocation>,
+}
+
+impl<A, O> OperationPublication<A, O> {
+    /// The immutable result of this operation, independent of the current head.
+    pub fn generation(&self) -> &Generation<A, O> {
+        &self.generation
+    }
+
+    /// The exact evidence supplied when this publication was prepared.
+    pub fn evidence(&self) -> Option<&[u8]> {
+        self.evidence.as_deref()
+    }
+
+    /// Releases the record backing while retaining the immutable result.
+    pub fn into_generation(self) -> Generation<A, O> {
+        self.generation
+    }
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
+    /// Recovers a publication's immutable generation and original evidence using
+    /// its existing authority operation index, without reading workspace paths.
+    /// Bound handles recheck current access before returning evidence; unbound
+    /// owner handles need only the indexed lookup. Publications without caller
+    /// evidence, including workspace creation, return a generation with no evidence. Missing
+    /// operations return `None`.
+    pub async fn operation_publication<W: crate::facade::FsWork>(
+        &self,
+        key: IdempotencyKey,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Option<OperationPublication<A, O>>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let (observed, mut allocation) = self
+                .volume
+                .fs
+                .workspace_operation_generation(
+                    &self.volume,
+                    key.operation_id(),
+                    None,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            let Some((id, record, evidence)) = observed else {
+                crate::kernel::retire_allocation(allocation, 0, &mut accounting)?;
+                return Ok(None);
+            };
+            let bytes =
+                if !self.volume.fs.authority().retains_operation_payload() && evidence.is_some() {
+                    record.payload.len() as u64
+                } else {
+                    0
+                };
+            if bytes != 0 && matches!(allocation, KernelOwnedAllocation::Standalone) {
+                let (funding, admitted) = accounting.record_actual_owned(bytes)?;
+                allocation = funding;
+                if let Err(error) = admitted {
+                    drop(evidence);
+                    drop(record);
+                    crate::kernel::retire_allocation(allocation, bytes, &mut accounting)?;
+                    return Err(error.into());
+                }
+            }
+            drop(record);
+            let allocation = if bytes != 0 {
+                Some(crate::kernel::RetainedAllocation::transfer(
+                    &mut allocation,
+                    bytes,
+                    &mut accounting,
+                )?)
+            } else {
+                crate::kernel::retire_allocation(allocation, bytes, &mut accounting)?;
+                None
+            };
+            Ok(Some(OperationPublication {
+                generation: Generation {
+                    workspace: self.clone(),
+                    id,
+                    publication_closure: None,
+                },
+                evidence,
+                _allocation: allocation,
+            }))
+        }
+        .await;
+        let result = read_core::authorize(self, result, &mut accounting, cancellation).await;
+        work.finish(result, &accounting)
+    }
+
     /// Fences this workspace's mutable head for an exact publication operation.
     pub async fn reserve_publication<W: crate::facade::FsWork>(
         &self,
@@ -124,12 +223,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             .workspace_operation_generation(
                 &self.volume,
                 key.operation_id(),
+                None,
                 &mut accounting,
                 cancellation,
             )
             .await
             .map(|mut observed| {
-                let id = observed.0.take().map(|(id, record)| {
+                let id = observed.0.take().map(|(id, record, _evidence)| {
                     drop(record);
                     id
                 });

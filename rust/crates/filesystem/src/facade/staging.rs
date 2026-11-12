@@ -139,12 +139,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .workspace_operation_generation(
                 workspace,
                 operation_id,
+                None,
                 &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
                 &cancellation,
             )
             .await?
             .0
-            .map(|(generation, record)| {
+            .map(|(generation, record, _evidence)| {
                 drop(record);
                 generation
             })

@@ -3,6 +3,10 @@ use super::*;
 impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     for AccountingAuthority<'_, P>
 {
+    fn retains_operation_payload(&self) -> bool {
+        false
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.0.operation_claims()
     }

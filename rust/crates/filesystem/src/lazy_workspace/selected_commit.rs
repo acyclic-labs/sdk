@@ -36,19 +36,31 @@ impl<
             .workspace_operation_generation(
                 &self.workspace.volume,
                 operation,
+                Some(self.workspace.limits().maximum_object_bytes),
                 ctx,
                 cancellation(ctx),
             )
             .await?;
-        let Some((actual, record)) = record else {
+        let Some((actual, record, evidence)) = record else {
             crate::kernel::retire_allocation(guard, 0, ctx)?;
             return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
         };
-        let bytes = record.payload.len() as u64;
-        if matches!(guard, KernelOwnedAllocation::Standalone) {
+        let bytes = if self
+            .workspace
+            .volume
+            .fs
+            .authority()
+            .retains_operation_payload()
+        {
+            0
+        } else {
+            record.payload.len() as u64
+        };
+        if bytes != 0 && matches!(guard, KernelOwnedAllocation::Standalone) {
             let (funding, admitted) = ctx.record_actual_owned(bytes)?;
             guard = funding;
             if let Err(error) = admitted {
+                drop(evidence);
                 drop(record);
                 crate::kernel::retire_allocation(guard, bytes, ctx)?;
                 return Err(error.into());
@@ -59,13 +71,8 @@ impl<
             if actual != generation {
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
             }
-            let decoded = crate::kernel::decode_publication_evidence_with_accounting(
-                &record.value.payload,
-                self.workspace.limits().maximum_object_bytes,
-                ctx,
-            )?;
-            let evidence = decoded
-                .original_evidence
+            let evidence = evidence
+                .as_deref()
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
             let context = publication_codec::decode_publication_context(evidence, operation, ctx)?;
             let NativeSnapshotContext::Selected { cut, input } = context else {
@@ -92,6 +99,7 @@ impl<
                 input,
             ))
         })();
+        drop(evidence);
         record.retire(ctx)?;
         result
     }

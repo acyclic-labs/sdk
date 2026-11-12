@@ -16,6 +16,10 @@ impl OriginalPageAuthority<'_> {
 }
 
 impl AsyncAuthorityStore for OriginalPageAuthority<'_> {
+    fn retains_operation_payload(&self) -> bool {
+        false
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.0.operation_claims()
     }

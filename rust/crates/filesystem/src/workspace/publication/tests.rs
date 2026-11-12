@@ -4,6 +4,163 @@ use crate::workspace::accounting_tests::Prefunded;
 use std::sync::Mutex;
 
 #[tokio::test]
+async fn original_publication_evidence_survives_later_heads_without_workspace_files()
+-> Result<(), Box<dyn std::error::Error>> {
+    exercise_original_publication(Fs::memory()).await?;
+    exercise_original_publication(Fs::new(
+        crate::MemoryAuthorityStore::default(),
+        crate::MemoryObjectStore::default(),
+        crate::EmbeddedCapabilities::MEMORY,
+    ))
+    .await
+}
+
+async fn exercise_original_publication<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
+    filesystem: Fs<A, O>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let workspace = filesystem
+        .create_workspace("evidence", budget, &cancellation)
+        .await?
+        .value;
+    let key = IdempotencyKey::new();
+    let mut transaction = workspace
+        .begin_transaction(key, budget, &cancellation)
+        .await?
+        .value;
+    let published = transaction
+        .commit(
+            Some((
+                crate::Digest::from_bytes([7; 32]),
+                acyclic_stream::OwnedBytes::from_static(b"original context"),
+                crate::PublicationPermit::Unrestricted,
+            )),
+            crate::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            publication_ready,
+        )
+        .await?
+        .value;
+    let TransactionCommit::Committed(original) = published else {
+        return Err("publication failed".into());
+    };
+    workspace.write_text("/later", "later head").await?;
+    let current = workspace.head(budget, &cancellation).await?.value.id();
+    assert_ne!(current, original.id());
+    let publication = workspace
+        .operation_publication(key, budget, &cancellation)
+        .await?;
+    publication.work.verify(budget)?;
+    let publication = publication.value.ok_or("publication disappeared")?;
+    assert_eq!(publication.generation().id(), original.id());
+    assert_eq!(publication.evidence(), Some(b"original context".as_slice()));
+    assert!(
+        original
+            .stat("/.system", budget, &cancellation)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        workspace.head(budget, &cancellation).await?.value.id(),
+        current
+    );
+    // Selected-import recovery supplies its configured bound to this same
+    // decoder. Refuse the envelope before decoding or hashing its evidence.
+    let mut bounded = KernelAccounting::standalone(budget, &cancellation);
+    let failure = filesystem
+        .workspace_operation_generation(
+            &workspace.volume,
+            key.operation_id(),
+            Some(1),
+            &mut bounded,
+            &cancellation,
+        )
+        .await
+        .err()
+        .ok_or("oversized publication evidence was admitted")?;
+    assert!(matches!(
+        failure,
+        WorkspaceError::Filesystem(crate::FsError::Decode(
+            crate::kernel::CanonicalDecodeError::ObjectTooLarge { maximum: 1, .. }
+        ))
+    ));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::initialize_test_native_io();
+        let native = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let authority = filesystem.authority();
+        let mut work = crate::AuthorityWork::native(&native, &cancellation);
+        // Warm the provider's existing owner once, then compare the original
+        // payload's live funding with the API alias, on the same ledger.
+        drop(
+            authority
+                .find_operation(workspace.authority_id(), key.operation_id(), &mut work)
+                .await?,
+        );
+        let baseline = native.live_allocation_bytes();
+        let record = authority
+            .find_operation(workspace.authority_id(), key.operation_id(), &mut work)
+            .await?
+            .ok_or("record absent")?;
+        let returned_credit = native.live_allocation_bytes() - baseline;
+        let payload_bytes = record.payload.len() as u64;
+        drop(record);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+        let recovered = workspace
+            .operation_publication(key, &native, &cancellation)
+            .await?
+            .ok_or("publication absent")?;
+        assert_eq!(recovered.evidence(), Some(b"original context".as_slice()));
+        let recovered_credit = native.live_allocation_bytes() - baseline;
+        if authority.retains_operation_payload() {
+            assert!(
+                recovered_credit <= returned_credit,
+                "recovery charged an already funded payload twice"
+            );
+        } else {
+            assert!(
+                recovered_credit >= payload_bytes,
+                "unfunded payload escaped its original ledger"
+            );
+        }
+        drop(recovered);
+        assert_eq!(
+            native.live_allocation_bytes(),
+            baseline,
+            "evidence release leaked funding"
+        );
+    }
+    let missing = workspace
+        .operation_publication(IdempotencyKey::new(), budget, &cancellation)
+        .await?;
+    assert!(missing.value.is_none());
+    let denied = WorkBudget {
+        backend_read_operations: 0,
+        ..budget
+    };
+    let failure = workspace
+        .operation_publication(key, denied, &cancellation)
+        .await
+        .err()
+        .ok_or("unfunded read admitted")?;
+    assert_eq!(failure.work.backend_read_operations, 0);
+    cancellation.cancel();
+    let failure = workspace
+        .operation_publication(key, budget, &cancellation)
+        .await
+        .err()
+        .ok_or("cancelled read admitted")?;
+    assert_eq!(*failure.work, crate::WorkCounters::default());
+    Ok(())
+}
+
+#[tokio::test]
 async fn reservation_preserves_original_live_peak_and_refuses_before_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_arch = "wasm32"))]

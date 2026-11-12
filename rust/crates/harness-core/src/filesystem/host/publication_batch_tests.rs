@@ -38,6 +38,83 @@ fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGran
 }
 
 #[tokio::test]
+async fn content_routing_evidence_never_creates_or_overwrites_a_workspace_path() -> Result<()> {
+    let provider = ProviderRef::new("routing".into(), "filesystem".into(), "1".into(), &mut None)?;
+    let filesystem = Fs::memory();
+    let store = acyclic_fs::StreamGitCompatStore::new(acyclic_fs::StreamAuthorityStore::new(
+        filesystem.stream_provider(),
+    ));
+    let host = FilesystemHost::new(filesystem, &provider, None)?.with_project_families(store)?;
+    let agent = AgentId::from_bytes([37; 16]);
+    let volume = VolumeRef::new(
+        provider.clone(),
+        "routing".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    let reference = host.create_volume(&volume).await?.workspace;
+    let root = host.open(&reference, None).await?;
+    let (grant, _) = publication_grants(&volume, agent)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let io = PreparationIo::for_unmeasured(&cancellation)?;
+    let (_, fence) = host
+        .authorize_content_write(&root, &grant, "file", false, None, Some(&io))?
+        .await?;
+    let operation = FilesystemKey::new();
+    let before = io.sdk(root.head(&io, &cancellation).await)?.id();
+    host.bind_content_operation(&root, root.id(), operation, (fence, &grant), &io)?
+        .await?;
+    assert_eq!(
+        io.sdk(root.head(&io, &cancellation).await)?.id(),
+        before,
+        "routing mutated the user's tree"
+    );
+    let original = io.sdk(root.head(&io, &cancellation).await)?;
+    assert!(
+        io.sdk(original.stat("/.system", &io, &cancellation).await)
+            .is_err()
+    );
+    host.apply(
+        &reference,
+        None,
+        &[
+            WorkspaceMutation::CreateDirectory {
+                path: "/.system".into(),
+            },
+            WorkspaceMutation::PutFile {
+                path: "/.system/harness-content-workspace".into(),
+                bytes: acyclic_stream::OwnedBytes::from_static(b"authored file"),
+            },
+        ],
+        &IdempotencyKey::new("authored")?,
+    )
+    .await?;
+    let (selected, binding) = host
+        .content_operation_workspace(&root, operation, false, &io)
+        .await?
+        .ok_or_else(|| io.invalid("routing disappeared"))?;
+    assert_eq!(selected.id(), root.id());
+    assert_eq!(
+        binding.ok_or_else(|| io.invalid("binding absent"))?.id(),
+        before
+    );
+    assert_eq!(
+        host.read(
+            &reference,
+            None,
+            "/.system/harness-content-workspace",
+            64,
+            None
+        )
+        .await?
+        .as_ref(),
+        b"authored file"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn publication_adapters_preserve_pinned_content_and_reject_changed_operation() -> Result<()> {
     for adapter in 0..3 {
         let provider =

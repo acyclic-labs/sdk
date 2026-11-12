@@ -7,6 +7,10 @@ const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 
 struct Fallback<'a>(&'a StreamAuthorityStore<MemoryStream>);
 impl AsyncAuthorityStore for Fallback<'_> {
+    fn retains_operation_payload(&self) -> bool {
+        false
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.0.operation_claims()
     }
@@ -95,6 +99,10 @@ async fn single_record(
 
 struct FundedReplay<'a>(&'a [u8], acyclic_stream::OperationClaims);
 impl AsyncAuthorityStore for FundedReplay<'_> {
+    fn retains_operation_payload(&self) -> bool {
+        false
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         &self.1
     }
