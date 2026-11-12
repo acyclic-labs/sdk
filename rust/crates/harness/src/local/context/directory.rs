@@ -36,7 +36,7 @@ impl LocalHarness {
             .agents
             .get()
             .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
-            .server
+            .server()
             .bound();
         let path = path.to_owned();
         #[cfg(any(test, not(target_arch = "wasm32")))]
