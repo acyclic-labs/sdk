@@ -702,6 +702,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         acyclic_stream::session::testing::authority(),
         None,
         server.clone(),
+        Some(server.clone()),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
         None,
     );

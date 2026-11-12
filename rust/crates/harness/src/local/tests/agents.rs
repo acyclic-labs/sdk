@@ -3965,6 +3965,7 @@ async fn historical_input_preview_case(later_hook: bool) -> Result<()> {
         let message = Message {
             from: by.clone(),
             id,
+            re: None,
             body: Box::new(body),
             attachments: None,
         };
