@@ -182,8 +182,10 @@ impl ActorsPackage {
         wire::encode_manifest(self.0.manifest())
     }
     #[wasm_bindgen(js_name = acceptsInterrupt)]
-    pub fn accepts_interrupt(&self, query: &[u8]) -> Result<bool, JsValue> {
-        wire::accepts_interrupt(&self.0, query).map_err(failed)
+    pub async fn accepts_interrupt(&self, query: &[u8]) -> Result<bool, JsValue> {
+        wire::accepts_interrupt(&self.0, query)
+            .await
+            .map_err(failed)
     }
     #[wasm_bindgen(js_name = onRecord)]
     pub async fn on_record(

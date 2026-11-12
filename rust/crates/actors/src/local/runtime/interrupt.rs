@@ -35,70 +35,77 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         Ok(())
     }
 
-    pub(super) async fn interrupt(
-        &self,
+    pub(super) async fn interrupt<'a>(
+        &'a self,
         inner: &mut Inner,
         cancellation: CancellationToken,
-        accepts: impl Fn(&str, &Record) -> Result<bool, Error>,
+        accepts: impl Fn(String, Record) -> crate::guest::GuestFuture<'a, bool>,
     ) -> Error {
-        let mut cancelled = false;
         // This active delivery owns a bounded, stable set of follows. Rotate
         // after an exhausted poll so a hot first input cannot hide a later
         // subscription's control record. No lookahead advances a durable cut.
         let ids: Vec<_> = inner.follows.keys().cloned().collect();
         let mut next = 0;
-        poll_fn(|context| {
-            if cancelled {
-                return Poll::Pending;
-            }
-            // Bound lookahead per poll so a busy inbox cannot starve the
-            // handler or its original wall-clock timeout.
-            let mut remaining = 256;
-            for _ in 0..ids.len() {
-                let id = &ids[next];
-                next = (next + 1) % ids.len();
-                let Some(follow) = inner.follows.get_mut(id) else {
-                    return Poll::Ready(Error::Invalid("interrupt follow disappeared"));
-                };
-                loop {
-                    if remaining == 0 {
-                        context.waker().wake_by_ref();
-                        return Poll::Pending;
-                    }
-                    match follow.poll_next_unpin(context) {
-                        Poll::Ready(Some(Ok(record))) => {
-                            remaining -= 1;
-                            if self.handler.manifest().interrupts.iter().any(|filter| {
-                                &filter.subscription == id
-                                    && !filter.value_prefix.is_empty()
-                                    && record.value.starts_with(&filter.value_prefix)
-                            }) && match accepts(id, &record) {
-                                Ok(accepted) => accepted,
-                                Err(error) => return Poll::Ready(error),
-                            } {
-                                cancellation.cancel();
-                                cancelled = true;
-                                // No unpolled provider future may obstruct the
-                                // handler's cleanup after cancellation.
-                                inner.follows.clear();
-                                return Poll::Pending;
-                            }
+        let mut remaining = 256;
+        loop {
+            let candidate = poll_fn(|context| {
+                // Bound lookahead per poll so a busy inbox cannot starve the
+                // handler or its original wall-clock timeout.
+                for _ in 0..ids.len() {
+                    let id = &ids[next];
+                    next = (next + 1) % ids.len();
+                    let Some(follow) = inner.follows.get_mut(id) else {
+                        return Poll::Ready(Err(Error::Invalid("interrupt follow disappeared")));
+                    };
+                    loop {
+                        if remaining == 0 {
+                            remaining = 256;
+                            context.waker().wake_by_ref();
+                            return Poll::Pending;
                         }
-                        Poll::Ready(Some(Err(error))) => return Poll::Ready(error.into()),
-                        Poll::Ready(None) => return Poll::Ready(StreamError::Unavailable.into()),
-                        Poll::Pending => break,
+                        match follow.poll_next_unpin(context) {
+                            Poll::Ready(Some(Ok(record))) => {
+                                remaining -= 1;
+                                if self.handler.manifest().interrupts.iter().any(|filter| {
+                                    &filter.subscription == id
+                                        && !filter.value_prefix.is_empty()
+                                        && record.value.starts_with(&filter.value_prefix)
+                                }) {
+                                    return Poll::Ready(Ok((id.clone(), record)));
+                                }
+                            }
+                            Poll::Ready(Some(Err(error))) => return Poll::Ready(Err(error.into())),
+                            Poll::Ready(None) => {
+                                return Poll::Ready(Err(StreamError::Unavailable.into()));
+                            }
+                            Poll::Pending => break,
+                        }
                     }
                 }
+                // A provider can yield before our own lookahead is exhausted
+                // (including cooperative executor admission). Rotate complete
+                // scans too, so the same first input cannot take every budget.
+                if !ids.is_empty() {
+                    next = (next + 1) % ids.len();
+                }
+                Poll::Pending
+            })
+            .await;
+            let (subscription, record) = match candidate {
+                Ok(candidate) => candidate,
+                Err(error) => return error,
+            };
+            match accepts(subscription, record).await {
+                Ok(false) => {}
+                Ok(true) => {
+                    cancellation.cancel();
+                    // No provider future may obstruct cleanup after cancellation.
+                    inner.follows.clear();
+                    return futures::future::pending().await;
+                }
+                Err(error) => return error.into(),
             }
-            // A provider can yield before our own lookahead is exhausted
-            // (including cooperative executor admission). Rotate complete
-            // scans too, so the same first input cannot take every budget.
-            if !ids.is_empty() {
-                next = (next + 1) % ids.len();
-            }
-            Poll::Pending
-        })
-        .await
+        }
     }
 }
 
@@ -187,7 +194,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         tokio::select! {
             () = cancellation.cancelled() => Ok(()),
-            error = runtime.interrupt(&mut inner, cancellation.clone(), |_, _| Ok(true)) =>
+            error = runtime.interrupt(&mut inner, cancellation.clone(), |_, _| Box::pin(async { Ok(true) })) =>
                 Err(format!("interrupt observation failed: {error}")),
         }?;
         assert!(

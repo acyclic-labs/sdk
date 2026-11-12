@@ -263,14 +263,14 @@ pub trait Handler: acyclic_stream::ProviderPlatform {
     fn manifest(&self) -> &Manifest;
     /// Match a declared interrupt against the original active delivery. A
     /// control for another operation must not cancel this delivery's work.
-    fn accepts_interrupt(
-        &self,
-        _delivery: &Delivery,
-        _checkpoint: Option<&Checkpoint>,
-        _subscription: &str,
-        _record: &Record,
-    ) -> Result<bool, GuestError> {
-        Ok(true)
+    fn accepts_interrupt<'a>(
+        &'a self,
+        _delivery: &'a Delivery,
+        _checkpoint: Option<&'a Checkpoint>,
+        _subscription: &'a str,
+        _record: &'a Record,
+    ) -> GuestFuture<'a, bool> {
+        Box::pin(async { Ok(true) })
     }
     /// Original host-bound admission fences, applied to both success and failure
     /// replies at the sole publication boundary. Guests cannot remove them.

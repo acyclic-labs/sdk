@@ -22,7 +22,10 @@ pub(crate) fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
                 wire::encode_transition(&transition)
             })
         },
-        move |query| wire::accepts_interrupt(interrupt_handler.as_ref(), &query),
+        move |query| -> acyclic_actors::guest::GuestFuture<'static, bool> {
+            let handler = interrupt_handler.clone();
+            Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
+        },
     )))
 }
 

@@ -1058,9 +1058,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         handled: crate::guest::GuestFuture<'_, T>,
     ) -> Result<T, Error> {
         let interrupted = self.interrupt(inner, cancellation, |subscription, record| {
-            self.handler
-                .accepts_interrupt(delivery, checkpoint, subscription, record)
-                .map_err(Error::from)
+            Box::pin(async move {
+                self.handler
+                    .accepts_interrupt(delivery, checkpoint, &subscription, &record)
+                    .await
+            })
         });
         let interrupted = core::pin::pin!(interrupted);
         let timeout: BoxProviderFuture<'_, ()> = Box::pin(async {

@@ -108,16 +108,23 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
                 .ok_or(Error::Record("steering inbox cursor overflow"))?;
             read += 1;
             let input = match input {
-                InboxRecord::Cancel(cancel) => InboxRecord::Notice {
-                    id: cancel.id,
-                    notice: super::NoticePayload::Quiet(crate::conversation::wire::Notice {
-                        source: "harness".into(),
-                        kind: "harness.input_cancelled".into(),
-                        body: serde_json::json!({"input": cancel.input}),
-                        wake: false,
-                        coalesce_key: None,
-                    }),
-                },
+                InboxRecord::Cancel(cancel) => {
+                    if super::cancellation::cancelled(provider, agent, cancel.input).await?
+                        != Some(cancel.conversation)
+                    {
+                        continue;
+                    }
+                    InboxRecord::Notice {
+                        id: cancel.id,
+                        notice: super::NoticePayload::Quiet(crate::conversation::wire::Notice {
+                            source: "harness".into(),
+                            kind: "harness.input_cancelled".into(),
+                            body: serde_json::json!({"input": cancel.input}),
+                            wake: false,
+                            coalesce_key: None,
+                        }),
+                    }
+                }
                 input => input,
             };
             // Independent records keep their ordered turns. Page past them

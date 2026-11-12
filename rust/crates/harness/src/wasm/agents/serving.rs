@@ -565,7 +565,7 @@ const PLATFORM: &str = r#"
 export interface WasmHostingPlatform {
     manifest: Uint8Array;
     onRecord(delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal): Promise<Uint8Array>;
-    acceptsInterrupt(query: Uint8Array): boolean;
+    acceptsInterrupt(query: Uint8Array): Promise<boolean>;
     policy(principal: Uint8Array, command: AgentCommand, signal: AbortSignal): boolean | Promise<boolean>;
     admitted(signal: AbortSignal): Promise<void>;
 }

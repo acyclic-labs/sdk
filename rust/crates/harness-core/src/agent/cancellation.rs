@@ -45,7 +45,7 @@ pub(super) fn cancelled_path(agent: &super::AgentPath, input: u64) -> Result<Str
     StreamPath::new(format!("{agent}/context/cancelled/{input}")).map_err(Error::Stream)
 }
 
-pub(super) async fn cancelled<P: crate::store::JournalProvider + ?Sized>(
+pub(super) async fn cancelled<P: acyclic_stream::StreamProvider + ?Sized>(
     provider: &P,
     agent: &super::AgentPath,
     input: u64,

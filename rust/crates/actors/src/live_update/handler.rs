@@ -90,13 +90,13 @@ impl FencedHandler {
 }
 
 impl Handler for FencedHandler {
-    fn accepts_interrupt(
-        &self,
-        delivery: &Delivery,
-        checkpoint: Option<&Checkpoint>,
-        subscription: &str,
-        record: &acyclic_stream::Record,
-    ) -> Result<bool, GuestError> {
+    fn accepts_interrupt<'a>(
+        &'a self,
+        delivery: &'a Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        subscription: &'a str,
+        record: &'a acyclic_stream::Record,
+    ) -> GuestFuture<'a, bool> {
         self.package
             .handler
             .accepts_interrupt(delivery, checkpoint, subscription, record)

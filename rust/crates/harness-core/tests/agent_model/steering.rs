@@ -240,6 +240,38 @@ async fn steering_keeps_reserved_turns_and_freezes_cancellation_notices() -> Res
         .await
         .is_err()
     );
+    // A completed answer wins the cancellation's conversation-tail condition.
+    // The control is still ordered in the inbox, but never becomes a withdrawal.
+    let commit = CommitRequest {
+        deadline_unix_millis: None,
+        effects: vec![CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
+                path: path.conversation()?,
+                records: vec![b"settled answer".to_vec().into()],
+            }],
+        )],
+        idempotency_key: intent_key("settled-answer", &[])?,
+    };
+    stream.commit(commit).await?;
+    let late = InboxRecord::Cancel(Cancellation {
+        by: user(),
+        id: intent("late-cancel"),
+        input: 3,
+        conversation: 0,
+    });
+    submit(&stream, send(&path, &user(), &late)?).await?;
+    let late_selection = select_boundary(&stream, &path, 7, BoundaryEnd::Open).await?;
+    assert_eq!(late_selection.through, 8);
+    assert!(late_selection.inputs.is_empty());
+    assert_eq!(
+        select_boundary(&stream, &path, 7, BoundaryEnd::Exact(8)).await?,
+        late_selection
+    );
+    assert_eq!(
+        select_boundary(&stream, &path, 1, BoundaryEnd::Exact(first.through)).await?,
+        first
+    );
     // Independent turns retain their entries, but cannot block a later reply.
     let approval = InboxRecord::ApprovalRequested(ApprovalRequested {
         child: path.child(&id(3))?,

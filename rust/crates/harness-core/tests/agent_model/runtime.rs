@@ -407,7 +407,10 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
                 wire::encode_transition(&transition)
             })
         },
-        move |query| wire::accepts_interrupt(interrupt_handler.as_ref(), &query),
+        move |query| -> acyclic_actors::guest::GuestFuture<'static, bool> {
+            let handler = interrupt_handler.clone();
+            Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
+        },
     );
     let host = AgentHost::hosting(
         provider.clone(),
