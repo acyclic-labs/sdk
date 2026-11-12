@@ -1,5 +1,4 @@
 use super::*;
-use crate::local::scheduling_shard;
 
 /// Shard routing and checkpoint custody survive node replacement without a
 /// root broadcast, rewriting producer keys or sharing checkpoint state.
@@ -8,11 +7,11 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let first = spawn_with(&store, "scheduled-first", &[b"emit"]).await?;
-    let shard = scheduling_shard(&first);
+    let shard = store.scheduling_shard(&first);
     let mut candidate = 0_u64;
     let second = loop {
         let address = actor(&format!("scheduled-other-{candidate}"))?;
-        if scheduling_shard(&address) != shard {
+        if store.scheduling_shard(&address) != shard {
             break address;
         }
         candidate = candidate
@@ -23,7 +22,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
     creation.join(store.create(None, &second, crate::local::Creation::default())?)?;
     creation.join(store.activation(&second)?)?;
     store.submit(creation).await?;
-    let other_shard = scheduling_shard(&second);
+    let other_shard = store.scheduling_shard(&second);
     let original_path = store.activation_record(&first)?.0;
     assert_ne!(original_path, store.activation_record(&second)?.0);
     assert!(matches!(
@@ -47,7 +46,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
     let (checkpoint, address) = host.dispatcher_store(shard)?;
     let initial = checkpoint.load(&address).await?;
     let tail = provider.tail(original_path.clone()).await?;
-    host.advance_dispatcher(&checkpoint, initial, shard, tail)
+    host.advance_dispatcher(&checkpoint, initial, shard, tail, 0)
         .await?;
     let replacement = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
