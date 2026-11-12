@@ -1154,12 +1154,22 @@ impl Composition for ScheduledSettlement {
     }
 }
 
-/// One owner publishes `kinds` (bit set: composed) after reloading its cut
-/// on every failure, as the runtime does, with the settlement attempts in
-/// `failing` refused. Returns whether every committed participant settled
-/// before the final plain publication cleared custody. `forget` drops the
-/// pre-publication settlement: the negative control.
-async fn one_owner(failing: usize, kinds: usize, forget: bool) -> Result<bool, Failure> {
+/// How the owner publishes: directly from the cut, through a state binding's
+/// `prepare_publish`, or through a binding that first `flush`es a write.
+/// Each binding takes the cut's state before preparing its publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Via {
+    Direct,
+    Binding,
+    Flush,
+}
+
+/// One owner publishes `kinds` (bit set: composed) `via` one path, reloading
+/// its cut on every failure as the runtime does, with the settlement
+/// attempts in `failing` refused. Returns whether every committed participant
+/// settled before the final plain publication cleared custody. `forget`
+/// drops each cut's unsettled marker before it is used: the negative control.
+async fn one_owner(failing: usize, kinds: usize, via: Via, forget: bool) -> Result<bool, Failure> {
     let provider = Arc::new(Faulty {
         inner: MemoryStream::default(),
         plan: Vec::new(),
@@ -1181,28 +1191,45 @@ async fn one_owner(failing: usize, kinds: usize, forget: bool) -> Result<bool, F
                 .state()
                 .and_then(|state| state.cursor("inbox"))
                 .ok_or("placed actor has no inbox cursor")?;
-            let mut publication = store.prepare_publish(
-                &previous,
-                1,
-                &Trigger::Record {
-                    subscription: "inbox".into(),
-                    sequence,
-                },
-                None,
-                Transition {
-                    effects: Vec::new(),
-                    participant: composed.then(|| crate::guest::Participant {
-                        kind: "test".into(),
-                        plan: Bytes::from(vec![plan]),
-                    }),
-                    ..transition(false)?
-                },
-                key(&format!("owner/{sequence}/{}", previous.tail))?,
-            )?;
+            let trigger = Trigger::Record {
+                subscription: "inbox".into(),
+                sequence,
+            };
+            let transition = Transition {
+                effects: Vec::new(),
+                participant: composed.then(|| crate::guest::Participant {
+                    kind: "test".into(),
+                    plan: Bytes::from(vec![plan]),
+                }),
+                ..transition(false)?
+            };
+            let publish = key(&format!("owner/{sequence}/{}", previous.tail))?;
+            let flush = key(&format!("flush/{sequence}/{}", previous.tail))?;
+            let mut cut = previous;
             if forget {
-                publication.unsettled = None;
+                cut.unsettled = false;
             }
-            match store.submit_retained(publication).await {
+            let outcome = async {
+                let publication = match via {
+                    Via::Direct => {
+                        store.prepare_publish(&cut, 1, &trigger, None, transition, publish)?
+                    }
+                    Via::Binding | Via::Flush => {
+                        let mut binding = store.bind_state(cut, 1)?;
+                        if via == Via::Flush {
+                            binding.transaction(|state| {
+                                state.put("step".into(), Bytes::from(vec![plan]));
+                                Ok(())
+                            })?;
+                            binding.flush(flush).await?;
+                        }
+                        binding.prepare_publish(&trigger, None, transition, publish)?
+                    }
+                };
+                store.submit_retained(publication).await
+            }
+            .await;
+            match outcome {
                 Ok(retained) => {
                     previous = retained.ok_or("actor publication has no receipt")?;
                     break;
@@ -1225,21 +1252,27 @@ async fn one_owner(failing: usize, kinds: usize, forget: bool) -> Result<bool, F
 
 const STEPS: usize = 3;
 
-/// Exhaustive over which settlement attempts fail and which publications
-/// compose: a failed settlement stays committed custody, and the same
-/// owner's next publication, plain or composed, finishes it first.
+/// Exhaustive over which settlement attempts fail, which publications
+/// compose, and the publication path (direct or through a state binding):
+/// a failed settlement stays committed custody, and the same owner's next
+/// publication, plain or composed, finishes it first.
 #[tokio::test]
 async fn a_failed_settlement_is_finished_by_the_next_publication() -> Result<(), Failure> {
-    let mut caught = 0;
-    for failing in 0..1 << (2 * STEPS) {
-        for kinds in 0..1 << STEPS {
-            assert!(
-                one_owner(failing, kinds, false).await?,
-                "failing {failing:b}, composed {kinds:b}: a committed participant never settled"
-            );
-            caught += usize::from(!one_owner(failing, kinds, true).await?);
+    for via in [Via::Direct, Via::Binding, Via::Flush] {
+        let mut caught = 0;
+        for failing in 0..1 << (2 * STEPS) {
+            for kinds in 0..1 << STEPS {
+                assert!(
+                    one_owner(failing, kinds, via, false).await?,
+                    "{via:?}, failing {failing:b}, composed {kinds:b}: a committed participant never settled"
+                );
+                caught += usize::from(!one_owner(failing, kinds, via, true).await?);
+            }
         }
+        assert!(
+            caught > 0,
+            "{via:?}: the negative control must forget a settlement"
+        );
     }
-    assert!(caught > 0, "the negative control must forget a settlement");
     Ok(())
 }

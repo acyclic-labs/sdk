@@ -271,10 +271,11 @@ pub struct Snapshot {
     anchor: Option<CommitId>,
     state: Option<State>,
     provenance: Option<Provenance<StreamPath, ForkCut>>,
-    /// This process settled the cut's custody: true only for the receipt of
-    /// a publication whose composition settled. A read cut never knows, so
-    /// its committed custody is settled again before anything replaces it.
-    settled: bool,
+    /// The cut's committed custody is not known settled. Fixed when the cut
+    /// is read or retained, independent of `state`, so a caller that takes
+    /// the state cannot drop it: a read cut with custody never knows, and the
+    /// receipt of a publication whose composition settled always knows.
+    unsettled: bool,
 }
 
 struct Publication<'a> {
@@ -302,8 +303,7 @@ impl Snapshot {
 
     /// The state stream whose committed custody this cut has not seen settled.
     fn unsettled(&self) -> Option<&StreamPath> {
-        (!self.settled && self.state.as_ref().is_some_and(|state| state.custody))
-            .then_some(&self.path)
+        self.unsettled.then_some(&self.path)
     }
 
     fn owns_epoch(&self, epoch: u64) -> bool {
@@ -347,7 +347,7 @@ impl Snapshot {
                 anchor: None,
                 state: None,
                 provenance,
-                settled: false,
+                unsettled: false,
             });
         }
         let record = last.ok_or(Error::Invalid("checkpoint history is incomplete"))?;
@@ -359,9 +359,9 @@ impl Snapshot {
             path,
             tail,
             anchor: Some(record.commit_id),
+            unsettled: state.custody,
             state: Some(state),
             provenance,
-            settled: false,
         })
     }
 }
@@ -449,7 +449,7 @@ impl PreparedPublish {
                     .ok_or(Error::Invalid("publication omitted its authored state"))?,
             ),
             provenance: self.provenance.clone(),
-            settled: true,
+            unsettled: false,
         }))
     }
 
