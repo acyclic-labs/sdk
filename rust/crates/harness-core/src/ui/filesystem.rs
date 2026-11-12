@@ -253,6 +253,9 @@ impl Write for Count<'_, '_> {
                 });
             self.failure = result.err();
         }
+        if self.failure.is_some() {
+            return Err(std::io::ErrorKind::Other.into());
+        }
         Ok(bytes.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
