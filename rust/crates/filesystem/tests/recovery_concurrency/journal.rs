@@ -44,6 +44,9 @@ pub(super) enum CrashStoreError {
 }
 
 impl MaterializationJournalStore for CrashJournalStore {
+    async fn revision(&self, operation: OperationId) -> Result<Option<u64>, Self::Error> {
+        self.inner.revision(operation).await.map_err(Into::into)
+    }
     type Error = CrashStoreError;
     #[cfg(not(target_arch = "wasm32"))]
     type ActionCompletion<'a> =

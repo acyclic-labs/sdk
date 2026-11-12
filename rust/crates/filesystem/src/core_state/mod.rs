@@ -492,23 +492,8 @@ impl LocalCoreStateStore {
         &self,
         operation_id: OperationId,
     ) -> Result<(), LocalCoreStateStoreError> {
-        self.transaction(move |namespace| {
-            let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
-            with_lock(&mut paths, |paths| {
-                let journal = read_recoverable::<MaterializationJournal>(paths)?;
-                if journal.as_ref().is_some_and(|(journal, _)| {
-                    !matches!(
-                        journal.phase,
-                        crate::MaterializationPhase::Applied
-                            | crate::MaterializationPhase::RolledBack
-                    )
-                }) {
-                    return Err(LocalCoreStateStoreError::MaterializationInProgress);
-                }
-                remove_record(paths)
-            })
-        })
-        .await
+        self.transaction(move |namespace| journal::remove_materialization(&namespace, operation_id))
+            .await
     }
 }
 

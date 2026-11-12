@@ -25,10 +25,13 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
         }
         .into());
     }
-    let mut storage = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let mut edits = Vec::new();
+    let mut allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+    let mut edits: Vec<MaterializationEdit> = Vec::new();
+    // Changed paths arrive in component order, so a structural ancestor
+    // immediately precedes its contiguous descendants.
+    let mut structural_parent = None;
     for change in changed {
-        if let Some(edit) = generation_edit(
+        if let Some((edit, structural, mut owned)) = generation_edit(
             change,
             &mut changed_allocation,
             &root,
@@ -38,62 +41,34 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
         )
         .await?
         {
-            push_buffer(&mut edits, edit, &mut storage)?;
-        }
-    }
-    drop(changed_allocation);
-    let mut index = 0;
-    while index < edits.len() {
-        let mut descendant = false;
-        for (parent, structural, _) in &edits {
-            if *structural {
-                let path = edit_path(&edits[index].0);
-                let parent = edit_path(parent);
+            if let Some(index) = structural_parent {
+                let parent = edit_path(&edits[index]);
+                let path = edit_path(&edit);
                 work.charge(
                     NativeResourceCredit::Items.delta(path.len().min(parent.len()) as u64),
                 )?;
-                if path != parent
-                    && path
-                        .strip_prefix(parent)
-                        .is_some_and(|suffix| suffix.starts_with('/'))
+                if path
+                    .strip_prefix(parent)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
                 {
-                    descendant = true;
-                    break;
+                    continue;
                 }
             }
-        }
-        if descendant {
-            edits.swap_remove(index);
-        } else {
-            index += 1;
-        }
-    }
-    let mut failure = None;
-    edits.sort_unstable_by(|a, b| {
-        match native_compare(edit_path(&a.0).bytes(), edit_path(&b.0).bytes(), work) {
-            Ok(order) => order,
-            Err(error) => {
-                failure.get_or_insert(error);
-                std::cmp::Ordering::Equal
+            if structural {
+                structural_parent = Some(edits.len());
             }
+            allocation.absorb(&mut owned)?;
+            push_buffer(&mut edits, edit, &mut allocation)?;
         }
-    });
-    if let Some(error) = failure {
-        return Err(error.into());
     }
-    let mut allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let mut plan_edits = Vec::new();
-    for (edit, _, mut owned) in edits {
-        allocation.absorb(&mut owned)?;
-        push_buffer(&mut plan_edits, edit, &mut allocation)?;
-    }
+    drop(changed_allocation);
     let plan = MaterializationPlan {
         operation_id: request.operation_id,
         intent: MaterializationIntent::GenerationTransition {
             from: request.from,
             to: request.to,
         },
-        edits: plan_edits,
+        edits,
     };
     check_native_plan(&plan, work)?;
     Ok((plan, allocation))
@@ -188,4 +163,122 @@ async fn generation_edit<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectSto
         (edit, structural)
     };
     Ok(Some((edit, structural, allocation)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unchanged_fork_has_no_checkout_edits() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let cancellation = crate::CancellationToken::new();
+        let budget = crate::WorkBudget::UNBOUNDED;
+        let workspace = crate::Fs::memory()
+            .create_workspace("parent", budget, &cancellation)
+            .await?
+            .value;
+        let mut seed = workspace
+            .begin_transaction(crate::IdempotencyKey::new(), budget, &cancellation)
+            .await?
+            .value;
+        seed.create_dir_all("/directory", budget, &cancellation)
+            .await?;
+        for index in 0..64 {
+            seed.write_text(&format!("/directory/file-{index:03}"), "original")
+                .await?;
+        }
+        seed.commit::<crate::WorkspaceError, _, _>(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            |_| async {
+                Ok(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await?;
+        let before = workspace.head(budget, &cancellation).await?.value;
+        let child = workspace
+            .fork::<_, _, crate::WorkspaceError>(
+                "child",
+                crate::ForkOptions::from_generation(before.clone(), crate::IdempotencyKey::new()),
+                crate::PublicationPermit::Unrestricted,
+                budget,
+                &cancellation,
+                &mut |_| async {
+                    Ok(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                },
+            )
+            .await?
+            .value;
+        let root = directory.path().join("checkout");
+        std::fs::create_dir_all(root.join("directory"))?;
+        for index in 0..64 {
+            std::fs::write(root.join(format!("directory/file-{index:03}")), "original")?;
+        }
+        for changed in [false, true] {
+            if changed {
+                child.write_text("/directory/file-017", "updated").await?;
+            }
+            let plan = child
+                .join_into(&workspace)
+                .plan(budget, &cancellation)
+                .await?
+                .value;
+            let outcome = plan
+                .apply(
+                    crate::ApplyOptions {
+                        if_target: before.id(),
+                        idempotency_key: crate::IdempotencyKey::new(),
+                    },
+                    std::collections::BTreeMap::new(),
+                    crate::PublicationPermit::Unrestricted,
+                )
+                .await?;
+            let after = match outcome {
+                crate::JoinOutcome::Applied(result)
+                | crate::JoinOutcome::AlreadyApplied(result) => result.generation,
+                crate::JoinOutcome::NoChanges(generation) => generation,
+                _ => return Err("join refused".into()),
+            };
+            let work = NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, _)| cause)?;
+            let operation = directory.path().join("operation");
+            let options = crate::MaterializeOptions::native(operation.join("target"));
+            let (plan, _custody) = generation_plan(
+                &before,
+                &after,
+                &NativeWorkspacePublication {
+                    root: &root,
+                    source_root_identity: work.root_identity(&root)?,
+                    operation_directory: &operation,
+                    operation_id: OperationId::new(),
+                    from: before.id(),
+                    to: after.id(),
+                    excluded_names: &[],
+                    options: &options,
+                    budget,
+                    cancellation: &cancellation,
+                },
+                &work,
+            )
+            .await?;
+            if changed {
+                assert_eq!(plan.edits.len(), 1);
+                assert_eq!(edit_path(&plan.edits[0]), "directory/file-017");
+            } else {
+                assert!(plan.edits.is_empty());
+                assert_eq!(work.receipt().source_bytes_read, 0);
+            }
+            assert_eq!(work.receipt().object_bytes_written, 0);
+        }
+        Ok(())
+    }
 }

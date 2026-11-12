@@ -276,6 +276,10 @@ impl MaterializationBackend for &Crashing {
 impl MaterializationJournalStore for &Crashing {
     type Error = Error;
 
+    async fn revision(&self, operation: OperationId) -> Result<Option<u64>, Error> {
+        self.journals.revision(operation).await.map_err(|_| Error)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     type ActionCompletion<'a>
         = std::future::Ready<Result<MaterializationJournal, Error>>
@@ -407,7 +411,7 @@ fn plan(edits: Vec<MaterializationEdit>) -> MaterializationPlan {
 
 #[tokio::test]
 async fn obsolete_journals_and_forward_rollback_are_rejected() {
-    for version in [0, 1, 2, 3, 4, u32::MAX, JOURNAL_VERSION] {
+    for version in [0, 1, 2, 3, 4, 5, u32::MAX, JOURNAL_VERSION] {
         let backend = Crashing::default();
         let store = &backend.journals;
         let materializer = JournaledMaterializer::new(&backend, &backend);

@@ -345,7 +345,13 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         &self,
         journal: &MaterializationJournal,
     ) -> Result<(), MaterializationError<S::Error, B::Error>> {
-        if self.load(journal.plan.operation_id).await?.as_ref() != Some(journal) {
+        if self
+            .store
+            .revision(journal.plan.operation_id)
+            .await
+            .map_err(MaterializationError::Store)?
+            != Some(journal.revision)
+        {
             return Err(MaterializationError::PlanConflict);
         }
         self.verify_allocation(journal).await

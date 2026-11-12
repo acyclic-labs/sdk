@@ -79,6 +79,8 @@ impl<S: MaterializationJournalStore>
         {
             return Err(invalid());
         }
+        self.check_plan(&journal.plan).map_err(E::from)?;
+        self.check_custody(&journal).map_err(E::from)?;
         let failure = NativeStageUncertainty::new(work)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
         let state = super::stage_state::StageState::<_, S::ActionCompletion<'_>>::new(journal);
@@ -113,8 +115,6 @@ impl<S: MaterializationJournalStore>
                             .before(
                                 authorized.expect("effect authorization"),
                                 |journal| async {
-                                    self.check_plan(&journal.plan).map_err(E::from)?;
-                                    self.check_custody(&journal).map_err(E::from)?;
                                     // Acceptance checks both live tails; the backend
                                     // separately checks the physical allocation.
                                     self.verify_allocation(&journal).await.map_err(E::from)?;

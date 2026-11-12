@@ -48,6 +48,13 @@ impl MaterializationJournalStore for Store {
     async fn load(&self, operation: OperationId) -> Result<Option<Journal>, StoreError> {
         self.0.lock().get(&operation).map(copy).transpose()
     }
+    async fn revision(&self, operation: OperationId) -> Result<Option<u64>, StoreError> {
+        Ok(self
+            .0
+            .lock()
+            .get(&operation)
+            .map(|journal| journal.revision))
+    }
     async fn compare_and_swap(
         &self,
         operation: OperationId,

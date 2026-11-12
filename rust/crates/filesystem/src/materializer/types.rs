@@ -169,6 +169,12 @@ pub trait MaterializationJournalStore: Send + Sync {
         operation_id: OperationId,
     ) -> impl Future<Output = Result<Option<MaterializationJournal>, Self::Error>> + Send;
 
+    /// Reads only the concurrency receipt, without reconstructing immutable history.
+    fn revision(
+        &self,
+        operation_id: OperationId,
+    ) -> impl Future<Output = Result<Option<u64>, Self::Error>> + Send;
+
     /// Atomically replaces `expected_revision`; zero creates a journal.
     fn compare_and_swap(
         &self,
