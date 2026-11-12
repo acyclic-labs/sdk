@@ -86,22 +86,20 @@ fn prefix_key(provider: &ResolvedModel, fields: &Fields) -> String {
 ///   model's own one.
 /// - Gemini: implicit caching over the stable order.
 pub(crate) fn project(provider: &ResolvedModel, fields: &mut Fields) {
-    match (provider.config.adapter, provider.config.prompt_cache) {
-        (Family::Anthropic, _) => fields.insert(Field::CacheControl, control(provider)),
-        (Family::Responses, _) | (Family::Chat, crate::PromptCache::Native) => {
+    match provider.config.adapter {
+        Family::Anthropic => fields.insert(Field::CacheControl, control(provider)),
+        Family::Responses | Family::Chat => {
             fields.insert(
                 Field::PromptCacheKey,
                 serde_json::Value::String(prefix_key(provider, fields)),
             );
+            if provider.config.adapter == Family::Chat
+                && provider.config.prompt_cache == crate::PromptCache::Routed
+            {
+                fields.insert(Field::CacheControl, control(provider));
+            }
         }
-        (Family::Chat, crate::PromptCache::Routed) => {
-            fields.insert(
-                Field::PromptCacheKey,
-                serde_json::Value::String(prefix_key(provider, fields)),
-            );
-            fields.insert(Field::CacheControl, control(provider));
-        }
-        (Family::Gemini, _) => {}
+        Family::Gemini => {}
     }
 }
 
