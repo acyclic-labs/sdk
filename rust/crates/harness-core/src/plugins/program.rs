@@ -15,6 +15,8 @@ pub struct LoadedProgram {
     pub(crate) run: HookRun,
     // Retained manifest and entry bytes retire before their original credit.
     custody: acyclic_fs::NativeCustody,
+    /// The admitted source selector for a hook; absent for a tool.
+    pub on: Option<config::ProgramTrigger>,
 }
 
 impl LoadedProgram {
@@ -31,6 +33,11 @@ impl LoadedProgram {
     /// # Errors
     /// Refuses a non-shell capability or an unsupported command form.
     pub fn bind(self, shell: std::sync::Arc<crate::tool::Tool>) -> Result<crate::tool::Tool> {
+        if self.on.is_some() {
+            return Err(Error::Invalid(
+                "hook programs cannot be bound as authored tools".into(),
+            ));
+        }
         let mut custody = self.custody;
         let shell = match shell.executor.capability() {
             Some(capability) => std::sync::Arc::new(capability.clone()),
@@ -168,6 +175,15 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
             "{path}: unsupported version or mismatched name"
         )));
     }
+    match (kind, &manifest.on) {
+        ("tools", None) => {}
+        ("hooks", Some(selector)) => selector.validate()?,
+        _ => {
+            return Err(Error::Invalid(format!(
+                "{path}: tools omit on; hooks require on"
+            )));
+        }
+    }
     let mut identity = blake3::Hasher::new_derive_key("acyclic.harness.program.v1");
     identity.update(&evaluated.digest);
     let mut native = None;
@@ -239,6 +255,7 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
     }
     Ok(LoadedProgram {
         definition,
+        on: manifest.on,
         run: HookRun::Shell {
             command,
             shell: selected_shell,

@@ -13,7 +13,7 @@ struct Files {
 
 impl Files {
     fn program(root: &str) -> Self {
-        Self {
+        let mut tree = Self {
             files: [
                 (format!("{root}/program.ts"),
                     "import {description} from './description.ts'; export default {version: 1, name: 'count', description, inputSchema: {}, entry: {sh: 'main.sh', ps1: 'main.ps1'}};".into()),
@@ -23,7 +23,15 @@ impl Files {
                 ("tools/unselected/program.ts".into(), "throw new Error('must remain lazy')".into()),
             ].into_iter().collect(),
             reads: Mutex::new(Vec::new()),
+        };
+        if root.starts_with("hooks/") {
+            let manifest = tree.files.get_mut(&format!("{root}/program.ts")).unwrap();
+            *manifest = manifest.replace(
+                "version: 1,",
+                "version: 1, on: {kind: 'lifecycle', event: 'Stop'},",
+            );
         }
+        tree
     }
 }
 
@@ -180,6 +188,70 @@ async fn program_revision_pins_imports_and_entries_without_reading_siblings() ->
         original.definition,
         load_program(&tree, "tools/count").await?.definition
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn hook_manifests_pin_source_selectors_and_refuse_invalid_or_cross_kind_sources() -> Result<()>
+{
+    let path = "hooks/count/program.ts";
+    let mut tree = Files::program("hooks/count");
+    let lifecycle = tree.files[path].clone();
+    tree.files.insert(
+        path.into(),
+        lifecycle.replace(
+            "{kind: 'lifecycle', event: 'Stop'}",
+            "{kind: 'file', volume: 'volume:///project', prefix: 'src', from: 'now'}",
+        ),
+    );
+    let file = load_program(&tree, "hooks/count").await?;
+    let shell = Arc::new(
+        crate::tools::defaults()?
+            .get("shell", None, None)?
+            .unwrap()
+            .clone(),
+    );
+    assert!(matches!(file.bind(shell), Err(Error::Invalid(_))));
+    tree.files.insert(
+        path.into(),
+        lifecycle.replace(
+            "{kind: 'lifecycle', event: 'Stop'}",
+            "{kind: 'stream', path: 'attention', from: 'start'}",
+        ),
+    );
+    let stream = load_program(&tree, "hooks/count").await?;
+    assert_ne!(
+        stream.definition.revision,
+        load_program(&Files::program("hooks/count"), "hooks/count")
+            .await?
+            .definition
+            .revision
+    );
+    for replacement in [
+        "{kind: 'lifecycle', event: 'FileChanged'}",
+        "{kind: 'lifecycle', event: 'StreamRecord'}",
+        "{kind: 'file', volume: 'volume:///project', prefix: '../src', from: 'now'}",
+        "{kind: 'stream', path: '', from: 'start'}",
+    ] {
+        tree.files.insert(
+            path.into(),
+            lifecycle.replace("{kind: 'lifecycle', event: 'Stop'}", replacement),
+        );
+        assert!(
+            load_program(&tree, "hooks/count").await.is_err(),
+            "{replacement}"
+        );
+    }
+    let mut tool = Files::program("tools/count");
+    let manifest = tool.files.get_mut("tools/count/program.ts").unwrap();
+    *manifest = manifest.replace(
+        "version: 1,",
+        "version: 1, on: {kind: 'lifecycle', event: 'Stop'},",
+    );
+    assert!(matches!(
+        load_program(&tool, "tools/count").await,
+        Err(Error::Invalid(_))
+    ));
     Ok(())
 }
 

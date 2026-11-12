@@ -20,6 +20,95 @@ pub struct ProgramManifest {
     pub input_schema: Value,
     /// Entry files relative to this program's directory.
     pub entry: ProgramEntry,
+    /// A hook's source selector. Tools omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub on: Option<ProgramTrigger>,
+}
+
+/// The existing hook runner's lifecycle and durable source events.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS, crate::HeapLayout)]
+pub enum HookEvent {
+    /// A session was opened, resumed, forked, or compacted.
+    SessionStart,
+    /// A user prompt is about to reach the model.
+    UserPromptSubmit,
+    /// A tool is about to execute.
+    PreToolUse,
+    /// A tool returned successfully.
+    PostToolUse,
+    /// The model is about to finish its turn.
+    Stop,
+    /// A committed volume publication changed a selected path.
+    FileChanged,
+    /// A followed stream published a selected record.
+    StreamRecord,
+}
+
+/// A hook follows a source through the source's existing event mechanism.
+/// The selector grants neither read access to that source nor execution rights.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ProgramTrigger {
+    /// An existing lifecycle boundary.
+    Lifecycle {
+        /// The lifecycle event; source events require their own selector.
+        event: HookEvent,
+    },
+    /// Changes below a normalized root-relative path prefix in a volume.
+    File {
+        /// The caller-visible volume address.
+        volume: String,
+        /// Empty selects the root; otherwise a complete path component prefix.
+        prefix: String,
+        /// Existing changes or only changes after admission.
+        from: super::Start,
+    },
+    /// Records on one exact stream path.
+    Stream {
+        /// The source stream path, independently authorized at follow admission.
+        path: String,
+        /// Existing records or only records after admission.
+        from: super::Start,
+    },
+}
+
+impl ProgramTrigger {
+    /// The one runner event delivered by this selector.
+    #[must_use]
+    pub const fn event(&self) -> HookEvent {
+        match self {
+            Self::Lifecycle { event } => *event,
+            Self::File { .. } => HookEvent::FileChanged,
+            Self::Stream { .. } => HookEvent::StreamRecord,
+        }
+    }
+
+    /// Checks selector syntax. The source is independently resolved and
+    /// authorized by its host before subscribing; this grants no authority.
+    pub fn validate(&self) -> crate::Result<()> {
+        match self {
+            Self::Lifecycle {
+                event: HookEvent::FileChanged | HookEvent::StreamRecord,
+            } => Err(crate::Error::Invalid(
+                "source events require a file or stream selector".into(),
+            )),
+            Self::Lifecycle { .. } => Ok(()),
+            Self::File { volume, prefix, .. } => {
+                if volume.is_empty() || volume.trim() != volume || volume.contains('\0') {
+                    return Err(crate::Error::Invalid(
+                        "hook volume address is invalid".into(),
+                    ));
+                }
+                if !prefix.is_empty() {
+                    crate::conversation::validate_content_path(prefix, &mut None)?;
+                }
+                Ok(())
+            }
+            Self::Stream { path, .. } => acyclic_stream::StreamPath::validate(path)
+                .map_err(|_| crate::Error::Invalid("hook stream path is invalid".into())),
+        }
+    }
 }
 
 /// Native forms of the same program. An absent native form refuses execution;
