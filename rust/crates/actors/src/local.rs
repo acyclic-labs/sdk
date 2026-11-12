@@ -271,6 +271,10 @@ pub struct Snapshot {
     anchor: Option<CommitId>,
     state: Option<State>,
     provenance: Option<Provenance<StreamPath, ForkCut>>,
+    /// This process settled the cut's custody: true only for the receipt of
+    /// a publication whose composition settled. A read cut never knows, so
+    /// its committed custody is settled again before anything replaces it.
+    settled: bool,
 }
 
 struct Publication<'a> {
@@ -294,6 +298,12 @@ impl Snapshot {
         self.provenance
             .as_ref()
             .is_some_and(|origin| self.anchor == Some(origin.inherited.commit_id))
+    }
+
+    /// The state stream whose committed custody this cut has not seen settled.
+    fn unsettled(&self) -> Option<&StreamPath> {
+        (!self.settled && self.state.as_ref().is_some_and(|state| state.custody))
+            .then_some(&self.path)
     }
 
     fn owns_epoch(&self, epoch: u64) -> bool {
@@ -337,6 +347,7 @@ impl Snapshot {
                 anchor: None,
                 state: None,
                 provenance,
+                settled: false,
             });
         }
         let record = last.ok_or(Error::Invalid("checkpoint history is incomplete"))?;
@@ -350,6 +361,7 @@ impl Snapshot {
             anchor: Some(record.commit_id),
             state: Some(state),
             provenance,
+            settled: false,
         })
     }
 }
@@ -365,6 +377,9 @@ pub struct PreparedPublish {
     failure_owner: Option<StreamPath>,
     request: CommitRequest,
     composition: Option<Box<dyn Composition>>,
+    /// The previous cut's committed, unfinished custody, settled before this
+    /// publication can replace it.
+    unsettled: Option<StreamPath>,
     sealed: bool,
     acknowledgement_unknown: bool,
     provenance: Option<Provenance<StreamPath, ForkCut>>,
@@ -434,6 +449,7 @@ impl PreparedPublish {
                     .ok_or(Error::Invalid("publication omitted its authored state"))?,
             ),
             provenance: self.provenance.clone(),
+            settled: true,
         }))
     }
 
@@ -447,6 +463,7 @@ impl PreparedPublish {
             journal: None,
             failure_owner: None,
             composition: None,
+            unsettled: None,
             sealed: false,
             acknowledgement_unknown: false,
             provenance: None,
@@ -901,11 +918,15 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// settlement; the new owner's claim fenced the old owner's publications.
     /// Settlement is therefore at least once across owners and exactly once
     /// within one, so every composer settles idempotently. A state without
-    /// custody costs nothing here.
+    /// custody, or one this process settled, costs nothing here.
     pub(crate) async fn recover_custody(&self, snapshot: &Snapshot) -> Result<(), Error> {
-        if !snapshot.state.as_ref().is_some_and(|state| state.custody) {
-            return Ok(());
+        match snapshot.unsettled() {
+            Some(path) => self.settle_custody(path).await,
+            None => Ok(()),
         }
+    }
+
+    async fn settle_custody(&self, path: &StreamPath) -> Result<(), Error> {
         let composer = self
             .composer
             .as_ref()
@@ -913,7 +934,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let intent = record::Intent::decode(
             &self
                 .provider
-                .head(custody_path(&snapshot.path)?)
+                .head(custody_path(path)?)
                 .await?
                 .last
                 .ok_or(Error::Invalid("actor custody intent is missing"))?
@@ -937,9 +958,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             .mutations
             .iter()
             .find_map(|mutation| match mutation {
-                acyclic_stream::CommittedMutation::Append(append)
-                    if append.path == snapshot.path =>
-                {
+                acyclic_stream::CommittedMutation::Append(append) if &append.path == path => {
                     Some(append)
                 }
                 _ => None,
@@ -957,9 +976,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         };
         // (path, seq) is immutable; proof: custody_recovery_never_reads_a_replaced_input.
         let previous = match own.start.checked_sub(1) {
-            Some(sequence) => {
-                State::decode(&self.record(&snapshot.path, sequence).await?.value)?.checkpoint
-            }
+            Some(sequence) => State::decode(&self.record(path, sequence).await?.value)?.checkpoint,
             None => None,
         };
         let delivered = match &intent.delivered {
@@ -980,7 +997,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         )?;
         composer
             .open(
-                &self.actor(&snapshot.path)?,
+                &self.actor(path)?,
                 previous.as_ref(),
                 delivered.as_ref(),
                 &next,
@@ -1085,8 +1102,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// that cut, keeps the path occupied so the actor is never re-created,
     /// and carries no input, alarm, checkpoint or funds, so scheduling entries
     /// that still name it resolve to a no-op. A pending participant's custody
-    /// is settled first, as a new owner's claim would.
-    pub async fn delete(
+    /// is settled first, as before every publication.
+    pub fn delete(
         &self,
         previous: &Snapshot,
         key: IdempotencyKey,
@@ -1098,7 +1115,6 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         if state.deleted() {
             return Err(Error::Deleted);
         }
-        self.recover_custody(previous).await?;
         let deleted = State {
             epoch: DELETED,
             placement_branch: state.placement_branch,
@@ -1302,6 +1318,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             Error::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
+                // Committed custody is durable state: every publication from
+                // its cut, a retry by the same owner included, finishes it
+                // first, and a failure leaves it committed for the next one.
+                if let Some(path) = &prepared.unsettled {
+                    self.settle_custody(path).await?;
+                    prepared.unsettled = None;
+                }
                 if !prepared.sealed {
                     if let Some(composition) = &mut prepared.composition {
                         // Compare canonical requests: a participant's own
@@ -1477,6 +1500,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             journal: None,
             failure_owner: None,
             composition: None,
+            unsettled: previous.unsettled().cloned(),
             sealed: false,
             acknowledgement_unknown: false,
             provenance: previous.provenance.clone(),

@@ -699,9 +699,7 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
     );
 
     let before = provider.requests();
-    store
-        .submit(store.delete(&live, key("delete")?).await?)
-        .await?;
+    store.submit(store.delete(&live, key("delete")?)?).await?;
     let work = provider.requests().since(before);
     assert_eq!(work.data() + work.control(), 1, "one conditional write");
     let deleted = store.load(&actor).await?;
@@ -726,7 +724,7 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         Err(Error::Conflict)
     ));
     assert!(matches!(
-        store.delete(&deleted, key("again")?).await,
+        store.delete(&deleted, key("again")?),
         Err(Error::Deleted)
     ));
     let mut again = PreparedPublish::foreign(key("recreate")?);

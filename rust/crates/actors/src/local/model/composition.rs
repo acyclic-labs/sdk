@@ -251,7 +251,7 @@ impl Composition for RecoveryAttempt {
 }
 
 #[tokio::test]
-async fn placement_replays_finish_failed_and_cancelled_custody_recovery() -> Result<(), Failure> {
+async fn placement_finishes_failed_and_cancelled_custody_recovery() -> Result<(), Failure> {
     let provider = Arc::new(Faulty {
         inner: MemoryStream::default(),
         plan: vec![Fault::None, Fault::None, Fault::LoseAck],
@@ -288,8 +288,9 @@ async fn placement_replays_finish_failed_and_cancelled_custody_recovery() -> Res
         runtime.place(actor.clone(), 1).await,
         Err(Error::Handler(GuestError::Handler(message))) if message == "interrupted custody recovery"
     ));
-    let committed = runtime.store().load(&actor).await?;
-    assert_eq!(committed.state().map(State::epoch), Some(2));
+    // Custody settles before the claim can replace its cut.
+    let unclaimed = runtime.store().load(&actor).await?;
+    assert_eq!(unclaimed.state().map(State::epoch), Some(1));
     let mut retry = Box::pin(runtime.place(actor.clone(), 1));
     assert!(futures::poll!(retry.as_mut()).is_pending());
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
@@ -297,8 +298,7 @@ async fn placement_replays_finish_failed_and_cancelled_custody_recovery() -> Res
     runtime.place(actor.clone(), 1).await?;
     assert_eq!(attempts.load(Ordering::SeqCst), 3);
     let admitted = runtime.store().load(&actor).await?;
-    assert_eq!(admitted.tail, committed.tail);
-    assert_eq!(admitted.anchor, committed.anchor);
+    assert_eq!(admitted.state().map(State::epoch), Some(2));
     Ok(())
 }
 
@@ -1065,7 +1065,9 @@ async fn a_replay_with_nothing_to_deliver_settles_a_dead_owners_participant() ->
                 .set_paused(&store.load(&actor).await?, 1, true, key("paused")?)
                 .await?;
         }
-        assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
+        // The pause publication finishes the custody it fences first.
+        let settled = usize::from(paused);
+        assert_eq!(counts.committed.load(Ordering::SeqCst), settled);
         let runtime = super::super::runtime::Runtime::new(
             store.clone(),
             Arc::new(crate::conformance::Package::new()?),
@@ -1073,9 +1075,10 @@ async fn a_replay_with_nothing_to_deliver_settles_a_dead_owners_participant() ->
         );
         runtime.track(actor.clone())?;
         runtime.drain_actor(&actor).await?;
+        // A read cut cannot know its custody settled: at least once.
         assert_eq!(
             counts.committed.load(Ordering::SeqCst),
-            1,
+            settled + 1,
             "paused: {paused}"
         );
         assert_eq!(
@@ -1089,5 +1092,154 @@ async fn a_replay_with_nothing_to_deliver_settles_a_dead_owners_participant() ->
             "the replay admitted no placement"
         );
     }
+    Ok(())
+}
+
+/// Settles each participant by its plan byte, failing the attempts the
+/// schedule marks, and records which committed participants ever settled.
+#[derive(Default)]
+struct Ledger {
+    attempts: AtomicUsize,
+    failing: usize,
+    committed: std::sync::Mutex<std::collections::BTreeSet<u8>>,
+    settled: std::sync::Mutex<std::collections::BTreeSet<u8>>,
+}
+
+struct Scheduled(Arc<Ledger>);
+
+impl Composer for Scheduled {
+    fn open(
+        &self,
+        _: &ActorReference,
+        _: Option<&Checkpoint>,
+        _: Option<&acyclic_stream::Record>,
+        _: &Checkpoint,
+        participant: &crate::guest::Participant,
+    ) -> Result<Box<dyn Composition>, GuestError> {
+        Ok(Box::new(ScheduledSettlement(
+            self.0.clone(),
+            participant.plan[0],
+        )))
+    }
+}
+
+struct ScheduledSettlement(Arc<Ledger>, u8);
+
+impl Composition for ScheduledSettlement {
+    fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest> {
+        Box::pin(async move { Ok(request) })
+    }
+
+    fn settle<'a>(
+        self: Box<Self>,
+        outcome: Result<&'a CommitOutcome, &'a StreamError>,
+    ) -> GuestFuture<'a, ()> {
+        Box::pin(async move {
+            let Ok(CommitOutcome::Committed(_)) = outcome else {
+                return Ok(());
+            };
+            let lock = |set: &std::sync::Mutex<std::collections::BTreeSet<u8>>| {
+                set.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(self.1)
+            };
+            lock(&self.0.committed);
+            let attempt = self.0.attempts.fetch_add(1, Ordering::SeqCst);
+            if (self.0.failing >> attempt) & 1 == 1 {
+                return Err(GuestError::Handler("scheduled settlement failure".into()));
+            }
+            lock(&self.0.settled);
+            Ok(())
+        })
+    }
+}
+
+/// One owner publishes `kinds` (bit set: composed) after reloading its cut
+/// on every failure, as the runtime does, with the settlement attempts in
+/// `failing` refused. Returns whether every committed participant settled
+/// before the final plain publication cleared custody. `forget` drops the
+/// pre-publication settlement: the negative control.
+async fn one_owner(failing: usize, kinds: usize, forget: bool) -> Result<bool, Failure> {
+    let provider = Arc::new(Faulty {
+        inner: MemoryStream::default(),
+        plan: Vec::new(),
+        calls: AtomicUsize::new(0),
+    });
+    let (store, actor) = placed(provider, Arc::new(Counts::default())).await?;
+    let ledger = Arc::new(Ledger {
+        failing,
+        ..Ledger::default()
+    });
+    let store = store.with_composer(Arc::new(Scheduled(ledger.clone())));
+    let mut previous = store.load(&actor).await?;
+    for step in 0..=STEPS {
+        let composed = step < STEPS && (kinds >> step) & 1 == 1;
+        let plan = u8::try_from(step)?;
+        // The final plain publication retries until it commits.
+        loop {
+            let sequence = previous
+                .state()
+                .and_then(|state| state.cursor("inbox"))
+                .ok_or("placed actor has no inbox cursor")?;
+            let mut publication = store.prepare_publish(
+                &previous,
+                1,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence,
+                },
+                None,
+                Transition {
+                    effects: Vec::new(),
+                    participant: composed.then(|| crate::guest::Participant {
+                        kind: "test".into(),
+                        plan: Bytes::from(vec![plan]),
+                    }),
+                    ..transition(false)?
+                },
+                key(&format!("owner/{sequence}/{}", previous.tail))?,
+            )?;
+            if forget {
+                publication.unsettled = None;
+            }
+            match store.submit_retained(publication).await {
+                Ok(retained) => {
+                    previous = retained.ok_or("actor publication has no receipt")?;
+                    break;
+                }
+                Err(Error::Settlement { .. } | Error::Handler(_)) => {
+                    previous = store.load(&actor).await?;
+                    if step < STEPS {
+                        break;
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    assert!(previous.state().is_some_and(|state| !state.custody));
+    let committed = ledger.committed.lock().map_err(|_| "poisoned")?.clone();
+    let settled = ledger.settled.lock().map_err(|_| "poisoned")?.clone();
+    Ok(committed.is_subset(&settled))
+}
+
+const STEPS: usize = 3;
+
+/// Exhaustive over which settlement attempts fail and which publications
+/// compose: a failed settlement stays committed custody, and the same
+/// owner's next publication, plain or composed, finishes it first.
+#[tokio::test]
+async fn a_failed_settlement_is_finished_by_the_next_publication() -> Result<(), Failure> {
+    let mut caught = 0;
+    for failing in 0..1 << (2 * STEPS) {
+        for kinds in 0..1 << STEPS {
+            assert!(
+                one_owner(failing, kinds, false).await?,
+                "failing {failing:b}, composed {kinds:b}: a committed participant never settled"
+            );
+            caught += usize::from(!one_owner(failing, kinds, true).await?);
+        }
+    }
+    assert!(caught > 0, "the negative control must forget a settlement");
     Ok(())
 }

@@ -306,7 +306,7 @@ async fn deleting_a_resident_actor_keeps_its_host_completing() -> TestResult {
     completed(&runtime, serving.as_mut()).await?;
     let snapshot = store.load(&doomed).await?;
     store
-        .submit(store.delete(&snapshot, key("doomed/delete")?).await?)
+        .submit(store.delete(&snapshot, key("doomed/delete")?)?)
         .await?;
     time.advance_to(WINDOW_TEN + 60_000)?;
     spawn_with(&store, "survivor", &[b"emit"]).await?;
