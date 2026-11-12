@@ -482,6 +482,7 @@ fn checkpoint_native_accounting_tracks_encoded_and_written_bytes_once() {
 
 #[tokio::test]
 async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
+    let mut first_history = None;
     for count in [8, 64, 512] {
         let directory = tempfile::tempdir().unwrap();
         let cxl = crate::CancellationToken::new();
@@ -544,6 +545,21 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 after.object_bytes_written - before.object_bytes_written,
             );
             let baseline = *first.get_or_insert(delta);
+            let across_sizes = *first_history.get_or_insert(delta);
+            assert!(
+                delta.0 <= across_sizes.0 + 256,
+                "plan size changed per-step reads: {delta:?} vs {across_sizes:?}"
+            );
+            assert!(
+                delta.1 <= across_sizes.1 + 256,
+                "plan size changed per-step writes: {delta:?} vs {across_sizes:?}"
+            );
+            if index + 1 == count {
+                eprintln!(
+                    "journal_delta history={count} read={} written={}",
+                    delta.0, delta.1
+                );
+            }
             assert!(
                 delta.0 <= baseline.0 + 256,
                 "history was reread at {index}/{count}: {delta:?} vs {baseline:?}"

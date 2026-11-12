@@ -58,6 +58,9 @@ pub async fn prepare_native_generation_transition<
         let mut guard = || std::future::ready(Ok::<_, NativeWorkspacePublicationError>(()));
         let (materializer, journal) =
             prepare_generation(from, to, state, publication, &work, &mut guard).await?;
+        let Some(materializer) = materializer else {
+            return Ok(journal);
+        };
         match journal.phase {
             MaterializationPhase::Prepared => Ok(journal),
             MaterializationPhase::Preparing => {
@@ -124,6 +127,9 @@ where
     let result = async {
         let (materializer, journal) =
             prepare_generation(from, to, state, publication, &work, &mut before_effect).await?;
+        let Some(materializer) = materializer else {
+            return Ok(journal);
+        };
         materializer
             .replay(
                 journal,
@@ -150,7 +156,12 @@ async fn prepare_generation<A, O, F, Fut>(
     before_effect: &mut F,
 ) -> Result<
     (
-        JournaledMaterializer<crate::LocalCoreStateStore, Arc<NativeTreeMaterializationBackend>>,
+        Option<
+            JournaledMaterializer<
+                crate::LocalCoreStateStore,
+                Arc<NativeTreeMaterializationBackend>,
+            >,
+        >,
         MaterializationJournal,
     ),
     NativeWorkspacePublicationError,
@@ -184,6 +195,28 @@ where
     } else {
         let (plan, custody) =
             publication_step(work, || generation_plan(from, to, &request, work)).await?;
+        if plan.edits.is_empty() {
+            // An empty physical transition has no effects to recover. Its
+            // immutable generation witness and root check need no journal.
+            return Ok((
+                None,
+                MaterializationJournal {
+                    version: JOURNAL_VERSION,
+                    revision: 1,
+                    plan,
+                    root_identity: Some(actual.to_bytes()),
+                    preparation_identity: None,
+                    preparation_progress: None,
+                    preimages: Vec::new(),
+                    phase: MaterializationPhase::Applied,
+                    applied: 0,
+                    restored: 0,
+                    work: work.journal_work()?,
+                    custody: Some(custody),
+                },
+            ));
+        }
+        state.bind_native_recovery_root(&root, actual, work).await?;
         let parent = super::directory_preparation::prepare_publication_parent(
             &operation,
             work,
@@ -240,7 +273,7 @@ where
     let journal =
         stage_prepared_generation(to, &materializer, journal, &request, work, before_effect)
             .await?;
-    Ok((materializer, journal))
+    Ok((Some(materializer), journal))
 }
 
 async fn stage_prepared_generation<A, O, F, Fut>(

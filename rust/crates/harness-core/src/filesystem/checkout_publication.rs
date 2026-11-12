@@ -86,9 +86,6 @@ impl CheckoutPublication {
         options: &MaterializeOptions,
         work: &NativeMaterializationWork,
     ) -> Result<MaterializationJournal> {
-        state
-            .bind_native_recovery_root(&self.root, self.identity, work)
-            .await?;
         let prepared = acyclic_fs::materializer::prepare_native_generation_transition(
             from,
             to,

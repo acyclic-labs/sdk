@@ -170,110 +170,162 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn unchanged_fork_has_no_checkout_edits() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let cancellation = crate::CancellationToken::new();
-        let budget = crate::WorkBudget::UNBOUNDED;
-        let workspace = crate::Fs::memory()
-            .create_workspace("parent", budget, &cancellation)
-            .await?
-            .value;
-        let mut seed = workspace
-            .begin_transaction(crate::IdempotencyKey::new(), budget, &cancellation)
-            .await?
-            .value;
-        seed.create_dir_all("/directory", budget, &cancellation)
-            .await?;
-        for index in 0..64 {
-            seed.write_text(&format!("/directory/file-{index:03}"), "original")
+    async fn merge_publication_touches_only_changed_files() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut changed_cost = None;
+        for count in [32, 256] {
+            let directory = tempfile::tempdir()?;
+            let cancellation = crate::CancellationToken::new();
+            let budget = crate::WorkBudget::UNBOUNDED;
+            let workspace = crate::Fs::memory()
+                .create_workspace("parent", budget, &cancellation)
+                .await?
+                .value;
+            let mut seed = workspace
+                .begin_transaction(crate::IdempotencyKey::new(), budget, &cancellation)
+                .await?
+                .value;
+            seed.create_dir_all("/directory", budget, &cancellation)
                 .await?;
-        }
-        seed.commit::<crate::WorkspaceError, _, _>(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            budget,
-            &cancellation,
-            |_| async {
-                Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
-        )
-        .await?;
-        let before = workspace.head(budget, &cancellation).await?.value;
-        let child = workspace
-            .fork::<_, _, crate::WorkspaceError>(
-                "child",
-                crate::ForkOptions::from_generation(before.clone(), crate::IdempotencyKey::new()),
+            for index in 0..count {
+                seed.write_text(&format!("/directory/file-{index:03}"), "original")
+                    .await?;
+            }
+            seed.commit::<crate::WorkspaceError, _, _>(
+                None,
                 crate::PublicationPermit::Unrestricted,
                 budget,
                 &cancellation,
-                (),
-            )
-            .await?
-            .value;
-        let root = directory.path().join("checkout");
-        std::fs::create_dir_all(root.join("directory"))?;
-        for index in 0..64 {
-            std::fs::write(root.join(format!("directory/file-{index:03}")), "original")?;
-        }
-        for changed in [false, true] {
-            let before = workspace.head(budget, &cancellation).await?.value;
-            if changed {
-                child.write_text("/directory/file-017", "updated").await?;
-            }
-            let plan = child
-                .join_into(&workspace)
-                .plan(budget, &cancellation)
-                .await?
-                .value;
-            let outcome = plan
-                .apply(
-                    crate::ApplyOptions {
-                        if_target: before.id(),
-                        idempotency_key: crate::IdempotencyKey::new(),
-                    },
-                    std::collections::BTreeMap::new(),
-                    crate::PublicationPermit::Unrestricted,
-                )
-                .await?;
-            let after = match outcome {
-                crate::JoinOutcome::Applied(result)
-                | crate::JoinOutcome::AlreadyApplied(result) => result.generation,
-                crate::JoinOutcome::NoChanges(generation) => generation,
-                _ => return Err("join refused".into()),
-            };
-            let work = NativeMaterializationWork::new(budget, &cancellation)
-                .map_err(|(cause, _)| cause)?;
-            let operation = directory.path().join("operation");
-            let options = crate::MaterializeOptions::native(operation.join("target"));
-            let (plan, _custody) = generation_plan(
-                &before,
-                &after,
-                &NativeWorkspacePublication {
-                    root: &root,
-                    source_root_identity: work.root_identity(&root)?,
-                    operation_directory: &operation,
-                    operation_id: OperationId::new(),
-                    from: before.id(),
-                    to: after.id(),
-                    excluded_names: &[],
-                    options: &options,
-                    budget,
-                    cancellation: &cancellation,
+                |_| async {
+                    Ok(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
                 },
-                &work,
             )
             .await?;
-            if changed {
-                assert_eq!(plan.edits.len(), 1);
-                assert_eq!(edit_path(&plan.edits[0]), "directory/file-017");
-            } else {
-                assert!(plan.edits.is_empty());
-                assert_eq!(work.receipt().source_bytes_read, 0);
+            let before = workspace.head(budget, &cancellation).await?.value;
+            let child = workspace
+                .fork::<_, _, crate::WorkspaceError>(
+                    "child",
+                    crate::ForkOptions::from_generation(
+                        before.clone(),
+                        crate::IdempotencyKey::new(),
+                    ),
+                    crate::PublicationPermit::Unrestricted,
+                    budget,
+                    &cancellation,
+                    (),
+                )
+                .await?
+                .value;
+            let root = directory.path().join("checkout");
+            std::fs::create_dir_all(root.join("directory"))?;
+            for index in 0..count {
+                std::fs::write(root.join(format!("directory/file-{index:03}")), "original")?;
             }
-            assert_eq!(work.receipt().object_bytes_written, 0);
+            let store = crate::LocalCoreStateStore::new(directory.path().join("state"));
+            for changed in [false, true] {
+                let before = workspace.head(budget, &cancellation).await?.value;
+                if changed {
+                    child.write_text("/directory/file-017", "updated").await?;
+                }
+                let plan = child
+                    .join_into(&workspace)
+                    .plan(budget, &cancellation)
+                    .await?
+                    .value;
+                let outcome = plan
+                    .apply(
+                        crate::ApplyOptions {
+                            if_target: before.id(),
+                            idempotency_key: crate::IdempotencyKey::new(),
+                        },
+                        std::collections::BTreeMap::new(),
+                        crate::PublicationPermit::Unrestricted,
+                    )
+                    .await?;
+                let after = match outcome {
+                    crate::JoinOutcome::Applied(result)
+                    | crate::JoinOutcome::AlreadyApplied(result) => result.generation,
+                    crate::JoinOutcome::NoChanges(generation) => generation,
+                    _ => return Err("join refused".into()),
+                };
+                let work = NativeMaterializationWork::new(budget, &cancellation)
+                    .map_err(|(cause, _)| cause)?;
+                let operation = directory.path().join("operation");
+                let options = crate::MaterializeOptions::native(operation.join("target"));
+                work.state.lock().write_probe = Some(crate::demand::WriteProbe {
+                    writes: 0,
+                    stop_before: None,
+                });
+                let identities = (0..count)
+                    .map(|index| {
+                        Ok(crate::file_identity(&std::fs::File::open(
+                            root.join(format!("directory/file-{index:03}")),
+                        )?)?)
+                    })
+                    .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+                let receipt = super::super::publication::publish_native_generation_transition(
+                    &before,
+                    &after,
+                    &store,
+                    NativeWorkspacePublication {
+                        root: &root,
+                        source_root_identity: work.root_identity(&root)?,
+                        operation_directory: &operation,
+                        operation_id: OperationId::new(),
+                        from: before.id(),
+                        to: after.id(),
+                        excluded_names: &[],
+                        options: &options,
+                        budget,
+                        cancellation: &cancellation,
+                    },
+                    work.clone(),
+                    || std::future::ready(Ok(())),
+                )
+                .await
+                .map_err(|(cause, _)| cause)?;
+                let writes = work.state.lock().write_probe.take().unwrap().writes;
+                let plan = &receipt.value.plan;
+                let mut rewritten = 0;
+                for (index, before) in identities.into_iter().enumerate() {
+                    let file =
+                        std::fs::File::open(root.join(format!("directory/file-{index:03}")))?;
+                    rewritten += usize::from(crate::file_identity(&file)? != before);
+                }
+                assert_eq!(rewritten, usize::from(changed));
+                if changed {
+                    assert_eq!(plan.edits.len(), 1);
+                    assert_eq!(edit_path(&plan.edits[0]), "directory/file-017");
+                    assert_eq!(std::fs::read(root.join("directory/file-017"))?, b"updated");
+                    let cost = (
+                        receipt.work.materializations,
+                        writes,
+                        receipt.work.source_bytes_read,
+                        receipt.work.object_bytes_written,
+                    );
+                    let baseline = *changed_cost.get_or_insert(cost);
+                    assert_eq!(cost.0, baseline.0);
+                    assert_eq!(cost.1, baseline.1);
+                    assert!(cost.2 <= baseline.2 + 256);
+                    assert!(cost.3 <= baseline.3 + 256);
+                    eprintln!(
+                        "merge_publication files={count} changed=1 materializations={} writes={} read={} written={}",
+                        cost.0, cost.1, cost.2, cost.3
+                    );
+                } else {
+                    assert!(plan.edits.is_empty());
+                    assert_eq!(receipt.work.materializations, 0);
+                    assert_eq!(receipt.work.source_bytes_read, 0);
+                    assert_eq!(receipt.work.object_bytes_written, 0);
+                    assert_eq!(writes, 0, "an unchanged merge must not append a journal");
+                    eprintln!(
+                        "merge_publication files={count} changed=0 materializations=0 writes=0 read=0 written=0"
+                    );
+                }
+            }
         }
         Ok(())
     }
