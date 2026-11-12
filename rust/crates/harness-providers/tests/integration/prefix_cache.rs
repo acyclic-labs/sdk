@@ -508,7 +508,7 @@ async fn run(
         Turns {
             executors: changing.clone(),
             limits: TurnLimits {
-                maximum_bytes: 1 << 20,
+                maximum_bytes: Some(1 << 20),
                 // A page of four entries: the parent's later turns cross one
                 // page cut, while the child's history stays on the first.
                 history_turns: 4,
