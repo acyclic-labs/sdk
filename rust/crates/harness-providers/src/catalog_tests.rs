@@ -75,6 +75,11 @@ async fn captured_container_catalog_keeps_exact_host_grants_on_every_route() -> 
         ),
         (
             Some("172.17.0.1"),
+            "http://172.17.0.1:9/v1?token=value",
+            "responses/input_tokens",
+        ),
+        (
+            Some("172.17.0.1"),
             "http://172.17.0.1:9/v1",
             "http://172.17.0.2:9/count",
         ),
@@ -87,6 +92,18 @@ async fn captured_container_catalog_keeps_exact_host_grants_on_every_route() -> 
         assert!(registry.register("refused".into(), refused).is_err());
     }
     assert_eq!(transport.sent.lock().unwrap().len(), sent);
+    for base in [
+        "https://provider.example/v1",
+        "http://localhost:9/v1",
+        "http://127.0.0.1:9/v1",
+        "http://[::1]:9/v1",
+    ] {
+        let mut default = spec.clone();
+        default.allow_http_host = None;
+        default.base_url = base.into();
+        registry.register("default".into(), default)?;
+        registry.resolve("default/fixture")?;
+    }
     Ok(())
 }
 
