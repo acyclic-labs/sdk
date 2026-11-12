@@ -151,7 +151,13 @@ async fn shell_admission_does_not_require_a_logical_volume_path() -> Result<()> 
             mount.native_root = crate::workspace::NativeRoot::Path(missing.clone());
         }
     }
-    let error = match prepare(input(), &mounts, invocation(&root), 1) {
+    let error = match prepare(
+        input(),
+        &mounts,
+        invocation(&root),
+        1,
+        std::time::Instant::now(),
+    ) {
         Err(error) => error,
         Ok(_) => panic!("missing physical root admitted"),
     };
@@ -223,6 +229,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
             &mounts,
             invocation(&mounts.root),
             1,
+            std::time::Instant::now(),
         ),
         Err(Error::Unsupported(_))
     ));
@@ -243,6 +250,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
         &mounts,
         invocation(&root),
         1,
+        std::time::Instant::now(),
     );
     assert!(matches!(logical, Err(Error::Unsupported(_))));
     // Both source and literal argv use production preparation and the original
@@ -355,6 +363,7 @@ fn bound_volume_cwd_keeps_its_authority() {
         &mounts,
         invocation(&mounts.root),
         1,
+        std::time::Instant::now(),
     );
     assert!(matches!(result, Err(Error::Invalid(_))));
     assert!(!temp.path().join("should-not-exist").exists());
@@ -388,6 +397,7 @@ fn bound_volume_cwd_keeps_its_authority() {
                     &mounts,
                     invocation(&mounts.root),
                     1,
+                    before,
                 );
                 if escape {
                     prop_assert!(matches!(result, Err(Error::Invalid(_))));
@@ -401,8 +411,8 @@ fn bound_volume_cwd_keeps_its_authority() {
                         ) => {
                             let duration =
                                 std::time::Duration::from_millis(u64::from(milliseconds));
-                            prop_assert!(deadline >= before + duration);
-                            prop_assert!(deadline <= std::time::Instant::now() + duration);
+                            // The deadline runs from admission, not preparation.
+                            prop_assert_eq!(deadline, before + duration);
                         }
                         other => {
                             return Err(TestCaseError::fail(format!(
@@ -529,7 +539,13 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
         invocation
     };
     for inherit_environment in [false, true] {
-        let prepared = prepare(input.clone(), &mounts, configured(inherit_environment), 1)?;
+        let prepared = prepare(
+            input.clone(),
+            &mounts,
+            configured(inherit_environment),
+            1,
+            std::time::Instant::now(),
+        )?;
         assert!(!prepared.inherit_environment);
         assert_eq!(
             prepared.environment.get("ACYCLIC_VOLUME_DATA"),
@@ -559,11 +575,23 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
         "stale explicit mode".into(),
     );
     assert!(matches!(
-        prepare(input.clone(), &mounts, collision, 1),
+        prepare(
+            input.clone(),
+            &mounts,
+            collision,
+            1,
+            std::time::Instant::now()
+        ),
         Err(Error::Invalid(_))
     ));
     // An empty production map loses a tool outside the shell's default path.
-    let mut missing_path = prepare(input.clone(), &mounts, configured(false), 1)?;
+    let mut missing_path = prepare(
+        input.clone(),
+        &mounts,
+        configured(false),
+        1,
+        std::time::Instant::now(),
+    )?;
     missing_path.environment.remove("PATH");
     let output = capture::capture_with_custody(
         missing_path,
@@ -582,14 +610,26 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     invalid
         .environment
         .insert("invalid=key".into(), "fixture-only-credential".into());
-    let error = prepare(input.clone(), &mounts, invalid, 1)
-        .err()
-        .expect("invalid settings refuse");
+    let error = prepare(
+        input.clone(),
+        &mounts,
+        invalid,
+        1,
+        std::time::Instant::now(),
+    )
+    .err()
+    .expect("invalid settings refuse");
     assert!(matches!(error, Error::Invalid(_)));
     assert!(!error.to_string().contains("fixture-only-credential"));
     // The old inheritance choice physically exposes both named credentials and
     // the ambient shell startup hook to exactly the same command.
-    let mut broken = prepare(input, &mounts, configured(false), 1)?;
+    let mut broken = prepare(
+        input,
+        &mounts,
+        configured(false),
+        1,
+        std::time::Instant::now(),
+    )?;
     // This is the deliberately unconfined old path, not an attempt to make
     // an authenticated grant accept an ambient environment.
     broken.execution_grant = None;
@@ -727,6 +767,7 @@ fn missing_shell_inputs_are_preflight_results_with_paths() -> Result<()> {
             &mounts,
             invocation(&mounts.root),
             1,
+            std::time::Instant::now(),
         )
         .err()
         .ok_or_else(|| Error::Invalid("missing shell input was accepted".into()))?;
@@ -774,6 +815,7 @@ fn missing_shell_inputs_are_preflight_results_with_paths() -> Result<()> {
             &mounts,
             invocation(&mounts.root),
             1,
+            std::time::Instant::now(),
         )
         .err()
         .ok_or_else(|| Error::Invalid("invalid shell input was accepted".into()))?;

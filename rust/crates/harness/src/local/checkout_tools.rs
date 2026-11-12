@@ -78,6 +78,56 @@ async fn serialized<T, R>(
     command(lock_owned(StateArc::clone(state)).await).await
 }
 
+async fn serialized_until<T, R>(
+    state: &StateArc<AsyncMutex<T>>,
+    deadline_unix_ms: Option<u64>,
+    clock: &dyn acyclic_stream::UnixMillisClock,
+    command: impl AsyncFnOnce(OwnedMutexGuard<T>) -> Result<R>,
+) -> Result<R> {
+    let guard = observe_until(deadline_unix_ms, clock, async {
+        Ok(lock_owned(StateArc::clone(state)).await)
+    })
+    .await?;
+    command(guard).await
+}
+
+/// Bounds observation without taking completion ownership. A detached task
+/// retains its accepted effects through cleanup and publication.
+async fn observe_until<R>(
+    deadline_unix_ms: Option<u64>,
+    clock: &dyn acyclic_stream::UnixMillisClock,
+    completion: impl std::future::Future<Output = Result<R>>,
+) -> Result<R> {
+    let Some(deadline) = deadline_unix_ms else {
+        return completion.await;
+    };
+    let timeout = || {
+        Error::process_io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timeout_ms elapsed during the checkout call; recovery: retry, or raise timeout_ms",
+        ))
+    };
+    if clock.now_unix_millis() >= deadline {
+        return Err(timeout());
+    }
+    let alarm = std::pin::pin!(acyclic_native_runtime::WallAlarm::wait(deadline).map_err(storage)?);
+    let command = std::pin::pin!(completion);
+    match futures::future::select(alarm, command).await {
+        futures::future::Either::Right((result, _)) => {
+            // A producer may finish a synchronous native step in the same
+            // poll in which the alarm fires. It cannot acknowledge late success.
+            if clock.now_unix_millis() >= deadline {
+                return Err(timeout());
+            }
+            result
+        }
+        futures::future::Either::Left((fired, _)) => {
+            fired.map_err(storage)?;
+            Err(timeout())
+        }
+    }
+}
+
 impl CheckoutTools {
     // Tool construction must not embed checkout recovery in every caller.
     pub(super) fn new<'a>(
@@ -179,6 +229,9 @@ impl CheckoutTools {
 }
 
 struct PreparedCommand {
+    control: Option<acyclic_native_runtime::ProcessControl>,
+    admitted: std::time::Instant,
+    deadline_unix_ms: Option<u64>,
     invocation: ToolInvocation,
     shell: Option<crate::tools::ShellInput>,
     fs: Option<crate::tools::FsCommand>,
@@ -188,12 +241,14 @@ struct PreparedCommand {
 }
 
 struct ShellCommand<'a> {
+    control: acyclic_native_runtime::ProcessControl,
     invocation: &'a ToolInvocation,
     context: &'a ToolContext,
     shell: Option<crate::tools::ShellInput>,
     request: Vec<u8>,
     maximum: usize,
     started: Option<tokio::sync::oneshot::Sender<ToolResult>>,
+    admitted: std::time::Instant,
 }
 
 impl CheckoutTools {
@@ -205,6 +260,9 @@ impl CheckoutTools {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ToolResult>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let PreparedCommand {
+                control,
+                admitted,
+                deadline_unix_ms,
                 invocation,
                 shell,
                 fs,
@@ -212,44 +270,67 @@ impl CheckoutTools {
                 maximum,
                 started,
             } = command;
-            let result = serialized(&self.state, async |mut state| {
-                let workspace = self
-                    .command_workspace(
-                        &mut state,
-                        context,
-                        if invocation.name == "fs" {
-                            "local fs facade"
-                        } else {
-                            "local shell"
-                        },
-                    )
-                    .await?;
-                let view = state
-                    .active
-                    .as_ref()
-                    .unwrap_or_else(|| self.workspace.view());
-                if reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await? {
-                    state.watcher = None;
-                }
-                workspace::volumes::sync(&workspace.mounts).await?;
-                if let Some(parsed) = fs {
-                    self.fs(parsed, context, &mut state, &workspace).await
-                } else {
-                    self.shell_checkout(
-                        ShellCommand {
-                            invocation: &invocation,
+            let result = serialized_until(
+                &self.state,
+                deadline_unix_ms,
+                self.clock.as_ref(),
+                async |mut state| {
+                    let workspace = self
+                        .command_workspace(
+                            &mut state,
                             context,
-                            shell,
-                            request,
-                            maximum,
-                            started,
-                        },
-                        state,
-                        &workspace,
-                    )?
-                    .await
-                }
-            })
+                            if invocation.name == "fs" {
+                                "local fs facade"
+                            } else {
+                                "local shell"
+                            },
+                        )
+                        .await?;
+                    let view = state
+                        .active
+                        .as_ref()
+                        .unwrap_or_else(|| self.workspace.view());
+                    if reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await? {
+                        state.watcher = None;
+                    }
+                    workspace::volumes::sync(&workspace.mounts).await?;
+                    // A child that handed back while this checkout was busy left
+                    // its publication to the next command; it lands before this
+                    // command observes the checkout.
+                    self.commands()
+                        .settle_publications(
+                            &workspace::git::CommandContext {
+                                owner: context.task(),
+                                operation: context.operation_id(),
+                                scope: context.effective_scope(),
+                                request: None,
+                            },
+                            &mut state,
+                        )
+                        .await?;
+                    if let Some(parsed) = fs {
+                        self.fs(parsed, context, &mut state, &workspace).await
+                    } else {
+                        self.shell_checkout(
+                            ShellCommand {
+                                control: control.ok_or_else(|| {
+                                    Error::Invalid("shell control is absent".into())
+                                })?,
+                                invocation: &invocation,
+                                context,
+                                shell,
+                                request,
+                                maximum,
+                                started,
+                                admitted,
+                            },
+                            state,
+                            &workspace,
+                        )?
+                        .await
+                    }
+                },
+            )
             .await;
             #[cfg(test)]
             if let Err(error) = &result {
@@ -267,12 +348,14 @@ impl CheckoutTools {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ToolResult>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let ShellCommand {
+                control,
                 invocation,
                 context,
                 shell,
                 request,
                 maximum,
                 started,
+                admitted,
             } = command;
             let execution_grant = context
                 .execution_grant()
@@ -315,7 +398,14 @@ impl CheckoutTools {
                 workspace::volumes::native_scope(&mounts, async |claims| {
                     let (result, mut state, files, claims) = self
                         .shell(
-                            (input, invocation.operation_id, execution_grant, started),
+                            (
+                                input,
+                                invocation.operation_id,
+                                execution_grant,
+                                started,
+                                admitted,
+                                control,
+                            ),
                             maximum,
                             state,
                             files,
@@ -497,6 +587,8 @@ impl ToolExecutor for CheckoutTools {
         mut invocation: ToolInvocation,
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
+        let admitted = std::time::Instant::now();
+        let admitted_unix_ms = self.clock.now_unix_millis();
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
             // Command access is checked once, under the command's own guard:
@@ -547,8 +639,33 @@ impl ToolExecutor for CheckoutTools {
                 });
             let maximum = usize::try_from(maximum).map_err(storage)?;
             let background = shell.as_ref().is_some_and(|input| input.background);
+            // Preserve admission across preparation and background dispatch;
+            // scheduling the worker cannot restart the caller's timeout.
+            let deadline_unix_ms = shell
+                .as_ref()
+                .and_then(|input| input.timeout_ms)
+                .filter(|timeout| *timeout != 0)
+                .map(|timeout| admitted_unix_ms.saturating_add(u64::from(timeout)));
             let (started, launched) = tokio::sync::oneshot::channel();
+            let expiry = deadline_unix_ms.map_or(self.expiry_unix_ms, |deadline| {
+                deadline.min(self.expiry_unix_ms)
+            });
+            let control = shell
+                .as_ref()
+                .map(|_| acyclic_native_runtime::ProcessControl::open(expiry))
+                .transpose()
+                .map_err(storage)?;
+            // Stopping observation stops execution, while the original task
+            // keeps its guard and volume claims through final publication.
+            let _stop = if background {
+                None
+            } else {
+                control.clone().map(shell::StopOnDrop)
+            };
             let command = PreparedCommand {
+                control,
+                admitted,
+                deadline_unix_ms,
                 invocation,
                 shell,
                 fs,
@@ -556,7 +673,7 @@ impl ToolExecutor for CheckoutTools {
                 maximum,
                 started: background.then_some(started),
             };
-            if !background {
+            if command.shell.is_none() {
                 return self.run_checkout_command(command, context)?.await;
             }
             let tools = self.clone();
@@ -566,21 +683,27 @@ impl ToolExecutor for CheckoutTools {
                 if let Err(error) = &result {
                     let terminal = serde_json::to_vec(&serde_json::json!({"error": error.to_string(), "indeterminate": error.leaves_outcome_uncertain()})).map_err(storage)?;
                     if let Err(cause) = output::writer::stage(&context, "result.json", &terminal, "application/json").await {
-                        tracing::error!(?cause, "background shell terminal publication failed");
+                        tracing::error!(?cause, "shell terminal publication failed");
                     }
                 }
                 result
             });
             tokio::pin!(task);
-            tokio::select! {
-                result = &mut task => result.map_err(storage)?,
-                result = launched => {
-                    match result {
-                        Ok(result) => Ok(result),
-                        Err(_) => task.await.map_err(storage)?,
+            observe_until(deadline_unix_ms, self.clock.as_ref(), async {
+                if !background {
+                    return task.await.map_err(storage)?;
+                }
+                tokio::select! {
+                    result = &mut task => result.map_err(storage)?,
+                    result = launched => {
+                        match result {
+                            Ok(result) => Ok(result),
+                            Err(_) => task.await.map_err(storage)?,
+                        }
                     }
                 }
-            }
+            })
+            .await
         })
     }
 
@@ -678,5 +801,107 @@ mod native_capture_storage_tests {
             measured.into_iter().all(|(_, bytes)| bytes <= 512),
             "capture spine embeds concrete child futures"
         );
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod deadline_tests {
+    use super::*;
+
+    fn timed_out(result: &Result<()>) -> bool {
+        matches!(
+            result,
+            Err(Error::Process(crate::ProcessError::Timeout { .. }))
+        )
+    }
+
+    /// A call queued behind a command that never releases the checkout gets
+    /// its timeout_ms failure from the wall alarm, and never runs.
+    #[tokio::test]
+    async fn queued_call_fails_at_its_deadline_without_running() -> Result<()> {
+        let state = StateArc::new(AsyncMutex::new(()));
+        let _dispatcher = lock_owned(StateArc::clone(&state)).await;
+        let clock = acyclic_stream::SystemUnixMillisClock;
+        let now = acyclic_stream::UnixMillisClock::now_unix_millis(&clock);
+        // Both a deadline that expired in the queue and one that expires
+        // while queued: the alarm event, not a recheck, fails the call.
+        for deadline in [now.saturating_sub(1), now.saturating_add(20)] {
+            let ran = std::sync::atomic::AtomicBool::new(false);
+            let result = serialized_until(&state, Some(deadline), &clock, async |_| {
+                ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+            assert!(
+                timed_out(&result),
+                "queued call did not time out: {result:?}"
+            );
+            assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+            assert!(
+                acyclic_stream::UnixMillisClock::now_unix_millis(&clock) >= deadline,
+                "deadline failure fired early"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_deadline_releases_observation_but_retains_completion() -> Result<()> {
+        use acyclic_native_runtime::testing::{Schedule, seeded_runtime};
+        let runtime = seeded_runtime(73).map_err(storage)?;
+        let (schedule, boundaries) = Schedule::seeded(73);
+        runtime.block_on(crate::test_support::run_native_schedule(
+            &schedule,
+            boundaries,
+            async {
+                tokio::time::pause();
+                let state = StateArc::new(AsyncMutex::new(()));
+                let clock = acyclic_stream::SystemUnixMillisClock;
+                for late_success in [false, true] {
+                    let preparation = StateArc::new(AsyncMutex::new(()));
+                    let owner = lock_owned(StateArc::clone(&preparation)).await;
+                    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let deadline = acyclic_stream::UnixMillisClock::now_unix_millis(&clock) + 20;
+                    let (finished, completion) = tokio::sync::oneshot::channel();
+                    let worker_state = StateArc::clone(&state);
+                    let worker_entered = Arc::clone(&entered);
+                    let worker_schedule = schedule.clone();
+                    let task = acyclic_native_runtime::TaskSpawner::current().spawn(async move {
+                        let result =
+                            serialized_until(&worker_state, Some(deadline), &clock, async |_| {
+                                worker_entered.store(true, std::sync::atomic::Ordering::SeqCst);
+                                if late_success {
+                                    worker_schedule.set_unix_millis(deadline);
+                                } else {
+                                    let _preparation = lock_owned(preparation).await;
+                                }
+                                Ok(())
+                            })
+                            .await;
+                        let _ = finished.send(());
+                        result
+                    });
+                    let result = observe_until(Some(deadline), &clock, async {
+                        task.await.map_err(storage)?
+                    })
+                    .await;
+                    assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
+                    assert!(
+                        timed_out(&result),
+                        "admitted call did not time out: {result:?}"
+                    );
+                    if !late_success {
+                        assert!(
+                            StateArc::clone(&state).try_lock_owned().is_err(),
+                            "timeout dropped the completion owner"
+                        );
+                    }
+                    drop(owner);
+                    completion.await.map_err(storage)?;
+                    assert!(StateArc::clone(&state).try_lock_owned().is_ok());
+                }
+                Ok(())
+            },
+        ))
     }
 }

@@ -39,8 +39,85 @@ fn path(workspace: acyclic_fs::WorkspaceId, part: &str) -> Result<StreamPath> {
     .map_err(storage)
 }
 
+async fn cursor(
+    filesystem: &acyclic_fs::LocalFs,
+    workspace: acyclic_fs::WorkspaceId,
+) -> Result<Option<Cursor>> {
+    let stream = filesystem.stream_provider();
+    let record = match stream.head(path(workspace, "cursor")?).await {
+        Ok(head) => head.last,
+        Err(error) if error.category() == StreamError::NotFound => None,
+        Err(error) => return Err(storage(error)),
+    };
+    let Some(record) = record else {
+        return Ok(None);
+    };
+    let cursor: Cursor = decode_record(&record.value)?;
+    if cursor.version != 2 {
+        return Err(Error::Unsupported(
+            "publication cursor requires format v2; start a fresh session".into(),
+        ));
+    }
+    Ok(Some(cursor))
+}
+
+async fn pending(
+    filesystem: &acyclic_fs::LocalFs,
+    workspace: acyclic_fs::WorkspaceId,
+    next: u64,
+) -> Result<Option<Publication>> {
+    let stream = filesystem.stream_provider();
+    let mut records = match stream
+        .read(ReadRequest {
+            key: None,
+            path: path(workspace, "pending")?,
+            from: next,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await
+    {
+        Ok(records) => records,
+        Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+        Err(error) => return Err(storage(error)),
+    };
+    let Some(record) = records.try_next().await.map_err(storage)? else {
+        return Ok(None);
+    };
+    let publication: Publication = decode_record(&record.value)?;
+    if publication.version != 2 {
+        return Err(Error::Unsupported(
+            "deferred publication requires format v2; start a fresh session".into(),
+        ));
+    }
+    Ok(Some(publication))
+}
+
 impl LocalWorkspace {
     pub(in crate::local) async fn defer_publication(
+        self: &Arc<Self>,
+        operation: OperationId,
+        branch: String,
+        source: acyclic_fs::GitGenerationRef,
+    ) -> Result<()> {
+        let workspace = Arc::clone(self);
+        acyclic_native_runtime::TaskSpawner::current()
+            .spawn(async move {
+                let result = workspace
+                    .enqueue_publication(operation, branch, source)
+                    .await;
+                // Publish the retry signal in the original append's completion owner,
+                // even if its caller stopped observing before the durable acknowledgement.
+                workspace
+                    .publication_debt
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                result
+            })
+            .await
+            .map_err(storage)?
+    }
+
+    async fn enqueue_publication(
         &self,
         operation: OperationId,
         branch: String,
@@ -89,55 +166,35 @@ impl LocalWorkspace {
         repository: &acyclic_fs::GitCompatRepository<LocalCoreStateStore>,
     ) -> Result<Option<(u64, Publication)>> {
         let workspace = self.view().workspace().id();
-        let stream = self.filesystem.stream_provider();
-        let next = match stream.head(path(workspace, "cursor")?).await {
-            Ok(head) => match head.last {
-                Some(record) => {
-                    let cursor: Cursor = decode_record(&record.value)?;
-                    if cursor.version != 2 {
-                        return Err(Error::Unsupported(
-                            "publication cursor requires format v2; start a fresh session".into(),
-                        ));
-                    }
-                    // The cursor is the durable withdrawal. Recover a crash
-                    // after acknowledging debt but before releasing its reply.
-                    repository
-                        .acknowledge_request(acyclic_fs::OperationId::from_bytes(
-                            cursor.completed.into_bytes(),
-                        ))
-                        .await
-                        .map_err(storage)?;
-                    cursor.next
-                }
-                None => 0,
-            },
-            Err(error) if error.category() == StreamError::NotFound => 0,
-            Err(error) => return Err(storage(error)),
+        let next = match cursor(&self.filesystem, workspace).await? {
+            Some(cursor) => {
+                // The cursor is the durable withdrawal. Recover a crash
+                // after acknowledging debt but before releasing its reply.
+                repository
+                    .acknowledge_request(acyclic_fs::OperationId::from_bytes(
+                        cursor.completed.into_bytes(),
+                    ))
+                    .await
+                    .map_err(storage)?;
+                cursor.next
+            }
+            None => 0,
         };
-        let mut records = match stream
-            .read(ReadRequest {
-                key: None,
-                path: path(workspace, "pending")?,
-                from: next,
-                limit: 1,
-                at_least: Default::default(),
-            })
-            .await
-        {
-            Ok(records) => records,
-            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
-            Err(error) => return Err(storage(error)),
-        };
-        let Some(record) = records.try_next().await.map_err(storage)? else {
-            return Ok(None);
-        };
-        let publication: Publication = decode_record(&record.value)?;
-        if publication.version != 2 {
-            return Err(Error::Unsupported(
-                "deferred publication requires format v2; start a fresh session".into(),
-            ));
-        }
-        Ok(Some((next, publication)))
+        Ok(pending(&self.filesystem, workspace, next)
+            .await?
+            .map(|publication| (next, publication)))
+    }
+
+    /// Whether `workspace` holds a handback no command has published yet,
+    /// read without binding the workspace.
+    pub(in crate::local) async fn owes_publication(
+        filesystem: &acyclic_fs::LocalFs,
+        workspace: acyclic_fs::WorkspaceId,
+    ) -> Result<bool> {
+        let next = cursor(filesystem, workspace)
+            .await?
+            .map_or(0, |cursor| cursor.next);
+        Ok(pending(filesystem, workspace, next).await?.is_some())
     }
 
     pub(in crate::local) async fn acknowledge_publication(
@@ -215,6 +272,57 @@ mod tests {
         )
         .await?;
         Ok((directory, local))
+    }
+
+    #[tokio::test]
+    async fn cancelled_enqueue_retains_its_durable_publication_signal() -> Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        for checkpoint in ["task:submitted", "task:completed"] {
+            let (_directory, local) = fixture().await?;
+            let workspace = local.workspace.as_ref().unwrap();
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let head = workspace
+                .view()
+                .workspace()
+                .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(storage)?
+                .value;
+            workspace.publication_debt.store(false, SeqCst);
+            let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::seeded(89);
+            let mut enqueue = Box::pin(schedule.scope(workspace.defer_publication(
+                OperationId::new(),
+                "child".into(),
+                acyclic_fs::GitGenerationRef {
+                    workspace_id: workspace.view().workspace().id(),
+                    generation: head.id(),
+                },
+            )));
+            let paused = loop {
+                tokio::select! {
+                    result = &mut enqueue => panic!("enqueue completed before {checkpoint}: {result:?}"),
+                    boundary = boundaries.recv() => {
+                        let boundary = boundary.expect("enqueue boundary");
+                        if boundary.name == checkpoint { break boundary; }
+                        boundary.release();
+                    }
+                }
+            };
+            drop(enqueue);
+            paused.release();
+            crate::test_support::run_native_schedule(&schedule, boundaries, schedule.drained())
+                .await;
+            assert!(workspace.publication_debt.load(SeqCst), "{checkpoint}");
+            assert!(
+                LocalWorkspace::owes_publication(
+                    &workspace.filesystem,
+                    workspace.view().workspace().id(),
+                )
+                .await?,
+                "{checkpoint}"
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -374,6 +482,139 @@ mod tests {
                 physical.mounted.is_some()
             );
         }
+        Ok(())
+    }
+
+    /// A child's handback completes while its parent holds the checkout,
+    /// and lands before the parent's next command reads the checkout.
+    #[tokio::test]
+    async fn handback_completes_while_the_parent_is_busy() -> Result<()> {
+        let (_directory, local) = fixture().await?;
+        let workspace = local
+            .workspace
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("no workspace".into()))?;
+        let id = workspace.view().workspace().id();
+        let owner = super::super::owner::AgentOwner(crate::agent::AgentPath::root(
+            &crate::agent::AgentId::from_bytes(local.root.into_bytes()),
+        ));
+        let scope = crate::runtime::RuntimeScope::new(
+            local.signed.capabilities().clone(),
+            Default::default(),
+        )?;
+        let configuration = super::super::super::checkout_tools::capture::configuration(workspace)?;
+        let commands = super::super::git::Commands {
+            workspace,
+            signed: &local.signed,
+            verifier: &local.verifier,
+            clock: local.clock.as_ref(),
+            capture_options: &configuration.0,
+            capture_policy: &configuration.1,
+        };
+        let context = |operation| super::super::git::CommandContext {
+            owner: &owner,
+            operation,
+            scope: &scope,
+            request: None,
+        };
+        commands
+            .invoke(
+                commands.fs_arguments("branch child", &scope)?,
+                context(OperationId::new()),
+                Box::pin(async { Ok(()) }),
+            )
+            .await?;
+        let repository = acyclic_fs::GitCompatRepository::new(id, workspace.store.clone());
+        let child_id = repository.load().await.map_err(storage)?.branches["child"].workspace_id;
+        let child = acyclic_fs::WorkspaceResolver::resolve(
+            &(
+                workspace.filesystem.clone(),
+                acyclic_fs::WorkspaceGraph::new(workspace.store.clone()),
+            ),
+            child_id,
+        )
+        .await
+        .map_err(storage)?;
+        child
+            .write_text("/handed-back", "completed")
+            .await
+            .map_err(storage)?;
+        let cut = child
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(storage)?
+            .value;
+        // The parent is mid-command for the whole handback.
+        let busy = crate::sync::owned::lock_owned(StateArc::clone(&workspace.state)).await;
+        commands
+            .hand_back(
+                &context(OperationId::new()),
+                "child".into(),
+                acyclic_fs::GitGenerationRef {
+                    workspace_id: child_id,
+                    generation: cut.id(),
+                },
+            )
+            .await?;
+        assert!(LocalWorkspace::owes_publication(&workspace.filesystem, id).await?);
+        drop(busy);
+        // The parent's next command settles the debt before reading.
+        let mut state = crate::sync::owned::lock_owned(StateArc::clone(&workspace.state)).await;
+        struct PausedOwner<'a> {
+            inner: &'a dyn super::super::owner::ViewOwner,
+            entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        }
+        impl super::super::owner::ViewOwner for PausedOwner<'_> {
+            fn verify(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
+                Box::pin(async move {
+                    self.inner.verify().await?;
+                    let entered = self.entered.lock().unwrap().take();
+                    if let Some(entered) = entered {
+                        let _ = entered.send(());
+                        std::future::pending::<()>().await;
+                    }
+                    Ok(())
+                })
+            }
+            fn lease(&self, operation: OperationId) -> acyclic_fs::OperationLeaseId {
+                self.inner.lease(operation)
+            }
+        }
+        let (entered, draining) = tokio::sync::oneshot::channel();
+        let paused = PausedOwner {
+            inner: &owner,
+            entered: std::sync::Mutex::new(Some(entered)),
+        };
+        let paused_context = super::super::git::CommandContext {
+            owner: &paused,
+            operation: OperationId::new(),
+            scope: &scope,
+            request: None,
+        };
+        let mut settlement = Box::pin(commands.settle_publications(&paused_context, &mut state));
+        tokio::select! {
+            entered = draining => entered.map_err(storage)?,
+            result = &mut settlement => panic!("settlement completed before cancellation: {result:?}"),
+        }
+        drop(settlement);
+        assert!(
+            workspace
+                .publication_debt
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+        assert!(LocalWorkspace::owes_publication(&workspace.filesystem, id).await?);
+        commands
+            .settle_publications(&context(OperationId::new()), &mut state)
+            .await?;
+        assert!(!LocalWorkspace::owes_publication(&workspace.filesystem, id).await?);
+        let physical = workspace.selected_workspace(&mut state, &owner).await?;
+        assert_eq!(
+            std::fs::read(physical.path.join("handed-back")).map_err(storage)?,
+            b"completed"
+        );
         Ok(())
     }
 

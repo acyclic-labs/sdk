@@ -7,7 +7,8 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
         MaterializationRecovery::RollBack,
     ] {
         // Fail before the first capture and at each later path in this install,
-        // remove, rename plan. Only successfully persisted captures may survive.
+        // remove, rename plan. Preimages persist only with the Prepared phase,
+        // so a capture failure leaves the bare original intent.
         for ordinal in 1..=plan(0).edits.len() {
             let store = CrashJournalStore::default();
             let tree = TreeBackend::source();
@@ -29,7 +30,7 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                 .expect("query same store after capture failure")
                 .expect("original intent survives before first capture");
             assert_eq!(retained.plan(), &original);
-            assert_eq!(retained.preimages().len(), ordinal - 1);
+            assert!(retained.preimages().is_empty());
             assert_eq!(retained.phase, MaterializationPhase::Preparing);
 
             let mut changed_from = original.clone();
@@ -76,7 +77,6 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                 MaterializationRecovery::Complete => {
                     assert_eq!(recovered.phase, MaterializationPhase::Applied);
                     assert_eq!(tree.snapshot(), target_tree());
-                    assert_eq!(&recovered.preimages()[..ordinal - 1], retained.preimages());
                 }
                 MaterializationRecovery::RollBack => {
                     assert_eq!(recovered.phase, MaterializationPhase::RolledBack);

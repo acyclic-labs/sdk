@@ -42,6 +42,20 @@ struct Invocation<'a> {
     capture_cut: acyclic_fs::GenerationId,
 }
 
+/// A cancelled or failed settlement still owes its durable queue a drain.
+struct PublicationSettlement<'a> {
+    debt: &'a std::sync::atomic::AtomicBool,
+    completed: bool,
+}
+
+impl Drop for PublicationSettlement<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.debt.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
 impl Commands<'_> {
     /// One serialized entry to the git facade, shared by native hosts and
     /// platform-owned session integration. The existing capture, recovery,
@@ -73,6 +87,9 @@ impl Commands<'_> {
             let physical: acyclic_stream::BoxProviderFuture<'_, _> =
                 Box::pin(self.workspace.selected_workspace(&mut state, context.owner));
             let physical = physical.await?;
+            let settled: acyclic_stream::BoxProviderFuture<'_, _> =
+                Box::pin(self.settle_publications(&context, &mut state));
+            settled.await?;
             before.await?;
             let command: acyclic_stream::BoxProviderFuture<'_, Result<Outcome>> =
                 Box::pin(self.fs(parsed, &context, &mut state, &physical));
@@ -155,6 +172,48 @@ impl Commands<'_> {
             self.drain_publications(context, state).await?;
         }
         Ok(result)
+    }
+
+    /// Hands a completed fork back without waiting for this checkout's
+    /// command guard. The durable enqueue is the handback; an idle checkout
+    /// publishes it now, and a busy one publishes it at its next command
+    /// (see [`Self::settle_publications`]). A handback never waits on the
+    /// work of the checkout it lands in.
+    pub(in crate::local) async fn hand_back(
+        &self,
+        context: &CommandContext<'_>,
+        branch: String,
+        source: acyclic_fs::GitGenerationRef,
+    ) -> Result<()> {
+        self.workspace
+            .defer_publication(context.operation, branch, source)
+            .await?;
+        let Ok(mut state) = StateArc::clone(&self.workspace.state).try_lock_owned() else {
+            return Ok(());
+        };
+        self.settle_publications(context, &mut state).await
+    }
+
+    /// Publishes every deferred handback before the guard's holder reads the
+    /// checkout. Costs one atomic load unless a handback raised the debt.
+    pub(in crate::local) async fn settle_publications(
+        &self,
+        context: &CommandContext<'_>,
+        state: &mut State,
+    ) -> Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if !self.workspace.publication_debt.swap(false, SeqCst) {
+            return Ok(());
+        }
+        let mut settlement = PublicationSettlement {
+            debt: &self.workspace.publication_debt,
+            completed: false,
+        };
+        let drained = self.drain_publications(context, state).await;
+        // Do not clear the flag here: another handback may have raised it
+        // while this drain held the checkout guard.
+        settlement.completed = drained.is_ok();
+        drained
     }
 
     pub(in crate::local) async fn drain_publications(

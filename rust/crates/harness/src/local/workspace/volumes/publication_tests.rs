@@ -113,6 +113,7 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
                 process_custody: None,
             },
             0,
+            std::time::Instant::now(),
         )?;
         let native = std::fs::canonicalize(&scratch.destination).map_err(storage)?;
         assert_eq!(prepared.cwd, native);
