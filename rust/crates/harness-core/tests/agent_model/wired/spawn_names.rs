@@ -160,7 +160,7 @@ async fn automatic_self_send_is_refused_without_stopping_the_actor() -> Result {
 }
 
 #[tokio::test]
-async fn same_node_peers_return_committed_receipts_and_preserve_reply_attribution() -> Result {
+async fn peer_send_returns_acceptance_before_receiver_execution() -> Result {
     let peer = AgentPath::root(&id(82));
     let (agents, stream, root, model, files) = fixture_with_files(
         vec![
@@ -222,8 +222,13 @@ async fn same_node_peers_return_committed_receipts_and_preserve_reply_attributio
             _ => None,
         })
         .collect();
+    assert_eq!(
+        model.requests().len(),
+        2,
+        "the receiver has not executed yet"
+    );
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["kind"], "delivered");
+    assert_eq!(results[0]["kind"], "accepted");
     assert_eq!(results[0]["inbox"], 1);
     assert_eq!(results[0]["id"], message.id.as_str());
     assert!(
