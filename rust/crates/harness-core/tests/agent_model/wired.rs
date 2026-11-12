@@ -1,4 +1,4 @@
-//! The wired path: stock executor and a filesystem journal on the agent's private volume.
+//! The wired path: stock executor and a filesystem journal owned by the agent.
 
 use super::{Result, adopted, id, intent};
 use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
@@ -26,6 +26,9 @@ use std::sync::Arc;
 #[path = "wired/workspace_announcements.rs"]
 mod workspace_announcements;
 
+#[path = "wired/journal_payloads.rs"]
+mod journal_payloads;
+
 #[path = "wired/input_wait.rs"]
 mod input_wait;
 #[path = "wired/preparation.rs"]
@@ -43,6 +46,16 @@ const LIMITS: TurnLimits = TurnLimits {
 fn within() -> acyclic_actors::addressing::ActorReference {
     acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
         .expect("actor binding")
+}
+
+fn journal_of(volume: &VolumeRef) -> Result<VolumeRef> {
+    let VolumeOwner::Agent(owner) = volume.owner() else {
+        return Err("expected an agent volume".into());
+    };
+    Ok(acyclic_harness_core::conversation::journal_volume(
+        volume.provider().clone(),
+        &AgentId::from_bytes(owner.into_bytes()),
+    )?)
 }
 
 /// A memory filesystem host with agent `path`'s private volume.
@@ -895,6 +908,8 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
             INTERACTION_ROUTE.to_owned(),
             own.capability(VolumeOperation::Read, &mut None)?,
             own.capability(VolumeOperation::Write, &mut None)?,
+            journal_of(&own)?.capability(VolumeOperation::Read, &mut None)?,
+            journal_of(&own)?.capability(VolumeOperation::Write, &mut None)?,
             envelope.read_capability(&mut None)?,
         ];
         if allowed == Some(true) {
@@ -1746,6 +1761,7 @@ async fn admitted_root_after_its_child(
             &mut None,
         )?;
         host.create_volume(&own).await?;
+        host.create_volume(&journal_of(&own)?).await?;
         let audience = Authority {
             kind: AggregateKind::Conversation,
             id: "workload".into(),
@@ -1765,6 +1781,8 @@ async fn admitted_root_after_its_child(
             } else {
                 grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
                 grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
+                grants.push(journal_of(volume)?.capability(VolumeOperation::Read, &mut None)?);
+                grants.push(journal_of(volume)?.capability(VolumeOperation::Write, &mut None)?);
             }
             Ok(issuer.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?)
         };
@@ -1963,6 +1981,7 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
             let mut grants = vec![INTERACTION_ROUTE.to_owned()];
             for operation in operations {
                 grants.push(binding.volume()?.capability(*operation, &mut None)?);
+                grants.push(journal_of(binding.volume()?)?.capability(*operation, &mut None)?);
             }
             let scope =
                 root.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?;
@@ -2100,6 +2119,7 @@ impl acyclic_stream::NativeStreamProvider for Refusing {}
 #[derive(Clone, Copy)]
 enum Grant {
     Exact(&'static [VolumeOperation]),
+    PrivateOnly,
     Structured(acyclic_fs::access::ActionSet),
 }
 
@@ -2134,6 +2154,14 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
                 Grant::Exact(operations) => {
                     for operation in operations {
                         grants.push(binding.volume()?.capability(*operation, &mut None)?);
+                        grants.push(
+                            journal_of(binding.volume()?)?.capability(*operation, &mut None)?,
+                        );
+                    }
+                }
+                Grant::PrivateOnly => {
+                    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+                        grants.push(binding.volume()?.capability(operation, &mut None)?);
                     }
                 }
                 Grant::Structured(actions) => grants.push(
@@ -2226,6 +2254,13 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
         assert!(reached > 0, "a valid admission reads its history");
     }
     for (case, issued, given, agent, grant) in [
+        (
+            "missing journal",
+            audience.clone(),
+            audience.clone(),
+            None,
+            Grant::PrivateOnly,
+        ),
         (
             "read-only",
             audience.clone(),
