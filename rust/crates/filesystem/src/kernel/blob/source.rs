@@ -7,7 +7,6 @@ pub struct OwnedSourceChunk {
     pub bytes: acyclic_stream::OwnedBytes,
     /// Payload capacity retained by these bytes, not their visible length.
     pub logical_owned_bytes: u64,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) intrinsic: bool,
 }
 
@@ -61,7 +60,6 @@ impl OwnedSourceChunk {
         Self {
             bytes,
             logical_owned_bytes,
-            #[cfg(not(target_arch = "wasm32"))]
             intrinsic: false,
         }
     }
@@ -72,7 +70,6 @@ impl OwnedSourceChunk {
         Self {
             bytes,
             logical_owned_bytes,
-            #[cfg(not(target_arch = "wasm32"))]
             intrinsic: true,
         }
     }
