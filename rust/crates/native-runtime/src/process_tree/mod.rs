@@ -935,16 +935,7 @@ impl ProcessTree {
     /// Observes direct-child exit on the caller's original schedule, retaining
     /// descendant ownership. An unbounded schedule waits only on OS exit.
     pub fn wait(&mut self, schedule: impl Into<CaptureSchedule>) -> io::Result<ExitStatus> {
-        let deadline = match schedule.into() {
-            CaptureSchedule::Unbounded => None,
-            CaptureSchedule::Deadline(deadline) => Some(deadline),
-            CaptureSchedule::Overflow => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "process deadline overflow",
-                ));
-            }
-        };
+        let deadline = schedule.into().deadline()?;
         self.wait_exit_until(deadline, None, &mut None)
     }
 

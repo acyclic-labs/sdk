@@ -49,7 +49,6 @@ impl CheckoutTools {
             claims.mounts(),
             invocation,
             self.clock.now_unix_millis() / 1000,
-            admitted,
         )?;
         control.check().map_err(Error::process_io)?;
         // A dropped turn stops its command; the worker still reaps the tree.

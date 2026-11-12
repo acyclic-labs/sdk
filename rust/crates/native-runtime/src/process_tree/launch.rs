@@ -225,11 +225,14 @@ impl CaptureRequest {
             pump::retire(&mut handler, true, Some(&error));
             return Err(LaunchFailure::Control { error, handler });
         }
-        match self.schedule {
+        // A relative timeout starts here, at launch: no wait before the
+        // process exists counts against it.
+        let schedule = self.schedule.launched();
+        match schedule {
             CaptureSchedule::Deadline(deadline) if capture_now() >= deadline => {
                 return refused(io::ErrorKind::TimedOut.into(), handler);
             }
-            CaptureSchedule::Overflow => {
+            CaptureSchedule::FromLaunch(_) | CaptureSchedule::Overflow => {
                 return refused(io::ErrorKind::InvalidInput.into(), handler);
             }
             CaptureSchedule::Unbounded | CaptureSchedule::Deadline(_) => {}
@@ -250,7 +253,7 @@ impl CaptureRequest {
             let answered = crate::testing::capture_process(
                 crate::testing::ProcessCapture {
                     command: &command,
-                    schedule: self.schedule,
+                    schedule,
                     maximum: self.maximum_output_bytes,
                     input: self.input.as_ref(),
                 },
@@ -280,7 +283,7 @@ impl CaptureRequest {
         };
         Ok(owner.tree(
             tree,
-            self.schedule,
+            schedule,
             self.maximum_output_bytes,
             self.input,
             handler,

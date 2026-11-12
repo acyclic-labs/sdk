@@ -195,6 +195,47 @@ async fn refusals_precede_spawn_and_return_the_original_handler() -> io::Result<
     Ok(())
 }
 
+/// timeout_ms bounds only the process's own run. Every wait before launch
+/// (admission, volume forks, mounts) is modelled by advancing the capture
+/// clock past the whole budget. The negative control fixes the same budget
+/// at admission and is refused as timed out without running; the budget
+/// from launch runs the process to completion.
+#[tokio::test]
+async fn a_launch_relative_timeout_excludes_every_wait_before_launch() -> io::Result<()> {
+    crate::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("work"))?;
+    let marker = root.path().join("marker");
+    let budget = Duration::from_secs(3600);
+    let admitted = Instant::now();
+    super::super::set_capture_clock(Some(admitted + budget * 2));
+    let mut control = command(root.path());
+    control.schedule = CaptureSchedule::until(admitted + budget);
+    let control = control.capture(Recorder::default()).await;
+    let mut request = command(root.path());
+    request.schedule = CaptureSchedule::FromLaunch(budget);
+    let launched = request.capture(Recorder::default()).await;
+    super::super::set_capture_clock(None);
+    let Err(LaunchFailure::Refused { failure, .. }) = control else {
+        panic!("a deadline fixed at admission survived the wait before launch");
+    };
+    assert_eq!(failure.error.kind(), io::ErrorKind::TimedOut);
+    let Ok(launched) = launched else {
+        panic!("the wait before launch counted against the process's timeout");
+    };
+    assert_eq!(
+        launched
+            .await?
+            .result
+            .map_err(io::Error::other)?
+            .status
+            .code(),
+        Some(3)
+    );
+    assert!(marker.exists(), "the launch-relative command never ran");
+    Ok(())
+}
+
 /// A failed spawn may have started a process, so it is never a refusal.
 #[tokio::test]
 async fn a_failed_spawn_is_indeterminate_with_its_handler() -> io::Result<()> {
