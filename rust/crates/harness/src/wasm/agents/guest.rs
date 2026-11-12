@@ -61,6 +61,12 @@ impl AgentGuest {
         wire::encode_manifest(self.handler.manifest())
     }
 
+    /// Test a candidate control against the guest's original active input.
+    #[wasm_bindgen(js_name = acceptsInterrupt)]
+    pub fn accepts_interrupt(&self, query: Vec<u8>) -> Result<bool, JsValue> {
+        wire::accepts_interrupt(&self.handler, &query).map_err(guest_error)
+    }
+
     /// Runs one canonical delivery (with the actor's committed checkpoint)
     /// and returns its canonical transition. Nothing is published here; a
     /// repeated delivery may run again. Aborting `signal` (the host gave up,
@@ -134,5 +140,16 @@ pub(super) fn call(
                 .map(|(bytes, ())| bytes)
                 .map_err(rejected)
         })
+    }
+}
+
+/// The host forwards the original predicate without running a second delivery.
+pub(super) fn interrupt(callback: Function) -> impl Fn(Vec<u8>) -> Result<bool, GuestError> {
+    move |query| {
+        callback
+            .call1(&JsValue::UNDEFINED, &Uint8Array::from(query.as_slice()))
+            .map_err(rejected)?
+            .as_bool()
+            .ok_or_else(|| GuestError::Decode("interrupt predicate must return a boolean".into()))
     }
 }

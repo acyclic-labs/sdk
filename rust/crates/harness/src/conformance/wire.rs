@@ -9,6 +9,7 @@ use std::sync::{
 
 pub(crate) fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
     let manifest = wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?;
+    let interrupt_handler = handler.clone();
     Ok(Arc::new(wire::Remote::new(
         manifest,
         move |bytes: Vec<u8>, cancellation| -> GuestFuture<'static, Vec<u8>> {
@@ -21,6 +22,7 @@ pub(crate) fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
                 wire::encode_transition(&transition)
             })
         },
+        move |query| wire::accepts_interrupt(interrupt_handler.as_ref(), &query),
     )))
 }
 
