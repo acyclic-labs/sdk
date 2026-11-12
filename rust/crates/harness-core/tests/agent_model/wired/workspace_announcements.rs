@@ -15,6 +15,10 @@ struct Exposed {
 }
 
 impl TurnExecutors for Exposed {
+    fn render_bytes(&self) -> Option<u64> {
+        self.turns.render_bytes()
+    }
+
     fn executor<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -166,6 +170,14 @@ async fn selected_instructions(
     let Some(selection) = &document.instructions else {
         return Ok(Vec::new());
     };
+    let reader = instruction_reader(files, selection)?;
+    Ok(selection.entries(reader.as_ref()).await?)
+}
+
+fn instruction_reader(
+    files: &Host,
+    selection: &AnnouncedInstructions,
+) -> Result<Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>> {
     let issuer = AuthorityRoot::new(
         "proof",
         [8; 32],
@@ -174,16 +186,18 @@ async fn selected_instructions(
             id: "proof".into(),
         },
     );
-    let grants = Capabilities::new([selection.manifest.read_capability(&mut None)?]);
+    let grants = Capabilities::new([
+        selection.manifest.read_capability(&mut None)?,
+        selection.content.read_capability(&mut None)?,
+    ]);
     let scope = issuer.bootstrap_scope("proof", &grants, None, &mut None)?;
-    let reader = FilesystemContentVerifier::new(
+    Ok(FilesystemContentVerifier::new(
         files.clone(),
         &issuer.verifier(&mut None)?,
         &scope,
         acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER,
         None,
-    )?;
-    Ok(selection.entries(reader.as_ref()).await?)
+    )?)
 }
 
 async fn large_instruction_selection(
@@ -207,12 +221,17 @@ async fn large_instruction_selection(
     let mut names = Vec::new();
     for n in 0_u8..32 {
         let name = format!("INSTRUCTIONS-{n}.md");
+        let body = if n < 2 {
+            format!("body {n}: {}", "é🦀".repeat(6800))
+        } else {
+            format!("instruction body {n}")
+        };
         files
             .put_content(
                 volume,
                 &grant,
                 &format!("{root}/{name}"),
-                format!("instruction body {n}").as_bytes(),
+                body.as_bytes(),
                 "text/markdown",
                 "AGENTS.md",
                 LIMITS.maximum_bytes,
@@ -501,13 +520,18 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             ])
             .reading_content(),
         );
+        let projection_limits = acyclic_harness_core::conversation::Limits {
+            render_bytes: 64 * 1024,
+            file_bytes: 64 * 1024,
+            ..Default::default()
+        };
         let turns = StockExecutors::new(
             (
                 Model::new("test".into(), "text".into(), "1".into())?,
                 model.clone(),
             ),
             ToolRegistry::default(),
-            (Default::default(), CompactionPolicy::Disabled),
+            (projection_limits, CompactionPolicy::Disabled),
             Arc::new(Grants(vec!["tool:call:wait".into()])),
         )
         .with_agent_tools(&["wait".into()]);
@@ -590,6 +614,47 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
         let requests = model.requests();
         assert_eq!(requests.len(), 2);
         assert!(requests[1].messages.starts_with(&requests[0].messages));
+        let delta = requests[0]
+            .messages
+            .iter()
+            .find(|message| {
+                message
+                    .content
+                    .file_refs()
+                    .any(|file| *file == selection.content)
+            })
+            .ok_or("missing rendered instruction selection")?;
+        let rendered = delta
+            .content
+            .parts()
+            .iter()
+            .filter_map(|part| match part {
+                ModelContentPart::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        let reader = instruction_reader(&proof_files, selection)?;
+        let original = reader
+            .read(
+                &selection.content,
+                selection.content.descriptor().byte_length(),
+                None,
+                None,
+            )?
+            .await?;
+        assert!(original.len() as u64 > projection_limits.render_bytes);
+        assert_eq!(
+            rendered.as_bytes(),
+            original.as_ref(),
+            "part boundaries must preserve every UTF-8 byte"
+        );
+        for request in &requests {
+            for message in &request.messages {
+                message
+                    .content
+                    .validate_limits(projection_limits, &mut None)?;
+            }
+        }
         assert!(
             requests[1]
                 .messages

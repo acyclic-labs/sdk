@@ -157,8 +157,11 @@ impl AnnouncedDocument {
 }
 
 /// One appended message for this turn's changed documents and instructions.
-#[must_use]
-pub fn announcement_message(documents: &[AnnouncedDocument]) -> crate::model::ModelContent {
+pub async fn announcement_message(
+    documents: &[AnnouncedDocument],
+    reader: &dyn crate::conversation::ContentResidencyVerifier,
+    render_bytes: Option<u64>,
+) -> crate::Result<crate::model::ModelContent> {
     use crate::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
     let mut parts = Vec::new();
     let file_part = |file: &crate::conversation::FileRef| ModelContentPart::File {
@@ -168,13 +171,35 @@ pub fn announcement_message(documents: &[AnnouncedDocument]) -> crate::model::Mo
     for document in documents {
         parts.push(file_part(&document.file));
         if let Some(instructions) = &document.instructions {
-            parts.push(file_part(&instructions.content));
+            // Retain the immutable selection's identity without requiring the
+            // aggregate body to fit a single file/render allowance.
+            parts.push(ModelContentPart::File {
+                file: instructions.content.clone(),
+                policy: FileProjectionPolicy::Reference,
+            });
+            let bytes = reader
+                .read(
+                    &instructions.content,
+                    instructions.content.descriptor().byte_length(),
+                    None,
+                    None,
+                )?
+                .await?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| {
+                crate::Error::Invalid("workspace instructions are not UTF-8".into())
+            })?;
+            parts.extend(
+                ModelContent::bounded_text(text, render_bytes)?
+                    .parts()
+                    .iter()
+                    .cloned(),
+            );
         }
     }
     if parts.len() == 1 {
-        ModelContent::Part(parts.remove(0))
+        Ok(ModelContent::Part(parts.remove(0)))
     } else {
-        ModelContent::Parts(parts)
+        Ok(ModelContent::Parts(parts))
     }
 }
 

@@ -1535,16 +1535,6 @@ impl<'a> TurnContext<'a> {
             });
             message_ids.push(message_id(checkpoint, ModelRole::Assistant));
         }
-        let announce = |messages: &mut Vec<ModelMessage>,
-                        message_ids: &mut Vec<uuid::Uuid>,
-                        turn: OperationId,
-                        documents: &[crate::agent::AnnouncedDocument]| {
-            messages.push(ModelMessage {
-                role: ModelRole::User,
-                content: crate::agent::announcement_message(documents),
-            });
-            message_ids.push(announcement_id(turn));
-        };
         for (
             at,
             SettledTurn {
@@ -1564,7 +1554,12 @@ impl<'a> TurnContext<'a> {
                 place(&mut messages, &mut message_ids, ancestor);
             }
             if !announced.is_empty() {
-                announce(&mut messages, &mut message_ids, settled, &announced);
+                messages.push(ModelMessage {
+                    role: ModelRole::User,
+                    content: crate::agent::announcement_message(&announced, reader, render_bytes)
+                        .await?,
+                });
+                message_ids.push(announcement_id(settled));
             }
             let (notices, content) =
                 selected_notices(stream, &agent.path, notices.as_ref(), content, render_bytes)
@@ -1598,7 +1593,12 @@ impl<'a> TurnContext<'a> {
             directive(&mut messages, &mut message_ids);
         }
         if !announcements.is_empty() {
-            announce(&mut messages, &mut message_ids, turn, announcements);
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: crate::agent::announcement_message(announcements, reader, render_bytes)
+                    .await?,
+            });
+            message_ids.push(announcement_id(turn));
         }
         let (notices, input) = selected_notices(
             stream,

@@ -164,6 +164,28 @@ impl ModelContentPart {
 }
 
 impl ModelContent {
+    /// Split verified UTF-8 text into lossless parts under a per-part allowance.
+    /// The allowance splits work; it never truncates the source or caps its size.
+    pub fn bounded_text(text: &str, maximum: Option<u64>) -> Result<Self> {
+        let maximum = maximum.unwrap_or(u64::MAX).min(usize::MAX as u64) as usize;
+        let mut remaining = text;
+        let mut parts = Vec::new();
+        while !remaining.is_empty() {
+            let mut end = remaining.len().min(maximum);
+            while !remaining.is_char_boundary(end) {
+                end -= 1;
+            }
+            if end == 0 {
+                return Err(Error::Invalid(
+                    "text character exceeds render allowance".into(),
+                ));
+            }
+            parts.push(ModelContentPart::text(remaining[..end].to_owned()));
+            remaining = &remaining[end..];
+        }
+        Ok(Self::Parts(parts))
+    }
+
     /// Structured parts; plain text has no structured parts.
     #[must_use]
     pub fn parts(&self) -> &[ModelContentPart] {
