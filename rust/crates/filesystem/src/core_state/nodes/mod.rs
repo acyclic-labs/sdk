@@ -39,7 +39,7 @@ pub(super) fn lazy_digest<T: LazyNode>(
     .map_err(LocalCoreStateStoreError::LazyWork)
 }
 
-pub(super) fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyWorkspaceError {
+pub(crate) fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyWorkspaceError {
     use crate::LazyWorkspaceError as Lazy;
     match error {
         LocalCoreStateStoreError::Io(error) => Lazy::NativeRecordIo(error, None),

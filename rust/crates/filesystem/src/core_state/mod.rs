@@ -786,6 +786,7 @@ pub use recovery::NativeRecoveryRoot;
 mod decode;
 use decode::*;
 mod nodes;
+pub(crate) use nodes::native_core_error;
 mod publications;
 use nodes::*;
 mod collection;

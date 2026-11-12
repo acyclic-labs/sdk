@@ -164,6 +164,7 @@ mod sync;
 mod watch;
 use content::*;
 mod metadata;
+pub(super) use metadata::lazy_error;
 use metadata::*;
 use promotion::*;
 

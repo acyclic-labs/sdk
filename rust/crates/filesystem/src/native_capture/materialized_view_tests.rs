@@ -118,11 +118,12 @@ async fn check_materialized_metadata() -> Result<(), Box<dyn std::error::Error>>
         std::fs::set_permissions(file, original)?;
     }
     let file = host.path().join("file-2");
-    let modified = std::fs::metadata(&file)?.modified()?;
+    let original = std::fs::metadata(&file)?;
+    let modified = original.modified()?;
+    let created = original.created().ok();
     let handle = std::fs::OpenOptions::new().write(true).open(&file)?;
     handle.set_times(
-        std::fs::FileTimes::new()
-            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(37)),
+        std::fs::FileTimes::new().set_modified(modified + std::time::Duration::from_secs(37)),
     )?;
     let mut checkout = workspace
         .checkout(
@@ -148,6 +149,11 @@ async fn check_materialized_metadata() -> Result<(), Box<dyn std::error::Error>>
     );
     handle.set_times(std::fs::FileTimes::new().set_modified(modified))?;
     drop(handle);
+    assert_eq!(
+        std::fs::metadata(&file)?.created().ok(),
+        created,
+        "the modification-time fixture preserves creation time"
+    );
     std::fs::write(host.path().join("file-3"), b"updated content")?;
     let mut checkout = workspace
         .checkout(

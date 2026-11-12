@@ -3,6 +3,9 @@ use super::*;
 impl From<crate::CaptureError> for MountSourceError {
     fn from(error: crate::CaptureError) -> Self {
         match error {
+            crate::CaptureError::Baseline(error) => {
+                super::super::lazy::lazy_error(crate::core_state::native_core_error(*error))
+            }
             crate::CaptureError::Kernel(error) => match *error {
                 FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error)) => {
                     MountSourceError::Work(error)
