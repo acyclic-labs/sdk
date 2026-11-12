@@ -1,4 +1,4 @@
-//! [`TurnEffects`] as internal files on the agent's private volume: one file
+//! [`TurnEffects`] as internal files on the agent's journal volume: one file
 //! `effects/v4/<turn>/<segment>/<call>.msgpack` per agent tool call, in the
 //! internal interaction area, so no file tool can forge an effect past the
 //! call's approval. Each segment's effects commit together, so a segment's

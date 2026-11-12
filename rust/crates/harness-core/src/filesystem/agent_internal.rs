@@ -1,5 +1,5 @@
 //! Internal files published through one host-owned volume grant. Approvals
-//! and tool-call effects use the private interaction area; announcement
+//! use the private interaction area; tool-call effects and announcement
 //! documents use the agent's journal. Each uses the same create-once publisher.
 //! Settled turn outputs live in the inherited conversation area, which an
 //! exact-version grant reaches.

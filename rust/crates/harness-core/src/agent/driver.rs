@@ -26,7 +26,7 @@ use std::{ops::ControlFlow, sync::Arc};
 pub struct OpenTurn {
     /// Executor bound to the agent's tools, volumes and policy.
     pub executor: Arc<dyn Executor>,
-    /// Journal of this agent's turns, on its private volume.
+    /// Journal of this agent's turns, outside its workspace table.
     pub journal: Arc<dyn ExecutionJournal>,
     /// Signing custody of the journal's authority; the journal holds only a
     /// weak admission port, so the custody lives exactly as long as the turn.

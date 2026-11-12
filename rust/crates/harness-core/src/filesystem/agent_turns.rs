@@ -1,5 +1,5 @@
 //! Agent turns on the filesystem: each agent's journal is a conversation-scoped
-//! authority over the agent's private volume; its executor comes from the host's
+//! authority over the agent's journal volume; its executor comes from the host's
 //! [`TurnExecutors`] for that agent and authority, per turn.
 //!
 //! The model context of a turn is the shared instruction, then the agent's
@@ -181,16 +181,18 @@ impl<'v> AdmittedAgent<'v> {
             TurnAdmission::Admitted { scope, .. } => Some(scope),
         };
         if let Some(scope) = parent {
-            // File authority always names the committed private binding.
-            crate::conversation::ContentGrant::authorize_agent_volume(
-                &issuer.verifier(&mut None)?,
-                scope,
-                owner,
-                private.volume()?,
-                VolumeOperation::Write,
-                &mut None,
-            )?;
-            require_structured_write(scope, owner, private.volume()?)?;
+            let verifier = issuer.verifier(&mut None)?;
+            for volume in [private.volume()?, &journal] {
+                crate::conversation::ContentGrant::authorize_agent_volume(
+                    &verifier,
+                    scope,
+                    owner,
+                    volume,
+                    VolumeOperation::Write,
+                    &mut None,
+                )?;
+                require_structured_write(scope, owner, volume)?;
+            }
         }
         Ok(Self {
             issuer,
@@ -499,11 +501,21 @@ pub(in crate::filesystem) type WorkspaceToolsFactory =
     Arc<dyn Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn crate::runtime::FilesystemExecutor>>>;
 
 /// A turn's bindings before its approval gate is resolved.
-struct Bindings {
+struct Bindings<A: 'static, O: 'static> {
     issuer: RuntimeAuthority,
     scope: Scope,
     grants: Capabilities,
     content: ContentBindings,
+    journal: JournalStorage<A, O>,
+}
+
+/// Host custody is separate from the authority exposed to the model and tools.
+struct JournalStorage<A: 'static, O: 'static> {
+    volume: VolumeRef,
+    verifier: AuthorityVerifier,
+    scope: Scope,
+    files: Arc<AgentInternalFiles<A, O>>,
+    reader: Arc<FilesystemContentVerifier<A, O>>,
 }
 
 impl<P, O> FilesystemTurnHost<P, acyclic_fs::StreamAuthorityStore<P>, O>
@@ -744,19 +756,21 @@ where
         agent: &AgentState,
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
-        Bindings,
+        Bindings<A, O>,
         Arc<AgentInternalFiles<A, O>>,
     )> {
-        self.journal(self.admit(agent)?, agent.policy.as_slice(), None, None)
+        self.journal(self.admit(agent)?, agent.policy.as_slice(), &[], None, None)
             .await
     }
 
-    /// Opens journal queries through this agent's original private-volume grant.
+    /// Opens journal queries through this agent's original journal grant.
     pub(super) async fn query_journal(
         &self,
         agent: &AgentState,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        let (journal, _, _) = self.journal(self.admit(agent)?, &[], None, None).await?;
+        let (journal, _, _) = self
+            .journal(self.admit(agent)?, &[], &[], None, None)
+            .await?;
         Ok(journal)
     }
 
@@ -880,14 +894,20 @@ where
         &self,
         admitted: AdmittedAgent<'_>,
         external: &[FileRef],
+        retained: &[FileRef],
         context: Option<&mut TurnContext<'_>>,
         stop: Option<acyclic_actors::guest::CancellationToken>,
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
-        Bindings,
+        Bindings<A, O>,
         Arc<AgentInternalFiles<A, O>>,
     )> {
         let local_root = admitted.parent.is_none();
+        let storage = crate::core::until_turn_stopped(
+            stop.clone(),
+            self.journal_storage(&admitted, retained),
+        )
+        .await?;
         let AgentAuthority {
             issuer,
             mut scope,
@@ -956,9 +976,9 @@ where
             Arc::clone(&self.stream),
             Arc::clone(&self.host),
             FilesystemJournalBinding {
-                volume: private.volume()?,
-                verifier: &verifier,
-                scope: &scope,
+                volume: &storage.volume,
+                verifier: &storage.verifier,
+                scope: &storage.scope,
                 io: None,
             },
         )?
@@ -975,6 +995,7 @@ where
                     reader,
                     writer: Some(writer),
                 },
+                journal: storage,
             },
             internal,
         ))
@@ -999,23 +1020,19 @@ where
         )))
     }
 
-    /// Host-only storage for announcement documents. Retained documents are
-    /// selected by the conversation, independently of current workspace roots.
+    /// Host-only storage for execution payloads, effects and announcements.
+    /// Retained documents are selected by the conversation, independently of
+    /// current workspace roots.
     /// This reader and its journal write grant never enter the tool bindings.
-    async fn announcement_storage(
+    async fn journal_storage(
         &self,
-        agent: &AgentState,
+        admitted: &AdmittedAgent<'_>,
         retained: &[FileRef],
-    ) -> Result<(
-        Arc<AgentInternalFiles<A, O>>,
-        Arc<FilesystemContentVerifier<A, O>>,
-    )> {
-        let admitted = self.admit(agent)?;
+    ) -> Result<JournalStorage<A, O>> {
         let volume = crate::conversation::journal_volume(
             admitted.private.volume()?.provider().clone(),
             &crate::agent::AgentId::from_bytes(admitted.owner.into_bytes()),
         )?;
-        admitted.authorize_volume(&volume)?;
         let grants = match admitted.parent {
             Some(parent) => parent.capabilities().clone(),
             None => Capabilities::new(
@@ -1028,24 +1045,24 @@ where
         };
         let scope = admitted
             .issuer
-            .issue(
-                admitted.parent,
-                "announcements",
-                &grants,
-                Some(admitted.owner),
-            )
+            .issue(admitted.parent, "journal", &grants, Some(admitted.owner))
             .await?;
         let verifier = admitted.issuer.verifier(&mut None)?;
-        Ok((
-            self.internal_files(&volume, &verifier, &scope)?,
-            FilesystemContentVerifier::new(
-                Arc::clone(&self.host),
-                &verifier,
-                &scope,
-                crate::conversation::MAX_EXACT_JS_INTEGER,
-                None,
-            )?,
-        ))
+        let files = self.internal_files(&volume, &verifier, &scope)?;
+        let reader = FilesystemContentVerifier::new(
+            Arc::clone(&self.host),
+            &verifier,
+            &scope,
+            crate::conversation::MAX_EXACT_JS_INTEGER,
+            None,
+        )?;
+        Ok(JournalStorage {
+            volume,
+            verifier,
+            scope,
+            files,
+            reader,
+        })
     }
 
     /// The agent's settled turns from the current history page cut, with their
@@ -1962,17 +1979,6 @@ where
                     )
                     .cloned()
                     .collect();
-                let mut announcement_storage = if retained.is_empty() {
-                    None
-                } else {
-                    Some(
-                        crate::core::until_turn_stopped(
-                            Some(stop.clone()),
-                            self.announcement_storage(agent, &retained),
-                        )
-                        .await?,
-                    )
-                };
                 let external: Vec<FileRef> = context
                     .files()
                     .chain(
@@ -1991,7 +1997,13 @@ where
                     .cloned()
                     .collect();
                 let (journal, bindings, files) = self
-                    .journal(admitted, &external, Some(&mut context), Some(stop.clone()))
+                    .journal(
+                        admitted,
+                        &external,
+                        &retained,
+                        Some(&mut context),
+                        Some(stop.clone()),
+                    )
                     .await?;
                 let input =
                     std::mem::replace(&mut context.input, ModelContent::Text(String::new()));
@@ -2013,13 +2025,7 @@ where
                             )
                         });
                         let seen = context
-                            .instruction_entries(
-                                announcement_storage
-                                    .as_ref()
-                                    .map_or(bindings.content.reader.as_ref(), |(_, reader)| {
-                                        reader.as_ref()
-                                    }),
-                            )
+                            .instruction_entries(bindings.journal.reader.as_ref())
                             .await?;
                         let update = self
                             .executors
@@ -2039,18 +2045,7 @@ where
                             });
                         let mut changed = Vec::new();
                         if roster.is_some() || update.is_some() {
-                            if announcement_storage.is_none() {
-                                announcement_storage = Some(
-                                    crate::core::until_turn_stopped(
-                                        Some(stop.clone()),
-                                        self.announcement_storage(agent, &retained),
-                                    )
-                                    .await?,
-                                );
-                            }
-                            let (announcement_files, _) = announcement_storage
-                                .as_ref()
-                                .expect("changed documents bind their journal storage");
+                            let announcement_files = &bindings.journal.files;
                             if let Some(roster) = roster {
                                 let (bytes, digest) = roster.canonical();
                                 changed.push(AnnouncedDocument {
@@ -2092,7 +2087,7 @@ where
                 };
                 let segment = crate::agent::turn_segment(agent).map_err(Error::from)?;
                 let effects = Arc::new(FilesystemTurnEffects::new(
-                    Arc::clone(&files),
+                    Arc::clone(&bindings.journal.files),
                     Arc::clone(&self.stream),
                     self.within.clone(),
                     agent.path.clone(),
@@ -2153,11 +2148,7 @@ where
                         &*self.stream,
                         agent,
                         &*bindings.content.reader,
-                        announcement_storage
-                            .as_ref()
-                            .map_or(bindings.content.reader.as_ref(), |(_, reader)| {
-                                reader.as_ref()
-                            }),
+                        bindings.journal.reader.as_ref(),
                         input,
                         &announcements,
                         self.executors.content_limits(),
