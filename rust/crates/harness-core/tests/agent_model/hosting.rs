@@ -313,7 +313,7 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
     };
     let stream = Arc::new(MemoryStream::default());
     let mut capacity = turns()?;
-    capacity.limits.maximum_bytes = 1 << 20;
+    capacity.limits.maximum_bytes = Some(1 << 20);
     let bound = Bound::local_root(
         AuthorityRoot::new(
             "agents",

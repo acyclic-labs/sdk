@@ -156,7 +156,7 @@ async fn fixture() -> Result<Fixture> {
             &scope,
             &volume,
             VolumeOperation::Write,
-            LIMITS.maximum_bytes,
+            LIMITS.maximum_bytes.expect("finite storage policy"),
             &mut None,
         )?;
         let file = files
@@ -255,7 +255,7 @@ fn file_reader(
         files.clone(),
         &issuer.verifier(&mut None)?,
         &scope,
-        acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER,
+        None,
         None,
     )?;
     Ok((issuer, reader))
@@ -264,7 +264,7 @@ fn file_reader(
 async fn selected_text(files: &Host, file: &FileRef) -> Result<String> {
     let (_custody, reader) = file_reader(files, &[file])?;
     let bytes = reader
-        .read(file, file.descriptor().byte_length(), None, None)?
+        .read(file, Some(file.descriptor().byte_length()), None, None)?
         .await?;
     Ok(String::from_utf8(bytes.to_vec())?)
 }
@@ -309,7 +309,7 @@ async fn large_instruction_selection(
         &scope,
         volume,
         VolumeOperation::Write,
-        LIMITS.maximum_bytes,
+        LIMITS.maximum_bytes.expect("finite storage policy"),
         &mut None,
     )?;
     let prefix = vec!["r".repeat(240); 9].join("/");
@@ -396,12 +396,12 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
     )?;
     let (bytes, digest) = document.canonical();
     let limits = acyclic_harness_core::conversation::Limits {
-        render_bytes: 64 * 1024,
-        file_bytes: 64 * 1024,
+        render_bytes: Some(64 * 1024),
+        file_bytes: Some(64 * 1024),
         attachments: std::num::NonZeroUsize::new(1),
         ..Default::default()
     };
-    assert!(bytes.len() as u64 > limits.render_bytes);
+    assert!(bytes.len() as u64 > limits.render_bytes.expect("finite render policy"));
     let volume = users[0].volume()?;
     let grants = Capabilities::new([
         volume.capability(VolumeOperation::Write, &mut None)?,
@@ -433,19 +433,13 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
             bytes,
             "application/json",
             "workspaces.json",
-            bytes.len() as u64,
+            Some(bytes.len() as u64),
             &acyclic_harness_core::IdempotencyKey::new("large-document")?,
             None,
             ContentAccess::default(),
         )
         .await?;
-    let reader = FilesystemContentVerifier::new(
-        files,
-        &verifier,
-        &scope,
-        acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER,
-        None,
-    )?;
+    let reader = FilesystemContentVerifier::new(files, &verifier, &scope, None, None)?;
     let discovered = WorkspaceUpdate::discover(
         entries.clone(),
         None,
@@ -547,8 +541,8 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
             .reading_content(),
     );
     let projection_limits = acyclic_harness_core::conversation::Limits {
-        file_bytes: 64 * 1024,
-        render_bytes: 64 * 1024,
+        file_bytes: Some(64 * 1024),
+        render_bytes: Some(64 * 1024),
         attachments: std::num::NonZeroUsize::new(1),
         ..Default::default()
     };
@@ -566,14 +560,15 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
     assert!(
         instruction_files[..2]
             .iter()
-            .all(|file| file.descriptor().byte_length() < projection_limits.file_bytes)
+            .all(|file| file.descriptor().byte_length()
+                < projection_limits.file_bytes.expect("finite file policy"))
     );
     assert!(
         instruction_files[..2]
             .iter()
             .map(|file| file.descriptor().byte_length())
             .sum::<u64>()
-            > projection_limits.file_bytes,
+            > projection_limits.file_bytes.expect("finite file policy"),
         "separately valid retained deltas must exceed the shared file credit"
     );
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
@@ -710,7 +705,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
             projection_limits,
             None,
         )?
-        .projected_file_bytes(Some(projection_limits.file_bytes))?;
+        .projected_file_bytes(projection_limits.file_bytes)?;
     }
     for (at, pair) in requests.windows(2).enumerate() {
         if at + 1 == 16 {
@@ -762,8 +757,8 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             .reading_content(),
         );
         let projection_limits = acyclic_harness_core::conversation::Limits {
-            render_bytes: 64 * 1024,
-            file_bytes: 64 * 1024,
+            render_bytes: Some(64 * 1024),
+            file_bytes: Some(64 * 1024),
             attachments: std::num::NonZeroUsize::new(1),
             ..Default::default()
         };
@@ -874,7 +869,12 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             })
             .collect::<String>();
         let original = announcement_text(&proof_files, &pinned).await?;
-        assert!(selection.content.descriptor().byte_length() > projection_limits.render_bytes);
+        assert!(
+            selection.content.descriptor().byte_length()
+                > projection_limits
+                    .render_bytes
+                    .expect("finite render policy")
+        );
         assert_eq!(
             rendered.as_bytes(),
             original.as_bytes(),
