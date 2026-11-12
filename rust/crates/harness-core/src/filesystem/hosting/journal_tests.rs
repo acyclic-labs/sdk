@@ -462,11 +462,13 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
         let by = Sender::Host {
             host: "query-race".into(),
         };
-        assert!(
-            matches!(agents.send(&root, &by, &InboxRecord::Cancel(crate::agent::Cancellation { conversation: 0, input: 1,
-            by: by.clone(), id: IntentId::try_from("arrived")?,
-        })).await?, Delivered::Committed { inbox } if inbox == cut)
-        );
+        assert!(matches!(agents.send(&root, &by, &InboxRecord::Notice {
+                id: IntentId::try_from("arrived")?,
+                notice: crate::agent::NoticePayload::Quiet(crate::conversation::wire::Notice {
+                    source: "test".into(), kind: "test.control".into(),
+                    body: serde_json::Value::Null, wake: false, coalesce_key: None,
+                }),
+            }).await?, Delivered::Committed { inbox } if inbox == cut));
         agents.drain(&root).await?;
         let progress = agents.input_progress(&root, cut).await?;
         assert!(progress.settled);

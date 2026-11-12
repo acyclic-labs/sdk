@@ -172,7 +172,7 @@ export class Agent extends DurableObject {
   send(intent: string, text: string) { return this.host().send(intent, text); }
   read(stream: "inbox" | "conversation" | "status") { return this.host().read(stream); }
   pause(paused: boolean) { return this.host().pause(paused); }
-  cancel(intent: string) { return this.host().cancel(intent); }
+  cancel(intent: string, input: bigint, conversation: bigint) { return this.host().cancel(intent, input, conversation); }
   observeModel() { return this.lifecycle.observe(); }
   readFile(file: WasmFileRefWire) { return this.host().readFile(file); }
   wake() { return this.host().wake(); }
@@ -375,7 +375,7 @@ export default {
       }
       await adoption.adopt(child);
       await adoption.adopt(child);
-      await adoption.cancel("adopted-control");
+      await adoption.pause(false);
       if ((await adoption.read("status")).length === 0) {
         throw new Error("STEP valid-adopt recovery failed; recovery: bash scripts/qualify-cloudflare.sh");
       }
@@ -384,10 +384,10 @@ export default {
     }
     if (new URL(request.url).pathname === "/adoption-replay") {
       const adoption = env.AGENT.getByName("invalid-adopt");
-      // Cancellation is deliberately the first request after the full restart.
-      await adoption.cancel("cold-adopted-control");
+      // An untargeted placement control is the first request after restart.
+      await adoption.pause(false);
       await adoption.adopt(new URL(request.url).searchParams.get("path")!);
-      await adoption.cancel("adopted-control");
+      await adoption.pause(false);
       if ((await adoption.read("status")).length === 0) {
         throw new Error("STEP adopted-host restart failed; recovery: bash scripts/qualify-cloudflare.sh");
       }
@@ -403,7 +403,7 @@ export default {
           throw new Error("STEP guest-cancel start failed; recovery: bash scripts/qualify-cloudflare.sh");
         }
         const [outcome, aborted] = await Promise.all([
-          creation, observations.next(), agent.cancel("cancel-running-guest"),
+          creation, observations.next(), agent.cancel("cancel-running-guest", 0n, 0n),
         ]);
         if ("error" in outcome || aborted.value !== "aborted") {
           throw new Error(`STEP guest-cancel failed: ${JSON.stringify(outcome)}; recovery: bash scripts/qualify-cloudflare.sh`);
