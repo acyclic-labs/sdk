@@ -126,7 +126,8 @@ pub enum Delete {
 pub struct Page {
     /// Digests strictly after the request's cursor.
     pub digests: Vec<Digest>,
-    /// The cursor for the next page; `None` only at the end.
+    /// The last inspected digest, including an incomplete put omitted from
+    /// `digests`; `None` only at the end. Continue even when `digests` is empty.
     pub next: Option<Digest>,
     /// The applied revision this page was served at, when the provider
     /// issues revisions.
@@ -344,7 +345,8 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error>;
 
     /// Lists digests strictly after `after` in ascending order. A blob present
-    /// for the whole traversal appears exactly once.
+    /// for the whole traversal appears exactly once. `limit` bounds inspected
+    /// candidates, so pending puts may produce a short or empty nonterminal page.
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error>;
 
     /// Makes the blobs in the closure of `only`, or every blob, survive a

@@ -182,7 +182,7 @@ pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
     if page.digests.windows(2).any(|pair| pair[0] >= pair[1])
         || page
             .next
-            .is_some_and(|next| page.digests.last() != Some(&next))
+            .is_some_and(|next| page.digests.last().is_some_and(|last| *last > next))
     {
         return Err(invalid());
     }
@@ -334,7 +334,10 @@ pub(crate) fn listed(
 ) -> Result<Page, Error> {
     let page = page(value)?;
     if page.digests.len() > limit as usize
-        || after.is_some_and(|after| page.digests.first().is_some_and(|first| *first <= after))
+        || after.is_some_and(|after| {
+            page.digests.first().is_some_and(|first| *first <= after)
+                || page.next.is_some_and(|next| next <= after)
+        })
     {
         return Err(wire::ErrorCode::Unavailable.into());
     }

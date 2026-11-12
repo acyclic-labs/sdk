@@ -470,9 +470,10 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
                     .digests
                     .first()
                     .is_none_or(|first| after.is_none_or(|cursor| *first > cursor))
-                && page
-                    .next
-                    .is_none_or(|next| page.digests.last() == Some(&next)),
+                && page.next.is_none_or(|next| {
+                    after.is_none_or(|after| next > after)
+                        && page.digests.last().is_none_or(|last| *last <= next)
+                }),
             page
         );
         seen.extend(page.digests.iter().copied());

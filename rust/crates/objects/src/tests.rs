@@ -1873,7 +1873,13 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
     loop {
         let page = blobs.list(after, 1).await?;
         // The cursor contract every wire client checks.
-        assert!(page.next.is_none() || page.next == page.digests.last().copied());
+        assert!(page.next.is_none_or(|next| {
+            after.is_none_or(|after| next > after)
+                && page.digests.last().is_none_or(|last| *last <= next)
+        }));
+        let decoded = crate::convert::page(&crate::convert::wire_page(&page))?;
+        assert_eq!(decoded.digests, page.digests);
+        assert_eq!(decoded.next, page.next);
         listed.extend(page.digests.iter().copied());
         match page.next {
             Some(next) => after = Some(next),
@@ -1888,6 +1894,86 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
     assert!(matches!(stalled.await?, Put::Created { .. }));
     // Control: once published, it lists.
     assert_eq!(blobs.list(None, 100).await?.digests.len(), 5);
+    Ok(())
+}
+
+#[test]
+fn sparse_remote_pages_require_forward_cursors() -> Result<(), crate::Error> {
+    let [before, after, next] = [1, 2, 3].map(|byte| Digest::from_bytes([byte; 32]));
+    for digests in [Vec::new(), vec![next.into()]] {
+        for cursor in [before, after] {
+            let page = crate::wire::ListBlobsResponse {
+                digests: digests.clone(),
+                next: Some(cursor.into()),
+            };
+            assert!(crate::convert::listed(&page, Some(after), 4).is_err());
+        }
+    }
+    for cursor in [None, Some(next)] {
+        let page = crate::wire::ListBlobsResponse {
+            digests: Vec::new(),
+            next: cursor.map(Into::into),
+        };
+        assert_eq!(crate::convert::listed(&page, Some(after), 4)?.next, cursor);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn listing_work_is_bounded_with_pending_puts() -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_test_support::scale::{Bound, assert_scales};
+
+    async fn page_work(
+        pending: u64,
+    ) -> Result<std::collections::BTreeMap<&'static str, usize>, Box<dyn std::error::Error>> {
+        let store = Store::new(Counting::new(MemoryMedium::default()));
+        let account = b"pending-list";
+        let blobs = store.account(account)?;
+        // This is the real envelope-before-payload boundary of a suspended put.
+        let envelope = crate::blob::Envelope {
+            kind: crate::Kind::Blob,
+            length: 1,
+            stored: 1,
+            references: Vec::new(),
+            version: [1; 16],
+            dying: None,
+            condemned: 0,
+        };
+        for index in 0..pending {
+            let digest = Digest::of(&index.to_le_bytes());
+            let key = blobs.envelope_key(&digest);
+            assert!(
+                store
+                    .medium()
+                    .create(&key, envelope.encode().into())
+                    .await?
+            );
+        }
+        store.medium().take();
+        let page = blobs.list(None, 4).await?;
+        let counted = store.medium().take();
+        assert!(page.digests.is_empty(), "incomplete puts are not blobs");
+        assert!(page.next.is_some(), "an empty page must retain progress");
+        let decoded = crate::convert::page(&crate::convert::wire_page(&page))?;
+        assert_eq!(decoded.digests, page.digests);
+        assert_eq!(decoded.next, page.next);
+        assert_eq!(counted.get("list"), Some(&1));
+        assert_eq!(counted.get("listed_keys"), Some(&4));
+        assert_eq!(counted.get("observe"), Some(&4));
+        assert_eq!(counted.get("read"), Some(&4));
+        Ok(counted)
+    }
+
+    let small = page_work(16).await?;
+    let large = page_work(128).await?;
+    assert!(small.keys().eq(large.keys()), "counter coverage changed");
+    for (metric, before) in small {
+        let after = large
+            .get(metric)
+            .expect("every original counter is present");
+        assert_scales(Bound::Constant, (16, before as u64), (128, *after as u64));
+    }
     Ok(())
 }
 

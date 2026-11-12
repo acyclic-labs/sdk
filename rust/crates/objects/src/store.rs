@@ -835,7 +835,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         Ok(Issued::new(account, incarnation, run))
     }
 
-    fn envelope_key(&self, digest: &Digest) -> String {
+    pub(crate) fn envelope_key(&self, digest: &Digest) -> String {
         let hex = digest.to_hex();
         format!("{}e/{}/{hex}", self.state.prefix, &hex[..2])
     }
@@ -1836,35 +1836,28 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 let served = self.read_revision().await?;
                 let after = after.map(|digest| self.envelope_key(&digest));
                 let limit = usize::try_from(limit).map_err(|_| invalid())?;
-                // Envelopes still awaiting their payload are not blobs: page past
-                // them to a full page.
+                // Bound inspected candidates, including envelopes whose payload
+                // is still pending. A sparse page retains the last inspected
+                // cursor so the caller can continue without an account scan.
                 let mut digests = Vec::new();
-                let mut cursor = after;
-                loop {
-                    let wanted = limit - digests.len();
-                    let keys = self
-                        .medium
-                        .list(
-                            &format!("{}e/", self.state.prefix),
-                            cursor.as_deref(),
-                            wanted,
-                        )
-                        .await
-                        .map_err(medium)?;
-                    for (key, _) in &keys {
-                        let digest = self.digest_from_key(key)?;
-                        if self.blob(&digest).await?.is_some() {
-                            digests.push(digest);
-                        }
+                let keys = self
+                    .medium
+                    .list(&format!("{}e/", self.state.prefix), after.as_deref(), limit)
+                    .await
+                    .map_err(medium)?;
+                for (key, _) in &keys {
+                    let digest = self.digest_from_key(key)?;
+                    if self.blob(&digest).await?.is_some() {
+                        digests.push(digest);
                     }
-                    if keys.len() < wanted || digests.len() == limit {
-                        break;
-                    }
-                    cursor = keys.last().map(|(key, _)| key.clone());
                 }
-                let next = (digests.len() == limit)
-                    .then(|| digests.last().copied())
-                    .flatten();
+                let next = if keys.len() == limit {
+                    keys.last()
+                        .map(|(key, _)| self.digest_from_key(key))
+                        .transpose()?
+                } else {
+                    None
+                };
                 Ok(Page {
                     digests,
                     next,
