@@ -131,6 +131,7 @@ export class GuestActivation<State, Bindings> {
       if (result !== null && result.type !== "reply") throw new Error("socket result outside a socket delivery");
       const next = await this.checkpoint();
       const encoded = wasm.encodeTransition(next.codec.name, next.codec.version, next.bytes, result?.payload ?? null);
+      signal?.throwIfAborted();
       this.#basis = next;
       return encoded;
     } catch (error) {
