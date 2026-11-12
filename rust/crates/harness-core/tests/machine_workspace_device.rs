@@ -382,7 +382,7 @@ async fn committed_handover(refused_close: bool) -> Result {
         )?),
         Arc::new(SystemClock),
     )
-    .claiming(&actor);
+    .within(&actor);
     let (failures, mut failed) = tokio::sync::mpsc::unbounded_channel();
     let runtime_failures = failures.clone();
     let _runtime = Task(tokio::spawn(async move {

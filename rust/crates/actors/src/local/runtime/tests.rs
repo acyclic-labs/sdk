@@ -23,6 +23,7 @@ mod retry;
 mod subscriptions;
 
 mod conditional;
+mod placement;
 
 fn root() -> Result<StreamPath, StreamError> {
     StreamPath::new("harness/actors")

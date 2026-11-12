@@ -126,29 +126,12 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
         }
         gate.decided = state.paused();
         if state.paused() != paused {
-            // A paused fork cannot reach dispatch's first placement claim.
-            // Control claims the same original branch under its exact cut;
-            // a parent's inherited epoch never authorizes the pause write.
-            if !snapshot.owns_epoch(state.epoch()) {
-                let epoch = state
-                    .epoch()
-                    .checked_add(1)
-                    .ok_or(Error::Invalid("actor epoch overflow"))?;
-                store
-                    .claim_with_pause(
-                        &snapshot,
-                        epoch,
-                        Some(paused),
-                        key(&snapshot, "control-claim")?,
-                    )
-                    .await?;
-                delivery.epoch = epoch;
-            } else {
-                let operation = if paused { "pause" } else { "resume" };
-                store
-                    .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
-                    .await?;
-            }
+            // An inherited fork has no local placement authority. Only an
+            // explicit placement command may claim its branch before control.
+            let operation = if paused { "pause" } else { "resume" };
+            store
+                .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
+                .await?;
             gate.decided = paused;
         }
         Ok(transition.await)
