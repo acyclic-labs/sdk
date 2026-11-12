@@ -10,6 +10,16 @@ it runs headless. It forwards options to the shared parser. Submit a headless ta
 with `-p 'TASK'`, or use `acyclic exec --operation OPERATION` with JSONL input.
 With no task, closing stdin exits; unexpected text is refused with a recovery
 command. Text stdin otherwise answers pending approvals.
+
+An external client can append peer input to an existing session with
+`acyclic --endpoint ADDRESS --operation MESSAGE_ID send --from SENDER RECIPIENT 'MESSAGE'`.
+Sender and recipient accept a canonical root path, session ID or exact alias.
+The connection uses the user's existing endpoint credential. Both sessions must
+participate in peering. The command prints a delivery receipt and exits without
+starting an agent loop. Peer text is attributed to the selected sender and does
+not expand user commands. A lost acknowledgement is reported as an unknown
+outcome; inspect the original intent before sending a replacement. This bare
+remote client has no durable outbox.
 `ACYCLIC_MODEL` selects the model when `--model` is absent. `ACYCLIC_LOG` enables
 diagnostics with explicit `--diagnostic-records` and `--diagnostic-record-bytes`
 storage; use `off` to disable text diagnostics. `--default-config` ignores the

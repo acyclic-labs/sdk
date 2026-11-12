@@ -88,6 +88,25 @@ fn is_manifest(part: &ModelContentPart) -> bool {
     )
 }
 
+fn is_user_input(part: &ModelContentPart) -> bool {
+    matches!(part, ModelContentPart::File { file, .. }
+        if file.descriptor().media_type() == USER_INPUT_MEDIA_TYPE)
+}
+
+async fn read_user_input(
+    file: &FileRef,
+    reader: &dyn crate::conversation::ContentResidencyVerifier,
+) -> crate::Result<ModelContent> {
+    let bytes = reader
+        .read(file, file.descriptor().byte_length(), None, None)?
+        .await?;
+    file.descriptor().verify(&bytes, &mut None)?;
+    let input: ModelContent = crate::contract::json_from_slice(&bytes)
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    input.validate_user_input(&mut None)?;
+    Ok(input)
+}
+
 /// `content` with each attachment manifest [`model_input`] names replaced by
 /// the files it lists, in order, each as it projects
 /// ([`FileProjectionPolicy::for_attachment`]), read through `reader`, whose
@@ -120,27 +139,36 @@ pub async fn expand_attachments(
     let content = if let ModelContent::Part(ModelContentPart::File { file, .. }) = &content
         && file.descriptor().media_type() == USER_INPUT_MEDIA_TYPE
     {
-        let bytes = reader
-            .read(file, file.descriptor().byte_length(), None, None)?
-            .await?;
-        file.descriptor().verify(&bytes, &mut None)?;
-        let input: ModelContent = crate::contract::json_from_slice(&bytes)
-            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-        input.validate_user_input(&mut None)?;
         // Only this original envelope is expanded. An attached file with the
         // same media type remains an ordinary file, never a recursive input.
-        return Ok(input);
+        return read_user_input(file, reader).await;
     } else {
         content
     };
     let ModelContent::Parts(parts) = content else {
         return Ok(content);
     };
-    if !parts.iter().any(is_manifest) {
+    let body = usize::from(matches!(
+        parts.first(),
+        Some(ModelContentPart::Notices { .. })
+    ));
+    let envelope = parts.get(body).is_some_and(is_user_input);
+    if !envelope && !parts.iter().any(is_manifest) {
         return Ok(ModelContent::Parts(parts));
     }
     let mut expanded = Vec::with_capacity(parts.len());
-    for part in parts {
+    for (index, part) in parts.into_iter().enumerate() {
+        if envelope && index == body {
+            let ModelContentPart::File { file, .. } = part else {
+                unreachable!()
+            };
+            match read_user_input(&file, reader).await? {
+                ModelContent::Text(text) => expanded.push(ModelContentPart::text(text)),
+                ModelContent::Part(part) => expanded.push(part),
+                ModelContent::Parts(parts) => expanded.extend(parts),
+            }
+            continue;
+        }
         if !is_manifest(&part) {
             expanded.push(part);
             continue;

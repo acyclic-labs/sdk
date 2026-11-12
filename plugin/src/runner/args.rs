@@ -204,6 +204,27 @@ pub struct Args {
 impl Args {
     /// Normalize the exec shorthand before validating its input identity.
     pub fn prepare_input(&mut self) -> Result<(), &'static str> {
+        if matches!(self.command, Some(Command::Send { .. })) {
+            if self.endpoint.is_none() || self.operation.is_none() {
+                return Err(
+                    "send requires --endpoint and --operation for an existing authenticated session",
+                );
+            }
+            if self.agent.is_some()
+                || self.prompt.is_some()
+                || self.no_peer
+                || self.resume.is_some()
+                || self.continue_session
+                || self.new_session
+                || self.host_workspace
+                || self.local_service
+                || self.input_format != InputFormat::Text
+            {
+                return Err(
+                    "send selects its sender and recipient explicitly and accepts no execution or session-creation input",
+                );
+            }
+        }
         if self.no_peer
             && (self.local_service
                 || self.host_workspace
@@ -468,6 +489,16 @@ pub enum Command {
         #[arg(id = "task")]
         prompt: Option<String>,
     },
+    /// Append attributed peer input to an existing session without running a client loop.
+    Send {
+        /// Existing sending session path, id or exact alias.
+        #[arg(long)]
+        from: String,
+        /// Existing recipient session path, id or exact alias.
+        recipient: String,
+        /// Peer content; never expanded as a user command.
+        message: String,
+    },
     /// Read one lazy page of this checkout's root sessions.
     Sessions(Sessions),
     /// Inspect an existing session through its original authenticated streams.
@@ -576,6 +607,43 @@ pub struct Serve {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn peer_send_requires_existing_endpoint_and_explicit_intent() {
+        use clap::Parser as _;
+        for options in [
+            vec![],
+            vec!["--endpoint", "http://localhost:9000"],
+            vec!["--operation", "message-1"],
+            vec![
+                "--endpoint",
+                "http://localhost:9000",
+                "--operation",
+                "message-1",
+                "--no-peer",
+            ],
+        ] {
+            let mut argv = vec!["acyclic"];
+            argv.extend(options);
+            argv.extend(["send", "--from", "sender", "recipient", "status please"]);
+            let mut args = super::Args::try_parse_from(argv).expect("valid command syntax");
+            assert!(args.prepare_input().is_err());
+        }
+        let mut args = super::Args::try_parse_from([
+            "acyclic",
+            "--endpoint",
+            "http://localhost:9000",
+            "--operation",
+            "message-1",
+            "send",
+            "--from",
+            "sender",
+            "recipient",
+            "status please",
+        ])
+        .expect("valid peer command");
+        assert!(args.prepare_input().is_ok());
+    }
+
     use super::*;
 
     #[test]

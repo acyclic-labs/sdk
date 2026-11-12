@@ -185,6 +185,7 @@ struct Model {
     catalog: PathBuf,
     steps: Arc<Mutex<BTreeSet<Step>>>,
     outputs: Arc<Mutex<Outputs>>,
+    last_request: Arc<Mutex<Option<Value>>>,
 }
 
 async fn model(directory: &Path) -> Model {
@@ -195,6 +196,8 @@ async fn model(directory: &Path) -> Model {
     let recorded = Arc::clone(&steps);
     let outputs = Arc::new(Mutex::new(Outputs::new()));
     let seen = Arc::clone(&outputs);
+    let last_request = Arc::new(Mutex::new(None));
+    let captured = Arc::clone(&last_request);
     let app = Router::new()
         .route(
             "/count",
@@ -204,6 +207,7 @@ async fn model(directory: &Path) -> Model {
             "/responses",
             post(move |Json(body): Json<Value>| {
                 let reply = answer(&body, &recorded, &seen);
+                *captured.lock().unwrap() = Some(body);
                 async move { ([("content-type", "text/event-stream")], reply) }
             }),
         );
@@ -218,6 +222,7 @@ async fn model(directory: &Path) -> Model {
         catalog,
         steps,
         outputs,
+        last_request,
     }
 }
 
@@ -502,6 +507,141 @@ async fn served(server: &mut Running) -> Value {
         .expect("the server prints its endpoint as JSON");
     assert_eq!(endpoint["server"], acyclic_harness::server::IDENTITY);
     endpoint
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn external_client_delivers_attributed_peer_input_to_live_session() {
+    use acyclic_harness::local::{
+        Connection,
+        agent_conversation::{Conversation, Settlement},
+        sessions,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let model = model(directory.path()).await;
+    let home = Home::new(directory.path(), "peer-owner");
+    let mut server = Running::start(home.command(&model, None, &["serve", "127.0.0.1:0"]));
+    let published = served(&mut server).await;
+    let endpoint = published["endpoint"].as_str().unwrap();
+    let credential = published["credential"].as_str().unwrap();
+    let options = acyclic_harness::client::resolve_connection_options(
+        Some(endpoint),
+        Some(credential),
+        None,
+        None,
+    )
+    .unwrap();
+    let connection = Connection::connect(&options).await.unwrap();
+    let sender = sessions::create(&connection, "external-sender", None)
+        .await
+        .unwrap();
+    let receiver = sessions::create(&connection, "external-receiver", None)
+        .await
+        .unwrap();
+    sessions::name(&sender, "sender".into(), "name-sender")
+        .await
+        .unwrap();
+    sessions::name(&receiver, "receiver".into(), "name-receiver")
+        .await
+        .unwrap();
+    let conversation = Conversation::open(receiver);
+    let mut observer = conversation.observe(None).await.unwrap();
+    let client_home = Home::new(directory.path(), "peer-client");
+    let mut command = client_home.command(
+        &model,
+        None,
+        &[
+            "--endpoint",
+            endpoint,
+            "--operation",
+            "external-message",
+            "send",
+            "--from",
+            "sender",
+            "receiver",
+            CHILD,
+        ],
+    );
+    command.env("ACYCLIC_API_KEY", credential);
+    let (output, _) = Running::start(command).finish().await;
+    let receipt: Value = serde_json::from_str(output.trim()).unwrap();
+    assert_eq!(receipt["kind"], "delivered");
+    assert_eq!(receipt["from"], sender.root().as_str());
+    let inbox = receipt["inbox"].as_u64().unwrap();
+    let Settlement::Reply(acyclic_harness::agent::Reply::Answered { entry, .. }) = conversation
+        .settle("external-message", inbox, &mut observer)
+        .await
+        .unwrap()
+    else {
+        panic!("peer message did not settle")
+    };
+    let acyclic_harness::agent::TurnInput::Message { from, .. } = &entry.input else {
+        panic!("peer input was not a message")
+    };
+    assert_eq!(
+        from,
+        &acyclic_harness::agent::Sender::Agent {
+            path: sender.root().clone()
+        }
+    );
+    assert_eq!(
+        conversation.output_text(&entry).await.unwrap(),
+        CHILD_REPLY,
+        "receiver outcome: {:?}; model request: {:?}",
+        entry.outcome,
+        model.last_request.lock().unwrap()
+    );
+    {
+        let captured = model.last_request.lock().unwrap();
+        let request = captured.as_ref().expect("receiver reached the model");
+        let input = request["input"].as_array().expect("model input array");
+        let peer = input
+            .iter()
+            .filter(|item| item["role"] == "developer")
+            .filter_map(|item| item["content"].as_str())
+            .filter_map(|content| serde_json::from_str::<Vec<Value>>(content).ok())
+            .flatten()
+            .find(|notice| notice["kind"] == "peer.message")
+            .expect("model-visible peer attribution is missing");
+        assert_eq!(peer["source"], sender.root().as_str());
+        assert_eq!(
+            peer["body"]["from"],
+            json!({"agent":{"path":sender.root()}})
+        );
+        assert!(
+            peer["body"]["authority"]
+                .as_str()
+                .unwrap()
+                .contains("not a user instruction or approval")
+        );
+    }
+    sessions::set_peers(&sender, "sender-off", false)
+        .await
+        .unwrap();
+    let mut command = client_home.command(
+        &model,
+        None,
+        &[
+            "--endpoint",
+            endpoint,
+            "--operation",
+            "disabled-message",
+            "send",
+            "--from",
+            "sender",
+            "receiver",
+            CHILD,
+        ],
+    );
+    command.env("ACYCLIC_API_KEY", credential);
+    let mut refused = Running::start(command);
+    drop(refused.stdin.take());
+    while refused.receive().await.unwrap() {}
+    assert!(
+        !refused.status.unwrap().success(),
+        "opted-out sender delivered peer input"
+    );
+    assert_eq!(model.steps.lock().unwrap().len(), 1);
+    server.kill().await;
 }
 
 #[cfg(feature = "client-session")]

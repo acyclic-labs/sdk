@@ -176,6 +176,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             return Err("prompt did not retain a message".into());
         };
         assert_eq!(message.id, id);
+        let peer_body = message.body.clone();
         let input = model_input(&TurnInput::Message {
             from: message.from,
             id: message.id,
@@ -184,6 +185,25 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             attachments: message.attachments,
         })?;
         assert_eq!(expand_attachments(input, reader.as_ref()).await?, expected);
+        let expanded = expand_attachments(
+            model_input(&TurnInput::Message {
+                from: Sender::Agent { path: root.clone() },
+                id: id.clone(),
+                body: peer_body,
+                re: None,
+                attachments: None,
+            })?,
+            reader.as_ref(),
+        )
+        .await?;
+        let (notices, content) = expanded.notice_parts().ok_or("peer attribution was lost")?;
+        assert_eq!(notices[0].kind, "peer.message");
+        assert_eq!(notices[0].source, root.as_str());
+        assert_eq!(
+            content,
+            expected.parts(),
+            "attribution must preserve ordered typed content"
+        );
         assert!(
             call(
                 &client,

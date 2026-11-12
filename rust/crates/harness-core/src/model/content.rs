@@ -195,8 +195,8 @@ impl ModelContent {
             Self::Parts(parts) => parts,
         }
     }
-    /// One original event block and its typed immutable file attachments.
-    /// Attachments remain ordinary file parts, so event metadata cannot
+    /// One original event block and its ordered text and file content.
+    /// Files remain typed parts, so event metadata cannot
     /// manufacture file authority by naming a reference in its JSON body.
     #[must_use]
     pub fn notice_parts(
@@ -204,9 +204,10 @@ impl ModelContent {
     ) -> Option<(&[crate::conversation::wire::Notice], &[ModelContentPart])> {
         match self.parts().split_first()? {
             (ModelContentPart::Notices { notices }, files)
-                if files
-                    .iter()
-                    .all(|part| matches!(part, ModelContentPart::File { .. })) =>
+                if files.iter().all(|part| {
+                    matches!(part, ModelContentPart::File { .. })
+                        || matches!(part, ModelContentPart::Text { text, .. } if !text.is_empty())
+                }) =>
             {
                 Some((notices, files))
             }

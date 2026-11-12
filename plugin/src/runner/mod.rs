@@ -16,6 +16,7 @@ pub mod test_support {
 mod headless;
 mod inspect;
 mod lifecycle;
+mod peer;
 mod sessions;
 mod setup;
 mod usage_export;
@@ -787,6 +788,31 @@ async fn connected(
     event_output: Option<&mut headless::Output>,
     mut terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(Command::Send {
+        from,
+        recipient,
+        message,
+    }) = &args.command
+    {
+        let receipt = peer::send(
+            &connection,
+            from,
+            recipient,
+            args.operation
+                .as_deref()
+                .ok_or("send requires --operation")?,
+            message,
+        )
+        .await?;
+        let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
+        headless::write_event(
+            &mut output,
+            OperationId::from_bytes(connection.root().id_bytes()),
+            &receipt,
+        )
+        .await?;
+        return Ok(());
+    }
     if let Some(Command::Inspect(inspect)) = &args.command {
         return self::inspect::run(connection, inspect, args.agent.as_deref()).await;
     }
