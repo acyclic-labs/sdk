@@ -2191,7 +2191,12 @@ async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult 
     runtime.host(address.clone())?;
     let slot = runtime.slot(&address).ok_or("missing actor slot")?;
     // Poll through claim and state observation, then cancel the stalled handler.
-    assert!(runtime.deliver(&address, &slot).now_or_never().is_none());
+    assert!(
+        runtime
+            .deliver(&address, &slot, None)
+            .now_or_never()
+            .is_none()
+    );
     drop(slot);
     let cut = store.load(&address).await?;
     assert_eq!(cut.state().ok_or("missing actor state")?.epoch(), 1);

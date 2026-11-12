@@ -838,6 +838,9 @@ impl<K: Ord + Clone> Drop for Registration<K> {
         if let Some(entry) = retired {
             if let Phase::Queued { previous, next } = entry.phase {
                 index.unlink(previous, next);
+                // A queued wake retired undelivered keeps its input pending,
+                // like unsettled work: its key carries a wake entry.
+                index.failed.insert(entry.key.clone());
             }
             if let Some(mut token) = entry.token {
                 if let Some(wake) = token.wake {

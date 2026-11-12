@@ -74,14 +74,18 @@ impl Drop for EventDelivery {
     }
 }
 
-/// One delivery's single settlement, on every way out: an error, a panic
-/// or a cancelled await settles it failed. A failed delivery invalidates
-/// its slot's state without taking its lock (a cancelled publication may
-/// have committed), and its carried wake, not a resident token, retains
-/// the alarm; its flight then keeps the actor's failure mark.
+/// One delivery's single settlement, on every way out, and the only place
+/// any input settles as delivered: only a delivery that owns its slot and
+/// ran to an outcome clears `failed`. An error, a panic, a cancelled await
+/// or a released slot settles it failed. A failed delivery invalidates its
+/// slot's state without taking its lock (a cancelled publication may have
+/// committed), and its carried wake, not a resident token, retains the
+/// alarm; its flight then keeps the actor's failure mark. The work it was
+/// taken for settles with it.
 struct Settlement<'a> {
     slot: &'a Slot,
     flight: Option<Flight<ActorReference>>,
+    work: Option<Work<ActorReference>>,
     failed: bool,
 }
 impl Drop for Settlement<'_> {
@@ -94,6 +98,9 @@ impl Drop for Settlement<'_> {
             self.slot.registration.suspend_alarm();
         }
         flight.finish(self.failed);
+        if let Some(work) = self.work.take() {
+            work.settle();
+        }
     }
 }
 
@@ -480,7 +487,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .pin(actor)?
                     .ok_or(Error::Invalid("actor is not tracked"))?;
                 let result = loop {
-                    match self.deliver(actor, &delivery.0).await {
+                    match self.deliver(actor, &delivery.0, None).await {
                         Ok(true) => break Ok(()),
                         Ok(false) => {
                             // Drop both locks before queueing the next finite batch.
@@ -1020,23 +1027,26 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     async fn execute(&self, work: Work<ActorReference>) -> Result<(), (ActorReference, Error)> {
         let actor = work.key().clone();
+        // Released before it ran: the work drops unsettled, so its input
+        // keeps the failure mark and the one carried entry it hands off.
         let Some(slot) = self.slot(&actor) else {
-            work.settle();
             return Ok(());
         };
-        let result = self.deliver(&actor, &slot).await;
+        let result = self.deliver(&actor, &slot, Some(work)).await;
         if let Err(Error::Conflict) = result {
             // Another placement owns the actor now; stop hosting it here.
             self.release(&actor);
         }
-        // The delivery recorded its outcome; dropped before here, the work
-        // settles failed.
-        work.settle();
         result.map(|_| ()).map_err(|error| (actor, error))
     }
 
     /// Deliver one bounded batch. False retains a wake for the next batch.
-    async fn deliver(&self, actor: &ActorReference, slot: &Arc<Slot>) -> Result<bool, Error> {
+    async fn deliver(
+        &self,
+        actor: &ActorReference,
+        slot: &Arc<Slot>,
+        work: Option<Work<ActorReference>>,
+    ) -> Result<bool, Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.deliver",
             Error::kind,
@@ -1053,6 +1063,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 let mut settlement = Settlement {
                     slot,
                     flight: Some(self.ready.flight(actor)),
+                    work,
                     failed: true,
                 };
                 let result = match &self.admission {
@@ -1074,7 +1085,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // releases the actor leaves its single carried entry behind.
                 // Settled under the actor's delivery lock, so an earlier
                 // delivery's success never clears a later one's failure.
-                settlement.failed = result.is_err();
+                // A released slot delivered nothing: its input belongs to
+                // the next placer.
+                settlement.failed = result.is_err() || inner.released;
                 drop(settlement);
                 drop(inner);
                 result
