@@ -541,8 +541,11 @@ mod batch_scaling {
                 let evaluations = FILTER_EVALUATIONS.with(std::cell::Cell::get);
                 assert_eq!(evaluations, 2 * subscriber_count);
                 for follow in follows {
-                    let delivered: Vec<_> =
-                        crate::records_only(follow).take(1).try_collect().await?;
+                    let delivered: Vec<_> = crate::records_only(follow)
+                        .take(1)
+                        .try_collect()
+                        .now_or_never()
+                        .ok_or("matching record did not wake its parked follow")??;
                     assert_eq!(delivered.len(), 1);
                     assert_eq!(delivered[0].sequence, 2);
                     assert_eq!(delivered[0].value.as_ref(), b"allowed");
