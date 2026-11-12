@@ -286,6 +286,11 @@ impl Opening {
         }
         .map_err(storage)?;
         let volume_stream = filesystem.stream_provider();
+        // Alarm time is the authority's: this ledger decides each alarm
+        // consumption with its own commit clock.
+        volume_stream
+            .install_commit_admission(acyclic_actors::local::alarm_admission())
+            .map_err(storage)?;
         let provider_ref = owner.project.provider();
         let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?
             .with_changes(filesystem.stream_provider())?;

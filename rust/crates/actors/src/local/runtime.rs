@@ -1145,6 +1145,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                 }
             }
+            if let (Err(Error::AlarmNotDue { authority_unix_ms }), Some(deadline)) =
+                (&result, state.alarm().pending())
+            {
+                // The authority decides alarm time. Wait out its remaining
+                // time on this host's clock; nothing was published.
+                let remaining = deadline.saturating_sub(*authority_unix_ms).max(1);
+                slot.registration
+                    .defer_alarm(state.alarm(), now.saturating_add(remaining))?;
+                inner.observed = None;
+                return Ok(true);
+            }
             if let Err(error) = result {
                 if inner.pending.is_none() {
                     if subscription.is_some() {
