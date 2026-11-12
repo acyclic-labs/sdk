@@ -1,4 +1,9 @@
 //! One shell language and invocation contract shared by every host.
+macro_rules! powershell_utf8 {
+    () => {
+        "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; "
+    };
+}
 /// Platform shell data shared by registration, execution and client routing.
 pub struct ShellSpec {
     /// Model-visible tool and approval-policy name.
@@ -48,9 +53,10 @@ pub const POWERSHELL: ShellSpec = ShellSpec {
     description: "Run PowerShell in your workspace, using PowerShell 7 when available, otherwise Windows PowerShell 5.1. Use PowerShell syntax and Windows paths; profiles are disabled. timeout_ms defaults to 300000 and cannot exceed it. Returns the exit code and output tail, about 30000 characters; overflow is saved in volume:///output/. Writes outside the workspace are not captured",
     executables: &["pwsh.exe", "powershell.exe"],
     arguments: POWERSHELL_ARGUMENTS,
-    stdin_bootstrap: Some(
-        "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; & ([ScriptBlock]::Create([Console]::In.ReadToEnd()))",
-    ),
+    stdin_bootstrap: Some(concat!(
+        powershell_utf8!(),
+        "& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))"
+    )),
 };
 
 /// Unix hosts retain the bash command language.
@@ -81,6 +87,45 @@ pub fn arguments(selected: &str) -> Option<&'static [&'static str]> {
         "cmd" => Some(&["/d", "/s", "/c"]),
         _ => None,
     }
+}
+
+/// Source passed as an argument while stdin carries separate UTF-8 data.
+/// PowerShell establishes its console encoding before parsing the original
+/// script block, preserving parameter blocks, quotes and newlines. Other
+/// supported languages borrow the source. `admit` reserves the exact buffer
+/// before any copy. `None` means an unsupported language or buffer-size overflow.
+pub fn source_argument<'a, E>(
+    selected: &str,
+    source: &'a str,
+    admit: impl FnOnce(usize) -> Result<(), E>,
+) -> Result<Option<std::borrow::Cow<'a, str>>, E> {
+    if arguments(selected).is_none() {
+        return Ok(None);
+    }
+    if !matches!(selected, "powershell" | "pwsh") {
+        return Ok(Some(std::borrow::Cow::Borrowed(source)));
+    }
+    const PREFIX: &str = concat!(powershell_utf8!(), "& ([ScriptBlock]::Create('");
+    const SUFFIX: &str = "'))";
+    let Some(bytes) = source
+        .len()
+        .checked_add(source.bytes().filter(|byte| *byte == b'\'').count())
+        .and_then(|bytes| bytes.checked_add(PREFIX.len()))
+        .and_then(|bytes| bytes.checked_add(SUFFIX.len()))
+    else {
+        return Ok(None);
+    };
+    admit(bytes)?;
+    let mut encoded = String::with_capacity(bytes);
+    encoded.push_str(PREFIX);
+    for (index, part) in source.split('\'').enumerate() {
+        if index != 0 {
+            encoded.push_str("''");
+        }
+        encoded.push_str(part);
+    }
+    encoded.push_str(SUFFIX);
+    Ok(Some(std::borrow::Cow::Owned(encoded)))
 }
 
 #[cfg(test)]
@@ -117,6 +162,19 @@ mod tests {
                     prop_assert_ne!(copied.as_ptr(), original);
                 }
             }
+            let mut admitted = None;
+            let rendered = source_argument("powershell", &source, |bytes| {
+                admitted = Some(bytes);
+                Ok::<_, ()>(())
+            }).unwrap().unwrap();
+            prop_assert_eq!(admitted, Some(rendered.len()));
+            let encoded = rendered.strip_prefix(concat!(powershell_utf8!(), "& ([ScriptBlock]::Create('")).unwrap()
+                .strip_suffix("'))").unwrap();
+            prop_assert_eq!(encoded.replace("''", "'"), source.as_str());
+            prop_assert_eq!(source_argument("powershell", &source, |_| Err("refused")), Err("refused"));
+            let borrowed = source_argument("bash", &source, |_| Err::<(), _>("unexpected copy"))
+                .unwrap().unwrap();
+            prop_assert_eq!(borrowed.as_ptr(), source.as_ptr());
         }
     }
 }

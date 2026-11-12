@@ -28,6 +28,7 @@ impl LoadedProgram {
     /// # Errors
     /// Refuses a non-shell capability or an unsupported command form.
     pub fn bind(self, shell: std::sync::Arc<crate::tool::Tool>) -> Result<crate::tool::Tool> {
+        let mut custody = self.custody;
         let shell = match shell.executor.capability() {
             Some(capability) => std::sync::Arc::new(capability.clone()),
             None => shell,
@@ -43,6 +44,34 @@ impl LoadedProgram {
         } = self.run
         else {
             return Err(Error::Invalid("program has no pinned shell source".into()));
+        };
+        let original_bytes = command.capacity() as u64;
+        let rendered = acyclic_host_platform::shell::source_argument(
+            selected
+                .as_deref()
+                .unwrap_or(crate::tools::shell::PLATFORM.language),
+            &command,
+            |bytes| {
+                if let Some(custody) = &mut custody {
+                    custody.grow(bytes as u64)?;
+                    custody.work().spent(acyclic_fs::WorkCounters {
+                        bytes_copied: bytes as u64,
+                        ..acyclic_fs::WorkCounters::UNCHARGED
+                    })?;
+                }
+                Ok::<_, Error>(())
+            },
+        )?
+        .ok_or_else(|| Error::Unsupported("program source cannot be represented".into()))?;
+        let command = match rendered {
+            std::borrow::Cow::Borrowed(_) => command,
+            std::borrow::Cow::Owned(rendered) => {
+                drop(command);
+                if let Some(custody) = &mut custody {
+                    custody.release(original_bytes)?;
+                }
+                rendered
+            }
         };
         let (executable, arguments) = match selected {
             Some(selected) => {
@@ -79,7 +108,7 @@ impl LoadedProgram {
             ("stdin".into(), stdin),
         ]));
         let template = Value::Object(Map::from_iter([("command".into(), command)]));
-        crate::tools::native::alias(self.definition, shell, template, self.custody)
+        crate::tools::native::alias(self.definition, shell, template, custody)
     }
 }
 
