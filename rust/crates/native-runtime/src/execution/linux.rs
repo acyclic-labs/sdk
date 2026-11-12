@@ -447,6 +447,7 @@ const AND: u16 = 0x54;
 const RETURN: u16 = 0x06;
 const DENY: u32 = 0x7fc0_0000; // SECCOMP_RET_USER_NOTIF: observed by the warden.
 const ALLOW: u32 = 0x7fff_0000;
+const UNIX_UNAVAILABLE: u32 = 0x0005_0000 | libc::EAFNOSUPPORT as u32;
 
 const fn instruction(code: u16, jt: u8, jf: u8, k: u32) -> Instruction {
     Instruction { code, jt, jf, k }
@@ -677,6 +678,15 @@ const fn control_filter<const N: usize>(code: &mut Filter<N>) {
 }
 
 const fn socket_filter<const N: usize>(code: &mut Filter<N>, network: FilterNetwork) {
+    // Local IPC remains unavailable. Return the socket API's ordinary error
+    // so capability probes can fall back without contacting a host service.
+    code.extend(&[
+        instruction(EQUAL, 0, 4, number(libc::SYS_socket)),
+        instruction(LOAD, 0, 0, 16),
+        instruction(EQUAL, 0, 1, libc::AF_UNIX as u32),
+        instruction(RETURN, 0, 0, UNIX_UNAVAILABLE),
+        instruction(LOAD, 0, 0, 0),
+    ]);
     if matches!(network, FilterNetwork::Off) {
         verdict(code, libc::SYS_socket, DENY);
         verdict(code, libc::SYS_socketpair, DENY);

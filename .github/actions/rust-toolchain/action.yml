@@ -33,9 +33,9 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if ! command -v rg >/dev/null; then
+        if ! command -v rg >/dev/null || ! command -v which >/dev/null || ! command -v file >/dev/null; then
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y ripgrep
+          sudo apt-get install --no-install-recommends -y ripgrep debianutils file
         fi
     - name: Read the pinned Rust release
       id: pinned

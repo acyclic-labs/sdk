@@ -49,9 +49,10 @@ sudo apt-get update
 sudo apt-get install --no-install-recommends clang mold ripgrep
 ```
 
-Linux native-runtime policy tests execute `ls -la` and `rg --files` in the
-confined shell. Install ripgrep even when using a different linker; the shared
-Linux CI toolchain action provisions it too.
+Linux native-runtime policy tests execute `ls -l`, `stat`, `which -a`, `file`
+and `rg --files` in the confined shell. Install these inspection tools even
+when using a different linker; the shared Linux CI toolchain action provisions
+the additional `ripgrep`, `debianutils` and `file` packages.
 
 On Linux, a sandbox syscall denial terminates the command tree and becomes a
 typed tool failure after cleanup. Descriptor-local FIONREAD and FIONBIO are
@@ -63,11 +64,11 @@ ordinary failed process status, including without an execution grant.
 The closed Unix tool environment supplies the already-selected `SHELL` path.
 This avoids Bash looking up a login shell through host name-service IPC during
 startup. The default workspace policy sets `HOME` to the workspace, so tools
-such as ripgrep do not rediscover a host home through NSS. Unix sockets remain
-denied and are covered by the typed-failure test.
-Commands such as `ls -la` may still request host IPC to resolve ownership names;
-that is a typed IPC denial. `ls -lan` and `rg --files` exercise directory metadata
-without that external lookup. The policy tests retain both command forms.
+such as ripgrep do not rediscover a host home through NSS. Unix socket creation
+returns `EAFNOSUPPORT` without contacting host services, so name-service probes
+can fall back to numeric ownership. Native policy tests exercise ordinary
+inspection commands and force a socket probe independently of the host's NSS
+configuration.
 
 To use the system C linker instead, override the workspace linker for the command:
 

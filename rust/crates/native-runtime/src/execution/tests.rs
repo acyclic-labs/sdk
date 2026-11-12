@@ -1890,17 +1890,30 @@ fn numbered_cat_preserves_file_and_pipeline_content() -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn host_name_service_probes_are_typed_without_blocking_directory_metadata() -> io::Result<()> {
+fn directory_inspection_handles_unavailable_local_sockets() -> io::Result<()> {
     crate::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("readable"), "workspace data")?;
+    let executable = std::env::current_exe()?;
+    let probe_arguments = [
+        "--exact",
+        "execution::tests::local_socket_unavailability_probe",
+        "--nocapture",
+    ];
+    let socket = root.path().join("missing-socket");
+    let control = std::process::Command::new(&executable)
+        .args(probe_arguments)
+        .env("ACYCLIC_LOCAL_SOCKET_PROBE", "unconfined")
+        .env("ACYCLIC_LOCAL_SOCKET_PATH", &socket)
+        .output()?;
+    assert!(control.status.success(), "{control:?}");
     let rg = crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
         .resolve_native("rg")?;
     let grant = ExecutionGrant::workspace_default(
         root.path(),
         ExecutionAccess::ReadOnly,
         [],
-        [rg.clone()],
+        [rg.clone(), executable.clone()],
     )?;
     let shell = crate::platform_shell()?;
     let custody = crate::ProcessCustody::open(&root.path().join("custody"))?;
@@ -1911,16 +1924,17 @@ fn host_name_service_probes_are_typed_without_blocking_directory_metadata() -> i
     ])
     .map_err(io::Error::other)?;
     for custody in [None, Some(&custody)] {
-        for source in [
-            "ls -la && rg --files",
-            // Preserve compound workspace-discovery argv.
-            "pwd; ls -la; ls -la ..; git -C . log --oneline -1 2>/dev/null; git -C .. log --oneline -1 2>/dev/null",
-        ] {
-            let mut command = Command::new(shell);
+        let mut probe = Command::new(&executable);
+        probe.args(probe_arguments);
+        let mut inspection = Command::new(shell);
+        inspection
+            .args(acyclic_host_platform::shell::PLATFORM.arguments)
+            .arg("ls -l readable && stat readable && which -a sh && file readable && rg --files");
+        for mut command in [probe, inspection] {
             command
-                .args(acyclic_host_platform::shell::PLATFORM.arguments)
-                .arg(source)
                 .env_clear()
+                .env("ACYCLIC_LOCAL_SOCKET_PROBE", "confined")
+                .env("ACYCLIC_LOCAL_SOCKET_PATH", &socket)
                 .env("SHELL", shell)
                 .env("HOME", root.path())
                 .env("PATH", &path)
@@ -1929,44 +1943,38 @@ fn host_name_service_probes_are_typed_without_blocking_directory_metadata() -> i
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             let mut tree = ProcessTree::spawn_granted(command, &grant, custody)?;
-            let output = tree.wait_with_output(
-                crate::CaptureSchedule::Unbounded,
-                65536,
-                None,
-                || Ok(()),
-                |_| Ok(Default::default()),
-                None,
-                None,
-                None,
-            );
-            match output {
-                Ok(output) => {
-                    // A libc without host-IPC lookups can complete the same
-                    // command. Missing fixture Git history is an ordinary exit.
-                    if source.starts_with("ls") {
-                        assert!(output.status.success(), "{output:?}");
-                        assert!(output.stderr.is_empty(), "{output:?}");
-                        assert!(String::from_utf8_lossy(&output.stdout).contains("readable"));
-                    }
-                    eprintln!("GC24_REPLAY source={source:?} output={output:?}");
-                }
-                Err(failure) => {
-                    assert!(failure.cleanup_completed, "{failure:?}");
-                    assert!(
-                        matches!(
-                            failure
-                                .error
-                                .get_ref()
-                                .and_then(|cause| cause.downcast_ref::<ExecutionViolation>()),
-                            Some(ExecutionViolation::HostIpc)
-                        ),
-                        "directory metadata must not be confused with host name-service IPC: {failure:?}"
-                    );
-                    eprintln!("GC24_REPLAY source={source:?} typed={failure}");
-                }
-            }
+            let output = tree
+                .wait_with_output(
+                    crate::CaptureSchedule::Unbounded,
+                    65536,
+                    None,
+                    || Ok(()),
+                    |_| Ok(Default::default()),
+                    None,
+                    None,
+                    None,
+                )
+                .map_err(io::Error::other)?;
+            assert!(output.status.success(), "{output:?}");
         }
     }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn local_socket_unavailability_probe() -> io::Result<()> {
+    let Some(mode) = std::env::var_os("ACYCLIC_LOCAL_SOCKET_PROBE") else {
+        return Ok(());
+    };
+    let path = std::env::var_os("ACYCLIC_LOCAL_SOCKET_PATH").ok_or(io::ErrorKind::NotFound)?;
+    let error = std::os::unix::net::UnixStream::connect(path).unwrap_err();
+    let expected = match mode.to_str() {
+        Some("confined") => libc::EAFNOSUPPORT,
+        Some("unconfined") => libc::ENOENT,
+        _ => return Err(io::ErrorKind::InvalidInput.into()),
+    };
+    assert_eq!(error.raw_os_error(), Some(expected), "{error}");
     Ok(())
 }
 

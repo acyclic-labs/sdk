@@ -373,7 +373,7 @@ proptest! {
             0x0005_0000 | libc::ENOSYS as u32);
         let mut socket = arguments;
         socket[0] = libc::AF_UNIX as u64;
-        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_socket).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, socket)?, DENY);
+        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_socket).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, socket)?, UNIX_UNAVAILABLE);
     }
 
     #[test]
@@ -403,7 +403,8 @@ proptest! {
             for family in [family, libc::AF_INET as u32, libc::AF_INET6 as u32, libc::AF_UNIX as u32] {
                 socket[0] = u64::from(family);
                 prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_socket).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, socket)?,
-                    if enabled && (family == libc::AF_INET as u32 || family == libc::AF_INET6 as u32) { ALLOW } else { DENY });
+                    if family == libc::AF_UNIX as u32 { UNIX_UNAVAILABLE }
+                    else if enabled && (family == libc::AF_INET as u32 || family == libc::AF_INET6 as u32) { ALLOW } else { DENY });
             }
             let mut clone = [0; 6];
             clone[0] = (libc::CLONE_VM | libc::CLONE_FS | libc::CLONE_FILES
