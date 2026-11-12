@@ -99,7 +99,7 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
         &super::super::workspace_ref(host.provider.clone(), &home.storage_name(&mut None)?)?,
         None,
         &[super::super::WorkspaceMutation::PutFile {
-            path: "/templates/worker/AGENT.md".into(),
+            path: "/agent.ts".into(),
             bytes: acyclic_stream::OwnedBytes::from_static(b"inherited configuration"),
         }],
         &crate::IdempotencyKey::new("seed-configuration")?,
@@ -281,15 +281,9 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
     for entry in [&bindings[5], &session_bindings[5]] {
         assert_ne!(entry.volume()?, entries[5].volume()?);
         assert_eq!(
-            host.read(
-                &reference(entry)?,
-                None,
-                "/templates/worker/AGENT.md",
-                64,
-                None,
-            )
-            .await?
-            .as_ref(),
+            host.read(&reference(entry)?, None, "/agent.ts", 64, None)
+                .await?
+                .as_ref(),
             b"inherited configuration"
         );
     }
@@ -297,7 +291,7 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
         &reference(&bindings[5])?,
         None,
         &[super::super::WorkspaceMutation::PutFile {
-            path: "/templates/worker/AGENT.md".into(),
+            path: "/agent.ts".into(),
             bytes: acyclic_stream::OwnedBytes::from_static(b"child configuration"),
         }],
         &crate::IdempotencyKey::new("edit-configuration")?,
@@ -305,15 +299,9 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
     .await?;
     for entry in [&entries[5], &session_bindings[5]] {
         assert_eq!(
-            host.read(
-                &reference(entry)?,
-                None,
-                "/templates/worker/AGENT.md",
-                64,
-                None,
-            )
-            .await?
-            .as_ref(),
+            host.read(&reference(entry)?, None, "/agent.ts", 64, None)
+                .await?
+                .as_ref(),
             b"inherited configuration"
         );
     }
