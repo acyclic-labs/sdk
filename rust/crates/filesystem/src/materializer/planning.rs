@@ -209,12 +209,7 @@ mod tests {
                 crate::PublicationPermit::Unrestricted,
                 budget,
                 &cancellation,
-                &mut |_| async {
-                    Ok(crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    })
-                },
+                (),
             )
             .await?
             .value;
@@ -224,6 +219,7 @@ mod tests {
             std::fs::write(root.join(format!("directory/file-{index:03}")), "original")?;
         }
         for changed in [false, true] {
+            let before = workspace.head(budget, &cancellation).await?.value;
             if changed {
                 child.write_text("/directory/file-017", "updated").await?;
             }
