@@ -32,6 +32,26 @@ fn input(
     }
 }
 
+fn reopen<P, A, O>(
+    journal: &FilesystemExecutionJournal<P, A, O>,
+) -> Result<FilesystemExecutionJournal<P, A, O>>
+where
+    P: crate::store::JournalProvider + ?Sized,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    FilesystemExecutionJournal::new(
+        Arc::clone(&journal.stream),
+        Arc::clone(&journal.host),
+        crate::filesystem::FilesystemJournalBinding {
+            volume: &journal.volume,
+            verifier: &journal.verifier,
+            scope: &journal.scope,
+            io: None,
+        },
+    )
+}
+
 fn executor() -> Result<(StockExecutor, Arc<ScriptedModelProvider>)> {
     let provider = Arc::new(
         ScriptedModelProvider::new((0..9).map(|_| ScriptedTurn::Text("answer".into())))
@@ -102,12 +122,12 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
         let new_bytes =
             crate::contract::canonical_json_bytes(&selected.messages.get(history..).unwrap())?
                 .len();
-        journal = journal
+        let before = log_length()?;
+        journal = reopen(&journal)?
             .with_preceding_turn(Some(preceding))
             .await?
             .with_bound_selection(selected.clone());
         let current = input(OperationId::new(), &selected);
-        let before = log_length()?;
         let output = executor.execute(current.clone(), &journal).await?;
         let written = log_length()? - before;
         let baseline = *first_write.get_or_insert(written);
@@ -119,7 +139,7 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
             "first_step_append history={history} new_bytes={new_bytes} objects_log_written={written}"
         );
         assert_eq!(executor.execute(current.clone(), &journal).await?, output);
-        journal = journal
+        journal = reopen(&journal)?
             .with_preceding_turn(Some(current.operation_id))
             .await?;
         let restored = crate::executor::load_model_request(
@@ -142,7 +162,7 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
                 log_length()? - before > 2 * baseline,
                 "a changed prefix must not reuse the old message chain"
             );
-            journal = journal.with_preceding_turn(Some(changed)).await?;
+            journal = reopen(&journal)?.with_preceding_turn(Some(changed)).await?;
             let restored = crate::executor::load_model_request(
                 &journal,
                 journal.preceding_request.as_ref().unwrap(),
