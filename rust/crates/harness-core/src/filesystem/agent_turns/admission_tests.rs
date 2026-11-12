@@ -2,8 +2,10 @@ use super::*;
 use crate::{
     conversation::{ContentGrant, VolumeRef},
     core::AuthorityRoot,
+    filesystem::workspace_ref,
     resources::ProviderRef,
 };
+use acyclic_fs::Workspace;
 
 async fn replace_policy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &Workspace<A, O>,
