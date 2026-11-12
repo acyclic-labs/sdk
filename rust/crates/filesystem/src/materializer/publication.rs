@@ -191,6 +191,9 @@ where
         validate_generation_journal(&journal, &request)?;
         check_native_plan(&journal.plan, work)?;
         work.set_original_work(journal.work);
+        if journal.phase == MaterializationPhase::Applied && journal.plan.edits.is_empty() {
+            return Ok((None, journal));
+        }
         journal
     } else {
         let (plan, custody) =

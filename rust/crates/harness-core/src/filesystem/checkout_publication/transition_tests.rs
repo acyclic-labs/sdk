@@ -875,6 +875,13 @@ async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult 
             )
             .await?;
         assert_eq!(journal.plan.edits.is_empty(), promoted);
+        if promoted && !unchanged {
+            // A preparation response may be lost after its empty result is durable.
+            let retry = publication
+                .prepare(from, &fixture.to, &fixture.state, &options, &fixture.work)
+                .await?;
+            assert_eq!(retry, journal);
+        }
         let approval =
             publication.approval_value(from, &fixture.to, &paths, &journal, "creator")?;
         let digest = approval.digest(&fixture.work)?;
@@ -910,6 +917,13 @@ async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult 
         // Rebuilding instead of carrying approval really would overwrite the
         // later edit: exercise the former unbound publication argument shape.
         if promoted && !unchanged {
+            // Completed empty preparation remains available after publication
+            // has retired the staging allocations.
+            let retry = publication
+                .prepare(from, &fixture.to, state, &options, &fixture.work)
+                .await?;
+            assert_eq!(retry.phase, acyclic_fs::MaterializationPhase::Applied);
+            assert!(retry.plan.edits.is_empty());
             // The original namespace retains completion even without an
             // approval handle, protecting later edits on a cold retry.
             publication
