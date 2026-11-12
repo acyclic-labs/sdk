@@ -68,7 +68,12 @@
   ],
   "assert": {
     "requests": 5,
-    "default_conventions": true,
+    "each_model_absent": [
+      "Plans and notes go in",
+      "GOAL.md is used only when",
+      "<model>",
+      "<git_status>"
+    ],
     "last_model_contains": [
       "---\\nstatus: active\\n---\\nGOAL_E2E\\n"
     ],
