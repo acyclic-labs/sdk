@@ -131,20 +131,16 @@ async fn assert_request(
     let ModelContent::Text(catalog) = &catalog.content else {
         return Err(Error::Invalid("skill catalog is not text".into()));
     };
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(catalog)
-            .map_err(|error| Error::Invalid(error.to_string()))?,
-        serde_json::json!([
-            {"name":"inspect","description":"Inspect files","source":manifest.discovery.skills[0].source},
-            {"name":"hidden","description":"Hidden skill","source":manifest.discovery.skills[1].source}
-        ])
-    );
-    let listing: serde_json::Value =
+    let listing: Vec<acyclic_harness::context::SkillSummary> =
         serde_json::from_str(catalog).map_err(|error| Error::Invalid(error.to_string()))?;
-    let source: acyclic_harness::context::PinnedContextPath =
-        serde_json::from_value(listing[1]["source"].clone())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-    let (_, body) = source.read(reader, 4096).await?;
+    assert_eq!(listing.len(), 2);
+    for (entry, metadata) in listing.iter().zip(&manifest.discovery.skills) {
+        assert_eq!(entry.name, metadata.name);
+        assert_eq!(entry.description, metadata.description);
+        assert_eq!(entry.source, metadata.source);
+    }
+    assert_ne!(listing[0].id, listing[1].id);
+    let (_, body) = listing[1].source.read(reader, 4096).await?;
     assert!(
         std::str::from_utf8(&body)
             .map_err(|error| Error::Invalid(error.to_string()))?

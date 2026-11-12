@@ -20,11 +20,43 @@ pub struct SkillMetadata {
 
 /// The model's discovery surface, including the exact lazy body location.
 /// Original source identity and callable fields stay pinned in the manifest.
+/// `id` identifies the declared name and original source across body versions
+/// and retained paths. Change and removal notices carry the same identifier.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct SkillSummary {
+    /// Opaque source identity, shared with change and removal notices.
+    pub id: String,
+    /// Declared skill name; different sources may declare the same name.
+    pub name: String,
+    /// Frontmatter description.
+    pub description: String,
+    /// Exact body location, loaded only when selected.
+    pub source: PinnedContextPath,
+}
+
 #[derive(Serialize)]
-pub(crate) struct SkillSummary<'a> {
+pub(crate) struct SkillSummaryView<'a> {
+    id: SkillId<'a>,
     name: &'a str,
     description: &'a str,
     source: &'a PinnedContextPath,
+}
+
+struct SkillId<'a>(&'a SkillMetadata);
+
+impl Serialize for SkillId<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"skill:");
+        serde_json::to_writer(&mut hash, &(&self.0.name, &self.0.identity))
+            .map_err(serde::ser::Error::custom)?;
+        serializer.collect_str(&hash.finalize().to_hex())
+    }
 }
 
 pub(super) struct SkillListing<'a>(pub &'a [SkillMetadata]);
@@ -49,8 +81,9 @@ pub struct SkillCallFields<'a> {
 }
 
 impl SkillMetadata {
-    pub(crate) fn summary(&self) -> SkillSummary<'_> {
-        SkillSummary {
+    pub(crate) fn summary(&self) -> SkillSummaryView<'_> {
+        SkillSummaryView {
+            id: SkillId(self),
             name: &self.name,
             description: &self.description,
             source: &self.source,
