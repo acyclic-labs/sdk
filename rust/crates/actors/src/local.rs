@@ -573,8 +573,9 @@ impl PreparedPublish {
 }
 
 /// Bind the original caller intent and current fork format before resolving
-/// mutable parent/input cuts. Version 3 binds the paused, independently funded overlay and host failure exclusion;
-/// older acceptance envelopes are outside this data generation.
+/// mutable parent/input cuts. It binds the paused, independently funded
+/// overlay and the host custody and failure exclusions; the retired
+/// `acyclic.actors.fork` acceptances are outside this data generation.
 fn fork_key(
     child: &StreamPath,
     request: &crate::wire::ForkActorRequest,
@@ -582,7 +583,7 @@ fn fork_key(
     use prost::Message as _;
     use sha2::Digest as _;
     let mut hash = sha2::Sha256::new();
-    hash.update(b"acyclic.actors.fork.v3\0");
+    hash.update(b"acyclic.actor.fork.v1\0");
     hash.update(child.as_str().as_bytes());
     hash.update([0]);
     hash.update(request.encode_to_vec());

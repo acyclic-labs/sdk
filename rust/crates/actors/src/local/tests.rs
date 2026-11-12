@@ -54,7 +54,11 @@ async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> T
     {
         use prost::Message as _;
         use sha2::Digest as _;
-        for format in [b"acyclic.actors.fork.v1\0", b"acyclic.actors.fork.v2\0"] {
+        for format in [
+            &b"acyclic.actors.fork.v1\0"[..],
+            b"acyclic.actors.fork.v2\0",
+            b"acyclic.actors.fork.v3\0",
+        ] {
             let mut old = sha2::Sha256::new();
             old.update(format);
             old.update(store.path(&child)?.as_str().as_bytes());
@@ -253,12 +257,12 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     result.response = Some(Bytes::new());
     // Mutate the original accepted record's version. Unsupported formats must
     // fail before either success or failure can consume input or mint a caller.
-    for version in [b"0", b"1", b"3"] {
+    for version in [b"0", b"2", b"3"] {
         let mut obsolete = ticket.record().clone();
         obsolete.headers = acyclic_stream::RecordHeaders::new(
             obsolete.headers.keys().to_vec(),
             vec![acyclic_stream::Attribute {
-                name: "acyclic.actors.invoke".into(),
+                name: "acyclic.actor.invoke".into(),
                 value: Bytes::copy_from_slice(version).into(),
             }],
         )?;
