@@ -605,6 +605,7 @@ fn guarantee(operation: Operation) -> &'static str {
         Operation::StreamFollow => {
             "deliver the original committed record to its already parked follower"
         }
+        Operation::StreamChildrenPage => "return the original bounded direct-child stream page",
         Operation::WorkerCold => "start the actual native worker and complete its original call",
         Operation::WorkerWarm => {
             "complete the original call on the admitted resident native worker"

@@ -12,7 +12,10 @@ use acyclic_actors::{
 use acyclic_fs::{CancellationToken, WorkBudget};
 use acyclic_objects::{Blobs, ByteRange, Digest, Head, Kind};
 use acyclic_stream::testing::RequestClass;
-use acyclic_stream::{AppendOutcome, CommitCondition, CommitMutation, Stream, StreamPath};
+use acyclic_stream::{
+    AppendOutcome, ChildrenPageRequest, CommitCondition, CommitMutation, Stream, StreamPath,
+    StreamProviderExt as _,
+};
 use acyclic_test_support::scale::Operation;
 use bytes::Bytes;
 use futures::{TryStreamExt as _, task::AtomicWaker};
@@ -118,6 +121,9 @@ pub(super) async fn run(
             Operation::StreamFollow,
         ]) {
             streams(fixture, samples, &mut rows).await?;
+        }
+        if rows.includes(Operation::StreamChildrenPage) {
+            children(fixture, samples, &mut rows).await?;
         }
         if any(&[
             Operation::ActorCreate,
@@ -357,6 +363,66 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>)
             return Err("finite read range mismatch".into());
         }
         require_bytes(record.value.as_ref(), &payload)?;
+    }
+    Ok(())
+}
+
+async fn children(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {
+    let parent = StreamPath::new("benchmark/children")?;
+    let mut paths = Vec::new();
+    for name in ["a", "b", "c"] {
+        let path = format!("{parent}/{name}");
+        let child = Stream::new(fixture.stream.clone(), path.as_str())?;
+        if !matches!(
+            child.append(Bytes::new(), key(path.clone())?).await?,
+            AppendOutcome::Committed(_)
+        ) {
+            return Err("child stream creation conflicted".into());
+        }
+        paths.push(StreamPath::new(path)?);
+    }
+    let request = ChildrenPageRequest {
+        tail_stream: None,
+        parent: Some(parent.clone()),
+        after: None,
+        hierarchy_version: None,
+        limit: 2,
+    };
+    for _ in 0..samples {
+        let page = timed!(
+            rows,
+            Operation::StreamChildrenPage,
+            read(0),
+            serde_json::json!({"parent": parent.as_str(), "after": null, "limit": 2}),
+            Some(RequestClass::List),
+            fixture.stream.children_page(request.clone())
+        )?;
+        page.validate_for(&request)?;
+        if page
+            .children
+            .iter()
+            .map(|child| &child.path)
+            .ne(paths[..2].iter())
+            || page.next_after.as_ref() != Some(&paths[1])
+        {
+            return Err("child page skipped or duplicated a stream".into());
+        }
+        let rest_request = ChildrenPageRequest {
+            after: page.next_after,
+            hierarchy_version: Some(page.hierarchy_version),
+            ..request.clone()
+        };
+        let rest = fixture.stream.children_page(rest_request.clone()).await?;
+        rest.validate_for(&rest_request)?;
+        if rest
+            .children
+            .iter()
+            .map(|child| &child.path)
+            .ne(paths[2..].iter())
+            || rest.next_after.is_some()
+        {
+            return Err("child page continuation changed stream membership".into());
+        }
     }
     Ok(())
 }

@@ -54,7 +54,7 @@ pub const LIFECYCLE_OPERATIONS: [Operation; 6] = [
     Operation::Archive,
 ];
 /// Primitive and session operations measured by the shared native benchmark.
-pub const CORE_OPERATIONS: [Operation; 18] = [
+pub const CORE_OPERATIONS: [Operation; 19] = [
     Operation::ActorCreate,
     Operation::ActorWake,
     Operation::ActorDurableWrite,
@@ -67,6 +67,7 @@ pub const CORE_OPERATIONS: [Operation; 18] = [
     Operation::StreamAppend,
     Operation::StreamRead,
     Operation::StreamFollow,
+    Operation::StreamChildrenPage,
     Operation::WorkerCold,
     Operation::WorkerWarm,
     Operation::PinnedRead,
@@ -113,6 +114,8 @@ pub enum Operation {
     StreamRead,
     /// Deliver one committed record to an already parked follower.
     StreamFollow,
+    /// Read one bounded direct-child stream page.
+    StreamChildrenPage,
     /// Start a native worker and complete one call.
     WorkerCold,
     /// Complete one call on an already resident worker.
@@ -155,6 +158,7 @@ impl Operation {
             Self::StreamAppend => "streams.append",
             Self::StreamRead => "streams.read",
             Self::StreamFollow => "streams.follow",
+            Self::StreamChildrenPage => "streams.children_page",
             Self::WorkerCold => "workers.cold",
             Self::WorkerWarm => "workers.warm",
             Self::PinnedRead => "fs.pinned_read",
