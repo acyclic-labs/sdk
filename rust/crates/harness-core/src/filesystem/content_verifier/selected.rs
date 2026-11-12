@@ -43,7 +43,7 @@ impl<A, O> FilesystemContentVerifier<A, O> {
         Ok(self)
     }
 
-    fn selected_input(
+    pub(super) fn selected_input(
         &self,
         reference: &FileRef,
         ceiling: Option<&crate::Capabilities>,

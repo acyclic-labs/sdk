@@ -4,6 +4,12 @@
 `filesystem-local` adds local providers. Generation-pinned references and signed
 volume grants govern reads and writes, including replay.
 
+A committed turn retains the original host reader for its exact immutable
+journal input references. The caller's read grant and any narrower request
+ceiling still apply. This permits selected prompts and inherited transcripts
+without publishing other journal files, delegating directory access, or giving
+tools the host's journal writer. Reads retain the caller's original work ledger.
+
 `LocalHarness::open(LocalHarnessConfig::new(path, (model, provider))).await`
 opens a normal checkout lazily with `filesystem-local,native-execution`. Owner
 credentials and durable state live in the per-user local data directory under
