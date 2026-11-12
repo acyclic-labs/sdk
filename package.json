@@ -53,7 +53,7 @@
   "license": "Apache-2.0",
   "type": "commonjs",
   "patchedDependencies": {
-    "@connectrpc/connect@2.2.0": "patches/connect-2.2.0.patch",
-    "@napi-rs/cli@3.10.9": "patches/napi-rs-cli-3.10.9.patch"
+    "@connectrpc/connect@2.3.0": "patches/connect-2.3.0.patch",
+    "@napi-rs/cli@3.10.12": "patches/napi-rs-cli-3.10.12.patch"
   }
 }
