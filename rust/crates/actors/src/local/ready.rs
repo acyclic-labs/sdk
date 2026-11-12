@@ -23,6 +23,8 @@ struct Entry<K> {
 #[must_use]
 struct Token {
     serial: u64,
+    /// The watermark group (scheduling shard) its deadline bounds.
+    group: u16,
     deadline: u64,
     /// Next wake; None once a wake was delivered to its registration.
     wake: Option<u64>,
@@ -46,8 +48,10 @@ struct Index<K> {
     waiter: Option<Waker>,
     /// Resident wakes, as `(wake_at, registration, serial)`.
     due: BTreeSet<(u64, Id, u64)>,
-    /// Every live token, as `(deadline, serial)`, wherever it is held.
-    deadlines: BTreeSet<(u64, u64)>,
+    /// Every live token, as `(group, deadline, serial)`, wherever it is held.
+    deadlines: BTreeSet<(u16, u64, u64)>,
+    /// A key's watermark group: one group's tokens never hold another's.
+    group: Box<dyn Fn(&K) -> u16 + Send + Sync>,
     serials: u64,
     /// Tokens of retired registrations, until their key registers again.
     /// Bounded by parked alarms, never by residents.
@@ -62,7 +66,7 @@ struct Index<K> {
     /// kept, never accumulated.
     dispatching: bool,
 }
-impl<K> Default for Index<K> {
+impl<K: 'static> Default for Index<K> {
     fn default() -> Self {
         Self {
             next: 0,
@@ -73,6 +77,7 @@ impl<K> Default for Index<K> {
             waiter: None,
             due: BTreeSet::new(),
             deadlines: BTreeSet::new(),
+            group: Box::new(|_| 0),
             serials: 0,
             parked: BTreeMap::new(),
             parked_wakes: BTreeSet::new(),
@@ -142,11 +147,13 @@ impl<K> Index<K> {
     }
 }
 impl<K: Ord + Clone> Index<K> {
-    fn mint(&mut self, deadline: u64, wake: Option<u64>) -> Token {
+    fn mint(&mut self, key: &K, deadline: u64, wake: Option<u64>) -> Token {
         self.serials = self.serials.wrapping_add(1);
-        self.deadlines.insert((deadline, self.serials));
+        let group = (self.group)(key);
+        self.deadlines.insert((group, deadline, self.serials));
         Token {
             serial: self.serials,
+            group,
             deadline,
             wake,
         }
@@ -154,7 +161,8 @@ impl<K: Ord + Clone> Index<K> {
 
     /// The durable alarm no longer needs this host: consumed or suspended.
     fn burn(&mut self, token: Token) {
-        self.deadlines.remove(&(token.deadline, token.serial));
+        self.deadlines
+            .remove(&(token.group, token.deadline, token.serial));
     }
 
     /// Two claims on one actor's alarm keep the earlier deadline and wake.
@@ -237,11 +245,24 @@ struct Core<K> {
 pub struct ReadySet<K> {
     core: Arc<Core<K>>,
 }
-impl<K> Default for ReadySet<K> {
+impl<K: 'static> Default for ReadySet<K> {
     fn default() -> Self {
         Self {
             core: Arc::new(Core {
                 index: SyncMutex::new(Index::default()),
+            }),
+        }
+    }
+}
+impl<K: 'static> ReadySet<K> {
+    /// A ready index whose deadline watermarks are kept per `group` of key,
+    /// so an alarm held in one scheduling shard never holds another's.
+    pub fn grouped(group: impl Fn(&K) -> u16 + Send + Sync + 'static) -> Self {
+        let mut index = Index::default();
+        index.group = Box::new(group);
+        Self {
+            core: Arc::new(Core {
+                index: SyncMutex::new(index),
             }),
         }
     }
@@ -433,10 +454,11 @@ impl<K: Ord + Clone> ReadySet<K> {
         index.due.first().map(|&(deadline, _, _)| deadline)
     }
 
-    /// The deadline window the watermark may not pass at `now_unix_ms`: the
-    /// current window, or the earliest original deadline's window of any
-    /// alarm token, resident or parked, however late its wake was deferred.
-    pub fn watermark(&self, now_unix_ms: u64) -> u64 {
+    /// The deadline window `group`'s watermark may not pass at `now_unix_ms`:
+    /// the current window, or the earliest original deadline's window of any
+    /// of the group's alarm tokens, resident or parked, however late its wake
+    /// was deferred.
+    pub fn watermark(&self, group: u16, now_unix_ms: u64) -> u64 {
         let index = self
             .core
             .index
@@ -445,8 +467,9 @@ impl<K: Ord + Clone> ReadySet<K> {
         super::scheduling::window(
             index
                 .deadlines
-                .first()
-                .map_or(now_unix_ms, |&(deadline, _)| deadline.min(now_unix_ms)),
+                .range((group, 0, 0)..=(group, u64::MAX, u64::MAX))
+                .next()
+                .map_or(now_unix_ms, |&(_, deadline, _)| deadline.min(now_unix_ms)),
         )
     }
 
@@ -639,7 +662,7 @@ impl<K: Ord + Clone> Registration<K> {
             if index.dispatching && known != Some(pending) {
                 index.armed.push((pending, key.clone()));
             }
-            let token = index.mint(pending, deadline);
+            let token = index.mint(&key, pending, deadline);
             if let Err(token) = index.hold(self.id, token) {
                 index.park(key, token);
             }
@@ -701,7 +724,7 @@ impl<K: Ord + Clone> Registration<K> {
         };
         if entry.token.is_none() {
             let key = entry.key.clone();
-            let token = index.mint(window_start_unix_ms, None);
+            let token = index.mint(&key, window_start_unix_ms, None);
             if let Err(token) = index.hold(self.id, token) {
                 index.park(key, token);
             }

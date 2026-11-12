@@ -10,14 +10,36 @@ use prost::Message as _;
 // A forbidden protobuf wire type prevents an unversioned decoder accepting it.
 const FORMAT_V1: &[u8] = b"\xffAFD\x01";
 const DIRECTORY: &str = ".failures";
+/// The leading character of every runtime namespace under a state root.
+pub(super) const RUNTIME: char = '_';
 /// The actor's participant custody stream: one intent per composed publication.
 pub(super) const CUSTODY: &str = "custody";
 
+/// The one reservation check at the effect boundary: whether `mutation`
+/// writes a runtime-owned stream, either the actor `owner`'s control records
+/// or any runtime namespace of its state root (every root child named with a
+/// leading `_`: deadline windows, dispatcher checkpoints, sockets). No actor
+/// path can be one, since an encoded actor component starts with `%`. The
+/// sole exception is an append to a shard's activation log itself: every
+/// producer's wake entry, a hint the dispatcher ignores when malformed.
 /// A fork replaces its destination subtree; appends write one exact stream.
 /// Compare borrowed components so admission adds no allocation or provider IO.
 pub(super) fn targets_host_records(mutation: &CommitMutation, owner: &StreamPath) -> bool {
     let path = mutation.path();
     if matches!(mutation, CommitMutation::Fork { .. }) && super::covers(path, owner) {
+        return true;
+    }
+    if let Some((root, _)) = owner.as_str().rsplit_once('/')
+        && path
+            .as_str()
+            .strip_prefix(root)
+            .and_then(|suffix| suffix.strip_prefix('/'))
+            .is_some_and(|name| {
+                name.starts_with(RUNTIME)
+                    && !(matches!(mutation, CommitMutation::Append { .. })
+                        && super::scheduling::wake_log(name))
+            })
+    {
         return true;
     }
     let relative = path
@@ -416,7 +438,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     }],
                 }],
             ))?;
-            prepared.join(self.activation(actor)?)?;
+            prepared.join_host(self.activation(actor)?)?;
         }
         Ok(prepared)
     }

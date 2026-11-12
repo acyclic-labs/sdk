@@ -219,11 +219,24 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             records: vec![Bytes::from_static(b"corrupt").into()],
         },
     ];
+    // Every runtime namespace of the state root, a deadline window among
+    // them; only the activation log itself takes producers' wake entries.
+    for path in [
+        format!("{}/{:020}", store.scheduling_path(0)?, 0),
+        format!("{}/_dispatcher/runtime", state_root()?),
+        format!("{}/_sockets/v1", state_root()?),
+    ] {
+        mutations.push(CommitMutation::Append {
+            path: StreamPath::new(path)?,
+            records: vec![Bytes::from_static(b"junk").into()],
+        });
+    }
     for destination in [
         failures,
         child.path.clone(),
         snapshot.path.clone(),
         state_root()?,
+        store.scheduling_path(0)?,
     ] {
         mutations.push(CommitMutation::Fork {
             source: source.clone(),

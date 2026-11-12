@@ -455,3 +455,23 @@ mod schedules {
         });
     }
 }
+
+/// A parked alarm holds only its own group's watermark: one shard's alarm
+/// that this host never hosts again cannot hold another shard's checkpoint.
+#[cfg(not(loom))]
+#[test]
+fn a_parked_alarm_holds_only_its_own_groups_watermark() -> Result<(), super::super::Error> {
+    let set = ReadySet::grouped(|key: &u64| u16::try_from(*key % 2).unwrap_or(0));
+    set.dispatch();
+    let held = set.register(1)?;
+    held.update_alarm(&alarm(1, Some(70_000), None))?;
+    drop(held);
+    let now = 250_000;
+    assert_eq!(
+        set.watermark(1, now),
+        1,
+        "the parked alarm holds its window"
+    );
+    assert_eq!(set.watermark(0, now), 4, "another group passes it");
+    Ok(())
+}

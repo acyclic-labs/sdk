@@ -200,7 +200,7 @@ impl World {
     }
 
     fn checkpoint(&self) -> u64 {
-        self.consumed.min(self.set.watermark(self.now()))
+        self.consumed.min(self.set.watermark(0, self.now()))
     }
 
     /// A restart from a checkpoint taken now reopens every window at or past
