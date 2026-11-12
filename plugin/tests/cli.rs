@@ -627,18 +627,13 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
         if initialize {
             arguments.extend(["--home-file", plugins.as_str()]);
         }
-        graphcoder(
-            &fixture,
-            &model.catalog,
-            vec!["--operation", operation, "-p", "hello"],
-            "",
-        )
+        graphcoder(&fixture, &model.catalog, arguments, "")
     };
     assert_eq!(succeeded(&run("first", true).await), "fixture answer\n");
     assert_eq!(model.generated(), 1);
     // The same operation names the same message: a second process prints the
     // settled answer without generating again.
-    assert_eq!(succeeded(&run("first").await), "fixture answer\n");
+    assert_eq!(succeeded(&run("first", false).await), "fixture answer\n");
     assert_eq!(model.generated(), 1);
     // Another operation is a new message to the same root agent.
     assert_eq!(succeeded(&run("second", false).await), "fixture answer\n");
@@ -1541,7 +1536,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             .unwrap()
             .without_user_settings()
             .feedback_plugin(false)
-            .topology(acyclic_harness::topology::Topology::select(Some("swarm")).unwrap())
+            .topology(acyclic_harness::topology::Topology::select("swarm").unwrap())
             .unwrap()
             .state_directory(fixture._directory.path().join(state))
             .working_directory(&fixture.workspace)
