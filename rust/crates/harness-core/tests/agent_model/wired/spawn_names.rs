@@ -167,9 +167,7 @@ async fn fixture_with_pause(
     files.seed_layer().await?;
     let limits = acyclic_harness_core::conversation::Limits {
         file_bytes: if project {
-            LIMITS
-                .maximum_bytes
-                .expect("fixture selects a finite byte limit")
+            LIMITS.maximum_bytes
         } else {
             acyclic_harness_core::conversation::Limits::default().file_bytes
         },
