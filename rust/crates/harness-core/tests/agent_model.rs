@@ -1333,8 +1333,13 @@ async fn a_wait_parks_only_on_children_that_can_settle() -> Result {
     let root = AgentPath::root(&id(1));
     let spawned = root.child(&AgentId::derive(&root.id(), "w1"))?;
     let stranger = root.child(&id(9))?;
+    let foreign = AgentPath::root(&id(3)).child(&spawned.id())?;
     let start = InboxRecord::Approval(Approval { id: intent("q1") });
-    for (awaited, spawn, parks) in [(spawned.clone(), true, true), (stranger, false, false)] {
+    for (awaited, spawn, parks) in [
+        (spawned.clone(), true, true),
+        (stranger, false, false),
+        (foreign.clone(), true, false),
+    ] {
         let state = AgentState::adopted(root.clone(), &adopted(id(1))).expect("adopts");
         let outs = if spawn {
             vec![Out::Spawn {
@@ -1379,6 +1384,80 @@ async fn a_wait_parks_only_on_children_that_can_settle() -> Result {
             "{awaited}: {:?}",
             stepped.state.phase
         );
+    }
+    // The same final child ID under another parent can neither discharge
+    // this wait nor remove this parent's open membership.
+    for any in [false, true] {
+        for done in [false, true] {
+            let mut state = AgentState::adopted(root.clone(), &adopted(id(1)))?;
+            state.open_children.insert(&spawned).await?;
+            let selected = BTreeSet::from([spawned.clone()]);
+            let driver = script(vec![
+                TurnStep {
+                    checkpoint: Some(b"waiting".to_vec()),
+                    outs: Vec::new(),
+                    wait: Wait::Until(if any {
+                        Until::any(selected)
+                    } else {
+                        Until::all(selected)
+                    }),
+                    drops: None,
+                },
+                TurnStep {
+                    checkpoint: None,
+                    outs: Vec::new(),
+                    wait: Wait::Input,
+                    drops: None,
+                },
+            ]);
+            let wake = |sequence, record| Wake::Inbox { sequence, record };
+            let cancel = acyclic_actors::guest::CancellationToken::new;
+            let waiting = step(
+                &driver,
+                &root,
+                Some(state),
+                (2, 0),
+                wake(1, start.clone()),
+                cancel(),
+            )
+            .await?;
+            assert!(matches!(waiting.state.phase, Phase::Waiting { .. }));
+            let completion = |child| {
+                if done {
+                    InboxRecord::ChildDone(ChildDone {
+                        child,
+                        outcome: AgentOutcome::Succeeded { result: None },
+                    })
+                } else {
+                    InboxRecord::ChildSettled(ChildSettled { child })
+                }
+            };
+            let waiting = step(
+                &driver,
+                &root,
+                Some(waiting.state),
+                (3, 0),
+                wake(2, completion(foreign.clone())),
+                cancel(),
+            )
+            .await?;
+            assert!(matches!(waiting.state.phase, Phase::Waiting { .. }));
+            assert!(waiting.state.awaiting.contains(&spawned).await?);
+            assert!(waiting.state.open_children.contains(&spawned).await?);
+            let settled = step(
+                &driver,
+                &root,
+                Some(waiting.state),
+                (4, 0),
+                wake(3, completion(spawned.clone())),
+                cancel(),
+            )
+            .await?;
+            assert_eq!(settled.state.phase, Phase::Idle);
+            assert!(settled.state.awaiting.is_empty());
+            assert_eq!(settled.state.open_children.contains(&spawned).await?, !done);
+            assert!(driver.0.lock().expect("script lock").is_empty());
+        }
     }
     Ok(())
 }
