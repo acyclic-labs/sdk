@@ -19,6 +19,31 @@ impl HttpTransport for Reported {
     fn now(&self) -> std::time::Duration {
         crate::fixtures::now()
     }
+    fn delay_with_native_work(
+        &self,
+        wait: std::time::Duration,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
+        crate::fixtures::native_delay(wait, work)
+    }
+    fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        work.remaining()?;
+        Ok(true)
+    }
+    fn send_with_native_work<'a>(
+        &'a self,
+        request: HttpRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
+            self.sent.lock().unwrap().push(request);
+            HttpResponse::with_native_body(
+                self.status,
+                futures::stream::iter([Ok(Bytes::from_static(self.body))]),
+                work,
+            )
+        })
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             self.sent.lock().unwrap().push(request);
