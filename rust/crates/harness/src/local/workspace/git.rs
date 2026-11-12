@@ -42,6 +42,20 @@ struct Invocation<'a> {
     capture_cut: acyclic_fs::GenerationId,
 }
 
+/// A cancelled or failed settlement still owes its durable queue a drain.
+struct PublicationSettlement<'a> {
+    debt: &'a std::sync::atomic::AtomicBool,
+    completed: bool,
+}
+
+impl Drop for PublicationSettlement<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.debt.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
 impl Commands<'_> {
     /// One serialized entry to the git facade, shared by native hosts and
     /// platform-owned session integration. The existing capture, recovery,
@@ -197,11 +211,14 @@ impl Commands<'_> {
         if !self.workspace.publication_debt.swap(false, SeqCst) {
             return Ok(());
         }
+        let mut settlement = PublicationSettlement {
+            debt: &self.workspace.publication_debt,
+            completed: false,
+        };
         let drained = self.drain_publications(context, state).await;
-        if drained.is_err() {
-            // The durable queue still holds the debt; the next command retries.
-            self.workspace.publication_debt.store(true, SeqCst);
-        }
+        // Do not clear the flag here: another handback may have raised it
+        // while this drain held the checkout guard.
+        settlement.completed = drained.is_ok();
         drained
     }
 

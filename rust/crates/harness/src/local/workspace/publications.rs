@@ -489,6 +489,49 @@ mod tests {
         drop(busy);
         // The parent's next command settles the debt before reading.
         let mut state = crate::sync::owned::lock_owned(StateArc::clone(&workspace.state)).await;
+        struct PausedOwner<'a> {
+            inner: &'a dyn super::super::owner::ViewOwner,
+            entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        }
+        impl super::super::owner::ViewOwner for PausedOwner<'_> {
+            fn verify(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
+                Box::pin(async move {
+                    self.inner.verify().await?;
+                    let entered = self.entered.lock().unwrap().take();
+                    if let Some(entered) = entered {
+                        let _ = entered.send(());
+                        std::future::pending::<()>().await;
+                    }
+                    Ok(())
+                })
+            }
+            fn lease(&self, operation: OperationId) -> acyclic_fs::OperationLeaseId {
+                self.inner.lease(operation)
+            }
+        }
+        let (entered, draining) = tokio::sync::oneshot::channel();
+        let paused = PausedOwner {
+            inner: &owner,
+            entered: std::sync::Mutex::new(Some(entered)),
+        };
+        let paused_context = super::super::git::CommandContext {
+            owner: &paused,
+            operation: OperationId::new(),
+            scope: &scope,
+            request: None,
+        };
+        let mut settlement = Box::pin(commands.settle_publications(&paused_context, &mut state));
+        tokio::select! {
+            entered = draining => entered.map_err(storage)?,
+            result = &mut settlement => panic!("settlement completed before cancellation: {result:?}"),
+        }
+        drop(settlement);
+        assert!(
+            workspace
+                .publication_debt
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+        assert!(LocalWorkspace::owes_publication(&workspace.filesystem, id).await?);
         commands
             .settle_publications(&context(OperationId::new()), &mut state)
             .await?;
