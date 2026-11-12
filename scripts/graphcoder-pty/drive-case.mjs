@@ -30,7 +30,15 @@ try {
   assert.equal(screen.cells.length, 30);
   assert.equal(screen.cells[0].length, 100);
   assert.ok(Number.isInteger(screen.cursor.x));
-  assert.ok(readFileSync(record.frames, "utf8").includes("DRIVE_ANSWER"));
+  const recorded = readFileSync(record.frames, "utf8").trimEnd().split("\n").map(JSON.parse);
+  assert.equal(recorded[0].cells.length, 30);
+  assert.equal(recorded[0].cells[0].length, 100);
+  assert.ok(recorded.slice(1).some(frame => frame.text.includes("DRIVE_ANSWER")));
+  for (const frame of recorded.slice(1)) {
+    assert.ok(!Object.hasOwn(frame, "cells"), "only the initial frame retains styled cells");
+    assert.equal(typeof frame.text, "string");
+    assert.ok(Number.isFinite(Date.parse(frame.at)), "logical frames retain timestamps");
+  }
   assert.equal(JSON.parse(readFileSync(record.recording, "utf8").split("\n")[0]).version, 2);
   await main(["stop", name]);
   started = false;

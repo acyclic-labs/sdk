@@ -35,8 +35,10 @@ Private DSR `CSI ? 7727 ; ID n` requests the fence; OSC 777
 `acyclic;settled;ID;PHASE_JSON` is the application response. Both use the shared
 terminal decoder and frame writer, including when a child is selected.
 
-`record` starts an asciicast v2 output capture plus timestamped styled frame
-snapshots, returning both paths. `start` reports first-paint latency; `keys`
+`record` captures the initial styled screen once, then timestamped logical
+frames and an asciicast v2 output capture. ANSI output retains subsequent styling;
+`screen --raw` supplies the current styled cells. It returns both recording paths.
+`start` reports first-paint latency; `keys`
 reports transport write latency (not input echo latency). Compare frame
 timestamps to measure echo and redraw. No credentials or environment are saved
 by the driver. Provider credentials must stay in a host relay, outside guest

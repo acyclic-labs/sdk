@@ -120,7 +120,7 @@ async function ownRun(config, { directory, socket }) {
   const frames = new TerminalFrames(terminal, () => {
     if (!frames.available()) return;
     sequence++;
-    if (framesLog !== undefined) writeSync(framesLog, JSON.stringify(snapshot(true)) + "\n");
+    if (framesLog !== undefined) writeSync(framesLog, JSON.stringify(snapshot()) + "\n");
     if (!painted && screenText(terminal).includes("GraphCoder")) {
       painted = true;
       process.send?.({ name: config.name, first_paint_ms: performance.now() - started, directory, artifacts });
