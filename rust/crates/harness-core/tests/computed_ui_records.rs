@@ -200,6 +200,7 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
 
 #[tokio::test]
 async fn private_agent_fork_binds_child_views_without_replacing_companion_roots() -> Result {
+    acyclic_native_runtime::initialize_native_io_services()?;
     use acyclic_fs::{
         Fs, IdempotencyKey as FsKey, LazyWorkspace, LazyWorkspaceError, LocalCoreStateStore,
         PublicationPermit, VolumeLimits,
