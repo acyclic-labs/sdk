@@ -234,10 +234,7 @@ impl Home {
             std::fs::create_dir_all(root.join(path)).unwrap();
         }
         Self {
-            custody: acyclic_native_runtime::signing_key::FixtureCustody::new(
-                &root.join("custody"),
-            )
-            .unwrap(),
+            custody: acyclic_native_runtime::signing_key::FixtureCustody::new().unwrap(),
             root,
         }
     }

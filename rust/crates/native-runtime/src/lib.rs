@@ -94,7 +94,7 @@ mod io_progress;
 mod kernel_keyring;
 pub mod owner_record;
 pub mod private_file;
-/// Native or owner-only file custody for the account's authority signing root.
+/// Injected, native or private-file custody for store-owned authority signing seeds.
 pub mod signing_key;
 #[cfg(unix)]
 pub use file::read_declared_source_bytes;

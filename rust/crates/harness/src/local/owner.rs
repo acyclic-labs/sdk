@@ -257,10 +257,10 @@ impl RootWitness {
 // f_fsid, Windows volume serial); on macOS it is st_dev, so a remount that
 // renumbers the device refuses attachment rather than trusting a copied token.
 
-/// The owner record's v2 name. A state directory still holding the v1 name is
-/// refused whole, without reading it: no older format is migrated.
-const RECORD: &str = "owner.v2";
-const V1_RECORD: &str = "owner.json";
+/// The store-owned seed reference changes the enclosing owner format. Older
+/// names are refused before decoding their records or accessing credentials.
+const RECORD: &str = "owner.v3";
+const OLDER_RECORDS: [&str; 2] = ["owner.json", "owner.v2"];
 
 impl Owner {
     pub(super) fn open(
@@ -268,6 +268,7 @@ impl Owner {
         selection: &LocalProject,
         checkout: Option<&Checkout>,
         custody: SigningCustody<'_>,
+        lifetime: Option<&acyclic_native_runtime::OwnershipAnchor>,
     ) -> Result<Self> {
         let workspace = match (selection, checkout) {
             (LocalProject::Workspace(_), Some(checkout)) => Some(checkout.path.clone()),
@@ -281,20 +282,9 @@ impl Owner {
         let path = directory.join(RECORD);
         let workspace_identity = checkout.map(|checkout| checkout.identity);
         let workspace_incarnation = checkout.map(|checkout| checkout.incarnation);
-        let owner = match Self::load(&path) {
+        let owner = match Self::load(directory) {
             Ok(owner) => owner,
             Err(Error::NotFound(_)) => {
-                // Only a missing v2 record pays for the v1 probe.
-                match fs::symlink_metadata(directory.join(V1_RECORD)) {
-                    Ok(_) => {
-                        return Err(Error::Conflict(format!(
-                            "local state at {} uses an older format; remove that directory to start fresh",
-                            directory.display()
-                        )));
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(storage(error)),
-                }
                 let project = match selection {
                     LocalProject::Volume { volume, .. } => volume.clone(),
                     LocalProject::Workspace(_) => VolumeRef::new(
@@ -310,14 +300,11 @@ impl Owner {
                         &mut None,
                     )?,
                 };
-                // The reference derives this owner's seed from the account's
-                // one signing root, so an owner that loses publication leaves
-                // no custody behind.
+                let signing =
+                    acyclic_native_runtime::signing_key::SigningKeyReference::create(custody)
+                        .map_err(storage)?;
                 let owner = Self {
-                    key_ref: acyclic_native_runtime::signing_key::SigningKeyReference::create(
-                        custody,
-                    )
-                    .map_err(storage)?,
+                    key_ref: signing.reference(),
                     agent: AgentId::new(),
                     task: TaskId::new(),
                     project,
@@ -325,10 +312,14 @@ impl Owner {
                     workspace_identity,
                     workspace_incarnation,
                 };
-                if owner.publish(directory, &path)? {
+                let published = owner.publish(directory, &path, &signing);
+                if let Some(lifetime) = lifetime {
+                    signing.retire_with(lifetime.clone());
+                }
+                if published? {
                     owner
                 } else {
-                    Self::load(&path)?
+                    Self::load(directory)?
                 }
             }
             Err(error) => return Err(error),
@@ -359,15 +350,32 @@ impl Owner {
         Ok(owner)
     }
 
-    fn load(path: &Path) -> Result<Self> {
+    fn load(directory: &Path) -> Result<Self> {
         use acyclic_native_runtime::{owner_record, private_file};
-        let record = private_file::read(path, 65_536).map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => Error::NotFound("local owner".into()),
-            std::io::ErrorKind::PermissionDenied => {
-                Error::Unauthorized("local owner is not private".into())
+        let record = match private_file::read(&directory.join(RECORD), 65_536) {
+            Ok(record) => record,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A current record takes one read. Only absence pays for the
+                // older-format probes, shared by open and explicit deletion.
+                for name in OLDER_RECORDS {
+                    match fs::symlink_metadata(directory.join(name)) {
+                        Ok(_) => {
+                            return Err(Error::Conflict(format!(
+                                "local state at {} uses an older format; remove that directory to start fresh",
+                                directory.display()
+                            )));
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(storage(error)),
+                    }
+                }
+                return Err(Error::NotFound("local owner".into()));
             }
-            _ => storage(error),
-        })?;
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(Error::Unauthorized("local owner is not private".into()));
+            }
+            Err(error) => return Err(storage(error)),
+        };
         let plain = owner_record::decode_with(&record.0, 65_536, None, |bytes| {
             Ok::<_, std::io::Error>(bytes.to_vec())
         })
@@ -377,7 +385,12 @@ impl Owner {
     }
 
     /// Install this record only if no other opener published first.
-    fn publish(&self, directory: &Path, path: &Path) -> Result<bool> {
+    fn publish(
+        &self,
+        directory: &Path,
+        path: &Path,
+        signing: &acyclic_native_runtime::signing_key::ProvisionalSigningKey,
+    ) -> Result<bool> {
         use acyclic_native_runtime::{owner_record, private_file};
         let temporary = directory.join(format!(".owner-{}.next", crate::identity::fresh_uuid()));
         let plain = serde_json::to_vec(self).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -389,8 +402,47 @@ impl Owner {
             path,
             &temporary,
             |file| acyclic_native_runtime::write_file_all(file, &bytes),
-            |_| Ok(()),
+            |stage| {
+                signing.observe_publication(stage);
+                Ok(())
+            },
         )
         .map_err(storage)
+    }
+
+    pub(super) fn remove(directory: &Path, custody: SigningCustody<'_>) -> Result<()> {
+        let record = directory.join(RECORD);
+        let owner = match Self::load(directory) {
+            Ok(owner) => owner,
+            // Only the final empty-directory removal may follow record removal.
+            // Never recursively delete an unrecognized nonempty directory.
+            Err(Error::NotFound(_)) => return fs::remove_dir(directory).map_err(storage),
+            Err(error) => return Err(error),
+        };
+        owner.key_ref.delete(custody).map_err(storage)?;
+        for entry in fs::read_dir(directory).map_err(storage)? {
+            let entry = entry.map_err(storage)?;
+            if entry.file_name() == RECORD {
+                continue;
+            }
+            let kind = entry.file_type().map_err(storage)?;
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::FileTypeExt as _;
+                if kind.is_symlink_dir() {
+                    fs::remove_dir(entry.path()).map_err(storage)?;
+                    continue;
+                }
+            }
+            if kind.is_dir() {
+                fs::remove_dir_all(entry.path()).map_err(storage)?;
+            } else {
+                fs::remove_file(entry.path()).map_err(storage)?;
+            }
+        }
+        // The original durable record remains retry evidence through every
+        // payload failure. No outside journal or second deletion protocol.
+        fs::remove_file(record).map_err(storage)?;
+        fs::remove_dir(directory).map_err(storage)
     }
 }

@@ -256,14 +256,23 @@ impl Opening {
             .config
             .without_user_settings
             .then(|| directory.join("signing-custody"));
-        let custody = match custody_directory.as_deref() {
-            Some(directory) => {
+        let custody = match (
+            self.config.signing_store.as_deref(),
+            custody_directory.as_deref(),
+        ) {
+            (Some(store), _) => acyclic_native_runtime::signing_key::SigningCustody::Store(store),
+            (None, Some(directory)) => {
                 acyclic_native_runtime::signing_key::SigningCustody::PrivateFile(directory)
             }
-            None => acyclic_native_runtime::signing_key::SigningCustody::Configured,
+            (None, None) => acyclic_native_runtime::signing_key::SigningCustody::Configured,
         };
-        let owner =
-            owner::Owner::open(&directory, &self.config.project, checkout.as_ref(), custody)?;
+        let owner = owner::Owner::open(
+            &directory,
+            &self.config.project,
+            checkout.as_ref(),
+            custody,
+            self.config.test_state.as_ref(),
+        )?;
         let options = acyclic_fs::LocalOptions::new(match &self.config.project {
             LocalProject::Workspace(_) => directory.join("filesystem"),
             LocalProject::Volume { directory, .. } => directory.clone(),

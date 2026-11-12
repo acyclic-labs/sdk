@@ -12,33 +12,16 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
         let record =
             std::env::var_os("CUSTODY_CONTROL_RECORD").ok_or(io::ErrorKind::InvalidInput)?;
         return match operation.to_str() {
-            Some("probe-native") => {
-                #[cfg(target_os = "macos")]
-                let _interaction =
-                    security_framework::os::macos::keychain::SecKeychain::disable_user_interaction(
-                    )
-                    .map_err(io::Error::other)?;
-                match SigningKeyReference::create(SigningCustody::Configured) {
-                    Ok(reference) => {
-                        // The account's one root entry is created at most once.
-                        reference.with_seed(SigningCustody::Configured, |_| ())?;
-                        println!("NATIVE_CUSTODY_AVAILABLE");
-                    }
-                    Err(error) => {
-                        assert!(error.get_ref().is_some_and(|error| {
-                            error.is::<acyclic_native_runtime::signing_key::CustodyFailure>()
-                        }));
-                        println!("NATIVE_CUSTODY_REFUSED {error}");
-                    }
-                }
-                Ok(())
-            }
             Some("create") => {
-                let reference = SigningKeyReference::create(SigningCustody::Configured)?;
+                let signing = SigningKeyReference::create(SigningCustody::Configured)?;
+                let reference = signing.reference();
                 reference.with_seed(SigningCustody::Configured, |_| ())?;
                 let encoded = serde_json::to_vec(&reference)?;
                 reference_oracle::check(&encoded);
                 std::fs::write(record, encoded)?;
+                signing.observe_publication(
+                    acyclic_native_runtime::private_file::PublicationStage::Installed,
+                );
                 Ok(())
             }
             Some("read") | Some("mismatch") => {
@@ -85,7 +68,7 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
                 .env_remove("DBUS_SESSION_BUS_ADDRESS")
                 .output()
         };
-    // Owners created by separate processes share the account's one root entry.
+    // Owners created by separate processes retain distinct store-owned entries.
     for operation in ["create", "read"] {
         for record in &records {
             let output = invoke(operation, "private-file", record)?;
@@ -124,20 +107,21 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
         );
         assert!(!root.path().join("other-store").exists());
     }
-    let entries = || std::fs::read_dir(root.path().join("acyclic/signing-root.v2"));
+    let entries = || std::fs::read_dir(root.path().join("acyclic/signing-seeds.v2"));
     let paths = entries()?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<io::Result<Vec<_>>>()?;
-    assert_eq!(paths.len(), 1);
-    let path = paths.first().ok_or(io::ErrorKind::InvalidData)?;
-    assert!(acyclic_native_runtime::private_file::is_private(
-        &acyclic_native_runtime::private_file::open(path, false)?
-    )?);
-    make_public(path)?;
+    assert_eq!(paths.len(), records.len());
+    for path in &paths {
+        assert!(acyclic_native_runtime::private_file::is_private(
+            &acyclic_native_runtime::private_file::open(path, false)?
+        )?);
+        make_public(path)?;
+    }
     let refused = invoke("read", "private-file", &records[0])?;
     assert!(
         !refused.status.success(),
-        "public signing root reached bootstrap"
+        "public signing seed reached bootstrap"
     );
     assert!(
         String::from_utf8_lossy(&refused.stderr).contains("CustodyFailure"),
@@ -146,7 +130,7 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
     );
     assert_eq!(
         entries()?.count(),
-        1,
+        records.len(),
         "refusal replaced the original identity"
     );
     // An explicit native policy with a file-only setting is refused, without
@@ -154,7 +138,7 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
     let refused = invoke("create", "native", &records[0])?;
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("InvalidPolicy"));
-    assert_eq!(entries()?.count(), 1);
+    assert_eq!(entries()?.count(), records.len());
     Ok(())
 }
 

@@ -4,23 +4,27 @@ use super::*;
 use std::{
     io::{self, Read as _, Write as _},
     net::{SocketAddr, TcpListener, TcpStream},
-    path::{Path, PathBuf},
     thread::JoinHandle,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use zeroize::Zeroizing;
 
 const ADDRESS: &str = "ACYCLIC_FIXTURE_CUSTODY_ADDRESS";
 const TOKEN: &str = "ACYCLIC_FIXTURE_CUSTODY_TOKEN";
-const DIRECTORY: &str = "ACYCLIC_FIXTURE_CUSTODY_DIRECTORY";
 
 fn platform(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Error {
     Error::PlatformFailure(error.into())
 }
 
-#[derive(Debug)]
 pub(super) struct Remote {
     address: io::Result<SocketAddr>,
     token: io::Result<[u8; 32]>,
+}
+
+impl std::fmt::Debug for Remote {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str("FixtureSigningStore")
+    }
 }
 
 pub(super) fn remote() -> Option<Remote> {
@@ -46,19 +50,13 @@ pub(super) fn remote() -> Option<Remote> {
     })
 }
 
-pub(super) fn lock_directory() -> io::Result<Option<PathBuf>> {
-    if std::env::var_os(ADDRESS).is_none() {
-        return Ok(None);
-    }
-    let root = PathBuf::from(std::env::var_os(DIRECTORY).ok_or(io::ErrorKind::InvalidInput)?);
-    if !root.is_absolute() {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    std::fs::canonicalize(root).map(Some)
-}
-
 impl Remote {
-    pub(super) fn request(&self, operation: u8, secret: &[u8]) -> keyring::Result<Vec<u8>> {
+    pub(super) fn request(
+        &self,
+        operation: u8,
+        name: &str,
+        secret: &[u8],
+    ) -> keyring::Result<Vec<u8>> {
         let address = self
             .address
             .as_ref()
@@ -70,6 +68,10 @@ impl Remote {
         let mut stream = TcpStream::connect(address).map_err(platform)?;
         stream.write_all(token).map_err(platform)?;
         stream.write_all(&[operation]).map_err(platform)?;
+        if name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(platform(io::Error::from(io::ErrorKind::InvalidInput)));
+        }
+        stream.write_all(name.as_bytes()).map_err(platform)?;
         if operation == 1 && secret.len() != 32 {
             return Err(platform(io::Error::from(io::ErrorKind::InvalidInput)));
         }
@@ -97,27 +99,24 @@ impl Remote {
 }
 
 /// Owns one isolated in-memory credential store across standalone fixture children.
-/// Its directory contains only the root creation lock; secrets never reach disk.
+/// Secrets never reach disk and are cleared with the parent-owned store.
 pub struct FixtureCustody {
     address: SocketAddr,
     token: [u8; 32],
-    directory: PathBuf,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl FixtureCustody {
-    /// Create the parent-owned fixture store and its lock directory.
+    /// Create the parent-owned in-memory fixture store.
     ///
     /// # Errors
-    /// Returns the original directory, entropy, socket or thread admission failure.
-    pub fn new(directory: &Path) -> io::Result<Self> {
-        std::fs::create_dir(directory)?;
-        let directory = std::fs::canonicalize(directory)?;
+    /// Returns the original entropy, socket or thread admission failure.
+    pub fn new() -> io::Result<Self> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
         let address = listener.local_addr()?;
         let token = crate::owner_record::new_key()?;
-        let prefix = format!("{}:", blake3::Hash::from_bytes(token).to_hex());
+        let store = MemorySigningStore::new()?;
         listener.set_nonblocking(true)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_io()
@@ -140,25 +139,20 @@ impl FixtureCustody {
                         };
                         tokio::select! {
                             _ = &mut stopped => break,
-                            _ = serve(&mut stream, &token, &prefix) => {},
+                            _ = serve(&mut stream, &token, &store) => {},
                         }
                     }
                 });
-                secrets()
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .retain(|name, _| !name.starts_with(&prefix));
             })?;
         Ok(Self {
             address,
             token,
-            directory,
             stop: Some(stop),
             worker: Some(worker),
         })
     }
 
-    /// Configure a test-support child to borrow this store and its lock namespace.
+    /// Configure a test-support child to borrow this in-memory store.
     /// Production builds do not recognize these environment variables.
     pub fn configure(&self, mut environment: impl FnMut(&str, &std::ffi::OsStr)) {
         environment(ADDRESS, self.address.to_string().as_ref());
@@ -169,14 +163,13 @@ impl FixtureCustody {
                 .as_str()
                 .as_ref(),
         );
-        environment(DIRECTORY, self.directory.as_os_str());
     }
 }
 
 async fn serve(
     stream: &mut tokio::net::TcpStream,
     token: &[u8; 32],
-    prefix: &str,
+    store: &MemorySigningStore,
 ) -> io::Result<()> {
     use subtle::ConstantTimeEq as _;
     let mut supplied = [0; 32];
@@ -188,10 +181,13 @@ async fn serve(
     stream.read_exact(&mut operation).await?;
     // Delegate to the existing fixture backend. The host adds isolation only;
     // it has no second secret map, publication policy or cleanup protocol.
-    let entry = Credential {
-        name: format!("{prefix}{}", super::super::ROOT),
-        remote: None,
-    };
+    let mut name = [0; 64];
+    stream.read_exact(&mut name).await?;
+    if !name.iter().all(u8::is_ascii_hexdigit) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let name = std::str::from_utf8(&name).map_err(io::Error::other)?;
+    let entry = store.entry(name)?;
     let result = match operation[0] {
         1 => {
             let mut secret = Zeroizing::new([0; 32]);

@@ -32,7 +32,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let home = temporary.path().join("home");
     seed_home(&home, &case.home)?;
     let harness = Arc::new(open_harness(&directory, &home, &state, &volume, &provider).await?);
-    if !state.join("owner.v2").is_file() {
+    if !state.join("owner.v3").is_file() {
         return Err("harness did not use the fixture-owned state directory".into());
     }
     let base = host.resolve(&workspace, None).await?.generation;

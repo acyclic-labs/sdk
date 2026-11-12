@@ -1,71 +1,111 @@
-//! One credential entry per OS account holds a random signing root. Every
-//! owner's signing seed is derived from that root and the owner's public
-//! reference, so creating owners never adds entries and abandoning one leaves
-//! nothing to retire. Persisted host metadata contains only the reference.
-//! Production selects native custody unless the owner explicitly requests
-//! private-file custody. Test and fixture builds replace only the native store.
-//!
-//! The root is created once, if absent, and adopted when present. A native
-//! store overwrites on write, so creators serialize on the store's own lock
-//! namespace; a private-file entry is installed without replacement, so a
-//! losing creator adopts the winner's root. Reopening takes no lock.
+//! Store-owned signing seeds. Only public, content-bound references reach owner
+//! metadata. An unpublished seed is retired on abandonment; deleting a store
+//! retires its exact entry. Credential adapters are injected at the boundary.
 use crate::owner_record::new_key;
 use serde::{Deserialize, Serialize};
-use std::{io, path::Path};
+use std::{
+    io,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use subtle::ConstantTimeEq as _;
 use zeroize::Zeroizing;
 
 mod file;
+mod memory;
+pub use memory::MemorySigningStore;
+mod error;
+use error::failure;
+pub use error::{CustodyCause, CustodyFailure};
 
 #[cfg(not(any(test, feature = "test-support")))]
-const SERVICE: &str = "acyclic.authority.signing-root.v2";
-/// The account's only entry name, in every store.
-const ROOT: &str = "root";
-/// Derives an owner's signing seed from (root, owner nonce).
-const SEED_CONTEXT: &str = "acyclic.authority 2026-11-06 owner signing seed v2";
-/// Derives the public commitment that binds a reference to its root.
-const CHECK_CONTEXT: &str = "acyclic.authority 2026-11-06 signing root check v2";
+const SERVICE: &str = "acyclic.authority.signing-seed.v2";
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod fixture;
 #[cfg(any(test, feature = "test-support"))]
 pub use fixture::FixtureCustody;
 
-/// Host-selected credential custody. The explicit file selection never consults
-/// process settings or a native credential service and never falls back to one.
-/// References bind the effective store without retaining its path or secrets.
-#[derive(Clone, Copy)]
-pub enum SigningCustody<'a> {
-    /// Use the application's configured native or explicit file policy.
-    Configured,
-    /// Use the same one-root-entry protocol in this absolute directory.
-    PrivateFile(&'a Path),
+/// A host-owned credential namespace. Entries implement the ordinary keyring
+/// contract; tests inject an isolated memory store through the same boundary.
+pub trait SigningStore: Send + Sync {
+    /// Stable public identity of this custody namespace, never a secret.
+    fn identity(&self) -> [u8; 32];
+    /// Select an opaque entry without reading or creating its value.
+    fn entry(&self, name: &str) -> io::Result<keyring::Entry>;
 }
 
-/// Non-secret owner reference: a random 16-byte owner nonce, then a 16-byte
-/// commitment to the root it was derived from. A replaced or recreated root
-/// is refused instead of silently deriving a different signing seed. Versioned
-/// metadata also binds the effective custody store before any store access.
+/// Explicit custody never falls back to an ambient credential service.
+#[derive(Clone, Copy)]
+pub enum SigningCustody<'a> {
+    /// The application's configured native or explicit private-file policy.
+    Configured,
+    /// Private entries in this absolute directory.
+    PrivateFile(&'a Path),
+    /// Host-injected custody; no native credential API is consulted.
+    Store(&'a dyn SigningStore),
+}
+
+/// A non-secret seed commitment bound to its selected credential namespace.
+/// Version two does not derive store keys from an account-wide signing root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SigningKeyReference {
-    // Owner nonce and root commitment, bound to the effective store.
-    v1: ([u8; 32], [u8; 32]),
+    v2: ([u8; 32], [u8; 32]),
 }
 
-enum Store {
+/// A new entry belongs to its unpublished store. Publication transfers custody
+/// at the actual namespace installation, including a lost durability response.
+pub struct ProvisionalSigningKey {
+    reference: SigningKeyReference,
+    entry: keyring::Entry,
+    cleanup: AtomicBool,
+}
+
+impl ProvisionalSigningKey {
+    pub fn reference(&self) -> SigningKeyReference {
+        self.reference
+    }
+
+    pub fn observe_publication(&self, stage: crate::private_file::PublicationStage) {
+        if stage == crate::private_file::PublicationStage::Installed {
+            self.cleanup.store(false, Ordering::Release);
+        }
+    }
+
+    /// Temporary stores retire published custody with their existing resource
+    /// lifetime. Unpublished entries still retire immediately on abandonment.
+    pub fn retire_with(self, owner: crate::OwnershipAnchor) {
+        if !self.cleanup.load(Ordering::Acquire) {
+            self.cleanup.store(true, Ordering::Release);
+            crate::OwnershipAnchor::fenced(owner, self);
+        }
+    }
+}
+
+impl Drop for ProvisionalSigningKey {
+    fn drop(&mut self) {
+        if self.cleanup.load(Ordering::Acquire) {
+            let _ = self.entry.delete_credential();
+        }
+    }
+}
+
+enum Store<'a> {
     Native { session_bus: bool },
     PrivateFile(std::path::PathBuf),
+    Injected(&'a dyn SigningStore),
 }
 
-impl SigningCustody<'_> {
-    /// Validate the configured policy without opening or creating any store.
+impl<'a> SigningCustody<'a> {
+    /// Validate policy without opening or creating a credential entry.
     pub fn validate(self) -> io::Result<()> {
         self.resolve().map(drop)
     }
 
-    fn resolve(self) -> io::Result<Store> {
+    fn resolve(self) -> io::Result<Store<'a>> {
         match self {
+            Self::Store(store) => Ok(Store::Injected(store)),
             Self::PrivateFile(directory) if directory.is_absolute() => {
                 Ok(Store::PrivateFile(directory.to_owned()))
             }
@@ -91,10 +131,10 @@ impl SigningCustody<'_> {
     }
 }
 
-impl Store {
+impl Store<'_> {
     fn identity(&self) -> [u8; 32] {
         let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic.signing-custody/v1\0");
+        hash.update(b"acyclic.signing-custody/v2\0");
         match self {
             Self::Native { session_bus } => {
                 hash.update(b"native\0");
@@ -103,73 +143,72 @@ impl Store {
             }
             Self::PrivateFile(directory) => {
                 hash.update(b"private-file\0");
-                // Lexical normalization requires no filesystem access, including
-                // before a newly selected directory exists. Parent components
-                // remain significant: resolving them could cross a symlink.
                 for component in directory.components() {
                     let bytes = component.as_os_str().as_encoded_bytes();
                     hash.update(&(bytes.len() as u64).to_le_bytes());
                     hash.update(bytes);
                 }
             }
+            Self::Injected(store) => return store.identity(),
         }
         *hash.finalize().as_bytes()
     }
 
-    fn entry(self) -> io::Result<(keyring::Entry, bool)> {
+    fn entry(&self, name: &str) -> io::Result<keyring::Entry> {
         match self {
-            Self::Native { session_bus } => Ok((native(session_bus)?, false)),
-            Self::PrivateFile(directory) => Ok((file::entry_in(directory)?, true)),
+            Self::Native { session_bus } => native(*session_bus, name),
+            Self::PrivateFile(directory) => file::entry_in(directory.clone(), name.to_owned()),
+            Self::Injected(store) => store.entry(name),
         }
     }
 }
 
-mod error;
-use error::failure;
-pub use error::{CustodyCause, CustodyFailure};
-
-fn unavailable() -> io::Error {
-    failure("validate", CustodyCause::InvalidStoredSeed)
-}
-
-type Root = Zeroizing<[u8; 32]>;
-
-fn check(root: &Root) -> [u8; 16] {
-    let mut check = [0; 16];
-    check.copy_from_slice(&blake3::derive_key(CHECK_CONTEXT, &root[..])[..16]);
-    check
-}
-
 impl SigningKeyReference {
-    /// Reference a new owner's signing seed in the selected store, creating
-    /// the account's root entry only if it is absent. Store failure never
-    /// selects a different custody policy.
-    pub fn create(custody: SigningCustody<'_>) -> io::Result<Self> {
+    /// Create one seed for a new store, retaining cleanup until its owner
+    /// record is installed. Existing stores reopen their persisted reference.
+    pub fn create(custody: SigningCustody<'_>) -> io::Result<ProvisionalSigningKey> {
         let store = custody.resolve()?;
-        let identity = store.identity();
-        let root = open_or_create(store)?;
-        let mut reference = [0; 32];
-        crate::owner_record::fill_random(&mut reference[..16]).map_err(io::Error::other)?;
-        reference[16..].copy_from_slice(&check(&root));
-        Ok(Self {
-            v1: (reference, identity),
-        })
+        let seed = Zeroizing::new(new_key()?);
+        let reference = Self {
+            v2: (*blake3::hash(&seed[..]).as_bytes(), store.identity()),
+        };
+        let entry = store.entry(blake3::Hash::from_bytes(reference.v2.0).to_hex().as_str())?;
+        // Native writes overwrite. Never arm cleanup for an already-owned
+        // entry, even when a deterministic entropy source repeats an identity.
+        match entry.get_secret() {
+            Ok(secret) => {
+                let _secret = Zeroizing::new(secret);
+                return Err(failure("create", CustodyCause::InvalidEntry));
+            }
+            Err(keyring::Error::NoEntry) => {}
+            Err(error) => return Err(error::backend("read", error)),
+        }
+        // The seed's cryptographic identity is fresh before publication; no
+        // account-wide creation lock or shared root is needed.
+        let provisional = ProvisionalSigningKey {
+            reference,
+            entry,
+            cleanup: AtomicBool::new(true),
+        };
+        provisional
+            .entry
+            .set_secret(&seed[..])
+            .map_err(|error| error::backend("write", error))?;
+        Ok(provisional)
     }
 
-    /// Check the bound policy without opening or creating a custody store.
     pub fn validate_custody(&self, custody: SigningCustody<'_>) -> io::Result<()> {
         self.validate_store(&custody.resolve()?)
     }
 
-    fn validate_store(&self, store: &Store) -> io::Result<()> {
-        if self.v1.1 != store.identity() {
+    fn validate_store(&self, store: &Store<'_>) -> io::Result<()> {
+        if self.v2.1 != store.identity() {
             return Err(failure("select", CustodyCause::StoreMismatch));
         }
         Ok(())
     }
 
-    /// Borrow the derived seed only for bootstrap; it and the root are cleared
-    /// on success, refusal or unwind. A missing root is never regenerated.
+    /// The exact persisted seed is zeroized on success, refusal and unwind.
     pub fn with_seed<T>(
         &self,
         custody: SigningCustody<'_>,
@@ -177,103 +216,61 @@ impl SigningKeyReference {
     ) -> io::Result<T> {
         let store = custody.resolve()?;
         self.validate_store(&store)?;
-        let root =
-            read(&store.entry()?.0)?.ok_or_else(|| failure("read", CustodyCause::MissingEntry))?;
-        if !bool::from(check(&root)[..].ct_eq(&self.v1.0[16..])) {
-            return Err(unavailable());
+        let entry = store.entry(blake3::Hash::from_bytes(self.v2.0).to_hex().as_str())?;
+        let secret = Zeroizing::new(
+            entry
+                .get_secret()
+                .map_err(|error| error::backend("read", error))?,
+        );
+        let seed: &[u8; 32] = secret
+            .as_slice()
+            .try_into()
+            .map_err(|_| failure("read", CustodyCause::InvalidStoredSeed))?;
+        if !bool::from(blake3::hash(seed).as_bytes().ct_eq(&self.v2.0)) {
+            return Err(failure("read", CustodyCause::InvalidStoredSeed));
         }
-        let mut material = Zeroizing::new([0; 48]);
-        let (root_material, nonce_material) = material.split_at_mut(32);
-        root_material.copy_from_slice(&root[..]);
-        nonce_material.copy_from_slice(&self.v1.0[..16]);
-        let seed = Zeroizing::new(blake3::derive_key(SEED_CONTEXT, &material[..]));
-        Ok(consume(&seed))
+        Ok(consume(seed))
+    }
+
+    /// Remove only this store's entry, without creating or regenerating it.
+    /// Repeating an interrupted store deletion is safe when it is already gone.
+    pub fn delete(self, custody: SigningCustody<'_>) -> io::Result<()> {
+        let store = custody.resolve()?;
+        self.validate_store(&store)?;
+        let entry = store.entry(blake3::Hash::from_bytes(self.v2.0).to_hex().as_str())?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error::backend("delete", error)),
+        }
     }
 }
 
-/// Read the root, or create it once under the store's creation discipline.
-fn open_or_create(store: Store) -> io::Result<Root> {
-    let (entry, exclusive) = store.entry()?;
-    if let Some(root) = read(&entry)? {
-        return Ok(root);
-    }
-    let _creation = (!exclusive).then(creation_lock).transpose()?;
-    if !exclusive && let Some(root) = read(&entry)? {
-        return Ok(root);
-    }
-    let root = Zeroizing::new(new_key()?);
-    if let Err(error) = entry.set_secret(&root[..]) {
-        // A visible root does not acknowledge publication's durability. Only
-        // an actual no-replace collision establishes a competing creator.
-        if exclusive
-            && matches!(&error, keyring::Error::PlatformFailure(source)
-                if source.downcast_ref::<io::Error>()
-                    .is_some_and(|error| error.kind() == io::ErrorKind::AlreadyExists))
-        {
-            return read(&entry)?.ok_or_else(unavailable);
-        }
-        return Err(error::backend("write", error));
-    }
-    // Observe the stored value before any reference to it can be published.
-    match read(&entry)? {
-        Some(stored) if bool::from(stored[..].ct_eq(&root[..])) => Ok(root),
-        _ => Err(unavailable()),
-    }
-}
-
-/// Probe exactly the selected store. A refusal is never treated as absence.
-fn read(entry: &keyring::Entry) -> io::Result<Option<Root>> {
-    match entry.get_secret() {
-        Ok(secret) => {
-            let secret = Zeroizing::new(secret);
-            let root: [u8; 32] = secret.as_slice().try_into().map_err(|_| unavailable())?;
-            Ok(Some(Zeroizing::new(root)))
-        }
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(error::backend("read", error)),
-    }
-}
-
-/// Linux selects Secret Service with a session bus, otherwise the kernel store.
 #[cfg(not(any(test, feature = "test-support")))]
-fn native(_session_bus: bool) -> io::Result<keyring::Entry> {
+fn native(_session_bus: bool, name: &str) -> io::Result<keyring::Entry> {
     #[cfg(target_os = "linux")]
     {
         if _session_bus {
-            let service =
-                keyring::secret_service::SsCredential::new_with_target(None, SERVICE, ROOT)
+            let credential =
+                keyring::secret_service::SsCredential::new_with_target(None, SERVICE, name)
                     .map_err(|error| error::backend("open", error))?;
-            Ok(keyring::Entry::new_with_credential(Box::new(service)))
+            Ok(keyring::Entry::new_with_credential(Box::new(credential)))
         } else {
             Ok(keyring::Entry::new_with_credential(Box::new(
-                crate::kernel_keyring::KernelKey::new(SERVICE, ROOT),
+                crate::kernel_keyring::KernelKey::new(SERVICE, name),
             )))
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
-        keyring::Entry::new(SERVICE, ROOT).map_err(|error| error::backend("open", error))
+        keyring::Entry::new(SERVICE, name).map_err(|error| error::backend("open", error))
     }
 }
 
-/// Native root creation serializes on the OS account's lock namespace.
-#[cfg(not(any(test, feature = "test-support")))]
-fn creation_lock() -> io::Result<crate::FileLock> {
-    crate::FileLock::acquire(
-        crate::private_file::credential_lock()?,
-        crate::FileLockMode::Exclusive,
-    )
-}
-
-/// Test and fixture builds stand the in-memory fixture store in for the OS
-/// store only; an explicit private-file selection reopens across processes.
+// Fixture builds cannot link this selection to the real native credential API.
 #[cfg(any(test, feature = "test-support"))]
-fn native(_session_bus: bool) -> io::Result<keyring::Entry> {
-    Ok(fixture::entry())
+fn native(_session_bus: bool, name: &str) -> io::Result<keyring::Entry> {
+    fixture::entry(name)
 }
-
-#[cfg(any(test, feature = "test-support"))]
-use fixture::creation_lock;
 
 #[cfg(test)]
 mod tests {
@@ -281,148 +278,103 @@ mod tests {
 
     #[cfg(feature = "test-support")]
     #[test]
-    fn private_root_creation_preserves_the_original_publication_failure() -> io::Result<()> {
-        use crate::testing::{DurableFault, Schedule};
+    fn repeated_entropy_never_retires_a_published_seed() -> io::Result<()> {
+        let store = MemorySigningStore::new()?;
+        let custody = SigningCustody::Store(&store);
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-        for fault in [DurableFault::Before, DurableFault::After] {
-            let root = tempfile::tempdir()?;
-            let directory = root.path().join("custody");
-            let (schedule, _) = Schedule::seeded(71);
-            // The original file sync is followed by the no-replace rename.
-            schedule.cut_at(1, fault);
-            let failure = runtime
-                .block_on(schedule.scope(async {
-                    SigningKeyReference::create(SigningCustody::PrivateFile(&directory))
-                }))
-                .expect_err("a visible root cannot acknowledge failed publication");
-            let cause = failure
-                .get_ref()
-                .and_then(|error| error.downcast_ref::<CustodyFailure>())
-                .expect("publication retains its typed custody failure");
-            assert_eq!(cause.operation, "write");
-            assert_eq!(directory.join(ROOT).is_file(), fault == DurableFault::After);
-            let original = schedule.storage_fault().expect("the physical cut ran");
-            assert_eq!(original.operation, "namespace:rename");
-            assert_eq!(original.ordinal, 1);
-            assert_eq!(original.fault, fault);
-        }
-        Ok(())
-    }
-
-    /// Growth guard: owners in any number of fresh state directories share one
-    /// entry per store. The former per-owner protocol added one entry each.
-    #[test]
-    fn owners_share_one_root_entry_and_derive_distinct_seeds() -> io::Result<()> {
-        let root = tempfile::tempdir()?;
-        let directory = root.path().join("custody");
-        for custody in [
-            SigningCustody::Configured,
-            SigningCustody::PrivateFile(&directory),
-        ] {
-            let references = (0..8)
-                .map(|_| SigningKeyReference::create(custody))
-                .collect::<io::Result<Vec<_>>>()?;
-            let mut seeds = references
-                .iter()
-                .map(|reference| reference.with_seed(custody, |seed| *seed))
-                .collect::<io::Result<Vec<_>>>()?;
-            for (reference, seed) in references.iter().zip(&seeds) {
-                assert_eq!(
-                    reference.with_seed(custody, |seed| *seed)?,
-                    *seed,
-                    "reopening changed an owner's seed"
-                );
-            }
-            seeds.sort_unstable();
-            seeds.dedup();
-            assert_eq!(seeds.len(), references.len(), "owners shared a seed");
-        }
-        assert_eq!(std::fs::read_dir(&directory)?.count(), 1);
-        Ok(())
-    }
-
-    /// Concurrent first creators converge on one root in the no-replace store
-    /// and in the overwriting store guarded by the creation lock.
-    #[test]
-    fn concurrent_first_creation_adopts_one_root() -> io::Result<()> {
-        let root = tempfile::tempdir()?;
-        let directory = root.path().join("custody");
-        for custody in [
-            SigningCustody::Configured,
-            SigningCustody::PrivateFile(&directory),
-        ] {
-            let start = std::sync::Barrier::new(8);
-            let references = std::thread::scope(|scope| {
-                let workers = (0..8)
-                    .map(|_| {
-                        scope.spawn(|| {
-                            start.wait();
-                            SigningKeyReference::create(custody)
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                workers
-                    .into_iter()
-                    .map(|worker| {
-                        worker
-                            .join()
-                            .map_err(|_| io::Error::other("creator panicked"))?
-                    })
-                    .collect::<io::Result<Vec<_>>>()
-            })?;
-            for reference in references {
-                reference.with_seed(custody, |_| ())?;
-            }
-        }
-        assert_eq!(std::fs::read_dir(&directory)?.count(), 1);
-        Ok(())
-    }
-
-    /// Preserve the selected custody policy: metadata never carries the root
-    /// or seed, another store never stands in, and a replaced or missing root
-    /// is refused rather than regenerated.
-    #[test]
-    fn custody_refuses_other_stores_and_replaced_or_missing_roots() -> io::Result<()> {
-        let root = tempfile::tempdir()?;
-        let directory = root.path().join("custody");
-        let custody = SigningCustody::PrivateFile(&directory);
-        let reference = SigningKeyReference::create(custody)?;
+        let (first, _) = crate::testing::Schedule::seeded(71);
+        let signing =
+            runtime.block_on(first.scope(async { SigningKeyReference::create(custody) }))?;
+        let reference = signing.reference();
+        signing.observe_publication(crate::private_file::PublicationStage::Installed);
+        drop(signing);
         let seed = Zeroizing::new(reference.with_seed(custody, |seed| *seed)?);
-        let (entry, _) = custody.resolve()?.entry()?;
-        let stored = read(&entry)?.ok_or_else(unavailable)?;
-        assert_ne!(reference.v1.0, *stored, "the reference carries the root");
-        assert_ne!(reference.v1.0, *seed, "the reference carries the seed");
-        let other = root.path().join("other");
-        for wrong in [
-            SigningCustody::Configured,
-            SigningCustody::PrivateFile(&other),
+        let (repeated, _) = crate::testing::Schedule::seeded(71);
+        assert!(
+            runtime
+                .block_on(repeated.scope(async { SigningKeyReference::create(custody) }))
+                .is_err()
+        );
+        assert_eq!(store.len(), 1);
+        assert_eq!(reference.with_seed(custody, |seed| *seed)?, *seed);
+        Ok(())
+    }
+
+    #[test]
+    fn owner_installation_is_the_custody_transfer_boundary() -> io::Result<()> {
+        use crate::private_file::{self, PublicationStage};
+        for cut in [
+            PublicationStage::Created,
+            PublicationStage::Synced,
+            PublicationStage::Installed,
+            PublicationStage::Published,
         ] {
-            assert!(
+            let directory = tempfile::tempdir()?;
+            let store = MemorySigningStore::new()?;
+            let signing = SigningKeyReference::create(SigningCustody::Store(&store))?;
+            let reference = signing.reference();
+            let record = serde_json::to_vec(&reference)?;
+            let result = private_file::publish_new(
+                &directory.path().join("owner"),
+                &directory.path().join("next"),
+                |file| crate::write_file_all(file, &record),
+                |stage| {
+                    signing.observe_publication(stage);
+                    if stage == cut {
+                        Err(io::ErrorKind::Interrupted.into())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+            drop(signing);
+            let installed = matches!(
+                cut,
+                PublicationStage::Installed | PublicationStage::Published
+            );
+            assert_eq!(directory.path().join("owner").exists(), installed);
+            assert_eq!(
                 reference
-                    .with_seed(wrong, |_| panic!("custody fell back to another store"))
-                    .is_err()
+                    .with_seed(SigningCustody::Store(&store), |_| ())
+                    .is_ok(),
+                installed
             );
         }
-        // File custody refuses overwrites. Replace the entry through deletion
-        // and creation, as an external custodian could.
-        entry.delete_credential().map_err(|_| unavailable())?;
-        entry.set_secret(&new_key()?).map_err(|_| unavailable())?;
+        Ok(())
+    }
+
+    #[test]
+    fn store_custody_isolated_reopen_abandon_and_delete() -> io::Result<()> {
+        let store = MemorySigningStore::new()?;
+        let other = MemorySigningStore::new()?;
+        let custody = SigningCustody::Store(&store);
+        let first = SigningKeyReference::create(custody)?;
+        let first_ref = first.reference();
+        first.observe_publication(crate::private_file::PublicationStage::Installed);
+        drop(first);
+        let second = SigningKeyReference::create(custody)?;
+        let second_ref = second.reference();
+        second.observe_publication(crate::private_file::PublicationStage::Installed);
+        drop(second);
+        let first_seed = Zeroizing::new(first_ref.with_seed(custody, |seed| *seed)?);
+        assert_ne!(*first_seed, second_ref.with_seed(custody, |seed| *seed)?);
+        assert_eq!(*first_seed, first_ref.with_seed(custody, |seed| *seed)?);
         assert!(
-            reference
-                .with_seed(custody, |_| panic!("replaced root reached bootstrap"))
+            first_ref
+                .with_seed(SigningCustody::Store(&other), |_| ())
                 .is_err()
         );
-        entry.delete_credential().map_err(|_| unavailable())?;
-        assert!(
-            reference
-                .with_seed(custody, |_| panic!("missing root was regenerated"))
-                .is_err()
-        );
-        assert!(read(&entry)?.is_none());
-        assert!(
-            SigningKeyReference::create(SigningCustody::PrivateFile(Path::new("relative")))
-                .is_err()
-        );
+        let abandoned = SigningKeyReference::create(custody)?;
+        let abandoned_ref = abandoned.reference();
+        drop(abandoned);
+        assert!(abandoned_ref.with_seed(custody, |_| ()).is_err());
+        first_ref.delete(custody)?;
+        first_ref.delete(custody)?;
+        assert!(first_ref.with_seed(custody, |_| ()).is_err());
+        second_ref.with_seed(custody, |_| ())?;
+        second_ref.delete(custody)?;
+        assert_eq!(store.len(), 0);
         Ok(())
     }
 }

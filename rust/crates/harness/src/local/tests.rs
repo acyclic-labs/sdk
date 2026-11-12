@@ -24,6 +24,7 @@ mod context;
 mod history_retry;
 mod replay;
 pub(super) mod settings;
+mod signing;
 mod transcripts;
 
 pub(super) fn scripted(
@@ -195,7 +196,7 @@ async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Resul
     let project = volume(directory.path()).await?;
     let provider = text();
     let mut config = volume_config(directory.path(), project, provider.clone())?;
-    let owner_path = config.resolved_state_directory()?.join("owner.v2");
+    let owner_path = config.resolved_state_directory()?.join("owner.v3");
     config = config.compaction(crate::context::CompactionPolicy::Capacity(
         crate::context::CapacityCompaction {
             response_reserve_tokens: capacity().context_tokens,

@@ -26,7 +26,7 @@ pub fn check(bytes: &[u8]) {
     unknown["unrecognized"] = true.into();
     assert!(serde_json::from_value::<SigningKeyReference>(unknown).is_err());
     let mut future: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-    let value = future.as_object_mut().unwrap().remove("v1").unwrap();
-    future["v2"] = value;
+    let value = future.as_object_mut().unwrap().remove("v2").unwrap();
+    future["v3"] = value;
     assert!(serde_json::from_value::<SigningKeyReference>(future).is_err());
 }

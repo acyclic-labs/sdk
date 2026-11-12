@@ -228,10 +228,7 @@ fn fixture() -> Fixture {
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::create_dir_all(settings.join(".codex")).unwrap();
     Fixture {
-        custody: acyclic_native_runtime::signing_key::FixtureCustody::new(
-            &directory.path().join("custody"),
-        )
-        .unwrap(),
+        custody: acyclic_native_runtime::signing_key::FixtureCustody::new().unwrap(),
         _directory: directory,
         workspace,
         settings,

@@ -57,8 +57,10 @@ fn configured_volumes_keep_their_existing_state() {
         };
         let state = state_directory_in(directory.path(), &project, None).unwrap();
         let state = self::directory(&state).unwrap();
-        let original = Owner::open(&state, &project, None, SigningCustody::Configured).unwrap();
-        let reopened = Owner::open(&state, &project, None, SigningCustody::Configured).unwrap();
+        let original =
+            Owner::open(&state, &project, None, SigningCustody::Configured, None).unwrap();
+        let reopened =
+            Owner::open(&state, &project, None, SigningCustody::Configured, None).unwrap();
         assert_eq!(original.key_ref, reopened.key_ref);
         assert_eq!(original.task, reopened.task);
     }
