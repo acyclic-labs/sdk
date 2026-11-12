@@ -53,6 +53,7 @@ fn check_input(bytes: &[u8]) -> CheckResult {
                 HookEvent::PreToolUse
             };
             let input = HookInput::Tool {
+                binding: None,
                 invocation: &invocation,
                 response: post.then_some(&response),
                 session_id: None,

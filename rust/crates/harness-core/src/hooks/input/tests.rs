@@ -13,7 +13,7 @@ proptest! {
         #[cfg(not(target_arch = "wasm32"))]
         for extra_copy in [false, true] {
             let measured = acyclic_test_support::measure(|| {
-                let input = HookInput::Tool { invocation:&invocation,
+                let input = HookInput::Tool { binding: None, invocation:&invocation,
                     response:post.then_some(&response), session_id:None };
                 std::hint::black_box(input.subject(event));
                 if extra_copy { std::hint::black_box(invocation.arguments.clone()); }
@@ -37,7 +37,7 @@ proptest! {
         let response = ToolResult { value: json!({"returned":number,"text":text}) };
         let event = if post { HookEvent::PostToolUse } else { HookEvent::PreToolUse };
         let task = crate::TaskId::from_bytes(identity);
-        let input = HookInput::Tool { invocation: &invocation, response: post.then_some(&response), session_id: Some(task) };
+        let input = HookInput::Tool { binding: None, invocation: &invocation, response: post.then_some(&response), session_id: Some(task) };
         let bytes = input.encode(event, Path::new("workspace"), None)?;
         let decoded: Value = serde_json::from_slice(&bytes).unwrap();
         prop_assert_eq!(&decoded["tool_input"], &invocation.arguments);

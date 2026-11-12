@@ -33,19 +33,25 @@ impl StockExecution<'_> {
         &self,
         operation: OperationId,
         site: HookSite,
-        invocation: &ToolInvocation,
+        (invocation, binding): (&ToolInvocation, Option<&crate::tool::Tool>),
         response: Option<&ToolResult>,
         retained_only: bool,
     ) -> Result<HookOutput> {
-        self.tool_hook_output(operation, site, invocation, response, retained_only)
-            .await?
-            .ok_or_else(|| {
-                if retained_only || self.stock.reconciliation_only {
-                    Error::Indeterminate(operation)
-                } else {
-                    Error::Invalid("started tool has no retained hook outcome".into())
-                }
-            })
+        self.tool_hook_output(
+            operation,
+            site,
+            (invocation, binding),
+            response,
+            retained_only,
+        )
+        .await?
+        .ok_or_else(|| {
+            if retained_only || self.stock.reconciliation_only {
+                Error::Indeterminate(operation)
+            } else {
+                Error::Invalid("started tool has no retained hook outcome".into())
+            }
+        })
     }
 
     /// None proves no hook claim exists. A claimed but unfinished effect remains
@@ -54,7 +60,7 @@ impl StockExecution<'_> {
         &self,
         operation: OperationId,
         site: HookSite,
-        invocation: &ToolInvocation,
+        (invocation, binding): (&ToolInvocation, Option<&crate::tool::Tool>),
         response: Option<&ToolResult>,
         retained_only: bool,
     ) -> Result<Option<HookOutput>> {
@@ -72,6 +78,7 @@ impl StockExecution<'_> {
         }
         let event = HookEvent::only(site)?;
         let input = HookInput::Tool {
+            binding,
             invocation,
             response,
             session_id: None::<TaskId>,
