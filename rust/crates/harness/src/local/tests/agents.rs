@@ -2563,10 +2563,12 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
                 _ => {}
             }
         };
-        assert!(matches!(
+        assert!(
+            matches!(entry.outcome, crate::agent::TurnOutcome::Completed),
+            "{id}: {:?}; model_requests={}",
             entry.outcome,
-            crate::agent::TurnOutcome::Completed
-        ));
+            provider.request_count()
+        );
         let mut inspection = conversation.inspect().await?;
         while !inspection.snapshot().synchronized {
             inspection.advance().await?;

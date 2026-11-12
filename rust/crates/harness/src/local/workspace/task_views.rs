@@ -303,7 +303,13 @@ impl LocalWorkspace {
                 .as_ref()
                 .map(|_| Arc::clone(&workspace.mounts));
             workspace.binding_owner = binding_owner;
-            let (active, pending) = workspace.selected_view().await?;
+            let reuse_primary = self.mounting == WorkspaceMounting::Physical
+                && workspace.view().workspace().id() == self.view().workspace().id();
+            let (active, pending) = if reuse_primary {
+                (None, None)
+            } else {
+                workspace.selected_view().await?
+            };
             let selected = active.as_ref().unwrap_or_else(|| workspace.view());
             let initial_view = selected.workspace().id();
             // A physical view stays unmounted: its commands, file tools and
@@ -319,30 +325,35 @@ impl LocalWorkspace {
                     // An auxiliary binding does not fork its primary volume.
                     // Reuse the admitted checkout when the project is unchanged;
                     // distinct project forks still need their own materialization.
-                    workspace.path =
-                        if workspace.view().workspace().id() == self.view().workspace().id() {
-                            self.path.clone()
-                        } else {
-                            workspace.physical_task_source(selected).await?
-                        };
+                    workspace.path = if reuse_primary {
+                        self.path.clone()
+                    } else {
+                        workspace.physical_task_source(selected).await?
+                    };
                     workspace.identity =
                         acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
                 }
             }
             workspace.mounts = workspace.mounts_at(&workspace.path).await?;
             workspace.context_line = workspace.mounts.context_line();
-            reconciliation::recover_pending(
-                &workspace,
-                active.as_ref().unwrap_or_else(|| workspace.view()),
-                pending,
-                &|| owner.verify(),
-            )
-            .await?;
-            workspace.state = StateArc::new(AsyncMutex::new(State {
-                active,
-                initialized: true,
-                ..State::new(initial_view, Arc::clone(&workspace.mounts))
-            }));
+            if reuse_primary {
+                // CheckoutTools owns recovery and initialization under this
+                // original guard, including its branch and capture cursor.
+                workspace.state = StateArc::clone(&self.state);
+            } else {
+                reconciliation::recover_pending(
+                    &workspace,
+                    active.as_ref().unwrap_or_else(|| workspace.view()),
+                    pending,
+                    &|| owner.verify(),
+                )
+                .await?;
+                workspace.state = StateArc::new(AsyncMutex::new(State {
+                    active,
+                    initialized: true,
+                    ..State::new(initial_view, Arc::clone(&workspace.mounts))
+                }));
+            }
             let workspace = Arc::new(workspace);
             Ok(workspace)
         })
@@ -371,6 +382,9 @@ impl LocalWorkspace {
         owner: &dyn super::owner::ViewOwner,
     ) -> Result<Arc<LocalWorkspace>> {
         if self.mounted.is_none() {
+            // The primary selection is shared, but each caller retains its
+            // own auxiliary volumes for the duration of this command guard.
+            state.mounts = Arc::clone(&self.mounts);
             return Ok(self.clone());
         }
         let view = state.active.as_ref().unwrap_or_else(|| self.view());

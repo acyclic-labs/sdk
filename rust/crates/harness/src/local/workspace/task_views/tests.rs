@@ -130,6 +130,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         std::fs::read(first.path.join("shared.txt")).map_err(storage)?,
         b"shared"
     );
+    shared_selection(&harness, workspace, &second, &owner.original).await?;
     let original = first
         .binding_owner
         .as_ref()
@@ -205,6 +206,92 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             &authority,
         )
         .await?;
+    Ok(())
+}
+
+async fn shared_selection(
+    harness: &LocalHarness,
+    admitted: &Arc<LocalWorkspace>,
+    bound: &Arc<LocalWorkspace>,
+    owner: &dyn ViewOwner,
+) -> Result<()> {
+    use crate::local::checkout_tools::capture;
+    let (options, policy) = capture::configuration(bound)?;
+    let commands = super::super::git::Commands {
+        workspace: bound,
+        signed: &harness.signed,
+        verifier: &harness.verifier,
+        clock: &*harness.clock,
+        capture_options: &options,
+        capture_policy: &policy,
+    };
+    let scope = RuntimeScope::new(harness.signed.capabilities().clone(), Default::default())?;
+    commands
+        .invoke(
+            crate::tools::parse_fs_command("checkout -b topic")?,
+            super::super::git::CommandContext {
+                owner,
+                operation: OperationId::new(),
+                scope: &scope,
+                request: None,
+            },
+            Box::pin(async { Ok(()) }),
+        )
+        .await?;
+    let cancellation = CancellationToken::new();
+    let before = admitted
+        .view()
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .id();
+    std::fs::write(admitted.path.join("topic.txt"), b"topic only").map_err(storage)?;
+    let mut state = crate::sync::owned::lock_owned(StateArc::clone(&admitted.state)).await;
+    assert!(
+        bound.state.try_lock().is_err(),
+        "two handles can command the same files concurrently"
+    );
+    let State {
+        active, watcher, ..
+    } = &mut *state;
+    let selected = active.as_ref().ok_or_else(|| {
+        Error::Conflict("admitted handle lost the bound handle's checkout selection".into())
+    })?;
+    assert_ne!(selected.workspace().id(), admitted.view().workspace().id());
+    capture::capture(
+        (&options, &policy),
+        (admitted, selected),
+        watcher,
+        (OperationId::new(), 0),
+        acyclic_fs::PublicationPermit::Unrestricted,
+    )
+    .await?;
+    let selected = selected
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    let content = selected
+        .read_range("/topic.txt", 0, 10, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    assert_eq!(content.bytes.as_ref(), b"topic only");
+    assert_eq!(
+        admitted
+            .view()
+            .workspace()
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id(),
+        before,
+        "capture crossed into the original branch"
+    );
     Ok(())
 }
 
