@@ -107,7 +107,7 @@ async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() 
     let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let baseline = root.join("summary/exact-capacity.json");
     run(Scenario::load(&root, &baseline)?).await?;
-    for field in ["mode", "text", "result", "context", "budget"] {
+    for field in ["mode", "text", "result", "context"] {
         let mut case = Scenario::load(&root, &baseline)?;
         match field {
             "mode" => {
@@ -117,7 +117,6 @@ async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() 
             "text" => case.expect.text = Some("wrong".into()),
             "result" => case.expect.result = Some(serde_json::json!({"source_messages":99})),
             "context" => case.context.pop().map(|_| ()).ok_or("missing context")?,
-            "budget" => case.max_output_tokens = None,
             _ => return Err("unknown summary mutation".into()),
         }
         assert!(run(case).await.is_err(), "accepted incorrect {field}");
@@ -140,7 +139,7 @@ async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accountin
     let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
     let baseline = root.join("compaction/threshold.json");
     run(Scenario::load(&root, &baseline)?).await?;
-    for field in ["context", "capacity", "policy", "accounting", "output"] {
+    for field in ["context", "capacity", "policy", "accounting"] {
         let mut case = Scenario::load(&root, &baseline)?;
         match field {
             "context" => case.context.clear(),
@@ -152,7 +151,6 @@ async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accountin
             }
             "policy" => case.compaction = Some(CompactionPolicy::Disabled),
             "accounting" => case.message_tokens = Some(1),
-            "output" => case.max_output_tokens = Some(11),
             _ => return Err("unknown compaction mutation".into()),
         }
         assert!(run(case).await.is_err(), "accepted incorrect {field}");

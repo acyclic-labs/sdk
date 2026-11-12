@@ -668,7 +668,6 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
             }],
             tools: Vec::new(),
             sampling: Default::default(),
-            max_output_tokens: None,
         },
         Default::default(),
         None,
@@ -710,7 +709,6 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
                 "model": request.request().model,
                 "tools": request.request().tools,
                 "sampling": request.request().sampling,
-                "max_output_tokens": request.request().max_output_tokens,
             },
             "projection": {
             "context": {"messages": request.request().messages, "metadata": {}, "current_input_index": 0},

@@ -85,7 +85,6 @@ fn usage_snapshot_is_atomic_across_concurrent_counting_and_completion() {
                     .collect(),
                 tools: Vec::new(),
                 sampling: Default::default(),
-                max_output_tokens: None,
             },
             Default::default(),
             None,

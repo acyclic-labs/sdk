@@ -26,7 +26,6 @@ impl StockExecution<'_> {
         stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
         let (source_bytes, source_digest, source_messages) =
             self.summary_source_identity(&source)?;
-        let summary_output = self.output_budget()?;
         let revision = with_history_io(self.io, |work| {
             crate::executor::preparation_format(
                 format_args!("{}", blake3::Hash::from(source_digest).to_hex()),
@@ -37,10 +36,7 @@ impl StockExecution<'_> {
             stock: self.stock,
             context: self.context,
             io: self.io,
-            summary: Some((
-                ContextPipeline::summary_source(source, revision, self.io)?,
-                summary_output,
-            )),
+            summary: Some(ContextPipeline::summary_source(source, revision, self.io)?),
             single_request: false,
             journal_writes: self.journal_writes.borrowed(),
             compaction: once_cell::sync::OnceCell::new(),

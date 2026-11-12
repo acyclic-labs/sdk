@@ -97,11 +97,13 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         Some("message_delta") => {
             state.usage(&value["usage"])?;
             if let Some(reason) = value["delta"]["stop_reason"].as_str() {
-                state.finish_reason(if reason == "max_tokens" {
-                    "length"
-                } else {
-                    reason
-                })?;
+                state.finish_reason(
+                    if matches!(reason, "max_tokens" | "model_context_window_exceeded") {
+                        "length"
+                    } else {
+                        reason
+                    },
+                )?;
             }
         }
         Some("message_stop") => state.terminal = true,

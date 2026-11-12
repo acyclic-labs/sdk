@@ -1,5 +1,0 @@
-{"capacity":{"output_tokens":30},"compaction":{"config":{"response_reserve_tokens":10}},
-  "turns":["answer"],"expect":{"text":"answer","request_count":1,"reconciliation_count":0,
-  "requests":[{"max_output_tokens":20,"messages":[{"role":"user","content":"current request"}]}],
-  "not_events":[{"kind":"context_compacted"},{"kind":"model_started","purpose":"summary"}]},"max_output_tokens":20,
-  "context":[],"replay":true}

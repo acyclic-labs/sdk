@@ -188,7 +188,7 @@ fn configure(
         let limits = case.execution_limits().map_err(|error| {
             acyclic_harness::Error::Invalid(format!("harness limits are invalid: {error}"))
         })?;
-        let mut executor = StockExecutor::new(
+        let executor = StockExecutor::new(
             Model::new("scripted".into(), "scenario".into(), "1".into())?,
             provider.clone(),
             context,
@@ -196,9 +196,6 @@ fn configure(
         )
         .with_compaction_policy(case.compaction.take().unwrap_or(CompactionPolicy::Disabled))
         .with_limits(limits);
-        if let Some(maximum) = case.max_output_tokens {
-            executor = executor.with_max_output_tokens(maximum)?;
-        }
         Ok(executor)
     })();
     (executor, provider, summary_source)

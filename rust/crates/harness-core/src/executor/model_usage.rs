@@ -88,8 +88,6 @@ pub(crate) struct ModelCallUsage<'a> {
     pub agent_path: Option<&'a str>,
     /// Sampling from the original pinned request.
     pub sampling: crate::model::ModelSampling,
-    /// Original requested output ceiling; absent remains unbounded.
-    pub max_output_tokens: Option<u32>,
     pub tokens: ModelTokenUsage,
     pub started_at: Option<u64>,
     pub completed_at: Option<u64>,
@@ -117,7 +115,7 @@ pub(crate) struct ModelCallUsage<'a> {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelUsageRecord {
-    /// Record format, currently three; older layouts are not migrated.
+    /// Record format, currently four; older layouts are not migrated.
     pub version: u32,
     /// A terminal provider event was committed. False preserves an admitted
     /// call whose completion was not observed; its counters stay unknown.
@@ -136,9 +134,6 @@ pub struct ModelUsageRecord {
     /// Sampling from the original pinned request.
     #[serde(default)]
     pub sampling: Option<crate::model::ModelSampling>,
-    /// Original requested output ceiling; absent remains unbounded.
-    #[serde(default)]
-    pub max_output_tokens: Option<u32>,
     /// Provider-reported counters with missing values preserved.
     pub tokens: ModelTokenUsage,
     /// Wall time at live provider dispatch, in Unix nanoseconds, with the
@@ -175,12 +170,11 @@ pub(crate) struct ModelUsageAdmission<'a> {
     pub model: &'a str,
     pub agent_path: Option<&'a str>,
     pub sampling: Option<crate::model::ModelSampling>,
-    pub max_output_tokens: Option<u32>,
 }
 
 impl ModelUsageRecord {
     /// The one per-call format accepted by producers, readers and aggregates.
-    pub const VERSION: u32 = 3;
+    pub const VERSION: u32 = 4;
 
     /// Whether both observations retain the same original admitted call.
     /// Completion counters, timing and provider response metadata may change;
@@ -201,7 +195,6 @@ impl ModelUsageRecord {
             model: &self.model,
             agent_path: self.agent_path.as_deref(),
             sampling: self.sampling,
-            max_output_tokens: self.max_output_tokens,
         }
     }
 }
@@ -377,7 +370,6 @@ pub(super) async fn project_record(
                 model: model.name,
                 agent_path: Some(agent_path.to_owned()),
                 sampling: Some(request.sampling),
-                max_output_tokens: request.max_output_tokens,
                 tokens: ModelTokenUsage::default(),
                 started_at: None,
                 completed_at: None,

@@ -567,7 +567,6 @@ impl Opening {
                     owner.agent,
                     started.clone(),
                     resolve,
-                    (&self.compaction, &self.compaction_choice),
                     self.config.clock.as_ref(),
                 )
                 .await?;

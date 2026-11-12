@@ -26,9 +26,6 @@ pub struct TokenCounterSpec {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub enum TokenCountField {
-    /// The Chat completion's provider-reported input usage.
-    #[serde(rename = "usage.prompt_tokens")]
-    PromptTokens,
     /// OpenAI/Anthropic input token count.
     #[serde(rename = "input_tokens")]
     InputTokens,
@@ -81,9 +78,6 @@ pub(crate) fn body(
     spec: &TokenCounterSpec,
 ) -> Result<Vec<u8>> {
     let adapter = spec.adapter;
-    if spec.response_field == TokenCountField::PromptTokens && adapter != Adapter::Chat {
-        return Err(invalid("reported prompt usage requires the Chat adapter"));
-    }
     #[cfg(all(test, not(target_arch = "wasm32")))]
     let model =
         if crate::tests::catalog_identity_tests::SUBSTITUTE_WIRE_MODEL.with(std::cell::Cell::get) {
@@ -155,19 +149,8 @@ pub(crate) fn response(bytes: &[u8], spec: &TokenCounterSpec) -> Result<u64> {
     struct Count {
         count: u64,
     }
-    #[derive(Deserialize)]
-    struct Usage {
-        prompt_tokens: u64,
-    }
-    #[derive(Deserialize)]
-    struct Completion {
-        usage: Usage,
-    }
     // Typed integer decoding cannot reinterpret a literal serde private-marker map.
     let reported = match spec.response_field {
-        TokenCountField::PromptTokens => {
-            serde_json::from_slice::<Completion>(bytes).map(|v| v.usage.prompt_tokens)
-        }
         TokenCountField::InputTokens => {
             serde_json::from_slice::<Input>(bytes).map(|v| v.input_tokens)
         }

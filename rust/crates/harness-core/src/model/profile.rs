@@ -11,7 +11,6 @@ pub struct ModelProfileBinding {
     pub(crate) reasoning: Reasoning,
     pub(crate) sampling: super::ModelSampling,
     pub(crate) cache: Cache,
-    pub(crate) max_output_tokens: Option<u32>,
     pub(crate) capacity: crate::context::ModelContextCapacity,
     pub(crate) overlay_effort: Option<Effort>,
 }
@@ -37,10 +36,6 @@ impl ModelProfileBinding {
     /// Admitted cache semantics, retained independently of a transient request.
     pub const fn cache(&self) -> Cache {
         self.cache
-    }
-    /// Role reservation; absent means the selected model's verified capacity.
-    pub const fn max_output_tokens(&self) -> Option<u32> {
-        self.max_output_tokens
     }
     /// Intersection of the user's context reservation and provider hard limits.
     pub const fn capacity(&self) -> crate::context::ModelContextCapacity {

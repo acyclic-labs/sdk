@@ -180,9 +180,7 @@ async fn run_call(
         ContextPlacement::Prepend,
     )) as Arc<dyn ContextStage>]);
     let executor = StockExecutor::new(model, Arc::new(resolved), pipeline, ToolRegistry::default())
-        .with_compaction_policy(CompactionPolicy::Disabled)
-        .with_max_output_tokens(512)
-        .map_err(|_| "live output reservation failed")?;
+        .with_compaction_policy(CompactionPolicy::Disabled);
     let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536)
         .await
         .map_err(|_| "live journal creation failed")?;

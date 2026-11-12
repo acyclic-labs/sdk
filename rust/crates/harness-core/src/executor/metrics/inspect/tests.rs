@@ -95,7 +95,6 @@ fn request(text: String) -> ModelRequest {
             projection_schema: json!({"type":"object"}),
         }],
         sampling: ModelSampling::default(),
-        max_output_tokens: None,
     }
 }
 
@@ -113,7 +112,6 @@ fn usage(call: &Call<'_>) -> ModelUsageRecord {
         model: call.request.model.name.clone(),
         agent_path: Some(call.source.agent_path.into()),
         sampling: Some(call.request.sampling),
-        max_output_tokens: call.request.max_output_tokens,
         tokens: super::super::super::ModelTokenUsage {
             input: Some(0),
             output: Some(u64::MAX),
@@ -138,7 +136,6 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
         .expect("captured SDK text");
     let mut request = request(text.into());
     request.sampling.temperature = Some(0.25);
-    request.max_output_tokens = Some(19);
     let bytes = serde_json::to_vec(&request).map_err(invalid)?;
     let admission = admission(&bytes)?;
     let call = Call::new(source(), &admission, &bytes)?;
@@ -199,7 +196,7 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
         ),
         Err(Error::Invalid(_))
     ));
-    for field in 0..4 {
+    for field in 0..3 {
         let mut foreign = usage.clone();
         match field {
             0 => foreign.agent_path = None,
@@ -211,7 +208,7 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
                     .expect("pinned sampling")
                     .temperature = Some(0.5)
             }
-            _ => foreign.max_output_tokens = None,
+            _ => unreachable!(),
         }
         let mut unpublished = Vec::new();
         assert!(matches!(
@@ -546,7 +543,6 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         model: &request.model.name,
         agent_path: Some("agents/generated-agent"),
         sampling: request.sampling,
-        max_output_tokens: None,
         tokens: super::super::super::ModelTokenUsage::reported(&metadata),
         started_at: None,
         completed_at: None,

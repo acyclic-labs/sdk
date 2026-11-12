@@ -15,7 +15,7 @@ def main():
             "parameters": {"type": "object", "properties": {"value": {"type": "integer"}},
                            "required": ["value"], "additionalProperties": False}}}
     base = {"model": "conformance-tiny", "stream": True, "stream_options": {"include_usage": True},
-            "max_completion_tokens": 128, "temperature": 0, "seed": 1,
+            "temperature": 0, "seed": 1,
             "chat_template_kwargs": {"enable_thinking": False}}
     cases = {
         "text": {"messages": [{"role": "user", "content": "Reply with exactly: hello"}]},

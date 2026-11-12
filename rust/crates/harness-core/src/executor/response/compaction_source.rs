@@ -27,7 +27,7 @@ impl StockExecution<'_> {
                 self.stock.limits,
                 self.io,
             )?;
-            let ceiling = policy.input_ceiling(accounting.capacity, self.output_tokens())?;
+            let ceiling = policy.input_ceiling(accounting.capacity)?;
             let count =
                 match stock_count_tokens(self.stock.provider.as_ref(), &request, ceiling, self.io)
                     .await
@@ -36,10 +36,15 @@ impl StockExecution<'_> {
                     Err(Error::ModelContextOverflow) => {
                         return Ok(CompactionSource::Base { context: base });
                     }
+                    // Only the projected context has proven pressure when
+                    // its shorter base has no count. Compact that projection.
+                    Err(Error::ModelTokenCountUnavailable) => {
+                        return Ok(CompactionSource::Projected);
+                    }
                     Err(error) => return Err(error),
                 };
             let tokens = with_history_io(self.io, |work| count.validate(&request, work))?;
-            if policy.needs_compaction(accounting.capacity, tokens, self.output_tokens())? {
+            if policy.needs_compaction(accounting.capacity, tokens)? {
                 return Ok(CompactionSource::Base { context: base });
             }
         }

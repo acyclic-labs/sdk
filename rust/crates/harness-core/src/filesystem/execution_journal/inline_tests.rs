@@ -50,7 +50,6 @@ fn request() -> Result<PreparedModelRequest> {
             }],
             tools: Vec::new(),
             sampling: Default::default(),
-            max_output_tokens: None,
         },
         Limits::default(),
         None,
@@ -442,7 +441,6 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         model: "inline",
         agent_path: None,
         sampling: Default::default(),
-        max_output_tokens: None,
         #[cfg(feature = "research")]
         provider_request_id: None,
         #[cfg(feature = "research")]

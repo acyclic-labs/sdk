@@ -323,12 +323,6 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
                 "count endpoint must accept the provider input dialect",
             ));
         }
-        let reported = counter.response_field == crate::TokenCountField::PromptTokens;
-        if reported && config.adapter != Adapter::Chat {
-            return Err(invalid("reported prompt usage requires the Chat adapter"));
-        }
-        // Tokenizer projections omit generation controls. Only the explicit
-        // reported-usage mode sends a one-token completion to generation.
         for name in std::iter::once("model").chain(config.models.keys().map(String::as_str)) {
             let count = validate_url(
                 &crate::counting::wire::endpoint(config, name, counter)?,
@@ -338,14 +332,9 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
                 .map_err(|_| invalid("invalid generation endpoint"))?;
             let same = count.origin() == generation.origin()
                 && count.path().trim_end_matches('/') == generation.path().trim_end_matches('/');
-            if same && !reported {
+            if same {
                 return Err(invalid(
                     "token counter must not use the generation endpoint",
-                ));
-            }
-            if reported && !same {
-                return Err(invalid(
-                    "reported prompt usage must use the generation endpoint",
                 ));
             }
         }

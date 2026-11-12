@@ -46,7 +46,6 @@ fn private_tool_validation_does_not_create_model_capacity_pressure() -> Result<(
                 }],
                 tools: vec![code.clone(), dynamic],
                 sampling: Default::default(),
-                max_output_tokens: Some(1),
             },
             Limits::default(),
             None,
@@ -86,7 +85,6 @@ fn continuing_an_admitted_request_transfers_every_history_buffer_at_one_to_one_t
                 .collect(),
             tools: Vec::new(),
             sampling: Default::default(),
-            max_output_tokens: Some(1),
         };
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
         let slots = prepared.request().messages.as_ptr();
@@ -139,7 +137,6 @@ proptest! {
     #[test]
     fn serialized_accounting_partitions_framing_and_message_content(
         texts in prop::collection::vec(prop::collection::vec(any::<char>(), 0..512), 1..8),
-        output in 1u32..=u32::MAX,
     ) {
         let request = ModelRequest {
             summary: false,
@@ -150,7 +147,7 @@ proptest! {
                 content: ModelContent::Text(text.into_iter().collect()),
             }).collect(),
             tools: Vec::new(),
-            sampling: Default::default(), max_output_tokens: Some(output),
+            sampling: Default::default(),
         };
         let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None).unwrap();
         #[cfg(not(target_arch = "wasm32"))]

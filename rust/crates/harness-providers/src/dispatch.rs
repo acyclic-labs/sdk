@@ -212,6 +212,22 @@ pub(crate) fn headers(
     }
     if provider.config.adapter == Adapter::Anthropic {
         headers.insert("anthropic-version".into(), "2023-06-01".into());
+        if streaming {
+            let feature = "model-context-window-exceeded-2025-08-26";
+            if let Some((_, value)) = headers
+                .iter_mut()
+                .find(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+            {
+                if !value.split(',').any(|part| part.trim() == feature) {
+                    if !value.is_empty() {
+                        value.push(',');
+                    }
+                    value.push_str(feature);
+                }
+            } else {
+                headers.insert("anthropic-beta".into(), feature.into());
+            }
+        }
         #[cfg(target_arch = "wasm32")]
         headers.insert(
             "anthropic-dangerous-direct-browser-access".into(),

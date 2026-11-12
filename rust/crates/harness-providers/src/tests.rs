@@ -420,7 +420,6 @@ pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest,
             ],
             tools: Vec::new(),
             sampling: Default::default(),
-            max_output_tokens: Some(64),
         },
         Limits::default(),
         None,
@@ -545,7 +544,8 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
 #[tokio::test]
 async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Result<()> {
     for (adapter, _) in fixtures() {
-        let (provider, script) = provider(adapter, 200);
+        let (mut provider, script) = provider(adapter, 200);
+        provider.capacity.output_tokens = Some(provider.capacity.context_tokens);
         let (request, dispatch) = request(&provider)?;
         let count = provider.count_tokens(&request, 0).await?;
         assert_eq!(count.request_digest, request.request_digest());
@@ -610,6 +610,16 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
             .map_err(|_| invalid("poisoned fixture"))?;
         assert_eq!(sent.len(), 1);
         let body = json(&sent[0].body)?;
+        for field in ["max_output_tokens", "max_completion_tokens"] {
+            assert!(
+                body.get(field).is_none(),
+                "unexpected output bound: {field}"
+            );
+        }
+        assert_eq!(
+            body.get("max_tokens").is_some(),
+            adapter == Adapter::Anthropic
+        );
         match adapter {
             Adapter::Anthropic => {
                 assert!(sent[0].url.ends_with("/messages"));
@@ -621,8 +631,12 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
                     body["cache_control"],
                     json!({"type":"ephemeral","ttl":"5m"})
                 );
-                assert_eq!(body["max_tokens"], 64);
+                assert_eq!(body["max_tokens"], provider.capacity.output_tokens.unwrap());
                 assert_eq!(sent[0].headers["x-api-key"], "scripted-key");
+                assert_eq!(
+                    sent[0].headers["anthropic-beta"],
+                    "model-context-window-exceeded-2025-08-26"
+                );
                 assert!(!sent[0].headers.contains_key("authorization"));
             }
             Adapter::Responses => {
@@ -641,7 +655,7 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
                         .ends_with("/models/model:streamGenerateContent?alt=sse")
                 );
                 assert_eq!(body["contents"][0]["role"], "user");
-                assert_eq!(body["generationConfig"]["maxOutputTokens"], 64);
+                assert!(body["generationConfig"].get("maxOutputTokens").is_none());
                 assert_eq!(sent[0].headers["x-goog-api-key"], "scripted-key");
             }
         }
@@ -764,7 +778,6 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             compose_tools: false,
             model: provider.model.clone(),
             sampling: Default::default(),
-            max_output_tokens: Some(64),
             tools: vec![tool],
             messages: vec![
                 ModelMessage {

@@ -123,8 +123,7 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
         provider.clone(),
         ContextPipeline::new([stage.clone() as Arc<dyn crate::context::ContextStage>]),
         ToolRegistry::default(),
-    )
-    .with_max_output_tokens(1_024)?;
+    );
     let journal = Journal::default();
     let input = TurnInput {
         max_steps: Some(1),
@@ -135,24 +134,6 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
     assert!(executor.model_step(&journal, &input, 1, &[]).await.is_err());
     let first = executor.model_step(&journal, &input, 0, &[]).await?;
     assert_eq!(first, executor.model_step(&journal, &input, 0, &[]).await?);
-    assert_eq!(
-        crate::model::PreparedModelRequest::decode(
-            &crate::contract::canonical_json_bytes(&provider.requests()[0])?,
-            Limits::default(),
-            None,
-        )?
-        .request()
-        .max_output_tokens,
-        Some(1_024)
-    );
-    assert!(
-        executor
-            .clone()
-            .with_max_output_tokens(2_048)?
-            .model_step(&journal, &input, 0, &[])
-            .await
-            .is_err()
-    );
     assert_eq!(stage.0.load(Ordering::SeqCst), 1);
     assert_eq!(provider.requests().len(), 1);
     journal.1.lock().unwrap().clear();
@@ -175,7 +156,6 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
             }],
             tools: Vec::new(),
             sampling: Default::default(),
-            max_output_tokens: Some(4096),
         },
         Limits::default(),
         None,
@@ -210,7 +190,6 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
     executor.execute(input.clone(), journal.as_ref()).await?;
     executor.execute(input.clone(), journal.as_ref()).await?;
     let mut expected = root.request().clone();
-    expected.max_output_tokens = None;
     expected.messages.push(ModelMessage {
         role: ModelRole::User,
         content: input.input.clone(),
@@ -279,12 +258,6 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
     ));
     assert_eq!(model.requests().len(), 0);
     let _ = base.execute(input.clone(), &journal).await?;
-    assert!(
-        model
-            .requests()
-            .iter()
-            .all(|request| request.max_output_tokens.is_none())
-    );
     let changed = Limits {
         file_bytes: Limits::default().file_bytes - 1,
         ..Limits::default()
@@ -500,9 +473,7 @@ mod prepared_request_reuse_properties {
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
             ToolRegistry::default(),
-        )
-        .with_max_output_tokens(512)
-        .unwrap();
+        );
         let current = ModelContent::Text(format!("current:{}", text[2]));
         let input = TurnInput {
             max_steps: None,
@@ -534,7 +505,6 @@ mod prepared_request_reuse_properties {
             messages: expected_messages,
             tools: Vec::new(),
             sampling: Default::default(),
-            max_output_tokens: Some(512),
         };
         let bytes = crate::contract::canonical_json_bytes(&expected).unwrap();
         let observed = if matches!(fault, Fault::StaleContext) {
@@ -610,7 +580,6 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
                 }],
                 tools: Vec::new(),
                 sampling: Default::default(),
-                max_output_tokens: None,
             },
             Limits::default(),
             None,

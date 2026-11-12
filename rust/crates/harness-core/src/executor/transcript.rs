@@ -21,7 +21,6 @@ pub(super) struct UsageRequest {
     pub(super) model: UsageModel,
     #[serde(default)]
     pub(super) sampling: crate::model::ModelSampling,
-    pub(super) max_output_tokens: Option<u32>,
 }
 
 pub(super) async fn usage_request(
@@ -153,7 +152,6 @@ struct RequestHeader {
         skip_serializing_if = "crate::model::ModelSampling::is_default"
     )]
     sampling: crate::model::ModelSampling,
-    max_output_tokens: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -168,7 +166,6 @@ struct HeaderView<'a> {
         skip_serializing_if = "crate::model::ModelSampling::is_default"
     )]
     sampling: crate::model::ModelSampling,
-    max_output_tokens: Option<u32>,
 }
 
 impl<'a> HeaderView<'a> {
@@ -180,7 +177,6 @@ impl<'a> HeaderView<'a> {
             model: &request.model,
             tools: &request.tools,
             sampling: request.sampling,
-            max_output_tokens: request.max_output_tokens,
         }
     }
 }
@@ -656,7 +652,6 @@ async fn load_request_inner(
             model: header.model,
             tools: header.tools,
             sampling: header.sampling,
-            max_output_tokens: header.max_output_tokens,
             messages,
         },
         limits,

@@ -22,7 +22,7 @@ test("canonical accounting rejects lossy UTF-16 requests, values and keys", () =
       summary: false,
       compose_tools: false,
       model: { provider: "synthetic", name: "byte-counter", revision: "1" },
-      messages: [{ role: "user", content: replacement }], tools: [], max_output_tokens: 1_024,
+      messages: [{ role: "user", content: replacement }], tools: [],
     };
     const count: ModelTokenCountWire = {
       request_digest: Array.from(contracts.digestCanonicalJson(request)) as ModelTokenCountWire["request_digest"],
@@ -45,23 +45,6 @@ test("generated optional current-input marker matches actual context projection 
   expect(current.current_input_index).toBe(0);
 });
 
-test("generated compaction policy validates actual capacity and finite output in Rust", () => {
-  const policy = contracts.defaultCompactionPolicy();
-  expect(policy.kind).toBe("capacity");
-  if (policy.kind !== "capacity") throw new Error("expected stock capacity policy");
-  expect(policy.config.response_reserve_tokens).toBe(0);
-  const capacity = { context_tokens: 65_536, output_tokens: 4_096 };
-  expect(contracts.validateCapacityCompaction(policy.config, capacity, undefined)).toBe(4_096);
-  const replacement = { ...policy.config, response_reserve_tokens: 1_024 };
-  expect(contracts.validateCapacityCompaction(replacement, capacity, undefined)).toBe(4_096);
-  expect(() => contracts.validateCapacityCompaction(policy.config,
-    { ...capacity, context_tokens: 0 }, undefined)).toThrow();
-  expect(() => contracts.validateCapacityCompaction(policy.config,
-    { ...capacity, output_tokens: 0 }, undefined)).toThrow();
-  for (const output of [0, -1, 0.5, 1.5, 4_097, 4_294_967_296, Infinity, NaN]) {
-    expect(() => contracts.validateCapacityCompaction(policy.config, capacity, output)).toThrow();
-  }
-});
 
 test("generated provider accounting binds canonical requests, dimensions and portable sums", () => {
   const request: ModelRequestWire = {
@@ -70,7 +53,6 @@ test("generated provider accounting binds canonical requests, dimensions and por
     model: { provider: "synthetic", name: "byte-counter", revision: "1" },
     messages: [{ role: "user", content: "é🦀" }],
     tools: [],
-    max_output_tokens: 1_024,
   };
   // This consumer's declared token units are UTF-8 bytes plus fixed framing.
   const count: ModelTokenCountWire = {

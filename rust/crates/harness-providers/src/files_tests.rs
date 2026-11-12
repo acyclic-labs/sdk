@@ -57,7 +57,7 @@ proptest! {
             let request = PreparedModelRequest::prepare(ModelRequest {
                 summary: false,
                 compose_tools: false,
-                model: provider.model().clone(), messages, tools, sampling: Default::default(), max_output_tokens: Some(64),
+                model: provider.model().clone(), messages, tools, sampling: Default::default(),
             }, Limits::default(), None).unwrap();
             let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, None).unwrap();
             let mut resolved = crate::files::FileText(vec![text.clone().into()].into_iter());
@@ -119,7 +119,6 @@ fn with_parts(
             }],
             tools: vec![],
             sampling: Default::default(),
-            max_output_tokens: Some(64),
         },
         Limits::default(),
         None,
@@ -620,34 +619,41 @@ proptest! {
                 let original_counter = provider.config.token_counter.clone();
                 drop(prepared);
                 for counter in std::iter::once(None).chain(fixtures().into_iter().map(|(counter, _)| Some(counter))) {
-                    if counter == Some(adapter) || (counter.is_none() && adapter == Adapter::Chat) { continue; }
+                    if counter == Some(adapter) { continue; }
                     Arc::make_mut(&mut Arc::get_mut(&mut provider).unwrap().config).token_counter = counter.map(|adapter| {
                         let mut spec = original_counter.clone().unwrap();
                         spec.adapter = adapter;
                         spec
                     });
-                    let expected = if counter.is_some() {
-                        acyclic_harness_core::wire::ErrorCode::Invalid
-                    } else {
-                        acyclic_harness_core::wire::ErrorCode::Unsupported
-                    };
                     let before = reader.reads.load(Ordering::SeqCst);
-                    assert_eq!(provider.count_tokens(&request, 0).await.unwrap_err().code(), expected);
-                    let error = crate::prepared::PreparedInput::new(provider.clone(), request.clone()).await.err().expect("unverified prepared counter admitted");
-                    assert_eq!(error.code(), expected);
+                    let error = provider.count_tokens(&request, 0).await.unwrap_err();
+                    let expected_reads = if counter.is_some() {
+                        assert_eq!(error.code(), acyclic_harness_core::wire::ErrorCode::Invalid);
+                        let error = crate::prepared::PreparedInput::new(provider.clone(), request.clone()).await.err().expect("mismatched prepared counter admitted");
+                        assert_eq!(error.code(), acyclic_harness_core::wire::ErrorCode::Invalid);
+                        before
+                    } else {
+                        assert!(matches!(error, Error::ModelTokenCountUnavailable));
+                        let prepared = Arc::new(crate::prepared::PreparedInput::new(provider.clone(), request.clone()).await.unwrap());
+                        assert_eq!(prepared.generation.as_ref(), baseline_generation.bytes.as_slice());
+                        assert!(matches!(prepared.count().await, Err(Error::ModelTokenCountUnavailable)));
+                        let dispatch = ModelDispatch {request_digest:request.request_digest(),..parser_dispatch()};
+                        crate::prepared::PreparedInput::generate(prepared, dispatch).try_collect::<Vec<_>>().await.unwrap();
+                        before + 1
+                    };
                     let cancellation = acyclic_fs::CancellationToken::new();
                     let work = acyclic_fs::NativeMaterializationWork::new(
                         acyclic_fs::performance::work_budget(1_000_000, 1_000_000), &cancellation,
                     ).unwrap();
                     let baseline = work.live_allocation_bytes();
                     let error = crate::counting::count(&provider, &request, 0, Some(&work)).await.err().expect("unverified native counter admitted");
-                    assert!(matches!(error, Error::NativeBoundary {code, reason} if code == expected && reason == if counter.is_some() {
-                        "token counter dialect differs from generation"
+                    if counter.is_some() {
+                        assert!(matches!(error, Error::NativeBoundary {code: acyclic_harness_core::wire::ErrorCode::Invalid, reason: "token counter dialect differs from generation"}));
                     } else {
-                        "configure a verified input token counter for this endpoint"
-                    }));
+                        assert!(matches!(error, Error::ModelTokenCountUnavailable));
+                    }
                     assert_eq!(work.live_allocation_bytes(), baseline);
-                    assert_eq!(reader.reads.load(Ordering::SeqCst), before, "counter refusal hydrated a file");
+                    assert_eq!(reader.reads.load(Ordering::SeqCst), expected_reads, "only generation preparation may hydrate the file");
                 }
             }
             }
@@ -870,7 +876,6 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
             model: provider.model().clone(),
             tools: vec![],
             sampling: Default::default(),
-            max_output_tokens: Some(64),
             messages: vec![ModelMessage {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {

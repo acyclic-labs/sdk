@@ -79,9 +79,7 @@ pub struct ProviderSpec {
         tsify(type = "Record<string, ModelSpec>")
     )]
     pub models: BTreeMap<String, crate::ModelSpec>,
-    /// Verified admission counter. Without one, Chat measures the same input
-    /// through a one-token completion's reported `usage.prompt_tokens`.
-    /// Other protocols require their own tokenizer contract.
+    /// Optional verified input tokenizer. Without one, generation admits its own input.
     #[serde(default)]
     pub token_counter: Option<crate::TokenCounterSpec>,
     /// Caller-selected capacity for one SSE event and retained protocol state.

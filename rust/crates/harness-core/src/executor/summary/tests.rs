@@ -27,7 +27,7 @@ proptest! {
             ContextPipeline::default(),
             ToolRegistry::default(),
         ).with_compaction_policy(crate::context::CompactionPolicy::Disabled)
-            .with_max_output_tokens(128).unwrap();
+            ;
         stock.limits.file_bytes = expected.len() as u64;
         let check = |execution: &StockExecution<'_>| {
             let (bytes, digest, messages) = execution.summary_source_identity(&source).unwrap();

@@ -32,7 +32,6 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
             }],
             tools: Vec::new(),
             sampling: Default::default(),
-            max_output_tokens: None,
         },
         Limits::default(),
         None,
@@ -50,7 +49,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         "independent turns must not republish an unchanged immutable header"
     );
     let mut changed = prepared.request().clone();
-    changed.max_output_tokens = Some(128);
+    changed.sampling.seed = Some(128);
     let changed = crate::model::PreparedModelRequest::prepare(changed, Limits::default(), None)?;
     let changed = initial_request(journal, &changed).await?;
     assert_ne!(
@@ -419,7 +418,6 @@ async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> 
             }],
             tools: Vec::new(),
             sampling: Default::default(),
-            max_output_tokens: None,
         },
         Limits::default(),
         None,

@@ -115,7 +115,6 @@ mod tests {
                 projection_schema: sparse,
             }],
             sampling: Default::default(),
-            max_output_tokens: None,
         })
     }
 

@@ -356,7 +356,6 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
                 projection_schema: json!({}),
             }],
             sampling: Default::default(),
-            max_output_tokens: Some(64),
         };
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
         let prepared = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;

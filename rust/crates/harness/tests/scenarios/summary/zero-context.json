@@ -1,2 +1,2 @@
-{"capacity":{"context_tokens":0},"max_output_tokens":10,"turns":[],
+{"capacity":{"context_tokens":0},"turns":[],
   "expect":{"error":"selected model capacity is invalid","request_count":0}}

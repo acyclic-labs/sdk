@@ -251,10 +251,7 @@ impl StockExecutors {
             Some(sampling) => executor.with_sampling(sampling)?,
             None => executor,
         };
-        match sampling.max_output_tokens {
-            Some(maximum) => executor.with_max_output_tokens(maximum),
-            None => Ok(executor),
-        }
+        Ok(executor)
     }
 
     /// Binds the agent tools among `names` to each turn's effects.

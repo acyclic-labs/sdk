@@ -54,23 +54,10 @@ pub(super) fn counts_input(
         // Resolution replaces the inherited remote counter with local counting.
         return Ok(());
     }
-    if config.token_counter.is_some() || config.adapter == Adapter::Chat {
+    if config.token_counter.is_some() {
         let counter = crate::counting::specification(config, None)?;
         return crate::counting::wire::endpoint(config, model, counter).map(|_| ());
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    if codex_route(config)
-        && matches!(credential, Credential::Key(_))
-        && config.authentication == Authentication::ApiKeyOrCodexLogin
-    {
-        return Err(invalid(
-            "catalog default_model requires a verified input token counter: \
-             the provider API key displaces the Codex login that counts input locally",
-        ));
-    }
-    #[cfg(target_arch = "wasm32")]
     let _ = credential;
-    Err(invalid(
-        "catalog default_model requires a verified input token counter",
-    ))
+    Ok(())
 }

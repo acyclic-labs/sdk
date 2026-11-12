@@ -56,7 +56,6 @@ async fn binding_facts_follow_shared_bytes_across_turns_and_forks() -> TestResul
             messages,
             tools,
             sampling: Default::default(),
-            max_output_tokens: None,
         };
         let mut inherited = None;
         for agent in 0..3_u8 {

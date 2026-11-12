@@ -165,15 +165,6 @@ pub(crate) fn body_named<'a>(
             "sampling projection failed: this protocol has no seed field; recovery: remove sampling.seed from the model profile",
         ));
     }
-    if provider
-        .profile
-        .as_ref()
-        .is_some_and(|profile| profile.max_output_tokens() != request.max_output_tokens)
-    {
-        return Err(invalid(
-            "request output reservation differs from its admitted profile",
-        ));
-    }
     let call_ids = crate::call_ids::CallIds::new(request, adapter)?;
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut deferred_media = Vec::new();
@@ -289,9 +280,6 @@ pub(crate) fn body_named<'a>(
     let tools = acyclic_model_render::ToolDeclarations::new(adapter, tools)
         .map_err(|error| invalid(error.to_string()))?;
     system.retain(|text| !text.trim().is_empty());
-    let max = provider
-        .admitted_capacity()
-        .output_reservation(request.max_output_tokens)?;
     let mut fields = Fields::default();
     if !tools.is_empty() || adapter == Adapter::Responses {
         fields
@@ -313,13 +301,11 @@ pub(crate) fn body_named<'a>(
         Adapter::Chat => {
             fields.insert(Field::Stream, json!(true));
             fields.insert(Field::StreamOptions, json!({"include_usage":true}));
-            fields.insert(Field::MaxCompletionTokens, json!(max));
         }
         Adapter::Responses => {
             fields.insert(Field::Include, json!(["reasoning.encrypted_content"]));
             fields.insert(Field::Stream, json!(true));
             fields.insert(Field::Store, json!(false));
-            fields.insert(Field::MaxOutputTokens, json!(max));
             if login_route {
                 fields.insert(
                     Field::Instructions,
@@ -328,14 +314,17 @@ pub(crate) fn body_named<'a>(
             }
             #[cfg(not(target_arch = "wasm32"))]
             if provider.codex_login.is_some() {
-                fields.remove(Field::MaxOutputTokens);
                 fields.insert(Field::ToolChoice, json!("auto"));
                 fields.insert(Field::ParallelToolCalls, json!(true));
             }
         }
         Adapter::Anthropic => {
             fields.insert(Field::Stream, json!(true));
-            fields.insert(Field::MaxTokens, json!(max));
+            // Messages requires the published model maximum, independent of roles
+            // and context admission. Optional protocols send no output bound.
+            let maximum = provider.capacity.output_tokens.filter(|maximum| *maximum > 0)
+                .ok_or_else(|| invalid("Anthropic Messages requires the model's published maximum output tokens in the catalog"))?;
+            fields.insert(Field::MaxTokens, json!(maximum));
             if !system.is_empty() {
                 // One text block holding the prefix breakpoint: Anthropic
                 // renders tools, then system, before every message. Built in
@@ -352,7 +341,7 @@ pub(crate) fn body_named<'a>(
             }
         }
         Adapter::Gemini => {
-            fields.insert(Field::GenerationConfig, json!({"maxOutputTokens":max}));
+            fields.insert(Field::GenerationConfig, json!({}));
             if !system.is_empty() {
                 // Built in place: `json!` would copy the joined text again.
                 let text = Value::String(text::join(system, "\n\n"));

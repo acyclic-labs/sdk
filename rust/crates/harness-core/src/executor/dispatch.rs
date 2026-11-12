@@ -12,7 +12,6 @@ struct ObservedCall<'a> {
     dispatch: crate::model::ModelDispatch,
     model: &'a Model,
     sampling: crate::model::ModelSampling,
-    max_output_tokens: Option<u32>,
     purpose: ModelPurpose,
     clock: super::model_usage::CallClock,
 }
@@ -287,7 +286,6 @@ impl StockExecution<'_> {
                         dispatch,
                         model: &request.request().model,
                         sampling: request.request().sampling,
-                        max_output_tokens: request.request().max_output_tokens,
                         purpose,
                         clock,
                     },
@@ -581,7 +579,6 @@ impl StockExecution<'_> {
             dispatch,
             model,
             sampling,
-            max_output_tokens,
             purpose,
             clock,
         } = call;
@@ -679,7 +676,6 @@ impl StockExecution<'_> {
                                 .and_then(|(context, _)| context.agent())
                                 .map(|(agent, _)| agent.as_str()),
                             sampling,
-                            max_output_tokens,
                             tokens: super::model_usage::ModelTokenUsage::reported(metadata),
                             started_at: clock.started_at(),
                             completed_at,

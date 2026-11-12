@@ -34,7 +34,6 @@ fn request() -> Result<(PreparedModelRequest, ModelDispatch)> {
                 projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
             }],
             sampling: Default::default(),
-            max_output_tokens: Some(64),
         },
         Limits::default(),
         None,

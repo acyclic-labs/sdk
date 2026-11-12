@@ -80,10 +80,8 @@ fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Res
         let prepared = PreparedModelRequest::prepare(resumed, Limits::default(), None)?;
         let count = futures::executor::block_on(provider.count_tokens(&prepared, 0))?.input_tokens;
         let capacity = provider.context_capacity(&provider.model)?;
-        let policy = CapacityCompaction {
-            response_reserve_tokens: 1024,
-        };
-        assert!(policy.needs_compaction(capacity, count, prepared.request().max_output_tokens)?);
+        let policy = CapacityCompaction {};
+        assert!(policy.needs_compaction(capacity, count)?);
         // No generation has started. A fresh process uses the verified count;
         // previous usage and a sparse calibration cannot weaken admission.
         assert!(script.sent.lock().expect("fixture requests").is_empty());
@@ -423,19 +421,23 @@ async fn token_limits_complete_uniformly_without_publishing_partial_tool_batches
                 "\"finishReason\":\"MAX_TOKENS\"",
             ),
         };
-        let events = stream::events(adapter, chunks(&truncated, 1), 4096, parser_dispatch())
-            .try_collect::<Vec<_>>()
-            .await?;
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, ModelEvent::ToolCall(_)))
-        );
-        let Some(ModelEvent::Completed { metadata }) = events.last() else {
-            return Err(invalid("no completion"));
-        };
-        assert_eq!(metadata["finish_reason"], "length");
-        assert!(metadata["usage"].is_object());
+        let context_stop = (adapter == Adapter::Anthropic)
+            .then(|| truncated.replace("max_tokens", "model_context_window_exceeded"));
+        for page in std::iter::once(truncated).chain(context_stop) {
+            let events = stream::events(adapter, chunks(&page, 1), 4096, parser_dispatch())
+                .try_collect::<Vec<_>>()
+                .await?;
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, ModelEvent::ToolCall(_)))
+            );
+            let Some(ModelEvent::Completed { metadata }) = events.last() else {
+                return Err(invalid("no completion"));
+            };
+            assert_eq!(metadata["finish_reason"], "length");
+            assert!(metadata["usage"].is_object());
+        }
     }
     let incomplete = concat!(
         "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"partial\",\"name\":\"echo\",\"arguments\":\"{\"}}\n\n",
@@ -492,9 +494,98 @@ impl HttpTransport for ToolLoop {
 }
 
 #[tokio::test]
+async fn context_window_stop_compacts_before_continuing_without_a_count_endpoint() -> Result<()> {
+    use acyclic_harness_core::{
+        context::{CompactionPolicy, Context, ContextPipeline, ContextPlacement, SourceStage},
+        executor::{Executor, StockExecutor, TurnInput},
+        filesystem::MemoryHarnessStorage,
+        tool::ToolRegistry,
+    };
+    let mut first = String::from(
+        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":15536}}}\n\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+    );
+    for _ in 0..50 {
+        let event = json!({"type":"content_block_delta","index":0,
+            "delta":{"type":"text_delta","text":"p".repeat(2000)}});
+        first.push_str(&format!("data: {event}\n\n"));
+    }
+    first.push_str("data: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"model_context_window_exceeded\"},\"usage\":{\"output_tokens\":50000}}\n\ndata: {\"type\":\"message_stop\"}\n\n");
+    let transport = Arc::new(ToolLoop {
+        replies: Mutex::new(VecDeque::from([first,
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\" complete\"}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n".into()
+        ])),
+        sent: Mutex::new(Vec::new()),
+    });
+    let mut provider = provider_with(
+        Adapter::Anthropic,
+        "http://127.0.0.1:1234/v1",
+        transport.clone(),
+    );
+    Arc::make_mut(&mut provider.config).token_counter = None;
+    Arc::make_mut(&mut provider.config).max_event_bytes = None;
+    provider.capacity = ModelContextCapacity {
+        context_tokens: 65536,
+        output_tokens: Some(65536),
+    };
+    let history = Context {
+        messages: vec![
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("earlier question".into()),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("h".repeat(20000)),
+            },
+        ],
+        ..Context::default()
+    };
+    let executor = StockExecutor::new(
+        provider.model.clone(),
+        Arc::new(provider),
+        ContextPipeline::default().with(Arc::new(SourceStage::new(
+            "history",
+            "1",
+            Arc::new(history),
+            ContextPlacement::Prepend,
+        ))),
+        ToolRegistry::default(),
+    )
+    .with_compaction_policy(CompactionPolicy::default());
+    let storage = MemoryHarnessStorage::new(acyclic_harness_core::AgentId::new(), 131072).await?;
+    let journal = storage.journal();
+    let input = TurnInput {
+        operation_id: acyclic_harness_core::OperationId::new(),
+        max_steps: None,
+        input: ModelContent::Text("report".into()),
+        selected_context: None,
+    };
+    let output = executor.execute(input.clone(), journal.as_ref()).await?;
+    assert_eq!(output.text, format!("{} complete", "p".repeat(100000)));
+    assert_eq!(output.steps, 2);
+    assert_eq!(executor.execute(input, journal.as_ref()).await?, output);
+    let sent = transport.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert!(
+        sent.iter()
+            .all(|request| request.url.ends_with("/messages"))
+    );
+    let next = json(&sent[1].body)?;
+    assert_eq!(next["max_tokens"], 65536);
+    // More bytes than tokens is valid. The provider admits an unknown count;
+    // the byte upper bound must not turn this into a false overflow.
+    assert!(sent[1].body.len() > 65536);
+    assert!(
+        !std::str::from_utf8(&sent[1].body)
+            .unwrap()
+            .contains(&"h".repeat(20000))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn responses_reasoning_runs_survive_delegate_results_and_durable_replay() -> Result<()> {
-    // Swarmbench 20261111T003659Z-decipher-single-XS-0c16 emitted two distinct
-    // opaque reasoning items before spawn. Preserve the whole run in order:
+    // Preserve multiple opaque reasoning items across delegation in order:
     // https://developers.openai.com/api/docs/guides/reasoning#keeping-reasoning-items-in-context
     let native = [
         r#"{"id":"rs_plan","type":"reasoning","content":[],"encrypted_content":"opaque-plan","summary":[]}"#,

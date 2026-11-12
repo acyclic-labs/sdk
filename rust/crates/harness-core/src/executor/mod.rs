@@ -634,7 +634,6 @@ pub struct StockExecutor {
     model: Model,
     sampling: Option<crate::model::ModelSampling>,
     resolved_sampling: once_cell::sync::OnceCell<crate::model::ModelSampling>,
-    max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
     tools: ToolRegistry,
@@ -680,9 +679,25 @@ pub(crate) struct ResponseProjection {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ContextAccounting {
     pub(crate) capacity: crate::context::ModelContextCapacity,
-    /// `None` records a typed provider context-overflow refusal for this projection.
-    /// It never supplies an estimated admission count.
-    pub(crate) count: Option<accounting::ContextCount>,
+    pub(crate) count: InputAccounting,
+}
+
+/// A missing tokenizer is distinct from a provider's context-overflow refusal.
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum InputAccounting {
+    Counted(accounting::ContextCount),
+    Overflow,
+    Unavailable,
+}
+
+impl InputAccounting {
+    fn as_ref(&self) -> Option<&accounting::ContextCount> {
+        match self {
+            Self::Counted(count) => Some(count),
+            Self::Overflow | Self::Unavailable => None,
+        }
+    }
 }
 
 /// Validated retained model artifacts without provider dispatch.

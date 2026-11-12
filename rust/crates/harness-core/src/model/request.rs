@@ -35,8 +35,6 @@ pub struct ModelRequest {
         skip_serializing_if = "crate::model::ModelSampling::is_default"
     )]
     pub sampling: crate::model::ModelSampling,
-    /// Optional output token ceiling.
-    pub max_output_tokens: Option<u32>,
 }
 impl ModelRequest {
     /// Separates the transient summary instruction from its selected context.
@@ -94,11 +92,6 @@ impl ModelRequest {
                 .is_some_and(|maximum| self.messages.len() > maximum.get())
         {
             return Err(Error::Invalid("model context count is invalid".into()));
-        }
-        if self.max_output_tokens == Some(0) {
-            return Err(Error::Invalid(
-                "model output token bound must be positive".into(),
-            ));
         }
         let mut remaining = limits.render_bytes;
         reserve_instruction_bodies(&self.messages, &mut remaining, io)?;

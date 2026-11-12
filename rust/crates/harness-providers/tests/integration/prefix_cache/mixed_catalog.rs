@@ -96,7 +96,6 @@ async fn mixed_provider_catalog_executes_every_route_and_rejects_a_swapped_adapt
                 }],
                 tools: Vec::new(),
                 sampling: Default::default(),
-                max_output_tokens: Some(16),
             },
             Limits::default(),
             None,

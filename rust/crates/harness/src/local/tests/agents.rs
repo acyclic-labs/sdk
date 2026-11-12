@@ -939,7 +939,6 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         completed.usage.sampling,
         Some(crate::model::ModelSampling::default())
     );
-    assert_eq!(completed.usage.max_output_tokens, None);
     assert!(rows.next().is_none());
     // The real journal's current format crosses the same shared boundary in
     // both directions. No other version or agent can enter this usage view.
@@ -1632,9 +1631,7 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
                 .without_default_tools()
                 .workspace_mounting(crate::local::WorkspaceMounting::Physical)
                 .compaction(crate::context::CompactionPolicy::Capacity(
-                    crate::context::CapacityCompaction {
-                        response_reserve_tokens: 4096,
-                    },
+                    crate::context::CapacityCompaction {},
                 )),
         )
         .await?,

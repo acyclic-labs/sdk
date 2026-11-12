@@ -17,35 +17,9 @@ pub struct ModelContextCapacity {
 }
 
 impl ModelContextCapacity {
-    /// Resolves a role reservation against the selected model's hard bounds.
-    /// Absence means its verified output capacity, never a guessed fallback.
-    pub fn output_reservation(self, requested: Option<u32>) -> Result<u32> {
-        let output = requested.or(self.output_tokens).ok_or_else(|| {
-            Error::Invalid("unknown output capacity requires a role reservation".into())
-        })?;
-        if !self.permits_output(output) {
-            return Err(Error::Invalid(
-                "requested output exceeds selected model capacity".into(),
-            ));
-        }
-        Ok(output)
-    }
-
-    /// Checks a request budget against every known hard bound.
-    #[must_use]
-    pub fn permits_output(self, output: u32) -> bool {
-        output > 0
-            && output <= self.context_tokens
-            && self.output_tokens.is_none_or(|limit| output <= limit)
-    }
-
     /// Rejects impossible provider advertisements.
     pub fn validate(self) -> Result<()> {
-        if self.context_tokens == 0
-            || self
-                .output_tokens
-                .is_some_and(|n| n == 0 || n > self.context_tokens)
-        {
+        if self.context_tokens == 0 {
             return Err(Error::Invalid("selected model capacity is invalid".into()));
         }
         Ok(())
@@ -185,28 +159,6 @@ mod tests {
 
     use crate::model::{Model, ModelContent, ModelMessage, ModelRequest, ModelRole};
 
-    #[test]
-    fn capacity_rejects_zero_and_inverted_bounds() {
-        for (context_tokens, output_tokens) in [(0, 1), (1, 0), (1, 2)] {
-            assert!(
-                ModelContextCapacity {
-                    context_tokens,
-                    output_tokens: Some(output_tokens)
-                }
-                .validate()
-                .is_err()
-            );
-        }
-        assert!(
-            ModelContextCapacity {
-                context_tokens: 8,
-                output_tokens: Some(8)
-            }
-            .validate()
-            .is_ok()
-        );
-    }
-
     proptest::proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(64))]
         #[test]
@@ -219,7 +171,7 @@ mod tests {
                 compose_tools: false,
                 model: Model::new("fixture".into(), "dense".into(), "1".into()).unwrap(),
                 messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(text) }],
-                tools: Vec::new(), sampling: Default::default(), max_output_tokens: Some(1),
+                tools: Vec::new(), sampling: Default::default(),
             }, crate::conversation::Limits::default(), None).unwrap();
             let count = ModelTokenCount { request_digest: request.request_digest(), input_tokens: actual,
                 fixed_tokens: fixed, message_tokens: vec![message] };
@@ -242,7 +194,6 @@ mod tests {
             }],
             tools: Vec::new(),
             sampling: Default::default(),
-            max_output_tokens: Some(1),
         };
         let prepared = PreparedModelRequest::prepare(
             request.clone(),
