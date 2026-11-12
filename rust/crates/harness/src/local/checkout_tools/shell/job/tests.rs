@@ -53,7 +53,16 @@ async fn listener_executor(
     let write = workspace
         .mounts
         .native_mounts()
-        .filter_map(|(_, root, mount)| (!mount.mode.read_only()).then(|| root.to_path_buf()))
+        .filter_map(|(_, root, mount)| {
+            (!mount.mode.read_only()).then(|| {
+                // These fixture-owned parents survive projection retirement;
+                // their volume directories are created only during execution.
+                mount.view.source.as_ref().map_or_else(
+                    || root.to_path_buf(),
+                    |source| source.binding_root.path().to_path_buf(),
+                )
+            })
+        })
         .chain(workspace.mounts.scratch_root.iter().cloned())
         .collect::<Vec<_>>();
     let grant = ExecutionGrant::composed(
