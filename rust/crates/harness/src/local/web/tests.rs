@@ -161,6 +161,7 @@ async fn configured_web_tools_reach_their_action_guards() -> Result<()> {
                 .run_commands(
                     HookEvent::PreToolUse,
                     HookInput::Tool {
+                        binding: None,
                         invocation: &invocation,
                         response: None,
                         session_id: None,

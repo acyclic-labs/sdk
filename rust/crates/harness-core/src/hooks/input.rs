@@ -11,6 +11,9 @@ pub enum HookInput<'a> {
     Fields(&'a Value),
     /// The effective tool call and, after execution, its canonical result.
     Tool {
+        /// Exact implementation admitted for this call. An absent binding uses
+        /// the registry's model declaration, as for external host calls.
+        binding: Option<&'a crate::tool::Tool>,
         /// Admitted invocation, including its original call identity.
         invocation: &'a ToolInvocation,
         /// The result exists only after the tool has finished.
@@ -87,6 +90,7 @@ impl Serialize for Envelope<'_> {
                 invocation,
                 response,
                 session_id,
+                ..
             } => {
                 fields.serialize_entry("tool_name", &invocation.name)?;
                 fields.serialize_entry("tool_input", self.3.unwrap_or(&invocation.arguments))?;
