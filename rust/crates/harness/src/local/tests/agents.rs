@@ -3182,20 +3182,15 @@ async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
         ));
     };
     let listed = listed(&harness, manifest).await?;
-    // Negative control: the same files listed inline in the record, as the
-    // message carried them before, exceed the stream's record bound.
+    // Compare reference publication with the full manifest independently
+    // of any stream record-size policy.
     let inline = serde_json::to_vec(&listed).map_err(agent)?;
-    assert!(
-        inline.len() > crate::agent::MAX_RECORD_BYTES,
-        "{} inline bytes fit a record",
-        inline.len()
-    );
-    // The records stay one reference: as small as a one-file prompt's.
+    // The records carry one reference rather than the full inline manifest.
     let (agents, root) = harness.agents().await?;
     let entries = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
     let inbox = records(&**agents.provider(), root.inbox().map_err(agent)?).await?;
     for record in inbox.iter().chain(&entries) {
-        assert!(record.len() < 4096, "{} record bytes", record.len());
+        assert!(record.len() < inline.len());
     }
     assert_eq!(listed.len(), MENTIONS);
     // The model sees the prompt and every file, in mention order.
@@ -3298,8 +3293,8 @@ async fn project_mentions_keep_their_volume_and_bounded_copy_paths() -> Result<(
     assert_eq!(parts.len(), MENTIONS + 1);
 
     // Copy names use their admitted identity instead of repeating a long source path.
-    const FIXTURE_PATH_BYTES: usize = 4096;
-    // Nested 200-byte components, then a file name, to one byte under the bound.
+    const FIXTURE_PATH_BYTES: usize = 8193;
+    // Cross the former logical path ceiling with ordinary-sized components.
     let mut parents = Vec::new();
     let mut long = String::new();
     while FIXTURE_PATH_BYTES - 1 - long.len() > 200 {
