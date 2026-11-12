@@ -492,27 +492,34 @@ impl LocalCoreStateStore {
         &self,
         operation_id: OperationId,
     ) -> Result<(), LocalCoreStateStoreError> {
-        self.transaction(move |namespace| {
-            let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
-            with_lock(&mut paths, |paths| {
-                let journal = read_recoverable::<MaterializationJournal>(paths)?;
-                if journal.as_ref().is_some_and(|(journal, _)| {
-                    !matches!(
-                        journal.phase,
-                        crate::MaterializationPhase::Applied
-                            | crate::MaterializationPhase::RolledBack
-                    )
-                }) {
-                    return Err(LocalCoreStateStoreError::MaterializationInProgress);
-                }
-                remove_record(paths)
-            })
-        })
-        .await
+        self.transaction(move |namespace| journal::remove_materialization(&namespace, operation_id))
+            .await
     }
 }
 
 impl Namespace {
+    fn durable_directory(&self, relative: &Path) -> Result<(), LocalCoreStateStoreError> {
+        if let Some(allocation) = &self._allocation {
+            let mut work = &*allocation.work();
+            let root = crate::native_host::HostRoot::open(&self.root, &mut work)?;
+            root.create_directories(
+                relative,
+                crate::native_host::NativeDurability::Durable,
+                &mut work,
+            )?;
+        } else {
+            let mut work = crate::native_host::ordinary_work();
+            let root = crate::native_host::HostRoot::open(&self.root, &mut work)
+                .map_err(|cause| LocalCoreStateStoreError::LazyWork(cause.into()))?;
+            root.create_directories(
+                relative,
+                crate::native_host::NativeDurability::Durable,
+                &mut work,
+            )
+            .map_err(|cause| LocalCoreStateStoreError::LazyWork(cause.into()))?;
+        }
+        Ok(())
+    }
     fn family(&self, family: &str) -> PathBuf {
         self.root.join(family)
     }
@@ -770,14 +777,14 @@ pub(crate) use native_io::reserve;
 mod native_log;
 use native_io::*;
 mod journal;
+mod materialized_metadata;
 pub use journal::LocalMaterializationActionCompletion;
+mod decode;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery;
-#[cfg(not(target_arch = "wasm32"))]
-pub use recovery::NativeRecoveryRoot;
-mod decode;
 use decode::*;
 mod nodes;
+pub(crate) use nodes::native_core_error;
 mod publications;
 use nodes::*;
 mod collection;

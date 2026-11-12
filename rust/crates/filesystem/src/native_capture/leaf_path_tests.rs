@@ -42,6 +42,7 @@ fn repeated_capture_counts_nested_checkout_union_once() -> Result<(), Box<dyn st
     let setup = work(WorkBudget::UNBOUNDED);
     let mut checkout = runtime.block_on(super::capture_policy_tests::native_checkout(&setup))?;
     let options = CaptureOptions {
+        materialized_view: None,
         source_namespace: None,
         source_root: source.path().to_owned(),
         expected_root_identity: capture_root_identity(source.path())?,
@@ -130,6 +131,7 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
     let root = HostRoot::open(source.path(), &mut &setup)
         .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
     let options = CaptureOptions {
+        materialized_view: None,
         source_namespace: None,
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
@@ -143,7 +145,6 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
         &options,
         &policy,
         setup.cancellation(),
-        None,
         &setup,
     ))?;
     // Directory proofs stay cached on the checkout's original allocation ledger.
@@ -250,6 +251,7 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
     let root = HostRoot::open(source.path(), &mut &setup)
         .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
     let options = CaptureOptions {
+        materialized_view: None,
         source_namespace: None,
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
@@ -262,7 +264,6 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
         &options,
         &CapturePolicy::default(),
         setup.cancellation(),
-        None,
         &setup,
     ))?;
     let mut all: Vec<_> = files

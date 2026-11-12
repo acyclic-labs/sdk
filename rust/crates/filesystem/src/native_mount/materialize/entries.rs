@@ -76,6 +76,16 @@ where
                 &mut work,
             )
             .map_err(MaterializeError::from)?;
+        if receipt.baseline.is_some() {
+            apply_host_metadata_offloaded(
+                host_root,
+                host_path,
+                FileMetadata::default(),
+                Some(file_id),
+                receipt,
+            )
+            .await?;
+        }
         generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
         receipt.value.files = receipt
             .value
@@ -295,7 +305,12 @@ where
         let file = flush_file.take().ok_or(MaterializeError::InvalidOptions)?;
         flushes
             .push(
-                (file, path, host_path, authenticated_metadata),
+                (
+                    file,
+                    path,
+                    host_path,
+                    authenticated_metadata.map(|metadata| (file_id, metadata)),
+                ),
                 (reader, host_root),
                 receipt,
                 before_effect,
@@ -309,7 +324,7 @@ where
             host_root,
             path,
             host_path,
-            authenticated_metadata,
+            authenticated_metadata.map(|metadata| (file_id, metadata)),
             receipt,
             before_effect,
         )

@@ -5,7 +5,7 @@ pub(super) async fn apply_metadata<A, O, E, F, Fut>(
     host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
     path: &NamespacePath,
     host_path: &HeldHostPath,
-    metadata: Option<FileMetadata>,
+    metadata: Option<(FileId, FileMetadata)>,
     receipt: &mut GenerationReceipt,
     before_effect: &mut Option<&mut F>,
 ) -> Result<(), E>
@@ -22,11 +22,11 @@ where
         .state
         .with_original_leaf(|original| original.cancellation().clone());
     let cancellation = &cancellation;
-    let metadata = match metadata {
+    let (file_id, metadata) = match metadata {
         Some(metadata) => metadata,
         None => read_source!(reader, receipt, remaining, value,
-            reader.read_metadata(path, receipt.custody.work(), cancellation) => value,
-            reader.read_metadata(path, remaining, cancellation) => value,
+            reader.read_metadata_entry(path, receipt.custody.work(), cancellation) => value,
+            reader.read_metadata_entry(path, remaining, cancellation) => value,
         ),
     };
     let (metadata, named_attributes) = host_metadata(metadata);
@@ -92,7 +92,7 @@ where
         generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
     }
     generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-    apply_host_metadata_offloaded(host_root, host_path, metadata, receipt).await?;
+    apply_host_metadata_offloaded(host_root, host_path, metadata, Some(file_id), receipt).await?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
 }
 
@@ -166,50 +166,88 @@ pub(super) async fn apply_host_metadata_offloaded(
     host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
     host_path: &HeldHostPath,
     metadata: FileMetadata,
+    file_id: Option<FileId>,
     receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {
     #[cfg(unix)]
     reject_unbaselined_unix_metadata(metadata)?;
     let root = host_root.clone();
     let path = host_path.clone();
-    host_io(None, receipt.custody.work().clone(), move |work| {
-        if metadata == FileMetadata::default() {
-            #[cfg(unix)]
-            root.0.stat(super::work::host_path(&path.0), work)?;
+    let baseline = receipt.baseline.clone();
+    host_io(
+        None,
+        receipt.custody.work().clone(),
+        move |work| -> Result<(), MaterializeError> {
+            if metadata == FileMetadata::default() {
+                #[cfg(unix)]
+                let stat = root.0.stat(super::work::host_path(&path.0), work)?;
+                #[cfg(windows)]
+                let stat = root.0.stat(&path.0, work)?;
+                return record_materialized_stat(baseline.as_ref(), file_id, &stat, work);
+            }
+            #[cfg(target_os = "linux")]
+            let target = root
+                .0
+                .open_linux_metadata_target(super::work::host_path(&path.0), work)?;
+            #[cfg(target_os = "macos")]
+            let target = crate::native_host::open_macos_metadata_target(
+                &root.0.directory(),
+                super::work::host_path(&path.0),
+                work,
+            )?;
             #[cfg(windows)]
-            root.0.stat(&path.0, work)?;
-            return Ok(());
-        }
-        #[cfg(target_os = "linux")]
-        let target = root
-            .0
-            .open_linux_metadata_target(super::work::host_path(&path.0), work)?;
-        #[cfg(target_os = "macos")]
-        let target = crate::native_host::open_macos_metadata_target(
-            &root.0.directory(),
-            super::work::host_path(&path.0),
-            work,
-        )?;
-        #[cfg(windows)]
-        let target = root.0.open_windows_metadata_target(&path.0, work)?;
-        #[cfg(target_os = "linux")]
-        {
-            crate::native_host::apply_metadata(&target, metadata, work)
-        }
-        #[cfg(target_os = "macos")]
-        {
-            target.apply(metadata, work)
-        }
-        #[cfg(windows)]
-        {
-            let result = crate::native_host::apply_metadata(&target, metadata, work);
-            drop(target);
-            result
-        }
-    })
+            let target = root.0.open_windows_metadata_target(&path.0, work)?;
+            #[cfg(target_os = "linux")]
+            {
+                crate::native_host::apply_metadata(&target, metadata, work)?;
+            }
+            #[cfg(target_os = "macos")]
+            {
+                target.apply(metadata, work)?;
+            }
+            #[cfg(windows)]
+            {
+                let result = crate::native_host::apply_metadata(&target, metadata, work);
+                drop(target);
+                result?;
+            }
+            if baseline.as_ref().is_some_and(|value| value.store.is_some()) {
+                #[cfg(unix)]
+                let stat = root.0.stat(super::work::host_path(&path.0), work)?;
+                #[cfg(windows)]
+                let stat = root.0.stat(&path.0, work)?;
+                record_materialized_stat(baseline.as_ref(), file_id, &stat, work)?;
+            }
+            Ok(())
+        },
+    )
     .await
     .map_err(MaterializeError::from)?
     .map_err(MaterializeError::from)
+}
+
+pub(super) fn record_materialized_stat(
+    baseline: Option<&crate::NativeViewBaseline>,
+    file_id: Option<FileId>,
+    stat: &crate::native_host::HostStat,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MaterializeError> {
+    let Some(baseline) = baseline else {
+        return Ok(());
+    };
+    let Some(store) = &baseline.store else {
+        return Ok(());
+    };
+    let root = baseline
+        .root_identity
+        .ok_or(MaterializeError::InvalidOptions)?;
+    let file_id = file_id.ok_or(MaterializeError::InvalidOptions)?;
+    let metadata =
+        crate::WorkspaceMetadata::from_engine(crate::native_capture::physical_metadata(stat));
+    store
+        .materialization(work.clone())
+        .record_materialized_metadata(root, stat.identity(), file_id, metadata)?;
+    Ok(())
 }
 
 #[cfg(unix)]

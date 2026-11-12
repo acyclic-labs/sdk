@@ -217,6 +217,13 @@ pub(super) fn open_source_root(
     options: &CaptureOptions,
     meter: &NativeMaterializationWork,
 ) -> Result<HostRoot, CaptureError> {
+    if options
+        .materialized_view
+        .as_ref()
+        .is_some_and(|baseline| baseline.root_identity != Some(options.expected_root_identity))
+    {
+        return Err(CaptureError::RootChanged);
+    }
     let root =
         HostRoot::open(&options.source_root, &mut meter.clone()).map_err(capture_demand_error)?;
     if root.identity() != options.expected_root_identity {

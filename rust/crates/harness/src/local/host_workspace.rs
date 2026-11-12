@@ -162,7 +162,7 @@ impl HostWorkspace {
                 .await
                 .map_err(|failure| failure.cause)?;
         } else {
-            let configuration = capture::configuration(&physical)?;
+            let configuration = capture::configuration(&physical);
             let super::checkout_tools::State {
                 active, watcher, ..
             } = &mut *state;
@@ -201,7 +201,7 @@ impl HostWorkspace {
         self.verify().await?;
         verify_root(&self.mount_root)?;
         let owner = &*self.owner;
-        let configuration = super::checkout_tools::capture::configuration(&self.workspace)?;
+        let configuration = super::checkout_tools::capture::configuration(&self.workspace);
         let commands = workspace::git::Commands {
             workspace: &self.workspace,
             signed: &self.signed,

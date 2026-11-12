@@ -16,7 +16,7 @@ fn native_view_keeps_canonical_stamps_for_the_same_root() -> Result<(), Box<dyn 
         ..FileMetadata::default()
     };
     let mut observed = metadata;
-    baseline.restore_canonical_stamps(identity, prior, &mut observed);
+    baseline.restore_canonical_stamps(identity, prior, &mut observed, None);
     assert_eq!(observed.changed_ns, prior.changed_ns);
     #[cfg(target_os = "linux")]
     assert_eq!(observed.created_ns, prior.created_ns);
@@ -26,7 +26,7 @@ fn native_view_keeps_canonical_stamps_for_the_same_root() -> Result<(), Box<dyn 
         object: identity.object.wrapping_add(1),
     };
     let mut observed = metadata;
-    baseline.restore_canonical_stamps(wrong_identity, prior, &mut observed);
+    baseline.restore_canonical_stamps(wrong_identity, prior, &mut observed, None);
     assert_eq!(observed.changed_ns, metadata.changed_ns);
     Ok(())
 }

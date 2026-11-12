@@ -1,23 +1,61 @@
 use super::*;
 
-/// A native view may have host-generated timestamps that are not SDK metadata.
-#[derive(Clone, Copy)]
-pub(crate) struct NativeViewBaseline {
-    pub(super) root_identity: NativeRootIdentity,
-    pub(super) read_only: bool,
+/// Host-generated defaults of one materialized view, distinct from authored metadata.
+#[derive(Clone, Debug)]
+pub struct NativeViewBaseline {
+    pub(crate) root_identity: Option<NativeRootIdentity>,
+    pub(crate) read_only: bool,
+    pub(crate) store: Option<crate::LocalCoreStateStore>,
     #[cfg(test)]
     pub(super) reuse_override: Option<bool>,
 }
 
+impl PartialEq for NativeViewBaseline {
+    fn eq(&self, other: &Self) -> bool {
+        self.root_identity == other.root_identity
+            && self.read_only == other.read_only
+            && match (&self.store, &other.store) {
+                (Some(left), Some(right)) => left.root() == right.root(),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+impl Eq for NativeViewBaseline {}
+
 impl NativeViewBaseline {
     /// Records the identity and access mode of the materialized view.
     #[cfg(any(not(target_arch = "wasm32"), test))]
-    pub(crate) const fn new(root_identity: NativeRootIdentity, read_only: bool) -> Self {
+    pub const fn new(root_identity: NativeRootIdentity, read_only: bool) -> Self {
         Self {
-            root_identity,
+            root_identity: Some(root_identity),
             read_only,
+            store: None,
             #[cfg(test)]
             reuse_override: None,
+        }
+    }
+    /// Records defaults while materializing, binding an unspecified root to the destination.
+    pub fn recording(store: &crate::LocalCoreStateStore) -> Self {
+        Self {
+            root_identity: None,
+            read_only: false,
+            store: Some(store.clone()),
+            #[cfg(test)]
+            reuse_override: None,
+        }
+    }
+    /// Uses the supplied companion namespace for this exact native view.
+    #[must_use]
+    pub fn recorded_in(mut self, store: &crate::LocalCoreStateStore) -> Self {
+        self.store = Some(store.clone());
+        self
+    }
+    pub(crate) fn for_root(&self, root: NativeRootIdentity, read_only: bool) -> Self {
+        Self {
+            root_identity: Some(root),
+            read_only,
+            ..self.clone()
         }
     }
     pub(super) fn restore_canonical_stamps(
@@ -25,14 +63,16 @@ impl NativeViewBaseline {
         root_identity: NativeRootIdentity,
         prior: FileMetadata,
         observed: &mut FileMetadata,
+        materialized: Option<crate::WorkspaceMetadata>,
     ) {
-        if self.root_identity != root_identity {
+        if self.root_identity != Some(root_identity) {
             return;
         }
-        // Fields absent from the selected SDK generation were not restored by materialization. Host-created defaults cannot become an apparent source edit merely because the view was created or read.
+        let actual = crate::WorkspaceMetadata::from_engine(*observed);
         macro_rules! retain_unavailable {
             ($($field:ident),+ $(,)?) => {$(
-                if matches!(prior.$field, MetadataField::Unavailable) {
+                if matches!(prior.$field, MetadataField::Unavailable)
+                    && materialized.is_some_and(|baseline| actual.$field == baseline.$field) {
                     observed.$field = MetadataField::Unavailable;
                 }
             )+};
@@ -45,12 +85,19 @@ impl NativeViewBaseline {
             windows_attributes,
             created_ns,
             modified_ns,
-            accessed_ns,
-            changed_ns,
-            named_attributes,
-            acl,
-            security_descriptor
+            changed_ns
         );
+        if matches!(prior.accessed_ns, MetadataField::Unavailable)
+            && materialized.is_some_and(|baseline| {
+                match (actual.accessed_ns, baseline.accessed_ns) {
+                    (Some(now), Some(before)) => now >= before,
+                    (None, None) => true,
+                    _ => false,
+                }
+            })
+        {
+            observed.accessed_ns = MetadataField::Unavailable;
+        }
         if self.read_only {
             observed.accessed_ns = prior.accessed_ns;
         }
@@ -68,6 +115,9 @@ impl NativeViewBaseline {
 /// Exact native capture options.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaptureOptions {
+    /// Original metadata of an SDK-materialized view on this exact host root.
+    /// None captures host metadata without materialization normalization.
+    pub materialized_view: Option<NativeViewBaseline>,
     /// Materialized checkout root owned by the caller.
     pub source_root: PathBuf,
     /// Stable identity that the capability actually used for capture must own.
@@ -189,6 +239,15 @@ pub enum CaptureError {
     /// The canonical original filesystem operation retained its typed cause.
     #[error(transparent)]
     Kernel(Box<crate::FsError>),
+    /// The materialization facts could not be read on the original ledger.
+    #[error(transparent)]
+    Baseline(Box<crate::LocalCoreStateStoreError>),
+}
+
+impl From<crate::LocalCoreStateStoreError> for CaptureError {
+    fn from(error: crate::LocalCoreStateStoreError) -> Self {
+        Self::Baseline(Box::new(error))
+    }
 }
 
 impl From<crate::CancellationError> for CaptureError {

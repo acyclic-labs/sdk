@@ -28,10 +28,10 @@ impl<C: Serialize> Serialize for CheckoutApproval<'_, C> {
             self.from.id(),
             self.to.id(),
             self.paths,
-            &self.journal.plan,
+            &self.journal.plan(),
             self.journal.root_identity,
             self.journal.preparation_identity,
-            &self.journal.preimages,
+            &self.journal.preimages(),
         )
             .serialize(serializer)
     }
@@ -136,7 +136,7 @@ impl<C> AuthorizedCheckout<'_, C> {
                 self.approval.to,
                 state,
                 options,
-                &self.work,
+                (&self.work, Some(self.approval.journal)),
                 guard,
             )
             .await
@@ -156,7 +156,10 @@ impl CheckoutPublication {
     ) -> Result<MaterializationJournal> {
         validate_paths(selection.0)?;
         let journal = self.prepare(from, to, state, options, work).await?;
-        if journal.phase != acyclic_fs::MaterializationPhase::Prepared {
+        if journal.phase != acyclic_fs::MaterializationPhase::Prepared
+            && !(journal.phase == acyclic_fs::MaterializationPhase::Applied
+                && journal.plan().edits.is_empty())
+        {
             return Err(Error::Conflict(
                 "selected checkout is not ready for approval".into(),
             ));
@@ -190,7 +193,7 @@ impl CheckoutPublication {
             ));
         }
         completed(journal, self.identity, from.id(), to.id())?;
-        require_selected_edits(&journal.plan.edits, paths)?;
+        require_selected_edits(&journal.plan().edits, paths)?;
         Ok(CheckoutApproval {
             publication: self,
             from,

@@ -830,7 +830,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
     for (checkout, tag) in [
         (None, "mounted-expired"),
         (
-            Some(acyclic_fs::NativeRootIdentity::from_bytes([1; 16])),
+            Some(acyclic_fs::hold_root(&root)?.identity()),
             "checkout-expired",
         ),
     ] {
@@ -994,9 +994,10 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
     let identity = work.root_identity(&root)?;
     let operation = OperationId::new();
     let publication = acyclic_harness_core::filesystem::CheckoutPublication::new(
-        &root, identity, operation, &work,
+        &root, identity, operation, &store, &work,
     )?;
     let options = MaterializeOptions {
+        materialized_view: None,
         destination: publication.directory().join("target"),
         expected_root_identity: None,
         maximum_directory_entries: 32,
@@ -1059,6 +1060,98 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
             ..
         } if expected == identity && actual != identity
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn checkout_state_layout_is_refused_before_logical_git_effects() -> Result<()> {
+    let (_temp, root, fs, _store, main) = fixture().await?;
+    write_text(&main, "/authored", b"retain").await?;
+    let stop = CancellationToken::new();
+    let before = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value
+        .id();
+    let identity = acyclic_fs::hold_root(&root)?.identity();
+    let stores = std::iter::once(LocalCoreStateStore::new(root.join("state")));
+    #[cfg(target_os = "linux")]
+    let other = {
+        use std::os::unix::fs::MetadataExt as _;
+        let device = std::fs::metadata(&root)?.dev();
+        // TMPDIR may select either filesystem; choose a distinct one rather
+        // than assuming the fixture lives outside shared memory.
+        let base = if std::fs::metadata("/dev/shm")?.dev() != device {
+            "/dev/shm"
+        } else {
+            "/tmp"
+        };
+        assert_ne!(
+            std::fs::metadata(base)?.dev(),
+            device,
+            "cross-device qualification needs a second filesystem"
+        );
+        tempfile::tempdir_in(base)?
+    };
+    #[cfg(target_os = "linux")]
+    let stores = stores.chain(std::iter::once(LocalCoreStateStore::new(
+        other.path().join("state"),
+    )));
+    for store in stores {
+        let result = git::run(
+            git::Workspace {
+                access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
+                filesystem: &fs,
+                store: &store,
+                view: (&main).into(),
+                root: &root,
+                repository: main.workspace().id(),
+                lease: None,
+                checkout: Some(identity),
+                author: "test",
+                authored_at_seconds: 1,
+                request: None,
+            },
+            &["clean".into(), "-f".into()],
+        )
+        .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => return Err("invalid host state accepted cleaning authored files".into()),
+        };
+        assert!(
+            matches!(
+                error,
+                Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            main.workspace()
+                .head(WorkBudget::UNBOUNDED, &stop)
+                .await?
+                .value
+                .id(),
+            before
+        );
+        assert_eq!(
+            read_text(&main, "/authored").await?.as_deref(),
+            Some(b"retain".as_slice())
+        );
+        assert_eq!(
+            std::fs::read_dir(&root)?.count(),
+            0,
+            "admission wrote harness state inside checkout"
+        );
+        assert!(
+            !store.root().exists(),
+            "admission created an unusable state directory"
+        );
+    }
     Ok(())
 }
 

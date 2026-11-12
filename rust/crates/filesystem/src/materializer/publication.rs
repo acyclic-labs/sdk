@@ -58,6 +58,9 @@ pub async fn prepare_native_generation_transition<
         let mut guard = || std::future::ready(Ok::<_, NativeWorkspacePublicationError>(()));
         let (materializer, journal) =
             prepare_generation(from, to, state, publication, &work, &mut guard).await?;
+        let Some(materializer) = materializer else {
+            return Ok(journal);
+        };
         match journal.phase {
             MaterializationPhase::Prepared => Ok(journal),
             MaterializationPhase::Preparing => {
@@ -124,6 +127,9 @@ where
     let result = async {
         let (materializer, journal) =
             prepare_generation(from, to, state, publication, &work, &mut before_effect).await?;
+        let Some(materializer) = materializer else {
+            return Ok(journal);
+        };
         materializer
             .replay(
                 journal,
@@ -150,7 +156,12 @@ async fn prepare_generation<A, O, F, Fut>(
     before_effect: &mut F,
 ) -> Result<
     (
-        JournaledMaterializer<crate::LocalCoreStateStore, Arc<NativeTreeMaterializationBackend>>,
+        Option<
+            JournaledMaterializer<
+                crate::LocalCoreStateStore,
+                Arc<NativeTreeMaterializationBackend>,
+            >,
+        >,
         MaterializationJournal,
     ),
     NativeWorkspacePublicationError,
@@ -180,10 +191,36 @@ where
         validate_generation_journal(&journal, &request)?;
         check_native_plan(&journal.plan, work)?;
         work.set_original_work(journal.work);
+        if journal.phase == MaterializationPhase::Applied && journal.plan.edits.is_empty() {
+            return Ok((None, journal));
+        }
         journal
     } else {
         let (plan, custody) =
             publication_step(work, || generation_plan(from, to, &request, work)).await?;
+        if plan.edits.is_empty() && from.id() == to.id() {
+            // Equal generations stay empty on every retry, independent of
+            // later host edits. Changed generations still need a durable
+            // acknowledgement even when their files already match the host.
+            return Ok((
+                None,
+                MaterializationJournal {
+                    history_id: OperationId::new(),
+                    version: JOURNAL_VERSION,
+                    revision: 1,
+                    plan,
+                    root_identity: Some(actual.to_bytes()),
+                    preparation_identity: None,
+                    preparation_progress: None,
+                    preimages: Vec::new(),
+                    phase: MaterializationPhase::Applied,
+                    applied: 0,
+                    restored: 0,
+                    work: work.journal_work()?,
+                    custody: Some(custody),
+                },
+            ));
+        }
         let parent = super::directory_preparation::prepare_publication_parent(
             &operation,
             work,
@@ -191,6 +228,7 @@ where
         )
         .await?;
         let journal = MaterializationJournal {
+            history_id: OperationId::new(),
             version: JOURNAL_VERSION,
             revision: 1,
             plan,
@@ -240,7 +278,7 @@ where
     let journal =
         stage_prepared_generation(to, &materializer, journal, &request, work, before_effect)
             .await?;
-    Ok((materializer, journal))
+    Ok((Some(materializer), journal))
 }
 
 async fn stage_prepared_generation<A, O, F, Fut>(
@@ -273,6 +311,10 @@ where
                 Some(Path::new("target")),
             )?;
             let options = crate::MaterializeOptions {
+                materialized_view: Some(
+                    crate::NativeViewBaseline::new(request.source_root_identity, false)
+                        .recorded_in(&materializer.store),
+                ),
                 destination,
                 expected_root_identity: Some(identity),
                 maximum_directory_entries: request.options.maximum_directory_entries,

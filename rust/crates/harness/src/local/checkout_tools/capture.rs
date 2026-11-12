@@ -22,20 +22,19 @@ pub(in crate::local) struct Cursor {
 }
 
 impl Cursor {
-    fn open(workspace: &LocalWorkspace, policy: &CapturePolicy) -> Result<Self> {
+    fn open(workspace: &LocalWorkspace) -> Result<Self> {
         let config = workspace.view().workspace().volume_config();
         // The held native source fences delivery without writing a cookie into
         // the checkout. Register directories once; subsequent commands consume
         // only push hints on this persistent watcher.
         let mut options = NativeWatchOptions::new(config.limits);
         // FSEvents and ReadDirectoryChangesW observe the whole root on one
-        // stream or handle, filtering excluded subtrees as changes arrive: a
-        // handle per directory would grow with the checkout. Inotify watches
-        // are per directory on one descriptor, so Linux registers each
+        // stream or handle: a handle per directory would grow with the checkout.
+        // Inotify watches are per directory on one descriptor, so Linux registers each
         // directory as capture discovers it.
         options.recursive = cfg!(any(target_os = "macos", windows));
         #[cfg(not(target_os = "macos"))]
-        let mut watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
+        let watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
             .map_err(storage)?;
         // FSEvents' held-source adapter requires retained native custody. Linux
         // selects its held source for a nonrecursive watch, Windows always.
@@ -46,16 +45,13 @@ impl Cursor {
         )
         .map_err(|(cause, _)| storage(cause))?;
         #[cfg(target_os = "macos")]
-        let mut watcher = NativeWatch::open_with_profile_with_native_work(
+        let watcher = NativeWatch::open_with_profile_with_native_work(
             &workspace.path,
             config.profile,
             options,
             &work,
         )
         .map_err(storage)?;
-        watcher
-            .exclude_subtrees(policy.excluded_prefixes())
-            .map_err(storage)?;
         Ok(Self {
             watcher,
             initial: None,
@@ -66,8 +62,8 @@ impl Cursor {
         })
     }
 
-    pub(super) fn initial(workspace: &LocalWorkspace, policy: &CapturePolicy) -> Result<Self> {
-        let mut cursor = Self::open(workspace, policy)?;
+    pub(super) fn initial(workspace: &LocalWorkspace) -> Result<Self> {
+        let mut cursor = Self::open(workspace)?;
         let rescan = cursor.watcher.begin_rescan().map_err(storage)?;
         cursor.watcher.watch_tree(&[]).map_err(storage)?;
         cursor.initial = Some(cursor.watcher.finish_rescan(rescan).map_err(storage)?);
@@ -335,7 +331,7 @@ where
     let baseline = needs_baseline(slot, physical) || baseline_pending;
     let mut cursor = match slot.take() {
         Some(cursor) => cursor,
-        None => Cursor::open(physical, policy)?,
+        None => Cursor::open(physical)?,
     };
     if cursor.watcher.root_identity() != physical.identity {
         return Err(Error::Unauthorized("checkout root was replaced".into()));
@@ -442,22 +438,17 @@ pub(super) fn capture_operation(operation: OperationId, phase: u8) -> acyclic_fs
 
 pub(in crate::local) fn configuration(
     workspace: &LocalWorkspace,
-) -> Result<(CaptureOptions, CapturePolicy)> {
+) -> (CaptureOptions, CapturePolicy) {
     let options = CaptureOptions {
+        materialized_view: (!workspace.import_source).then(|| {
+            acyclic_fs::NativeViewBaseline::new(workspace.identity, false)
+                .recorded_in(&workspace.store)
+        }),
         source_namespace: Some(workspace.view().source_reference().identity),
         source_root: workspace.path.clone(),
         expected_root_identity: workspace.identity,
         maximum_paths: None,
         maximum_extent_spans: None,
     };
-    let policy = CapturePolicy::excluding(vec![
-        acyclic_fs::NativeRecoveryRoot::prefix(
-            workspace.identity,
-            workspace.view().workspace().volume_config().profile,
-            workspace.view().workspace().volume_config().limits,
-        )
-        .map_err(storage)?,
-    ])
-    .map_err(storage)?;
-    Ok((options, policy))
+    (options, CapturePolicy::default())
 }

@@ -848,6 +848,10 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
 
     let view = tempfile::tempdir()?;
     let started = Instant::now();
+    let metadata = tempfile::tempdir()?;
+    let store = acyclic_fs::LocalCoreStateStore::new(metadata.path());
+    let mut materialization = MaterializeOptions::native(view.path());
+    materialization.materialized_view = Some(acyclic_fs::NativeViewBaseline::recording(&store));
     let working_set = lazy
         .prepare_native_working_set(
             native_access::options(
@@ -857,7 +861,7 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
                     .subdirectory("/hot"),
             )
             .await?,
-            &MaterializeOptions::native(view.path()),
+            &materialization,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,

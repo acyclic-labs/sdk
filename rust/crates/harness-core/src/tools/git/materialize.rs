@@ -68,10 +68,18 @@ where
     let cancellation = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let publication = CheckoutPublication::new(root, source_root_identity, operation_id, &work)?;
+    let publication =
+        CheckoutPublication::new(root, source_root_identity, operation_id, store, &work)?;
     let options = MaterializeOptions::native(publication.directory().join("target"));
     publication
-        .publish(&from, &to_generation, store, &options, &work, before_effect)
+        .publish(
+            &from,
+            &to_generation,
+            store,
+            &options,
+            (&work, None),
+            before_effect,
+        )
         .await?;
     Ok(())
 }

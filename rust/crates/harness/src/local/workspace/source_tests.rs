@@ -2,7 +2,7 @@ use super::*;
 use acyclic_fs::demand::DemandSource as _;
 
 #[tokio::test]
-async fn recovery_exclusion_is_bound_to_the_held_checkout_before_startup() -> Result<()> {
+async fn held_source_keeps_former_recovery_names_and_refuses_root_replacement() -> Result<()> {
     acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
     let directory = tempfile::tempdir().map_err(storage)?;
     let path = directory.path().join("checkout");
@@ -12,20 +12,21 @@ async fn recovery_exclusion_is_bound_to_the_held_checkout_before_startup() -> Re
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let held = acyclic_fs::hold_root(&path).map_err(storage)?;
     let identity = held.identity();
-    let state = LocalCoreStateStore::new(directory.path().join("state"));
-    state
-        .bind_native_recovery_root(&path, identity, &work)
-        .await
-        .map_err(storage)?;
-    let name = acyclic_fs::NativeRecoveryRoot::name(identity);
-    let name = std::str::from_utf8(&name).map_err(storage)?;
-    std::fs::write(path.join(name).join("recovery-copy"), b"retained").map_err(storage)?;
+    let name = format!(
+        ".acyclic-r-{}",
+        uuid::Uuid::from_bytes(identity.to_bytes()).simple()
+    );
+    std::fs::create_dir(path.join(&name)).map_err(storage)?;
+    std::fs::write(path.join(&name).join("authored"), b"retained").map_err(storage)?;
     let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
-    let prefix = acyclic_fs::NativeRecoveryRoot::prefix(identity, config.profile, config.limits)
-        .map_err(storage)?;
+    let prefix = acyclic_fs::kernel::NamespacePath::from_text_in_profile(
+        &format!("/{name}"),
+        config.profile,
+        config.limits,
+    )
+    .map_err(storage)?;
     let source = held_source(
         acyclic_fs::hold_root(&path).map_err(storage)?,
-        &state,
         config,
         None,
         &work,
@@ -37,28 +38,21 @@ async fn recovery_exclusion_is_bound_to_the_held_checkout_before_startup() -> Re
             .lookup(source.reference(), &prefix, &work, &cancellation)
             .await
             .map_err(storage)?
-            .is_none()
+            .is_some()
     );
     drop(source);
 
     let retained = directory.path().join("retained-checkout");
     std::fs::rename(&path, &retained).map_err(storage)?;
     std::fs::create_dir(&path).map_err(storage)?;
-    let replacement = work.root_identity(&path)?;
-    assert_ne!(replacement, identity);
-    // Reopening only the path accepts this replacement. Startup must retain
-    // the held checkout's identity for both exclusion and inspection instead.
-    state
-        .inspect_native_recovery_root(&path, replacement, &work)
-        .await
-        .map_err(storage)?;
+    assert_ne!(work.root_identity(&path)?, identity);
     assert!(
-        held_source(held, &state, config, None, &work, &cancellation)
+        held_source(held, config, None, &work, &cancellation)
             .await
             .is_err()
     );
     assert_eq!(
-        std::fs::read(retained.join(name).join("recovery-copy")).map_err(storage)?,
+        std::fs::read(retained.join(&name).join("authored")).map_err(storage)?,
         b"retained"
     );
     assert_eq!(std::fs::read_dir(&path).map_err(storage)?.count(), 0);

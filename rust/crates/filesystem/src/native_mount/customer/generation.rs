@@ -7,6 +7,7 @@ where
 {
     /// Materializes this exact generation and binds its native capture owner.
     /// Cached mount options are reauthorized before any import or host copy.
+    /// Materialization options must supply a recording metadata namespace for exact recapture.
     /// Raw preparation requires a selection that only the admission module mints:
     ///
     /// ```compile_fail
@@ -68,6 +69,13 @@ where
                     "native working set requires an absolute root and manual publication",
                 ));
             }
+            let recording = options
+                .materialized_view
+                .as_ref()
+                .filter(|view| view.store.is_some())
+                .ok_or(MountLifecycleError::NativePolicy(
+                    "native working sets require recorded materialization metadata",
+                ))?;
             cancellation
                 .check()
                 .map_err(|_| MountSourceError::Cancelled)?;
@@ -108,14 +116,22 @@ where
                 expected_root_identity,
                 work,
             )?;
-            let baseline = NativeViewBaseline::new(source_identity, !mount.writable);
+            if recording
+                .root_identity
+                .is_some_and(|expected| expected != source_identity)
+            {
+                return Err(MountLifecycleError::NativePolicy(
+                    "materialization metadata names a different root",
+                ));
+            }
+            let baseline = recording.for_root(source_identity, !mount.writable);
             let source = selection.checkout_source(checkout, (root, root_custody), work)?;
             if expected_root_identity.is_some() {
                 validate_recovered_capture(
                     &source,
                     &source_root,
                     source_identity,
-                    baseline,
+                    baseline.clone(),
                     work.native_volume_work(capture_budget)?,
                     cancellation,
                 )
@@ -127,6 +143,7 @@ where
                 return Err(WorkspaceError::StaleGeneration.into());
             }
             Ok(NativeWorkingSet {
+                baseline,
                 source,
                 workspace,
                 source_root,

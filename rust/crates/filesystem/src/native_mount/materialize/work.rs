@@ -26,6 +26,7 @@ pub(super) use index::GenerationIndex;
 
 /// Native traversal and host work share the original ledger; standalone SDK reads contribute their measured prefixes.
 pub(super) struct GenerationReceipt {
+    pub(super) baseline: Option<crate::NativeViewBaseline>,
     pub(super) value: MaterializationReceipt,
     pub(super) custody: crate::materializer::NativeAllocation,
 }
@@ -40,6 +41,7 @@ impl GenerationReceipt {
         // an earlier mount in the process is not a prerequisite for this API.
         acyclic_native_runtime::initialize_native_io_services()?;
         Ok(Self {
+            baseline: None,
             value: MaterializationReceipt::default(),
             custody,
         })

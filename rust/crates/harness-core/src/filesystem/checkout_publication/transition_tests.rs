@@ -52,12 +52,11 @@ proptest! {
         let from = from_variants[from_case];
         let to = to_variants[to_case];
         let phases = [MaterializationPhase::Preparing, MaterializationPhase::Prepared, MaterializationPhase::Applying, MaterializationPhase::Applied, MaterializationPhase::RollingBack, MaterializationPhase::RolledBack];
-        let journal = MaterializationJournal {
-            version: 1, revision: 1,
-            plan: MaterializationPlan { operation_id: OperationId::from_bytes([1; 16]), intent: MaterializationIntent::GenerationTransition { from, to }, edits: Vec::new() },
-            root_identity: Some(root), preparation_identity: None, preparation_progress: None,
-            preimages: Vec::new(), phase: phases[phase], applied: 0, restored: 0, work: WorkCounters::UNCHARGED, custody: None,
-        };
+        let mut journal = MaterializationJournal::empty(
+            MaterializationPlan { operation_id: OperationId::from_bytes([1; 16]), intent: MaterializationIntent::GenerationTransition { from, to }, edits: Vec::new() },
+            Some(root),
+        ).unwrap();
+        journal.phase = phases[phase];
         let mut actual_root = root;
         let mutate = |id: GenerationId| { let mut object = id.object_id(); let mut bytes = object.digest.into_bytes(); bytes[0] ^= 1; object.digest = Digest::from_bytes(bytes); GenerationId::from_root(object) };
         if change == 1 { actual_root[0] ^= 1; }
@@ -178,9 +177,6 @@ impl Fixture {
         }
         let identity = work.root_identity(&root)?;
         let state = LocalCoreStateStore::new(directory.path().join("core"));
-        state
-            .bind_native_recovery_root(&root, identity, &work)
-            .await?;
         Ok(Self {
             _directory: directory,
             root,
@@ -193,7 +189,13 @@ impl Fixture {
         })
     }
     fn publication(&self, operation: OperationId) -> crate::Result<CheckoutPublication> {
-        CheckoutPublication::new(&self.root, self.identity, operation, &self.work)
+        CheckoutPublication::new(
+            &self.root,
+            self.identity,
+            operation,
+            &self.state,
+            &self.work,
+        )
     }
     async fn publish(
         &self,
@@ -241,9 +243,14 @@ impl Fixture {
                 let publication = self.publication(operation)?;
                 let options = MaterializeOptions::native(publication.directory().join("target"));
                 publication
-                    .publish(from, &self.to, &self.state, &options, &self.work, || {
-                        std::future::ready(Ok(()))
-                    })
+                    .publish(
+                        from,
+                        &self.to,
+                        &self.state,
+                        &options,
+                        (&self.work, None),
+                        || std::future::ready(Ok(())),
+                    )
                     .await?;
                 Ok(())
             }
@@ -257,12 +264,10 @@ impl Fixture {
             .prepare(&self.from, &self.to, &self.state, &options, &self.work)
             .await?;
         assert_eq!(prepared.phase, acyclic_fs::MaterializationPhase::Prepared);
-        // Each operation owns one child of the verified recovery binding; workspace names
-        // remain authored data, and an unwritable parent is irrelevant.
-        assert_eq!(
-            publication.directory().parent().and_then(Path::parent),
-            Some(self.root.as_path())
-        );
+        // Operations share external staging ancestors without reserving any
+        // workspace name or needing write authority in the checkout's parent.
+        assert!(publication.directory().starts_with(self.state.root()));
+        assert!(!publication.directory().starts_with(&self.root));
         let shared_parent = publication.directory().parent().unwrap();
         let parent_identity = self.work.root_identity(shared_parent)?;
         assert!(options.destination.exists());
@@ -288,6 +293,7 @@ impl Fixture {
             &other_root,
             self.work.root_identity(&other_root)?,
             OperationId::new(),
+            &self.state,
             &self.work,
         )?;
         let other_options = MaterializeOptions::native(other.directory().join("target"));
@@ -356,7 +362,7 @@ impl Fixture {
                 &self.to,
                 &self.state,
                 &options,
-                &self.work,
+                (&self.work, None),
                 || {
                     std::future::ready(Err(acyclic_fs::NativeTreeMaterializationError::Io(
                         std::io::ErrorKind::PermissionDenied.into(),
@@ -439,53 +445,6 @@ async fn publication_needs_no_write_authority_in_the_checkout_parent() -> TestRe
 }
 
 #[tokio::test]
-async fn recovery_binding_requires_original_ownership_and_is_created_lazily() -> TestResult {
-    for replacement in [false, true] {
-        let fixture = Fixture::new().await?;
-        let name = acyclic_fs::NativeRecoveryRoot::name(fixture.identity);
-        let binding = fixture.root.join(std::str::from_utf8(&name)?);
-        let retained = fixture.root.join("retained-directory");
-        std::fs::rename(&binding, &retained)?;
-        let state = if replacement {
-            fixture.state.clone()
-        } else {
-            LocalCoreStateStore::new(fixture.root.parent().unwrap().join("fresh-core"))
-        };
-        if !replacement {
-            state
-                .inspect_native_recovery_root(&fixture.root, fixture.identity, &fixture.work)
-                .await?;
-            assert!(
-                !binding.exists(),
-                "source inspection created recovery storage"
-            );
-        }
-        std::fs::create_dir(&binding)?;
-        std::fs::write(binding.join("authored"), "user-owned")?;
-        for _ in 0..2 {
-            assert!(
-                state
-                    .inspect_native_recovery_root(&fixture.root, fixture.identity, &fixture.work)
-                    .await
-                    .is_err()
-            );
-            assert!(
-                state
-                    .bind_native_recovery_root(&fixture.root, fixture.identity, &fixture.work)
-                    .await
-                    .is_err()
-            );
-            assert_eq!(
-                std::fs::read_to_string(binding.join("authored"))?,
-                "user-owned"
-            );
-            assert!(retained.is_dir());
-        }
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn staged_recovery_stays_out_of_capture_and_lazy_discovery_after_reopen() -> TestResult {
     use acyclic_fs::demand::{DemandSource as _, native::NativeDemandSource};
     use acyclic_fs::kernel::NamespacePath;
@@ -493,7 +452,7 @@ async fn staged_recovery_stays_out_of_capture_and_lazy_discovery_after_reopen() 
     let operation = OperationId::new();
     let publication = fixture.publication(operation)?;
     let options = MaterializeOptions::native(publication.directory().join("target"));
-    publication
+    let prepared = publication
         .prepare(
             &fixture.from,
             &fixture.to,
@@ -502,23 +461,49 @@ async fn staged_recovery_stays_out_of_capture_and_lazy_discovery_after_reopen() 
             &fixture.work,
         )
         .await?;
+    assert!(publication.directory().starts_with(fixture.state.root()));
+    assert!(!publication.directory().starts_with(&fixture.root));
+
+    // Reopen the real journal while the original operation is still Prepared.
+    // No separate binding record or process-local recovery registry is needed.
+    let state = LocalCoreStateStore::new(fixture.state.root().to_path_buf());
+    let reopened = CheckoutPublication::new(
+        &fixture.root,
+        fixture.identity,
+        operation,
+        &state,
+        &fixture.work,
+    )?;
+    let recovered = reopened
+        .prepare(&fixture.from, &fixture.to, &state, &options, &fixture.work)
+        .await?;
+    assert_eq!(recovered.phase, acyclic_fs::MaterializationPhase::Prepared);
+    assert_eq!(
+        recovered.preparation_identity,
+        prepared.preparation_identity
+    );
+    assert_eq!(reopened.directory(), publication.directory());
+
     std::fs::write(fixture.root.join("authored.txt"), "user-owned")?;
-    std::fs::create_dir(fixture.root.join(".acyclic-r-lookalike"))?;
+    let former = format!(
+        ".acyclic-r-{}",
+        uuid::Uuid::from_bytes(fixture.identity.to_bytes()).simple()
+    );
+    std::fs::create_dir(fixture.root.join(&former))?;
     std::fs::write(
-        fixture.root.join(".acyclic-r-lookalike/authored"),
+        fixture.root.join(&former).join("authored"),
         "also user-owned",
     )?;
 
-    // A fresh store handle must validate the persisted binding while the
-    // original operation is still Prepared; no process-local registry suffices.
-    LocalCoreStateStore::new(fixture.state.root().to_path_buf())
-        .bind_native_recovery_root(&fixture.root, fixture.identity, &fixture.work)
-        .await?;
     let config = fixture.from.workspace().volume_config();
-    let prefix =
-        acyclic_fs::NativeRecoveryRoot::prefix(fixture.identity, config.profile, config.limits)?;
-    let policy = acyclic_fs::CapturePolicy::excluding(vec![prefix.clone()])?;
     let stop = fixture.work.cancellation();
+    let path = |text: &str| -> TestResult<_> {
+        Ok(NamespacePath::from_text_in_profile(
+            text,
+            config.profile,
+            config.limits,
+        )?)
+    };
     let source = NativeDemandSource::open(
         std::borrow::Cow::Borrowed(&fixture.root),
         config.profile,
@@ -531,32 +516,29 @@ async fn staged_recovery_stays_out_of_capture_and_lazy_discovery_after_reopen() 
     .await?;
     assert!(
         source
-            .lookup(source.reference(), &prefix, &fixture.work, stop)
+            .lookup(
+                source.reference(),
+                &path(&format!("/{former}"))?,
+                &fixture.work,
+                stop,
+            )
             .await?
             .is_some()
     );
-    let source = source.exclude(vec![prefix.clone()], &(&fixture.work), stop)?;
-    assert!(
-        source
-            .lookup(source.reference(), &prefix, &fixture.work, stop)
-            .await?
-            .is_none()
-    );
-    let volume_root = NamespacePath::new(Vec::new(), config.limits)?;
     let page = source
         .list_page(
             source.reference(),
-            &volume_root,
+            &NamespacePath::new(Vec::new(), config.limits)?,
             None,
             16,
             &fixture.work,
             stop,
         )
         .await?;
-    assert!(
-        page.entries
-            .iter()
-            .all(|entry| entry.name != prefix.components()[0])
+    assert_eq!(
+        page.entries.len(),
+        2,
+        "recovery leaked into authored source"
     );
 
     let mut checkout = fixture
@@ -571,6 +553,7 @@ async fn staged_recovery_stays_out_of_capture_and_lazy_discovery_after_reopen() 
         .await?
         .value;
     let capture = acyclic_fs::CaptureOptions {
+        materialized_view: None,
         source_root: fixture.root.clone(),
         expected_root_identity: fixture.identity,
         source_namespace: None,
@@ -580,75 +563,21 @@ async fn staged_recovery_stays_out_of_capture_and_lazy_discovery_after_reopen() 
     acyclic_fs::capture_baseline(
         &mut checkout,
         &capture,
-        &policy,
+        &acyclic_fs::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         stop,
     )
     .await?;
-    let relative = publication
-        .directory()
-        .strip_prefix(&fixture.root)?
-        .join("target/note");
-    let limits = checkout.volume_config().limits;
-    let path = |text: &str| -> TestResult<_> {
-        Ok(NamespacePath::from_text_in_profile(
-            text,
-            config.profile,
-            limits,
-        )?)
-    };
-    let staged = path(&format!(
-        "/{}",
-        relative.to_string_lossy().replace('\\', "/")
-    ))?;
-    for text in ["/authored.txt", "/.acyclic-r-lookalike/authored"] {
+    for text in ["/authored.txt".to_owned(), format!("/{former}/authored")] {
         assert!(
             checkout
-                .lookup_no_follow(&path(text)?, WorkBudget::UNBOUNDED, stop)
+                .lookup_no_follow(&path(&text)?, WorkBudget::UNBOUNDED, stop)
                 .await?
                 .value
                 .record
                 .is_some()
         );
     }
-    assert!(
-        checkout
-            .lookup_no_follow(&staged, WorkBudget::UNBOUNDED, stop)
-            .await?
-            .value
-            .record
-            .is_none()
-    );
-    // Actual former configuration imports the retained copy as project data.
-    // Each policy gets a clean candidate; capture refuses pending mutations.
-    drop(checkout);
-    let mut checkout = fixture
-        .from
-        .workspace()
-        .checkout(
-            acyclic_fs::model::GenerationSelector::Exact(fixture.from.id()),
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
-            WorkBudget::UNBOUNDED,
-            stop,
-        )
-        .await?
-        .value;
-    acyclic_fs::capture_baseline(
-        &mut checkout,
-        &capture,
-        &acyclic_fs::CapturePolicy::default(),
-        WorkBudget::UNBOUNDED,
-        stop,
-    )
-    .await?;
-    assert!(
-        checkout
-            .lookup_no_follow(&staged, WorkBudget::UNBOUNDED, stop)
-            .await?
-            .value
-            .record
-            .is_some()
-    );
     assert_eq!(
         std::fs::read_to_string(options.destination.join("note"))?,
         "candidate"
@@ -663,7 +592,7 @@ async fn recovery_name_collision_preserves_authored_data_before_publication() ->
             let fixture = Fixture::new().await?;
             let operation = OperationId::new();
             let publication = fixture.publication(operation)?;
-            std::fs::create_dir(publication.directory())?;
+            std::fs::create_dir_all(publication.directory())?;
             let sentinel = publication.directory().join("authored");
             if populated {
                 std::fs::write(&sentinel, "user-owned")?;
@@ -812,8 +741,7 @@ async fn obsolete_staging_binding_is_refused_before_publication() -> TestResult 
                 &fixture.work,
             )
             .await?;
-        assert_eq!(journal.version, 5);
-        journal.version = 4;
+        journal.version = 5;
         let expected = journal.revision;
         journal.revision = expected + 1;
         let (stored, _) = fixture
@@ -837,6 +765,119 @@ async fn obsolete_staging_binding_is_refused_before_publication() -> TestResult 
             assert_eq!(
                 std::fs::read_to_string(fixture.root.join(path))?,
                 "original"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult {
+    for (promoted, unchanged) in [(true, true), (true, false), (false, false)] {
+        let fixture = Fixture::new().await?;
+        let from = if unchanged {
+            &fixture.to
+        } else {
+            &fixture.from
+        };
+        if promoted {
+            std::fs::write(fixture.root.join("note"), "candidate")?;
+        }
+        let publication = fixture.publication(OperationId::new())?;
+        let options = MaterializeOptions::native(publication.directory().join("target"));
+        let paths = vec!["note".into()];
+        let journal = publication
+            .prepare_selected(
+                from,
+                &fixture.to,
+                &fixture.state,
+                &options,
+                &fixture.work,
+                (&paths, "creator"),
+            )
+            .await?;
+        assert_eq!(journal.plan().edits.is_empty(), promoted);
+        if promoted && !unchanged {
+            // A preparation response may be lost after its empty result is durable.
+            let retry = publication
+                .prepare(from, &fixture.to, &fixture.state, &options, &fixture.work)
+                .await?;
+            assert_eq!(retry, journal);
+        }
+        let approval =
+            publication.approval_value(from, &fixture.to, &paths, &journal, "creator")?;
+        let digest = approval.digest(&fixture.work)?;
+        let interaction = crate::InteractionId::new();
+        let verifier = PublicationDecision {
+            id: interaction,
+            operation: crate::OperationId::from_bytes(publication.operation.into_bytes()),
+            digest,
+            approved: true,
+        };
+        let authorized = approval
+            .authorize(&verifier, interaction, &digest, &fixture.work)
+            .await?;
+        std::fs::write(fixture.root.join("note"), "edit after approval")?;
+        let missing = LocalCoreStateStore::new(fixture._directory.path().join("missing"));
+        let state = if promoted { &fixture.state } else { &missing };
+        let result = authorized
+            .publish(state, &options, || std::future::ready(Ok(())))
+            .await;
+        if promoted {
+            assert!(result?.plan().edits.is_empty());
+            assert_eq!(
+                state.materialization_operations_async().await?.is_empty(),
+                unchanged
+            );
+        } else {
+            assert!(matches!(result, Err(Error::Unauthorized(_))));
+        }
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join("note"))?,
+            "edit after approval"
+        );
+        // Rebuilding instead of carrying approval really would overwrite the
+        // later edit: exercise the former unbound publication argument shape.
+        if promoted && !unchanged {
+            // Completed empty preparation remains available after publication
+            // has retired the staging allocations.
+            let retry = publication
+                .prepare(from, &fixture.to, state, &options, &fixture.work)
+                .await?;
+            assert_eq!(retry.phase, acyclic_fs::MaterializationPhase::Applied);
+            assert!(retry.plan().edits.is_empty());
+            // The original namespace retains completion even without an
+            // approval handle, protecting later edits on a cold retry.
+            publication
+                .publish(
+                    from,
+                    &fixture.to,
+                    state,
+                    &options,
+                    (&fixture.work, None),
+                    || std::future::ready(Ok(())),
+                )
+                .await?;
+            assert_eq!(
+                std::fs::read_to_string(fixture.root.join("note"))?,
+                "edit after approval"
+            );
+            state
+                .remove_materialization_async(publication.operation)
+                .await?;
+            publication
+                .publish(
+                    from,
+                    &fixture.to,
+                    state,
+                    &options,
+                    (&fixture.work, None),
+                    || std::future::ready(Ok(())),
+                )
+                .await?;
+            assert_eq!(
+                std::fs::read_to_string(fixture.root.join("note"))?,
+                "candidate"
             );
         }
     }
@@ -1146,7 +1187,7 @@ async fn selected_authority_retains_cancellation_and_original_work() -> TestResu
             &fixture.to,
             &fixture.state,
             &options,
-            &fresh,
+            (&fresh, None),
             || std::future::ready(Ok(())),
         )
         .await?;
@@ -1210,7 +1251,7 @@ async fn git_and_prepared_guards_keep_the_original_late_refusal() -> TestResult 
                         &fixture.to,
                         &fixture.state,
                         &options,
-                        &fixture.work,
+                        (&fixture.work, None),
                         guard,
                     )
                     .await

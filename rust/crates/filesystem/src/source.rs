@@ -666,6 +666,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         )
         .map_err(engine)?;
         let capture = CaptureOptions {
+            materialized_view: None,
             source_namespace: None,
             source_root: PathBuf::from(path.as_ref()),
             expected_root_identity: watcher.root_identity(),

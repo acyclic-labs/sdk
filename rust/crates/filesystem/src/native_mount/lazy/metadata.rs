@@ -115,7 +115,7 @@ pub(super) fn field<T>(value: Option<T>) -> MetadataField<T> {
     value.map_or(MetadataField::Unavailable, MetadataField::Value)
 }
 
-pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
+pub(in crate::native_mount) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     match error {
         LazyWorkspaceError::OriginalSnapshotUnavailable => {
             MountSourceError::OriginalSnapshotUnavailable

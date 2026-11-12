@@ -235,7 +235,7 @@ mod tests {
                 Default::default(),
             )?;
             let configuration =
-                super::super::super::checkout_tools::capture::configuration(workspace)?;
+                super::super::super::checkout_tools::capture::configuration(workspace);
             let commands = super::super::git::Commands {
                 workspace,
                 signed: &local.signed,

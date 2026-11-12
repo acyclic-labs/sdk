@@ -60,6 +60,7 @@ async fn identical_regular_payloads_use_native_clone_without_aliasing()
     let receipt = materialize_checkout(
         &mut checkout,
         &MaterializeOptions {
+            materialized_view: None,
             destination: destination.clone(),
             expected_root_identity: None,
             maximum_directory_entries: 16,

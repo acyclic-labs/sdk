@@ -518,7 +518,7 @@ impl LocalHarness {
         .await
         .map_err(storage)?;
         let (capture_options, capture_policy) =
-            super::checkout_tools::capture::configuration(&parent_workspace)?;
+            super::checkout_tools::capture::configuration(&parent_workspace);
         let commands = super::workspace::git::Commands {
             workspace: &parent_workspace,
             signed: &signed,

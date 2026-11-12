@@ -219,8 +219,6 @@ pub use async_storage::{
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(not(target_arch = "wasm32"))]
-pub use core_state::NativeRecoveryRoot;
-#[cfg(not(target_arch = "wasm32"))]
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 pub use distributed::{
     AuthorityPlacement, FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome,
@@ -283,10 +281,11 @@ pub use lineage::{
 };
 pub use materializer::{
     JournaledMaterializer, MaterializationBackend, MaterializationEdit, MaterializationError,
-    MaterializationIntent, MaterializationJournal, MaterializationJournalStore,
-    MaterializationPhase, MaterializationPlan, MaterializationPreimage,
-    MaterializationPreparationIdentity, MaterializationPreparationProgress,
-    MaterializationPreparationSelection, MaterializationRecovery,
+    MaterializationIntent, MaterializationJournal, MaterializationJournalCopyError,
+    MaterializationJournalStore, MaterializationPhase, MaterializationPlan,
+    MaterializationPreimage, MaterializationPreparationIdentity,
+    MaterializationPreparationProgress, MaterializationPreparationSelection,
+    MaterializationRecovery,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{
@@ -327,9 +326,9 @@ pub use multi_root::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_capture::{
     CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, HeldRoot, NativeDurability,
-    SearchRoot, WatchCaptureReceipt, capture_baseline, capture_held_paths, capture_paths,
-    capture_root_identity, capture_subtree, capture_watch_batch, file_identity, hold_root,
-    hold_search_root, host_path_to_namespace, namespace_to_host_path,
+    NativeViewBaseline, SearchRoot, WatchCaptureReceipt, capture_baseline, capture_held_paths,
+    capture_paths, capture_root_identity, capture_subtree, capture_watch_batch, file_identity,
+    hold_root, hold_search_root, host_path_to_namespace, namespace_to_host_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_identity::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};

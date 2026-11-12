@@ -80,7 +80,23 @@ where
     Fut: Future<Output = crate::Result<()>> + Send,
 {
     let guard: &EffectGuard<'_> = &|| Box::pin(before_effect());
-    let (executor, tree, patch) = match prepare(&workspace, args, guard).await? {
+    let admit_checkout = || {
+        if let Some(identity) = workspace.checkout {
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            crate::filesystem::CheckoutPublication::validate_state(
+                workspace.root,
+                identity,
+                workspace.store,
+                &work,
+            )?;
+        }
+        Ok(())
+    };
+    let (executor, tree, patch) = match prepare(&workspace, args, guard, admit_checkout).await? {
         Prepared::Complete(output) => return Ok(output),
         Prepared::Ready {
             executor,
@@ -138,7 +154,7 @@ where
         }
         let guard: &EffectGuard<'_> = &|| Box::pin(before_effect());
         let command = async {
-            let (executor, tree, patch) = match prepare(&workspace, args, guard).await? {
+            let (executor, tree, patch) = match prepare(&workspace, args, guard, || Ok(())).await? {
                 Prepared::Complete(output) => return Ok(output),
                 Prepared::Ready {
                     executor,
@@ -169,6 +185,7 @@ async fn prepare<'a, P, O, S>(
     workspace: &Workspace<'a, P, O, S>,
     args: &[String],
     before_effect: &'a EffectGuard<'a>,
+    admit_checkout: impl FnOnce() -> crate::Result<()>,
 ) -> crate::Result<Prepared<'a, P, O, S>>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
@@ -196,6 +213,7 @@ where
             switched: None,
         }));
     }
+    admit_checkout()?;
     let permit = workspace.lease.as_ref().map_or(
         PublicationPermit::Unrestricted,
         OperationWindowLease::publication_permit,

@@ -311,7 +311,7 @@ pub async fn capture_watch_batch<
         let rename_mutations = std::mem::take(&mut mutations);
         let mut batch = CaptureBatch::new(
             &source_root,
-            None,
+            options.materialized_view.as_ref(),
             options.source_namespace,
             options.maximum_extent_spans,
             meter,

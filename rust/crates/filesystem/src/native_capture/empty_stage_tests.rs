@@ -260,7 +260,6 @@ async fn run_capture(
         options,
         &CapturePolicy::default(),
         &cancellation,
-        None,
         &work,
     )
     .await;
@@ -346,6 +345,7 @@ fn empty_finalization(length: u64) -> Result<(), Box<dyn std::error::Error>> {
                 sparse_file(&file, length);
                 side_data(&file, &attribute);
                 let options = CaptureOptions {
+                    materialized_view: None,
                     source_namespace: None,
                     source_root: source.path().to_owned(),
                     expected_root_identity: capture_root_identity(source.path())

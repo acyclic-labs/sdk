@@ -1,5 +1,7 @@
 use super::*;
 use crate::{NativeMaterializationWork, NativeTreeMaterializationError};
+mod receipt;
+use receipt::Receipt;
 
 impl MaterializationJournalStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
@@ -54,9 +56,9 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                     &journal.plan.operation_id.into_bytes(),
                 )?;
                 let record_lock = acquire_lock(&mut paths, LockMode::Exclusive)?;
-                let current = read_recoverable::<MaterializationJournal>(&paths)?
+                let current = read_recoverable::<Receipt>(&paths)?
                     .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
-                if current.0 != journal {
+                if current.0 != Receipt::from(&journal) {
                     return Err(NativeTreeMaterializationError::InvalidLayout.into());
                 }
                 drop(current);
@@ -70,8 +72,9 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                     .checked_add(1)
                     .ok_or(crate::WorkError::Overflow)
                     .map_err(NativeTreeMaterializationError::from)?;
+                let mut receipt = Receipt::from(&journal);
                 let (encoding, encoding_credit, encoding_allocation) =
-                    prepare_materialization_encoding(&mut journal, work)?;
+                    prepare_materialization_encoding(&mut receipt, work)?;
                 // Completion writes and flushes a separate image before its
                 // atomic replacement. The acknowledged current image remains
                 // durable throughout preparation and every incomplete write.
@@ -96,6 +99,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 let Namespace { admission, .. } = namespace;
                 Ok(LocalMaterializationActionCompletion {
                     journal: Some(journal),
+                    receipt,
                     encoding,
                     encoding_credit,
                     host: Some(host),
@@ -113,6 +117,19 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         operation_id: OperationId,
     ) -> Result<Option<MaterializationJournal>, Self::Error> {
         self.load_materialization(operation_id).await
+    }
+
+    async fn matches(&self, journal: &MaterializationJournal) -> Result<bool, Self::Error> {
+        let operation = journal.plan.operation_id;
+        let expected = Receipt::from(journal);
+        self.transaction(move |namespace| {
+            let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation.into_bytes())?;
+            with_lock(&mut paths, |paths| {
+                Ok(read_recoverable::<Receipt>(paths)?
+                    .is_some_and(|(current, _)| current == expected))
+            })
+        })
+        .await
     }
 
     async fn compare_and_swap(
@@ -133,8 +150,14 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         self.transaction(move |namespace| {
             let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
             let stored = with_lock(&mut paths, |paths| {
-                let current = read_recoverable::<MaterializationJournal>(paths)?;
+                let current = read_recoverable::<Receipt>(paths)?;
                 if current.as_ref().map_or(0, |(journal, _)| journal.revision) != expected_revision
+                {
+                    return Ok(false);
+                }
+                if current
+                    .as_ref()
+                    .is_some_and(|(current, _)| current.history_id != replacement.history_id)
                 {
                     return Ok(false);
                 }
@@ -147,7 +170,12 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                     );
                     replacement.work = work.journal_work()?;
                 }
-                write_journaled(paths, &replacement)?;
+                receipt::publish(
+                    &namespace,
+                    current.as_ref().map(|(receipt, _)| receipt),
+                    &replacement,
+                )?;
+                write_journaled(paths, &Receipt::from(&replacement))?;
                 Ok(true)
             })?;
             Ok((stored, replacement))
@@ -159,6 +187,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
 /// The original materialization record's accepted, lock-held completion.
 pub struct LocalMaterializationActionCompletion {
     journal: Option<MaterializationJournal>,
+    receipt: Receipt,
     encoding: Vec<u8>,
     encoding_credit: crate::materializer::NativeWorkReservation,
     host: Option<crate::native_host::PreparedMaterializationRecord>,
@@ -182,9 +211,10 @@ impl Future for LocalMaterializationActionCompletion {
         };
         std::task::Poll::Ready((|| {
             journal.work = this._body_custody.work().journal_work()?;
+            this.receipt.work = journal.work;
             let capacity = this.encoding.len();
             let mut writer = this.encoding.as_mut_slice();
-            let encoded = serde_json::to_writer(&mut writer, &journal);
+            let encoded = serde_json::to_writer(&mut writer, &this.receipt);
             let length = capacity - writer.len();
             this.encoding_credit.record_completed(crate::WorkCounters {
                 bytes_encoded: length as u64,
@@ -231,8 +261,8 @@ impl Write for MaterializationEncodedSize<'_> {
     }
 }
 
-pub(super) fn prepare_materialization_encoding(
-    journal: &mut MaterializationJournal,
+fn prepare_materialization_encoding(
+    journal: &mut Receipt,
     work: &crate::materializer::NativeMaterializationWork,
 ) -> Result<
     (
@@ -277,26 +307,20 @@ impl LocalCoreStateStore {
     ) -> Result<Option<MaterializationJournal>, LocalCoreStateStoreError> {
         self.transaction(move |namespace| {
             let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
-            if paths.allocation.is_none() {
-                return read_locked(&mut paths);
-            }
             with_lock(&mut paths, |paths| {
-                let journal = read_recoverable::<MaterializationJournal>(paths)?.map(
-                    |(mut journal, allocation)| {
-                        journal.custody = allocation;
-                        journal
-                    },
-                );
-                paths
-                    .allocation
-                    .as_ref()
-                    .ok_or(NativeTreeMaterializationError::MissingCustody)?
-                    .work()
-                    .set_original_work(
+                let journal = read_recoverable::<Receipt>(paths)?
+                    .map(|(receipt, allocation)| {
+                        receipt::reconstruct(&namespace, operation_id, receipt, allocation)
+                    })
+                    .transpose()?;
+
+                if let Some(allocation) = &paths.allocation {
+                    allocation.work().set_original_work(
                         journal
                             .as_ref()
                             .map_or_else(crate::WorkCounters::default, |record| record.work),
                     );
+                }
                 Ok(journal)
             })
         })
@@ -310,4 +334,25 @@ impl LocalCoreStateStore {
             ..self.clone()
         }
     }
+}
+
+pub(super) fn remove_materialization(
+    namespace: &Namespace,
+    operation: OperationId,
+) -> Result<(), LocalCoreStateStoreError> {
+    let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation.into_bytes())?;
+    with_lock(&mut paths, |paths| {
+        if let Some((receipt, _)) = read_recoverable::<Receipt>(paths)? {
+            if !matches!(
+                receipt.phase,
+                crate::MaterializationPhase::Applied | crate::MaterializationPhase::RolledBack
+            ) {
+                return Err(LocalCoreStateStoreError::MaterializationInProgress);
+            }
+        }
+        // Retire the reachable receipt before deleting its immutable backing.
+        // Interrupted cleanup can repeat by operation id, even without a receipt.
+        remove_record(paths)?;
+        receipt::remove(namespace, operation)
+    })
 }

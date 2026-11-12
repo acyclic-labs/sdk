@@ -114,7 +114,7 @@ impl CheckoutTools {
                 ),
                 None => None,
             };
-            let (capture_options, capture_policy) = capture::configuration(&workspace)?;
+            let (capture_options, capture_policy) = capture::configuration(&workspace);
             let shared = StateArc::clone(&workspace.state);
             {
                 let mut state = lock_owned(StateArc::clone(&shared)).await;
@@ -129,7 +129,7 @@ impl CheckoutTools {
                     })
                     .await?;
                     state.watcher = if workspace.fresh {
-                        Some(capture::Cursor::initial(&workspace, &capture_policy)?)
+                        Some(capture::Cursor::initial(&workspace)?)
                     } else {
                         None
                     };

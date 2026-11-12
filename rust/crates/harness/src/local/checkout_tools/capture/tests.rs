@@ -95,7 +95,7 @@ async fn arriving_descendant_under_a_replaced_directory_is_absent() -> Result<()
         changes: vec![acyclic_fs::WatchChange::Arrived(path)],
         original: Default::default(),
     };
-    let mut cursor = Cursor::open(&tools.workspace, &tools.capture_policy)?;
+    let mut cursor = Cursor::open(&tools.workspace)?;
     cursor
         .watcher
         .watch_arrivals(&batch, &tools.capture_policy, None)
@@ -181,7 +181,7 @@ async fn replacing_a_captured_directory_with_a_file_preserves_publication() -> R
         std::fs::write(root.join("marker/child"), b"before").map_err(storage)
     })
     .await?;
-    let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+    let mut slot = Some(Cursor::initial(&tools.workspace)?);
     run(&tools, &mut slot).await?;
     std::fs::remove_file(directory.path().join("marker/child")).map_err(storage)?;
     std::fs::remove_dir(directory.path().join("marker")).map_err(storage)?;
@@ -208,7 +208,7 @@ async fn cursor_custody_follows_actual_capture_admission() -> Result<()> {
             std::fs::write(directory.path().join("marker"), expected).map_err(storage)?;
         }
         // Each interruption gets a fresh cursor and current head.
-        let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+        let mut slot = Some(Cursor::initial(&tools.workspace)?);
         let workspace = tools.workspace.view().workspace();
         let cancellation = CancellationToken::new();
         let original = workspace
@@ -295,7 +295,7 @@ async fn cursor_custody_follows_actual_capture_admission() -> Result<()> {
 
 async fn recovers(stage: &'static str) -> Result<()> {
     let (directory, harness, tools) = fixture().await?;
-    let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+    let mut cursor = Cursor::initial(&tools.workspace)?;
     // Exercise a real full scan for its boundaries; fence/poll also exercise
     // the ordinary persistent-cursor path on Linux and Windows.
     if matches!(stage, "begin" | "watch-tree" | "baseline" | "finish") {
@@ -370,7 +370,7 @@ async fn invalidated_replay_converges() -> Result<()> {
 #[tokio::test]
 async fn repeated_invalidation_is_bounded_and_never_publishes_a_candidate() -> Result<()> {
     let (directory, harness, tools) = fixture().await?;
-    let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+    let mut cursor = Cursor::initial(&tools.workspace)?;
     cursor.initial = Some(WatchBatch::RescanRequired {
         epoch: 1,
         reason: WatchInvalidationReason::QueueOverflow,
@@ -425,7 +425,7 @@ async fn overflow_and_unconfirmed_initial_batches_rebaseline() -> Result<()> {
         WatchInvalidationReason::QueueOverflow,
         WatchInvalidationReason::AmbiguousRename,
     ] {
-        let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+        let mut cursor = Cursor::initial(&tools.workspace)?;
         cursor.initial = Some(WatchBatch::RescanRequired { epoch: 7, reason });
         std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
         let mut slot = Some(cursor);
@@ -445,7 +445,7 @@ async fn replay_rescan_requirement_is_a_transition() -> Result<()> {
     )
     .map_err(storage)?;
     let cancellation = CancellationToken::new();
-    let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+    let mut cursor = Cursor::initial(&tools.workspace)?;
     let workspace = tools.workspace.view().workspace();
     let mut checkout = workspace
         .checkout(
@@ -524,7 +524,7 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
         .id();
     assert_ne!(original, winner);
     std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
-    let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+    let mut cursor = Cursor::initial(&tools.workspace)?;
     converge::capture(
         &mut cursor,
         &mut checkout,
@@ -603,7 +603,7 @@ async fn refuse_changed_captures(tools: &CheckoutTools) -> Result<Option<Cursor>
         .value
         .id();
     let imported = baseline(tools).await?;
-    let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+    let mut cursor = Cursor::initial(&tools.workspace)?;
     cursor.initial = Some(WatchBatch::RescanRequired {
         epoch: 1,
         reason: WatchInvalidationReason::RootChanged,
@@ -723,7 +723,7 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
             std::io::ErrorKind::PermissionDenied,
             "the real source must refuse its before-image"
         );
-        let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+        let mut slot = Some(Cursor::initial(&tools.workspace)?);
         run(&tools, &mut slot).await?;
         assert!(!slot.as_ref().unwrap().before_images_complete);
         // A complete, retained watcher still permits another command despite
@@ -789,11 +789,11 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
             );
             assert!(slot.is_none());
             if phase == 0 {
-                slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+                slot = Some(Cursor::initial(&tools.workspace)?);
                 run(&tools, &mut slot).await?;
             }
         }
-        let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+        let mut cursor = Cursor::initial(&tools.workspace)?;
         cursor.initial = Some(WatchBatch::RescanRequired {
             epoch: 1,
             reason: WatchInvalidationReason::QueueOverflow,

@@ -6,9 +6,9 @@ use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-// Version five binds native recovery to the excluded checkout namespace.
+// Version eight binds immutable history to preparation outside the checkout.
 // Earlier journals belong to their original runtime and are never relocated.
-pub(crate) const JOURNAL_VERSION: u32 = 5;
+pub(crate) const JOURNAL_VERSION: u32 = 8;
 /// Requires an absent endpoint during native preparation.
 #[cfg(not(target_arch = "wasm32"))]
 pub const NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX: &[u8] = b"acyclic.native.prepare-absent/v1\0";
@@ -17,6 +17,8 @@ mod intent;
 pub use intent::*;
 mod types;
 pub use types::*;
+mod journal_copy;
+pub use journal_copy::MaterializationJournalCopyError;
 mod protocol;
 #[cfg(test)]
 use crate as sdk;

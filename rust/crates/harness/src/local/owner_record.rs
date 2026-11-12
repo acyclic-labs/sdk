@@ -2,7 +2,7 @@ use super::{AgentId, TaskId, VolumeRef};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Owner record v3. It holds only a public reference to its store-owned seed.
+/// Owner record v4: store-owned seed reference and external native preparation.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Owner {

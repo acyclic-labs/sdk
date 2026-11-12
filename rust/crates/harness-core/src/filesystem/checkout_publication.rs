@@ -23,23 +23,47 @@ pub struct CheckoutPublication {
     _custody: NativeAllocation,
 }
 impl CheckoutPublication {
+    /// Admits the host state layout before a caller changes its logical workspace.
+    /// Uses the same native topology proof as publication without creating state.
+    pub fn validate_state(
+        root: &Path,
+        identity: NativeRootIdentity,
+        state: &LocalCoreStateStore,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        let actual = acyclic_fs::materializer::validate_native_preparation_location(
+            root,
+            state.root(),
+            work,
+        )?;
+        if actual != identity {
+            return Err(
+                acyclic_fs::NativeTreeMaterializationError::AllocationChanged {
+                    expected: identity,
+                    actual,
+                }
+                .into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Retains paths on the caller's original native ledger.
     pub fn new(
         root: &Path,
         identity: NativeRootIdentity,
         operation: OperationId,
+        state: &LocalCoreStateStore,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
-        if !root.is_absolute() {
+        if !root.is_absolute() || !state.root().is_absolute() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
-                reason: "native checkout root must be absolute",
+                reason: "native checkout and host state roots must be absolute",
             });
         }
         let mut root = work.path(root, None)?;
-        let mut directory = acyclic_fs::NativeRecoveryRoot::operation_directory(
-            &root.0, identity, operation, work,
-        )?;
+        let mut directory = state.native_preparation_directory(identity, operation, work)?;
         root.1.absorb(&mut directory.1)?;
         Ok(Self {
             root: root.0,
@@ -86,9 +110,6 @@ impl CheckoutPublication {
         options: &MaterializeOptions,
         work: &NativeMaterializationWork,
     ) -> Result<MaterializationJournal> {
-        state
-            .bind_native_recovery_root(&self.root, self.identity, work)
-            .await?;
         let prepared = acyclic_fs::materializer::prepare_native_generation_transition(
             from,
             to,
@@ -109,13 +130,14 @@ impl CheckoutPublication {
         to: &LocalGeneration,
         state: &LocalCoreStateStore,
         options: &MaterializeOptions,
-        work: &NativeMaterializationWork,
+        preparation: (&NativeMaterializationWork, Option<&MaterializationJournal>),
         mut guard: F,
     ) -> Result<MaterializationJournal>
     where
         F: FnMut() -> Fut + Send,
         Fut: Future<Output = Result<()>> + Send,
     {
+        let (work, approved) = preparation;
         guard().await?;
         let actual = work.root_identity(&self.root)?;
         if actual != self.identity {
@@ -134,9 +156,38 @@ impl CheckoutPublication {
             Ok(receipt) => receipt.value,
             Err((cause, _)) => return Err(cause.into()),
         };
-        let journal = match journal {
-            Some(journal) => journal,
-            None => self.prepare(from, to, state, options, work).await?,
+        let journal = match (journal, approved) {
+            (Some(journal), Some(approved)) => {
+                if journal.plan() != approved.plan()
+                    || journal.root_identity != approved.root_identity
+                    || journal.preparation_identity != approved.preparation_identity
+                    || journal.preimages() != approved.preimages()
+                {
+                    return Err(Error::Unauthorized(
+                        "checkout differs from its approved preparation".into(),
+                    ));
+                }
+                journal
+            }
+            (Some(journal), None) => journal,
+            (None, Some(approved))
+                if approved.plan().edits.is_empty()
+                    && completed(approved, self.identity, from.id(), to.id())? =>
+            {
+                // This approval authorizes no physical effects. Host changes
+                // after preparation cannot expand it into a different plan.
+                let mut copy = approved.copy_empty().ok_or_else(|| {
+                    Error::Unauthorized("checkout approval contains preimages".into())
+                })?;
+                copy.custody = Some(work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?);
+                copy
+            }
+            (None, Some(_)) => {
+                return Err(Error::Unauthorized(
+                    "checkout lost its approved preparation".into(),
+                ));
+            }
+            (None, None) => self.prepare(from, to, state, options, work).await?,
         };
         // A logical commit can precede its native acknowledgement. Every host
         // resumes the original transition, even when its current head is `to`.
@@ -144,7 +195,7 @@ impl CheckoutPublication {
             && let acyclic_fs::MaterializationIntent::GenerationTransition {
                 from: original,
                 to: target,
-            } = journal.plan.intent
+            } = journal.plan().intent
             && target == to.id()
         {
             Some(
@@ -201,7 +252,7 @@ impl CheckoutPublication {
     /// Ends replay custody after the enclosing publication is acknowledged.
     pub(crate) async fn finish(
         state: &LocalCoreStateStore,
-        root: &Path,
+        identity: NativeRootIdentity,
         operation: OperationId,
     ) -> Result<()> {
         // Remove staging before its replay evidence: a failed cleanup must
@@ -209,12 +260,8 @@ impl CheckoutPublication {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let (directory, _custody) = acyclic_fs::NativeRecoveryRoot::operation_directory(
-            root,
-            work.root_identity(root)?,
-            operation,
-            &work,
-        )?;
+        let (directory, _custody) =
+            state.native_preparation_directory(identity, operation, &work)?;
         cleanup_directory(&directory)?;
         state.remove_materialization_async(operation).await?;
         Ok(())
@@ -228,7 +275,7 @@ fn completed(
     to: acyclic_fs::GenerationId,
 ) -> Result<bool> {
     if journal.root_identity != Some(root.to_bytes())
-        || journal.plan.intent
+        || journal.plan().intent
             != (acyclic_fs::MaterializationIntent::GenerationTransition { from, to })
     {
         return Err(Error::Storage(
@@ -268,12 +315,15 @@ mod tests {
         let baseline = work.live_allocation_bytes();
         let identity = NativeRootIdentity::from_bytes([0; 16]);
         let root = std::env::temp_dir().join("checkout-parent/checkout");
-        let publication = CheckoutPublication::new(&root, identity, OperationId::new(), &work)?;
+        let state = LocalCoreStateStore::new(std::env::temp_dir().join("host-state/core"));
+        let publication =
+            CheckoutPublication::new(&root, identity, OperationId::new(), &state, &work)?;
         assert_eq!(publication.root(), root.as_path());
         assert!(work.live_allocation_bytes() > baseline);
         drop(publication);
         assert_eq!(work.live_allocation_bytes(), baseline);
-        let refused = CheckoutPublication::new(Path::new(""), identity, OperationId::new(), &work);
+        let refused =
+            CheckoutPublication::new(Path::new(""), identity, OperationId::new(), &state, &work);
         assert!(matches!(
             refused,
             Err(Error::NativeBoundary {

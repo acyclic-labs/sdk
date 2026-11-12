@@ -121,8 +121,12 @@ async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
     let paths = namespace
         .record(MATERIALIZATION_FAMILY, &operation.into_bytes())
         .unwrap();
-    std::fs::create_dir_all(paths.directory()).unwrap();
-    std::fs::write(&paths.previous, serde_json::to_vec(&journal).unwrap()).unwrap();
+    let (stored, journal) =
+        MaterializationJournalStore::compare_and_swap(&store, operation, 0, journal)
+            .await
+            .unwrap();
+    assert!(stored);
+    std::fs::rename(&paths.current, &paths.previous).unwrap();
     assert_eq!(
         store.materialization_operations_async().await.unwrap(),
         [operation]
@@ -137,7 +141,16 @@ async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let budget = crate::WorkBudget {
-            source_bytes_read: std::fs::metadata(&paths.current).unwrap().len(),
+            source_bytes_read: std::fs::metadata(&paths.current).unwrap().len()
+                + std::fs::read_dir(
+                    directory
+                        .path()
+                        .join("materialization-data-v1")
+                        .join(hex::encode(operation.into_bytes())),
+                )
+                .unwrap()
+                .map(|entry| entry.unwrap().metadata().unwrap().len())
+                .sum::<u64>(),
             ..native::finite_budget()
         };
         let cxl = crate::CancellationToken::new();
@@ -465,4 +478,214 @@ fn checkpoint_native_accounting_tracks_encoded_and_written_bytes_once() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
+    let mut first_history = None;
+    for count in [8, 64, 512] {
+        let directory = tempfile::tempdir().unwrap();
+        let cxl = crate::CancellationToken::new();
+        let work =
+            crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cxl).unwrap();
+        let store = LocalCoreStateStore::new(directory.path()).materialization(work.clone());
+        let operation = OperationId::new();
+        let mut journal = materialization_journal(operation);
+        journal.phase = crate::MaterializationPhase::Preparing;
+        journal.plan.edits = (0..count)
+            .map(|index| crate::MaterializationEdit::Install {
+                path: format!("directory/file-{index:04}"),
+                image: vec![1],
+            })
+            .collect();
+        journal.custody = Some(
+            work.claim(
+                crate::materializer::journal_owned_bytes(&journal).unwrap(),
+                0,
+                crate::WorkCounters::UNCHARGED,
+            )
+            .unwrap(),
+        );
+        let (stored, mut journal) =
+            MaterializationJournalStore::compare_and_swap(&store, operation, 0, journal)
+                .await
+                .unwrap();
+        assert!(stored);
+        let custody = journal.custody.as_mut().unwrap();
+        crate::materializer::reserve_buffer(&mut journal.preimages, count, custody).unwrap();
+        let mut first = None;
+        for index in 0..count {
+            let (image, mut custody) = work.copy_bytes(&[255; 64]).unwrap();
+            journal
+                .custody
+                .as_mut()
+                .unwrap()
+                .absorb(&mut custody)
+                .unwrap();
+            let before = work.receipt();
+            assert!(store.matches(&journal).await.unwrap());
+            journal.preimages.push(crate::MaterializationPreimage {
+                image,
+                custody: None,
+            });
+            let expected = journal.revision;
+            journal.revision += 1;
+            let (stored, updated) =
+                MaterializationJournalStore::compare_and_swap(&store, operation, expected, journal)
+                    .await
+                    .unwrap();
+            assert!(stored);
+            journal = updated;
+            let after = work.receipt();
+            let delta = (
+                after.source_bytes_read - before.source_bytes_read,
+                after.object_bytes_written - before.object_bytes_written,
+            );
+            let baseline = *first.get_or_insert(delta);
+            let across_sizes = *first_history.get_or_insert(delta);
+            assert!(
+                delta.0 <= across_sizes.0 + 256,
+                "plan size changed per-step reads: {delta:?} vs {across_sizes:?}"
+            );
+            assert!(
+                delta.1 <= across_sizes.1 + 256,
+                "plan size changed per-step writes: {delta:?} vs {across_sizes:?}"
+            );
+            if index + 1 == count {
+                eprintln!(
+                    "journal_delta history={count} read={} written={}",
+                    delta.0, delta.1
+                );
+            }
+            assert!(
+                delta.0 <= baseline.0 + 256,
+                "history was reread at {index}/{count}: {delta:?} vs {baseline:?}"
+            );
+            assert!(
+                delta.1 <= baseline.1 + 256,
+                "history was rewritten at {index}/{count}: {delta:?} vs {baseline:?}"
+            );
+        }
+        let recovered = MaterializationJournalStore::load(&store, operation)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered, journal);
+        drop(recovered);
+        journal.revision += 1;
+        journal.phase = crate::MaterializationPhase::RolledBack;
+        let expected = journal.revision - 1;
+        let (stored, journal) =
+            MaterializationJournalStore::compare_and_swap(&store, operation, expected, journal)
+                .await
+                .unwrap();
+        assert!(stored);
+        let before = work.receipt();
+        assert!(
+            !MaterializationJournalStore::compare_and_swap(&store, operation, expected, journal)
+                .await
+                .unwrap()
+                .0
+        );
+        assert_eq!(
+            work.receipt().object_bytes_written,
+            before.object_bytes_written
+        );
+        store.remove_materialization_async(operation).await.unwrap();
+        assert!(
+            MaterializationJournalStore::load(&store, operation)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            std::fs::read_dir(directory.path().join("materialization-data-v1"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn journal_receipts_refuse_independently_admitted_history() {
+    let left = tempfile::tempdir().unwrap();
+    let right = tempfile::tempdir().unwrap();
+    let stores = [
+        LocalCoreStateStore::new(left.path()),
+        LocalCoreStateStore::new(right.path()),
+    ];
+    let operation = OperationId::new();
+    for (index, store) in stores.iter().enumerate() {
+        let mut journal = materialization_journal(operation);
+        journal.phase = crate::MaterializationPhase::Preparing;
+        journal
+            .plan
+            .edits
+            .push(crate::MaterializationEdit::Install {
+                path: "file".into(),
+                image: vec![index as u8],
+            });
+        journal.preimages.push(crate::MaterializationPreimage {
+            image: vec![index as u8 + 2],
+            custody: None,
+        });
+        assert!(MaterializationJournal::empty(journal.plan.clone(), None).is_none());
+        assert!(
+            MaterializationJournalStore::compare_and_swap(store, operation, 0, journal)
+                .await
+                .unwrap()
+                .0
+        );
+    }
+    // Identical revisions and progress do not admit another store's history.
+    // Exercise both physical-action admission and ordinary progress publication.
+    let foreign = MaterializationJournalStore::load(&stores[1], operation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!stores[0].matches(&foreign).await.unwrap());
+    assert!(stores[1].matches(&foreign).await.unwrap());
+    assert!(stores[0].prepare_action(foreign).await.is_err());
+    let mut foreign = MaterializationJournalStore::load(&stores[1], operation)
+        .await
+        .unwrap()
+        .unwrap();
+    let revision = foreign.revision;
+    foreign.revision += 1;
+    assert!(
+        !MaterializationJournalStore::compare_and_swap(&stores[0], operation, revision, foreign)
+            .await
+            .unwrap()
+            .0
+    );
+    let original = MaterializationJournalStore::load(&stores[0], operation)
+        .await
+        .unwrap()
+        .unwrap();
+    for field in ["plan", "preimages"] {
+        let mut snapshot = serde_json::to_value(&original).unwrap();
+        if field == "plan" {
+            snapshot["plan"]["edits"][0]["Install"]["image"] = serde_json::json!([7]);
+        } else {
+            snapshot["preimages"][0]["image"] = serde_json::json!([7]);
+        }
+        let forged: MaterializationJournal = serde_json::from_value(snapshot).unwrap();
+        assert_eq!(forged.revision, original.revision);
+        assert!(!stores[0].matches(&forged).await.unwrap());
+        assert!(stores[0].prepare_action(forged).await.is_err());
+    }
+    assert_eq!(original.revision, revision);
+    let crate::MaterializationEdit::Install { image, .. } = &original.plan.edits[0] else {
+        panic!("install")
+    };
+    assert_eq!(image, &[0]);
+    assert_eq!(original.preimages[0].image, [2]);
+    assert!(stores[0].matches(&original).await.unwrap());
+    let copy = original.try_clone().unwrap();
+    assert!(stores[0].matches(&copy).await.unwrap());
+    drop(copy);
+    let completion = stores[0].prepare_action(original).await.unwrap();
+    let acknowledged = completion.await.unwrap();
+    assert!(stores[0].matches(&acknowledged).await.unwrap());
 }

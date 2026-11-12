@@ -434,10 +434,24 @@ impl<'a> CaptureBatch<'a> {
             prior_metadata = Some(prior);
             canonical_metadata = preserve_unobserved_metadata(canonical_metadata, prior);
             if let Some(baseline) = self.baseline {
+                let materialized = match &baseline.store {
+                    Some(store) => {
+                        store
+                            .materialization(self.meter.clone())
+                            .materialized_metadata(
+                                self.source_root.identity(),
+                                metadata.identity(),
+                                record.file_id,
+                            )
+                            .await?
+                    }
+                    None => None,
+                };
                 baseline.restore_canonical_stamps(
                     self.source_root.identity(),
                     prior,
                     &mut canonical_metadata,
+                    materialized,
                 );
             }
             // A read advances the access time, and an inode change capture does not represent, such as macOS adding `com.apple.provenance`, advances the status-change time: those stamps alone never make a new version, so a rescan of unchanged content stages nothing. A stamp moved backwards was set explicitly and is captured.

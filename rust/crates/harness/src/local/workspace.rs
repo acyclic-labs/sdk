@@ -496,6 +496,12 @@ async fn lazy_view(
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    crate::filesystem::CheckoutPublication::validate_state(
+        root.path(),
+        root.identity(),
+        store,
+        &work,
+    )?;
     let mut accounting = KernelAccounting::NativeOriginal {
         work: &work,
         cancellation: &cancellation,
@@ -522,7 +528,6 @@ async fn lazy_view(
     );
     let source = held_source(
         root,
-        store,
         config,
         original.as_ref().map(|state| state.source),
         &work,
@@ -564,18 +569,15 @@ async fn lazy_view(
     Ok((view, fresh, durability))
 }
 
-/// Authored data is the source; its recorded recovery binding is excluded.
+/// Every authored path is source data. Recovery lives in external host state.
 async fn held_source(
     root: acyclic_fs::HeldRoot,
-    store: &LocalCoreStateStore,
     config: acyclic_fs::VolumeConfig,
     reference: Option<acyclic_fs::demand::SourceReference>,
     work: &NativeMaterializationWork,
     cancellation: &acyclic_fs::CancellationToken,
 ) -> Result<Arc<NativeDemandSource>> {
     let identity = root.identity();
-    let prefix = acyclic_fs::NativeRecoveryRoot::prefix(identity, config.profile, config.limits)
-        .map_err(storage)?;
     let (path, _custody) = work.path(root.path(), None)?;
     let source = NativeDemandSource::open_held(
         root,
@@ -587,13 +589,17 @@ async fn held_source(
         cancellation,
     )
     .await
-    .map_err(storage)?
-    .exclude(vec![prefix], &work, cancellation)
     .map_err(storage)?;
-    store
-        .inspect_native_recovery_root(&path, identity, work)
-        .await
-        .map_err(storage)?;
+    let actual = work.root_identity(&path)?;
+    if actual != identity {
+        return Err(
+            acyclic_fs::NativeTreeMaterializationError::AllocationChanged {
+                expected: identity,
+                actual,
+            }
+            .into(),
+        );
+    }
     Ok(Arc::new(source))
 }
 
@@ -611,6 +617,9 @@ pub(super) async fn open_volume(
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
         let staging = bootstrap::staging(directory)?;
+        let mut materialization = acyclic_fs::MaterializeOptions::native(&staging);
+        materialization.materialized_view =
+            Some(acyclic_fs::NativeViewBaseline::recording(&state.store));
         let cancellation = acyclic_fs::CancellationToken::new();
         let name = volume.storage_name(&mut None)?;
         let workspace = filesystem
@@ -628,7 +637,7 @@ pub(super) async fn open_volume(
                 generation
                     .materialize(
                         ["/"].into_iter(),
-                        &acyclic_fs::MaterializeOptions::native(&staging),
+                        &materialization,
                         acyclic_fs::WorkBudget::UNBOUNDED,
                         &cancellation,
                     )

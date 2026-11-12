@@ -66,10 +66,14 @@ mod tests {
             .await
             .map_err(|failure| failure.error)?
             .value;
+        let metadata = tempfile::tempdir()?;
+        let store = acyclic_fs::LocalCoreStateStore::new(metadata.path());
+        let mut materialization = MaterializeOptions::native(destination.path());
+        materialization.materialized_view = Some(acyclic_fs::NativeViewBaseline::recording(&store));
         let prepared = generation
             .prepare_native_working_set(
                 &options,
-                &MaterializeOptions::native(destination.path()),
+                &materialization,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancel,
             )

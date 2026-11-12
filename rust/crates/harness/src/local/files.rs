@@ -148,7 +148,7 @@ impl LocalHarness {
             crate::runtime::RuntimeScope::new(signed.capabilities().clone(), Default::default())?;
         let owner = super::workspace::owner::AgentOwner(owner);
         let command = format!("merge {branch}");
-        let configuration = super::checkout_tools::capture::configuration(workspace)?;
+        let configuration = super::checkout_tools::capture::configuration(workspace);
         let commands = super::workspace::git::Commands {
             workspace,
             signed,

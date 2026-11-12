@@ -241,7 +241,7 @@ async fn shared_selection(
     owner: &dyn ViewOwner,
 ) -> Result<()> {
     use crate::local::checkout_tools::capture;
-    let (options, policy) = capture::configuration(bound)?;
+    let (options, policy) = capture::configuration(bound);
     let commands = super::super::git::Commands {
         workspace: bound,
         signed: &harness.signed,

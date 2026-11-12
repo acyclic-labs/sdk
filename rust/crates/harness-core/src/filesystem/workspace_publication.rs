@@ -70,7 +70,7 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend>
             .physical_roots
             .get(&root)
             .ok_or_else(|| Error::Unauthorized("publication root is not configured".into()))?;
-        finish_checkout(&self.state, &physical.path, operation).await
+        finish_checkout(&self.state, physical.source_root_identity, operation).await
     }
 }
 
@@ -83,10 +83,10 @@ pub(crate) async fn publish_checkout(
     to: &LocalGeneration,
     work: acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let publication = super::CheckoutPublication::new(root, identity, operation, &work)?;
+    let publication = super::CheckoutPublication::new(root, identity, operation, state, &work)?;
     let options = MaterializeOptions::native(publication.directory().join("target"));
     publication
-        .publish(from, to, state, &options, &work, || {
+        .publish(from, to, state, &options, (&work, None), || {
             std::future::ready(Ok(()))
         })
         .await?;
@@ -95,10 +95,10 @@ pub(crate) async fn publish_checkout(
 
 pub(crate) async fn finish_checkout(
     state: &LocalCoreStateStore,
-    root: &std::path::Path,
+    identity: NativeRootIdentity,
     operation: OperationId,
 ) -> Result<()> {
-    super::CheckoutPublication::finish(state, root, operation).await
+    super::CheckoutPublication::finish(state, identity, operation).await
 }
 
 /// Local SDK multi-root publisher with native checkout materialization.

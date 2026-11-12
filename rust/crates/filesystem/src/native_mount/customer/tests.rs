@@ -482,7 +482,7 @@ async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_captu
         )
         .await?;
     let directory = tempfile::tempdir()?;
-    let options = crate::MaterializeOptions::native(directory.path());
+    let options = recording_options(directory.path());
     let mount = fixture_options(
         lazy.workspace(),
         MountOptions::read_only().subdirectory("/selected-Ã©"),
@@ -565,10 +565,11 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     workspace.write_text("/file.txt", "concurrent").await?;
     let concurrent = head(&workspace, &fixture_work).await?;
     let source_root = tempfile::tempdir()?;
+    let source_options = recording_options(source_root.path());
     let source = admitted
         .prepare_native_working_set(
             &fixture_options(&workspace, MountOptions::read_only()).await?,
-            &crate::MaterializeOptions::native(source_root.path()),
+            &source_options,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
@@ -584,6 +585,28 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     source.verify_unchanged(&capture_work).await?;
     assert!(capture_work.receipt().source_bytes_read > before_capture.source_bytes_read);
     assert!(capture_work.live_allocation_bytes() >= caller_payload.bytes());
+    let namespace = source_options
+        .materialized_view
+        .as_ref()
+        .unwrap()
+        .store
+        .as_ref()
+        .unwrap();
+    let owner = crate::LocalCoreStateStore::open_owned(namespace.root())?;
+    let ownership = source
+        .verify_unchanged(&default_work)
+        .await
+        .err()
+        .ok_or("capture ignored namespace ownership")?;
+    assert!(
+        matches!(
+            ownership,
+            MountLifecycleError::Source(MountSourceError::NativeRecordOwnershipConflict(_, _))
+        ),
+        "{ownership:?}"
+    );
+    drop(owner);
+    source.verify_unchanged(&default_work).await?;
     let mut denied_budget = crate::WorkBudget::UNBOUNDED;
     denied_budget.items_examined = 0;
     let denied_work = test_work(denied_budget, &capture_token)?;
@@ -607,7 +630,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     let rejected = admitted
         .prepare_native_working_set(
             &write,
-            &crate::MaterializeOptions::native(destination_root.path()),
+            &recording_options(destination_root.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
@@ -623,7 +646,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
         .await?
         .prepare_native_working_set(
             &write,
-            &crate::MaterializeOptions::native(destination_root.path()),
+            &recording_options(destination_root.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
@@ -666,7 +689,7 @@ async fn lazy_working_set_requires_authority_before_exactifying()
             MountOptions::read_write()
                 .subdirectory("/hot")
                 .publication(MountPublication::Manual),
-            &crate::MaterializeOptions::native(destination.path()),
+            &recording_options(destination.path()),
             crate::WorkBudget::UNBOUNDED,
             &cancel,
             PublicationPermit::Unrestricted,
@@ -690,7 +713,7 @@ async fn lazy_working_set_requires_authority_before_exactifying()
         assert!(matches!(
             lazy.prepare_native_working_set(
                 mount,
-                &crate::MaterializeOptions::native(destination.path()),
+                &recording_options(destination.path()),
                 crate::WorkBudget::UNBOUNDED,
                 &cancel,
                 PublicationPermit::Unrestricted,
@@ -735,7 +758,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
                     .subdirectory("/hot")
             )
             .await?,
-            &crate::MaterializeOptions::native("relative-native-view"),
+            &recording_options("relative-native-view"),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
             PublicationPermit::Unrestricted,
@@ -755,7 +778,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
                     .subdirectory("/hot"),
             )
             .await?,
-            &crate::MaterializeOptions::native(native_view.path()),
+            &recording_options(native_view.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
             PublicationPermit::Unrestricted,
@@ -986,7 +1009,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
                     .subdirectory("/hot"),
             )
             .await?,
-            &crate::MaterializeOptions::native(latest_view.path()),
+            &recording_options(latest_view.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
             PublicationPermit::Unrestricted,

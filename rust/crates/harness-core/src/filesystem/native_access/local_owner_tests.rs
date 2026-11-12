@@ -273,6 +273,10 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
         lazy.workspace().head(&work, &cancellation).await?.id(),
         original
     );
+    let metadata = tempfile::tempdir()?;
+    let store = acyclic_fs::LocalCoreStateStore::new(metadata.path());
+    let mut materialization = acyclic_fs::MaterializeOptions::native(destination.path());
+    materialization.materialized_view = Some(acyclic_fs::NativeViewBaseline::recording(&store));
     let prepared = if flow == Preparation::StaleOptions {
         let exact = lazy
             .exactify(
@@ -284,7 +288,7 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
         exact
             .prepare_native_working_set(
                 &options,
-                &acyclic_fs::MaterializeOptions::native(destination.path()),
+                &materialization,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
@@ -300,7 +304,7 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
         }
         lazy.prepare_native_working_set(
             options,
-            &acyclic_fs::MaterializeOptions::native(destination.path()),
+            &materialization,
             WorkBudget::UNBOUNDED,
             &cancellation,
             PublicationPermit::Unrestricted,

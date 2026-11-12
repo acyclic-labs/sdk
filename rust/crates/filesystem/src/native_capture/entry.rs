@@ -576,7 +576,7 @@ async fn capture_paths_in<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             usize::MAX,
             options.maximum_extent_spans,
             &source_root,
-            None,
+            options.materialized_view.as_ref(),
             options.source_namespace,
             &scope.native,
         )
@@ -597,7 +597,6 @@ pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObject
     options: &CaptureOptions,
     batch_size: usize,
     cancellation: &CancellationToken,
-    baseline: Option<&NativeViewBaseline>,
     work: &crate::NativeMaterializationWork,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let checked = (|| {
@@ -636,7 +635,7 @@ pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObject
             batch_size,
             options.maximum_extent_spans,
             &source_root,
-            baseline,
+            options.materialized_view.as_ref(),
             options.source_namespace,
             meter,
         )
@@ -676,7 +675,6 @@ pub async fn capture_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         options,
         &CapturePolicy::default(),
         cancellation,
-        None,
         &native,
     )
     .await;
@@ -700,7 +698,6 @@ pub(crate) async fn capture_subtrees_with_native_work<
     options: &CaptureOptions,
     policy: &CapturePolicy,
     cancellation: &CancellationToken,
-    baseline: Option<&NativeViewBaseline>,
     work: &crate::NativeMaterializationWork,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let scope = CaptureWorkScope::new(work)?;
@@ -794,7 +791,7 @@ pub(crate) async fn capture_subtrees_with_native_work<
             usize::MAX,
             options.maximum_extent_spans,
             &source_root,
-            baseline,
+            options.materialized_view.as_ref(),
             options.source_namespace,
             meter,
         )
@@ -944,7 +941,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             usize::MAX,
             options.maximum_extent_spans,
             &source_root,
-            None,
+            options.materialized_view.as_ref(),
             options.source_namespace,
             meter,
         )
