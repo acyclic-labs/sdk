@@ -12,6 +12,35 @@ pub(super) struct CancelledInput {
 
 impl super::AgentRecord for CancelledInput {}
 
+/// Validate the immutable accepted input before publishing a cancellation fact.
+pub(super) async fn validate<P: crate::store::JournalProvider + ?Sized>(
+    provider: &P,
+    agent: &super::AgentPath,
+    cancel: &super::Cancellation,
+) -> Result<(), Error> {
+    let mut records = provider
+        .read(ReadRequest {
+            key: None,
+            path: agent.inbox()?,
+            from: cancel.input,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await
+        .map_err(Error::Stream)?;
+    let record = records
+        .try_next()
+        .await
+        .map_err(Error::Stream)?
+        .filter(|record| record.sequence == cancel.input)
+        .ok_or(Error::Record("cancellation must name an accepted input"))?;
+    let record = super::InboxRecord::decode(&record.value)?;
+    if super::input::input(cancel.input, record).is_none() {
+        return Err(Error::Record("cancellation must name an accepted input"));
+    }
+    Ok(())
+}
+
 pub(super) fn cancelled_path(agent: &super::AgentPath, input: u64) -> Result<StreamPath, Error> {
     StreamPath::new(format!("{agent}/context/cancelled/{input}")).map_err(Error::Stream)
 }

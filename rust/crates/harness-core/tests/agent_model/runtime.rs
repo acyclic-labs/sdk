@@ -342,7 +342,7 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
 
 #[tokio::test]
 async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -> Result {
-    use acyclic_actors::guest::CancellationToken;
+    use acyclic_actors::guest::{CancellationToken, GuestFuture, Handler as _, wire};
     use tokio::sync::{mpsc, oneshot};
 
     struct Controlled(mpsc::UnboundedSender<(u64, CancellationToken, oneshot::Sender<()>)>);
@@ -389,15 +389,50 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
 
     let provider = Arc::new(MemoryStream::default());
     let (starting, mut started) = mpsc::unbounded_channel();
-    let host = AgentHost::new(
-        provider.clone(),
+    let handler = Arc::new(AgentHandler::new(
+        actor_store(&provider)?,
         Controlled(starting),
-        ActorReference::new(b"account", b"agents", b"owner")?,
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+    )?);
+    let interrupt_handler = handler.clone();
+    let remote = wire::Remote::new(
+        handler.manifest().clone(),
+        move |bytes: Vec<u8>, cancellation| -> GuestFuture<'static, Vec<u8>> {
+            let handler = handler.clone();
+            Box::pin(async move {
+                let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
+                let transition = handler
+                    .on_record(delivery, checkpoint.as_ref(), cancellation)
+                    .await?;
+                wire::encode_transition(&transition)
+            })
+        },
+        move |query| wire::accepts_interrupt(interrupt_handler.as_ref(), &query),
+    );
+    let host = AgentHost::hosting(
+        provider.clone(),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        Arc::new(remote),
         Arc::new(SystemClock),
+        None,
     )?;
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     assert!(host.runtime().drain().await.is_empty());
+    assert!(
+        host.send(
+            &root,
+            &user(),
+            &InboxRecord::Cancel(Cancellation {
+                by: user(),
+                id: intent("invalid-future-cancel"),
+                input: 2,
+                conversation: 0,
+            })
+        )
+        .await
+        .is_err(),
+        "a future input is not an accepted cancellation target"
+    );
     let message = |name| -> Result<InboxRecord> {
         Ok(InboxRecord::Message(Message {
             from: user(),

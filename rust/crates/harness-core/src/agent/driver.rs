@@ -636,6 +636,29 @@ pub fn turn_notices(agent: &AgentState) -> Result<Option<super::NoticeSelection>
 /// part, followed by a message's attachment manifest by its exact version
 /// (which [`expand_attachments`] replaces with the files it lists). Primitive
 /// events use the common Notice block and retain their original typed files.
+pub fn model_input_at(inbox: u64, input: &TurnInput) -> Result<ModelContent, Error> {
+    let content = model_input(input)?;
+    if !matches!(input, TurnInput::Message { .. }) {
+        return Ok(content);
+    }
+    let mut parts = vec![ModelContentPart::Notices {
+        notices: vec![crate::conversation::wire::Notice {
+            source: "harness".into(),
+            kind: "harness.input".into(),
+            body: serde_json::json!({"input": inbox}),
+            wake: false,
+            coalesce_key: None,
+        }],
+    }];
+    match content {
+        ModelContent::Text(text) => parts.push(ModelContentPart::Text { text, native: None }),
+        ModelContent::Part(part) => parts.push(part),
+        ModelContent::Parts(content) => parts.extend(content),
+    }
+    Ok(ModelContent::Parts(parts))
+}
+
+/// Project an input's immutable payload.
 pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
     let body = |file: &FileRef| ModelContentPart::File {
         file: file.clone(),
@@ -1035,7 +1058,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             let notices = turn_notices(agent)?;
             let turn = turn_id(agent, &input)?;
             let stop = cancellation;
-            let content = model_input(&input)?;
+            let content = model_input_at(inbox, &input)?;
             let Some(open) = opened(
                 self.host
                     .open(agent, turn, inbox, cursor, &content, stop.clone())

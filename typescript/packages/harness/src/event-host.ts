@@ -81,6 +81,7 @@ export class EventAgentHost {
       const events = this.events;
       this.host = WasmAgentServer.open(providers, options, owner, registry, authority, {
         manifest: guest.manifest(),
+        acceptsInterrupt: (query: Uint8Array) => guest.acceptsInterrupt(query),
         onRecord: (delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => guest.onRecord(delivery, signal, interrupt),
         policy: (principal: Uint8Array, command: AgentCommand, signal: AbortSignal) => access.policy(principal, command, signal),
         admitted: (signal: AbortSignal) => recoverable(storage, events, signal),
@@ -289,7 +290,7 @@ export class EventAgentHost {
     return identity.path;
   }
 
-  cancel(intent: string) { return this.event(() => this.host.command({ kind: "cancel", agent: this.path(), id: intent }, this.access.credential)); }
+  cancel(intent: string, input: bigint, conversation: bigint) { return this.event(() => this.host.command({ kind: "cancel", agent: this.path(), id: intent, input, conversation }, this.access.credential)); }
   archive(intent: string) { return this.event(() => this.host.archive(this.path(), intent)); }
   pause(paused: boolean) { return this.event(() => this.host.pause(this.path(), paused)); }
   readFile(file: WasmFileRefWire) { return this.host.readFile(this.path(), file); }
