@@ -147,6 +147,7 @@
       "owner": "e2e-gate",
       "cases": [
         "instructions-and-skills",
+        "memory-skill-files",
         "skill-invocation",
         "file-mention",
         "pty-mention",
