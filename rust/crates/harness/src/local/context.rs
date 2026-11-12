@@ -572,23 +572,27 @@ impl LocalHarness {
         Ok(manifest)
     }
 
-    async fn resolve_attachments(
-        &self,
-        base: &str,
-        text: &str,
-        reader: &dyn ContentResidencyVerifier,
-    ) -> Result<Vec<FileRef>> {
-        // Mentioned files are copied beside the manifest on the private
-        // volume, which every fork of the agent inherits: a child forks a
-        // volume project, so the original project would not carry them.
-        let root = match self.checkout_mentions(base, text).await? {
-            Some(root) => root,
-            None => self.project_mentions(base, text, reader).await?,
-        };
-        self.resolve_at(&root, text, reader, |path| {
-            format!("{}/{}", root.directory, copy_name(path))
+    // Attachment reads/publication keep their IO state behind the same kind
+    // of future boundary as command-file reads, independent of caller depth.
+    fn resolve_attachments<'a>(
+        &'a self,
+        base: &'a str,
+        text: &'a str,
+        reader: &'a dyn ContentResidencyVerifier,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Vec<FileRef>>> {
+        Box::pin(async move {
+            // Mentioned files are copied beside the manifest on the private
+            // volume, which every fork of the agent inherits: a child forks a
+            // volume project, so the original project would not carry them.
+            let root = match self.checkout_mentions(base, text).await? {
+                Some(root) => root,
+                None => self.project_mentions(base, text, reader).await?,
+            };
+            self.resolve_at(&root, text, reader, |path| {
+                format!("{}/{}", root.directory, copy_name(path))
+            })
+            .await
         })
-        .await
     }
 
     /// A volume project's mentioned files, read at its head and copied onto
