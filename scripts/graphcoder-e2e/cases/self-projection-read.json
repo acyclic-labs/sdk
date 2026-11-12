@@ -58,12 +58,16 @@
       {
         "when": { "tool_result": "PROJECT_SOURCE_BODY" },
         "text": ["done"]
+      },
+      {
+        "when": { "contains": "Append feedback records; reply none" },
+        "text": ["none"]
       }
     ]
   },
   "inputs": [{ "mode": "headless", "text": "Inspect the private view and project source.", "answer": "done" }],
   "assert": {
-    "requests": 6,
+    "requests": 7,
     "files": { "ui/index.md": "PROJECT_SOURCE_BODY" },
     "absent_files": ["agent", "context", "children", "evals"],
     "tool_results": [
