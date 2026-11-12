@@ -32,9 +32,10 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
         : query.path === "project/src"
         ? [{ name: "CLAUDE.md", kind: "file" }, { name: "child", kind: "directory" }]
         : query.path === "" ? [{ name: "inspect", kind: "directory" }] : [{ name: "SKILL.md", kind: "file" }];
-      const available = entries.filter(entry => query.after === null || entry.name > query.after);
-      return { generation, hasMore: available.length > query.maximum_entries,
-        entries: available.slice(0, query.maximum_entries) };
+      const offset = query.after?.[0] ?? 0;
+      const end = offset + query.maximum_entries;
+      return { generation, next: end < entries.length ? [end] : null,
+        entries: entries.slice(offset, end) };
     },
     async prefix(query) {
       expect(query.maximum_bytes).toBe(256n);
