@@ -10,6 +10,11 @@ use crate::{
 use serde::Deserialize;
 use std::sync::Arc;
 
+/// Select one model at admission: role policy wins, otherwise inherit the fallback.
+#[must_use]
+pub fn resolve_model<'a>(role: Option<&'a str>, fallback: Option<&'a str>) -> Option<&'a str> {
+    role.or(fallback)
+}
 const ROOT: &str = include_str!("seed/templates/orchestrator/AGENT.md");
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -242,4 +247,28 @@ pub(crate) async fn directive(
             ..Context::default()
         }),
     })
+}
+
+#[cfg(test)]
+mod model_precedence_tests {
+    use super::*;
+
+    #[test]
+    fn configured_role_model_wins_over_parent_or_requested_fallback() {
+        for fallback in [None, Some("other/parent"), Some("other/requested")] {
+            assert_eq!(
+                resolve_model(Some("morph/morph-dsv41flash"), fallback),
+                Some("morph/morph-dsv41flash")
+            );
+        }
+    }
+
+    #[test]
+    fn role_without_model_inherits_parent_model() {
+        assert_eq!(
+            resolve_model(None, Some("other/parent")),
+            Some("other/parent")
+        );
+        assert_eq!(resolve_model(None, None), None);
+    }
 }

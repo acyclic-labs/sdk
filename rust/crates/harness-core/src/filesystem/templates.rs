@@ -81,13 +81,20 @@ mod tests {
             let child = templates
                 .child(&parent, &path, &volumes, role, None)
                 .await?;
-            assert_eq!(child.model, parent.model);
+            assert_eq!(
+                child.model.as_deref(),
+                Some(if role == "orchestrator" {
+                    "morph/morph-kimik31"
+                } else {
+                    "morph/morph-dsv41flash"
+                })
+            );
         }
         let orchestrator = templates
             .child(&parent, &path, &volumes, "orchestrator", None)
             .await?;
         assert_eq!(orchestrator.context, SpawnContext::Fresh);
-        assert_eq!(orchestrator.model, parent.model);
+        assert_eq!(orchestrator.model.as_deref(), Some("morph/morph-kimik31"));
         assert_eq!(orchestrator.template.as_ref().unwrap().volume(), &seed);
         templates
             .child(&orchestrator, &path, &volumes, "orchestrator", None)
@@ -125,6 +132,7 @@ mod tests {
             .child(&parent, &path, &volumes, "worker", None)
             .await?;
         assert_eq!(selected.context, SpawnContext::Fresh);
+        assert_eq!(selected.model, parent.model);
         let selected_file = selected.template.as_ref().unwrap();
         assert_eq!(selected_file.volume(), &home);
         put(
@@ -421,7 +429,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
             )
             .await?;
             selected.question_plugin = creation.question_plugin;
-            selected.model = selected.model.or_else(|| creation.model.clone());
+            selected.model = crate::templates::resolve_model(
+                selected.model.as_deref(),
+                creation.model.as_deref(),
+            )
+            .map(str::to_owned);
             Ok(selected)
         })
     }

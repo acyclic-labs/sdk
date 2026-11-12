@@ -113,7 +113,9 @@ async function prepare(test, gitOrigin) {
   fixture.binary = binary;
   fixture.output = artifact;
   fixture.env = environment(fixture.settings, hostEnvironment);
-  fixture.provider = test.keychain ? `e2e-first-run-${randomUUID()}` : "e2e";
+  fixture.provider = "e2e";
+  fixture.credential_service = `e2e-first-run-${randomUUID()}`;
+  fixture.env.ACYCLIC_KEYCHAIN_SERVICE = fixture.credential_service;
   if (nativeCases.has(test.id)) {
     fixture.url = `http://127.0.0.1:${port}/native-${test.id}/v1`;
     fixture.nativeCapability = nativeCapability;
@@ -134,7 +136,7 @@ async function prepare(test, gitOrigin) {
       capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true }
     }])),
     token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
-  await json(fixture.catalog, { ...(test.first_run ? { default_model: `${fixture.provider}/tiny` } : {}), [fixture.provider]: provider });
+  await json(fixture.catalog, { ...(test.first_run ? { default_model: `${fixture.provider}/tiny` } : {}), [fixture.provider]: provider, morph: { ...provider, models: { ...provider.models, "morph-kimik31": Object.values(provider.models)[0], "morph-dsv41flash": Object.values(provider.models)[0] } } });
   fixture.env.E2E_MOCK_URL = fixture.url;
   fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
   fixture.requested = request => events.has(requestKey(test.id, request));
@@ -143,7 +145,7 @@ async function prepare(test, gitOrigin) {
   });
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
   const selection = ["--workspace", fixture.workspace, "--catalog", fixture.catalog,
-    ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`])];
+    ...(test.first_run ? [] : ["--model", "morph/morph-kimik31"])];
   const extra = expand(test.extra_args ?? [], fixture);
   fixture.clientArgs = [...selection, ...extra];
   fixture.args = [...selection, "--settings-root", fixture.settings,
@@ -310,7 +312,7 @@ async function execute(test, prepared) {
       try {
         assert.ok(process.env.E2E_CREDENTIALS_FIXTURE && isAbsolute(process.env.E2E_CREDENTIALS_FIXTURE),
           "E2E_CREDENTIALS_FIXTURE must name the absolute native provider credential fixture");
-        const removed = await processes.run(process.env.E2E_CREDENTIALS_FIXTURE, [fixture.provider], { env: fixture.env });
+        const removed = await processes.run(process.env.E2E_CREDENTIALS_FIXTURE, [fixture.credential_service], { env: fixture.env });
         assert.equal(removed.code, 0, removed.stderr);
       } catch (error) {
         result = { ...result, status: "fail", credential_cleanup: failureReport(error) };

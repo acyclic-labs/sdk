@@ -3,7 +3,7 @@
   "workspace": {
     "kind": "plain",
     "files": {
-      "prices.jsonl": "{\"version\":1,\"revision\":\"topology-e2e-v1\",\"provider\":\"e2e\",\"model\":\"tiny\",\"effective_at\":0,\"currency\":\"USD\",\"input_nano_units_per_million\":1000000000,\"output_nano_units_per_million\":2000000000,\"cached\":{\"kind\":\"included\"},\"cache_write\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"}}\n"
+      "prices.jsonl": "{\"version\":1,\"revision\":\"topology-e2e-v1\",\"provider\":\"morph\",\"model\":\"morph-kimik31\",\"effective_at\":0,\"currency\":\"USD\",\"input_nano_units_per_million\":1000000000,\"output_nano_units_per_million\":2000000000,\"cached\":{\"kind\":\"included\"},\"cache_write\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"}}\n{\"version\":1,\"revision\":\"topology-e2e-v1\",\"provider\":\"morph\",\"model\":\"morph-dsv41flash\",\"effective_at\":0,\"currency\":\"USD\",\"input_nano_units_per_million\":1000000000,\"output_nano_units_per_million\":2000000000,\"cached\":{\"kind\":\"included\"},\"cache_write\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"}}\n"
     }
   },
   "model": {

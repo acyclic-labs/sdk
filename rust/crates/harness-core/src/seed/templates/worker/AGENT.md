@@ -1,5 +1,6 @@
 ---
 version: 1
+model: morph/morph-dsv41flash
 context: fork
 may_spawn: [worker, advisor, reviewer]
 ---

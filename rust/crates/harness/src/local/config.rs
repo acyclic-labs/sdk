@@ -183,6 +183,15 @@ impl LocalHarnessConfig {
         injected: bool,
     ) -> Result<Self> {
         let Some((models, selection)) = self.models.take() else {
+            if let Some((model, _)) = &self.model {
+                let role = crate::templates::root()?.model;
+                let fixed = format!("{}/{}", model.provider, model.name);
+                if crate::templates::resolve_model(role.as_deref(), Some(&fixed))
+                    != Some(fixed.as_str())
+                {
+                    return Err(Error::Invalid("configured role model differs from the fixed binding; use LocalHarnessConfig::resolving with a catalog that resolves the role model".into()));
+                }
+            }
             return Ok(self);
         };
         let selection = match selection {
@@ -193,7 +202,10 @@ impl LocalHarnessConfig {
                 .flatten()
                 .unwrap_or_else(|| models.default_model().to_owned()),
         };
-        self.model = Some(models.resolve(&selection)?);
+        let role = crate::templates::root()?.model;
+        let selection = crate::templates::resolve_model(role.as_deref(), Some(&selection))
+            .ok_or_else(|| Error::Invalid("root model absent".into()))?;
+        self.model = Some(models.resolve(selection)?);
         for model in self.approval_policy.models() {
             self.approval_models
                 .insert(model.into(), models.resolve(model)?);
@@ -617,7 +629,7 @@ mod resolver_tests {
     // 1k compositions over one resolver construct each selection's provider
     // once; a changed selection, here a changed settings model, resolves anew.
     #[test]
-    fn shared_resolver_reuses_providers_and_resolves_changed_models_anew() -> Result<()> {
+    fn role_model_wins_over_settings_and_session_selection_with_one_provider() -> Result<()> {
         let constructed = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&constructed);
         let models = Arc::new(ModelResolver::new("first", move |selection| {
@@ -643,13 +655,19 @@ mod resolver_tests {
         };
         for _ in 0..1000 {
             let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
-            assert_eq!(selected(config.resolve(Some(&settings()), true)?)?, "first");
+            assert_eq!(
+                selected(config.resolve(Some(&settings()), true)?)?,
+                "morph/morph-kimik31"
+            );
         }
         assert_eq!(constructed.load(Ordering::Relaxed), 1);
         std::fs::write(codex.path().join("config.toml"), "model = \"second\"\n")
             .map_err(storage)?;
         let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
-        assert!(selected(config.resolve(Some(&settings()), true)?)?.ends_with("second"));
+        assert_eq!(
+            selected(config.resolve(Some(&settings()), true)?)?,
+            "morph/morph-kimik31"
+        );
         let explicit = LocalHarnessConfig::resolving(
             workspace.path(),
             Arc::clone(&models),
@@ -657,12 +675,47 @@ mod resolver_tests {
         );
         assert_eq!(
             selected(explicit.resolve(Some(&settings()), true)?)?,
-            "first"
+            "morph/morph-kimik31"
         );
         let defaults = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None)
             .without_user_settings();
-        assert_eq!(selected(defaults.resolve(None, true)?)?, "first");
-        assert_eq!(constructed.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            selected(defaults.resolve(None, true)?)?,
+            "morph/morph-kimik31"
+        );
+        assert_eq!(constructed.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod fixed_role_binding_tests {
+    use super::*;
+
+    #[test]
+    fn incompatible_fixed_binding_requires_a_role_resolver_before_opening() -> Result<()> {
+        let provider: Arc<dyn ModelProvider> =
+            Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
+        let model = Model::new("other".into(), "fixed".into(), "1".into())?;
+        let config = LocalHarnessConfig::new(".", (model, provider));
+        let error = match config.resolve(None, true) {
+            Err(error) => error,
+            Ok(_) => return Err(Error::Invalid("incompatible binding admitted".into())),
+        };
+        assert!(error.to_string().contains("LocalHarnessConfig::resolving"));
+        Ok(())
+    }
+
+    #[test]
+    fn fixed_binding_for_the_configured_role_remains_supported() -> Result<()> {
+        let provider: Arc<dyn ModelProvider> =
+            Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
+        let model = Model::new("morph".into(), "morph-kimik31".into(), "1".into())?;
+        let config = LocalHarnessConfig::new(".", (model.clone(), provider));
+        assert_eq!(
+            config.resolve(None, true)?.model.map(|binding| binding.0),
+            Some(model)
+        );
         Ok(())
     }
 }

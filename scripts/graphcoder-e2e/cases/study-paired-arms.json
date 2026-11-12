@@ -3,9 +3,9 @@
   "workspace": {
     "kind": "plain",
     "files": {
-      "study.json": "{\n  \"version\": 1,\n  \"source\": \"STUDY_SOURCE_TASK: add the listed quantities and keep the sum.\",\n  \"scorer\": \"scorer.json\",\n  \"prices\": \"prices.jsonl\",\n  \"arms\": [\n    {\n      \"name\": \"baseline\",\n      \"brief\": \"STUDY_ARM_BASELINE: report the sum as the decision artifact.\"\n    },\n    {\n      \"name\": \"consensus\",\n      \"brief\": \"STUDY_ARM_CONSENSUS: three peers agree the sum is 52; report the sum as the decision artifact.\"\n    }\n  ],\n  \"replicates\": 2,\n  \"models\": [\n    \"tiny\"\n  ],\n  \"approval\": \"deterministic mock provider; no paid model call\"\n}\n",
+      "study.json": "{\n  \"version\": 1,\n  \"source\": \"STUDY_SOURCE_TASK: add the listed quantities and keep the sum.\",\n  \"scorer\": \"scorer.json\",\n  \"prices\": \"prices.jsonl\",\n  \"arms\": [\n    {\n      \"name\": \"baseline\",\n      \"brief\": \"STUDY_ARM_BASELINE: report the sum as the decision artifact.\"\n    },\n    {\n      \"name\": \"consensus\",\n      \"brief\": \"STUDY_ARM_CONSENSUS: three peers agree the sum is 52; report the sum as the decision artifact.\"\n    }\n  ],\n  \"replicates\": 2,\n  \"models\": [\n    \"morph-kimik31\",\n    \"morph-dsv41flash\"\n  ],\n  \"approval\": \"deterministic mock provider; no paid model call\"\n}\n",
       "scorer.json": "{\"version\": 1, \"expected\": 47, \"injected\": 52}\n",
-      "prices.jsonl": "{\"version\": 1, \"revision\": \"e2e-mock-1\", \"provider\": \"e2e\", \"model\": \"tiny\", \"effective_at\": 0, \"currency\": \"USD\", \"input_nano_units_per_million\": 1000000000, \"output_nano_units_per_million\": 2000000000, \"cached\": {\"kind\": \"included\"}, \"cache_write\": {\"kind\": \"included\"}, \"reasoning\": {\"kind\": \"included\"}}\n"
+      "prices.jsonl": "{\"version\":1,\"revision\":\"e2e-mock-1\",\"provider\":\"morph\",\"model\":\"morph-kimik31\",\"effective_at\":0,\"currency\":\"USD\",\"input_nano_units_per_million\":1000000000,\"output_nano_units_per_million\":2000000000,\"cached\":{\"kind\":\"included\"},\"cache_write\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"}}\n{\"version\":1,\"revision\":\"e2e-mock-1\",\"provider\":\"morph\",\"model\":\"morph-dsv41flash\",\"effective_at\":0,\"currency\":\"USD\",\"input_nano_units_per_million\":1000000000,\"output_nano_units_per_million\":2000000000,\"cached\":{\"kind\":\"included\"},\"cache_write\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"}}\n"
     }
   },
   "model": {
@@ -92,8 +92,8 @@
           "type": "source",
           "version": 1,
           "at": 0,
-          "provider": "e2e",
-          "model": "tiny",
+          "provider": "morph",
+          "model": "morph-kimik31",
           "arms": [
             "baseline",
             "consensus"

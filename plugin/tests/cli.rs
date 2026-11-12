@@ -99,6 +99,7 @@ async fn explicit_home_module_configures_the_first_model_call() {
     )
     .unwrap();
     let input = format!("agent.ts={}", source.display());
+    let plugins = task_plugins(&fixture);
     let mut endpoint = graphcoder_command(&fixture);
     endpoint.args([
         "--endpoint",
@@ -125,6 +126,8 @@ async fn explicit_home_module_configures_the_first_model_call() {
             "physical",
             "--home-file",
             &input,
+            "--home-file",
+            &plugins,
             "-p",
             "reply",
         ],
@@ -134,13 +137,13 @@ async fn explicit_home_module_configures_the_first_model_call() {
     succeeded(&output);
     let requests = model.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0]["model"], "tiny");
+    assert_eq!(requests[0]["model"], "morph-kimik31");
     assert_eq!(requests[0]["temperature"], json!(0.25));
     model.close().await;
 }
 
 #[tokio::test]
-async fn home_model_selection_preserves_only_explicit_model_requirements() {
+async fn role_model_wins_over_home_selection_and_explicit_requirements_fail_closed() {
     for (explicit, credentials_available) in [(false, true), (true, true), (false, false)] {
         let fixture = fixture();
         let model = model(fixture._directory.path()).await;
@@ -149,13 +152,14 @@ async fn home_model_selection_preserves_only_explicit_model_requirements() {
         catalog["unused"] = catalog["graphcoder-qual"].clone();
         catalog["unused"]["authentication"] = json!("api_key");
         catalog["graphcoder-qual"]["authentication"] = json!("api_key");
+        catalog["morph"]["authentication"] = json!("api_key");
         catalog["default_model"] = json!("unused/tiny");
         std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
         let credentials = fixture._directory.path().join("credentials.json");
         std::fs::write(
             &credentials,
             serde_json::to_vec(&json!({"api_keys": if credentials_available {
-                json!({"graphcoder-qual": "fixture-key"})
+                json!({"graphcoder-qual": "fixture-key", "morph": "fixture-key"})
             } else {
                 json!({})
             }}))
@@ -189,7 +193,8 @@ async fn home_model_selection_preserves_only_explicit_model_requirements() {
         if !credentials_available {
             assert!(!output.status.success());
             assert!(
-                String::from_utf8_lossy(&output.stderr).contains("API key is unavailable"),
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("model provider API key is unavailable"),
                 "{output:?}"
             );
             assert_eq!(model.generated(), 0);
@@ -202,9 +207,7 @@ async fn home_model_selection_preserves_only_explicit_model_requirements() {
             assert_eq!(model.generated(), 0);
         } else {
             succeeded(&output);
-            let requests = model.requests.lock().unwrap().clone();
-            assert_eq!(requests.len(), 1);
-            assert_eq!(requests[0]["model"], "drifted");
+            assert_eq!(model.requests.lock().unwrap()[0]["model"], "morph-kimik31");
         }
         model.close().await;
     }
@@ -259,14 +262,19 @@ async fn model_adapter(
             .unwrap();
     });
     let catalog = directory.join("catalog.json");
-    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
+    let mut document = json!({"graphcoder-qual":{
         "adapter":adapter,"authentication":"optional","base_url":format!("http://{address}"),
         "models":{
             "tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}},
             "drifted":{"capacity":{"context_tokens":4096,"output_tokens":512},"features":{"tools":true,"images":false}}
         },"max_event_bytes":4096,
         "token_counter": (adapter != "chat").then(|| json!({"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}))
-    }})).unwrap()).unwrap();
+    }});
+    document["morph"] = document["graphcoder-qual"].clone();
+    for name in ["morph-kimik31", "morph-dsv41flash"] {
+        document["morph"]["models"][name] = document["graphcoder-qual"]["models"]["tiny"].clone();
+    }
+    std::fs::write(&catalog, serde_json::to_vec(&document).unwrap()).unwrap();
     Model {
         catalog,
         requests,
@@ -357,6 +365,18 @@ fn fixture() -> Fixture {
     }
 }
 
+// These finite scripts prove original task execution, not settlement feedback.
+// Use the existing Home plugin setting, as local open_scripted fixtures do.
+fn task_plugins(fixture: &Fixture) -> String {
+    let source = fixture._directory.path().join("task-plugins.ts");
+    std::fs::write(
+        &source,
+        "export default base => ({ ...base, feedback: { ...base.feedback, enabled: false } });",
+    )
+    .unwrap();
+    format!("plugins.ts={}", source.display())
+}
+
 fn graphcoder_command(fixture: &Fixture) -> Command {
     let mut command = Command::new(acyclic_test_support::cargo_binary!("acyclic"));
     fixture.custody.configure(|key, value| {
@@ -373,9 +393,22 @@ fn graphcoder_command(fixture: &Fixture) -> Command {
         .env("ACYCLIC_LOG", "off")
         .env_remove("ACYCLIC_MODEL")
         .env_remove("OPENAI_API_KEY")
+        .env_remove("MORPH_API_KEY")
         .current_dir(&fixture.workspace)
         .arg("--workspace")
-        .arg(&fixture.workspace);
+        .arg(&fixture.workspace)
+        .env(
+            "ACYCLIC_KEYCHAIN_SERVICE",
+            format!(
+                "e2e-cli-{}",
+                fixture
+                    ._directory
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+            ),
+        );
     command
 }
 
@@ -386,7 +419,7 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
         .arg(&fixture.settings)
         .arg("--catalog")
         .arg(catalog)
-        .args(["--model", "graphcoder-qual/tiny"])
+        .args(["--model", "morph/morph-kimik31"])
         .args(args);
     capture(command, stdin).await
 }
@@ -588,22 +621,22 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     #[cfg(unix)]
     assert!(std::fs::write(fixture.home.join("must-not-write"), b"refused").is_err());
     let model = model(fixture._directory.path()).await;
-    let run = |operation: &'static str| {
-        graphcoder(
-            &fixture,
-            &model.catalog,
-            vec!["--operation", operation, "-p", "hello"],
-            "",
-        )
+    let plugins = task_plugins(&fixture);
+    let run = |operation: &'static str, initialize: bool| {
+        let mut arguments = vec!["--operation", operation, "-p", "hello"];
+        if initialize {
+            arguments.extend(["--home-file", plugins.as_str()]);
+        }
+        graphcoder(&fixture, &model.catalog, arguments, "")
     };
-    assert_eq!(succeeded(&run("first").await), "fixture answer\n");
+    assert_eq!(succeeded(&run("first", true).await), "fixture answer\n");
     assert_eq!(model.generated(), 1);
     // The same operation names the same message: a second process prints the
     // settled answer without generating again.
-    assert_eq!(succeeded(&run("first").await), "fixture answer\n");
+    assert_eq!(succeeded(&run("first", false).await), "fixture answer\n");
     assert_eq!(model.generated(), 1);
     // Another operation is a new message to the same root agent.
-    assert_eq!(succeeded(&run("second").await), "fixture answer\n");
+    assert_eq!(succeeded(&run("second", false).await), "fixture answer\n");
     assert_eq!(model.generated(), 2);
     // Invalid user settings cannot become an implicit model or tool source in
     // default-config mode. Ordinary MCP loading still rejects these same bytes.
@@ -616,23 +649,30 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     let usage = explicit._directory.path().join("usage.jsonl");
     let transcripts = explicit._directory.path().join("transcripts");
     let mut previous_transcript = None;
-    for _ in 0..2 {
+    let explicit_plugins = task_plugins(&explicit);
+    for attempt in 0..2 {
         assert_eq!(
             succeeded(
                 &graphcoder(
                     &explicit,
                     &model.catalog,
-                    vec![
-                        "--default-config",
-                        "--usage-jsonl",
-                        usage.to_str().unwrap(),
-                        "--transcripts",
-                        transcripts.to_str().unwrap(),
-                        "--operation",
-                        "explicit-defaults",
-                        "-p",
-                        "hello"
-                    ],
+                    {
+                        let mut arguments = vec![
+                            "--default-config",
+                            "--usage-jsonl",
+                            usage.to_str().unwrap(),
+                            "--transcripts",
+                            transcripts.to_str().unwrap(),
+                            "--operation",
+                            "explicit-defaults",
+                            "-p",
+                            "hello",
+                        ];
+                        if attempt == 0 {
+                            arguments.extend(["--home-file", explicit_plugins.as_str()]);
+                        }
+                        arguments
+                    },
                     "",
                 )
                 .await
@@ -685,8 +725,8 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
         assert_eq!(index.len(), 1, "replay replaces the agent index");
         assert_eq!(index[0]["agent_path"], row["agent_path"]);
         assert_eq!(index[0]["parent"], Value::Null);
-        assert_eq!(row["provider"], "graphcoder-qual");
-        assert_eq!(row["model"], "tiny");
+        assert_eq!(row["provider"], "morph");
+        assert_eq!(row["model"], "morph-kimik31");
         assert_eq!(row["completed"], true);
         assert_eq!(row["tokens"]["input"], 64);
         assert_eq!(row["tokens"]["output"], 2);
@@ -1471,10 +1511,12 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     let mut catalog: Value =
         serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
     catalog["default_model"] = json!("graphcoder-qual/tiny");
-    catalog["graphcoder-qual"]["models"]["tiny"]["capacity"] =
+    catalog["morph"]["models"]["morph-kimik31"]["capacity"] =
         json!({"context_tokens":1_048_576,"output_tokens":1_048_576});
     std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
+    let plugins = task_plugins(&fixture);
     let mut command = graphcoder_command(&fixture);
+    command.arg("--home-file").arg(&plugins);
     command.arg("--catalog").arg(&model.catalog).args([
         "--default-config",
         "--operation",
@@ -1493,10 +1535,15 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             )
             .unwrap()
             .without_user_settings()
+            .feedback_plugin(false)
+            .topology(acyclic_harness::topology::Topology::select("swarm").unwrap())
+            .unwrap()
             .state_directory(fixture._directory.path().join(state))
             .working_directory(&fixture.workspace)
             .unwrap()
     };
+    let cli = model.requests.lock().unwrap()[0].clone();
+    let embedded_request = model.generated();
     let embedded_config = || configured(None, "embedded-state");
     assert_eq!(
         embedded::answer(embedded_config(), "parity", "hello")
@@ -1504,45 +1551,46 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             .unwrap(),
         "fixture answer"
     );
-    let requests = model.requests.lock().unwrap().clone();
-    let [cli, embedded] = requests.as_slice() else {
-        panic!("both hosts must submit exactly one original request");
-    };
+    let embedded = model.requests.lock().unwrap()[embedded_request].clone();
     let same_contract = |left: &Value, right: &Value| {
         [
             "model",
             "tools",
             "instructions",
-            "input",
             "max_output_tokens",
             "reasoning",
         ]
         .iter()
         .all(|field| left.get(field) == right.get(field))
     };
-    assert_eq!(cli["model"], "tiny");
+    assert_eq!(cli["model"], "morph-kimik31");
     assert!(cli.get("max_output_tokens").is_none());
     assert!(!cli["tools"].as_array().unwrap().is_empty());
-    assert!(cli.to_string().contains("Preserve Unicode Ï€"));
+    for request in [&cli, &embedded] {
+        let input = request["input"].to_string();
+        assert!(input.contains("Preserve Unicode Ï€"));
+        assert!(input.contains("hello"));
+    }
     assert!(
-        same_contract(cli, embedded),
+        same_contract(&cli, &embedded),
         "CLI={cli}; embedding={embedded}"
     );
-    // The alternate embedding still returns the same answer from this endpoint.
-    // Its actual different model/capacity or missing tool must fail request parity.
+    // A configured role prevents fallback-model drift; removing tools still
+    // changes the contract even when the endpoint returns the same answer.
     for changed_model in [true, false] {
         let selected = if changed_model { "drifted" } else { "tiny" };
         let mut config = configured(Some(selected), selected);
         if !changed_model {
             config = config.without_default_tools();
         }
+        let original_request = model.generated();
         assert_eq!(
             embedded::answer(config, "parity", "hello").await.unwrap(),
             "fixture answer"
         );
-        let actual = model.requests.lock().unwrap().last().unwrap().clone();
+        let actual = model.requests.lock().unwrap()[original_request].clone();
         if changed_model {
-            assert_eq!(actual["model"], "drifted");
+            assert_eq!(actual["model"], "morph-kimik31");
             assert_eq!(actual["tools"], cli["tools"]);
         } else {
             assert_eq!(actual["model"], cli["model"]);
@@ -1551,9 +1599,8 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
                 actual["tools"].as_array().unwrap().len() < cli["tools"].as_array().unwrap().len()
             );
         }
-        assert!(!same_contract(cli, &actual), "{actual}");
+        assert_eq!(same_contract(&cli, &actual), changed_model, "{actual}");
     }
-    assert_eq!(model.generated(), 4);
     // A new identity appends another prompt to the same persistent conversation.
     assert_eq!(
         embedded::answer(embedded_config(), "next", "another prompt")
@@ -1561,7 +1608,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             .unwrap(),
         "fixture answer"
     );
-    assert_eq!(model.generated(), 5);
+    let generated = model.generated();
     // Reopening with the same identity and prompt recovers without dispatch.
     assert_eq!(
         embedded::answer(embedded_config(), "next", "another prompt")
@@ -1569,13 +1616,13 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             .unwrap(),
         "fixture answer"
     );
-    assert_eq!(model.generated(), 5);
+    assert_eq!(model.generated(), generated);
     assert!(
         embedded::answer(embedded_config(), "next", "changed prompt")
             .await
             .is_err()
     );
-    assert_eq!(model.generated(), 5);
+    assert_eq!(model.generated(), generated);
     model.close().await;
 }
 
