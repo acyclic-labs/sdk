@@ -45,8 +45,8 @@ numeric statuses. Apple interaction-not-allowed is
 InteractionRequired(-25308); it cannot distinguish a locked keychain from an
 unavailable prompt. Credential contents never enter diagnostics.
 
-The store-owned seed reference is persisted only in owner.v3. If that record
-is absent but owner.json or owner.v2 exists, both opening and explicit deletion
+The store-owned seed reference is persisted only in owner.v4. If that record
+is absent but owner.json, owner.v2 or owner.v3 exists, both opening and explicit deletion
 return Error::Conflict with: local state at <dir> uses an older format; remove
 that directory to start fresh. Refusal happens before decoding the older
 record or accessing credentials, and leaves its bytes unchanged. There is

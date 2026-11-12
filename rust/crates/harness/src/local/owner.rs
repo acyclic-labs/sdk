@@ -259,8 +259,10 @@ impl RootWitness {
 
 /// The store-owned seed reference changes the enclosing owner format. Older
 /// names are refused before decoding their records or accessing credentials.
-const RECORD: &str = "owner.v3";
-const OLDER_RECORDS: [&str; 2] = ["owner.json", "owner.v2"];
+// The record name is the local store's generation: owner.v3 stores hold the
+// retired actor state, invocation and fork-acceptance records.
+const RECORD: &str = "owner.v4";
+const OLDER_RECORDS: [&str; 3] = ["owner.json", "owner.v2", "owner.v3"];
 
 impl Owner {
     pub(super) fn open(

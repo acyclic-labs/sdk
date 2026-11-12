@@ -9,10 +9,11 @@ use bytes::Bytes;
 use prost::Message;
 use sha2::{Digest, Sha256};
 
-const HEADER: &str = "acyclic.actors.invoke";
-// Version 2 requires the original caller's journal root. Version 1 cannot be
-// completed here without inventing write authority for a missing caller.
-const VERSION: &[u8] = b"2";
+// The original caller's journal root is required. The retired
+// `acyclic.actors.invoke` attribute belongs to the previous record generation,
+// which stores refuse as a whole.
+const HEADER: &str = "acyclic.actor.invoke";
+const VERSION: &[u8] = b"1";
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct RequestWire {
@@ -176,7 +177,7 @@ impl Invocation {
 
     pub(crate) fn identity(&self, state_path: &str) -> [u8; 32] {
         let mut hash = Sha256::new();
-        hash.update(b"acyclic.actors.invoke.v2");
+        hash.update(b"acyclic.actor.invoke.v1");
         let actor = self.actor.encode();
         for part in [
             self.caller.as_str().as_bytes(),
