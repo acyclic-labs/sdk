@@ -313,8 +313,11 @@ async fn hand_back(
 ) -> Result<Option<Vec<String>>> {
     use acyclic_fs::JoinOutcome;
     let permit = acyclic_fs::PublicationPermit::Unrestricted;
+    // Git semantics: content decides a conflict, never incidental metadata
+    // such as two commands' write times.
     let plan = fork
         .join_into(target)
+        .git_metadata()
         .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .map_err(|failure| Error::from(failure.error))?
