@@ -130,7 +130,12 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
         let entry = observed
             .send("author-and-call", "Write and call a program")
             .await?;
-        assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+        assert!(
+            entry.outcome.is_completed(),
+            "{:?}; requests: {:#?}",
+            entry.outcome,
+            provider.requests()
+        );
         let requests = provider.requests();
         assert_eq!(requests.len(), first + 3);
         assert_eq!(result(&requests[first + 1], "author")?, "authored");
