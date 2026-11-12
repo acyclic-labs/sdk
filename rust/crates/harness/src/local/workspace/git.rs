@@ -36,7 +36,6 @@ struct Invocation<'a> {
     checkout: &'a workspace::View,
     view: crate::tools::git::View<'a>,
     source: Option<&'a workspace::MountedVolume>,
-    lease: &'a acyclic_fs::OperationWindowLease,
     watcher: &'a mut Option<capture::Cursor>,
     access: &'a crate::filesystem::WorkspaceAccess,
     capture_cut: acyclic_fs::GenerationId,
@@ -350,22 +349,32 @@ impl Commands<'_> {
             .map_or_else(|| checkout.into(), |source| source.workspace.view());
         let owner = context.owner;
         owner.verify().await?;
-        let volume = view.workspace();
-        let now = acyclic_stream::UnixMillisClock::now_unix_millis(
-            &acyclic_stream::SystemUnixMillisClock,
-        );
-        let (parent, recovered) = self
-            .recover_window(workspace, context, view, source.is_none(), now)
-            .await?;
         if source.is_some()
-            && recovered
-            && let Some(native) = native
+            && let Some(outcome) = acyclic_fs::OperationWindowCoordinator::new(
+                workspace.filesystem.operation_window_store(),
+            )
+            .recover_workspace(
+                view.workspace(),
+                acyclic_stream::UnixMillisClock::now_unix_millis(
+                    &acyclic_stream::SystemUnixMillisClock,
+                ),
+                acyclic_fs::OperationReconcileLimits::default(),
+            )
+            .await
+            .map_err(storage)?
         {
-            owner.verify().await?;
-            native.advance_to_head().await?;
-            owner.verify().await?;
+            if reconciliation::terminal(&outcome)
+                && let Some(native) = native
+            {
+                owner.verify().await?;
+                native.advance_to_head().await?;
+            }
+            reconciliation_generation(outcome)?;
         }
-        let lease = begin_window(workspace, context, volume.id(), parent.id(), now).await?;
+        // Runtime ownership and the checkout guard cover the whole command.
+        // Capture user edits before reconciling the parent at command close;
+        // a second, timed lease must not revoke this still-owned operation.
+        let parent = head(view).await?;
         let access = crate::filesystem::WorkspaceAccess::new(
             self.verifier,
             self.signed,
@@ -388,7 +397,6 @@ impl Commands<'_> {
                     checkout,
                     view,
                     source: source.as_deref(),
-                    lease: &lease,
                     watcher,
                     access: &access,
                     capture_cut: parent.id(),
@@ -396,15 +404,49 @@ impl Commands<'_> {
             )
             .await;
         let before_close = head(view).await?;
-        if source.is_none()
+        let parent = match view
+            .workspace()
+            .parent_advance(
+                None,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+        {
+            Ok(receipt) => receipt.value,
+            Err(failure) if matches!(failure.error, acyclic_fs::WorkspaceError::NotFork) => None,
+            Err(failure) => return Err(storage(failure)),
+        };
+        let journaled = parent.is_some()
+            && source.is_none()
             && !result
                 .as_ref()
-                .is_ok_and(|output| output.switched.is_some())
-        {
+                .is_ok_and(|output| output.switched.is_some());
+        if journaled {
             self.prepare_reconciliation(workspace, context, b"close", &before_close)
                 .await?;
         }
-        let publication = finish_window(workspace, view, &lease).await;
+        let (publication, terminal) = if let Some(parent) = parent {
+            match acyclic_fs::OperationWindowCoordinator::new(
+                workspace.filesystem.operation_window_store(),
+            )
+            .parent_advanced_workspace(
+                view.workspace(),
+                parent,
+                acyclic_fs::OperationReconcileLimits::default(),
+            )
+            .await
+            {
+                Ok(Some(outcome)) => {
+                    let terminal = reconciliation::terminal(&outcome);
+                    (reconciliation_generation(outcome).map(|_| ()), terminal)
+                }
+                Ok(None) => (Ok(()), true),
+                Err(error) => (Err(storage(error)), false),
+            }
+        } else {
+            (Ok(()), true)
+        };
         // In-place actions publish directly to the workspace, including conflict
         // projections. Refresh its clean mount before another command can enter
         // this checkout. Switched actions select their destination mount below.
@@ -418,7 +460,7 @@ impl Commands<'_> {
                     .as_ref()
                     .is_ok_and(|output| output.switched.is_some())
             {
-                if publication.is_ok() {
+                if terminal {
                     self.publish_reconciliation(workspace, context, true)
                         .await?;
                 } else {
@@ -433,45 +475,6 @@ impl Commands<'_> {
             .await
     }
 
-    async fn recover_window(
-        &self,
-        workspace: &LocalWorkspace,
-        context: &CommandContext<'_>,
-        view: crate::tools::git::View<'_>,
-        checkout: bool,
-        now: u64,
-    ) -> Result<(
-        acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>,
-        bool,
-    )> {
-        let before = head(view).await?;
-        if checkout {
-            self.prepare_reconciliation(workspace, context, b"recover", &before)
-                .await?;
-        }
-        // Expired operation windows must settle before another publication.
-        let recovered = acyclic_fs::OperationWindowCoordinator::new(
-            workspace.filesystem.operation_window_store(),
-        )
-        .recover_workspace(
-            view.workspace(),
-            now,
-            acyclic_fs::OperationReconcileLimits::default(),
-        )
-        .await
-        .map_err(storage)?;
-        let changed = recovered.is_some();
-        let parent = match recovered {
-            Some(outcome) => reconciliation_generation(outcome)?,
-            None => before,
-        };
-        if checkout {
-            self.publish_reconciliation(workspace, context, changed)
-                .await?;
-        }
-        Ok((parent, changed))
-    }
-
     async fn execute(
         &self,
         arguments: &[String],
@@ -483,7 +486,6 @@ impl Commands<'_> {
             checkout,
             view,
             source,
-            lease,
             watcher,
             access,
             capture_cut,
@@ -501,7 +503,7 @@ impl Commands<'_> {
                 (workspace, checkout),
                 watcher,
                 (OperationId::from_bytes(capture_operation.into_bytes()), 0),
-                lease.publication_permit(),
+                acyclic_fs::PublicationPermit::Unrestricted,
             )
             .await?;
         }
@@ -519,7 +521,7 @@ impl Commands<'_> {
                 } else {
                     workspace.view().workspace().id()
                 },
-                lease: Some(lease.clone()),
+                lease: None,
                 checkout: (source.is_none() && workspace.mounted.is_none())
                     .then_some(workspace.identity),
                 author: "LocalHarness",
@@ -599,54 +601,6 @@ impl Commands<'_> {
         let view = state.as_ref().unwrap_or_else(|| workspace.view());
         reconciliation::publish(workspace, view, refresh_mount, &|| context.owner.verify()).await?;
         Ok(())
-    }
-}
-
-async fn begin_window(
-    workspace: &LocalWorkspace,
-    context: &CommandContext<'_>,
-    volume: acyclic_fs::WorkspaceId,
-    parent: acyclic_fs::GenerationId,
-    now: u64,
-) -> Result<acyclic_fs::OperationWindowLease> {
-    const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
-    acyclic_fs::OperationWindowCoordinator::new(workspace.filesystem.operation_window_store())
-        .begin_with_lease_id(
-            volume,
-            parent,
-            context.operation.to_string(),
-            now,
-            now.saturating_add(GIT_PUBLICATION_LEASE_MILLIS),
-            context.owner.lease(context.operation),
-        )
-        .await
-        .map_err(storage)
-}
-
-async fn finish_window(
-    workspace: &LocalWorkspace,
-    view: crate::tools::git::View<'_>,
-    lease: &acyclic_fs::OperationWindowLease,
-) -> Result<()> {
-    // Closing can rebase the source after the command has published. The
-    // caller preserves a switched destination rather than refreshing it here.
-    let outcome =
-        acyclic_fs::OperationWindowCoordinator::new(workspace.filesystem.operation_window_store())
-            .finish_workspace(
-                view.workspace(),
-                lease,
-                acyclic_stream::UnixMillisClock::now_unix_millis(
-                    &acyclic_stream::SystemUnixMillisClock,
-                ),
-                acyclic_fs::OperationReconcileLimits::default(),
-            )
-            .await
-            .map_err(storage)?;
-    match outcome {
-        acyclic_fs::WorkspaceOperationFinish::Reconciled(outcome) => {
-            reconciliation_generation(outcome).map(|_| ())
-        }
-        _ => Ok(()),
     }
 }
 

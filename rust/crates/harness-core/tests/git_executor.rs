@@ -708,7 +708,7 @@ async fn fixture_native(
 /// the child must publish and track the work, never the alias, and record
 /// each parent once.
 #[tokio::test]
-async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()> {
+async fn agent_diff_exactifies_only_its_authorized_target() -> Result<()> {
     let (_temp, root, fs, store, main) = fixture_native(true).await?;
     let repository = main.workspace().id();
     acyclic_fs::WorkspaceGraph::new(store.clone())

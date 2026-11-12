@@ -71,9 +71,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     let (entered, observed) = oneshot::channel();
     let (release, released) = oneshot::channel();
     let owner = PausedOwner {
-        original: AgentOwner(crate::agent::AgentPath::root(
-            &crate::agent::AgentId::from_bytes([1; 16]),
-        )),
+        original: AgentOwner,
         entered: crate::sync::SyncMutex::new(Some(entered)),
         release: AsyncMutex::new(Some(released)),
     };
@@ -354,10 +352,6 @@ impl ViewOwner for PausedOwner {
             Ok(())
         })
     }
-
-    fn lease(&self, operation: OperationId) -> acyclic_fs::OperationLeaseId {
-        self.original.lease(operation)
-    }
 }
 
 #[tokio::test]
@@ -396,9 +390,7 @@ async fn binding_preparation_releases_the_checkout_owner() -> Result<()> {
     let (entered, observed) = oneshot::channel();
     let (release, released) = oneshot::channel();
     let owner = PausedOwner {
-        original: AgentOwner(crate::agent::AgentPath::root(
-            &crate::agent::AgentId::from_bytes([1; 16]),
-        )),
+        original: AgentOwner,
         entered: crate::sync::SyncMutex::new(Some(entered)),
         release: AsyncMutex::new(Some(released)),
     };
@@ -486,9 +478,7 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
         harness.verifier.clone(),
         harness.signed.copy(&mut None)?,
     );
-    let owner = AgentOwner(crate::agent::AgentPath::root(
-        &crate::agent::AgentId::from_bytes([1; 16]),
-    ));
+    let owner = AgentOwner;
     let bound = workspace
         .bound_task_view(
             view,

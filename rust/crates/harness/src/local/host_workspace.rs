@@ -84,7 +84,7 @@ impl HostWorkspace {
         }
         let mut result = Self {
             workspace,
-            owner: Arc::new(AgentOwner(agent.clone())),
+            owner: Arc::new(AgentOwner),
             agent,
             scope: crate::runtime::RuntimeScope::new(
                 signed.capabilities().clone(),
@@ -291,7 +291,7 @@ impl HostWorkspace {
         .await
         .map_err(storage)?;
         drop(state);
-        let child_owner: Arc<dyn ViewOwner> = Arc::new(AgentOwner(child.clone()));
+        let child_owner: Arc<dyn ViewOwner> = Arc::new(AgentOwner);
         let authority = self
             .workspace
             .mount_authority

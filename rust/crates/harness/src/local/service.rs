@@ -541,7 +541,7 @@ mod tests {
                         view,
                         binding.volume()?,
                         &state.volumes,
-                        &super::super::workspace::owner::AgentOwner(root.clone()),
+                        &super::super::workspace::owner::AgentOwner,
                         &authority,
                     )
                     .await?;
@@ -1276,7 +1276,6 @@ mod tests {
         let parent_workspace = local
             .project_workspace(
                 local.workspace.as_ref().unwrap(),
-                descendants[0].root(),
                 &binding("project"),
                 &parent_state.volumes,
                 &signed,

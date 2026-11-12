@@ -12,10 +12,6 @@ pub(in crate::local) async fn prepare(
     operation: acyclic_fs::OperationId,
     from: GitGenerationRef,
 ) -> Result<()> {
-    // The repository root has no parent and cannot be rebased by a window.
-    if from.workspace_id == workspace.view().workspace().id() {
-        return Ok(());
-    }
     replace(workspace, None, Some((operation, from))).await
 }
 
@@ -83,10 +79,61 @@ where
     Fut: Future<Output = Result<()>> + Send + 'a,
 {
     // Mount binding and tool initialization share this recovery producer.
-    // Keep its operation-window and publication futures out of both layouts.
+    // Keep its rebase and publication futures out of both layouts.
     Box::pin(async move {
-        let Some(pending) = pending else {
-            return Ok(false);
+        let coordinator = acyclic_fs::OperationWindowCoordinator::new(
+            workspace.filesystem.operation_window_store(),
+        );
+        let now = acyclic_stream::UnixMillisClock::now_unix_millis(
+            &acyclic_stream::SystemUnixMillisClock,
+        );
+        let pending = match pending {
+            Some(pending) => pending,
+            None => {
+                before_effect().await?;
+                let Some(reconcile) = coordinator
+                    .claim_reconcile(view.workspace().id(), now)
+                    .await
+                    .map_err(storage)?
+                else {
+                    return Ok(false);
+                };
+                // A branch switch can leave a core ticket without a native
+                // marker. Preserve this recovery attempt's physical edits
+                // before selecting the cut the parent rebase will publish.
+                if workspace.mounted.is_none() {
+                    let configuration = capture::configuration(workspace);
+                    capture::capture(
+                        (&configuration.0, &configuration.1),
+                        (workspace, view),
+                        &mut None,
+                        (OperationId::new(), 0),
+                        acyclic_fs::PublicationPermit::Unrestricted,
+                    )
+                    .await?;
+                    before_effect().await?;
+                }
+                // Journal the captured cut before resuming the rebase, so
+                // interruption during recovery still owes publication.
+                let from = view
+                    .workspace()
+                    .head(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(storage)?
+                    .value;
+                let pending = (
+                    reconcile.ticket,
+                    GitGenerationRef {
+                        workspace_id: view.workspace().id(),
+                        generation: from.id(),
+                    },
+                );
+                prepare(workspace, pending.0, pending.1).await?;
+                pending
+            }
         };
         let (_, source) = pending;
         if source.workspace_id != view.workspace().id() {
@@ -95,22 +142,28 @@ where
             ));
         }
         before_effect().await?;
-        let outcome = acyclic_fs::OperationWindowCoordinator::new(
-            workspace.filesystem.operation_window_store(),
-        )
-        .recover_workspace(
-            view.workspace(),
-            acyclic_stream::UnixMillisClock::now_unix_millis(
-                &acyclic_stream::SystemUnixMillisClock,
-            ),
-            acyclic_fs::OperationReconcileLimits::default(),
-        )
-        .await
-        .map_err(storage)?;
-        if let Some(outcome) = outcome {
-            super::git::reconciliation_generation(outcome)?;
-        }
+        let outcome = coordinator
+            .recover_workspace(
+                view.workspace(),
+                now,
+                acyclic_fs::OperationReconcileLimits::default(),
+            )
+            .await
+            .map_err(storage)?;
+        // Conflicts complete the coordinator ticket. Publish and acknowledge
+        // the unchanged checkout too, so the next command can capture edits
+        // that resolve the conflict. Nonterminal failures keep their intent.
+        let recovered = match outcome {
+            Some(outcome) => {
+                if !terminal(&outcome) {
+                    return super::git::reconciliation_generation(outcome).map(|_| true);
+                }
+                super::git::reconciliation_generation(outcome).map(|_| ())
+            }
+            None => Ok(()),
+        };
         replay(workspace, view, pending, true, before_effect).await?;
+        recovered?;
         Ok(true)
     })
 }
@@ -235,6 +288,18 @@ where
     before_effect().await?;
     replace(workspace, Some(pending), None).await?;
     Ok(())
+}
+
+pub(in crate::local) fn terminal<A: 'static, O: 'static>(
+    outcome: &acyclic_fs::WorkspaceRebase<A, O>,
+) -> bool {
+    matches!(
+        outcome,
+        acyclic_fs::WorkspaceRebase::Rebased(_)
+            | acyclic_fs::WorkspaceRebase::AlreadyRebased(_)
+            | acyclic_fs::WorkspaceRebase::Current(_)
+            | acyclic_fs::WorkspaceRebase::Conflicted { .. }
+    )
 }
 
 pub(in crate::local) async fn advance_mount<F, Fut>(

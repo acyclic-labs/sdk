@@ -54,7 +54,6 @@ impl LocalHarness {
                 let bound = self
                     .project_workspace(
                         workspace,
-                        &parent,
                         project.volume()?,
                         &parent_state.volumes,
                         &signed,
@@ -65,7 +64,6 @@ impl LocalHarness {
                     .merge_checkout(
                         &bound,
                         (&signed, &verifier),
-                        parent,
                         operation,
                         (branch, source.workspace().id()),
                     )
@@ -94,7 +92,7 @@ impl LocalHarness {
                 .await
                 .map_err(storage)?;
             let arguments = ["merge".to_owned(), branch];
-            let owner = super::workspace::owner::AgentOwner(parent);
+            let owner = super::workspace::owner::AgentOwner;
             let command: acyclic_stream::BoxProviderFuture<'_, _> =
                 Box::pin(crate::tools::git::run_with_guard(
                     crate::tools::git::Workspace {
@@ -128,7 +126,6 @@ impl LocalHarness {
         self.merge_checkout(
             workspace,
             (&signed, &self.verifier),
-            agent.parent().unwrap_or_else(|| agent.clone()),
             operation,
             (branch, source.workspace().id()),
         )
@@ -140,13 +137,12 @@ impl LocalHarness {
         &self,
         workspace: &Arc<super::workspace::LocalWorkspace>,
         (signed, verifier): (&crate::core::Scope, &crate::core::AuthorityVerifier),
-        owner: crate::agent::AgentPath,
         operation: OperationId,
         (branch, source): (String, acyclic_fs::WorkspaceId),
     ) -> Result<Option<String>> {
         let scope =
             crate::runtime::RuntimeScope::new(signed.capabilities().clone(), Default::default())?;
-        let owner = super::workspace::owner::AgentOwner(owner);
+        let owner = super::workspace::owner::AgentOwner;
         let command = format!("merge {branch}");
         let configuration = super::checkout_tools::capture::configuration(workspace);
         let commands = super::workspace::git::Commands {

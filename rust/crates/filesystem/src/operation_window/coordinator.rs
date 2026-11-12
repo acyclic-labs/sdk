@@ -346,10 +346,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
             let workspace = workspace.clone();
             async move {
                 match workspace
-                    .volume
-                    .fs
                     .parent_advance(
-                        &workspace.volume,
                         limits.maximum_generations,
                         crate::WorkBudget::UNBOUNDED,
                         &crate::CancellationToken::new(),

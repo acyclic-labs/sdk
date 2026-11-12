@@ -1,6 +1,21 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
+    /// The current parent generation when this fork needs reconciliation.
+    /// Returns `None` when already current, and `NotFork` for an independent
+    /// workspace. Selecting an advance never changes this workspace's head.
+    pub async fn parent_advance<W: crate::facade::FsWork>(
+        &self,
+        maximum_generations: Option<u32>,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Option<GenerationId>, WorkspaceError> {
+        self.volume
+            .fs
+            .parent_advance(&self.volume, maximum_generations, work, cancellation)
+            .await
+    }
+
     /// Forks an exact generation with the supplied limits and publication guard.
     pub async fn fork<W, G, E>(
         &self,

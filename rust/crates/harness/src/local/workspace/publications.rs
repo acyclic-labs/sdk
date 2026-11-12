@@ -335,9 +335,7 @@ mod tests {
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("no workspace".into()))?;
             let id = workspace.view().workspace().id();
-            let owner = super::super::owner::AgentOwner(crate::agent::AgentPath::root(
-                &crate::agent::AgentId::from_bytes(local.root.into_bytes()),
-            ));
+            let owner = super::super::owner::AgentOwner;
             let scope = crate::runtime::RuntimeScope::new(
                 local.signed.capabilities().clone(),
                 Default::default(),
@@ -495,9 +493,7 @@ mod tests {
             .as_ref()
             .ok_or_else(|| Error::Invalid("no workspace".into()))?;
         let id = workspace.view().workspace().id();
-        let owner = super::super::owner::AgentOwner(crate::agent::AgentPath::root(
-            &crate::agent::AgentId::from_bytes(local.root.into_bytes()),
-        ));
+        let owner = super::super::owner::AgentOwner;
         let scope = crate::runtime::RuntimeScope::new(
             local.signed.capabilities().clone(),
             Default::default(),
@@ -578,9 +574,6 @@ mod tests {
                     }
                     Ok(())
                 })
-            }
-            fn lease(&self, operation: OperationId) -> acyclic_fs::OperationLeaseId {
-                self.inner.lease(operation)
             }
         }
         let (entered, draining) = tokio::sync::oneshot::channel();

@@ -33,42 +33,13 @@ where
         let target_tree = if target.workspace_id == self.current.id() {
             target_view.view().tree(true, self.permit).await?
         } else {
-            let coordinator = OperationWindowCoordinator::new(self.fs.operation_window_store());
-            let now = now_millis();
-            let head = target_view
-                .workspace()
-                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .map_err(|failure| Error::from(failure.error))?
-                .value;
-            let lease = coordinator
-                .begin(
-                    target.workspace_id,
-                    head.id(),
-                    "git-agent-diff",
-                    now,
-                    self.lease
-                        .as_ref()
-                        .map_or(now.saturating_add(300_000), |lease| lease.expires_at_millis),
-                )
-                .await
-                .map_err(Error::from)?;
-            let tree = target_view
+            // The authorized target view exactifies its own immutable snapshot.
+            // A wall-clock lease adds no authority to this read and must not
+            // revoke an inspection while native materialization is in flight.
+            target_view
                 .view()
-                .tree(true, lease.publication_permit())
-                .await;
-            // Retire the target lease on failure too; the caller's permit is
-            // never authority to exactify a different agent's native files.
-            coordinator
-                .finish_workspace(
-                    target_view.workspace(),
-                    &lease,
-                    now_millis(),
-                    acyclic_fs::OperationReconcileLimits::default(),
-                )
-                .await
-                .map_err(Error::from)?;
-            tree?
+                .tree(true, PublicationPermit::Unrestricted)
+                .await?
         };
         let tracked_paths = repository
             .tracked_paths()

@@ -613,19 +613,12 @@ impl LocalHarness {
             (authority.scope, authority.verifier)
         };
         let workspace = self
-            .project_workspace(
-                root,
-                &receiver.path,
-                project,
-                &receiver.volumes,
-                &signed,
-                &verifier,
-            )
+            .project_workspace(root, project, &receiver.volumes, &signed, &verifier)
             .await?;
         let capture = super::checkout_tools::capture::configuration(&workspace);
         Ok(CompletionTarget {
             scope: crate::runtime::RuntimeScope::new(authority.grants, Default::default())?,
-            owner: super::workspace::owner::AgentOwner(receiver.path.clone()),
+            owner: super::workspace::owner::AgentOwner,
             clock: Arc::clone(&self.clock),
             workspace,
             signed,
@@ -640,7 +633,6 @@ impl LocalHarness {
     pub(super) async fn project_workspace(
         &self,
         workspace: &Arc<super::workspace::LocalWorkspace>,
-        agent: &AgentPath,
         project: &crate::conversation::VolumeRef,
         bindings: &[WorkspaceEntry],
         scope: &crate::core::Scope,
@@ -656,7 +648,7 @@ impl LocalHarness {
             return Ok(Arc::clone(workspace));
         }
         let view = workspace.spawned_project_view(project).await?;
-        let owner = super::workspace::owner::AgentOwner(agent.clone());
+        let owner = super::workspace::owner::AgentOwner;
         let authority = crate::filesystem::NativeMountAuthority::admitted(
             verifier.clone(),
             scope.copy(&mut None)?,
@@ -746,14 +738,7 @@ impl LocalHarness {
                 && let Some(workspace) = &self.workspace
             {
                 let workspace = self
-                    .project_workspace(
-                        workspace,
-                        &agent.path,
-                        project,
-                        &agent.volumes,
-                        scope,
-                        &verifier,
-                    )
+                    .project_workspace(workspace, project, &agent.volumes, scope, &verifier)
                     .await?;
                 let (tools, writer) = workspace
                     .executor(

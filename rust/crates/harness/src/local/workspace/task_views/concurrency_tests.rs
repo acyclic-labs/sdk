@@ -17,10 +17,6 @@ impl ViewOwner for GatedOwner {
             Ok(())
         })
     }
-
-    fn lease(&self, operation: OperationId) -> acyclic_fs::OperationLeaseId {
-        acyclic_fs::OperationLeaseId::from_bytes(operation.into_bytes())
-    }
 }
 
 #[tokio::test]
