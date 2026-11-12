@@ -3101,7 +3101,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             (input, after) = (selected, next);
         }
     }
-    let catalog = |index| -> Result<Vec<crate::context::SkillMetadata>> {
+    let catalog = |index| -> Result<Vec<crate::context::SkillSummary>> {
         let request = provider
             .request(index)
             .ok_or_else(|| Error::NotFound("context request".into()))?;
@@ -3126,7 +3126,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
                     )
             })
             .find_map(|text| {
-                serde_json::from_str::<Vec<crate::context::SkillMetadata>>(text)
+                serde_json::from_str::<Vec<crate::context::SkillSummary>>(text)
                     .ok()
                     .filter(|skills| !skills.is_empty())
             })
