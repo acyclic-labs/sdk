@@ -87,28 +87,7 @@ pub(super) fn publish(
             .directory()
             .strip_prefix(&namespace.root)
             .map_err(|_| LocalCoreStateStoreError::Integrity)?;
-        match &paths.allocation {
-            Some(allocation) => {
-                let mut work = &*allocation.work();
-                let root = crate::native_host::HostRoot::open(&namespace.root, &mut work)?;
-                root.create_directories(
-                    relative,
-                    crate::native_host::NativeDurability::Durable,
-                    &mut work,
-                )?;
-            }
-            None => {
-                let mut work = crate::native_host::ordinary_work();
-                let root = crate::native_host::HostRoot::open(&namespace.root, &mut work)
-                    .map_err(|error| LocalCoreStateStoreError::LazyWork(error.into()))?;
-                root.create_directories(
-                    relative,
-                    crate::native_host::NativeDurability::Durable,
-                    &mut work,
-                )
-                .map_err(|error| LocalCoreStateStoreError::LazyWork(error.into()))?;
-            }
-        }
+        namespace.durable_directory(relative)?;
         write_journaled(&paths, &journal.plan)?;
     }
     for (index, image) in journal.preimages.iter().enumerate().skip(previous) {

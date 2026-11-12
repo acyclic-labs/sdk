@@ -219,7 +219,8 @@ pub(super) fn open_source_root(
 ) -> Result<HostRoot, CaptureError> {
     if options
         .materialized_view
-        .is_some_and(|baseline| baseline.root_identity != options.expected_root_identity)
+        .as_ref()
+        .is_some_and(|baseline| baseline.root_identity != Some(options.expected_root_identity))
     {
         return Err(CaptureError::RootChanged);
     }

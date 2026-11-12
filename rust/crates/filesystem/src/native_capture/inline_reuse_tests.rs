@@ -8,7 +8,7 @@ async fn capture(
     baseline: Option<&NativeViewBaseline>,
 ) -> Result<CaptureReceipt, crate::OperationFailure<CaptureError>> {
     let options = CaptureOptions {
-        materialized_view: baseline.copied(),
+        materialized_view: baseline.cloned(),
         ..options.clone()
     };
     Ok(capture_subtrees_with_native_work(

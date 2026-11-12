@@ -195,7 +195,7 @@ async fn metadata_offload_keeps_original_cancellation_without_starting_host_io()
     let before = original.receipt();
     cancellation.cancel();
     let failure =
-        apply_host_metadata_offloaded(&root, &path, FileMetadata::default(), &mut receipt)
+        apply_host_metadata_offloaded(&root, &path, FileMetadata::default(), None, &mut receipt)
             .await
             .err()
             .ok_or("metadata offload ignored original cancellation")?;
@@ -241,6 +241,7 @@ fn replaced_root_is_rejected_before_destination_enumeration()
     )?;
     let failure = validate_options(
         &MaterializeOptions {
+            materialized_view: None,
             expected_root_identity: Some(original),
             ..MaterializeOptions::native(&destination)
         },
@@ -747,7 +748,7 @@ async fn native_materialization_rejects_unrepresentable_metadata()
         },
     ] {
         assert!(matches!(
-            apply_host_metadata_offloaded(&root, &host_path, metadata, &mut receipt).await,
+            apply_host_metadata_offloaded(&root, &host_path, metadata, None, &mut receipt).await,
             Err(MaterializeError::UnsupportedMetadata(_))
         ));
     }
@@ -758,7 +759,7 @@ async fn native_materialization_rejects_unrepresentable_metadata()
     };
     #[cfg(windows)]
     assert!(matches!(
-        apply_host_metadata_offloaded(&root, &host_path, metadata, &mut receipt).await,
+        apply_host_metadata_offloaded(&root, &host_path, metadata, None, &mut receipt).await,
         Err(failure) if matches!(failure, MaterializeError::UnsupportedMetadata(_))
     ));
     Ok(())

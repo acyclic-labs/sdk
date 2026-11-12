@@ -44,7 +44,7 @@ async fn publish_command(
                 MountOptions::read_write().publication(MountPublication::Manual),
             )
             .await?,
-            &crate::MaterializeOptions::native(destination.path()),
+            &recording_options(destination.path()),
             crate::WorkBudget::UNBOUNDED,
             &cancellation,
         )

@@ -611,6 +611,9 @@ pub(super) async fn open_volume(
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
         let staging = bootstrap::staging(directory)?;
+        let mut materialization = acyclic_fs::MaterializeOptions::native(&staging);
+        materialization.materialized_view =
+            Some(acyclic_fs::NativeViewBaseline::recording(&state.store));
         let cancellation = acyclic_fs::CancellationToken::new();
         let name = volume.storage_name(&mut None)?;
         let workspace = filesystem
@@ -628,7 +631,7 @@ pub(super) async fn open_volume(
                 generation
                     .materialize(
                         ["/"].into_iter(),
-                        &acyclic_fs::MaterializeOptions::native(&staging),
+                        &materialization,
                         acyclic_fs::WorkBudget::UNBOUNDED,
                         &cancellation,
                     )

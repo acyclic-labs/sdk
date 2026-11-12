@@ -26,13 +26,10 @@ async fn materialized_baseline_ignores_host_defaults_and_keeps_content_edits()
         )
         .await?
         .value;
-    crate::materialize_checkout(
-        &mut reader,
-        &crate::MaterializeOptions::native(host.path().to_path_buf()),
-        budget,
-        &cancellation,
-    )
-    .await?;
+    let metadata = crate::LocalCoreStateStore::new(state.path().join("metadata"));
+    let mut materialization = crate::MaterializeOptions::native(host.path());
+    materialization.materialized_view = Some(NativeViewBaseline::recording(&metadata));
+    crate::materialize_checkout(&mut reader, &materialization, budget, &cancellation).await?;
     let identity = capture_root_identity(host.path())?;
     let mut options = CaptureOptions {
         materialized_view: None,
@@ -52,7 +49,8 @@ async fn materialized_baseline_ignores_host_defaults_and_keeps_content_edits()
             )
             .await?
             .value;
-        options.materialized_view = normalized.then(|| NativeViewBaseline::new(identity, false));
+        options.materialized_view =
+            normalized.then(|| NativeViewBaseline::new(identity, false).recorded_in(&metadata));
         let receipt = capture_baseline(
             &mut checkout,
             &options,
@@ -107,6 +105,37 @@ async fn materialized_baseline_ignores_host_defaults_and_keeps_content_edits()
         assert!(checkout.has_pending_mutations());
         std::fs::set_permissions(file, original)?;
     }
+    let file = host.path().join("file-2");
+    let modified = std::fs::metadata(&file)?.modified()?;
+    let handle = std::fs::OpenOptions::new().write(true).open(&file)?;
+    handle.set_times(
+        std::fs::FileTimes::new()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(37)),
+    )?;
+    let mut checkout = workspace
+        .checkout(
+            crate::model::GenerationSelector::Head,
+            crate::model::CheckoutMode::tracking_transaction(),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let changed = capture_baseline(
+        &mut checkout,
+        &options,
+        &CapturePolicy::default(),
+        budget,
+        &cancellation,
+    )
+    .await?
+    .value;
+    assert_eq!(
+        changed.changed_paths, 1,
+        "explicit modification times must survive normalization"
+    );
+    handle.set_times(std::fs::FileTimes::new().set_modified(modified))?;
+    drop(handle);
     std::fs::write(host.path().join("file-3"), b"updated content")?;
     let mut checkout = workspace
         .checkout(

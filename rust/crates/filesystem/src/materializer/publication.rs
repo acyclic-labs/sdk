@@ -310,6 +310,10 @@ where
                 Some(Path::new("target")),
             )?;
             let options = crate::MaterializeOptions {
+                materialized_view: Some(
+                    crate::NativeViewBaseline::new(request.source_root_identity, false)
+                        .recorded_in(&materializer.store),
+                ),
                 destination,
                 expected_root_identity: Some(identity),
                 maximum_directory_entries: request.options.maximum_directory_entries,

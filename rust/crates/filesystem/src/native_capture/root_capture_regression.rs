@@ -63,6 +63,7 @@ async fn root_capture_publishes_metadata_and_children() -> Result<(), Box<dyn st
     crate::materialize_checkout(
         &mut reader,
         &crate::MaterializeOptions {
+            materialized_view: None,
             destination: output.path().to_path_buf(),
             expected_root_identity: None,
             maximum_directory_entries: 2,

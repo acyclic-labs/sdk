@@ -997,6 +997,7 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
         &root, identity, operation, &work,
     )?;
     let options = MaterializeOptions {
+        materialized_view: None,
         destination: publication.directory().join("target"),
         expected_root_identity: None,
         maximum_directory_entries: 32,

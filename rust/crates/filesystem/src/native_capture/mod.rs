@@ -79,6 +79,7 @@ mod rescan_probe_tests;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod stat_probe_tests;
+pub(crate) use metadata::physical_metadata;
 use metadata::*;
 #[cfg(test)]
 mod empty_stage_tests;

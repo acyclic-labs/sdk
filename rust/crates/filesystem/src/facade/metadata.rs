@@ -114,21 +114,42 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         cancellation: &CancellationToken,
     ) -> W::Output<FileMetadata, FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            let record = self
-                .resolve_file(path, &mut accounting, cancellation)
-                .await?;
-            crate::kernel::read_file_metadata_with_accounting(
-                self.volume.fs.objects(),
-                record.metadata,
-                DecodeLimits::for_volume(self.volume.config),
-                &mut accounting,
-                cancellation,
-            )
+        let result = self
+            .read_metadata_entry_with_accounting(path, &mut accounting, cancellation)
             .await
-        }
-        .await;
+            .map(|(_, metadata)| metadata);
         budget.finish(result, &accounting)
+    }
+
+    pub(crate) async fn read_metadata_entry<W: FsWork>(
+        &self,
+        path: &NamespacePath,
+        budget: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(FileId, FileMetadata), FsError> {
+        let mut accounting = budget.accounting(cancellation);
+        let result = self
+            .read_metadata_entry_with_accounting(path, &mut accounting, cancellation)
+            .await;
+        budget.finish(result, &accounting)
+    }
+
+    async fn read_metadata_entry_with_accounting(
+        &self,
+        path: &NamespacePath,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(FileId, FileMetadata), FsError> {
+        let record = self.resolve_file(path, accounting, cancellation).await?;
+        let metadata = crate::kernel::read_file_metadata_with_accounting(
+            self.volume.fs.objects(),
+            record.metadata,
+            DecodeLimits::for_volume(self.volume.config),
+            accounting,
+            cancellation,
+        )
+        .await?;
+        Ok((record.file_id, metadata))
     }
 }
 

@@ -247,6 +247,12 @@ where
     let selection_bytes = vec_bytes(&selected_paths);
     let destination = validate_options(options, &mut receipt)?;
     let host_root = receipt.owned_arc(destination, 0)?;
+    receipt.baseline = options.materialized_view.as_ref().map(|baseline| {
+        baseline.for_root(
+            baseline.root_identity.unwrap_or(host_root.0.identity()),
+            baseline.read_only,
+        )
+    });
     let mut known_files = GenerationIndex::<FileId, HeldHostPath>::default();
     #[cfg(any(target_os = "macos", windows))]
     let mut known_payloads = GenerationIndex::<(u64, ObjectId, ObjectId), HeldHostPath>::default();
@@ -678,6 +684,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         .await?;
         let (stage_path, stage_allocation) = prepared.stage_path;
         let materialize_options = MaterializeOptions {
+            materialized_view: options.materialized_view.clone(),
             destination: stage_path,
             expected_root_identity: Some(prepared.stage_root.identity()),
             maximum_directory_entries: options.maximum_directory_entries,

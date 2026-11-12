@@ -437,6 +437,7 @@ pub(super) async fn materialize(
     materialize_checkout(
         &mut checkout,
         &MaterializeOptions {
+            materialized_view: None,
             destination: destination.to_path_buf(),
             expected_root_identity: None,
             maximum_directory_entries: 1_024,

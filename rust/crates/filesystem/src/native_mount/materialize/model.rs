@@ -3,6 +3,8 @@ use super::*;
 /// Exact hard bounds and destination for one materialization.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MaterializeOptions {
+    /// Records actual host defaults for later capture of this materialized view.
+    pub materialized_view: Option<crate::NativeViewBaseline>,
     /// Existing empty directory owned by the caller.
     pub destination: PathBuf,
     /// Original host allocation, when attachment follows a durable preparation.
@@ -50,6 +52,7 @@ impl MaterializeOptions {
     #[must_use]
     pub fn native(destination: impl Into<PathBuf>) -> Self {
         Self {
+            materialized_view: None,
             destination: destination.into(),
             expected_root_identity: None,
             maximum_directory_entries: 1_024,
@@ -97,6 +100,9 @@ pub enum HostPathRestore {
 /// Fail-closed explicit materialization errors.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum MaterializeError {
+    /// Persisting original materialization metadata failed on its native ledger.
+    #[error(transparent)]
+    Baseline(Box<crate::LocalCoreStateStoreError>),
     /// Destination is absent, non-directory, a symlink, or non-empty.
     #[error("materialization destination must be an existing empty real directory")]
     InvalidDestination,
@@ -174,6 +180,12 @@ pub enum MaterializeError {
     /// The original caller cancellation stopped materialization.
     #[error(transparent)]
     Cancelled(#[from] crate::CancellationError),
+}
+
+impl From<crate::LocalCoreStateStoreError> for MaterializeError {
+    fn from(error: crate::LocalCoreStateStoreError) -> Self {
+        Self::Baseline(Box::new(error))
+    }
 }
 
 impl From<crate::FsError> for MaterializeError {

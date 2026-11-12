@@ -146,6 +146,7 @@ impl NativeCheckout {
                 let receipt = Box::pin(materialize_checkout(
                     &mut checkout,
                     &MaterializeOptions {
+                        materialized_view: None,
                         destination: options.destination.into(),
                         expected_root_identity: None,
                         maximum_directory_entries: options.maximum_directory_entries.into_inner(),

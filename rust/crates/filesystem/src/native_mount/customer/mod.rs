@@ -19,6 +19,17 @@ use crate::{
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+#[cfg(test)]
+fn recording_options(destination: impl Into<PathBuf>) -> crate::MaterializeOptions {
+    let directory = tempfile::tempdir().unwrap();
+    let store = crate::LocalCoreStateStore::new(directory.path()).with_ownership_anchor(Some(
+        acyclic_native_runtime::OwnershipAnchor::new(directory),
+    ));
+    let mut options = crate::MaterializeOptions::native(destination);
+    options.materialized_view = Some(NativeViewBaseline::recording(&store));
+    options
+}
 use thiserror::Error;
 
 // A view transfers the issuance, while explicit mounts borrow their caller's path.

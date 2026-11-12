@@ -482,7 +482,7 @@ async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_captu
         )
         .await?;
     let directory = tempfile::tempdir()?;
-    let options = crate::MaterializeOptions::native(directory.path());
+    let options = recording_options(directory.path());
     let mount = fixture_options(
         lazy.workspace(),
         MountOptions::read_only().subdirectory("/selected-Ã©"),
@@ -568,7 +568,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     let source = admitted
         .prepare_native_working_set(
             &fixture_options(&workspace, MountOptions::read_only()).await?,
-            &crate::MaterializeOptions::native(source_root.path()),
+            &recording_options(source_root.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
@@ -607,7 +607,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     let rejected = admitted
         .prepare_native_working_set(
             &write,
-            &crate::MaterializeOptions::native(destination_root.path()),
+            &recording_options(destination_root.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
@@ -623,7 +623,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
         .await?
         .prepare_native_working_set(
             &write,
-            &crate::MaterializeOptions::native(destination_root.path()),
+            &recording_options(destination_root.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
@@ -666,7 +666,7 @@ async fn lazy_working_set_requires_authority_before_exactifying()
             MountOptions::read_write()
                 .subdirectory("/hot")
                 .publication(MountPublication::Manual),
-            &crate::MaterializeOptions::native(destination.path()),
+            &recording_options(destination.path()),
             crate::WorkBudget::UNBOUNDED,
             &cancel,
             PublicationPermit::Unrestricted,
@@ -690,7 +690,7 @@ async fn lazy_working_set_requires_authority_before_exactifying()
         assert!(matches!(
             lazy.prepare_native_working_set(
                 mount,
-                &crate::MaterializeOptions::native(destination.path()),
+                &recording_options(destination.path()),
                 crate::WorkBudget::UNBOUNDED,
                 &cancel,
                 PublicationPermit::Unrestricted,
@@ -735,7 +735,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
                     .subdirectory("/hot")
             )
             .await?,
-            &crate::MaterializeOptions::native("relative-native-view"),
+            &recording_options("relative-native-view"),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
             PublicationPermit::Unrestricted,
@@ -755,7 +755,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
                     .subdirectory("/hot"),
             )
             .await?,
-            &crate::MaterializeOptions::native(native_view.path()),
+            &recording_options(native_view.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
             PublicationPermit::Unrestricted,
@@ -986,7 +986,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
                     .subdirectory("/hot"),
             )
             .await?,
-            &crate::MaterializeOptions::native(latest_view.path()),
+            &recording_options(latest_view.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
             PublicationPermit::Unrestricted,

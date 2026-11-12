@@ -472,12 +472,17 @@ async fn prepare_ntfs(
         acyclic_fs::facade::LocalObjectBackend,
     >,
 > {
+    let metadata = tempfile::tempdir()?;
+    let store = acyclic_fs::LocalCoreStateStore::new(metadata.path())
+        .with_ownership_anchor(Some(acyclic_native_runtime::OwnershipAnchor::new(metadata)));
+    let mut materialization = MaterializeOptions::native(view);
+    materialization.materialized_view = Some(acyclic_fs::NativeViewBaseline::recording(&store));
     Ok(lazy
         .prepare_native_working_set(
             native_access::manual_mount_options(lazy.workspace())
                 .await?
                 .subdirectory("/hot"),
-            &MaterializeOptions::native(view),
+            &materialization,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,

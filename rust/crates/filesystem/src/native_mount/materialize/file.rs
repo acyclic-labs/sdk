@@ -77,7 +77,11 @@ pub(super) struct GenerationFlush {
     width: usize,
 }
 
-type PendingFlushMetadata = (HeldNamespacePath, HeldHostPath, Option<FileMetadata>);
+type PendingFlushMetadata = (
+    HeldNamespacePath,
+    HeldHostPath,
+    Option<(FileId, FileMetadata)>,
+);
 type FlushSource<'a, A, O> = (
     &'a PinnedReader<A, O>,
     &'a Arc<(HostRoot, crate::NativeAllocation)>,
@@ -86,7 +90,7 @@ type FlushEntry<'a> = (
     acyclic_native_runtime::NativeFile,
     &'a NamespacePath,
     &'a HeldHostPath,
-    Option<FileMetadata>,
+    Option<(FileId, FileMetadata)>,
 );
 
 impl GenerationFlush {

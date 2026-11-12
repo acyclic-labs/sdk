@@ -30,6 +30,7 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
         .materialize(
             std::iter::once("/output/nested/status"),
             &crate::MaterializeOptions {
+                materialized_view: None,
                 destination: destination.path().to_path_buf(),
                 expected_root_identity: None,
                 maximum_directory_entries: 32,
@@ -50,6 +51,7 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
         .materialize(
             std::iter::once("/output/nested"),
             &crate::MaterializeOptions {
+                materialized_view: None,
                 destination: directory_destination.path().to_path_buf(),
                 expected_root_identity: None,
                 maximum_directory_entries: 32,
@@ -130,6 +132,7 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
     std::fs::write(destination.path().join("nested/file"), b"stale")?;
     std::fs::write(destination.path().join("sibling"), b"untouched")?;
     let options = crate::MaterializeOptions {
+        materialized_view: None,
         destination: destination.path().to_path_buf(),
         expected_root_identity: None,
         maximum_directory_entries: 32,
@@ -199,6 +202,7 @@ async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Resul
             Path::new("escape/file"),
             crate::HostPathReplacement::Atomic,
             &crate::MaterializeOptions {
+                materialized_view: None,
                 destination: destination.path().to_path_buf(),
                 expected_root_identity: None,
                 maximum_directory_entries: 32,
@@ -236,6 +240,7 @@ async fn public_generation_restore_host_path_rejects_reparse_parent_when_availab
             Path::new("escape/file"),
             crate::HostPathReplacement::Atomic,
             &crate::MaterializeOptions {
+                materialized_view: None,
                 destination: destination.path().to_path_buf(),
                 expected_root_identity: None,
                 maximum_directory_entries: 32,

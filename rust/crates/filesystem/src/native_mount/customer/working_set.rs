@@ -2,6 +2,7 @@ use super::*;
 
 /// SDK capture and publication owner for one pinned native directory.
 pub struct NativeWorkingSet<A: 'static, O: 'static> {
+    pub(super) baseline: NativeViewBaseline,
     pub(super) source: Arc<CheckoutMountSource<A, O>>,
     pub(super) workspace: Workspace<A, O>,
     pub(super) source_root: PathBuf,
@@ -131,10 +132,7 @@ where
                 paths,
                 self.source_identity,
                 scope,
-                Some(NativeViewBaseline::new(
-                    self.source_identity,
-                    !self.writable,
-                )),
+                Some(self.baseline.clone()),
                 work,
             )
             .await?;

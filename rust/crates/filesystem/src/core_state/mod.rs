@@ -498,6 +498,28 @@ impl LocalCoreStateStore {
 }
 
 impl Namespace {
+    fn durable_directory(&self, relative: &Path) -> Result<(), LocalCoreStateStoreError> {
+        if let Some(allocation) = &self._allocation {
+            let mut work = &*allocation.work();
+            let root = crate::native_host::HostRoot::open(&self.root, &mut work)?;
+            root.create_directories(
+                relative,
+                crate::native_host::NativeDurability::Durable,
+                &mut work,
+            )?;
+        } else {
+            let mut work = crate::native_host::ordinary_work();
+            let root = crate::native_host::HostRoot::open(&self.root, &mut work)
+                .map_err(|cause| LocalCoreStateStoreError::LazyWork(cause.into()))?;
+            root.create_directories(
+                relative,
+                crate::native_host::NativeDurability::Durable,
+                &mut work,
+            )
+            .map_err(|cause| LocalCoreStateStoreError::LazyWork(cause.into()))?;
+        }
+        Ok(())
+    }
     fn family(&self, family: &str) -> PathBuf {
         self.root.join(family)
     }
@@ -755,6 +777,7 @@ pub(crate) use native_io::reserve;
 mod native_log;
 use native_io::*;
 mod journal;
+mod materialized_metadata;
 pub use journal::LocalMaterializationActionCompletion;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery;
