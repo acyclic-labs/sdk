@@ -98,12 +98,14 @@ impl ToolRegistry {
     /// definitions keep precedence, and a template ceiling is checked before
     /// any source read.
     pub async fn load(&self, name: &str) -> Result<Option<Arc<Tool>>> {
-        if !self.source_allowed(name) {
-            return Ok(None);
-        }
         let mut selected = None;
         for source in &self.sources {
             if source.has_lazy_tools()
+                && (self.source_allowed(name)
+                    || source
+                        .capability()
+                        .and_then(|grant| grant.strip_prefix("tool:call:"))
+                        .is_some_and(|capability| self.source_allowed(capability)))
                 && let Some(tool) = source.load(name).await?
             {
                 if selected.is_some() || self.resolve(name, None)?.is_some() {
