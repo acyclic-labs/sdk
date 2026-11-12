@@ -365,7 +365,7 @@ impl CaptureHandler for Handler {
             std::thread::current()
                 .name()
                 .unwrap()
-                .starts_with("acyclic-host-io-")
+                .starts_with("acyclic-process-io-")
         );
         self.took_wakes = true;
         Ok(Some(self.wake.clone()).into())
