@@ -31,15 +31,16 @@ struct Windows {
     replies: [(usize, usize); 5],
     reopen: (usize, usize),
     reopened_first: (usize, usize),
+    reopened_reply: (usize, usize),
 }
 
 /// Opens, settles five replies, commits one independent record, then reopens
-/// and settles one more reply. Each turn cut follows committed settlement.
+/// and settles its first and steady replies. Each cut follows committed settlement.
 fn turns(
     schedule: acyclic_native_runtime::testing::Schedule,
     directory: &Path,
-    replies: [ScriptedTurn; 6],
-) -> EntryFuture<'_, Result<[usize; 10]>> {
+    replies: [ScriptedTurn; 7],
+) -> EntryFuture<'_, Result<[usize; 11]>> {
     entry(async move {
         let reference =
             ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -74,7 +75,7 @@ fn turns(
             .volume(volume.clone())
             .state_directory(directory.join("state")))
         };
-        let mut cuts = [0; 10];
+        let mut cuts = [0; 11];
         cuts[0] = schedule.durable_write_count();
         let harness = Arc::new(entry(LocalHarness::open(config()?)).await?);
         cuts[1] = schedule.durable_write_count();
@@ -104,13 +105,16 @@ fn turns(
         let (agents, _) = entry(reopened.agents()).await?;
         entry(agents.runtime().complete()).await.map_err(storage)?;
         cuts[9] = schedule.durable_write_count();
+        prompt(&reopened, "reopened-steady", "reply", &expected[6]).await?;
+        entry(agents.runtime().complete()).await.map_err(storage)?;
+        cuts[10] = schedule.durable_write_count();
         Ok(cuts)
     })
 }
 
 /// Observe open, settled replies, the independent commit and reopen. Teardown
 /// drains every accepted worker outside those windows.
-fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
+fn measure(replies: [ScriptedTurn; 7]) -> Result<Windows> {
     let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
@@ -131,6 +135,7 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
             replies: std::array::from_fn(|index| window(index + 2, index + 3)),
             reopen: window(7, 8),
             reopened_first: window(8, 9),
+            reopened_reply: window(9, 10),
         })
     })
 }
@@ -167,6 +172,7 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
         streamed(2),
         streamed(32),
         text("four"),
+        text("five"),
     ])?;
     assert_eq!(
         observed.open,
@@ -194,6 +200,12 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
     assert!(
         (11..=12).contains(&observed.reopened_first.1),
         "reopened physical drains changed: {observed:?}"
+    );
+    // Reopening pays its placement cost once. A later reply must use the
+    // same publication work as an ordinary steady turn.
+    assert_eq!(
+        observed.reopened_reply, observed.replies[0],
+        "reopened steady reply adds publication work: {observed:?}"
     );
     // Includes input publication through committed actor settlement. This
     // absolute budget rejects uniform added or missing work. Nine publications
