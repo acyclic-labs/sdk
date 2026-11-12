@@ -146,7 +146,10 @@ mod tests {
                 source_argument("powershell", source, |_| Ok::<_, std::io::Error>(()))?
                     .expect("supported source")
             } else {
-                std::borrow::Cow::Borrowed(source)
+                std::borrow::Cow::Owned(format!(
+                    "& ([ScriptBlock]::Create('{}'))",
+                    source.replace('\'', "''")
+                ))
             };
             // A legacy host is a supported initial state. The control fails
             // even when the test runner itself happens to use UTF-8.
@@ -168,6 +171,8 @@ mod tests {
             assert_eq!(output.status.success(), wrapped, "{output:?}");
             if wrapped {
                 assert_eq!(output.stdout, "quoted ' value 🦀".as_bytes());
+            } else {
+                assert_eq!(output.status.code(), Some(9), "{output:?}");
             }
         }
         Ok(())
