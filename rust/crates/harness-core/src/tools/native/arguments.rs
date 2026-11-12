@@ -10,7 +10,8 @@
 //! absent `first` is line 1), `{"$case": name, "$default": value, value: template, ...}`
 //! `{"$if": name, "then": template, "else": template}`, and `{"$json": name}`
 //! (an argument encoded as JSON text). `@arguments` names the complete original
-//! argument object. Every other value is
+//! JSON argument value, including arrays, scalars and null. Named fields are
+//! absent on non-object values. Every other value is
 //! literal. An absent argument leaves its member out, and an object whose
 //! references are all absent is itself absent.
 use crate::{Error, Result, tool::ToolInvocation};
@@ -37,16 +38,13 @@ impl Arguments {
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         examine(work)?;
-        let fields = invocation.arguments.as_object().ok_or_else(|| {
-            invalid(
-                work,
-                "native tool arguments are not an object",
-                format_args!("native tool arguments are not an object"),
-            )
-        })?;
+        let fields = invocation.arguments.as_object();
         for name in &self.refuse {
             examine(work)?;
-            if fields.get(name.as_str()).is_some_and(set) {
+            if fields
+                .and_then(|fields| fields.get(name.as_str()))
+                .is_some_and(set)
+            {
                 return Err(invalid(
                     work,
                     "native argument is not supported here",
@@ -62,7 +60,7 @@ impl Arguments {
 }
 
 type Call<'a> = (
-    &'a Map<String, Value>,
+    Option<&'a Map<String, Value>>,
     &'a ToolInvocation,
     acyclic_fs::NativeWork<'a>,
 );
@@ -175,7 +173,7 @@ fn field<'a>((fields, invocation, _): &Call<'a>, name: &str) -> Option<Resolved<
         "@call_id" => Some(Resolved::Text(&invocation.call_id)),
         "@operation_id" => Some(Resolved::Operation(&invocation.operation_id)),
         _ => fields
-            .get(name)
+            .and_then(|fields| fields.get(name))
             .filter(|value| !value.is_null())
             .map(Resolved::Value),
     }
