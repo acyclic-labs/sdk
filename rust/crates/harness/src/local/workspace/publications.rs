@@ -489,7 +489,22 @@ mod tests {
     /// and lands before the parent's next command reads the checkout.
     #[tokio::test]
     async fn handback_completes_while_the_parent_is_busy() -> Result<()> {
-        let (_directory, local) = fixture().await?;
+        let directory = tempfile::tempdir().map_err(storage)?;
+        for index in 0..32 {
+            std::fs::write(directory.path().join(format!("file-{index}")), b"original")
+                .map_err(storage)?;
+        }
+        let local = LocalHarness::open(
+            crate::test_support::local_harness_config(
+                directory.path(),
+                (
+                    crate::model::Model::new("scripted".into(), "test".into(), "1".into())?,
+                    Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+                ),
+            )?
+            .without_default_tools(),
+        )
+        .await?;
         let workspace = local
             .workspace
             .as_ref()
@@ -536,7 +551,7 @@ mod tests {
         .await
         .map_err(storage)?;
         child
-            .write_text("/handed-back", "completed")
+            .write_text("/file-0", "completed")
             .await
             .map_err(storage)?;
         let cut = child
@@ -612,8 +627,39 @@ mod tests {
         assert!(!LocalWorkspace::owes_publication(&workspace.filesystem, id).await?);
         let physical = workspace.selected_workspace(&mut state, &owner).await?;
         assert_eq!(
-            std::fs::read(physical.path.join("handed-back")).map_err(storage)?,
+            std::fs::read(physical.path.join("file-0")).map_err(storage)?,
             b"completed"
+        );
+        let mut transitions = 0;
+        for operation in workspace
+            .store
+            .materialization_operations_async()
+            .await
+            .map_err(storage)?
+        {
+            let journal =
+                acyclic_fs::MaterializationJournalStore::load(&workspace.store, operation)
+                    .await
+                    .map_err(storage)?
+                    .ok_or_else(|| Error::Storage("missing transition".into()))?;
+            let changes_file = journal.plan.edits.iter().any(|edit| match edit {
+                acyclic_fs::MaterializationEdit::Install { path, .. }
+                | acyclic_fs::MaterializationEdit::Remove { path }
+                | acyclic_fs::MaterializationEdit::SetMetadata { path, .. } => path == "file-0",
+                _ => false,
+            });
+            if changes_file {
+                assert_eq!(
+                    journal.plan.edits.len(),
+                    1,
+                    "handback must contain only the child's changed path"
+                );
+                transitions += 1;
+            }
+        }
+        assert!(
+            transitions > 0,
+            "the handback must publish a generation transition"
         );
         Ok(())
     }

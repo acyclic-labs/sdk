@@ -500,7 +500,7 @@ impl LocalCoreStateStore {
                     let mut journal = read_recoverable::<MaterializationJournal>(paths)?;
                     if let (Some((journal, _)), Some(progress)) = (
                         &mut journal,
-                        journal::progress(namespace, log, operation_id)?,
+                        journal::progress(&namespace, log, operation_id)?,
                     ) {
                         progress.apply(journal)?;
                     }
@@ -514,7 +514,7 @@ impl LocalCoreStateStore {
                         return Err(LocalCoreStateStoreError::MaterializationInProgress);
                     }
                     remove_record(paths)?;
-                    journal::append_progress(namespace, log, operation_id, None)
+                    journal::append_progress(&namespace, log, operation_id, None)
                 })
             })
         })

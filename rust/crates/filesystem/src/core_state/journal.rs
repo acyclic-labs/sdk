@@ -6,6 +6,7 @@ use crate::{NativeMaterializationWork, NativeTreeMaterializationError};
 #[serde(deny_unknown_fields)]
 pub(super) struct Progress {
     version: u32,
+    journal_version: u32,
     revision: u64,
     phase: crate::MaterializationPhase,
     applied: u32,
@@ -17,6 +18,7 @@ impl Progress {
     fn new(journal: &MaterializationJournal) -> Self {
         Self {
             version: 1,
+            journal_version: journal.version,
             revision: journal.revision,
             phase: journal.phase,
             applied: journal.applied,
@@ -33,6 +35,7 @@ impl Progress {
             return Err(LocalCoreStateStoreError::Integrity);
         }
         journal.revision = self.revision;
+        journal.version = self.journal_version;
         journal.phase = self.phase;
         journal.applied = self.applied;
         journal.restored = self.restored;
@@ -200,9 +203,10 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 return Err(crate::LazyWorkspaceError::NativeLedgerMismatch.into());
             }
         }
-        self.transaction(move |namespace| {
+        self.transaction(move |mut namespace| {
+            namespace.durability = Durability::Flushed;
             namespace.with_log(|log| {
-                if let Some(current) = progress(namespace, log, operation_id)? {
+                if let Some(current) = progress(&namespace, log, operation_id)? {
                     if current.revision != expected_revision {
                         return Ok((false, replacement));
                     }
@@ -212,7 +216,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                         replacement.work = work.journal_work()?;
                     }
                     append_progress(
-                        namespace,
+                        &namespace,
                         log,
                         operation_id,
                         Some(Progress::new(&replacement)),
@@ -246,7 +250,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 // Once captured, this fixed image is never rewritten by a step.
                 if stored && replacement.phase != crate::MaterializationPhase::Preparing {
                     append_progress(
-                        namespace,
+                        &namespace,
                         log,
                         operation_id,
                         Some(Progress::new(&replacement)),
@@ -378,14 +382,15 @@ impl LocalCoreStateStore {
         &self,
         operation_id: OperationId,
     ) -> Result<Option<MaterializationJournal>, LocalCoreStateStoreError> {
-        self.transaction(move |namespace| {
+        self.transaction(move |mut namespace| {
+            namespace.durability = Durability::Flushed;
             namespace.with_log(|log| {
                 let mut paths =
                     namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
                 if paths.allocation.is_none() {
                     let mut journal = read_locked::<MaterializationJournal>(&mut paths)?;
                     if let (Some(journal), Some(progress)) =
-                        (&mut journal, progress(namespace, log, operation_id)?)
+                        (&mut journal, progress(&namespace, log, operation_id)?)
                     {
                         progress.apply(journal)?;
                     }
@@ -399,7 +404,7 @@ impl LocalCoreStateStore {
                         },
                     );
                     if let (Some(journal), Some(progress)) =
-                        (&mut journal, progress(namespace, log, operation_id)?)
+                        (&mut journal, progress(&namespace, log, operation_id)?)
                     {
                         progress.apply(journal)?;
                     }

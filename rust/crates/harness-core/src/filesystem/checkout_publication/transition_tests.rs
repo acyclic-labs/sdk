@@ -812,8 +812,8 @@ async fn obsolete_staging_binding_is_refused_before_publication() -> TestResult 
                 &fixture.work,
             )
             .await?;
-        assert_eq!(journal.version, 5);
-        journal.version = 4;
+        assert_eq!(journal.version, 1);
+        journal.version = 0;
         let expected = journal.revision;
         journal.revision = expected + 1;
         let (stored, _) = fixture
