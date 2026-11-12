@@ -92,14 +92,17 @@ impl<P: NativeStreamProvider + ?Sized + 'static> StreamProvider<P> {
     }
     async fn heads(
         &self,
+        at: Option<Revision>,
         work: &NativeMaterializationWork,
     ) -> Result<NativeStreamOutput<acyclic_stream::Heads>, DemandError> {
         result(
             self.streams
                 .native_heads(
                     HeadsRequest {
-                        at: None,
-                        at_least: RevisionCut::default(),
+                        at_least: at
+                            .clone()
+                            .map_or_else(RevisionCut::default, RevisionCut::of),
+                        at,
                         paths: HeadSet::from_buf([path(&self.path, work)?]),
                         retained: HeadSet::new(),
                         durable_through: None,
@@ -132,7 +135,7 @@ impl<P: NativeStreamProvider + ?Sized + 'static> ViewProvider for StreamProvider
             cancellation: stop,
         };
         let output = async {
-            let heads = self.heads(&owner.work).await?;
+            let heads = self.heads(None, &owner.work).await?;
             let tail = heads
                 .value()
                 .heads
@@ -180,6 +183,22 @@ impl<P: NativeStreamProvider + ?Sized + 'static> ViewProvider for StreamProvider
             cancellation: stop,
         };
         let output = async {
+            // A source reference is an address, never bearer authority. This
+            // observation rechecks the current session even for directory-only
+            // demands, and authenticates the retained tail before using it.
+            let _floor =
+                RetainedAllocation::claim(std::mem::size_of::<Revision>() as u64, 1, &mut ctx)?;
+            let heads = self.heads(Some(revision.clone()), &owner.work).await?;
+            let retained_tail = heads
+                .value()
+                .heads
+                .first()
+                .and_then(Option::as_ref)
+                .map_or(0, |head| head.tail);
+            if retained_tail != tail {
+                return Err(DemandError::StaleSource);
+            }
+            drop(heads);
             let stream = path(&self.path, &owner.work)?;
             let allocation =
                 RetainedAllocation::claim(std::mem::size_of::<StreamPath>() as u64, 1, &mut ctx)?;
