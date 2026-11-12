@@ -1001,6 +1001,7 @@ async fn draft_step<T: TurnDriver + ?Sized>(
                     let next = kernel::admit(before, Admit::Cancel);
                     #[cfg(feature = "test-support")]
                     control_trace::record(&state, Decision::Admit(before, Admit::Cancel, next));
+                    state.wait_resume = None;
                     state.turn = None;
                     if next.control.mode == Mode::Idle {
                         state.phase = Phase::Idle;
@@ -1088,7 +1089,7 @@ pub(super) async fn failed_step(
 
 // A parked turn can ingest messages/notices at its next model boundary. Other
 // queued inputs retain their own turn and cannot release an input wait.
-fn wake_input(state: &AgentState) -> bool {
+fn wake_input(state: &AgentState) -> Option<u64> {
     if control(state).input {
         // Starting input belongs to the retained turn even when a custom
         // driver has no stock model boundary or steering journal.
@@ -1098,9 +1099,9 @@ fn wake_input(state: &AgentState) -> bool {
                 .as_ref()
                 .map_or(0, |turn| turn.inbox.saturating_add(1)),
         );
-        state.steering_tail > through
+        (state.steering_tail > through).then(|| state.steering_tail - 1)
     } else {
-        !state.queued.is_empty()
+        state.queued.front().map(|input| input.inbox)
     }
 }
 
@@ -1121,7 +1122,8 @@ fn finalize_step(
                 .retain(|input| input.inbox >= *through || !input.steering);
         }
     }
-    let queued = wake_input(&state) || (!control(&state).input && state.overflow.is_some());
+    let queued =
+        wake_input(&state).is_some() || (!control(&state).input && state.overflow.is_some());
     let approval_ready = approval_position(&state).is_some();
     let pending = state.archive_pending.len();
     let before = control(&state);
@@ -1508,7 +1510,8 @@ async fn run<T: TurnDriver + ?Sized>(
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<(), Error> {
     let approval = approval_position(state);
-    let queued = wake_input(state);
+    let waking_input = wake_input(state);
+    let queued = waking_input.is_some();
     let approval_ready = approval.is_some();
     let before = control(state);
     let picked = kernel::pick(before, alarm_wake, queued, approval_ready);
@@ -1533,14 +1536,8 @@ async fn run<T: TurnDriver + ?Sized>(
         resume.reason = Some(
             if alarm_wake && deadline_unix_ms.is_some_and(|deadline| deadline <= now_unix_ms) {
                 WaitReason::Deadline
-            } else if *input && queued {
-                WaitReason::Input {
-                    inbox: state
-                        .queued
-                        .front()
-                        .ok_or(Error::Record("input wake has no input"))?
-                        .inbox,
-                }
+            } else if *input && let Some(inbox) = waking_input {
+                WaitReason::Input { inbox }
             } else {
                 return Err(Error::Record(
                     "wait resumed without its deadline or selected input",

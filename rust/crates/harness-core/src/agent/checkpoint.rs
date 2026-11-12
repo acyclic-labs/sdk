@@ -19,8 +19,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
-            // Host-owned interaction storage with input-scoped cancellation and statuses.
-            version: "4".into(),
+            // Retain the exact deferred invocation and its typed wake event.
+            version: "5".into(),
         });
     &IDENTITY
 }
