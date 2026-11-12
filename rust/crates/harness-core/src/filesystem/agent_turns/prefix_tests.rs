@@ -38,6 +38,8 @@ async fn state(
 ) -> Result<AgentState> {
     let volume = private_volume(host.host.provider.clone(), &path.id())?;
     host.host.create_volume(&volume).await?;
+    let journal = crate::conversation::journal_volume(host.host.provider.clone(), &path.id())?;
+    host.host.create_volume(&journal).await?;
     AgentState::adopted(
         path.clone(),
         &ForkAdopted {
