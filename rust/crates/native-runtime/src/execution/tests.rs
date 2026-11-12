@@ -1986,9 +1986,21 @@ fn node_capture_preserves_workspace_writes_and_output() -> io::Result<()> {
         [],
         [node.clone()],
     )?;
+    std::fs::write(
+        root.path().join("capture.mjs"),
+        r#"import { readFileSync, writeFileSync } from "node:fs";
+writeFileSync("written", "GC95_NODE_CONTENT\n");
+process.stdout.write(readFileSync("written"));"#,
+    )?;
     let mut command = Command::new(node);
-    command.args(["-e", r#"const fs=require("node:fs"); fs.writeFileSync("written","GC95_NODE_CONTENT\n"); process.stdout.write(fs.readFileSync("written"));"#]).current_dir(root.path()).env_clear()
-        .env("HOME", root.path()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .arg("capture.mjs")
+        .current_dir(root.path())
+        .env_clear()
+        .env("HOME", root.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut tree = ProcessTree::spawn_granted(command, &grant, None)?;
     let output = tree
         .wait_with_output(
