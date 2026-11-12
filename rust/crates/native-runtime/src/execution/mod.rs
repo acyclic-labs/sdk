@@ -99,7 +99,10 @@ impl std::error::Error for ExecutionRefusal {}
 #[derive(Debug)]
 pub enum ExecutionViolation {
     /// A forbidden syscall or syscall argument crossed the boundary.
-    Syscall { number: i32 },
+    Syscall {
+        /// Kernel-reported syscall number in the execution host's native ABI.
+        number: i32,
+    },
     /// A Unix socket would acquire host IPC outside the execution domain.
     HostIpc,
 }
