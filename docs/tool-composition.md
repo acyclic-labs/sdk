@@ -127,6 +127,13 @@ later fresh call; it cannot replace an already selected call. Children discover
 programs through their own existing home-volume fork, so later parent edits do
 not change a child's inherited cut. No program catalog is copied into a child.
 
+Module reads share the selecting call's original preparation ledger, including
+imports. Evaluator cache entries retain their original allocation ownership;
+receiving callers fund result copies even on a cache hit. An allocation refusal
+keeps its typed operational cause and cannot become a cached semantic failure.
+The selected manifest and native script retain their allocation credit through
+binding and dispatch by the ordinary tool adapter.
+
 The script receives the validated arguments as UTF-8 JSON on stdin. The source
 and executable argv remain separate from this data; quotes, shell syntax and NUL
 characters inside JSON string values do not become executable source. The result
