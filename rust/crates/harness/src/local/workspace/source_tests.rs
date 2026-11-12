@@ -32,9 +32,16 @@ async fn recovery_exclusion_is_bound_to_the_held_checkout_before_startup() -> Re
         &cancellation,
     )
     .await?;
+    let reference = source
+        .reference(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        })
+        .await
+        .map_err(storage)?;
     assert!(
         source
-            .lookup(source.reference(), &prefix, &work, &cancellation)
+            .lookup(reference, &prefix, &work, &cancellation)
             .await
             .map_err(storage)?
             .is_none()
