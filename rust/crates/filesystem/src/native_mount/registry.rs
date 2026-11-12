@@ -77,8 +77,10 @@ fn fence_destination(record: &[u8]) -> Option<PathBuf> {
     }
 }
 
-/// A mount whose owner died together with its exit action is detached no
-/// later than the next process that opens this registry. Liveness is the
+/// A mount whose owner and exit action both die is detached at the next
+/// registry open on the host. Process-group kills and terminal hangups do not
+/// reach the exit action, which leads its own group; a session or cgroup kill
+/// does, and this reap is then the guarantee. Liveness is the
 /// fence's kernel lock, held by the owner and by its exit action, and released
 /// only once both have exited: recovery of a live fence is refused as busy and
 /// the fence is left alone. Identity is that lock, never a name or path.
