@@ -1,404 +1,488 @@
 {
-  "ntfs": true,
-  "physical": true,
+  "id": "bestofn-model-chosen",
   "workspace": {
     "files": {},
     "kind": "plain"
   },
-  "id": "bestofn-model-chosen",
   "model": {
     "steps": [
       {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
         "tools": [
           {
             "name": "spawn",
+            "id": "call-1-spawn",
             "arguments": {
-              "name": "alpha",
               "role": "worker",
-              "task": "ATTEMPT_alpha"
-            },
-            "id": "call-0-spawn"
+              "task": "ATTEMPT_alpha",
+              "name": "alpha"
+            }
           }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "ATTEMPT_alpha"
+        },
         "tools": [
           {
             "name": "write",
+            "id": "call-2-write",
             "arguments": {
-              "content": "alpha\n",
-              "path": "selected.txt"
-            },
-            "id": "call-1-write"
+              "path": "selected.txt",
+              "content": "SELECTED_alpha\n"
+            }
           }
-        ],
-        "when": {
-          "user": "ATTEMPT_alpha"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "ATTEMPT_alpha"
+        },
         "tools": [
           {
             "name": "read",
+            "id": "call-3-read",
             "arguments": {
               "path": "selected.txt"
-            },
-            "id": "call-2-read"
+            }
           }
-        ],
-        "when": {
-          "user": "ATTEMPT_alpha"
-        }
+        ]
       },
       {
-        "tools": [
-          {
-            "name": "write",
-            "arguments": {
-              "content": "{\"version\":1,\"checks\": [{\"kind\":\"file_read\",\"path\":\"selected.txt\",\"passed\":true}],\"candidate\":\"alpha\"}",
-              "path": "results/alpha/tests.json"
-            },
-            "id": "call-3-write"
-          }
-        ],
         "when": {
           "user": "ATTEMPT_alpha",
-          "tool_result": "alpha"
-        }
+          "tool_result": "SELECTED_alpha"
+        },
+        "tools": [
+          {
+            "name": "write",
+            "id": "call-4-write",
+            "arguments": {
+              "path": "volume:///shared/results/root/alpha/tests.json",
+              "content": "{\"version\":1,\"candidate\":\"root/alpha\",\"evidence\":\"EVIDENCE_root_alpha_PASSED\",\"checks\":[{\"expected\":\"SELECTED_alpha\",\"kind\":\"file_read\",\"passed\":true,\"path\":\"selected.txt\"}]}"
+            }
+          },
+          {
+            "name": "write",
+            "id": "call-5-write",
+            "arguments": {
+              "path": "volume:///shared/results/root/alpha/logs/check.txt",
+              "content": "OBSERVED_SELECTED_alpha\n"
+            }
+          }
+        ]
       },
       {
-        "text": [
-          "CANDIDATE_DONE_alpha"
-        ],
         "when": {
           "user": "ATTEMPT_alpha"
-        }
+        },
+        "text": [
+          "CANDIDATE_DONE_alpha"
+        ]
       },
       {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
         "tools": [
           {
             "name": "spawn",
+            "id": "call-6-spawn",
             "arguments": {
-              "name": "beta",
               "role": "worker",
-              "task": "ATTEMPT_beta"
-            },
-            "id": "call-5-spawn"
+              "task": "ATTEMPT_beta",
+              "name": "beta"
+            }
           }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "ATTEMPT_beta"
+        },
         "tools": [
           {
             "name": "write",
+            "id": "call-7-write",
             "arguments": {
-              "content": "beta\n",
-              "path": "selected.txt"
-            },
-            "id": "call-6-write"
+              "path": "selected.txt",
+              "content": "SELECTED_beta\n"
+            }
           }
-        ],
-        "when": {
-          "user": "ATTEMPT_beta"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "ATTEMPT_beta"
+        },
         "tools": [
           {
             "name": "read",
+            "id": "call-8-read",
             "arguments": {
               "path": "selected.txt"
-            },
-            "id": "call-7-read"
+            }
           }
-        ],
-        "when": {
-          "user": "ATTEMPT_beta"
-        }
+        ]
       },
       {
-        "tools": [
-          {
-            "name": "write",
-            "arguments": {
-              "content": "{\"version\":1,\"checks\": [{\"kind\":\"file_read\",\"path\":\"selected.txt\",\"passed\":true}],\"candidate\":\"beta\"}",
-              "path": "results/beta/tests.json"
-            },
-            "id": "call-8-write"
-          }
-        ],
         "when": {
           "user": "ATTEMPT_beta",
-          "tool_result": "beta"
-        }
+          "tool_result": "SELECTED_beta"
+        },
+        "tools": [
+          {
+            "name": "write",
+            "id": "call-9-write",
+            "arguments": {
+              "path": "volume:///shared/results/root/beta/tests.json",
+              "content": "{\"version\":1,\"candidate\":\"root/beta\",\"evidence\":\"EVIDENCE_root_beta_PASSED\",\"checks\":[{\"expected\":\"SELECTED_beta\",\"kind\":\"file_read\",\"passed\":true,\"path\":\"selected.txt\"}]}"
+            }
+          },
+          {
+            "name": "write",
+            "id": "call-10-write",
+            "arguments": {
+              "path": "volume:///shared/results/root/beta/logs/check.txt",
+              "content": "OBSERVED_SELECTED_beta\n"
+            }
+          }
+        ]
       },
       {
-        "text": [
-          "CANDIDATE_DONE_beta"
-        ],
         "when": {
           "user": "ATTEMPT_beta"
-        }
+        },
+        "text": [
+          "CANDIDATE_DONE_beta"
+        ]
       },
       {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
         "tools": [
           {
             "name": "spawn",
+            "id": "call-11-spawn",
             "arguments": {
-              "name": "gamma",
               "role": "worker",
-              "task": "ATTEMPT_gamma"
-            },
-            "id": "call-10-spawn"
+              "task": "ATTEMPT_gamma",
+              "name": "gamma"
+            }
           }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "ATTEMPT_gamma"
+        },
         "tools": [
           {
             "name": "write",
+            "id": "call-12-write",
             "arguments": {
-              "content": "gamma\n",
-              "path": "selected.txt"
-            },
-            "id": "call-11-write"
+              "path": "selected.txt",
+              "content": "SELECTED_gamma\n"
+            }
           }
-        ],
-        "when": {
-          "user": "ATTEMPT_gamma"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "ATTEMPT_gamma"
+        },
         "tools": [
           {
             "name": "read",
+            "id": "call-13-read",
             "arguments": {
               "path": "selected.txt"
-            },
-            "id": "call-12-read"
+            }
           }
-        ],
-        "when": {
-          "user": "ATTEMPT_gamma"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "ATTEMPT_gamma",
+          "tool_result": "SELECTED_gamma"
+        },
         "tools": [
           {
             "name": "write",
+            "id": "call-14-write",
             "arguments": {
-              "content": "{\"version\":1,\"checks\": [{\"kind\":\"file_read\",\"path\":\"selected.txt\",\"passed\":true}],\"candidate\":\"gamma\"}",
-              "path": "results/gamma/tests.json"
-            },
-            "id": "call-13-write"
+              "path": "volume:///shared/results/root/gamma/tests.json",
+              "content": "{\"version\":1,\"candidate\":\"root/gamma\",\"evidence\":\"EVIDENCE_root_gamma_PASSED\",\"checks\":[{\"expected\":\"SELECTED_gamma\",\"kind\":\"file_read\",\"passed\":true,\"path\":\"selected.txt\"}]}"
+            }
+          },
+          {
+            "name": "write",
+            "id": "call-15-write",
+            "arguments": {
+              "path": "volume:///shared/results/root/gamma/logs/check.txt",
+              "content": "OBSERVED_SELECTED_gamma\n"
+            }
           }
-        ],
-        "when": {
-          "user": "ATTEMPT_gamma",
-          "tool_result": "gamma"
-        }
+        ]
       },
       {
-        "text": [
-          "CANDIDATE_DONE_gamma"
-        ],
         "when": {
           "user": "ATTEMPT_gamma"
-        }
+        },
+        "text": [
+          "CANDIDATE_DONE_gamma"
+        ]
       },
       {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
         "tools": [
           {
             "name": "wait",
+            "id": "call-16-wait",
             "arguments": {
               "agents": [
                 "alpha",
                 "beta",
                 "gamma"
               ]
-            },
-            "id": "call-15-wait"
+            }
           }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       },
       {
-        "tools": [
-          {
-            "name": "fs",
-            "arguments": {
-              "command": "diff agents/alpha"
-            },
-            "id": "call-16-fs"
-          }
-        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        }
-      },
-      {
-        "tools": [
-          {
-            "name": "fs",
-            "arguments": {
-              "command": "diff agents/beta"
-            },
-            "id": "call-17-fs"
-          }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
-      },
-      {
-        "tools": [
-          {
-            "name": "fs",
-            "arguments": {
-              "command": "diff agents/gamma"
-            },
-            "id": "call-18-fs"
-          }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
-      },
-      {
-        "tools": [
-          {
-            "name": "write",
-            "arguments": {
-              "content": "# Candidate comparison\n\nalpha: valid\nbeta: preferred by the parent\ngamma: valid\n\n```input pick-fork id=winner\n- alpha\n- beta\n- gamma\n```\n",
-              "path": "volume:///private/ui/compare.md"
-            },
-            "id": "call-19-write"
-          }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
-      },
-      {
+        },
         "tools": [
           {
             "name": "read",
+            "id": "call-17-read",
             "arguments": {
-              "path": "volume:///private/ui/compare.md"
-            },
-            "id": "call-20-read"
+              "path": "volume:///shared/results/root/alpha/tests.json"
+            }
           }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "COMPARE_CANDIDATES",
+          "tool_result": "EVIDENCE_root_alpha_PASSED"
+        },
         "tools": [
           {
-            "name": "write",
+            "name": "read",
+            "id": "call-18-read",
             "arguments": {
-              "content": "# Candidate comparison\n\nalpha: valid\nbeta: preferred by the parent\ngamma: valid\n\n```input pick-fork id=winner\n- alpha\n- beta\n- gamma\n```\n\r\n```ui:default\r\n```\r\n",
-              "path": "volume:///private/ui/index.md"
-            },
-            "id": "call-21-write"
+              "path": "volume:///shared/results/root/alpha/logs/check.txt"
+            }
           }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "COMPARE_CANDIDATES",
+          "tool_result": "OBSERVED_SELECTED_alpha"
+        },
         "tools": [
           {
             "name": "fs",
+            "id": "call-19-fs",
+            "arguments": {
+              "command": "diff agents/alpha"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "name": "read",
+            "id": "call-20-read",
+            "arguments": {
+              "path": "volume:///shared/results/root/beta/tests.json"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES",
+          "tool_result": "EVIDENCE_root_beta_PASSED"
+        },
+        "tools": [
+          {
+            "name": "read",
+            "id": "call-21-read",
+            "arguments": {
+              "path": "volume:///shared/results/root/beta/logs/check.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES",
+          "tool_result": "OBSERVED_SELECTED_beta"
+        },
+        "tools": [
+          {
+            "name": "fs",
+            "id": "call-22-fs",
+            "arguments": {
+              "command": "diff agents/beta"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "name": "read",
+            "id": "call-23-read",
+            "arguments": {
+              "path": "volume:///shared/results/root/gamma/tests.json"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES",
+          "tool_result": "EVIDENCE_root_gamma_PASSED"
+        },
+        "tools": [
+          {
+            "name": "read",
+            "id": "call-24-read",
+            "arguments": {
+              "path": "volume:///shared/results/root/gamma/logs/check.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES",
+          "tool_result": "OBSERVED_SELECTED_gamma"
+        },
+        "tools": [
+          {
+            "name": "fs",
+            "id": "call-25-fs",
+            "arguments": {
+              "command": "diff agents/gamma"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "name": "write",
+            "id": "call-26-write",
+            "arguments": {
+              "path": "volume:///private/ui/compare.md",
+              "content": "# Candidate comparison\n\nalpha: shared check and log read; results/root/alpha/tests.json\nbeta: shared check and log read; results/root/beta/tests.json\ngamma: shared check and log read; results/root/gamma/tests.json\n\n```input pick-fork id=winner\n- alpha\n- beta\n- gamma\n```\n"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "name": "fs",
+            "id": "call-27-fs",
             "arguments": {
               "command": "merge agents/beta"
-            },
-            "id": "call-22-fs"
+            }
           }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
         "tools": [
           {
             "name": "archive",
+            "id": "call-28-archive",
             "arguments": {
               "agent": "alpha"
-            },
-            "id": "call-23-archive"
+            }
           }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
         "tools": [
           {
             "name": "archive",
+            "id": "call-29-archive",
             "arguments": {
               "agent": "gamma"
-            },
-            "id": "call-24-archive"
+            }
           }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
         "tools": [
           {
             "name": "wait",
+            "id": "call-30-wait",
             "arguments": {
               "agents": [
                 "alpha",
                 "gamma"
               ]
-            },
-            "id": "call-25-wait"
+            }
           }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
         "tools": [
           {
             "name": "read",
+            "id": "call-31-read",
             "arguments": {
               "path": "selected.txt"
-            },
-            "id": "call-26-read"
+            }
           }
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       },
       {
+        "when": {
+          "user": "COMPARE_CANDIDATES",
+          "tool_result": "SELECTED_beta"
+        },
         "text": [
           "SEARCH_DONE"
-        ],
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        }
+        ]
       }
     ]
   },
@@ -407,24 +491,34 @@
       "mode": "service"
     },
     {
+      "mode": "pty",
       "actions": [
         {
           "when": {
+            "cursor": true,
             "contains": [
               "GraphCoder"
-            ],
-            "cursor": true
+            ]
           },
           "prompt": "COMPARE_CANDIDATES"
         },
         {
           "when": {
+            "cursor": true,
             "contains": [
-              "Candidate comparison",
               "SEARCH_DONE",
               "○"
-            ],
-            "cursor": true
+            ]
+          },
+          "prompt": "/view compare.md"
+        },
+        {
+          "when": {
+            "contains": [
+              "Agent view: compare.md",
+              "Candidate comparison",
+              "pick-fork"
+            ]
           },
           "prompt": "/merge "
         },
@@ -436,19 +530,44 @@
           },
           "prompt": "/quit "
         }
-      ],
-      "mode": "pty"
+      ]
     }
   ],
   "assert": {
-    "requests": 28,
     "tool_contains": [
-      "pick-fork",
-      "beta",
       "archived"
     ],
+    "tool_results": [
+      {
+        "path": "volume:///shared/results/root/alpha/tests.json",
+        "text": "{\"version\":1,\"candidate\":\"root/alpha\",\"evidence\":\"EVIDENCE_root_alpha_PASSED\",\"checks\":[{\"expected\":\"SELECTED_alpha\",\"kind\":\"file_read\",\"passed\":true,\"path\":\"selected.txt\"}]}"
+      },
+      {
+        "path": "volume:///shared/results/root/alpha/logs/check.txt",
+        "text": "OBSERVED_SELECTED_alpha\n"
+      },
+      {
+        "path": "volume:///shared/results/root/beta/tests.json",
+        "text": "{\"version\":1,\"candidate\":\"root/beta\",\"evidence\":\"EVIDENCE_root_beta_PASSED\",\"checks\":[{\"expected\":\"SELECTED_beta\",\"kind\":\"file_read\",\"passed\":true,\"path\":\"selected.txt\"}]}"
+      },
+      {
+        "path": "volume:///shared/results/root/beta/logs/check.txt",
+        "text": "OBSERVED_SELECTED_beta\n"
+      },
+      {
+        "path": "volume:///shared/results/root/gamma/tests.json",
+        "text": "{\"version\":1,\"candidate\":\"root/gamma\",\"evidence\":\"EVIDENCE_root_gamma_PASSED\",\"checks\":[{\"expected\":\"SELECTED_gamma\",\"kind\":\"file_read\",\"passed\":true,\"path\":\"selected.txt\"}]}"
+      },
+      {
+        "path": "volume:///shared/results/root/gamma/logs/check.txt",
+        "text": "OBSERVED_SELECTED_gamma\n"
+      }
+    ],
     "files": {
-      "selected.txt": "beta\n"
-    }
-  }
+      "selected.txt": "SELECTED_beta\n"
+    },
+    "requests": 32
+  },
+  "physical": true,
+  "ntfs": true
 }
