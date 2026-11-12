@@ -9,6 +9,7 @@
     {"when":{"user":"PRICED_ROOT","tool_result":"PRICED_CHILD_DONE"},"text":["PRICED_ROOT_DONE"]}
   ]},
   "inputs":[
+    {"mode":"service"},
     {"mode":"headless","args":["--new-session","--usage-jsonl","{{workspace}}/usage.jsonl","-p","PRICED_ROOT"],"answer":"PRICED_ROOT_DONE"},
     {"mode":"pty","resume":true,"actions":[
       {"when":{"contains":["PRICED_ROOT_DONE","This agent","USD 0.000000006"],"cursor":true},"prompt":"/cost"},
