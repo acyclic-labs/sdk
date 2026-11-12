@@ -116,6 +116,9 @@ inside `code`. Listing names does not evaluate manifests, load descriptions or
 schemas, or scan sibling programs. Fixed catalog tools take precedence over an
 authored tool with the same name. Authored tools add no native model declarations
 and do not rewrite the context epoch's cached prefix.
+JavaScript's implicit `then` and `toJSON` property probes do not resolve lazy
+programs. These properties require an explicit catalog declaration; awaiting or
+serializing the namespace otherwise performs no host call.
 
 One invocation reads the selected manifest, its static imports and every declared
 entry from one immutable home generation. Its revision covers those observations,
