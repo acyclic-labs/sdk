@@ -181,11 +181,11 @@ fn configured_limits_reject_oversized_references() -> Result<()> {
     )?;
     Limits::default().validate_file(&long, &mut None)?;
     let mut selected = Limits {
-        path_bytes: 4096,
+        path_bytes: std::num::NonZeroUsize::new(4096),
         ..Limits::default()
     };
     assert!(selected.validate_file(&long, &mut None).is_err());
-    selected.path_bytes = path.len();
+    selected.path_bytes = std::num::NonZeroUsize::new(path.len());
     selected.validate_file(&long, &mut None)?;
     let encoded = serde_json::to_vec(&long).map_err(|error| Error::Invalid(error.to_string()))?;
     let decoded: FileRef =
