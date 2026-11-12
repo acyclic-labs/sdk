@@ -592,11 +592,18 @@ impl PreparedPublish {
         }
         Ok(())
     }
-    /// Take the request to submit it through another commit owner.
+    /// Take the request to submit it through another commit owner. Only
+    /// [`Store::submit_retained`] settles a participant or the previous cut's
+    /// committed custody, so a publication carrying either never leaves.
     pub fn into_request(self) -> Result<CommitRequest, Error> {
         if self.composition.is_some() {
             return Err(Error::Invalid(
                 "composed publication must retain participant custody",
+            ));
+        }
+        if self.unsettled.is_some() {
+            return Err(Error::Invalid(
+                "publication must first settle the committed custody it replaces",
             ));
         }
         Ok(self.request)

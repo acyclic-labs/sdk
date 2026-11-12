@@ -1155,13 +1155,15 @@ impl Composition for ScheduledSettlement {
 }
 
 /// How the owner publishes: directly from the cut, through a state binding's
-/// `prepare_publish`, or through a binding that first `flush`es a write.
-/// Each binding takes the cut's state before preparing its publication.
+/// `prepare_publish`, through a binding that first `flush`es a write, or
+/// directly and then deleting the actor through a raw provider commit of
+/// the deletion's request. Each binding takes the cut's state first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Via {
     Direct,
     Binding,
     Flush,
+    Delete,
 }
 
 /// One owner publishes `kinds` (bit set: composed) `via` one path, reloading
@@ -1210,8 +1212,22 @@ async fn one_owner(failing: usize, kinds: usize, via: Via, forget: bool) -> Resu
                 cut.unsettled = false;
             }
             let outcome = async {
+                if via == Via::Delete && step == STEPS {
+                    // A raw commit is refused while custody is unsettled;
+                    // the deletion then goes through the one settling path.
+                    return match store.delete(&cut, publish.clone())?.into_request() {
+                        Ok(request) => {
+                            PreparedPublish::settle(&store.provider().commit(request).await?)?;
+                            Ok(None)
+                        }
+                        Err(Error::Invalid(_)) => {
+                            store.submit_retained(store.delete(&cut, publish)?).await
+                        }
+                        Err(error) => Err(error),
+                    };
+                }
                 let publication = match via {
-                    Via::Direct => {
+                    Via::Direct | Via::Delete => {
                         store.prepare_publish(&cut, 1, &trigger, None, transition, publish)?
                     }
                     Via::Binding | Via::Flush => {
@@ -1231,7 +1247,10 @@ async fn one_owner(failing: usize, kinds: usize, via: Via, forget: bool) -> Resu
             .await;
             match outcome {
                 Ok(retained) => {
-                    previous = retained.ok_or("actor publication has no receipt")?;
+                    previous = match retained {
+                        Some(retained) => retained,
+                        None => store.load(&actor).await?,
+                    };
                     break;
                 }
                 Err(Error::Settlement { .. } | Error::Handler(_)) => {
@@ -1253,12 +1272,13 @@ async fn one_owner(failing: usize, kinds: usize, via: Via, forget: bool) -> Resu
 const STEPS: usize = 3;
 
 /// Exhaustive over which settlement attempts fail, which publications
-/// compose, and the publication path (direct or through a state binding):
-/// a failed settlement stays committed custody, and the same owner's next
-/// publication, plain or composed, finishes it first.
+/// compose, and the publication path (direct, through a state binding, or a
+/// final deletion committed raw): a failed settlement stays committed
+/// custody, and the same owner's next publication, plain or composed,
+/// finishes it first.
 #[tokio::test]
 async fn a_failed_settlement_is_finished_by_the_next_publication() -> Result<(), Failure> {
-    for via in [Via::Direct, Via::Binding, Via::Flush] {
+    for via in [Via::Direct, Via::Binding, Via::Flush, Via::Delete] {
         let mut caught = 0;
         for failing in 0..1 << (2 * STEPS) {
             for kinds in 0..1 << STEPS {
