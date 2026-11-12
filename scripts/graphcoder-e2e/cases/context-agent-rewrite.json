@@ -1,0 +1,106 @@
+{
+  "id": "context-agent-rewrite",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "tools": [
+          {
+            "id": "context-skill",
+            "arguments": {
+              "path": "volume:///effective/skills/context/SKILL.md"
+            },
+            "name": "read"
+          }
+        ],
+        "when": {
+          "user": "PIN_EVIDENCE"
+        }
+      },
+      {
+        "tools": [
+          {
+            "id": "context-pin",
+            "arguments": {
+              "path": "volume:///home/context/pins/evidence/decision.md",
+              "content": "PINNED_FACT_USE_BLUE_WIDGET"
+            },
+            "name": "write"
+          }
+        ],
+        "when": {
+          "user": "PIN_EVIDENCE",
+          "tool_result": "working documents"
+        }
+      },
+      {
+        "text": [
+          "PIN_READY"
+        ],
+        "when": {
+          "user": "PIN_EVIDENCE"
+        }
+      },
+      {
+        "text": [
+          "PIN_USED"
+        ],
+        "when": {
+          "contains": "PINNED_FACT_USE_BLUE_WIDGET",
+          "user": "USE_PIN"
+        }
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "service"
+    },
+    {
+      "actions": [
+        {
+          "prompt": "PIN_EVIDENCE",
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          }
+        },
+        {
+          "prompt": "USE_PIN",
+          "when": {
+            "contains": [
+              "PIN_READY",
+              "○"
+            ],
+            "cursor": true
+          }
+        },
+        {
+          "detach": true,
+          "when": {
+            "contains": [
+              "PIN_USED",
+              "○"
+            ],
+            "cursor": true
+          }
+        }
+      ],
+      "mode": "pty"
+    }
+  ],
+  "assert": {
+    "last_model_contains": [
+      "PINNED_FACT_USE_BLUE_WIDGET"
+    ],
+    "requests": 4
+  },
+  "physical": true,
+  "ntfs": true
+}
+

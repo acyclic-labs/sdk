@@ -139,7 +139,8 @@
       "cases": [
         "auto-compaction",
         "pty-manual-compaction",
-        "compaction-background"
+        "compaction-background",
+        "context-agent-rewrite"
       ]
     },
     "A9": {
@@ -347,3 +348,4 @@
     }
   }
 }
+
