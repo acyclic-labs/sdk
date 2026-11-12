@@ -154,7 +154,8 @@ impl Registry {
         self.update_catalog(Changes::Many(catalog.providers), catalog.default_model)
     }
 
-    /// Resolves a model without doing network I/O. Remaining slashes belong to the model.
+    /// Resolves a model without network I/O or requiring credentials for an unused selection.
+    /// Authentication is enforced by request dispatch. Remaining slashes belong to the model.
     pub fn resolve(&self, selection: &str) -> Result<ResolvedModel> {
         let (provider, name) = selection
             .split_once('/')
@@ -203,12 +204,6 @@ impl Registry {
             self.transport.clone(),
         )?;
         let (key, credential_scope, transport) = binding.into_parts();
-        let authenticated = key.is_some() || credential_scope.is_some();
-        #[cfg(not(target_arch = "wasm32"))]
-        let authenticated = authenticated || codex_login.is_some();
-        if !authenticated && config.authentication != Authentication::Optional {
-            return Err(invalid("model provider API key is unavailable"));
-        }
         // Bind the effective selected route, not the whole catalog. An edit to
         // another model cannot rotate this identity, while an endpoint, header,
         // counter, authority or selected-capacity change cannot reuse it.
