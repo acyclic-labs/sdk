@@ -1,469 +1,476 @@
 {
+  "ntfs": true,
+  "physical": true,
+  "workspace": {
+    "files": {},
+    "kind": "plain"
+  },
+  "id": "tree-search-depth2",
   "model": {
     "steps": [
       {
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        },
         "tools": [
           {
-            "id": "call-0-spawn",
+            "name": "spawn",
             "arguments": {
-              "role": "worker",
               "name": "alpha",
+              "role": "worker",
               "task": "ATTEMPT_alpha"
             },
-            "name": "spawn"
+            "id": "call-0-spawn"
           }
-        ]
+        ],
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        }
       },
       {
-        "when": {
-          "user": "ATTEMPT_alpha"
-        },
         "tools": [
           {
-            "id": "call-1-spawn",
+            "name": "spawn",
             "arguments": {
-              "role": "worker",
               "name": "leaf",
+              "role": "worker",
               "task": "LEAF_alpha"
             },
-            "name": "spawn"
+            "id": "call-1-spawn"
           }
-        ]
+        ],
+        "when": {
+          "user": "ATTEMPT_alpha"
+        }
       },
       {
-        "when": {
-          "user": "LEAF_alpha"
-        },
         "tools": [
           {
-            "id": "call-2-write",
+            "name": "write",
             "arguments": {
               "content": "alpha\n",
               "path": "selected.txt"
             },
-            "name": "write"
+            "id": "call-2-write"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "LEAF_alpha"
-        },
-        "text": [
-          "LEAF_DONE_alpha"
-        ]
+        }
       },
       {
+        "text": [
+          "LEAF_DONE_alpha"
+        ],
         "when": {
-          "user": "ATTEMPT_alpha"
-        },
+          "user": "LEAF_alpha"
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-4-wait",
+            "name": "wait",
             "arguments": {
               "agents": [
                 "leaf"
               ]
             },
-            "name": "wait"
+            "id": "call-4-wait"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_alpha"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-5-fs",
+            "name": "fs",
             "arguments": {
               "command": "merge agents/leaf"
             },
-            "name": "fs"
+            "id": "call-5-fs"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_alpha"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-6-archive",
+            "name": "archive",
             "arguments": {
               "agent": "leaf"
             },
-            "name": "archive"
+            "id": "call-6-archive"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_alpha"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-7-wait",
+            "name": "wait",
             "arguments": {
               "agents": [
                 "leaf"
               ]
             },
-            "name": "wait"
+            "id": "call-7-wait"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_alpha"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-8-read",
+            "name": "read",
             "arguments": {
               "path": "selected.txt"
             },
-            "name": "read"
+            "id": "call-8-read"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_alpha"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-9-write",
+            "name": "write",
             "arguments": {
-              "content": "{\"version\":1,\"command\":\"inspect selected.txt\",\"exit_status\":0,\"candidate\":\"alpha\"}",
-              "path": "volume:///private/results/alpha/tests.json"
+              "content": "{\"version\":1,\"checks\": [{\"kind\":\"file_read\",\"path\":\"selected.txt\",\"passed\":true}],\"candidate\":\"alpha\"}",
+              "path": "results/alpha/tests.json"
             },
-            "name": "write"
+            "id": "call-9-write"
           }
-        ]
+        ],
+        "when": {
+          "user": "ATTEMPT_alpha",
+          "tool_result": "alpha"
+        }
       },
       {
-        "when": {
-          "user": "ATTEMPT_alpha"
-        },
         "text": [
           "CANDIDATE_DONE_alpha"
-        ]
+        ],
+        "when": {
+          "user": "ATTEMPT_alpha"
+        }
       },
       {
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        },
         "tools": [
           {
-            "id": "call-11-spawn",
+            "name": "spawn",
             "arguments": {
-              "role": "worker",
               "name": "beta",
+              "role": "worker",
               "task": "ATTEMPT_beta"
             },
-            "name": "spawn"
+            "id": "call-11-spawn"
           }
-        ]
+        ],
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        }
       },
       {
-        "when": {
-          "user": "ATTEMPT_beta"
-        },
         "tools": [
           {
-            "id": "call-12-spawn",
+            "name": "spawn",
             "arguments": {
-              "role": "worker",
               "name": "leaf",
+              "role": "worker",
               "task": "LEAF_beta"
             },
-            "name": "spawn"
+            "id": "call-12-spawn"
           }
-        ]
+        ],
+        "when": {
+          "user": "ATTEMPT_beta"
+        }
       },
       {
-        "when": {
-          "user": "LEAF_beta"
-        },
         "tools": [
           {
-            "id": "call-13-write",
+            "name": "write",
             "arguments": {
               "content": "beta\n",
               "path": "selected.txt"
             },
-            "name": "write"
+            "id": "call-13-write"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "LEAF_beta"
-        },
-        "text": [
-          "LEAF_DONE_beta"
-        ]
+        }
       },
       {
+        "text": [
+          "LEAF_DONE_beta"
+        ],
         "when": {
-          "user": "ATTEMPT_beta"
-        },
+          "user": "LEAF_beta"
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-15-wait",
+            "name": "wait",
             "arguments": {
               "agents": [
                 "leaf"
               ]
             },
-            "name": "wait"
+            "id": "call-15-wait"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_beta"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-16-fs",
+            "name": "fs",
             "arguments": {
               "command": "merge agents/leaf"
             },
-            "name": "fs"
+            "id": "call-16-fs"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_beta"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-17-archive",
+            "name": "archive",
             "arguments": {
               "agent": "leaf"
             },
-            "name": "archive"
+            "id": "call-17-archive"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_beta"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-18-wait",
+            "name": "wait",
             "arguments": {
               "agents": [
                 "leaf"
               ]
             },
-            "name": "wait"
+            "id": "call-18-wait"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_beta"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-19-read",
+            "name": "read",
             "arguments": {
               "path": "selected.txt"
             },
-            "name": "read"
+            "id": "call-19-read"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_beta"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-20-write",
+            "name": "write",
             "arguments": {
-              "content": "{\"version\":1,\"command\":\"inspect selected.txt\",\"exit_status\":0,\"candidate\":\"beta\"}",
-              "path": "volume:///private/results/beta/tests.json"
+              "content": "{\"version\":1,\"checks\": [{\"kind\":\"file_read\",\"path\":\"selected.txt\",\"passed\":true}],\"candidate\":\"beta\"}",
+              "path": "results/beta/tests.json"
             },
-            "name": "write"
+            "id": "call-20-write"
           }
-        ]
+        ],
+        "when": {
+          "user": "ATTEMPT_beta",
+          "tool_result": "beta"
+        }
       },
       {
-        "when": {
-          "user": "ATTEMPT_beta"
-        },
         "text": [
           "CANDIDATE_DONE_beta"
-        ]
+        ],
+        "when": {
+          "user": "ATTEMPT_beta"
+        }
       },
       {
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        },
         "tools": [
           {
-            "id": "call-22-spawn",
+            "name": "spawn",
             "arguments": {
-              "role": "worker",
               "name": "gamma",
+              "role": "worker",
               "task": "ATTEMPT_gamma"
             },
-            "name": "spawn"
+            "id": "call-22-spawn"
           }
-        ]
+        ],
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        }
       },
       {
-        "when": {
-          "user": "ATTEMPT_gamma"
-        },
         "tools": [
           {
-            "id": "call-23-spawn",
+            "name": "spawn",
             "arguments": {
-              "role": "worker",
               "name": "leaf",
+              "role": "worker",
               "task": "LEAF_gamma"
             },
-            "name": "spawn"
+            "id": "call-23-spawn"
           }
-        ]
+        ],
+        "when": {
+          "user": "ATTEMPT_gamma"
+        }
       },
       {
-        "when": {
-          "user": "LEAF_gamma"
-        },
         "tools": [
           {
-            "id": "call-24-write",
+            "name": "write",
             "arguments": {
               "content": "gamma\n",
               "path": "selected.txt"
             },
-            "name": "write"
+            "id": "call-24-write"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "LEAF_gamma"
-        },
-        "text": [
-          "LEAF_DONE_gamma"
-        ]
+        }
       },
       {
+        "text": [
+          "LEAF_DONE_gamma"
+        ],
         "when": {
-          "user": "ATTEMPT_gamma"
-        },
+          "user": "LEAF_gamma"
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-26-wait",
+            "name": "wait",
             "arguments": {
               "agents": [
                 "leaf"
               ]
             },
-            "name": "wait"
+            "id": "call-26-wait"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_gamma"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-27-fs",
+            "name": "fs",
             "arguments": {
               "command": "merge agents/leaf"
             },
-            "name": "fs"
+            "id": "call-27-fs"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_gamma"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-28-archive",
+            "name": "archive",
             "arguments": {
               "agent": "leaf"
             },
-            "name": "archive"
+            "id": "call-28-archive"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_gamma"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-29-wait",
+            "name": "wait",
             "arguments": {
               "agents": [
                 "leaf"
               ]
             },
-            "name": "wait"
+            "id": "call-29-wait"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_gamma"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-30-read",
+            "name": "read",
             "arguments": {
               "path": "selected.txt"
             },
-            "name": "read"
+            "id": "call-30-read"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "ATTEMPT_gamma"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-31-write",
+            "name": "write",
             "arguments": {
-              "content": "{\"version\":1,\"command\":\"inspect selected.txt\",\"exit_status\":0,\"candidate\":\"gamma\"}",
-              "path": "volume:///private/results/gamma/tests.json"
+              "content": "{\"version\":1,\"checks\": [{\"kind\":\"file_read\",\"path\":\"selected.txt\",\"passed\":true}],\"candidate\":\"gamma\"}",
+              "path": "results/gamma/tests.json"
             },
-            "name": "write"
+            "id": "call-31-write"
           }
-        ]
+        ],
+        "when": {
+          "user": "ATTEMPT_gamma",
+          "tool_result": "gamma"
+        }
       },
       {
-        "when": {
-          "user": "ATTEMPT_gamma"
-        },
         "text": [
           "CANDIDATE_DONE_gamma"
-        ]
+        ],
+        "when": {
+          "user": "ATTEMPT_gamma"
+        }
       },
       {
-        "when": {
-          "user": "COMPARE_CANDIDATES"
-        },
         "tools": [
           {
-            "id": "call-33-wait",
+            "name": "wait",
             "arguments": {
               "agents": [
                 "alpha",
@@ -471,205 +478,205 @@
                 "gamma"
               ]
             },
-            "name": "wait"
+            "id": "call-33-wait"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-34-fs",
+            "name": "fs",
             "arguments": {
               "command": "diff agents/alpha"
             },
-            "name": "fs"
+            "id": "call-34-fs"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-35-fs",
+            "name": "fs",
             "arguments": {
               "command": "diff agents/beta"
             },
-            "name": "fs"
+            "id": "call-35-fs"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-36-fs",
+            "name": "fs",
             "arguments": {
               "command": "diff agents/gamma"
             },
-            "name": "fs"
+            "id": "call-36-fs"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-37-write",
+            "name": "write",
             "arguments": {
               "content": "# Candidate comparison\n\nalpha: valid\nbeta: preferred by the parent\ngamma: valid\n\n```input pick-fork id=winner\n- alpha\n- beta\n- gamma\n```\n",
               "path": "volume:///private/ui/compare.md"
             },
-            "name": "write"
+            "id": "call-37-write"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-38-read",
+            "name": "read",
             "arguments": {
               "path": "volume:///private/ui/compare.md"
             },
-            "name": "read"
+            "id": "call-38-read"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-39-fs",
+            "name": "write",
+            "arguments": {
+              "content": "# Candidate comparison\n\nalpha: valid\nbeta: preferred by the parent\ngamma: valid\n\n```input pick-fork id=winner\n- alpha\n- beta\n- gamma\n```\n\r\n```ui:default\r\n```\r\n",
+              "path": "volume:///private/ui/index.md"
+            },
+            "id": "call-39-write"
+          }
+        ],
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        }
+      },
+      {
+        "tools": [
+          {
+            "name": "fs",
             "arguments": {
               "command": "merge agents/beta"
             },
-            "name": "fs"
+            "id": "call-40-fs"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-40-archive",
+            "name": "archive",
             "arguments": {
               "agent": "alpha"
             },
-            "name": "archive"
+            "id": "call-41-archive"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-41-archive",
+            "name": "archive",
             "arguments": {
               "agent": "gamma"
             },
-            "name": "archive"
+            "id": "call-42-archive"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-42-wait",
+            "name": "wait",
             "arguments": {
               "agents": [
                 "alpha",
                 "gamma"
               ]
             },
-            "name": "wait"
+            "id": "call-43-wait"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        },
+        }
+      },
+      {
         "tools": [
           {
-            "id": "call-43-read",
+            "name": "read",
             "arguments": {
               "path": "selected.txt"
             },
-            "name": "read"
+            "id": "call-44-read"
           }
-        ]
-      },
-      {
+        ],
         "when": {
           "user": "COMPARE_CANDIDATES"
-        },
+        }
+      },
+      {
         "text": [
           "SEARCH_DONE"
-        ]
+        ],
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        }
       }
     ]
   },
-  "ntfs": true,
-  "physical": true,
-  "assert": {
-    "files": {
-      "selected.txt": "beta\n"
-    },
-    "requests": 45,
-    "tool_contains": [
-      "pick-fork",
-      "beta",
-      "archived"
-    ]
-  },
-  "workspace": {
-    "kind": "plain",
-    "files": {}
-  },
-  "id": "tree-search-depth2",
   "inputs": [
     {
       "mode": "service"
     },
     {
-      "mode": "pty",
       "actions": [
         {
           "when": {
-            "cursor": true,
             "contains": [
               "GraphCoder"
-            ]
+            ],
+            "cursor": true
           },
           "prompt": "COMPARE_CANDIDATES"
         },
         {
           "when": {
-            "cursor": true,
             "contains": [
+              "Candidate comparison",
               "SEARCH_DONE",
               "○"
-            ]
+            ],
+            "cursor": true
           },
           "prompt": "/merge "
         },
@@ -681,7 +688,19 @@
           },
           "prompt": "/quit "
         }
-      ]
+      ],
+      "mode": "pty"
     }
-  ]
+  ],
+  "assert": {
+    "requests": 46,
+    "tool_contains": [
+      "pick-fork",
+      "beta",
+      "archived"
+    ],
+    "files": {
+      "selected.txt": "beta\n"
+    }
+  }
 }
