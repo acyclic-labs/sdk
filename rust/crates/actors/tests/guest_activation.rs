@@ -609,10 +609,7 @@ async fn strict_wire_record_matches_typescript_guest() -> Result<(), Box<dyn std
     let input: Vec<u8> = serde_json::from_value(fixture["delivery"].clone())?;
     let expected: Vec<u8> = serde_json::from_value(fixture["transition"].clone())?;
     let (delivery, checkpoint) = wire::decode_delivery(&input)?;
-    assert_eq!(
-        wire::encode_delivery(&delivery, checkpoint.as_ref())?,
-        input
-    );
+    assert_eq!(wire::encode_delivery(&delivery, checkpoint.as_ref()), input);
     assert!(checkpoint.is_none());
     assert_eq!(delivery.epoch, 3);
     assert_eq!(delivery.now_unix_ms, 1700);
