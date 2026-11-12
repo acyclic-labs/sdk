@@ -229,7 +229,8 @@ async function execute(test, prepared) {
           .map(argument => argument === "{{file_source}}" ? path : argument);
         const running = await processes.startReported(binary, arguments_, { cwd: input.cwd ?? fixture.workspace, env: inputFixture.env });
         if (input.kill_on) {
-          await withCancellation(running, fixture.signal, Promise.race([fixture.waitRequest(input.kill_on), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]));
+          const signal = AbortSignal.any([running.failure, fixture.signal]);
+          await withCancellation(running, signal, Promise.race([fixture.waitRequest(input.kill_on), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]));
           running.child.kill("SIGKILL");
           const result = await running.exited;
           assert.ok(result.signal || result.code !== 0);

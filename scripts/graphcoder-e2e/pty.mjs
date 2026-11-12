@@ -57,22 +57,22 @@ export async function pty(processes, binary, fixture, input, capture) {
       })}\n`);
     }
     function frame(settled = false) {
-      if (failure || !frames.ready()) return;
+      if (failure) return;
       try {
+        const action = input.actions[index];
+        // Provider settlement is independent of terminal parsing. An open
+        // synchronized frame must not hide a bypassed required interaction.
+        if (action?.before_request && fixture.requested(action.before_request)) {
+          const error = new Error(`step=await terminal action ${index}: model request ${JSON.stringify(action.before_request)} overtook the required interaction; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
+          error.code = "terminal_action_overtaken";
+          throw error;
+        }
+        if (!frames.ready()) return;
         const { visible, diagnostic, logical } = screenSnapshot(screen, { completeLines: !settled });
         trace({ event: "frame", settled, available: frames.available(), visible });
         if (firstPaint === undefined && frames.available() && visible.includes("GraphCoder")) {
           firstPaint = performance.now() - launchStarted;
           process.stderr.write(`pty-startup: ${JSON.stringify({ case: fixture.id, first_paint_ms: firstPaint })}\n`);
-        }
-        const action = input.actions[index];
-        // A provider boundary can prove an expected interaction was bypassed
-        // even while the terminal keeps repainting (or the response is held).
-        // Observe that original event, never infer progress from elapsed time.
-        if (action?.before_request && fixture.requested(action.before_request)) {
-          const error = new Error(`step=await terminal action ${index}: model request ${JSON.stringify(action.before_request)} overtook the required interaction\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
-          error.code = "terminal_action_overtaken";
-          throw error;
         }
         const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(diagnostic, action?.when, action?.assert, visible);
         if (refusal) {
@@ -151,7 +151,11 @@ export async function pty(processes, binary, fixture, input, capture) {
       frames.write(bytes);
     });
     let result;
-    try { result = await withCancellation(running, fixture.signal); }
+    // Interactive waits must stop on native failure; ordinary commands retain
+    // their original exit status so declared refusal cases can assert it.
+    const signal = running.failure
+      ? AbortSignal.any([running.failure, ...(fixture.signal ? [fixture.signal] : [])]) : fixture.signal;
+    try { result = await withCancellation(running, signal); }
     catch (error) {
       (errors ??= []).push(error);
       try { result = await running.closed; }

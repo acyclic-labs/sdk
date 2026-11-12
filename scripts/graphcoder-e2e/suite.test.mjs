@@ -20,14 +20,15 @@ test("cancelled waits observe an eagerly rejected original callback", async () =
   await assert.rejects(waiting, error => error === cause);
 });
 
-test("recorded scenario failure retires and joins its original executable", async () => {
+for (const waiting of ["completion", "provider"]) test(`recorded scenario failure retires and joins its original executable (${waiting})`, async () => {
   const processes = new Processes(), cancellation = new AbortController();
   const failure = new Error("original tool refused execution");
   try {
     const running = processes.start(process.execPath, ["-e",
       "console.log(JSON.stringify({ready:true}));process.stdin.resume()"]);
     const events = new Spool(running.child.stdout, running.closed);
-    const completed = withCancellation(running, cancellation.signal);
+    const completed = withCancellation(running, cancellation.signal,
+      waiting === "provider" ? new Promise(() => {}) : running.closed);
     completed.catch(() => {});
     await events.next(event => event.ready === true);
     cancellation.abort(failure);
@@ -35,6 +36,25 @@ test("recorded scenario failure retires and joins its original executable", asyn
     assert.equal(processes.children.size, 0);
     const result = await running.closed;
     assert.ok(result.signal || result.code !== 0);
+  } finally { await processes.close(); }
+});
+
+test("native failure settles a conversation waiting for a committed reply", async () => {
+  const processes = new Processes(), captures = [];
+  try {
+    await assert.rejects(conversation(processes, process.execPath, {
+      workspace: tmpdir(), args: ["-e", `
+        const { Socket, connect } = require('node:net');
+        const channel = process.env.ACYCLIC_REPORT_PIPE
+          ? connect(process.env.ACYCLIC_REPORT_PIPE) : new Socket({ fd: 3 });
+        const generation = process.env.ACYCLIC_REPORT_GENERATION;
+        process.stdin.on('data', () => channel.write(JSON.stringify({ generation,
+          failed: { phase: 'execution', cause: 'original conversation refusal', raw_os_error: null } }) + '\\n'));
+      `, "--"],
+    }, { operation: "native-failure", turns: [{ id: "pending", text: "hello" }] }, result => captures.push(result)),
+    error => error.code === "PROCESS_EXECUTION_FAILED" && error.cause.cause === "original conversation refusal");
+    assert.equal(captures.length, 1, "retain original transcripts after native failure");
+    assert.equal(processes.children.size, 0);
   } finally { await processes.close(); }
 });
 

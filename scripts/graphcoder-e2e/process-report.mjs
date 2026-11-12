@@ -18,6 +18,8 @@ export class ProcessReport {
   ready = new Promise((resolve, reject) => { this.#readyResolve = resolve; this.#readyReject = reject; });
   #terminal;
   #executionFailure;
+  #failure = new AbortController();
+  get failure() { return this.#failure.signal; }
   #controlFailure;
   #resolve;
   #completion = new Promise(resolve => { this.#resolve = resolve; });
@@ -94,6 +96,7 @@ export class ProcessReport {
       // Retain the first returned cause even when that snapshot arrived first.
       this.#executionFailure = message.failed;
       this.#finish("write-failed", "execution-failed");
+      this.#fail("PROCESS_EXECUTION_FAILED", message.failed);
       return;
     }
     if (!this.#terminal && !this.#ready && message.generation === this.generation
@@ -103,6 +106,7 @@ export class ProcessReport {
       // The original producer refused setup before announcing executable work.
       // This is neither a diagnostic ACK nor a physical retirement receipt.
       this.#finish("write-failed", "startup-rejected", [], false, message.rejected);
+      this.#fail("PROCESS_STARTUP_REJECTED", message.rejected);
       return;
     }
     if (!this.#terminal && message.ready === true && message.generation === this.generation && !this.#ready) {
@@ -138,6 +142,12 @@ export class ProcessReport {
     this.#terminal = { outcome, cause, waits, acknowledged, rejection };
     this.#endReady(outcome, cause);
     this.#resolve();
+  }
+  #fail(code, cause) {
+    // A native terminal failure settles execution, even if the process is
+    // still alive or a diagnostic snapshot was acknowledged earlier.
+    this.#failure.abort(Object.assign(new Error(`process failed: ${cause.cause}`, { cause }),
+      { code, generation: this.generation }));
   }
   #invalid(cause) {
     // Diagnostic completion does not certify the remaining control stream.

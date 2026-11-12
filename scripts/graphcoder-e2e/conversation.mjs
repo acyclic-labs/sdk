@@ -26,22 +26,23 @@ export async function conversation(processes, binary, fixture, input, capture, b
   const lifetime = new AbortController();
   active.closed.then(result => lifetime.abort(new Error(`conversation exited: ${JSON.stringify(result)}`)),
     error => lifetime.abort(error));
-  const signal = fixture.signal ? AbortSignal.any([fixture.signal, lifetime.signal]) : lifetime.signal;
+  const signal = AbortSignal.any([lifetime.signal, ...(active.failure ? [active.failure] : []),
+    ...(fixture.signal ? [fixture.signal] : [])]);
   let result, failures, ended;
   try {
     for (const turn of input.turns) {
       await waitFor(beforeTurn(turn, active, signal), signal);
-      if (turn.after_request) await Promise.race([
+      if (turn.after_request) await waitFor(Promise.race([
         fixture.waitRequest(turn.after_request),
-        ended ??= active.closed.then(result => {
+        ended ??= active.exited.then(result => {
           throw new Error(`conversation exited before its next turn: ${JSON.stringify(result)}`);
         }),
-      ]);
+      ]), signal);
       assert.ok(!replies.has(turn.id), "committed reply preceded its prompt");
       await new Promise((resolve, reject) => active.input.write(
         JSON.stringify({ id: turn.id, prompt: turn.text }) + "\n",
         error => error ? reject(error) : resolve()));
-      const reply = messageReply(await replies.keyed(turn.id), turn.id);
+      const reply = messageReply(await waitFor(replies.keyed(turn.id), signal), turn.id);
       assert.equal(reply.error, undefined, `failed JSONL turn ${turn.id}: ${reply.error}`);
       if (turn.answer !== undefined) assert.equal(reply.text, turn.answer);
       await waitFor(afterTurn(turn, reply, signal), signal);

@@ -14,6 +14,42 @@ import { TerminalFrames } from "./frames.mjs";
 import { fuzz as fuzzTerminalFrames } from "./frames.fuzz.mjs";
 import { failureReport } from "./report.mjs";
 
+test("provider settlement rejects a bypassed action during an unfinished terminal frame", async () => {
+  let running, requested = false;
+  class TerminalProcess extends Processes {
+    startTerminal(binary, args, { cwd, env }) {
+      return running = this.start(binary, args, { cwd, env });
+    }
+  }
+  const root = mkdtempSync(join(tmpdir(), "terminal-provider-settlement-")), processes = new TerminalProcess();
+  try {
+    let captured;
+    await assert.rejects(pty(processes, process.execPath, {
+      id: "provider-settlement", workspace: root,
+      args: ["-e", "process.stdin.resume();process.stdout.write('\\x1b[?2026happroval redraw')"],
+      requested() { return requested; },
+      onRequest(notify) {
+        // Deliver the provider event after these original bytes enter the
+        // parser. Neither pending parsing nor an open transaction may hide it.
+        running.child.stdout.once("data", () => queueMicrotask(() => {
+          requested = true;
+          notify({ path: "responses", step: 1 });
+          // EOF also releases the negative control: without the event guard
+          // it must fail the cause assertion, rather than hang this test.
+          running.input.end();
+        }));
+        return () => {};
+      },
+    }, { actions: [{ when: { contains: ["Approval"] }, before_request: { step: 1 }, send: "cancel\r" }] },
+    result => { captured = result; }), error => {
+      assert.equal(error.code, "terminal_action_overtaken");
+      return true;
+    });
+    assert.ok(captured.stdout.includes("approval redraw"), "retain the unfinished original frame");
+    assert.equal(processes.children.size, 0, "settlement joins the original executable and transcripts");
+  } finally { await processes.close(); rmSync(root, { recursive: true }); }
+});
+
 test("terminal commands reject typed unavailable notices before waiting for changed colours", async () => {
   class TerminalProcess extends Processes {
     startTerminal(binary, args, { cwd, env }) { return this.start(binary, args, { cwd, env }); }

@@ -3,11 +3,83 @@ import { readFileSync } from "node:fs";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import test from "node:test";
-import { Processes } from "./process.mjs";
+import { Processes, withCancellation } from "./process.mjs";
 import { ProcessReport } from "./process-report.mjs";
 import { executionSucceeded } from "./assertions.mjs";
 
 const captured = JSON.parse(readFileSync(new URL("./fixtures/native-report-ready.json", import.meta.url)));
+
+test("native terminal failures retire a live executable independently of diagnostic acknowledgement", async () => {
+  for (const phase of ["startup", "execution", "execution-after-ack"]) {
+    const scope = new Processes();
+    try {
+      const running = await scope.startReported(process.execPath, ["-e", `
+        const { Socket } = require('node:net');
+        const { connect } = require('node:net');
+        const { createInterface } = require('node:readline');
+        const channel = process.env.ACYCLIC_REPORT_PIPE
+          ? connect(process.env.ACYCLIC_REPORT_PIPE) : new Socket({ fd: 3 });
+        const generation = process.env.ACYCLIC_REPORT_GENERATION;
+        const phase = process.argv[1];
+        createInterface({ input: channel }).on('line', line => {
+          const request = JSON.parse(line);
+          channel.write(JSON.stringify({ generation, request_id: request.request_id, outcome: 'empty', waits: [] }) + '\\n');
+        });
+        if (phase !== 'startup') channel.write(JSON.stringify({ generation, ready: true }) + '\\n');
+        process.stdin.once('data', () => {
+          const cause = { phase: phase === 'startup' ? 'startup' : 'execution', cause: 'original native refusal', raw_os_error: 5 };
+          channel.write(JSON.stringify({ generation, [phase === 'startup' ? 'rejected' : 'failed']: cause }) + '\\n');
+        });
+      `, phase]);
+      const completed = withCancellation(running, running.failure);
+      completed.catch(() => {});
+      if (phase !== "startup") await running.reportReady;
+      if (phase === "execution-after-ack") {
+        await running.requestReport(Number.MAX_SAFE_INTEGER);
+        assert.equal(running.failure.aborted, false, "a diagnostic ACK is not execution settlement");
+      }
+      running.input.write("fail\n");
+      await assert.rejects(completed, error => {
+        assert.equal(error.code, phase === "startup" ? "PROCESS_STARTUP_REJECTED" : "PROCESS_EXECUTION_FAILED");
+        assert.equal(error.cause.cause, "original native refusal");
+        return true;
+      });
+      const result = await running.closed;
+      assert.ok(result.signal || result.code !== 0, "the still-live producer is stopped on its native failure event");
+      assert.equal(scope.children.size, 0, "native settlement includes physical retirement");
+      if (phase === "execution-after-ack") assert.equal(result.termination.report_acknowledged, true);
+    } finally { await scope.close(); }
+  }
+});
+
+test("ordinary commands retain expected native refusal status and output", async () => {
+  const scope = new Processes();
+  try {
+    for (const phase of ["startup", "execution"]) {
+      const running = await scope.startReported(process.execPath, ["-e", `
+        const { Socket, connect } = require('node:net');
+        const channel = process.env.ACYCLIC_REPORT_PIPE
+          ? connect(process.env.ACYCLIC_REPORT_PIPE) : new Socket({ fd: 3 });
+        const generation = process.env.ACYCLIC_REPORT_GENERATION;
+        const phase = process.argv[1];
+        const cause = { phase, cause: 'missing explicit credentials', raw_os_error: 2 };
+        channel.end(JSON.stringify({ generation, [phase === 'startup' ? 'rejected' : 'failed']: cause }) + '\\n', () => {
+          process.stdout.write(JSON.stringify({ kind: 'error', code: 'execution_failed', step: 'execute', message: '--credentials' }) + '\\n', () => process.exit(1));
+        });
+      `, phase]);
+      const result = await withCancellation(running);
+      assert.equal(result.code, 1, result.stderr);
+      assert.equal(result.signal, null, "native refusal is not forced cancellation");
+      assert.deepEqual(JSON.parse(result.stdout), {
+        kind: "error", code: "execution_failed", step: "execute", message: "--credentials",
+      });
+      assert.equal((result.termination.startup_rejection ?? result.termination.execution_failure).cause,
+        "missing explicit credentials");
+      assert.throws(() => executionSucceeded(result), /selected native execution reported failure/);
+      assert.equal(scope.children.size, 0);
+    }
+  } finally { await scope.close(); }
+});
 // Replay recorded native frames through the shipped process/report owner and
 // actual child pipe. Only launch identities and explicit damage are changed.
 const producer = `

@@ -197,7 +197,7 @@ export class Processes {
     joined.then(() => joins.delete(joined));
     this.children.set(child, { kill, reaped, report,
       cancel: process.platform === "win32" ? undefined : () => child.kill("SIGTERM") });
-    return { child, input, exited, closed, reportReady: report?.ready,
+    return { child, input, exited, closed, reportReady: report?.ready, failure: report?.failure,
       requestReport: report ? deadline => report.request(deadline) : undefined,
       killExecutable: () => child.kill("SIGKILL") };
   }
@@ -350,11 +350,13 @@ export class Processes {
 // The original failure event stops just this invocation, then joins its native
 // completion. Redraws and elapsed time never participate in the decision.
 export async function withCancellation(running, signal, completion = running.closed) {
-  const abort = () => running.killExecutable();
+  let reject;
+  const cancelled = new Promise((_, fail) => { reject = fail; });
+  const abort = () => { running.killExecutable(); reject(signal.reason); };
   signal?.addEventListener("abort", abort, { once: true });
   if (signal?.aborted) abort();
   try {
-    const result = await completion;
+    const result = await Promise.race([completion, cancelled]);
     signal?.throwIfAborted();
     return result;
   } catch (error) {
