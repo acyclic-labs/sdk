@@ -134,6 +134,9 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
         InboxRecord::Message(_) | InboxRecord::Notice { .. }
     );
     let input = match record {
+        InboxRecord::ForkAdopted(adopted) => adopted.brief.map(|brief| TurnInput::Brief {
+            brief: Box::new(brief),
+        }),
         InboxRecord::Notice {
             id,
             notice: super::NoticePayload::Waking(notice),
@@ -176,8 +179,7 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
         }),
         // Awaiting is control between a parent's turn and its child; neither
         // record is turn input (see [`super::machine`]).
-        InboxRecord::ForkAdopted(_)
-        | InboxRecord::WorkspaceChanged(_)
+        InboxRecord::WorkspaceChanged(_)
         | InboxRecord::Awaited
         | InboxRecord::ChildSettled(_)
         | InboxRecord::Cancel(_)
