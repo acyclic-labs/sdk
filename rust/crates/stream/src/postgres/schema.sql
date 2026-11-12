@@ -1,6 +1,20 @@
 BEGIN ISOLATION LEVEL READ COMMITTED;
 -- Serialize first-open DDL across independent processes, including an empty DB.
 SELECT pg_advisory_xact_lock(hashtextextended('acyclic-stream-schema', 1937006962));
+-- One native key for indexes, fencing and notifications. It is not an identity:
+-- every lookup retains the exact original spelling, including hash collisions.
+CREATE OR REPLACE FUNCTION acyclic_stream_namespace_key(stream_namespace text)
+RETURNS bigint LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
+    SELECT hashtextextended(stream_namespace COLLATE "C", 1937006962)
+$$;
+-- Keep the namespace itself when it fits the PostgreSQL NOTIFY representation.
+-- Longer names use their index key; notification equality only requests a refresh.
+CREATE OR REPLACE FUNCTION acyclic_stream_notification_payload(
+    stream_namespace text, namespace_key bigint
+) RETURNS text LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
+    SELECT CASE WHEN octet_length(stream_namespace) < 8000
+        THEN stream_namespace ELSE namespace_key::text END
+$$;
 CREATE TABLE IF NOT EXISTS acyclic_stream_journal (
     revision bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     namespace text NOT NULL,
@@ -8,16 +22,52 @@ CREATE TABLE IF NOT EXISTS acyclic_stream_journal (
     -- Public command ceiling (1056768), plus oneof tag and length delimiter.
     command bytea NOT NULL CHECK (octet_length(command) <= 1056772)
 );
-CREATE INDEX IF NOT EXISTS acyclic_stream_journal_namespace_revision
-    ON acyclic_stream_journal(namespace, revision);
+CREATE INDEX IF NOT EXISTS acyclic_stream_journal_key_revision
+    ON acyclic_stream_journal(acyclic_stream_namespace_key(namespace), revision);
+DROP INDEX IF EXISTS acyclic_stream_journal_namespace_revision;
 -- One revision incarnation per namespace journal, shared by every replica.
 -- Deleting the row (or recreating the database) issues a new incarnation, so
 -- tokens from an earlier journal refuse instead of matching reused indexes.
 -- A restore from backup must delete it too.
 CREATE TABLE IF NOT EXISTS acyclic_stream_generation (
-    namespace text PRIMARY KEY,
+    namespace text NOT NULL,
     generation bytea NOT NULL CHECK (octet_length(generation) = 16)
 );
+
+-- Only indexes change. Rows, generation bytes and revision identities retain
+-- their original representation. Full names distinguish a shared native key.
+CREATE INDEX IF NOT EXISTS acyclic_stream_generation_key
+    ON acyclic_stream_generation(acyclic_stream_namespace_key(namespace));
+ALTER TABLE acyclic_stream_generation
+    DROP CONSTRAINT IF EXISTS acyclic_stream_generation_pkey;
+
+CREATE OR REPLACE FUNCTION acyclic_stream_open(
+    stream_namespace text, proposed_generation bytea
+) RETURNS TABLE (generation bytea, notification_key text)
+LANGUAGE plpgsql VOLATILE AS $$
+DECLARE
+    namespace_key bigint := acyclic_stream_namespace_key(stream_namespace);
+    retained bytea;
+BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION USING ERRCODE = 'PST02',
+            MESSAGE = 'namespace opening requires READ COMMITTED';
+    END IF;
+    PERFORM pg_advisory_xact_lock(namespace_key);
+    -- Acquire the eventual insert lock before reading, so concurrent DDL
+    -- cannot interpose an exclusive lock ahead of a later lock upgrade.
+    LOCK TABLE acyclic_stream_generation IN ROW EXCLUSIVE MODE;
+    SELECT g.generation INTO retained FROM acyclic_stream_generation g
+        WHERE acyclic_stream_namespace_key(g.namespace) = namespace_key
+            AND g.namespace COLLATE "C" = stream_namespace COLLATE "C";
+    IF NOT FOUND THEN
+        INSERT INTO acyclic_stream_generation(namespace, generation)
+            VALUES (stream_namespace, proposed_generation)
+            RETURNING acyclic_stream_generation.generation INTO retained;
+    END IF;
+    RETURN QUERY SELECT retained, acyclic_stream_notification_payload(stream_namespace, namespace_key);
+END;
+$$;
 
 -- Physical append-if-revision only. The canonical Stream core decides paths,
 -- conditions and retry identity; SQL never decodes a command. VOLATILE keeps
@@ -32,6 +82,7 @@ CREATE OR REPLACE FUNCTION acyclic_stream_publish(
 ) RETURNS TABLE (revision bigint, at_millis bigint, accepted boolean)
 LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
+    namespace_key bigint := acyclic_stream_namespace_key(stream_namespace);
     current_revision bigint;
     accepted_millis bigint;
     published_revision bigint;
@@ -49,9 +100,10 @@ BEGIN
             MESSAGE = 'STEP stream-publication refused: empty or mismatched frame arrays',
             HINT = 'Recovery: submit the original nonempty ordered journal frame batch';
     END IF;
-    PERFORM pg_advisory_xact_lock(hashtextextended(stream_namespace, 1937006962));
+    PERFORM pg_advisory_xact_lock(namespace_key);
     SELECT COALESCE(max(j.revision), 0) INTO current_revision
-        FROM acyclic_stream_journal AS j WHERE j.namespace = stream_namespace;
+        FROM acyclic_stream_journal AS j WHERE acyclic_stream_namespace_key(j.namespace) = namespace_key
+            AND j.namespace COLLATE "C" = stream_namespace COLLATE "C";
     IF current_revision <> expected_revision THEN
         RETURN QUERY SELECT current_revision, 0::bigint, false;
         RETURN;
@@ -72,7 +124,7 @@ BEGIN
             RETURNING acyclic_stream_journal.revision INTO published_revision;
         earliest_deadline := LEAST(earliest_deadline, frame.deadline);
     END LOOP;
-    PERFORM pg_notify('acyclic_stream_commits', stream_namespace);
+    PERFORM pg_notify('acyclic_stream_commits', acyclic_stream_notification_payload(stream_namespace, namespace_key));
     -- A refusal aborts the statement and its insertion/notification together.
     -- The durable acknowledgement may arrive later than this acceptance cut.
     IF earliest_deadline IS NOT NULL AND

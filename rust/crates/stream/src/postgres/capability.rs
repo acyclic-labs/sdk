@@ -553,7 +553,7 @@ impl ReplayObserver for CompetingPublication<'_> {
                 .journal
                 .client
                 .query_one(
-                    "SELECT pg_try_advisory_xact_lock(hashtextextended($1,1937006962))",
+                    "SELECT pg_try_advisory_xact_lock(acyclic_stream_namespace_key($1::text))",
                     &[&writer.journal.namespace],
                 )
                 .await
@@ -638,69 +638,187 @@ async fn stale_publication_returns_without_retaining_the_losing_identity()
 async fn cancelled_acknowledgement_replays_the_committed_identity()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;
-    let namespace = format!("cancelled-ack-{}", uuid::Uuid::new_v4());
-    let provider = PostgresStream::connect(&database, &namespace).await?;
-    let peer = PostgresStream::connect(&database, &namespace).await?;
-    let (listener, mut notifications) = tokio_postgres::connect(&database, NoTls).await?;
-    let (sent, received) = tokio::sync::oneshot::channel();
-    let observed = namespace.clone();
-    let notification = tokio::spawn(async move {
-        while let Some(message) =
-            futures::future::poll_fn(|cx| notifications.poll_message(cx)).await
-        {
-            match message {
-                Ok(AsyncMessage::Notification(value)) if value.payload() == observed => {
-                    let _ = sent.send(());
-                    return;
-                }
-                Ok(_) => {}
-                Err(_) => return,
-            }
-        }
-    });
-    listener
-        .batch_execute("LISTEN acyclic_stream_commits")
+    // Existing stores retain their original text columns, rows and generation.
+    let (existing, connection) = tokio_postgres::connect(&database, NoTls).await?;
+    let existing_driver = tokio::spawn(connection);
+    existing
+        .batch_execute(
+            "BEGIN ISOLATION LEVEL READ COMMITTED;
+         SELECT pg_advisory_xact_lock(hashtextextended('acyclic-stream-schema', 1937006962));
+         CREATE TABLE IF NOT EXISTS acyclic_stream_journal (
+            revision bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            namespace text NOT NULL, at_millis bigint NOT NULL, command bytea NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS acyclic_stream_generation (
+            namespace text PRIMARY KEY, generation bytea NOT NULL
+         ); COMMIT;",
+        )
         .await?;
-    let request = AppendRequest {
-        path: StreamPath::new("accepted")?,
+    let original_namespace = uuid::Uuid::new_v4().to_string();
+    let generation = [23_u8; 16];
+    let original = AppendRequest {
+        path: StreamPath::new("retained")?,
         records: vec!["original".into()],
         if_tail: Some(0),
         idempotency_key: IdempotencyKey::unique(),
     };
-    {
-        let pending = provider.append(request.clone());
-        tokio::pin!(pending);
-        assert!(futures::poll!(&mut pending).is_pending());
-        // PostgreSQL delivers NOTIFY only after COMMIT. Abandon the caller's
-        // acknowledgement after this real event, without polling it to success.
-        received.await?;
-    }
-    notification.await?;
-    // NOTIFY proves durability, not that another replica has applied the cut.
-    // Reconcile the original identity before requesting its retained replay.
-    let recovered = peer
-        .inspect_idempotency(request.idempotency_key.clone())
-        .await?
-        .ok_or(StreamError::NotFound)?;
-    let IdempotencyOutcome::Append(receipt @ AppendOutcome::Committed(_)) = recovered.outcome
-    else {
-        return Err(StreamError::InvalidResponse.into());
-    };
-    assert_eq!(peer.append(request.clone()).await?, receipt);
-    assert_eq!(provider.append(request).await?, receipt);
-    let rows = peer
-        .inner
-        .session
-        .lock()
-        .await
-        .journal
-        .client
-        .query_one(
-            "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",
-            &[&namespace],
+    let command = WriteRequest::Append(original.clone()).encode_to_vec();
+    existing
+        .execute(
+            "INSERT INTO acyclic_stream_generation(namespace,generation) VALUES ($1,$2)",
+            &[&original_namespace, &generation.as_slice()],
         )
         .await?;
-    assert_eq!(rows.get::<_, i64>(0), 1);
+    existing
+        .execute(
+            "INSERT INTO acyclic_stream_journal(namespace,at_millis,command) VALUES ($1,1000,$2)",
+            &[&original_namespace, &command],
+        )
+        .await?;
+    let retained = PostgresStream::connect(&database, &original_namespace).await?;
+    let recovered = retained
+        .inspect_idempotency(original.idempotency_key.clone())
+        .await?
+        .ok_or(StreamError::NotFound)?;
+    let IdempotencyOutcome::Append(accepted) = recovered.outcome else {
+        return Err(StreamError::InvalidResponse.into());
+    };
+    let AppendOutcome::Committed(receipt) = &accepted else {
+        return Err(StreamError::InvalidResponse.into());
+    };
+    let mut location = generation.to_vec();
+    location.extend_from_slice(original_namespace.as_bytes());
+    assert_eq!(
+        receipt.revision.scope,
+        crate::AppliedRevisions::storage_scope("postgres", &location)
+    );
+    assert_eq!(
+        receipt.revision.incarnation,
+        u128::from_be_bytes(generation)
+    );
+    assert_eq!(retained.append(original).await?, accepted);
+    let count: i64 = existing
+        .query_one(
+            "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",
+            &[&original_namespace],
+        )
+        .await?
+        .get(0);
+    assert_eq!(count, 1);
+    let connections: i64 = existing.query_one(
+        "SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 OR application_name=$2",
+        &[&format!("acyclic-stream-query-{original_namespace}"), &format!("acyclic-stream-listener-{original_namespace}")],
+    ).await?.get(0);
+    assert_eq!(connections, 2);
+    drop(existing);
+    existing_driver.abort();
+    let long_namespace = format!(
+        "cancelled-ack-{}-{}",
+        uuid::Uuid::new_v4(),
+        "namespace".repeat(2048)
+    );
+    for (namespace, prior_rows) in [(original_namespace, 1), (long_namespace, 0)] {
+        let (provider, peer) = tokio::try_join!(
+            PostgresStream::connect(&database, &namespace),
+            PostgresStream::connect(&database, &namespace)
+        )?;
+        assert!(
+            provider
+                .inner
+                .core
+                .revisions
+                .current()
+                .same_authority(&peer.inner.core.revisions.current())
+        );
+        let (listener, mut notifications) = tokio_postgres::connect(&database, NoTls).await?;
+        let (sent, received) = tokio::sync::oneshot::channel();
+        let observed: String = if namespace.len() < 8000 {
+            // Match the original subscriber payload without the new SQL helper.
+            namespace.clone()
+        } else {
+            let replica = provider.inner.session.lock().await;
+            replica
+                .journal
+                .client
+                .query_one(
+                    "SELECT acyclic_stream_namespace_key($1::text)::text",
+                    &[&namespace],
+                )
+                .await?
+                .get(0)
+        };
+        let notification = tokio::spawn(async move {
+            while let Some(message) =
+                futures::future::poll_fn(|cx| notifications.poll_message(cx)).await
+            {
+                match message {
+                    Ok(AsyncMessage::Notification(value)) if value.payload() == observed => {
+                        let _ = sent.send(());
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(_) => return,
+                }
+            }
+        });
+        listener
+            .batch_execute("LISTEN acyclic_stream_commits")
+            .await?;
+        let request = AppendRequest {
+            path: StreamPath::new("accepted")?,
+            records: vec!["original".into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        {
+            // Preparation may need SQL before publication starts. Keep driving it,
+            // while withholding a successful receipt from the caller.
+            let pending = async {
+                provider.append(request.clone()).await?;
+                std::future::pending::<Result<(), StreamError>>().await
+            };
+            tokio::pin!(pending);
+            tokio::select! {
+                observed = received => observed?,
+                failed = &mut pending => failed?,
+            }
+        }
+        notification.await?;
+        // NOTIFY proves durability, not that another replica has applied the cut.
+        // Reconcile the original identity before requesting its retained replay.
+        let recovered = peer
+            .inspect_idempotency(request.idempotency_key.clone())
+            .await?
+            .ok_or(StreamError::NotFound)?;
+        let IdempotencyOutcome::Append(receipt @ AppendOutcome::Committed(_)) = recovered.outcome
+        else {
+            return Err(StreamError::InvalidResponse.into());
+        };
+        assert_eq!(peer.append(request.clone()).await?, receipt);
+        assert_eq!(provider.append(request.clone()).await?, receipt);
+        let rows = peer
+            .inner
+            .session
+            .lock()
+            .await
+            .journal
+            .client
+            .query_one(
+                "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",
+                &[&namespace],
+            )
+            .await?;
+        assert_eq!(rows.get::<_, i64>(0), prior_rows + 1);
+        let reopened = PostgresStream::connect(&database, &namespace).await?;
+        assert_eq!(reopened.append(request.clone()).await?, receipt);
+        let other = PostgresStream::connect(&database, &format!("{namespace}-other")).await?;
+        assert!(
+            other
+                .inspect_idempotency(request.idempotency_key)
+                .await?
+                .is_none()
+        );
+    }
     Ok(())
 }
 

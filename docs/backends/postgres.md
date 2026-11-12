@@ -8,7 +8,7 @@ correction landed with Streams surface PR #1705.
 
 Enable `acyclic-stream/postgres` and call
 `postgres::PostgresStream::connect(connection_string, namespace)`. Each namespace
-is an independent Stream provider in the caller-owned database. The adapter
+is an independent Stream provider in the caller-owned database. Namespace names have no SDK length ceiling. Fixed-width expression indexes retain complete names in the original rows, and full names remain distinct even when a native key collides. Existing rows, generations and replica identities retain their representation. Notifications use a fixed-width key. The adapter
 installs `acyclic_stream_journal` and its namespace/revision index. The database
 role needs schema DDL permission because connect runs idempotent installation,
 plus SELECT/INSERT, sequence access, advisory locks and LISTEN/NOTIFY. Use a local

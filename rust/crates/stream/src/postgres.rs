@@ -108,7 +108,7 @@ impl PostgresStream {
     /// The connection string is never included in diagnostics. Use a TLS proxy
     /// or Unix socket when the database is outside the local trust boundary.
     pub async fn connect(database: &str, namespace: &str) -> Result<Self, StreamError> {
-        if namespace.is_empty() || namespace.len() > 256 || namespace.contains('\0') {
+        if namespace.is_empty() || namespace.contains('\0') {
             return Err(StreamError::InvalidArgument);
         }
         let (client, connection) = tokio_postgres::connect(database, NoTls)
@@ -133,14 +133,15 @@ impl PostgresStream {
             .map_err(unavailable)?;
         client.batch_execute(SCHEMA).await.map_err(unavailable)?;
         // The first opener installs the generation; every later replica reads it.
-        let generation: Vec<u8> = client
+        let opened = client
             .query_one(
-                "INSERT INTO acyclic_stream_generation(namespace, generation) VALUES ($1, $2)                  ON CONFLICT (namespace) DO UPDATE SET generation = acyclic_stream_generation.generation                  RETURNING generation",
+                "SELECT generation, notification_key FROM acyclic_stream_open($1, $2)",
                 &[&namespace, &crate::new_identity().as_slice()],
             )
             .await
-            .map_err(unavailable)?
-            .get(0);
+            .map_err(unavailable)?;
+        let generation: Vec<u8> = opened.get(0);
+        let notified_namespace: String = opened.get(1);
         let generation = <[u8; 16]>::try_from(generation.as_slice()).map_err(unavailable)?;
         let publish = client
             .prepare(
@@ -151,13 +152,24 @@ impl PostgresStream {
             .map_err(unavailable)?;
         let read = client
             .prepare(
-                "SELECT j.revision,j.at_millis,j.command,h.head,h.at_millis FROM \
-                 (SELECT COALESCE(max(revision),0) AS head, \
-                 floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS at_millis \
-                 FROM acyclic_stream_journal WHERE namespace=$1) h \
-                 LEFT JOIN LATERAL (SELECT revision,at_millis,command FROM acyclic_stream_journal \
-                 WHERE namespace=$1 AND revision>$2 ORDER BY revision LIMIT $3) j ON true \
-                 ORDER BY j.revision",
+                r#"WITH selected_namespace AS MATERIALIZED (
+                    SELECT acyclic_stream_namespace_key($1::text) AS key
+                )
+                SELECT j.revision,j.at_millis,j.command,h.head,h.at_millis
+                FROM selected_namespace n
+                CROSS JOIN LATERAL (
+                    SELECT COALESCE(max(revision),0) AS head,
+                        floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS at_millis
+                    FROM acyclic_stream_journal
+                    WHERE acyclic_stream_namespace_key(namespace)=n.key
+                        AND namespace COLLATE "C"=$1 COLLATE "C"
+                ) h
+                LEFT JOIN LATERAL (
+                    SELECT revision,at_millis,command FROM acyclic_stream_journal
+                    WHERE acyclic_stream_namespace_key(namespace)=n.key
+                        AND namespace COLLATE "C"=$1 COLLATE "C" AND revision>$2
+                    ORDER BY revision LIMIT $3
+                ) j ON true ORDER BY j.revision"#,
             )
             .await
             .map_err(unavailable)?;
@@ -165,7 +177,6 @@ impl PostgresStream {
             .await
             .map_err(unavailable)?;
         let (wake, wakes) = watch::channel(());
-        let notified_namespace = namespace.to_owned();
         let notification_owner = ConnectionOwner(failure.clone());
         let notification_driver = tokio::spawn(async move {
             let _owner = notification_owner;
