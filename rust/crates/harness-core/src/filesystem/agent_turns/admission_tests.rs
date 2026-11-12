@@ -383,7 +383,14 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             4096,
             None,
         )?;
-        assert!(host_reader.read(&manifest, 4096, None, None)?.await?.len() > 0);
+        assert!(
+            host_reader
+                .read(&manifest, 4096, None, None)?
+                .await
+                .expect("host reads private epoch manifest")
+                .len()
+                > 0
+        );
         ContentGrant::verify_read(&guest.verifier, &guest.scope, &manifest)?;
         for ceiling in [None, Some(parent.capabilities())] {
             let denied = async { reader.read(&manifest, 4096, ceiling, None)?.await }
@@ -427,7 +434,11 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             )
             .await?;
         assert_eq!(
-            reader.read(&skill, 4096, None, None)?.await?.as_ref(),
+            reader
+                .read(&skill, 4096, None, None)?
+                .await
+                .expect("guest reads published skill body")
+                .as_ref(),
             b"optional instructions"
         );
         let selected = root.bootstrap_scope(
@@ -574,7 +585,8 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
         let reopened_admission = AdmittedAgent::verify(&issuer, &admission, &path, &volumes)?;
         reopened_admission
             .journal_authority(&reopened, &[input.clone()], &[])
-            .await?;
+            .await
+            .expect("host repairs the owned journal policy");
         let reference = workspace_ref(
             journal.provider().clone(),
             &journal.storage_name(&mut None)?,
@@ -600,7 +612,8 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
         );
         reopened_admission
             .journal_authority(&reopened, &[input.clone()], &[])
-            .await?;
+            .await
+            .expect("host repairs the owned journal policy");
         assert_eq!(
             reopened.resolve(&reference, None).await?.generation,
             repaired.generation
@@ -799,7 +812,8 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             AdmittedAgent::verify(&source_issuer, &read_only_admission, &path, &volumes)?;
         reader_admission
             .journal_authority(&reopened, &[], std::slice::from_ref(&shared))
-            .await?;
+            .await
+            .expect("read-only source admission leaves foreign policy unchanged");
         assert_eq!(
             host.resolve(&source_reference, None).await?.generation,
             source_before.generation,
@@ -891,7 +905,8 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             )?;
             administrator
                 .journal_authority(&reopened, &[], std::slice::from_ref(&shared))
-                .await?;
+                .await
+                .expect("generation-bound administrator repairs the source policy");
             assert_ne!(
                 host.resolve(&source_reference, None).await?.generation,
                 source_before.generation,
