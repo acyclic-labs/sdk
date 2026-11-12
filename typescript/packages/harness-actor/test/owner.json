@@ -40,10 +40,8 @@
     "limits": { "handlerTimeoutMillis": "600000", "memoryBytes": "268435456", "checkpointBytes": "1024" },
     "subscriptions": [{ "subscriptionId": "inbox", "streamPath": "harness/inbox", "start": { "cursor": "0" }, "placementAnchor": true }],
     "bindings": [
-      { "name": "eventStorage", "capability": "", "resource": "", "stateTransaction": true },
       { "name": "sharedStreams", "capability": "harnessStreams", "resource": "streams:/" },
       { "name": "objects", "capability": "harnessObjects", "resource": "objects:/harness" },
-      { "name": "hostAccess", "capability": "", "resource": "", "guestAdmission": "hostAccess" },
       { "name": "platformAuthority", "capability": "", "resource": "", "guestAdmission": "platformAuthority" },
       { "name": "machinesWorkspace", "capability": "harnessMachines", "resource": "machines:/harness" }
     ],
