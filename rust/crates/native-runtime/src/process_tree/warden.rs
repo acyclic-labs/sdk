@@ -410,8 +410,15 @@ fn await_exit(watch: Fd, _owner: Pid, program: Pid, listener: Fd, report: Fd) ->
         if denial.notified() {
             // The filtered task is blocked in the kernel. Terminate the whole
             // tree, preserving SIGSYS even if a shell would mask its child.
-            let kind = if sys::host_ipc_denial(listener) { 4 } else { 1 };
-            let _ = write_full(report, &[kind]);
+            match sys::syscall_denial(listener) {
+                Ok((number, host_ipc)) => {
+                    let [a, b, c, d] = number.to_le_bytes();
+                    let _ = write_full(report, &[if host_ipc { 4 } else { 1 }, a, b, c, d]);
+                }
+                Err(_) => {
+                    let _ = write_full(report, &[2]);
+                }
+            }
             return Some(31);
         }
         if child.ready() {

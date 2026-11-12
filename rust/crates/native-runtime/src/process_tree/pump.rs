@@ -641,12 +641,20 @@ impl<'a> Pump<'a> {
                         match read {
                             0 => {}
                             1 if byte == [1] || byte == [4] => {
+                                let mut number = [0; 4];
+                                process_control_attempt(
+                                    meter,
+                                    crate::NativeOperationKind::Read,
+                                    || report.read_exact(&mut number),
+                                )?;
                                 return Err(io::Error::new(
                                     io::ErrorKind::PermissionDenied,
                                     if byte == [4] {
                                         crate::execution::ExecutionViolation::HostIpc
                                     } else {
-                                        crate::execution::ExecutionViolation::Syscall
+                                        crate::execution::ExecutionViolation::Syscall {
+                                            number: i32::from_le_bytes(number),
+                                        }
                                     },
                                 ));
                             }
