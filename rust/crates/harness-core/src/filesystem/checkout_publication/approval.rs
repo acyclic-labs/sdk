@@ -136,7 +136,7 @@ impl<C> AuthorizedCheckout<'_, C> {
                 self.approval.to,
                 state,
                 options,
-                &self.work,
+                (&self.work, Some(self.approval.journal)),
                 guard,
             )
             .await

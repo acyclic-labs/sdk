@@ -106,13 +106,14 @@ impl CheckoutPublication {
         to: &LocalGeneration,
         state: &LocalCoreStateStore,
         options: &MaterializeOptions,
-        work: &NativeMaterializationWork,
+        preparation: (&NativeMaterializationWork, Option<&MaterializationJournal>),
         mut guard: F,
     ) -> Result<MaterializationJournal>
     where
         F: FnMut() -> Fut + Send,
         Fut: Future<Output = Result<()>> + Send,
     {
+        let (work, approved) = preparation;
         guard().await?;
         let actual = work.root_identity(&self.root)?;
         if actual != self.identity {
@@ -131,9 +132,47 @@ impl CheckoutPublication {
             Ok(receipt) => receipt.value,
             Err((cause, _)) => return Err(cause.into()),
         };
-        let journal = match journal {
-            Some(journal) => journal,
-            None => self.prepare(from, to, state, options, work).await?,
+        let journal = match (journal, approved) {
+            (Some(journal), Some(approved)) => {
+                if journal.plan != approved.plan
+                    || journal.root_identity != approved.root_identity
+                    || journal.preparation_identity != approved.preparation_identity
+                    || journal.preimages != approved.preimages
+                {
+                    return Err(Error::Unauthorized(
+                        "checkout differs from its approved preparation".into(),
+                    ));
+                }
+                journal
+            }
+            (Some(journal), None) => journal,
+            (None, Some(approved))
+                if approved.plan.edits.is_empty()
+                    && completed(approved, self.identity, from.id(), to.id())? =>
+            {
+                // This approval authorizes no physical effects. Host changes
+                // after preparation cannot expand it into a different plan.
+                MaterializationJournal {
+                    version: approved.version,
+                    revision: approved.revision,
+                    plan: approved.plan.clone(),
+                    root_identity: approved.root_identity,
+                    preparation_identity: approved.preparation_identity,
+                    preparation_progress: approved.preparation_progress,
+                    work: approved.work,
+                    preimages: Vec::new(),
+                    phase: approved.phase,
+                    applied: approved.applied,
+                    restored: approved.restored,
+                    custody: Some(work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?),
+                }
+            }
+            (None, Some(_)) => {
+                return Err(Error::Unauthorized(
+                    "checkout lost its approved preparation".into(),
+                ));
+            }
+            (None, None) => self.prepare(from, to, state, options, work).await?,
         };
         // A logical commit can precede its native acknowledgement. Every host
         // resumes the original transition, even when its current head is `to`.

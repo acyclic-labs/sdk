@@ -241,9 +241,14 @@ impl Fixture {
                 let publication = self.publication(operation)?;
                 let options = MaterializeOptions::native(publication.directory().join("target"));
                 publication
-                    .publish(from, &self.to, &self.state, &options, &self.work, || {
-                        std::future::ready(Ok(()))
-                    })
+                    .publish(
+                        from,
+                        &self.to,
+                        &self.state,
+                        &options,
+                        (&self.work, None),
+                        || std::future::ready(Ok(())),
+                    )
                     .await?;
                 Ok(())
             }
@@ -356,7 +361,7 @@ impl Fixture {
                 &self.to,
                 &self.state,
                 &options,
-                &self.work,
+                (&self.work, None),
                 || {
                     std::future::ready(Err(acyclic_fs::NativeTreeMaterializationError::Io(
                         std::io::ErrorKind::PermissionDenied.into(),
@@ -845,6 +850,78 @@ async fn obsolete_staging_binding_is_refused_before_publication() -> TestResult 
 }
 
 #[tokio::test]
+async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult {
+    for promoted in [false, true] {
+        let fixture = Fixture::new().await?;
+        if promoted {
+            std::fs::write(fixture.root.join("note"), "candidate")?;
+        }
+        let publication = fixture.publication(OperationId::new())?;
+        let options = MaterializeOptions::native(publication.directory().join("target"));
+        let paths = vec!["note".into()];
+        let journal = publication
+            .prepare_selected(
+                &fixture.from,
+                &fixture.to,
+                &fixture.state,
+                &options,
+                &fixture.work,
+                (&paths, "creator"),
+            )
+            .await?;
+        assert_eq!(journal.plan.edits.is_empty(), promoted);
+        let approval =
+            publication.approval_value(&fixture.from, &fixture.to, &paths, &journal, "creator")?;
+        let digest = approval.digest(&fixture.work)?;
+        let interaction = crate::InteractionId::new();
+        let verifier = PublicationDecision {
+            id: interaction,
+            operation: crate::OperationId::from_bytes(publication.operation.into_bytes()),
+            digest,
+            approved: true,
+        };
+        let authorized = approval
+            .authorize(&verifier, interaction, &digest, &fixture.work)
+            .await?;
+        std::fs::write(fixture.root.join("note"), "edit after approval")?;
+        let missing = LocalCoreStateStore::new(fixture._directory.path().join("missing"));
+        let state = if promoted { &fixture.state } else { &missing };
+        let result = authorized
+            .publish(state, &options, || std::future::ready(Ok(())))
+            .await;
+        if promoted {
+            assert!(result?.plan.edits.is_empty());
+            assert!(state.materialization_operations_async().await?.is_empty());
+        } else {
+            assert!(matches!(result, Err(Error::Unauthorized(_))));
+        }
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join("note"))?,
+            "edit after approval"
+        );
+        // Rebuilding instead of carrying approval really would overwrite the
+        // later edit: exercise the former unbound publication argument shape.
+        if promoted {
+            publication
+                .publish(
+                    &fixture.from,
+                    &fixture.to,
+                    state,
+                    &options,
+                    (&fixture.work, None),
+                    || std::future::ready(Ok(())),
+                )
+                .await?;
+            assert_eq!(
+                std::fs::read_to_string(fixture.root.join("note"))?,
+                "candidate"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn selected_approval_binds_original_root_transition_paths_and_creator() -> TestResult {
     let fixture = Fixture::new().await?;
     let publication = fixture.publication(OperationId::new())?;
@@ -1147,7 +1224,7 @@ async fn selected_authority_retains_cancellation_and_original_work() -> TestResu
             &fixture.to,
             &fixture.state,
             &options,
-            &fresh,
+            (&fresh, None),
             || std::future::ready(Ok(())),
         )
         .await?;
@@ -1211,7 +1288,7 @@ async fn git_and_prepared_guards_keep_the_original_late_refusal() -> TestResult 
                         &fixture.to,
                         &fixture.state,
                         &options,
-                        &fixture.work,
+                        (&fixture.work, None),
                         guard,
                     )
                     .await

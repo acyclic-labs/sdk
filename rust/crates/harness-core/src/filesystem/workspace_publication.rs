@@ -86,7 +86,7 @@ pub(crate) async fn publish_checkout(
     let publication = super::CheckoutPublication::new(root, identity, operation, &work)?;
     let options = MaterializeOptions::native(publication.directory().join("target"));
     publication
-        .publish(from, to, state, &options, &work, || {
+        .publish(from, to, state, &options, (&work, None), || {
             std::future::ready(Ok(()))
         })
         .await?;
