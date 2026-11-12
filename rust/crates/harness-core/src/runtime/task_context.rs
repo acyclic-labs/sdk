@@ -7,7 +7,7 @@ pub struct TaskContext {
     pub(super) scope: RuntimeScope,
     pub(super) output_content: ContentBindings,
     pub(super) journal_output: Option<ContentBindings>,
-    pub(super) journal: Option<Arc<dyn crate::executor::ExecutionJournal>>,
+    pub(super) journal: Option<(Arc<dyn crate::executor::ExecutionJournal>, OperationId)>,
     /// The agent whose turn this is, with the volumes it binds.
     pub(super) agent: Option<(crate::agent::AgentPath, Vec<crate::agent::WorkspaceEntry>)>,
     pub(super) children: Option<Arc<dyn crate::agent::TurnChildren>>,
@@ -19,21 +19,17 @@ impl TaskContext {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn claim_effect(
         &self,
-        parent: OperationId,
         effect: OperationId,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<crate::executor::ExecutionClaim<'_>> {
-        self.journal
-            .as_ref()
-            .ok_or_else(|| {
-                crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unsupported,
-                    "task has no original execution journal",
-                )
-            })?
-            .acquire_effect(parent, effect, io)?
-            .into_owner(io)
+        let (journal, parent) = self.journal.as_ref().ok_or_else(|| {
+            crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "task has no original execution journal",
+            )
+        })?;
+        journal.acquire_effect(*parent, effect, io)?.into_owner(io)
     }
 
     /// Binds the host's shared name resolver for filesystem tools.
@@ -79,7 +75,7 @@ impl TaskContext {
                 .chain(grant.as_deref()),
         );
         self.journal_output = output;
-        self.journal = Some(journal);
+        self.journal = Some((journal, operation));
         Ok(self)
     }
 
@@ -100,6 +96,7 @@ impl TaskContext {
                     "task has no original execution journal",
                 )
             })?
+            .0
             .model_cancellation())
     }
 
@@ -122,6 +119,7 @@ impl TaskContext {
                     "task has no original execution journal",
                 )
             })?
+            .0
             .tool_settlement(query, io)
     }
 

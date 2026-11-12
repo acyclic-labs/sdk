@@ -74,9 +74,7 @@ where
     Fut: std::future::Future<Output = crate::Result<HookOutput>>,
 {
     let operation = phase_operation(context.operation_id(), event);
-    let owner = context
-        .task()
-        .claim_effect(context.turn_id(), operation, None)?;
+    let owner = context.task().claim_effect(operation, None)?;
     if let (Some(file), _) = context.observe_staged_file_once(operation, None).await? {
         let bytes = context.task().read_file(&file, None).await?;
         let output = serde_json::from_slice(&bytes)

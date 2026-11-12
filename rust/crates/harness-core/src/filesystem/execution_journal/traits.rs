@@ -232,7 +232,6 @@ where
         })?;
         let mut namespace = blake3::Hasher::new_derive_key("acyclic.execution.effects/v1");
         namespace.update(&volume);
-        namespace.update(&parent.into_bytes());
         crate::executor::execution_claim::acquire(
             self.host.filesystem.operation_claims(),
             *namespace.finalize().as_bytes(),
