@@ -506,7 +506,10 @@ fn command_mounts(mounts: &Mounts, views: &[CommandView]) -> Mounts {
                 .as_ref()
                 .is_some_and(|source| Arc::ptr_eq(source, &view.source))
         }) {
-            mount.native_root = crate::workspace::NativeRoot::Path(view.mount.path().to_path_buf());
+            mount.native_root = crate::workspace::NativeRoot::View {
+                view: view.mount.path().to_path_buf(),
+                binding: view.source.destination.clone(),
+            };
         }
     }
     table
