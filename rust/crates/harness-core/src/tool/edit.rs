@@ -215,9 +215,12 @@ pub(super) fn scan_source(work: &acyclic_fs::NativeCustody, bytes: u64) -> Resul
     Ok(())
 }
 
-/// Rejects unbounded or empty allowances at both transformation and I/O boundaries.
-pub(crate) fn validate_edit_bound(maximum_bytes: u64) -> Result<()> {
-    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+/// Validates a selected byte allowance at transformation and I/O boundaries.
+pub(crate) fn validate_edit_bound(maximum_bytes: impl Into<Option<u64>>) -> Result<()> {
+    if maximum_bytes
+        .into()
+        .is_some_and(|maximum| maximum == 0 || maximum == u64::MAX)
+    {
         return Err(Error::Invalid(
             "edit byte bound must be positive and finite".into(),
         ));
@@ -231,7 +234,7 @@ pub(crate) fn replace(
     old_text: &str,
     new_text: &str,
     replace_all: bool,
-    maximum_bytes: u64,
+    maximum_bytes: impl Into<Option<u64>>,
     work: &mut acyclic_fs::NativeCustody,
 ) -> Result<String> {
     replace_sequence(
@@ -283,9 +286,10 @@ pub(super) fn plan_output(
 pub(crate) fn replace_sequence<'a>(
     source: &str,
     replacements: impl IntoIterator<Item = Replacement<'a>>,
-    maximum_bytes: u64,
+    maximum_bytes: impl Into<Option<u64>>,
     work: &mut acyclic_fs::NativeCustody,
 ) -> Result<String> {
+    let maximum_bytes = maximum_bytes.into();
     plan_output(work, |work| {
         let mut replacements = replacements.into_iter();
         let first = replacements
@@ -309,17 +313,18 @@ fn replace_into(
         new_text,
         replace_all,
     }: Replacement<'_>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: &mut acyclic_fs::NativeCustody,
     output: &mut String,
 ) -> Result<()> {
-    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+    if maximum_bytes.is_some_and(|maximum| maximum == 0 || maximum == u64::MAX) {
         return Err(invalid(work, "edit byte bound must be positive and finite"));
     }
-    if source.len() as u64 > maximum_bytes
-        || old_text.len() as u64 > maximum_bytes
-        || new_text.len() as u64 > maximum_bytes
-        || old_text.is_empty()
+    if maximum_bytes.is_some_and(|maximum| {
+        source.len() as u64 > maximum
+            || old_text.len() as u64 > maximum
+            || new_text.len() as u64 > maximum
+    }) || old_text.is_empty()
     {
         return Err(invalid(work, "exact edit has invalid text or byte bounds"));
     }
@@ -371,7 +376,7 @@ fn replace_into(
                 .checked_mul(count)
                 .and_then(|added| length.checked_add(added))
         })
-        .filter(|length| *length as u64 <= maximum_bytes)
+        .filter(|length| maximum_bytes.is_none_or(|maximum| *length as u64 <= maximum))
         .ok_or_else(|| invalid(work, "exact edit output exceeds byte bound"))?;
     reserve_string(work, output, output_bytes)?;
     output.clear();

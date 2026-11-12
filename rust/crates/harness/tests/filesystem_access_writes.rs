@@ -58,7 +58,7 @@ async fn put(
             b"new",
             "text/plain",
             "new",
-            4096,
+            Some(4096),
             &IdempotencyKey::new(key)?,
             None,
             acyclic_harness::conversation::ContentAccess { ceiling: None, io },

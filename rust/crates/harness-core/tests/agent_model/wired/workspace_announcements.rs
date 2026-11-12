@@ -411,7 +411,7 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
     let (bytes, digest) = document.canonical();
     let limits = acyclic_harness_core::conversation::Limits {
         render_bytes: Some(64 * 1024),
-        file_bytes: 64 * 1024,
+        file_bytes: Some(64 * 1024),
         attachments: std::num::NonZeroUsize::new(1),
         ..Default::default()
     };
@@ -444,7 +444,7 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
             bytes,
             "application/json",
             "workspaces.json",
-            bytes.len() as u64,
+            Some(bytes.len() as u64),
             &acyclic_harness_core::IdempotencyKey::new("large-document")?,
             None,
             ContentAccess::default(),
@@ -558,7 +558,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
             .reading_content(),
     );
     let projection_limits = acyclic_harness_core::conversation::Limits {
-        file_bytes: 64 * 1024,
+        file_bytes: Some(64 * 1024),
         render_bytes: Some(64 * 1024),
         attachments: std::num::NonZeroUsize::new(1),
         ..Default::default()
@@ -574,17 +574,17 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
             Arc::new(InstructionTools),
         ),
     ))?;
-    assert!(
-        instruction_files[..2]
-            .iter()
-            .all(|file| file.descriptor().byte_length() < projection_limits.file_bytes)
-    );
+    assert!(instruction_files[..2].iter().all(|file| {
+        projection_limits
+            .file_bytes
+            .is_some_and(|maximum| file.descriptor().byte_length() < maximum)
+    }));
     assert!(
         instruction_files[..2]
             .iter()
             .map(|file| file.descriptor().byte_length())
             .sum::<u64>()
-            > projection_limits.file_bytes,
+            > projection_limits.file_bytes.expect("finite file policy"),
         "separately valid retained deltas must exceed the shared file credit"
     );
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
@@ -732,7 +732,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
             projection_limits,
             None,
         )?
-        .projected_file_bytes(Some(projection_limits.file_bytes))?;
+        .projected_file_bytes(projection_limits.file_bytes)?;
     }
     for (at, pair) in requests.windows(2).enumerate() {
         if at + 1 == 16 {
@@ -785,7 +785,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
         );
         let projection_limits = acyclic_harness_core::conversation::Limits {
             render_bytes: Some(64 * 1024),
-            file_bytes: 64 * 1024,
+            file_bytes: Some(64 * 1024),
             attachments: std::num::NonZeroUsize::new(1),
             ..Default::default()
         };

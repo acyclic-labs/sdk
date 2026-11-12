@@ -247,7 +247,13 @@ impl FileTool {
         };
         let encoded = super::value(
             &result,
-            maximum_result_bytes.min(context.effective_scope().limits().file_bytes),
+            context
+                .effective_scope()
+                .limits()
+                .file_bytes
+                .map_or(maximum_result_bytes, |maximum| {
+                    maximum.min(maximum_result_bytes)
+                }),
             work,
         )?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
@@ -272,9 +278,9 @@ impl FileTool {
         if work.is_none() {
             limits.validate()?;
         }
-        if input.0.file.descriptor().byte_length() > limits.maximum_bytes
-            || input.0.diff.len() as u64 > limits.maximum_bytes
-        {
+        if limits.maximum_bytes.is_some_and(|maximum| {
+            input.0.file.descriptor().byte_length() > maximum || input.0.diff.len() as u64 > maximum
+        }) {
             return Err(invalid("patch input exceeds original task file bound"));
         }
         let bytes = context.read_file(&input.0.file, io).await?;
@@ -352,7 +358,7 @@ impl FileTool {
         };
         _notebook_hold = notebook_hold;
         _notebook_facts = notebook_facts;
-        if edited.len() as u64 > maximum {
+        if maximum.is_some_and(|maximum| edited.len() as u64 > maximum) {
             return Err(invalid("edited file exceeds admitted file credit"));
         }
         context

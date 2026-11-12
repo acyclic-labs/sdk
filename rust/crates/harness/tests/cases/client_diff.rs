@@ -295,7 +295,7 @@ impl Fixture {
                 text.as_bytes(),
                 "text/plain",
                 "source",
-                1_000_000,
+                Some(1_000_000),
                 &IdempotencyKey::new(key)?,
                 None,
                 acyclic_harness::conversation::ContentAccess::default(),
@@ -912,7 +912,7 @@ impl ContentResidencyVerifier for Reader<'_> {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a acyclic_harness::resources::GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
@@ -931,7 +931,10 @@ impl ContentResidencyVerifier for Reader<'_> {
 
         let index = self.reads.fetch_add(1, Ordering::SeqCst);
         if let Some(limits) = self.expected_limits {
-            assert_eq!(limits.get(index), Some(&maximum_bytes));
+            assert_eq!(
+                maximum_bytes,
+                Some(*limits.get(index).expect("expected diff read"))
+            );
         }
         let read = self.inner.read_private_path(
             volume,

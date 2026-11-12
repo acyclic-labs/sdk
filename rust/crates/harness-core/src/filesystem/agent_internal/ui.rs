@@ -77,7 +77,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> AgentInter
             }
             // A later overwrite or deletion in the same turn closes the ask.
             // Current bytes are never substituted for this turn's own receipt.
-            let Some(current) = Self::read_at(&head, &format!("/{path}"), u64::MAX).await? else {
+            let Some(current) = Self::read_at(&head, &format!("/{path}"), None).await? else {
                 continue;
             };
             if original.as_ref() == current.as_ref() {

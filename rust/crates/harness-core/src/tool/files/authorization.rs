@@ -39,19 +39,21 @@ impl FileTool {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             io.check_json_byte_bound(&invocation.arguments, scope.limits().file_bytes)?;
-        } else {
+        } else if let Some(maximum) = scope.limits().file_bytes {
             crate::executor::json::json_byte_length(
                 &invocation.arguments,
-                Some(scope.limits().file_bytes),
+                Some(maximum),
                 &mut None,
             )?;
         }
         #[cfg(target_arch = "wasm32")]
-        crate::executor::json::json_byte_length(
-            &invocation.arguments,
-            Some(scope.limits().file_bytes),
-            &mut None,
-        )?;
+        if let Some(maximum) = scope.limits().file_bytes {
+            crate::executor::json::json_byte_length(
+                &invocation.arguments,
+                Some(maximum),
+                &mut None,
+            )?;
+        }
         let (file, custody) = self.decode_source(scope, context, invocation, work, io)?;
         let Some(file) = file else {
             return Ok((None, custody));
@@ -233,7 +235,12 @@ impl FileTool {
                     || input.0.query.len() as u64 > options.maximum_query_bytes
                     || u64::from(options.maximum_matches)
                         * std::mem::size_of::<super::text::TextRange>() as u64
-                        > maximum_result_bytes.min(scope.limits().file_bytes)
+                        > scope
+                            .limits()
+                            .file_bytes
+                            .map_or(maximum_result_bytes, |maximum| {
+                                maximum.min(maximum_result_bytes)
+                            })
                 {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,

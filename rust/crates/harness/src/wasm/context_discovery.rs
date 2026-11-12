@@ -289,7 +289,7 @@ impl ContentResidencyVerifier for BrowserReader {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<
@@ -308,7 +308,9 @@ impl ContentResidencyVerifier for BrowserReader {
 
         crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
-            let maximum_bytes = maximum_bytes.min(self.maximum_bytes);
+            let maximum_bytes = maximum_bytes.map_or(self.maximum_bytes, |maximum| {
+                maximum.min(self.maximum_bytes)
+            });
             let generation = generation.ok_or_else(|| {
                 Error::Invalid("context path requires a pinned generation".into())
             })?;

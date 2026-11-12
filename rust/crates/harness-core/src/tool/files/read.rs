@@ -106,8 +106,12 @@ impl FileTool {
             .ok_or_else(|| invalid("read range is reversed; use start <= end"))?;
         let window =
             crate::tool::output::view_bytes(context.effective_scope().limits().render_bytes)
-                .saturating_add(3)
-                .min(context.effective_scope().limits().file_bytes);
+                .saturating_add(3);
+        let window = context
+            .effective_scope()
+            .limits()
+            .file_bytes
+            .map_or(window, |maximum| maximum.min(window));
         let window = super::window::Window::first(
             context,
             input,

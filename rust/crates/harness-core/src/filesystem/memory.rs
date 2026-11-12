@@ -39,15 +39,9 @@ thread_local! {
 
 async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     agent: AgentId,
-    maximum_file_bytes: u64,
     filesystem: Fs<A, O>,
     changes: Arc<dyn StreamProvider>,
 ) -> Result<(Arc<FilesystemHost<A, O>>, VolumeRef)> {
-    if maximum_file_bytes == 0 {
-        return Err(Error::Invalid(
-            "memory Harness file limit must be positive".into(),
-        ));
-    }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
     let shared_owner = filesystem.operation_claims().owner_identity()
         == changes.context().operation_claims().owner_identity();
@@ -87,7 +81,7 @@ fn agent_approvals(
     volume: &VolumeRef,
     files: Arc<dyn ApprovalFiles>,
     policy: ApprovalPolicy,
-    maximum_file_bytes: u64,
+    maximum_file_bytes: Option<u64>,
 ) -> Result<Arc<AgentApprovals>> {
     let limits = Limits {
         file_bytes: maximum_file_bytes,
@@ -131,7 +125,7 @@ pub struct MemoryHarnessStorage<
     issuer: AuthorityRoot,
     stream: Arc<P>,
     conversation: Authority,
-    maximum_file_bytes: u64,
+    maximum_file_bytes: Option<u64>,
 }
 
 mod listing;
@@ -139,8 +133,13 @@ use listing::LocalListFilesTool;
 
 impl MemoryHarnessStorage {
     /// Creates an agent-owned private volume and a bound conversation before any turn or interaction can publish a reference.
-    pub async fn new(agent: AgentId, maximum_file_bytes: u64) -> Result<Self> {
-        Self::with_stream(agent, maximum_file_bytes, Arc::new(MemoryStream::default())).await
+    pub async fn new(agent: AgentId, maximum_file_bytes: impl Into<Option<u64>>) -> Result<Self> {
+        Self::with_stream(
+            agent,
+            maximum_file_bytes.into(),
+            Arc::new(MemoryStream::default()),
+        )
+        .await
     }
 }
 
@@ -148,10 +147,10 @@ impl<P: crate::store::JournalProvider> MemoryHarnessStorage<P> {
     /// Binds the journal and conversation to `stream`; files stay in process.
     pub async fn with_stream(
         agent: AgentId,
-        maximum_file_bytes: u64,
+        maximum_file_bytes: impl Into<Option<u64>>,
         stream: Arc<P>,
     ) -> Result<Self> {
-        Self::from_providers(agent, maximum_file_bytes, Fs::memory(), stream).await
+        Self::from_providers(agent, maximum_file_bytes.into(), Fs::memory(), stream).await
     }
 }
 
@@ -164,7 +163,10 @@ impl<
     /// Builds an optional directory listing tool for explicit custom registration.
     pub fn list_files_tool(&self, limits: Limits) -> Result<Tool> {
         limits.validate(&mut None)?;
-        if limits.file_bytes > self.maximum_file_bytes {
+        if self
+            .maximum_file_bytes
+            .is_some_and(|maximum| limits.file_bytes.is_none_or(|limit| limit > maximum))
+        {
             return Err(Error::Invalid(
                 "tool file limit exceeds the bound storage volume".into(),
             ));
@@ -225,7 +227,7 @@ impl<
     #[inline(never)]
     pub fn from_providers<'a>(
         agent: AgentId,
-        maximum_file_bytes: u64,
+        maximum_file_bytes: impl Into<Option<u64>>,
         filesystem: Fs<A, O>,
         stream: Arc<P>,
     ) -> BoxFuture<'a, Result<Self>>
@@ -234,9 +236,14 @@ impl<
     {
         // One cold owner keeps filesystem initialization out of every caller's
         // future layout. Established operations need no such allocation.
+        let maximum_file_bytes = maximum_file_bytes.into();
         Box::pin(async move {
-            let (host, volume) =
-                new_memory_content(agent, maximum_file_bytes, filesystem, stream.clone()).await?;
+            Limits {
+                file_bytes: maximum_file_bytes,
+                ..Limits::default()
+            }
+            .validate(&mut None)?;
+            let (host, volume) = new_memory_content(agent, filesystem, stream.clone()).await?;
             let conversation = Authority {
                 kind: AggregateKind::Conversation,
                 id: ConversationId::new().to_string(),
@@ -442,7 +449,7 @@ impl<
     /// Reads a pinned owner-private version after verifying its descriptor.
     pub async fn read(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.content_verifier
-            .read(file, self.maximum_file_bytes, None, None)?
+            .read(file, file.descriptor().byte_length(), None, None)?
             .await
     }
 
@@ -489,7 +496,7 @@ impl<
         file: &FileRef,
     ) -> Result<acyclic_stream::OwnedBytes> {
         self.delegated_reader(scope)?
-            .read(file, self.maximum_file_bytes, None, None)?
+            .read(file, file.descriptor().byte_length(), None, None)?
             .await
     }
 
@@ -544,7 +551,7 @@ impl<
                 granted_prefix,
                 path,
                 expected_generation,
-                u64::MAX,
+                None,
                 crate::conversation::ContentAccess::default(),
             )?
             .await

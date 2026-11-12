@@ -181,7 +181,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &'a ContentGrant,
         changes: &'a [ContentChange<'a>],
         key: &'a IdempotencyKey,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: ContentAccess<'a, 'a>,
         check: Option<&'a (dyn Fn(Action, &str) -> Result<()> + Send + Sync)>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ContentChanges>> {
@@ -263,7 +263,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     | ContentChange::Delete { .. } => None,
                 };
                 let file = if let Some((path, bytes, media, display)) = output {
-                    if bytes.len() as u64 > maximum_bytes {
+                    if maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum) {
                         return Err(
                             io.invalid("conditional file exceeds admitted content capacity")
                         );

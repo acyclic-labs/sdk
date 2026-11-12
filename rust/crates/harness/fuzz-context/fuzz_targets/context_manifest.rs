@@ -29,7 +29,7 @@ fuzz_target!(|input: &[u8]| {
     }
     let limits = Limits {
         render_bytes: Some(4096),
-        file_bytes: 4096,
+        file_bytes: Some(4096),
         context_messages: std::num::NonZeroUsize::new(16),
         ..Default::default()
     };
@@ -55,13 +55,9 @@ fuzz_target!(|input: &[u8]| {
             ..limits
         };
         if let Ok(manifest) = ContextManifest::decode(input, limits) {
-            assert!(
-                manifest
-                    .discovery
-                    .skills
-                    .iter()
-                    .all(|skill| skill.source.path.len() <= path_bytes)
-            );
+            assert!(manifest.discovery.skills.iter().all(|skill| {
+                path_bytes.is_none_or(|maximum| skill.source.path.len() <= maximum.get())
+            }));
             assert!(manifest.encode(limits).is_ok_and(|bytes| {
                 ContextManifest::decode(&bytes, limits).is_ok_and(|decoded| decoded == manifest)
             }));

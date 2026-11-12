@@ -168,7 +168,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
                 b"long original",
                 "text/plain",
                 "value",
-                64,
+                Some(64),
                 &key,
                 None,
                 access,
@@ -189,7 +189,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
                 b"x",
                 "text/plain",
                 "value",
-                64,
+                Some(64),
                 &IdempotencyKey::new("batch-replacement")?,
                 None,
                 access,
@@ -208,7 +208,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
             b"x"
         );
         assert_eq!(
-            host.content_for_operation(&volume, &write, &key, "nested/value", 64, access)
+            host.content_for_operation(&volume, &write, &key, "nested/value", Some(64), access)
                 .await?,
             Some(original)
         );
@@ -222,7 +222,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
                 b"forged",
                 "text/plain",
                 "value",
-                64,
+                Some(64),
                 &key,
                 None,
                 access,
@@ -254,7 +254,7 @@ async fn replace_source(
         bytes,
         source.descriptor().media_type(),
         source.display_name(),
-        64,
+        Some(64),
         key,
         None,
         Some(&expected),
@@ -318,7 +318,7 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
                 b"before",
                 "text/plain",
                 "value",
-                64,
+                Some(64),
                 &IdempotencyKey::new("original")?,
                 None,
                 access,
@@ -332,7 +332,7 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
             b"settled",
             "application/json",
             "result",
-            64,
+            Some(64),
             &IdempotencyKey::new("tool-result")?,
             InternalContentClass::Execution,
             io.as_ref(),
@@ -375,7 +375,7 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
                 b"after",
                 "text/plain",
                 "value",
-                64,
+                Some(64),
                 &IdempotencyKey::new("equal-body-new-publication")?,
                 None,
                 access,
@@ -473,7 +473,7 @@ async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()>
                     b"input",
                     "text/plain",
                     "input",
-                    64,
+                    Some(64),
                     &IdempotencyKey::new(key)?,
                     None,
                     access,
@@ -565,7 +565,7 @@ impl PublicationCase<'_> {
                 bytes,
                 "application/json",
                 "payload",
-                64,
+                Some(64),
                 key,
                 class,
                 None,
@@ -665,7 +665,7 @@ impl PublicationCase<'_> {
                         &directory_grant,
                         path,
                         None,
-                        64,
+                        Some(64),
                         crate::conversation::ContentAccess {
                             ceiling: None,
                             io: self.io,
@@ -716,7 +716,7 @@ impl PublicationCase<'_> {
                     volume: self.volume,
                     key: &key,
                     expected_path: Some(&path),
-                    maximum_bytes: 64,
+                    maximum_bytes: Some(64),
                     internal_class: class,
                     purpose: PublicationPurpose::Content,
                     scope: self.write.policy_scope(),
@@ -782,7 +782,7 @@ impl PublicationCase<'_> {
                     volume: self.volume,
                     key: &old_key,
                     expected_path: Some("legacy-target"),
-                    maximum_bytes: 64,
+                    maximum_bytes: Some(64),
                     internal_class: None,
                     purpose: PublicationPurpose::Content,
                     scope: self.read.policy_scope(),
@@ -805,7 +805,7 @@ impl PublicationCase<'_> {
                 display_name: "legacy-target",
             }];
             assert!(matches!(
-                self.host.put_changes(self.volume, self.write, &changes, &old_key, 64, access, None)?.await,
+                self.host.put_changes(self.volume, self.write, &changes, &old_key, Some(64), access, None)?.await,
                 Err(error) if error.code() == crate::wire::ErrorCode::Unsupported
             ));
             assert_eq!(self.host.resolve(workspace, None).await?, before);
@@ -934,7 +934,15 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         let changes = [add("nested/first"), add("second")];
         let key = IdempotencyKey::new("conditional-create")?;
         let original = host
-            .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
+            .put_changes(
+                &volume,
+                &write,
+                &changes,
+                &key,
+                Some(64),
+                create_access,
+                None,
+            )?
             .await?;
         let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
         let opened = host.open(&workspace, None).await?;
@@ -1008,7 +1016,15 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             b"first"
         );
         let replay = host
-            .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
+            .put_changes(
+                &volume,
+                &write,
+                &changes,
+                &key,
+                Some(64),
+                create_access,
+                None,
+            )?
             .await?;
         assert_eq!(replay.generation, original.generation);
         assert_eq!(
@@ -1030,7 +1046,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 &write,
                 &[add("unpublished"), add("second")],
                 &IdempotencyKey::new("conditional-conflict")?,
-                64,
+                Some(64),
                 create_access,
                 None,
             )?
@@ -1051,7 +1067,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 &write,
                 &[add("valid"), add("forbidden/file")],
                 &IdempotencyKey::new("conditional-parent")?,
-                64,
+                Some(64),
                 create_access,
                 Some(&deny_parent)
             )?
@@ -1068,7 +1084,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                     bytes: b"denied"
                 }],
                 &IdempotencyKey::new("conditional-write-denied")?,
-                64,
+                Some(64),
                 create_access,
                 None
             )?
@@ -1085,7 +1101,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                     &write,
                     &[ContentChange::DeleteExpected { source: first }],
                     &IdempotencyKey::new("conditional-delete-without-grant")?,
-                    64,
+                    Some(64),
                     ContentAccess {
                         ceiling: Some(ceiling),
                         io: io.as_ref(),
@@ -1124,7 +1140,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                         &write,
                         changes,
                         &IdempotencyKey::new("conditional-delete-denied")?,
-                        64,
+                        Some(64),
                         delete_access,
                         None,
                     )?
@@ -1151,7 +1167,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                     &write,
                     &[ContentChange::DeleteExpected { source: first }],
                     &delete_key,
-                    64,
+                    Some(64),
                     delete_access,
                     None,
                 )?
@@ -1165,7 +1181,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                     &write,
                     &[ContentChange::DeleteExpected { source: first }],
                     &delete_key,
-                    64,
+                    Some(64),
                     delete_access,
                     None,
                 )?

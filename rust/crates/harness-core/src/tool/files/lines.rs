@@ -75,8 +75,12 @@ pub(super) async fn read(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
     let maximum = context.effective_scope().limits().render_bytes;
-    let quantum =
-        crate::tool::output::view_bytes(maximum).min(context.effective_scope().limits().file_bytes);
+    let quantum = crate::tool::output::view_bytes(maximum);
+    let quantum = context
+        .effective_scope()
+        .limits()
+        .file_bytes
+        .map_or(quantum, |maximum| maximum.min(quantum));
     if quantum == 0 {
         return Err(executor::rejection(
             work,

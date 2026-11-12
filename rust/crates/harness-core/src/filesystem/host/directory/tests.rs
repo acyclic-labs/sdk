@@ -75,7 +75,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         b"branch row",
         "text/plain",
         "02",
-        4096,
+        Some(4096),
         &IdempotencyKey::new("selected-branch-write")?,
         None,
         crate::conversation::ContentAccess::default(),
@@ -123,7 +123,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         b"branch",
         "text/plain",
         "branch-only",
-        4096,
+        Some(4096),
         &IdempotencyKey::new("selected-branch-directory-entry")?,
         None,
         crate::conversation::ContentAccess::default(),
@@ -165,20 +165,20 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         );
         assert_eq!(
             files
-                .create("branch-owner/action.json", b"first", 4096)
+                .create("branch-owner/action.json", b"first", Some(4096))
                 .await?,
             None
         );
         assert_eq!(
             files
-                .read("branch-owner/action.json", 4096)
+                .read("branch-owner/action.json", Some(4096))
                 .await?
                 .as_deref(),
             Some(b"first".as_slice())
         );
         assert_eq!(
             files
-                .create("branch-owner/action.json", b"later", 4096)
+                .create("branch-owner/action.json", b"later", Some(4096))
                 .await?
                 .as_deref(),
             Some(b"first".as_slice())
@@ -239,7 +239,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
             b"stale",
             "text/plain",
             "02",
-            4096,
+            Some(4096),
             &IdempotencyKey::new("root-policy-changed-during-branch-write")?,
             None,
             crate::conversation::ContentAccess::default(),
@@ -331,7 +331,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
                     b"denied",
                     "text/plain",
                     "row",
-                    4096,
+                    Some(4096),
                     &IdempotencyKey::new(key)?,
                     None,
                     crate::conversation::ContentAccess::default()
@@ -681,7 +681,7 @@ async fn fixture(
             b"row",
             "text/plain",
             &name,
-            4096,
+            Some(4096),
             &IdempotencyKey::new(format!("row-{index}"))?,
             None,
             crate::conversation::ContentAccess::default(),

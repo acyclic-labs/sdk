@@ -51,8 +51,9 @@ pub struct GoalState {
 
 impl GoalState {
     /// Parses bounded bytes already delivered by an authorized file query.
-    pub fn from_bytes(bytes: &[u8], maximum_bytes: u64) -> Result<Self> {
-        if bytes.len() as u64 > maximum_bytes {
+    pub fn from_bytes(bytes: &[u8], maximum_bytes: impl Into<Option<u64>>) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
+        if maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum) {
             return Err(Error::Invalid("goal file exceeds byte bound".into()));
         }
         let text = std::str::from_utf8(bytes)
@@ -154,12 +155,13 @@ impl GoalView {
     pub fn from_file(
         source: crate::conversation::FileRef,
         bytes: &[u8],
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
     ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
         source.validate(&mut None)?;
         if source.path() != "GOAL.md"
             || source.volume().class() != VolumeClass::AgentPrivate
-            || bytes.len() as u64 > maximum_bytes
+            || maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
         {
             return Err(Error::Invalid(
                 "invalid private goal file or byte bound".into(),
@@ -171,9 +173,10 @@ impl GoalView {
             reason,
             markdown,
         } = GoalState::from_bytes(bytes, maximum_bytes)?;
-        if maximum_bytes < GOAL_METADATA_HEADROOM as u64
-            || markdown.len() as u64 > maximum_bytes - GOAL_METADATA_HEADROOM as u64
-        {
+        if maximum_bytes.is_some_and(|maximum| {
+            maximum < GOAL_METADATA_HEADROOM as u64
+                || markdown.len() as u64 > maximum - GOAL_METADATA_HEADROOM as u64
+        }) {
             return Err(Error::Invalid(
                 "goal body leaves no status metadata headroom".into(),
             ));

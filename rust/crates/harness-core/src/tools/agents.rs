@@ -129,7 +129,7 @@ struct Turn {
     /// What `wait` observes; `None` when the host observes no children.
     observer: Option<Arc<dyn TurnChildren>>,
     writer: Arc<dyn ContentPublisher>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     /// This agent's creation snapshot and the host's template reader; spawn refuses
     /// when either is absent.
     templates: Option<(CreationConfig, Arc<dyn SpawnTemplates>)>,
@@ -351,7 +351,11 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                if input.task.is_empty() || input.task.len() as u64 > turn.maximum_bytes {
+                if input.task.is_empty()
+                    || turn
+                        .maximum_bytes
+                        .is_some_and(|maximum| input.task.len() as u64 > maximum)
+                {
                     return Ok(rejected("task is empty or too large"));
                 }
                 let Ok(intent) = spawn_intent(&input.name, 0) else {
@@ -448,7 +452,10 @@ impl AgentTool {
                         "send requires a parent, open child or authorized peer inbox",
                     ));
                 };
-                if input.message.len() as u64 > turn.maximum_bytes {
+                if turn
+                    .maximum_bytes
+                    .is_some_and(|maximum| input.message.len() as u64 > maximum)
+                {
                     return Ok(rejected("message is too large"));
                 }
                 let attachments = self
@@ -1031,7 +1038,7 @@ pub fn bind_agent_tools(
     agent: &AgentState,
     (effects, observer): (Arc<dyn TurnEffects>, Option<Arc<dyn TurnChildren>>),
     writer: Arc<dyn ContentPublisher>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     (names, templates): (&[String], Option<Arc<dyn SpawnTemplates>>),
 ) -> Result<()> {
     let turn = Arc::new(Turn {
@@ -1134,7 +1141,7 @@ mod tests {
                     writer: Arc::new(crate::runtime::test_context::PrivateVolume(
                         crate::runtime::test_context::private_volume(71)?,
                     )),
-                    maximum_bytes: u64::MAX,
+                    maximum_bytes: None,
                     templates: None,
                     volumes: Vec::new(),
                     released: AtomicBool::new(false),

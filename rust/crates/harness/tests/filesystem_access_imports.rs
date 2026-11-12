@@ -33,7 +33,7 @@ async fn revoked_import(protected: bool, action: Action) -> Result<(), Box<dyn E
             b"new-private",
             "text/plain",
             "new-private",
-            4096,
+            Some(4096),
             &IdempotencyKey::new("new-private")?,
             None,
             acyclic_harness::conversation::ContentAccess::default(),

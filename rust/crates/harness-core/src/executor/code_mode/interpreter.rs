@@ -303,7 +303,7 @@ mod tests {
                 scope: RuntimeScope::new(
                     grants,
                     Limits {
-                        file_bytes: 65536,
+                        file_bytes: Some(65536),
                         render_bytes: Some(4096),
                         ..Limits::default()
                     },
@@ -475,7 +475,7 @@ mod tests {
                         Arc::new(task.scoped(
                             task.scope().grants().clone(),
                             Limits {
-                                file_bytes: 1536,
+                                file_bytes: Some(1536),
                                 ..task.scope().limits()
                             },
                         )?)

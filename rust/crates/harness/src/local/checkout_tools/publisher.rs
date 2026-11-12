@@ -30,7 +30,7 @@ pub(in crate::local) struct CheckoutPublisher {
     files: Arc<LocalFilesystem>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
-    maximum: u64,
+    maximum: Option<u64>,
 }
 
 enum Publication<'a> {
@@ -66,14 +66,14 @@ impl CheckoutPublisher {
         files: Arc<LocalFilesystem>,
         volume: &VolumeRef,
         verifier: &AuthorityVerifier,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
     ) -> Self {
         Self {
             tools,
             files,
             volume: volume.clone(),
             verifier: verifier.clone(),
-            maximum,
+            maximum: maximum.into(),
         }
     }
 
@@ -393,7 +393,7 @@ impl ContentPublisher for CheckoutPublisher {
         &'a self,
         operation: OperationId,
         replacement: Option<(&'a VolumeRef, &'a str)>,
-        maximum: u64,
+        maximum: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
         let crate::conversation::ContentAccess { ceiling, io } = access;

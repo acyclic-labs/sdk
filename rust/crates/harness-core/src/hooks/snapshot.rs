@@ -2,9 +2,10 @@ use super::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeStruct};
 
 impl Hooks {
-    /// Encodes normalized rules under a positive finite configuration-file bound.
-    pub fn encode(&self, maximum_bytes: u64) -> Result<Vec<u8>> {
-        if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+    /// Encodes normalized rules under an optional configuration-file byte bound.
+    pub fn encode(&self, maximum_bytes: impl Into<Option<u64>>) -> Result<Vec<u8>> {
+        let maximum_bytes = maximum_bytes.into();
+        if maximum_bytes.is_some_and(|maximum| maximum == 0 || maximum == u64::MAX) {
             return Err(Error::Invalid(
                 "hook configuration requires a finite positive byte bound".into(),
             ));
@@ -12,8 +13,8 @@ impl Hooks {
         crate::executor::json::json_bytes_bounded(
             self,
             crate::executor::json::JsonBounds {
-                maximum_bytes: Some(maximum_bytes),
-                maximum_items: Some(maximum_bytes),
+                maximum_bytes: maximum_bytes,
+                maximum_items: maximum_bytes,
                 maximum_depth: 16,
             },
             None,
@@ -92,6 +93,7 @@ mod tests {
                 return Ok(());
             }
             let snapshot = serde_json::to_vec(&original)?;
+            prop_assert_eq!(original.encode(None)?, snapshot.clone());
             let bounded = original.encode(maximum);
             prop_assert_eq!(bounded.is_ok(), snapshot.len() as u64 <= maximum && maximum > 0 && maximum != u64::MAX);
             if let Ok(encoded) = bounded { prop_assert_eq!(encoded, snapshot.clone()); }

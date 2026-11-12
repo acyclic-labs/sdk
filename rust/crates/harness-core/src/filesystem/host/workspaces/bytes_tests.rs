@@ -220,7 +220,7 @@ fn publication_boundaries_retain_only_owned_polling_handles() {
                 input,
                 "text/plain",
                 "content",
-                0,
+                Some(0),
                 key,
                 None,
                 None,

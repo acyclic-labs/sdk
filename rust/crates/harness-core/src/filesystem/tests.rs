@@ -215,7 +215,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             b"one",
             "text/plain",
             display_name.as_str(),
-            16,
+            Some(16),
             &IdempotencyKey::new("stage-first")?,
             None,
             crate::conversation::ContentAccess::default(),
@@ -229,7 +229,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             b"two",
             "text/plain",
             display_name.as_str(),
-            16,
+            Some(16),
             &IdempotencyKey::new("stage-second")?,
             None,
             crate::conversation::ContentAccess::default(),
@@ -243,7 +243,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             b"one",
             "text/plain",
             display_name.as_str(),
-            16,
+            Some(16),
             &IdempotencyKey::new("stage-first")?,
             None,
             crate::conversation::ContentAccess::default()
@@ -268,7 +268,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
                 b"one",
                 media_type,
                 display_name,
-                16,
+                Some(16),
                 &IdempotencyKey::new("stage-first")?,
                 None,
                 crate::conversation::ContentAccess::default()
@@ -410,7 +410,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages",
             "messages/first.txt",
             Some(&listed_generation),
-            16,
+            Some(16),
             crate::conversation::ContentAccess::default(),
         )?
         .await?
@@ -423,7 +423,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages",
             "messages/first.txt",
             Some(&listed_generation),
-            u64::MAX,
+            Some(u64::MAX),
             crate::conversation::ContentAccess::default(),
         )?
         .await?
@@ -438,7 +438,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         b"later",
         "text/plain",
         "later.txt",
-        16,
+        Some(16),
         &IdempotencyKey::new("stage-later")?,
         None,
         crate::conversation::ContentAccess::default(),
@@ -481,7 +481,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages",
             "messages/first.txt",
             Some(&listed_generation),
-            u64::MAX,
+            Some(u64::MAX),
             crate::conversation::ContentAccess::default(),
         )?
         .await?
@@ -534,7 +534,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             b"bad",
             "application/json",
             "forged.json",
-            16,
+            Some(16),
             &IdempotencyKey::new("internal-write")?,
             None,
             crate::conversation::ContentAccess::default()
@@ -550,7 +550,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             b"",
             "text/plain",
             "empty.txt",
-            16,
+            Some(16),
             &IdempotencyKey::new("stage-empty")?,
             None,
             crate::conversation::ContentAccess::default(),
@@ -563,7 +563,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
                 "messages",
                 "messages/empty.txt",
                 Some(&listed_generation),
-                u64::MAX,
+                Some(u64::MAX),
                 crate::conversation::ContentAccess::default()
             )?
             .await?
@@ -592,7 +592,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             b"bad",
             "text/plain",
             "escape",
-            16,
+            Some(16),
             &IdempotencyKey::new("invalid-path")?,
             None,
             crate::conversation::ContentAccess::default()

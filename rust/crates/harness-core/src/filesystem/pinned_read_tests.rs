@@ -55,7 +55,7 @@ async fn fixture_with_filesystem(
             bytes,
             "text/plain",
             "payload",
-            4096,
+            Some(4096),
             &IdempotencyKey::new("payload")?,
             None,
             crate::conversation::ContentAccess::default(),

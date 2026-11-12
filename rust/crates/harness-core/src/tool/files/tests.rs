@@ -95,7 +95,7 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
         }
     }
     let limits = Limits {
-        file_bytes: 65536,
+        file_bytes: Some(65536),
         render_bytes: Some(4096),
         ..Limits::default()
     };

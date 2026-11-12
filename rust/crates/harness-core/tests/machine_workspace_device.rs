@@ -142,7 +142,7 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
         bindings.scope = RuntimeScope::new(
             Capabilities::default(),
             acyclic_harness_core::conversation::Limits {
-                file_bytes: 4096,
+                file_bytes: Some(4096),
                 render_bytes: Some(4096),
                 ..Default::default()
             },
@@ -488,7 +488,7 @@ async fn committed_handover(refused_close: bool) -> Result {
         bindings.scope = acyclic_harness_core::runtime::RuntimeScope::new(
             scope.capabilities().clone(),
             acyclic_harness_core::conversation::Limits {
-                file_bytes: 2,
+                file_bytes: Some(2),
                 render_bytes: Some(4),
                 ..Default::default()
             },
@@ -1323,7 +1323,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                                 "",
                                 &path,
                                 None,
-                                2,
+                                Some(2),
                                 acyclic_harness_core::conversation::ContentAccess::default(),
                             )?
                             .await?

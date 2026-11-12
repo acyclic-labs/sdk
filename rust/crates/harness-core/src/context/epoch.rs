@@ -102,7 +102,7 @@ impl ContextEpoch {
                 None,
                 // A harness record bounded by what it renders, not admitted
                 // content under the file bound.
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                None,
                 ContentAccess::default(),
             )?
             .await?;

@@ -299,7 +299,10 @@ impl CommandCatalog {
     /// The prompt command or skill name `input` selects and its arguments,
     /// when its name is well formed. Client actions are resolved by the active
     /// catalogue before prompt admission; the server reserves no builtin names.
-    pub fn selected(input: &str, maximum_bytes: u64) -> Result<Option<(String, &str)>> {
+    pub fn selected(
+        input: &str,
+        maximum_bytes: impl Into<Option<u64>>,
+    ) -> Result<Option<(String, &str)>> {
         let Some((name, arguments)) = syntax::split(input, maximum_bytes)? else {
             return Ok(None);
         };
@@ -310,7 +313,11 @@ impl CommandCatalog {
 
     /// A prompt command or skill body with its frontmatter removed and its
     /// `$ARGUMENTS` replaced by `arguments`.
-    pub fn expand(body: &[u8], arguments: &str, maximum_bytes: u64) -> Result<String> {
+    pub fn expand(
+        body: &[u8],
+        arguments: &str,
+        maximum_bytes: impl Into<Option<u64>>,
+    ) -> Result<String> {
         let body = if has_frontmatter(body) {
             let (_, _, start) = crate::context::frontmatter_end(body)?;
             &body[start..]
@@ -319,7 +326,7 @@ impl CommandCatalog {
         };
         let text = std::str::from_utf8(body)
             .map_err(|_| Error::Invalid("command body is not UTF-8".into()))?;
-        expand(text, arguments, maximum_bytes)
+        expand(text, arguments, maximum_bytes.into())
     }
 }
 

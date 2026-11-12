@@ -18,7 +18,7 @@ impl LocalHarness {
         &self,
         text: &str,
     ) -> Result<Option<String>> {
-        let Some((name, arguments)) = CommandCatalog::selected(text, u64::MAX)? else {
+        let Some((name, arguments)) = CommandCatalog::selected(text, None)? else {
             return Ok(None);
         };
         let maximum = self.limits.file_bytes;
@@ -58,7 +58,11 @@ impl LocalHarness {
 
     /// Each of `paths` present in the project, from the selected checkout
     /// view or the project volume's current generation.
-    async fn project_files(&self, paths: &[String], maximum: u64) -> Result<Vec<(usize, Vec<u8>)>> {
+    async fn project_files(
+        &self,
+        paths: &[String],
+        maximum: Option<u64>,
+    ) -> Result<Vec<(usize, Vec<u8>)>> {
         #[cfg(any(test, not(target_arch = "wasm32")))]
         if self.checkout_context
             && let Some(workspace) = &self.workspace

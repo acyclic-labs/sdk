@@ -42,9 +42,13 @@ impl Output {
                 "device output exceeds its protective chunk".into(),
             ));
         }
-        // RuntimeScope admits only a positive file limit.
-        let maximum =
-            usize::try_from(context.effective_scope().limits().file_bytes).unwrap_or(usize::MAX);
+        // Selected file credit partitions this already bounded source chunk.
+        let maximum = context
+            .effective_scope()
+            .limits()
+            .file_bytes
+            .and_then(|maximum| usize::try_from(maximum).ok())
+            .map_or(data.len(), |maximum| maximum.min(data.len()));
         let channel = if stderr { "stderr" } else { "stdout" };
         let directory = directory(self.operation);
         for (index, piece) in data.chunks(maximum).enumerate() {
@@ -141,7 +145,7 @@ mod tests {
         bindings.scope = RuntimeScope::new(
             storage.owner_scope().capabilities().clone(),
             Limits {
-                file_bytes: 2,
+                file_bytes: Some(2),
                 render_bytes: Some(4),
                 ..Limits::default()
             },
@@ -167,7 +171,7 @@ mod tests {
                 "",
                 &path,
                 None,
-                4096,
+                Some(4096),
                 ContentAccess::default(),
             )?
             .await?
@@ -183,7 +187,7 @@ mod tests {
                     directory(operation)
                 ),
                 None,
-                2,
+                Some(2),
                 ContentAccess::default(),
             )?
             .await?
@@ -255,7 +259,7 @@ mod tests {
                 "",
                 &path,
                 None,
-                4096,
+                Some(4096),
                 ContentAccess::default(),
             )?
             .await?

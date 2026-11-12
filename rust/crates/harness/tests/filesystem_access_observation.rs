@@ -47,7 +47,7 @@ async fn racing_observation(revoke: bool, range: bool) -> Result<(), Box<dyn Err
             contents.as_bytes(),
             "text/plain",
             "blob",
-            65536,
+            Some(65536),
             &IdempotencyKey::new("observation-blob")?,
             None,
             acyclic_harness::conversation::ContentAccess::default(),

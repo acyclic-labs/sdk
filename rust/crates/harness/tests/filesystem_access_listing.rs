@@ -36,7 +36,7 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
                 b"row",
                 "text/plain",
                 &name,
-                4096,
+                Some(4096),
                 &IdempotencyKey::new(format!("row-{index}"))?,
                 None,
                 acyclic_harness::conversation::ContentAccess::default(),

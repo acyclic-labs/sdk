@@ -118,7 +118,8 @@ fn validate<I: Serialize>(
                 target: None,
                 filesystem: None,
             },
-            Some(limits.file_bytes)
+            limits
+                .file_bytes
                 .into_iter()
                 .chain(limits.render_bytes)
                 .min(),
