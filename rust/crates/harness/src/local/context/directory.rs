@@ -51,17 +51,25 @@ impl LocalHarness {
                 if let Some((operation, _)) = pending { Err(Error::Indeterminate(OperationId::from_bytes(operation.into_bytes())))?; }
                 let view = selected.as_ref().unwrap_or_else(|| workspace.view());
                 let cancellation = acyclic_fs::CancellationToken::new();
-                let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-                local.authorize_checkout_context(&workspace, view.workspace(), &io, (&verifier, &scope)).await?;
-                let cut = view.snapshot(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal { work: &work, cancellation: &cancellation }).await?;
-                let mut source = crate::context::native_discovery::LazyDiscovery { view, cut, work: &work };
+                let mut selected_cut = None;
                 let mut cursor = None;
                 loop {
-                    let Some(page) = source.page(&path, Some(&cut), cursor.take(), rows).await? else { break; };
-                    cursor = page.next;
+                    // Work credit applies to one source page, never the total
+                    // number of names in the directory or query lifetime.
+                    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+                    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
                     local.authorize_checkout_context(&workspace, view.workspace(), &io, (&verifier, &scope)).await?;
+                    let cut = match selected_cut {
+                        Some(cut) => cut,
+                        None => view.snapshot(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal { work: &work, cancellation: &cancellation }).await?,
+                    };
+                    selected_cut = Some(cut);
+                    let mut source = crate::context::native_discovery::LazyDiscovery { view, cut, work: &work };
+                    let page = source.page(&path, Some(&cut), cursor.take(), rows).await?;
+                    local.authorize_checkout_context(&workspace, view.workspace(), &io, (&verifier, &scope)).await?;
+                    let Some(page) = page else { break; };
+                    cursor = page.next;
                     yield entries(page.entries);
                     if cursor.is_none() { break; }
                 }
