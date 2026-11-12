@@ -203,6 +203,12 @@ impl Probe {
             match self.state {
                 0 if byte == 0x1b => self.state = 1,
                 0 => self.finish(false),
+                1 | 2 if byte == 0x1b => {
+                    self.frame.pop();
+                    self.finish(false);
+                    self.frame.push(byte);
+                    self.state = 1;
+                }
                 1 => match byte {
                     b'[' => self.state = 2,
                     b']' | b'P' | b'_' => {
@@ -213,12 +219,6 @@ impl Probe {
                     _ => self.finish(false),
                 },
                 2 if (0x40..=0x7e).contains(&byte) => self.finish(true),
-                2 if byte == 0x1b => {
-                    self.frame.pop();
-                    self.finish(false);
-                    self.frame.push(byte);
-                    self.state = 1;
-                }
                 3 if byte == 7 && self.string_kind == b']' => self.finish(true),
                 3 if byte == 0x1b => self.state = 4,
                 4 if byte == 0x1b && self.frame.starts_with(b"\x1bPtmux;") => self.state = 3,

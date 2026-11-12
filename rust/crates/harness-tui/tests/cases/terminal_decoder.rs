@@ -90,6 +90,43 @@ fn late_and_partial_replies_never_become_input() -> io::Result<()> {
 }
 
 #[test]
+fn consecutive_escapes_preserve_following_key_frames_at_every_transport_cut() -> io::Result<()> {
+    for (bytes, following) in [
+        (
+            b"\x1b\x1b[1;3A".as_slice(),
+            KeyEvent::new(KeyCode::Up, KeyModifiers::ALT),
+        ),
+        (
+            b"\x1b\x1bOP".as_slice(),
+            KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE),
+        ),
+        (
+            b"\x1b\x1bx".as_slice(),
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT),
+        ),
+        (
+            b"\x1b\x1b".as_slice(),
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        ),
+    ] {
+        let expected = vec![
+            InputEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            InputEvent::Key(following),
+        ];
+        for split in 0..=bytes.len() {
+            let mut decoder = Decoder::default();
+            decoder.feed(&bytes[..split])?;
+            let mut events = decoder.take_events();
+            decoder.feed(&bytes[split..])?;
+            decoder.finish_input()?;
+            events.extend(decoder.take_events());
+            assert_eq!(events, expected, "bytes={bytes:?}, transport cut {split}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn input_deadline_only_resolves_an_isolated_escape() -> io::Result<()> {
     let mut decoder = Decoder::default();
     decoder.feed(b"\x1b")?;
