@@ -1,4 +1,6 @@
-//! Activation discovery is a checkpointed actor in a separate state root.
+//! Each stable scheduling shard checkpoints its activation cursor as a small
+//! actor in a separate state root. Opening reads it; the first advance creates
+//! it, so an idle shard costs one head read and never a write.
 //! Placement commands, not a root child scan, admit resident execution.
 use super::*;
 use crate::local::Subscription;
@@ -24,55 +26,34 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         ))
     }
 
-    pub(super) async fn dispatcher(
-        &self,
-        store: &Store<P>,
-        actor: &ActorReference,
-        shard: u8,
-    ) -> Result<Snapshot, Error> {
-        let snapshot = store.load(actor).await?;
-        if snapshot.state().is_some() {
-            return Ok(snapshot);
-        }
-        let state = State {
-            placement_branch: None,
-            escrow: None,
-            metadata: BTreeMap::new(),
-            journal_tail: 0,
-            epoch: 0,
-            checkpoint: None,
-            alarm: Default::default(),
-            paused: false,
-            subscriptions: BTreeMap::from([(
-                "activation".into(),
-                Subscription {
-                    path: self.store.scheduling_path(shard)?,
-                    cursor: 0,
-                },
-            )]),
-        };
-        let request = store.prepare(
-            &snapshot,
-            state,
-            Vec::new(),
-            key(&snapshot, "dispatcher-open")?,
-        )?;
-        store
-            .submit_retained(request)
-            .await?
-            .ok_or(Error::Invalid("dispatcher receipt has no state"))
-    }
-
     pub(super) async fn advance_dispatcher(
         &self,
         store: &Store<P>,
         previous: Snapshot,
+        shard: u8,
         seen: u64,
     ) -> Result<Snapshot, Error> {
-        let mut state = previous
-            .state()
-            .cloned()
-            .ok_or(Error::Invalid("dispatcher state disappeared"))?;
+        let mut state = match previous.state() {
+            Some(state) => state.clone(),
+            None => State {
+                placement_branch: None,
+                escrow: None,
+                metadata: Default::default(),
+                journal_tail: 0,
+                epoch: 0,
+                checkpoint: None,
+                alarm: Default::default(),
+                paused: false,
+                subscriptions: BTreeMap::from([(
+                    "activation".into(),
+                    Subscription {
+                        path: self.store.scheduling_path(shard)?,
+                        cursor: 0,
+                    },
+                )])
+                .into(),
+            },
+        };
         let subscription = state
             .subscriptions
             .get_mut("activation")
@@ -97,4 +78,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .await?
             .ok_or(Error::Invalid("dispatcher receipt has no state"))
     }
+}
+
+/// The confirmed cursor of a shard checkpoint; zero before its creation.
+pub(super) fn activation_cursor(snapshot: &Snapshot) -> u64 {
+    snapshot
+        .state()
+        .and_then(|state| state.cursor("activation"))
+        .unwrap_or(0)
 }

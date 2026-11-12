@@ -12,12 +12,14 @@ async fn placement_commands_fence_same_namespace_nodes_without_self_claim() -> T
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
-    );
+    )
+    .with_external_placement();
     let other = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
-    );
+    )
+    .with_external_placement();
     other.track(first.clone())?;
     assert!(matches!(
         other.drain_actor(&first).await,
@@ -82,11 +84,9 @@ async fn placement_commands_fence_same_namespace_nodes_without_self_claim() -> T
         owner.place(first.clone(), 1).await,
         Err(Error::Conflict)
     ));
-    owner.track(first.clone())?;
-    assert!(matches!(
-        owner.drain_actor(&first).await,
-        Err(Error::Conflict)
-    ));
+    // The deposed node may observe, but it never claims back without a command.
+    owner.drain_actor(&first).await?;
+    assert_eq!(store.load(&first).await?.state().map(State::epoch), Some(2));
     other.drain_actor(&first).await?;
     assert_eq!(
         records(provider.as_ref(), "out/placed-first").await?.len(),

@@ -56,14 +56,14 @@ async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() ->
     runtime.store().submit(inputs).await?;
     let (store, actor) = runtime.dispatcher_store(0)?;
     let before = provider.requests();
-    let opened = runtime.dispatcher(&store, &actor, 0).await?;
+    let opened = store.load(&actor).await?;
     assert_eq!(
         provider.requests().since(before).control(),
         1,
         "opening observes absence once, then retains the committed receipt"
     );
     let before = provider.requests();
-    let first = runtime.advance_dispatcher(&store, opened, 3).await?;
+    let first = runtime.advance_dispatcher(&store, opened, 0, 3).await?;
     assert_eq!(
         provider.requests().since(before).control(),
         0,
@@ -76,10 +76,10 @@ async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() ->
     let stale = store.load(&actor).await?;
     assert_eq!(first.tail, stale.tail);
     assert_eq!(first.anchor, stale.anchor);
-    let replaced = runtime.advance_dispatcher(&store, first, 5).await?;
+    let replaced = runtime.advance_dispatcher(&store, first, 0, 5).await?;
     let before = provider.requests();
     assert!(matches!(
-        runtime.advance_dispatcher(&store, stale, 7).await,
+        runtime.advance_dispatcher(&store, stale, 0, 7).await,
         Err(Error::Conflict)
     ));
     let lost = provider.requests().since(before);
@@ -100,7 +100,7 @@ async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() ->
     );
     // Only a new invocation may propose a cursor against this observed cut.
     let before = provider.requests();
-    let reconciled = runtime.advance_dispatcher(&store, observed, 7).await?;
+    let reconciled = runtime.advance_dispatcher(&store, observed, 0, 7).await?;
     assert_eq!(
         provider.requests().since(before).control(),
         0,
@@ -172,7 +172,6 @@ struct LocalTarget<P: StreamProvider> {
     running: std::sync::Mutex<Running<P>>,
     clock: Arc<ControlledClock>,
     time: std::sync::Mutex<ClockControl>,
-    placement: std::sync::Mutex<BTreeMap<ActorReference, (uuid::Uuid, u64)>>,
 }
 
 impl<P: StreamProvider> LocalTarget<P> {
@@ -189,13 +188,13 @@ impl<P: StreamProvider> LocalTarget<P> {
             running: std::sync::Mutex::new(None),
             clock: Arc::new(clock),
             time: std::sync::Mutex::new(time),
-            placement: std::sync::Mutex::new(BTreeMap::new()),
         };
         target.launch()?;
         Ok(target)
     }
 
     fn launch(&self) -> Result<(), StreamError> {
+        // The single-node runtime is its store's placement owner.
         let runtime = Arc::new(Runtime::new(
             Store::new(Arc::clone(self.store.provider()), root()?),
             Arc::clone(&self.handler),
@@ -223,30 +222,6 @@ impl<P: StreamProvider> LocalTarget<P> {
             .map(|(runtime, _, _)| Arc::clone(runtime))
             .ok_or(Error::Invalid("runtime stopped"))
     }
-
-    // The fixture is the placement owner, not the runtime under test. It
-    // sends one actor-local command per node incarnation through the same
-    // durable admission path used by a real host's placement controller.
-    async fn admit(&self, runtime: &Runtime<P>, actor: &ActorReference) -> Result<(), Error> {
-        let previous = self
-            .placement
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(actor)
-            .copied();
-        if previous.is_some_and(|(node, _)| node == runtime.instance) {
-            return Ok(());
-        }
-        let index = previous
-            .map_or(Some(1), |(_, index)| index.checked_add(1))
-            .ok_or(Error::Invalid("placement index overflow"))?;
-        runtime.place(actor.clone(), index).await?;
-        self.placement
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(actor.clone(), (runtime.instance, index));
-        Ok(())
-    }
 }
 
 impl<P: StreamProvider> Drop for LocalTarget<P> {
@@ -273,7 +248,7 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
     fn clock(&self) -> &dyn Clock {
         self.clock.as_ref()
     }
-    fn complete<'a>(&'a self, actor: &'a ActorReference) -> BoxFuture<'a, Result<(), Error>> {
+    fn complete<'a>(&'a self, _: &'a ActorReference) -> BoxFuture<'a, Result<(), Error>> {
         async move {
             let (runtime, mut ready) = self
                 .running
@@ -286,7 +261,6 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
                 .wait_for(|started| *started)
                 .await
                 .map_err(|_| Error::CompletionStopped)?;
-            self.admit(&runtime, actor).await?;
             runtime.complete().await
         }
         .boxed()
@@ -306,12 +280,7 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
         actor: &'a ActorReference,
         paused: bool,
     ) -> BoxFuture<'a, Result<(), Error>> {
-        async move {
-            let runtime = self.runtime()?;
-            self.admit(&runtime, actor).await?;
-            runtime.pause(actor, paused).await
-        }
-        .boxed()
+        async move { self.runtime()?.pause(actor, paused).await }.boxed()
     }
     fn restart(&self) -> BoxFuture<'_, Result<(), Error>> {
         async move {
@@ -514,13 +483,12 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
             )
             .with_limits(RuntimeLimits::new(1, 1)?),
         );
-        runtime.track(address.clone())?;
+        runtime.host(address.clone())?;
         assert!(runtime.drain().await.is_empty());
         let idle = store.load(&address).await?;
         assert_eq!(idle.state().map(State::epoch), Some(0));
         assert!(matches!(store.bind_state(idle, 0), Err(Error::Conflict)));
-        let idle = store.load(&address).await?;
-        store.claim(&idle, 1, key("idle/claim")?).await?;
+        runtime.place(address.clone(), 1).await?;
         if let Some(deadline) = original {
             let snapshot = store.load(&address).await?;
             let epoch = snapshot.state().ok_or("missing state")?.epoch();
@@ -530,12 +498,16 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
         }
         let mut executor = futures::executor::LocalPool::new();
         let serving = Arc::clone(&runtime);
-        executor.spawner().spawn_local(async move {
-            match serving.run(|_, error| panic!("host failed: {error}")).await {
-                Ok(never) => match never {},
-                Err(error) => panic!("host stopped: {error}"),
-            }
-        })?;
+        // The pool is not a Tokio task: Tokio's cooperative budget would defer
+        // its wakes to a scheduler this blocked test thread never runs.
+        executor
+            .spawner()
+            .spawn_local(tokio::task::unconstrained(async move {
+                match serving.run(|_, error| panic!("host failed: {error}")).await {
+                    Ok(never) => match never {},
+                    Err(error) => panic!("host stopped: {error}"),
+                }
+            }))?;
         // Drive the original host through every executor wake, including its
         // one-step cooperative yields, until no runnable task remains.
         executor.run_until_stalled();
@@ -854,7 +826,7 @@ async fn reopened_alarm_delivery_retains_the_committed_subscription_cut() -> Tes
         handler.clone(),
         Arc::new(Manual(AtomicU64::new(1))),
     );
-    runtime.track(address.clone())?;
+    runtime.host(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     drop(runtime);
     let reopened = Runtime::new(
@@ -862,7 +834,7 @@ async fn reopened_alarm_delivery_retains_the_committed_subscription_cut() -> Tes
         handler.clone(),
         Arc::new(Manual(AtomicU64::new(101))),
     );
-    reopened.track(address.clone())?;
+    reopened.host(address.clone())?;
     assert!(reopened.drain().await.is_empty());
     let snapshot = store.load(&address).await?;
     assert_eq!(
@@ -962,7 +934,10 @@ async fn state_after<P: StreamProvider + ?Sized>(
     let mut records = acyclic_stream::records_only(
         store
             .provider()
-            .follow(acyclic_stream::FollowRequest::new(store.path(actor)?, 0))
+            .follow(acyclic_stream::FollowRequest {
+                when_absent: acyclic_stream::WhenAbsent::Wait,
+                ..acyclic_stream::FollowRequest::new(store.path(actor)?, 0)
+            })
             .await?,
     );
     while let Some(record) = records.next().await {
@@ -1076,8 +1051,8 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
         Arc::new(Package::new()?),
         Arc::new(Manual(AtomicU64::new(1))),
     );
-    runtime.track(first.clone())?;
-    runtime.track(second.clone())?;
+    runtime.host(first.clone())?;
+    runtime.host(second.clone())?;
     let failures = runtime.drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     // A claim that reset the bound cursor would replay r0..r4 here.
@@ -1122,8 +1097,8 @@ async fn first_record<P: StreamProvider + ?Sized>(
         .ok_or(StreamError::Unavailable)?
 }
 
-/// Activation by the root's activation log: actors created by other parties'
-/// commits get their first delivery with no placement call and no scan.
+/// Activation by the stable shard logs: actors created by other parties'
+/// commits get their first delivery from the local placement owner, no scan.
 async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     // The observer has its own ledger over the same provider state. Host work
@@ -1139,19 +1114,9 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
         let host = Arc::clone(&runtime);
         tokio::spawn(async move { host.run(|_, _| {}).await })
     };
-    let mut task = if precreated { None } else { Some(launch()) };
-    if let Some(task) = task.as_mut() {
-        let (dispatcher_store, dispatcher) = runtime.dispatcher_store(0)?;
-        let path = dispatcher_store.path(&dispatcher)?;
-        tokio::select! {
-            stopped = task => return Err(format!("host stopped before dispatcher publication: {stopped:?}").into()),
-            ready = first_record(&observer, path) => { ready?; },
-        }
-        assert!(
-            matches!(provider.tail(root()?).await, Err(StreamError::NotFound)),
-            "starting a host must not append a synthetic root activation"
-        );
-    }
+    // Shard follows wait for absent logs from their checkpoint cursor, so a
+    // host started before creation needs no startup publication to observe it.
+    let task = if precreated { None } else { Some(launch()) };
     for index in 0..count {
         let address = actor(&format!("a{index}"))?;
         let inbox = StreamPath::new(format!("agents/a{index}"))?;
@@ -1215,8 +1180,18 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
     );
     assert_eq!(
         observer.requests().data(),
-        u64::try_from(count)? + u64::from(!precreated),
-        "one follow per first publication, including the dispatcher"
+        u64::try_from(count)?,
+        "one follow per first publication"
+    );
+    assert!(
+        matches!(
+            provider
+                .tail(root()?)
+                .await
+                .map_err(|error| error.category()),
+            Ok(0) | Err(StreamError::NotFound)
+        ),
+        "hosting must not append a synthetic root activation"
     );
     Ok(())
 }
@@ -1282,11 +1257,10 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
         store.load(&address).await?.state().map(State::epoch),
         Some(0)
     );
-    runtime.track(address.clone())?;
+    runtime.host(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert!(records(&*provider, "out/paused").await?.is_empty());
-    // Control must resume an inherited pause before dispatch can claim. An
-    // inherited epoch (including zero) still cannot publish directly.
+    // An inherited epoch (including zero) cannot publish directly.
     let cut = store.load(&address).await?;
     let child = actor("paused-child-zero")?;
     let mut fork = PreparedPublish::foreign(key("paused-child-zero")?);
@@ -1311,12 +1285,15 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
             .await,
         Err(Error::Conflict)
     ));
+    // An inherited fork has no placement: an explicit command admits this
+    // node before control may resume it.
+    runtime.place(child.clone(), 1).await?;
     runtime.pause(&child, false).await?;
     let resumed = store.load(&child).await?;
     assert_eq!(
         resumed.tail,
-        inherited.tail + 1,
-        "claim and resume must share one publication"
+        inherited.tail + 2,
+        "one placement command, then one resume publication"
     );
     assert_eq!(resumed.state().map(State::epoch), Some(1));
     assert_eq!(resumed.state().map(State::paused), Some(false));
@@ -1375,12 +1352,15 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
             idempotency_key: key("paused-child-input")?,
         })
         .await?;
+    // An inherited fork has no placement: an explicit command admits this
+    // node before control may resume it.
+    runtime.place(child.clone(), 1).await?;
     runtime.pause(&child, false).await?;
     let resumed = store.load(&child).await?;
     assert_eq!(
         resumed.tail,
-        inherited.tail + 1,
-        "claim and resume must share one publication"
+        inherited.tail + 2,
+        "one placement command, then one resume publication"
     );
     runtime.drain_actor(&child).await?;
     let child_state = store.load(&child).await?;
@@ -1516,7 +1496,7 @@ async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
     let mut actors = Vec::new();
     for index in 0..6 {
         let address = spawn_with(&store, &format!("bounded-{index}"), &[b"emit"]).await?;
-        runtime.track(address.clone())?;
+        runtime.host(address.clone())?;
         actors.push(address);
     }
     {
@@ -1605,8 +1585,8 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
     let cold = spawn_with(&store, "duplicate-cold", &[b"emit"]).await?;
     let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock))
         .with_limits(RuntimeLimits::new(2, 2)?);
-    runtime.track(hot.clone())?;
-    runtime.track(cold.clone())?;
+    runtime.host(hot.clone())?;
+    runtime.host(cold.clone())?;
     let slot = runtime.slot(&hot).ok_or("missing hot actor")?;
     let occupied = slot.inner.lock().await;
     let mut duplicates = FuturesUnordered::new();
@@ -1691,7 +1671,7 @@ async fn ordinary_inputs_rotate_through_all_subscriptions_across_batches() -> Te
     store.submit(create).await?;
     let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock))
         .with_limits(RuntimeLimits::new(1, 1)?);
-    runtime.track(address.clone())?;
+    runtime.host(address.clone())?;
     for expected in 0..64 {
         let work = runtime.ready.take().ok_or("rotation work disappeared")?;
         runtime.execute(work).await.map_err(|(_, error)| error)?;
@@ -1720,8 +1700,8 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
         Arc::new(SystemClock),
     )
     .with_limits(RuntimeLimits::new(1, 2)?);
-    runtime.track(hot.clone())?;
-    runtime.track(cold.clone())?;
+    runtime.host(hot.clone())?;
+    runtime.host(cold.clone())?;
     let work = runtime.ready.take().ok_or("missing initial hot work")?;
     assert_eq!(work.key(), &hot);
     runtime.execute(work).await.map_err(|(_, error)| error)?;
@@ -1768,7 +1748,7 @@ async fn event_batch_yield_retains_placement_until_completion_or_abort() -> Test
         Arc::new(SystemClock),
     )
     .with_limits(RuntimeLimits::new(1, 1)?);
-    runtime.track(address.clone())?;
+    runtime.host(address.clone())?;
     {
         let delivery = runtime.drain_actor(&address);
         let mut delivery = core::pin::pin!(delivery);
@@ -1808,7 +1788,7 @@ async fn event_batch_yield_retains_placement_until_completion_or_abort() -> Test
         runtime.release(&address),
         "aborting the event releases its placement guard"
     );
-    runtime.track(address.clone())?;
+    runtime.host(address.clone())?;
     runtime.drain_actor(&address).await?;
     assert_eq!(
         records(&*provider, "out/event-lease").await?,
@@ -1835,7 +1815,7 @@ async fn a_paused_actor_withdraws_its_due_alarm_until_resume() -> TestResult {
         shared,
     );
     let address = spawn_with(&store, "sleeper", &[b"set 10"]).await?;
-    runtime.track(address.clone())?;
+    runtime.host(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert_eq!(runtime.ready.next_deadline(), Some(11));
     runtime.pause(&address, true).await?;
@@ -1930,7 +1910,7 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
         }),
         Arc::new(Manual(AtomicU64::new(1))),
     );
-    runtime.track(address.clone())?;
+    runtime.host(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     provider
@@ -1946,12 +1926,10 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
         .set_paused(&cut, 1, true, key("external-pause")?)
         .await?;
     runtime.wake(&address);
-    let failures = runtime.drain().await;
-    assert!(
-        matches!(failures.as_slice(), [(_, Error::Conflict)]),
-        "{failures:?}"
-    );
-    assert_eq!(runtime.counts(), (0, 0));
+    // The wake refreshes the retained cut: the resident observes the pause
+    // and stays placed without invoking its handler.
+    assert!(runtime.drain().await.is_empty());
+    assert_eq!(runtime.counts(), (1, 0));
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -1965,7 +1943,7 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
     store
         .set_paused(&cut, 1, false, key("external-resume")?)
         .await?;
-    runtime.track(address.clone())?;
+    runtime.host(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -2011,7 +1989,7 @@ async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult 
         Arc::new(Limited::new(Some(10_000), Some(1 << 16), true)?),
         Arc::new(Manual(AtomicU64::new(1))),
     );
-    runtime.track(address.clone())?;
+    runtime.host(address.clone())?;
     let slot = runtime.slot(&address).ok_or("missing actor slot")?;
     // Poll through claim and state observation, then cancel the stalled handler.
     assert!(runtime.deliver(&address, &slot).now_or_never().is_none());
@@ -2044,7 +2022,7 @@ async fn a_long_state_root_still_claims_and_delivers() -> TestResult {
         Arc::new(Package::new()?),
         Arc::new(Manual(AtomicU64::new(1))),
     );
-    runtime.track(address)?;
+    runtime.host(address)?;
     // Control: a key embedding the path exceeds 256 bytes, so every claim
     // fails with InvalidArgument.
     let failures = runtime.drain().await;
@@ -2110,7 +2088,7 @@ async fn run_limited(handler: Limited) -> Result<Outcome, Box<dyn std::error::Er
         Arc::new(handler),
         Arc::new(Manual(AtomicU64::new(1))),
     );
-    runtime.track(address)?;
+    runtime.host(address)?;
     let failures = runtime.drain().await;
     Ok((failures, records(&*provider, "out/limited").await?))
 }

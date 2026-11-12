@@ -1218,7 +1218,8 @@ async fn alarm_publication_wakes() -> TestResult {
             if staged {
                 binding.transaction(|state| state.alarm(Some(20)))?;
             }
-            let from = provider.tail(store.root().clone()).await?;
+            let wakes_path = store.activation_record(&address)?.0;
+            let from = provider.tail(wakes_path.clone()).await?;
             let prepared = binding.prepare_publish(
                 &record(0),
                 None,
@@ -1234,14 +1235,14 @@ async fn alarm_publication_wakes() -> TestResult {
             .ok_or("missing alarm receipt")?;
             let wakes = u64::from(staged || change != AlarmChange::Keep);
             assert_eq!(
-                provider.tail(store.root().clone()).await?,
+                provider.tail(wakes_path.clone()).await?,
                 from + wakes,
                 "alarm changes in either source wake once; Keep alone never wakes"
             );
             if wakes != 0 {
                 let mut records = provider
                     .read(ReadRequest {
-                        path: store.root().clone(),
+                        path: wakes_path.clone(),
                         from,
                         limit: 1,
                         key: None,

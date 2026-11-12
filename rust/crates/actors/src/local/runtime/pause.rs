@@ -30,6 +30,7 @@ pub(super) fn start<P, T>(
     store: Store<P>,
     actor: ActorReference,
     placement: EventDelivery,
+    owner: Option<super::placement::Owner>,
     paused: bool,
     transition: impl std::future::Future<Output = T> + acyclic_stream::ProviderTask + 'static,
 ) -> impl std::future::Future<Output = Result<T, Error>>
@@ -41,7 +42,7 @@ where
     PlatformExecutor.spawn_owned(Box::pin(async move {
         let slot = &placement.0;
         let _control = slot.control.lock().await;
-        match apply(&store, &actor, slot, paused, transition).await {
+        match apply(&store, &actor, slot, owner, paused, transition).await {
             Ok(value) => {
                 let _ = send.send(Ok(value));
             }
@@ -90,6 +91,7 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
     store: &Store<P>,
     actor: &ActorReference,
     slot: &Slot,
+    owner: Option<super::placement::Owner>,
     paused: bool,
     transition: impl std::future::Future<Output = T>,
 ) -> Result<T, ()> {
@@ -124,10 +126,20 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
         if epoch.is_some_and(|epoch| epoch != state.epoch()) {
             return Err(Error::Conflict);
         }
+        // An inherited branch has no owner yet. Only a placement command may
+        // admit it: the local placement owner issues one before control.
+        let snapshot = match owner {
+            Some(owner) if epoch.is_none() && !snapshot.owns_epoch(state.epoch()) => {
+                super::placement::command(store, owner, actor, None, &mut delivery).await?;
+                delivery.observed.clone().ok_or(Error::Conflict)?
+            }
+            _ => Arc::new(snapshot),
+        };
+        let state = snapshot
+            .state()
+            .ok_or(Error::Invalid("actor state was never created"))?;
         gate.decided = state.paused();
         if state.paused() != paused {
-            // An inherited fork has no local placement authority. Only an
-            // explicit placement command may claim its branch before control.
             let operation = if paused { "pause" } else { "resume" };
             store
                 .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)

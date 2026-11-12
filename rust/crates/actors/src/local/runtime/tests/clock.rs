@@ -76,21 +76,6 @@ async fn clock_schedule(
         assert_eq!(state.alarm().deadline_unix_ms, Some(deadline));
         assert_eq!(state.alarm().delivered_generation, None);
     }
-    let activation_tail = provider
-        .tail(store.scheduling_path(crate::local::scheduling_shard(&first))?)
-        .await?;
-    let (dispatch_store, dispatch_actor) =
-        runtime.dispatcher_store(crate::local::scheduling_shard(&first))?;
-    observe_while_running(
-        serving.as_mut(),
-        state_after(&dispatch_store, &dispatch_actor, |state| {
-            state
-                .cursor("activation")
-                .is_some_and(|cursor| cursor >= activation_tail)
-        }),
-    )
-    .await?;
-
     let mut early = clock.sleep_until(110);
     assert!(early.as_mut().poll(&mut context).is_pending());
     notifications.0.store(0, Ordering::SeqCst);
@@ -111,7 +96,6 @@ async fn clock_schedule(
     } else {
         None
     };
-
     // Both an installed waiter and a not-yet-observed future retain the same
     // original advance. Neither owns the clock producer.
     let mut reached = clock.sleep_until(110);
@@ -142,7 +126,7 @@ async fn clock_schedule(
         assert_eq!(state.alarm().delivered_generation, None);
         // Only this explicit placement may claim epoch 3 and deliver the
         // still-committed alarm; the stale dispatcher may not publish it.
-        runtime.track(first.clone())?;
+        runtime.place(first.clone(), 2).await?;
     } else {
         assert_eq!(conflicts.load(Ordering::SeqCst), 0);
     }
@@ -166,7 +150,6 @@ async fn clock_schedule(
             .and_then(|state| state.alarm().pending()),
         Some(120)
     );
-
     let mut retained = clock.sleep_until(130);
     assert!(retained.as_mut().poll(&mut context).is_pending());
     notifications.0.store(0, Ordering::SeqCst);
@@ -397,20 +380,6 @@ fn running_dispatcher_reports_its_original_clock_retirement() -> TestResult {
                     assert!(state.alarm().pending().is_some());
                     assert_eq!(state.alarm().delivered_generation, None);
                 }
-                let tail = provider
-                    .tail(store.scheduling_path(crate::local::scheduling_shard(&first))?)
-                    .await?;
-                let (dispatcher_store, dispatcher_actor) =
-                    runtime.dispatcher_store(crate::local::scheduling_shard(&first))?;
-                observe_while_running(
-                    serving.as_mut(),
-                    state_after(&dispatcher_store, &dispatcher_actor, |state| {
-                        state
-                            .cursor("activation")
-                            .is_some_and(|cursor| cursor >= tail)
-                    }),
-                )
-                .await?;
                 let mut context = Context::from_waker(&waker);
                 assert!(serving.as_mut().poll(&mut context).is_pending());
                 Ok::<_, Box<dyn std::error::Error>>((first, second))

@@ -164,6 +164,8 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     shards: RandomState,
     /// Host node incarnation retained in explicit placement commands.
     instance: uuid::Uuid,
+    /// Whether this runtime is its store's local placement owner.
+    places: bool,
     limits: RuntimeLimits,
     admission: Option<tokio::sync::Semaphore>,
     completions: OnceLock<tokio::sync::mpsc::Sender<Completion>>,
@@ -183,6 +185,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             actors: std::array::from_fn(|_| SyncMutex::new(HashMap::new())),
             shards: RandomState::new(),
             instance: crate::identity::fresh_uuid(),
+            places: true,
             limits: RuntimeLimits::default(),
             admission: None,
             completions: OnceLock::new(),
@@ -204,6 +207,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     #[must_use]
     pub fn within(mut self, within: &ActorReference) -> Self {
         self.scope = Some((within.account().clone(), within.namespace().clone()));
+        self
+    }
+
+    /// Accept ownership only from explicit [Self::place] commands, as a node
+    /// among several sharing one state root. By default a runtime is the
+    /// single local placement owner of its store, which holds the store's
+    /// exclusive claim, and issues each resident actor's next command itself.
+    #[must_use]
+    pub const fn with_external_placement(mut self) -> Self {
+        self.places = false;
         self
     }
 
@@ -262,6 +275,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 delivery_control: SyncMutex::new(DeliveryControl::default()),
             }),
         );
+        Ok(())
+    }
+
+    /// Register an actor and request its first delivery attempt, as after
+    /// reopening a store whose committed input this host must now serve.
+    pub fn host(&self, actor: ActorReference) -> Result<(), Error> {
+        self.track(actor.clone())?;
+        self.wake(&actor);
         Ok(())
     }
 
@@ -347,6 +368,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     Store::new(Arc::clone(self.store.provider()), self.store.root().clone()),
                     actor.clone(),
                     placement,
+                    self.places.then_some(placement::Owner {
+                        node: self.instance,
+                        places: true,
+                    }),
                     paused,
                     transition,
                 )
@@ -559,25 +584,25 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut stores = BTreeMap::new();
         let mut dispatchers = BTreeMap::new();
         let mut created = futures::stream::SelectAll::new();
+        // Every shard checkpoint loads in one snapshot request.
+        let mut assigned = Vec::with_capacity(self.scheduling_shards.len());
         for &shard in &self.scheduling_shards {
-            let (store, actor) = self.dispatcher_store(shard)?;
-            let dispatcher = self.dispatcher(&store, &actor, shard).await?;
-            let from = dispatcher
-                .state()
-                .and_then(|state| state.cursor("activation"))
-                .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
+            assigned.push(self.dispatcher_store(shard)?);
+        }
+        let actors: Vec<_> = assigned.iter().map(|(_, actor)| actor.clone()).collect();
+        let loaded = assigned[0].0.load_all(&actors).await?;
+        for ((&shard, (store, _)), dispatcher) in
+            self.scheduling_shards.iter().zip(assigned).zip(loaded)
+        {
+            let from = dispatcher::activation_cursor(&dispatcher);
             stores.insert(shard, store);
             dispatchers.insert(shard, Some(dispatcher));
             seen.insert(shard, from);
             completion_tail.insert(shard, from);
-            let records = acyclic_stream::records_only(
-                provider
-                    .follow(acyclic_stream::FollowRequest::new(
-                        self.store.scheduling_path(shard)?,
-                        from,
-                    ))
-                    .await?,
-            );
+            let mut request =
+                acyclic_stream::FollowRequest::new(self.store.scheduling_path(shard)?, from);
+            request.when_absent = acyclic_stream::WhenAbsent::Wait;
+            let records = acyclic_stream::records_only(provider.follow(request).await?);
             created.push(records.map(move |record| (shard, record)));
         }
         let mut dispatching: FuturesUnordered<
@@ -682,13 +707,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             steps += 1;
             match event {
                 Event::Created(shard, record) => {
-                    // Activation is a wake hint, not a placement command.
-                    // Do not discover or register another node's actors.
+                    // Activation is a wake hint, not a placement command. The
+                    // local placement owner hosts its shard's actors on demand;
+                    // under external placement only admitted residents wake.
                     if let Ok(actor) = ActorReference::decode(record.value.as_ref())
                         && super::scheduling_shard(&actor) == shard
                         && self.includes(&actor)
-                        && self.slot(&actor).is_some()
                     {
+                        if self.places {
+                            self.track(actor.clone())?;
+                        }
                         self.wake(&actor);
                     }
                     let cursor = record
@@ -732,13 +760,26 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::Idle => {
                     // No delivery can publish while this owner captures the cut.
                     // A newly observed prefix resumes the SAME activation follow.
-                    for &shard in &self.scheduling_shards {
-                        let tail = match provider.tail(self.store.scheduling_path(shard)?).await {
-                            Ok(tail) => tail,
-                            Err(error) if error.category() == StreamError::NotFound => 0,
-                            Err(error) => return Err(error.into()),
-                        };
-                        completion_tail.insert(shard, tail);
+                    // One snapshot of every assigned shard log: a single
+                    // control request regardless of the shard count.
+                    let request = acyclic_stream::HeadsRequest {
+                        retained: Default::default(),
+                        durable_through: None,
+                        projection: acyclic_stream::HeadProjection::Tail,
+                        paths: self
+                            .scheduling_shards
+                            .iter()
+                            .map(|&shard| self.store.scheduling_path(shard))
+                            .collect::<Result<_, _>>()?,
+                        children: None,
+                        limit: u32::try_from(self.scheduling_shards.len())
+                            .map_err(|_| Error::Invalid("too many scheduling shards"))?,
+                        at_least: Default::default(),
+                    };
+                    let view = provider.heads(request.clone()).await?;
+                    view.validate_for(&request)?;
+                    for (&shard, head) in self.scheduling_shards.iter().zip(view.heads) {
+                        completion_tail.insert(shard, head.map_or(0, |head| head.tail));
                     }
                     if completion_tail
                         .iter()
@@ -753,19 +794,29 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                 }
             }
+            // A checkpoint may pass an activation entry only after its wake
+            // finished: every seen entry was delivered to quiescence, so a
+            // restart replays exactly the entries that may still own work.
+            // A failed delivery keeps its entries for the next incarnation.
+            // A pending alarm also owns work: its activation stays replayable.
+            if !running.is_empty()
+                || self.ready.counts().1 != 0
+                || self.ready.next_deadline().is_some()
+                || failure.is_some()
+            {
+                continue;
+            }
             for (&shard, previous) in &mut dispatchers {
                 let cursor = seen[&shard];
-                if let Some(previous) = previous.take_if(|previous| {
-                    previous
-                        .state()
-                        .and_then(|state| state.cursor("activation"))
-                        .is_some_and(|confirmed| confirmed < cursor)
-                }) {
+                if let Some(previous) =
+                    previous.take_if(|previous| dispatcher::activation_cursor(previous) < cursor)
+                {
                     let store = &stores[&shard];
                     dispatching.push(Box::pin(async move {
                         (
                             shard,
-                            self.advance_dispatcher(store, previous, cursor).await,
+                            self.advance_dispatcher(store, previous, shard, cursor)
+                                .await,
                         )
                     }));
                 }
@@ -871,10 +922,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .release(actor);
                 return Ok(true);
             };
-            if inner.epoch == 0 {
-                inner.epoch = self.admitted_epoch(&snapshot).await?;
-            }
-            if state.epoch() != inner.epoch {
+            if inner.epoch != 0 && state.epoch() != inner.epoch {
                 return Err(Error::Conflict);
             }
             if state.paused() {
@@ -925,6 +973,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     None => return Ok(true),
                 },
             };
+            if inner.epoch == 0 {
+                // Only work admits placement: one command per node incarnation,
+                // never per delivery. The next pass delivers at the admitted
+                // cut; admission is not a delivery step of the work budget.
+                self.admit(actor, &mut inner).await?;
+                steps -= 1;
+                continue;
+            }
             // A retained publication cut cannot admit external handler work:
             // another host may already have paused or replaced this placement.
             // Until canonical control invalidation is available, observe the
