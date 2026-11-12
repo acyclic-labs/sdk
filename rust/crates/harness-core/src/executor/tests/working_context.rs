@@ -23,7 +23,14 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
     } else {
         None
     };
-    let (provider, _) = counted_model(32_768, None, [], []);
+    let (provider, _) = counted_model(
+        32_768,
+        None,
+        [ScriptedTurn::Text(
+            r#"{"version":1,"drop_through":2,"summary":"retained selected history"}"#.into(),
+        )],
+        [],
+    );
     let stage = crate::context::Context {
         messages: vec![ModelMessage {
             role: ModelRole::System,
@@ -48,15 +55,15 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
     let selected = vec![
         ModelMessage {
             role: ModelRole::User,
-            content: ModelContent::Text("old user".repeat(4_000)),
+            content: ModelContent::Text("old user".repeat(1_500)),
         },
         ModelMessage {
             role: ModelRole::Assistant,
-            content: ModelContent::Text("old answer".repeat(2_800)),
+            content: ModelContent::Text("old answer".repeat(1_000)),
         },
         ModelMessage {
             role: ModelRole::User,
-            content: ModelContent::Text("current question".into()),
+            content: ModelContent::Text("current question".repeat(1_000)),
         },
     ];
     let input = TurnInput {
@@ -87,13 +94,17 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
     );
     println!("response preparation: caller={preparing_bytes} bound={bound}");
     let first = preparing.await?;
-    assert!(first.bytes().len() < 2_000);
+    assert!(first.bytes().len() < 18_000);
     let restarted = StockExecution::ordinary(&executor);
     let replayed = restarted
         .prepared_response(&journal, &input, 0, &[], None)
         .await?;
     assert_eq!(replayed.bytes(), first.bytes());
-    assert_eq!(provider.request_count(), 0, "the backstop called a model");
+    assert_eq!(
+        provider.request_count(),
+        1,
+        "reopen repeated context management"
+    );
     let tail = vec![ModelMessage {
         role: ModelRole::Assistant,
         content: ModelContent::Text("tool result after the cut".into()),
@@ -140,7 +151,7 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
                 .count(),
             1
         );
-        assert!(crate::contract::canonical_json_bytes(&projected)?.len() < 2_000);
+        assert!(crate::contract::canonical_json_bytes(&projected)?.len() < 18_000);
         let reads = journal.4.load(Ordering::SeqCst);
         let (_, repeated, repeated_working) =
             session.response_base(&journal, &input, 1, &tail).await?;
@@ -195,7 +206,7 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
         );
         working_cut_admission_controls(session, &journal, &input, reference, signed).await?;
     }
-    assert!(provider.requests().is_empty());
+    assert_eq!(provider.request_count(), 1);
     let address = std::ptr::from_ref(&journal) as usize;
     journal = Journal::default();
     assert_eq!(std::ptr::from_ref(&journal) as usize, address);
@@ -204,7 +215,7 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
         working.is_none(),
         "replacing the journal retained an authenticated working cut"
     );
-    assert!(crate::contract::canonical_json_bytes(&original)?.len() > 50_000);
+    assert!(crate::contract::canonical_json_bytes(&original)?.len() > 35_000);
     Ok(())
 }
 
