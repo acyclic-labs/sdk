@@ -349,6 +349,9 @@ impl LocalHarness {
             .instructions(binding, &policy.instruction_names, publisher, &mut work)
             .await?;
         let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+        manifest.documents =
+            crate::context::capture_working_documents(binding.reader, binding.scratch, self.limits)
+                .await?;
         manifest.tools = tools;
         let mode = match self.preset.approval_policy.approvers.as_slice() {
             [
