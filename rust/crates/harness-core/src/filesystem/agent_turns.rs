@@ -311,6 +311,9 @@ impl<'v> AdmittedAgent<'v> {
             .filter(|volume| volume.is_agent_journal())
             .collect();
         for journal in journals {
+            if journal != &self.journal && !self.administers_journal(journal)? {
+                continue;
+            }
             host.enforce_journal_policy(
                 journal,
                 &verifier,
@@ -367,7 +370,9 @@ impl<'v> AdmittedAgent<'v> {
         let VolumeOwner::Agent(owner) = journal.owner() else {
             return Err(Error::Invalid("journal has no agent owner".into()));
         };
-        let parent = if self.issuer.native().is_some() {
+        let parent = if self.issuer.native().is_some()
+            && (journal == &self.journal || self.parent.is_none())
+        {
             None
         } else {
             self.parent
@@ -383,8 +388,54 @@ impl<'v> AdmittedAgent<'v> {
             None => journal_grants(journal, content)?,
         };
         self.issuer
-            .issue(parent, "host-journal", &grants, Some(*owner))
+            .issue(
+                parent,
+                "host-journal",
+                &grants,
+                parent.and_then(Scope::agent).or(Some(*owner)),
+            )
             .await
+    }
+
+    fn administers_journal(&self, journal: &VolumeRef) -> Result<bool> {
+        if journal.provider() != self.journal.provider() {
+            return Ok(false);
+        }
+        let scope = match self.parent {
+            Some(scope) => scope,
+            None if self.issuer.native().is_some() => return Ok(true),
+            None => match self.issuer.caller() {
+                Some((_, scope)) => scope,
+                None => return Ok(false),
+            },
+        };
+        if !scope
+            .capabilities()
+            .contains(crate::contract::capability::HARNESS_HOST)
+        {
+            return Ok(false);
+        }
+        if !crate::core::volume_operation_granted_with_work(
+            scope.capabilities(),
+            journal,
+            VolumeOperation::Write,
+            &mut None,
+        )? {
+            return Ok(false);
+        }
+        let VolumeOwner::Agent(owner) = journal.owner() else {
+            return Ok(false);
+        };
+        match structured_scope_view(scope, *owner, journal)? {
+            Some(view) => Ok(view
+                .decide(
+                    acyclic_fs::access::Action::Admin,
+                    "",
+                    super::access::access_now()?,
+                )
+                .allowed),
+            None => Ok(scope.agent().is_none_or(|agent| agent == *owner)),
+        }
     }
 
     /// Pure admission for a proposed volume. Local enrollment already owns
@@ -445,11 +496,28 @@ pub(super) fn require_structured_access(
     volume: &crate::conversation::VolumeRef,
     actions: &[acyclic_fs::access::Action],
 ) -> Result<()> {
+    let Some(view) = structured_scope_view(scope, owner, volume)? else {
+        return Ok(());
+    };
+    if view.allows_every_path(actions, super::access::access_now()?) {
+        Ok(())
+    } else {
+        Err(Error::Unauthorized(
+            "admission does not grant the complete volume access".into(),
+        ))
+    }
+}
+
+fn structured_scope_view(
+    scope: &Scope,
+    owner: crate::AgentId,
+    volume: &crate::conversation::VolumeRef,
+) -> Result<Option<acyclic_fs::access::PathTrie>> {
     use acyclic_fs::access::{
         Capability, Context, INITIAL_POLICY, PathTrie, Policy, Principal, PrincipalKind, Resource,
     };
     let Some(label) = crate::core::filesystem_scope_label(scope.capabilities(), &mut None)? else {
-        return Ok(());
+        return Ok(None);
     };
     let denied =
         || Error::Unauthorized("admission does not grant the complete volume access".into());
@@ -484,11 +552,7 @@ pub(super) fn require_structured_access(
         &capability,
     )
     .map_err(|_| denied())?;
-    if view.allows_every_path(actions, now) {
-        Ok(())
-    } else {
-        Err(denied())
-    }
+    Ok(Some(view))
 }
 
 /// A local root agent's grants: routing, tools, the visible entries' read/write
