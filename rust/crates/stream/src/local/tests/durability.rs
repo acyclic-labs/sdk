@@ -115,67 +115,77 @@ async fn phase_barrier_preserves_live_delivery_and_reopens_the_accepted_prefix()
 #[tokio::test]
 async fn native_phase_barrier_admits_before_io_and_flushes_append_and_guarded_commit()
 -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    let meter = Arc::new(Meter::local());
-    let path = StreamPath::new("native-phase")?;
-    meter.deny_durability.store(true, Ordering::SeqCst);
-    drop(
-        provider
+    use acyclic_test_support::scale::{Bound, assert_scales};
+    let mut samples = Vec::new();
+    for count in [16_u64, 128] {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let meter = Arc::new(Meter::local());
+        let path = StreamPath::new("native-phase")?;
+        meter.deny_durability.store(true, Ordering::SeqCst);
+        drop(
+            provider
+                .native_durability_barrier(meter.original())
+                .await??,
+        );
+        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
+        meter.deny_durability.store(false, Ordering::SeqCst);
+        deferring_durability(async {
+            for tail in 0..count {
+                let output = provider
+                    .native_append(keyed_append("native-phase", tail)?, meter.original())
+                    .await??;
+                drop(output);
+            }
+            let request = CommitRequest {
+                deadline_unix_millis: None,
+                effects: vec![crate::CommitEffect::hard(
+                    vec![crate::CommitCondition::Tail {
+                        path: path.clone(),
+                        expected: count,
+                    }],
+                    vec![crate::CommitMutation::Append {
+                        path: path.clone(),
+                        records: vec![OwnedBytes::from_static(b"committed").into()],
+                    }],
+                )],
+                idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(
+                    b"native-phase-commit",
+                ))?,
+            };
+            let output = provider
+                .native_commit_with_guard::<NativeGuardFailure, _, _>(
+                    request,
+                    None,
+                    meter.original(),
+                    || async { Ok(()) },
+                )
+                .await??;
+            drop(output);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+        .await?;
+        assert_eq!(provider.watermarks(path.clone()).await?.durable, 0);
+        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
+        meter.deny_durability.store(true, Ordering::SeqCst);
+        let error = provider
             .native_durability_barrier(meter.original())
-            .await??,
-    );
-    assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
-    meter.deny_durability.store(false, Ordering::SeqCst);
-    deferring_durability(async {
-        let output = provider
-            .native_append(keyed_append("native-phase", 0)?, meter.original())
-            .await??;
-        drop(output);
-        let request = CommitRequest {
-            deadline_unix_millis: None,
-            effects: vec![crate::CommitEffect::hard(
-                vec![crate::CommitCondition::Tail {
-                    path: path.clone(),
-                    expected: 1,
-                }],
-                vec![crate::CommitMutation::Append {
-                    path: path.clone(),
-                    records: vec![OwnedBytes::from_static(b"committed").into()],
-                }],
-            )],
-            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"native-phase-commit"))?,
-        };
-        let output = provider
-            .native_commit_with_guard::<NativeGuardFailure, _, _>(
-                request,
-                None,
-                meter.original(),
-                || async { Ok(()) },
-            )
-            .await??;
-        drop(output);
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })
-    .await?;
-    assert_eq!(provider.watermarks(path.clone()).await?.durable, 0);
-    assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
-    meter.deny_durability.store(true, Ordering::SeqCst);
-    let error = provider
-        .native_durability_barrier(meter.original())
-        .await
-        .err()
-        .ok_or("unfunded durability barrier succeeded")?;
-    assert_original_denial(&error, "durability");
-    assert_eq!(provider.watermarks(path.clone()).await?.durable, 0);
-    meter.deny_durability.store(false, Ordering::SeqCst);
-    drop(
-        provider
-            .native_durability_barrier(meter.original())
-            .await??,
-    );
-    assert_eq!(provider.watermarks(path).await?.durable, 2);
-    assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
-    meter.assert_refunded();
+            .await
+            .err()
+            .ok_or("unfunded durability barrier succeeded")?;
+        assert_original_denial(&error, "durability");
+        assert_eq!(provider.watermarks(path.clone()).await?.durable, 0);
+        meter.deny_durability.store(false, Ordering::SeqCst);
+        drop(
+            provider
+                .native_durability_barrier(meter.original())
+                .await??,
+        );
+        assert_eq!(provider.watermarks(path).await?.durable, count + 1);
+        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
+        samples.push((count, meter.durability_operations.load(Ordering::SeqCst)));
+        meter.assert_refunded();
+    }
+    assert_scales(Bound::Constant, samples[0], samples[1]);
     Ok(())
 }
