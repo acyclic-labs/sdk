@@ -1177,3 +1177,98 @@ async fn counting_context_refusal_compacts_and_replays_without_recounting() -> R
     }
     Ok(())
 }
+struct CeilingCounter(crate::test_support::ScriptedModelProvider);
+
+impl ModelProvider for CeilingCounter {
+    fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
+        self.0.context_capacity(model)
+    }
+
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        ceiling: u64,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::context::ModelTokenCount>> {
+        Box::pin(async move {
+            let bound = u32::try_from(request.bytes().len())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            if u64::from(bound) <= ceiling {
+                Ok(crate::context::ModelTokenCount::from_upper_bounds(
+                    request.request_digest(),
+                    bound,
+                    vec![0; request.request().messages.len()],
+                ))
+            } else {
+                self.0.count_tokens(request, ceiling).await
+            }
+        })
+    }
+
+    fn generate<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        dispatch: crate::model::ModelDispatch,
+    ) -> crate::model::ModelStream<'a> {
+        self.0.generate(request, dispatch)
+    }
+}
+
+#[tokio::test]
+async fn response_reserve_requests_a_tighter_count_before_rewriting() -> Result<()> {
+    let provider = Arc::new(CeilingCounter(
+        ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]).with_context_capacity(
+            crate::context::ModelContextCapacity {
+                context_tokens: 65_536,
+                output_tokens: Some(8192),
+            },
+        ),
+    ));
+    let executor = StockExecutor::new(
+        Model::new("fixture".into(), "ceiling-counter".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+            "history",
+            "1",
+            Arc::new(crate::context::Context {
+                messages: vec![
+                    ModelMessage {
+                        role: ModelRole::User,
+                        content: ModelContent::Text("o".repeat(30_000)),
+                    },
+                    ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: ModelContent::Text("a".repeat(30_000)),
+                    },
+                ],
+                ..Default::default()
+            }),
+            crate::context::ContextPlacement::Prepend,
+        )) as Arc<dyn crate::context::ContextStage>]),
+        ToolRegistry::default(),
+    );
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("question".into()),
+        selected_context: None,
+        max_steps: None,
+    };
+    let output = executor.execute(input.clone(), journal.as_ref()).await?;
+    assert_eq!(output.text, "answer");
+    assert_eq!(executor.execute(input, journal.as_ref()).await?, output);
+    let requests = provider.0.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "an exact count fits; no manager call is needed"
+    );
+    assert!(!requests[0].summary);
+    let prepared =
+        crate::model::PreparedModelRequest::prepare(requests[0].clone(), Limits::default(), None)?;
+    assert!(
+        (57_345..=65_536).contains(&prepared.bytes().len()),
+        "the loose bound must distinguish the two ceilings"
+    );
+    Ok(())
+}

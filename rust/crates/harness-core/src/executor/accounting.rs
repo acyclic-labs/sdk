@@ -281,7 +281,13 @@ impl StockExecution<'_> {
         capacity: crate::context::ModelContextCapacity,
     ) -> Result<u64> {
         capacity.validate()?;
-        Ok(u64::from(capacity.context_tokens))
+        if self.single_request {
+            return Ok(u64::from(capacity.context_tokens));
+        }
+        match self.compaction_policy()? {
+            crate::context::CompactionPolicy::Capacity(policy) => policy.input_ceiling(capacity),
+            crate::context::CompactionPolicy::Disabled => Ok(u64::from(capacity.context_tokens)),
+        }
     }
 
     pub(super) fn sampling(&self) -> Result<crate::model::ModelSampling> {
