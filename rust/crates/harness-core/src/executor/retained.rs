@@ -133,7 +133,7 @@ pub(crate) async fn retained_model_step<'a>(
                         "model observation is missing",
                     )
                 })?;
-            stock_push_model_event(&mut events, event, io)?;
+            stock_vec_push(&mut events, event, io)?;
             let event = events.last().ok_or_else(|| {
                 stock_boundary(
                     io,

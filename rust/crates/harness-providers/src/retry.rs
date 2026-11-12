@@ -122,6 +122,33 @@ impl Redelivery {
     }
 }
 
+/// Observe the original timer in the model stream, without a parallel log or
+/// waiter. The same timer still exclusively determines redelivery readiness.
+pub(crate) fn events<'a>(
+    transport: &'a dyn crate::HttpTransport,
+    error: Error,
+    duration: Duration,
+    retry_after: bool,
+    work: acyclic_fs::NativeWork<'a>,
+) -> impl futures::Stream<Item = acyclic_harness_core::Result<acyclic_harness_core::model::ModelEvent>>
++ acyclic_stream::ProviderTask
++ 'a {
+    async_stream::try_stream! {
+        use acyclic_harness_core::model::{ModelEvent, ModelWait};
+        let cause = match error {
+            Error::ModelUnavailable { failure, .. } => Some(failure),
+            _ => None,
+        };
+        let timer = crate::deadline::timer(transport, duration, work)?;
+        yield ModelEvent::Wait(ModelWait::Started { cause, delay: duration, retry_after });
+        let started = transport.now();
+        timer.await?;
+        yield ModelEvent::Wait(ModelWait::Finished {
+            elapsed: transport.now().saturating_sub(started),
+        });
+    }
+}
+
 /// Observe the original recovery timer; it alone determines when redelivery resumes.
 pub(crate) async fn wait(
     transport: &dyn crate::HttpTransport,

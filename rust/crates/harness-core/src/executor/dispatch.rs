@@ -80,6 +80,7 @@ impl StockExecution<'_> {
             let request::ModelStepRequest {
                 history: mut prior_messages,
                 prepared,
+                publish_reply,
             } = request;
             let retained = self
                 .retained_dispatch_step(journal, input.operation_id, step, purpose)
@@ -193,7 +194,7 @@ impl StockExecution<'_> {
                     )
                     .await?;
                 }
-                return Ok(replayed);
+                return stock_active_model_events(replayed, io);
             }
             let dispatch = crate::model::ModelDispatch {
                 operation_id: purpose.attempt_operation(input.operation_id, io)?,
@@ -230,7 +231,7 @@ impl StockExecution<'_> {
                 None
             };
             // Only a fresh provider generation streams; a continuation replays.
-            let live = continuation.is_none() && purpose == ModelPurpose::Response;
+            let live = publish_reply && continuation.is_none() && purpose == ModelPurpose::Response;
             let mut clock = super::model_usage::CallClock::unknown();
             let stream = if let Some(continuation) = continuation {
                 {
@@ -289,7 +290,7 @@ impl StockExecution<'_> {
                         purpose,
                         clock,
                     },
-                    replayed,
+                    stock_active_model_events(replayed, io)?,
                     &mut admission,
                     (stream, live),
                     #[cfg(feature = "research")]
@@ -656,7 +657,7 @@ impl StockExecution<'_> {
                 }
                 if let Some(text) = text.as_mut() {
                     text.observe(event);
-                    if matches!(event, ModelEvent::Restarted) {
+                    if matches!(event, ModelEvent::Restarted | ModelEvent::Completed { .. }) {
                         text.flush().await?;
                     }
                 }
@@ -714,6 +715,14 @@ impl StockExecution<'_> {
                 }
                 #[cfg(not(feature = "research"))]
                 let _ = receipt;
+                // Wait facts are durable now; response assembly needs none of them.
+                // Recovery loads its original ordered prefix from the journal.
+                if matches!(event, ModelEvent::Wait(_)) {
+                    stock_retire_event(
+                        observed.pop().expect("the committed event is retained"),
+                        io,
+                    )?;
+                }
                 // The committed terminal event settles this step. Transport
                 // closure is independent and may never follow it.
                 if admission.completed {
@@ -748,14 +757,16 @@ impl StockExecution<'_> {
         let io = self.io;
 
         let (event, custody) = result?;
-        io.ok_or_else(|| {
+        let io = io.ok_or_else(|| {
             stock_boundary(
                 io,
                 crate::wire::ErrorCode::Storage,
                 "native stock session lacks its original IO",
             )
-        })?
-        .absorb_native_custody(custody)?;
+        })?;
+        io.absorb_native_custody(custody)?;
+        // The incoming value moves onto the stack; vector slots fund their own storage.
+        drop(io.guard_owned(std::mem::size_of::<ModelEvent>() as u64)?);
         Ok(event)
     }
 
@@ -775,5 +786,136 @@ fn model_purpose_key(purpose: ModelPurpose) -> &'static str {
     match purpose {
         ModelPurpose::Response => "model",
         ModelPurpose::Summary => "summary",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    #[test]
+    fn retiring_native_events_releases_their_original_custody() -> Result<()> {
+        let model = Model::new("test".into(), "events".into(), "1".into())?;
+        let stock = StockExecutor::new(
+            model,
+            std::sync::Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let sources = [
+            ModelEvent::Wait(crate::model::ModelWait::Finished {
+                elapsed: std::time::Duration::from_secs(1),
+            }),
+            ModelEvent::Content {
+                delta: "payload".into(),
+            },
+        ];
+        let bytes = sources
+            .iter()
+            .map(crate::contract::canonical_json_bytes)
+            .collect::<Result<Vec<_>>>()?;
+        let observed = crate::test_support::accounted::accounted(true, 16_384, false, |io| {
+            let execution = StockExecution {
+                io: Some(io),
+                ..StockExecution::ordinary(&stock)
+            };
+            let mut events = Vec::new();
+            for _ in 0..64 {
+                for bytes in &bytes {
+                    let event =
+                        execution.admit_model_event(ModelEvent::decode_with_native_work(
+                            bytes,
+                            io.original_native_work().unwrap(),
+                        ))?;
+                    stock_push_model_event(&mut events, event, Some(io))?;
+                    stock_retire_event(events.pop().unwrap(), Some(io))?;
+                    assert_eq!(
+                        io.owned_bytes()?,
+                        (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64
+                    );
+                }
+            }
+            drop(stock_events_into_iter(events, Some(io))?);
+            Ok::<_, Error>(())
+        })
+        .map_err(|(cause, _)| Error::Storage(cause))?;
+        observed.0?;
+        assert_eq!(observed.2, 0);
+        assert_eq!(
+            observed.5,
+            acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+        );
+        Ok(())
+    }
+    #[tokio::test]
+    async fn committed_waits_do_not_accumulate_in_live_response_storage() -> Result<()> {
+        let model = Model::new("test".into(), "waits".into(), "1".into())?;
+        let stock = StockExecutor::new(
+            model.clone(),
+            std::sync::Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let mut capacity = None;
+        for waits in [1, 64] {
+            let execution = StockExecution::ordinary(&stock);
+            let journal = super::super::tests::Journal::default();
+            let operation_id = OperationId::new();
+            let dispatch = crate::model::ModelDispatch {
+                operation_id,
+                step: 0,
+                request_digest: [0; 32],
+            };
+            let events = (0..waits)
+                .flat_map(|_| {
+                    [
+                        ModelEvent::Wait(crate::model::ModelWait::Started {
+                            cause: Some(crate::ModelTransportFailure::Status(429)),
+                            delay: std::time::Duration::from_secs(1),
+                            retry_after: true,
+                        }),
+                        ModelEvent::Wait(crate::model::ModelWait::Finished {
+                            elapsed: std::time::Duration::from_secs(1),
+                        }),
+                    ]
+                })
+                .chain([ModelEvent::Completed {
+                    metadata: Value::Null,
+                }]);
+            let mut admission = ModelEventAdmission::default();
+            let observed = execution
+                .record_model_events(
+                    &journal,
+                    ObservedCall {
+                        operation_id,
+                        dispatch,
+                        model: &model,
+                        sampling: crate::model::ModelSampling::default(),
+                        purpose: ModelPurpose::Response,
+                        clock: super::super::model_usage::CallClock::unknown(),
+                    },
+                    Vec::new(),
+                    &mut admission,
+                    (Either::Right(futures::stream::iter(events.map(Ok))), false),
+                    #[cfg(feature = "research")]
+                    &mut DispatchPhase::new(),
+                )
+                .await?;
+            assert_eq!(
+                observed,
+                [ModelEvent::Completed {
+                    metadata: Value::Null
+                }]
+            );
+            assert_eq!(
+                *capacity.get_or_insert(observed.capacity()),
+                observed.capacity()
+            );
+            assert_eq!(admission.count, waits * 2 + 1);
+            let records = journal.replay(operation_id, 0, 256, None)?.await?;
+            assert_eq!(records.len(), waits * 2 + 1);
+        }
+        Ok(())
     }
 }

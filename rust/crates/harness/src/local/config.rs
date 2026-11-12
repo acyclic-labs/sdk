@@ -87,6 +87,7 @@ pub struct LocalHarnessConfig {
     /// Standard tools enabled, by name.
     pub(super) default_tools: Vec<String>,
     pub(super) question: bool,
+    pub(super) feedback: Option<bool>,
     /// Hosts the agents for [`crate::server::serve`].
     pub(super) served: Option<Arc<dyn super::Verifier>>,
     pub(super) approval_policy: crate::approvals::ApprovalPolicy,
@@ -250,6 +251,7 @@ impl LocalHarnessConfig {
             tools: Vec::new(),
             default_tools: crate::tools::default_names(),
             question: false,
+            feedback: None,
             served: None,
             approval_policy: Default::default(),
             approval_issuer: None,
@@ -495,6 +497,14 @@ impl LocalHarnessConfig {
         if enabled {
             self.default_tools.push("ask_question".into());
         }
+        self
+    }
+
+    /// Selects feedback settlement notices before opening the session.
+    /// Finite model scripts can disable notices without removing other hooks.
+    #[must_use]
+    pub fn feedback_plugin(mut self, enabled: bool) -> Self {
+        self.feedback = Some(enabled);
         self
     }
 

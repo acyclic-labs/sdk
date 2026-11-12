@@ -673,6 +673,53 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    #[test]
+    fn interrupted_wait_prefixes_reconcile_without_losing_events() -> Result<()> {
+        let events = vec![
+            ModelEvent::Wait(crate::model::ModelWait::Started {
+                cause: Some(crate::ModelTransportFailure::Status(429)),
+                delay: std::time::Duration::from_secs(2),
+                retry_after: true,
+            }),
+            ModelEvent::Wait(crate::model::ModelWait::Finished {
+                elapsed: std::time::Duration::from_secs(2),
+            }),
+            ModelEvent::Content {
+                delta: "abandoned".into(),
+            },
+            ModelEvent::Restarted,
+            ModelEvent::Content {
+                delta: "answer".into(),
+            },
+            ModelEvent::Completed {
+                metadata: serde_json::Value::Null,
+            },
+        ];
+        let call = RecordedCall {
+            source: None,
+            events: events
+                .iter()
+                .map(crate::contract::canonical_json_bytes)
+                .collect::<Result<_>>()?,
+            tools: Vec::new(),
+        };
+        let mut observed = Vec::new();
+        for event in &events {
+            crate::executor::stock_vec_push(&mut observed, event.clone(), None)?;
+            let mut suffix = Vec::new();
+            replay_suffix(
+                &call,
+                &observed,
+                |bytes| Ok((decode(bytes)?, ())),
+                |event, ()| {
+                    suffix.push(event);
+                    Ok(())
+                },
+            )?;
+            assert_eq!(suffix, events[observed.len()..]);
+        }
+        Ok(())
+    }
     struct Quiet;
     impl DivergenceSink for Quiet {
         fn diverged(&self, _: Divergence) {}

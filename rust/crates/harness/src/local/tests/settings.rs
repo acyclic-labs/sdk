@@ -20,6 +20,36 @@ async fn open(
     .await
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn enabling_feedback_preserves_authored_settlement_settings() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let project = volume(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
+    write(
+        &harness,
+        "plugins.ts",
+        "export default base => ({ ...base, feedback: { ...base.feedback, enabled: false, config: { retrospective: false } } });",
+    )
+    .await?;
+    drop(harness);
+    let provider = text();
+    let harness = std::sync::Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .feedback_plugin(true),
+        )
+        .await?,
+    );
+    let mut observed = super::ObservedConversation::open(&harness).await?;
+    let entry = observed.send("task", "Finish the task").await?;
+    assert_eq!(entry.outcome, crate::agent::TurnOutcome::Completed);
+    assert_eq!(observed.conversation.output_text(&entry).await?, "done");
+    assert_eq!(provider.request_count(), 1);
+    Ok(())
+}
+
 /// Writes a home settings module, returning its version.
 pub(in crate::local) async fn write(
     harness: &LocalHarness,
@@ -931,6 +961,7 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
     let tree = super::super::agent_settings::Tree::new(&volumes).await?;
     let reason = match super::super::agent_settings::plugins(
         false,
+        None,
         &tree,
         harness.root,
         harness.clock.as_ref(),

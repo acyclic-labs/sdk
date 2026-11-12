@@ -1060,6 +1060,14 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
             delta: "abandoned".into(),
         }),
         ScriptedEvent::Event(ModelEvent::Restarted),
+        ScriptedEvent::Event(ModelEvent::Wait(crate::model::ModelWait::Started {
+            cause: Some(crate::ModelTransportFailure::Status(429)),
+            delay: std::time::Duration::from_secs(2),
+            retry_after: true,
+        })),
+        ScriptedEvent::Event(ModelEvent::Wait(crate::model::ModelWait::Finished {
+            elapsed: std::time::Duration::from_secs(2),
+        })),
         ScriptedEvent::Event(ModelEvent::Content {
             delta: "answer".into(),
         }),
@@ -1087,8 +1095,28 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
     let output = futures::executor::block_on(executor.execute(input.clone(), &journal))?;
     assert_eq!(output.text, "answer");
     assert_eq!(output.steps, 1);
+    let records = journal.0.lock().unwrap().clone();
+    let waits = futures::executor::block_on(async {
+        let mut waits = Vec::new();
+        for record in &records {
+            if let Some(ModelEvent::Wait(wait)) =
+                super::super::model_observation::load(&journal, &record.event, None).await?
+            {
+                waits.push(wait);
+            }
+        }
+        Ok::<_, Error>(waits)
+    })?;
+    assert_eq!(
+        waits.len(),
+        2,
+        "recovery facts are original journal records"
+    );
+    assert!(matches!(waits[0], crate::model::ModelWait::Started { .. }));
+    assert!(matches!(waits[1], crate::model::ModelWait::Finished { .. }));
     let replay = futures::executor::block_on(executor.execute(input, &journal))?;
     assert_eq!(replay, output);
     assert_eq!(provider.requests().len(), 1);
+    assert_eq!(journal.0.lock().unwrap().len(), records.len());
     Ok(())
 }

@@ -9,6 +9,9 @@ pub enum ModelEvent {
     /// Abandon the incomplete output of this dispatch and begin its next transport attempt.
     /// Consumers discard all earlier events in this step; request and tool identities stay fixed.
     Restarted,
+    /// Original transport recovery observation. This does not change model
+    /// output, call identity or completion, and contains no remote error text.
+    Wait(ModelWait),
     /// User-visible fragment.
     Content {
         /// Incremental content.
@@ -50,6 +53,30 @@ pub enum ModelEvent {
         #[serde(deserialize_with = "crate::deserialize_json_value")]
         #[heap_layout(as = serde_json::Value)]
         metadata: Value,
+    },
+}
+
+/// Compact recovery facts carried by the original ordered model stream.
+/// An unfinished start remains visible when cancellation or timer failure wins.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum ModelWait {
+    /// Redelivery is delayed by the original recovery timer.
+    Started {
+        /// Typed transport cause; absent for an unclassified unavailable error.
+        cause: Option<crate::ModelTransportFailure>,
+        /// Exact selected delay, without narrowing the timer's capacity.
+        #[cfg_attr(feature = "wasm", tsify(type = "{ secs: number; nanos: number }"))]
+        delay: std::time::Duration,
+        /// Whether the provider supplied the delay rather than local backoff.
+        retry_after: bool,
+    },
+    /// The original timer completed successfully, before the next send.
+    Finished {
+        /// Measured on the transport's monotonic clock around the timer wait.
+        #[cfg_attr(feature = "wasm", tsify(type = "{ secs: number; nanos: number }"))]
+        elapsed: std::time::Duration,
     },
 }
 /// Executor identity supplied separately from canonical model bytes.
@@ -228,7 +255,7 @@ mod tests;
 impl ModelEvent {
     pub(crate) fn retained_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
-            Self::Restarted => 0,
+            Self::Restarted | Self::Wait(_) => 0,
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
             Self::MessageCompleted { text } => text.capacity() as u64,
             Self::TextPart { text, native } => add(

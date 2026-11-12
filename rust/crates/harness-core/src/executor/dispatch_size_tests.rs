@@ -46,6 +46,7 @@ fn model_step_callers_keep_only_control_state() -> Result<()> {
         request::ModelStepRequest {
             history: request::ModelStepHistory::Selected(&[]),
             prepared: None,
+            publish_reply: true,
         },
         ModelPurpose::Response,
         &mut phase,
@@ -59,6 +60,7 @@ fn model_step_callers_keep_only_control_state() -> Result<()> {
         request::ModelStepRequest {
             history: request::ModelStepHistory::Selected(&[]),
             prepared: None,
+            publish_reply: true,
         },
         ModelPurpose::Response,
         &mut phase,

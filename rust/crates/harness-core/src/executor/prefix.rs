@@ -25,7 +25,10 @@ impl StockExecution<'_> {
             )
             .await?,
         )?;
-        let events = stock_events_into_iter(retained.events, self.io)?;
+        let events = stock_events_into_iter(
+            stock_active_model_events(retained.events, self.io)?,
+            self.io,
+        )?;
         let prepared = retained
             .request
             .ok_or(Error::Indeterminate(input.operation_id))?;

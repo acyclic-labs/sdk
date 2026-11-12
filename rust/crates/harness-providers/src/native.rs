@@ -226,8 +226,22 @@ pub(crate) fn generate<'a>(
                     let mut attempt = dispatch::GenerationAttempt::new(provider.config.retry, dispatch_id);
                     let mut response = response;
                     loop {
-                    let response_body = attempt.exchange(provider, &body, dispatch_id, &mut auth,
-                        response, Some(&mut auth_custody), Some(work)).await?;
+                    let response_body = {
+                        let exchange = attempt.exchange(provider, &body, dispatch_id, &mut auth,
+                            response, Some(&mut auth_custody), Some(work));
+                        let mut exchange = core::pin::pin!(exchange);
+                        loop {
+                            match exchange.next().await {
+                                Some(Ok(dispatch::Exchange::Observation(event))) => {
+                                    let custody = work.claim(event.logical_owned_bytes()?, 1, WorkCounters::UNCHARGED)?;
+                                    yield (event, custody);
+                                }
+                                Some(Ok(dispatch::Exchange::Accepted(response))) => break response,
+                                Some(Err(error)) => Err(error)?,
+                                None => Err(crate::invalid("model exchange ended without an accepted response"))?,
+                            }
+                        }
+                    };
                     let retry_after = response_body.retry_after;
                     let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
                     let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
@@ -251,7 +265,15 @@ pub(crate) fn generate<'a>(
                         let custody = work.claim(event.logical_owned_bytes()?, 1, WorkCounters::UNCHARGED)?;
                         yield (event, custody);
                     }
-                    attempt.recover(provider, &mut auth, error, retry_after, Some(&mut auth_custody), Some(work)).await?;
+                    {
+                        let recovery = attempt.recover(provider, &mut auth, error, retry_after, Some(&mut auth_custody), Some(work));
+                        let mut recovery = core::pin::pin!(recovery);
+                        while let Some(event) = recovery.next().await {
+                            let event = event?;
+                            let custody = work.claim(event.logical_owned_bytes()?, 1, WorkCounters::UNCHARGED)?;
+                            yield (event, custody);
+                        }
+                    }
                     response = dispatch::send(provider, body.clone(), dispatch_id, auth.0.as_deref(), auth.1.as_deref(), Some(work)).await;
                     }
                 }

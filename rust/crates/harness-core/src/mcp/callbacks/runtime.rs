@@ -175,6 +175,7 @@ impl McpRuntimeCallbacks {
                     ));
                 }
                 ModelEvent::Restarted
+                | ModelEvent::Wait(_)
                 | ModelEvent::Content { .. }
                 | ModelEvent::TextPart { .. }
                 | ModelEvent::Reasoning { .. }

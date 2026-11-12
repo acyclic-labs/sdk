@@ -39,12 +39,7 @@ pub(super) fn text() -> Arc<ScriptedModelProvider> {
 /// Finite scripts model the task's requests, without optional settlement
 /// followups. Settlement coverage opens the default composition directly.
 pub(super) async fn open_scripted(config: LocalHarnessConfig) -> Result<LocalHarness> {
-    let mut harness = LocalHarness::open(config).await?;
-    Arc::get_mut(&mut harness.plugin_set)
-        .expect("the fixture owns the unopened agent composition")
-        .after
-        .clear();
-    Ok(harness)
+    LocalHarness::open(config.feedback_plugin(false)).await
 }
 
 /// One conversation and its observation, which reports each settled entry.
@@ -135,9 +130,19 @@ pub(super) async fn request_text(
             text.push('\n');
         }
         for part in message.content.parts() {
-            if let crate::model::ModelContentPart::Text { text: body, .. } = part {
-                text.push_str(body);
-                text.push('\n');
+            match part {
+                crate::model::ModelContentPart::Text { text: body, .. } => {
+                    text.push_str(body);
+                    text.push('\n');
+                }
+                crate::model::ModelContentPart::ToolResult { content, .. } => {
+                    text.push_str(
+                        &serde_json::to_string(content)
+                            .map_err(|error| Error::Storage(error.to_string()))?,
+                    );
+                    text.push('\n');
+                }
+                _ => {}
             }
             if let crate::model::ModelContentPart::ToolResult {
                 content: crate::model::ToolResultContent::Error { message },
@@ -325,3 +330,4 @@ async fn defaults_are_additive_and_opt_out_retains_custom_tools() -> Result<()> 
 }
 
 mod questions;
+mod settlement;

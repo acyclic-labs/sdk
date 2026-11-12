@@ -45,8 +45,19 @@ pub(crate) fn generate_encoded<'a>(
         let mut attempt = GenerationAttempt::new(provider.config.retry, dispatch);
         let mut response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None).await;
         loop {
-            let response_body = attempt.exchange(provider, &body, dispatch, &mut auth, response,
-                #[cfg(not(target_arch = "wasm32"))] None, None).await?;
+            let response_body = {
+                let exchange = attempt.exchange(provider, &body, dispatch, &mut auth, response,
+                    #[cfg(not(target_arch = "wasm32"))] None, None);
+                let mut exchange = core::pin::pin!(exchange);
+                loop {
+                    match exchange.next().await {
+                        Some(Ok(Exchange::Observation(event))) => yield event,
+                        Some(Ok(Exchange::Accepted(response))) => break response,
+                        Some(Err(error)) => Err(error)?,
+                        None => Err(invalid("model exchange ended without an accepted response"))?,
+                    }
+                }
+            };
             let retry_after = response_body.retry_after;
             let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
             let cache = cache.map(|cache| acyclic_harness_core::executor::ModelCacheObservation {
@@ -68,8 +79,12 @@ pub(crate) fn generate_encoded<'a>(
             }
             let Some(error) = failure else {break;};
             if error.code() == acyclic_harness_core::wire::ErrorCode::Unavailable { yield ModelEvent::Restarted; }
-            attempt.recover(provider, &mut auth, error, retry_after,
-                #[cfg(not(target_arch = "wasm32"))] None, None).await?;
+            {
+                let recovery = attempt.recover(provider, &mut auth, error, retry_after,
+                    #[cfg(not(target_arch = "wasm32"))] None, None);
+                let mut recovery = core::pin::pin!(recovery);
+                while let Some(event) = recovery.next().await { yield event?; }
+            }
             response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None).await;
         }
     }
@@ -253,6 +268,12 @@ pub(crate) struct GenerationAttempt {
     attempt: crate::retry::Attempt,
 }
 
+/// One shared exchange's original observations, followed by its accepted body.
+pub(crate) enum Exchange {
+    Observation(ModelEvent),
+    Accepted(HttpResponse),
+}
+
 impl GenerationAttempt {
     pub(crate) fn new(spec: crate::RetrySpec, dispatch: ModelDispatch) -> Self {
         Self {
@@ -262,21 +283,25 @@ impl GenerationAttempt {
 
     /// Finish the original first send or its permitted pre-acceptance recovery.
     /// Accepted bodies leave this loop once, before their parser is polled.
-    pub(crate) async fn exchange(
-        &mut self,
-        provider: &ResolvedModel,
-        body: &bytes::Bytes,
+    pub(crate) fn exchange<'a, 'auth>(
+        &'a mut self,
+        provider: &'a ResolvedModel,
+        body: &'a bytes::Bytes,
         dispatch: ModelDispatch,
-        auth: &mut (Option<Cow<'_, str>>, Option<String>),
+        auth: &'a mut (Option<Cow<'auth, str>>, Option<String>),
         mut response: Result<HttpResponse>,
-        #[cfg(not(target_arch = "wasm32"))] mut custody: Option<&mut acyclic_fs::NativeAllocation>,
-        work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<HttpResponse> {
+        #[cfg(not(target_arch = "wasm32"))] mut custody: Option<
+            &'a mut acyclic_fs::NativeAllocation,
+        >,
+        work: acyclic_fs::NativeWork<'a>,
+    ) -> impl futures::Stream<Item = Result<Exchange>> + acyclic_stream::ProviderTask + 'a {
+        async_stream::try_stream! {
         loop {
             let (error, retry_after) = match response {
                 Ok(response) if (200..300).contains(&response.status) => {
                     self.attempt.observe(response.status);
-                    return Ok(response);
+                    yield Exchange::Accepted(response);
+                    break;
                 }
                 Ok(response) => {
                     // Preserve refusal before its diagnostic body can fail.
@@ -289,7 +314,8 @@ impl GenerationAttempt {
                 }
                 Err(error) => (error, None),
             };
-            self.recover(
+            {
+            let recovery = self.recover(
                 provider,
                 auth,
                 error,
@@ -297,8 +323,12 @@ impl GenerationAttempt {
                 #[cfg(not(target_arch = "wasm32"))]
                 custody.as_deref_mut(),
                 work,
-            )
-            .await?;
+            );
+            let mut recovery = core::pin::pin!(recovery);
+            while let Some(event) = recovery.next().await {
+                yield Exchange::Observation(event?);
+            }
+            }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = work {
                 work.remaining()?;
@@ -313,19 +343,21 @@ impl GenerationAttempt {
             )
             .await;
         }
+        }
     }
 
     /// Complete recovery before the caller may send another model request.
     /// Refresh and timer failures are final causes, never model retry inputs.
-    pub(crate) async fn recover(
-        &mut self,
-        provider: &ResolvedModel,
-        auth: &mut (Option<Cow<'_, str>>, Option<String>),
+    pub(crate) fn recover<'a, 'auth>(
+        &'a mut self,
+        provider: &'a ResolvedModel,
+        auth: &'a mut (Option<Cow<'auth, str>>, Option<String>),
         error: acyclic_harness_core::Error,
         retry_after: Option<std::time::Duration>,
-        #[cfg(not(target_arch = "wasm32"))] custody: Option<&mut acyclic_fs::NativeAllocation>,
-        work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))] custody: Option<&'a mut acyclic_fs::NativeAllocation>,
+        work: acyclic_fs::NativeWork<'a>,
+    ) -> impl futures::Stream<Item = Result<ModelEvent>> + acyclic_stream::ProviderTask + 'a {
+        async_stream::try_stream! {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(login) = &provider.codex_login
             && self.attempt.refresh(&error)
@@ -335,12 +367,16 @@ impl GenerationAttempt {
                 .bearer(provider.transport.as_ref(), auth.0.as_deref(), custody)
                 .await?;
             *auth = (Some(Cow::Owned(key)), account);
-            return Ok(());
+            return;
         }
         let _ = auth;
         if let Some(wait) = self.attempt.next(&error, retry_after) {
-            return crate::retry::wait(provider.transport.as_ref(), error, wait, work).await;
+            let events = crate::retry::events(provider.transport.as_ref(), error, wait, retry_after.is_some(), work);
+            let mut events = core::pin::pin!(events);
+            while let Some(event) = events.next().await { yield event?; }
+            return;
         }
-        Err(error)
+        Err(error)?;
+        }
     }
 }

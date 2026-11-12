@@ -425,6 +425,7 @@ async fn open_harness(
         .state_directory(state)
         .volume(volume.clone())
         .compaction(CompactionPolicy::Disabled)
+        .feedback_plugin(false)
         .goal_continuations(None);
     Ok(LocalHarness::open(config).await?)
 }

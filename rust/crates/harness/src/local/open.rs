@@ -560,6 +560,7 @@ impl Opening {
         #[cfg(any(test, not(target_arch = "wasm32")))]
         let plugin_set = agent_settings::plugins(
             self.config.question,
+            self.config.feedback,
             &settings_tree,
             owner.agent,
             self.config.clock.as_ref(),

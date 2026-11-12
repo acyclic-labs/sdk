@@ -208,14 +208,19 @@ async fn record(
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub(super) async fn plugins(
     question: bool,
+    feedback: Option<bool>,
     tree: &Tree<'_>,
     agent: AgentId,
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<crate::plugins::Enabled> {
     use crate::plugins::{MANIFEST, load_result};
     let enabler = agent.to_string();
-    let selection =
-        format!("export default base => ({{ ...base, question: {{ enabled: {question} }} }});");
+    let feedback = feedback
+        .map(|enabled| format!("feedback: {{ ...base.feedback, enabled: {enabled} }},"))
+        .unwrap_or_default();
+    let selection = format!(
+        "export default base => ({{ ...base, question: {{ enabled: {question} }}, {feedback} }});"
+    );
     let session = Layer {
         name: "session",
         generation: "",
@@ -503,7 +508,7 @@ mod tests {
             crate::local::tests::settings::write(&harness, path, source).await?;
         }
         let clock = harness.clock.as_ref();
-        let enabled = plugins(false, &original, harness.root, clock).await?;
+        let enabled = plugins(false, None, &original, harness.root, clock).await?;
         assert!(
             !enabled.rules.is_empty(),
             "plugin admission refreshed its pinned home generation"
@@ -523,7 +528,7 @@ mod tests {
         );
         let current = Tree::new(&volumes).await?;
         assert!(
-            plugins(false, &current, harness.root, clock)
+            plugins(false, None, &current, harness.root, clock)
                 .await?
                 .rules
                 .is_empty()

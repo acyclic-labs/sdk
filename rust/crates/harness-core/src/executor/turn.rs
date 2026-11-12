@@ -87,6 +87,8 @@ impl StockExecution<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut stop_active = false;
         #[cfg(not(target_arch = "wasm32"))]
+        let mut stop_check = None;
+        #[cfg(not(target_arch = "wasm32"))]
         let mut after_answer = None;
         let mut steps = 0_u32;
         let progress = async {
@@ -110,6 +112,16 @@ impl StockExecution<'_> {
                                 &mut steering,
                             ),
                             prepared: None,
+                            publish_reply: {
+                                #[cfg(not(target_arch = "wasm32"))]
+                                {
+                                    after_answer.is_none()
+                                }
+                                #[cfg(target_arch = "wasm32")]
+                                {
+                                    true
+                                }
+                            },
                         },
                         ModelPurpose::Response,
                         phase,
@@ -121,7 +133,17 @@ impl StockExecution<'_> {
                     Ok(events) => events,
                     Err(error) => {
                         #[cfg(not(target_arch = "wasm32"))]
-                        if after_answer.is_some() {
+                        if after_answer.is_some()
+                            && error.is_model_failure()
+                            && self
+                                .stop_allows_completion(
+                                    input.operation_id,
+                                    step,
+                                    stop_active,
+                                    stop_check,
+                                )
+                                .await?
+                        {
                             return Ok(ExecutionProgress::Ready((
                                 String::new(),
                                 Value::Null,
@@ -162,10 +184,14 @@ impl StockExecution<'_> {
                 if calls.is_empty() {
                     // An explicit Stop denial supersedes the candidate answer.
                     #[cfg(not(target_arch = "wasm32"))]
-                    if after_answer.is_none()
-                        && let Some(reason) =
-                            Box::pin(self.stop_hook(input.operation_id, step, stop_active)).await?
+                    let stop =
+                        Box::pin(self.stop_hook(input.operation_id, step, stop_active)).await?;
+                    #[cfg(not(target_arch = "wasm32"))]
                     {
+                        stop_check = Some((step, stop.is_none()));
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(reason) = stop {
                         let answer = if parts { "" } else { text.as_str() };
                         self.continue_after_stop(&mut prior_messages, answer, reason)?;
                         stock_retire_text(text, self.io)?;
@@ -234,7 +260,11 @@ impl StockExecution<'_> {
                 append_step_context(&mut prior_messages, &mut hook_context, self.io)?;
             }
             #[cfg(not(target_arch = "wasm32"))]
-            if after_answer.is_some() {
+            if after_answer.is_some()
+                && self
+                    .stop_allows_completion(input.operation_id, steps - 1, stop_active, stop_check)
+                    .await?
+            {
                 return Ok(ExecutionProgress::Ready((String::new(), Value::Null, true)));
             }
             Err(stock_boundary(
@@ -273,6 +303,23 @@ impl StockExecution<'_> {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn stop_allows_completion(
+        &self,
+        operation: OperationId,
+        step: u32,
+        active: bool,
+        checked: Option<(u32, bool)>,
+    ) -> Result<bool> {
+        if let Some((checked_step, allowed)) = checked
+            && checked_step == step
+        {
+            return Ok(allowed);
+        }
+        Ok(Box::pin(self.stop_hook(operation, step, active))
+            .await?
+            .is_none())
+    }
     fn finish_assistant_output(&self, unfinished: &mut String, text: String) -> Result<String> {
         if unfinished.is_empty() {
             stock_retire_text(std::mem::take(unfinished), self.io)?;
@@ -410,6 +457,7 @@ impl StockExecution<'_> {
                     )?;
                 }
                 event @ (ModelEvent::Restarted
+                | ModelEvent::Wait(_)
                 | ModelEvent::Content { .. }
                 | ModelEvent::Reasoning { .. }) => {
                     stock_retire_event(event, io)?;

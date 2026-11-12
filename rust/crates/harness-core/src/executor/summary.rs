@@ -84,6 +84,7 @@ impl StockExecution<'_> {
                 request::ModelStepRequest {
                     history: request::ModelStepHistory::Selected(&[]),
                     prepared,
+                    publish_reply: false,
                 },
                 ModelPurpose::Summary,
                 phase,
@@ -196,6 +197,7 @@ impl StockExecution<'_> {
                     ));
                 }
                 event @ (ModelEvent::Restarted
+                | ModelEvent::Wait(_)
                 | ModelEvent::Content { .. }
                 | ModelEvent::TextPart { .. }
                 | ModelEvent::Reasoning { .. }

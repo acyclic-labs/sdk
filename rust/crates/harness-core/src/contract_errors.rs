@@ -20,7 +20,11 @@ pub enum InteractionRejection {
 }
 
 /// How a model provider exchange failed, with its retryability.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout,
+)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelTransportFailure {
     /// The provider answered with this refusal status: 408, 429 or 5xx.
     Status(u16),

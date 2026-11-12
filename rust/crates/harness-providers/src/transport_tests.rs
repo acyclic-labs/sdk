@@ -3,7 +3,7 @@
 use super::*;
 use acyclic_harness_core::ModelTransportFailure;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 /// One scripted connection.
@@ -29,6 +29,7 @@ struct Counted {
 }
 
 struct WaitGate {
+    now_ns: AtomicU64,
     entered: Mutex<Option<tokio::sync::oneshot::Sender<std::time::Duration>>>,
     release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
@@ -74,7 +75,11 @@ impl HttpTransport for Counted {
         Box::pin(self.wait(wait))
     }
     fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
+        self.gate
+            .as_ref()
+            .map_or_else(crate::fixtures::now, |gate| {
+                std::time::Duration::from_nanos(gate.now_ns.load(Ordering::SeqCst))
+            })
     }
     fn unix_ms(&self) -> Result<u64> {
         Ok(1_700_000_000_000)
@@ -207,69 +212,32 @@ fn failure(error: &Error) -> Option<ModelTransportFailure> {
 async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_the_turn()
 -> Result<()> {
     use std::time::Duration;
-    use tracing::instrument::WithSubscriber as _;
-    use tracing_subscriber::prelude::*;
-
-    #[derive(Clone)]
-    struct Log(Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for Log {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     for native in [false, true] {
-        for (status, headers, reason, seconds, cut) in [
-            (
-                429,
-                "Retry-After: 60\r\nRateLimit-Reset: 900\r\n",
-                "provider rate limit",
-                60,
-                None,
-            ),
-            (
-                429,
-                "RateLimit-Reset: 60\r\n",
-                "provider rate limit",
-                60,
-                None,
-            ),
+        for (status, headers, seconds, cut) in [
+            (429, "Retry-After: 60\r\nRateLimit-Reset: 900\r\n", 60, None),
+            (429, "RateLimit-Reset: 60\r\n", 60, None),
             (
                 429,
                 "x-ratelimit-remaining-requests: 0\r\nx-ratelimit-reset-requests: 1s\r\nx-ratelimit-remaining-tokens: 10000\r\nx-ratelimit-reset-tokens: 65s\r\n",
-                "provider rate limit",
                 65,
                 None,
             ),
             (
                 429,
                 "x-ratelimit-remaining-requests: 1000\r\nx-ratelimit-reset-requests: 1s\r\nx-ratelimit-remaining-tokens: 100\r\nx-ratelimit-reset-tokens: 65s\r\n",
-                "provider rate limit",
                 65,
                 None,
             ),
-            (503, "Retry-After: 60\r\n", "provider transport", 60, None),
-            (
-                200,
-                "RateLimit-Reset: 65\r\n",
-                "provider transport",
-                65,
-                Some(0),
-            ),
+            (503, "Retry-After: 60\r\n", 60, None),
+            (200, "RateLimit-Reset: 65\r\n", 65, Some(0)),
             (
                 200,
                 "Retry-After: 60\r\n",
-                "provider transport",
                 60,
                 Some(CHAT.find("\n\n").unwrap() + 10),
             ),
         ] {
             let expected = Duration::from_secs(seconds);
-            let until = format!("until {}.000000000 (Unix seconds)", 1_700_000_000 + seconds);
             let first = cut.map_or(
                 Reply::Headers(status, headers, r#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#),
                 |cut| Reply::Cut(status, headers, CHAT, cut),
@@ -282,6 +250,7 @@ async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_t
                 sent: AtomicUsize::new(0),
                 waits: Mutex::new(Vec::new()),
                 gate: Some(Arc::new(WaitGate {
+                    now_ns: AtomicU64::new(0),
                     entered: Mutex::new(Some(entered_tx)),
                     release: Mutex::new(Some(release_rx)),
                 })),
@@ -294,15 +263,7 @@ async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_t
             let (request, dispatch) = super::request(&provider)?;
             let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
             let baseline = work.live_allocation_bytes();
-            let report = acyclic_native_runtime::obs::WaitReport::default();
-            let log = Log(Arc::new(Mutex::new(Vec::new())));
-            let writer = log.clone();
-            let subscriber = tracing_subscriber::registry().with(report.clone()).with(
-                tracing_subscriber::fmt::layer()
-                    .without_time()
-                    .with_ansi(false)
-                    .with_writer(move || writer.clone()),
-            );
+            let waits = Arc::new(Mutex::new(Vec::new()));
             let run = async {
                 let (mut completed, mut calls, mut content, mut restarted) = (0, 0, false, 0);
                 let mut observe = |event: &ModelEvent| match event {
@@ -316,6 +277,7 @@ async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_t
                         calls += 1;
                     }
                     ModelEvent::Completed { .. } => completed += 1,
+                    ModelEvent::Wait(wait) => waits.lock().unwrap().push(wait.clone()),
                     _ => {}
                 };
                 if native {
@@ -334,8 +296,7 @@ async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_t
                     }
                 }
                 Ok::<_, Error>((completed, calls, content, restarted))
-            }
-            .with_subscriber(subscriber);
+            };
             tokio::pin!(run);
             tokio::select! {
                 result = &mut run => panic!("turn ended before its provider wait: {result:?}"),
@@ -344,26 +305,36 @@ async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_t
             assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
             assert_eq!(accepted.load(Ordering::SeqCst), 1);
             assert_eq!(*transport.waits.lock().unwrap(), [expected]);
-            let waits = report.snapshot();
-            assert!(
-                waits
-                    .iter()
-                    .any(|wait| wait.primitive == reason && wait.key == until)
+            assert_eq!(
+                *waits.lock().unwrap(),
+                [acyclic_harness_core::model::ModelWait::Started {
+                    cause: Some(if cut.is_some() {
+                        ModelTransportFailure::Interrupted
+                    } else {
+                        ModelTransportFailure::Status(status)
+                    }),
+                    delay: expected,
+                    retry_after: true,
+                }],
+                "the original stream must expose the selected wait before it finishes"
             );
-            let visible = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
-            assert!(
-                visible.contains(&format!("waiting for {reason} {until}")),
-                "{visible}"
-            );
+            let elapsed = expected + Duration::from_millis(7);
+            transport
+                .gate
+                .as_ref()
+                .unwrap()
+                .now_ns
+                .store(u64::try_from(elapsed.as_nanos()).unwrap(), Ordering::SeqCst);
             release.send(()).unwrap();
             assert_eq!(run.await?, (1, 1, true, usize::from(cut.is_some())));
             assert_eq!(transport.sent.load(Ordering::SeqCst), 2);
             assert_eq!(accepted.load(Ordering::SeqCst), 2);
-            assert!(
-                report
-                    .snapshot()
-                    .iter()
-                    .all(|wait| wait.primitive != reason)
+            let observed = waits.lock().unwrap();
+            assert_eq!(observed.len(), 2, "each timer has one start and one finish");
+            assert_eq!(
+                observed[1],
+                acyclic_harness_core::model::ModelWait::Finished { elapsed },
+                "report measured elapsed time, including timer overshoot"
             );
             assert_eq!(work.live_allocation_bytes(), baseline);
         }

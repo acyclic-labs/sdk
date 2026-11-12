@@ -72,7 +72,9 @@ pub(crate) use preparation::{
 pub use profile::ModelProfileBinding;
 #[cfg(not(target_arch = "wasm32"))]
 pub use provider::NativeModelStream;
-pub use provider::{ModelDelivery, ModelDispatch, ModelEvent, ModelProvider, ModelStream};
+pub use provider::{
+    ModelDelivery, ModelDispatch, ModelEvent, ModelProvider, ModelStream, ModelWait,
+};
 pub use reasoning::{NativePart, ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
 pub use request::{InputAnchor, ModelRequest, PreparedModelRequest};
 pub use tool_call::ToolCall;

@@ -214,7 +214,8 @@ impl ModelEventAdmission {
                 })?;
             }
             ModelEvent::Completed { .. } => self.completed = true,
-            ModelEvent::Content { .. }
+            ModelEvent::Wait(_)
+            | ModelEvent::Content { .. }
             | ModelEvent::MessageCompleted { .. }
             | ModelEvent::TextPart { .. }
             | ModelEvent::Reasoning { .. }

@@ -32,7 +32,8 @@ impl Executor for CustomExecutor {
                     ModelEvent::Content { delta } => text.push_str(&delta),
                     ModelEvent::MessageCompleted { text: completed } => text = completed,
                     ModelEvent::Completed { metadata: value } => metadata = Some(value),
-                    ModelEvent::TextPart { .. }
+                    ModelEvent::Wait(_)
+                    | ModelEvent::TextPart { .. }
                     | ModelEvent::Reasoning { .. }
                     | ModelEvent::ReasoningBlock { .. } => {}
                     ModelEvent::ToolCall(_) => {

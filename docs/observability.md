@@ -1,5 +1,21 @@
 # Observability
 
+## Original model recovery observations
+
+Generation recovery emits `ModelEvent::Wait` through the original model stream.
+A start contains the typed transport cause, exact selected delay and whether the
+provider supplied that delay. A finish contains the transport clock's measured
+elapsed duration. Neither event contains headers, credentials or remote error
+text. The ordinary model journal records each event once, including waits before
+response acceptance and after an interrupted accepted response.
+
+The original timer alone controls readiness. Cancellation or timer failure leaves
+an unfinished start rather than fabricating a successful wait. Recovery events
+do not enter assistant context, reset output or accumulate in the active model
+attempt. Generation waits no longer publish a duplicate text log or native wait
+report. Token-count requests still use their existing future-based recovery
+reporting; inspection wait totals are not yet projected.
+
 ## Live session inspection
 
 Execution observations expose `committed_at_micros` from their original Stream

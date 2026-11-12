@@ -80,6 +80,22 @@ pub(crate) fn stock_push_model_event(
     stock_vec_push(events, event, io)
 }
 
+/// Reconciliation consumes the original prefix before output discards abandoned attempts.
+pub(in crate::executor) fn stock_active_model_events(
+    mut events: Vec<ModelEvent>,
+    io: Option<&PreparationIo>,
+) -> Result<Vec<ModelEvent>> {
+    if let Some(restart) = events
+        .iter()
+        .rposition(|event| matches!(event, ModelEvent::Restarted))
+    {
+        for event in events.drain(..restart) {
+            stock_retire_event(event, io)?;
+        }
+    }
+    Ok(events)
+}
+
 pub(crate) fn stock_vec_push<T>(
     values: &mut Vec<T>,
     value: T,
