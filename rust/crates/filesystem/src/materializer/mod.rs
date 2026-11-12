@@ -68,8 +68,6 @@ mod checkout_work;
 mod reservation_meter;
 #[cfg(not(target_arch = "wasm32"))]
 mod runtime_meter;
-#[cfg(not(target_arch = "wasm32"))]
-mod stage_state;
 
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 native_modules! {

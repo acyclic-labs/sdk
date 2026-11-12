@@ -254,6 +254,7 @@ impl LocalWorkspace {
             #[cfg(all(test, not(loom)))]
             mount_advances: std::sync::atomic::AtomicUsize::new(0),
             state: StateArc::new(AsyncMutex::new(State::new(view.workspace().id()))),
+            publication_debt: std::sync::atomic::AtomicBool::new(true),
             mounts: Arc::clone(&mounts),
             binding: None,
             binding_owner: None,
@@ -425,6 +426,7 @@ impl LocalWorkspace {
             bindings: self.bindings.clone(),
             // This cached physical handle must not retain its owning cache.
             state: StateArc::new(AsyncMutex::new(State::new(view.workspace().id()))),
+            publication_debt: std::sync::atomic::AtomicBool::new(true),
             identity: served_identity(&mounted)?,
             path,
             fresh: false,

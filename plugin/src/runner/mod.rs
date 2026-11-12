@@ -252,6 +252,12 @@ fn configure(
     if let Some(directory) = &args.directory {
         config = config.active_directory(directory);
     }
+    for (path, source) in &args.home_file {
+        config = config.home_file(
+            path,
+            acyclic_harness::local::read_regular_file(source)?.into(),
+        );
+    }
     let mounting = match args.workspace_mounting {
         args::Mounting::Native => WorkspaceMounting::Native,
         args::Mounting::Physical => WorkspaceMounting::Physical,
@@ -387,6 +393,25 @@ async fn run_inner(
     };
     let mut registry = setup::registry(&args)?;
     let terminal = setup::first_run(&mut args, &mut registry)?;
+    // Only the serving owner opens its configuration. Attaching clients forward
+    // initial inputs instead of reading and constructing them a second time.
+    if let Some(directory) = service {
+        let starter = directory.clone();
+        let arguments = service_arguments(&args);
+        let started = tokio::task::spawn_blocking(move || {
+            starter.start(
+                &std::env::current_exe()
+                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?,
+                &arguments,
+            )
+        })
+        .await??;
+        if !started {
+            require_existing_owner(&args, &directory)?;
+        }
+        let connection = directory.connect().await?;
+        return connected(&args, connection, output, event_output, terminal).await;
+    }
     let catalog = catalog_identity(&registry)?;
     let config = configure(&args, registry)?;
     if args.local_service {
@@ -446,25 +471,6 @@ async fn run_inner(
         .await?;
         return Ok(());
     }
-    // Interactive sessions belong to the serving process. The terminal owns
-    // only a client, so dropping it neither cancels a turn nor ends its owner.
-    if let Some(directory) = service {
-        let starter = directory.clone();
-        let arguments = service_arguments(&args);
-        let started = tokio::task::spawn_blocking(move || {
-            starter.start(
-                &std::env::current_exe()
-                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?,
-                &arguments,
-            )
-        })
-        .await??;
-        if !started {
-            require_existing_owner(&args, &directory)?;
-        }
-        let connection = directory.connect().await?;
-        return connected(&args, connection, output, event_output, terminal).await;
-    }
     let local = Arc::new(phase(|| LocalHarness::open(config)).await?);
     let connection = phase(|| local.connect()).await?;
     connected(&args, connection, output, event_output, terminal).await
@@ -516,6 +522,15 @@ fn owner_arguments(args: &Args) -> Vec<OwnerArgument> {
             reusable: true,
         },
     ];
+    for (path, source) in &args.home_file {
+        let mut value = std::ffi::OsString::from(format!("{path}="));
+        value.push(source);
+        arguments.push(OwnerArgument {
+            flag: "--home-file",
+            value: Some(value),
+            reusable: false,
+        });
+    }
     for (flag, path, reusable) in [
         (
             "--host-state-directory",
@@ -677,6 +692,7 @@ mod owner_arguments_tests {
             ("--directory", Some("scoped/subtree")),
             ("--credentials", Some("credentials.json")),
             ("--settings-root", Some("settings")),
+            ("--home-file", Some("agent.ts=initial-settings.ts")),
             ("--workspace-mounting", Some("physical")),
             ("--default-config", None),
         ] {

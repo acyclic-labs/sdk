@@ -78,6 +78,32 @@ async fn serialized<T, R>(
     command(lock_owned(StateArc::clone(state)).await).await
 }
 
+/// [`serialized`] for a call with a deadline. Waiting for the guard counts
+/// against the deadline, and a call still queued when it expires fails as a
+/// timeout before any effect: model feedback, never a silent wait.
+async fn serialized_until<T, R>(
+    state: &StateArc<AsyncMutex<T>>,
+    deadline_unix_ms: Option<u64>,
+    command: impl AsyncFnOnce(OwnedMutexGuard<T>) -> Result<R>,
+) -> Result<R> {
+    let Some(deadline) = deadline_unix_ms else {
+        return serialized(state, command).await;
+    };
+    let alarm = std::pin::pin!(acyclic_native_runtime::WallAlarm::wait(deadline).map_err(storage)?);
+    let guard = std::pin::pin!(lock_owned(StateArc::clone(state)));
+    match futures::future::select(guard, alarm).await {
+        futures::future::Either::Left((guard, _)) => command(guard).await,
+        futures::future::Either::Right((fired, _)) => {
+            fired.map_err(storage)?;
+            Err(Error::process_io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timeout_ms elapsed while the call waited for the checkout; recovery: retry, \
+                 or raise timeout_ms",
+            )))
+        }
+    }
+}
+
 impl CheckoutTools {
     // Tool construction must not embed checkout recovery in every caller.
     pub(super) fn new<'a>(
@@ -194,6 +220,7 @@ struct ShellCommand<'a> {
     request: Vec<u8>,
     maximum: usize,
     started: Option<tokio::sync::oneshot::Sender<ToolResult>>,
+    admitted: std::time::Instant,
 }
 
 impl CheckoutTools {
@@ -212,7 +239,19 @@ impl CheckoutTools {
                 maximum,
                 started,
             } = command;
-            let result = serialized(&self.state, async |mut state| {
+            // A shell call's timeout_ms runs from here: queueing behind
+            // another command and preparation count against it.
+            let admitted = std::time::Instant::now();
+            let deadline = shell
+                .as_ref()
+                .and_then(|input| input.timeout_ms)
+                .filter(|timeout| *timeout != 0)
+                .map(|timeout| {
+                    self.clock
+                        .now_unix_millis()
+                        .saturating_add(u64::from(timeout))
+                });
+            let result = serialized_until(&self.state, deadline, async |mut state| {
                 let workspace = self
                     .command_workspace(
                         &mut state,
@@ -232,6 +271,20 @@ impl CheckoutTools {
                     state.watcher = None;
                 }
                 workspace::volumes::sync(&workspace.mounts).await?;
+                // A child that handed back while this checkout was busy left
+                // its publication to the next command; it lands before this
+                // command observes the checkout.
+                self.commands()
+                    .settle_publications(
+                        &workspace::git::CommandContext {
+                            owner: context.task(),
+                            operation: context.operation_id(),
+                            scope: context.effective_scope(),
+                            request: None,
+                        },
+                        &mut state,
+                    )
+                    .await?;
                 if let Some(parsed) = fs {
                     self.fs(parsed, context, &mut state, &workspace).await
                 } else {
@@ -243,6 +296,7 @@ impl CheckoutTools {
                             request,
                             maximum,
                             started,
+                            admitted,
                         },
                         state,
                         &workspace,
@@ -273,6 +327,7 @@ impl CheckoutTools {
                 request,
                 maximum,
                 started,
+                admitted,
             } = command;
             let execution_grant = context
                 .execution_grant()
@@ -315,7 +370,13 @@ impl CheckoutTools {
                 workspace::volumes::native_scope(&mounts, async |claims| {
                     let (result, mut state, files, claims) = self
                         .shell(
-                            (input, invocation.operation_id, execution_grant, started),
+                            (
+                                input,
+                                invocation.operation_id,
+                                execution_grant,
+                                started,
+                                admitted,
+                            ),
                             maximum,
                             state,
                             files,
@@ -678,5 +739,47 @@ mod native_capture_storage_tests {
             measured.into_iter().all(|(_, bytes)| bytes <= 512),
             "capture spine embeds concrete child futures"
         );
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod deadline_tests {
+    use super::*;
+
+    fn timed_out(result: &Result<()>) -> bool {
+        matches!(
+            result,
+            Err(Error::Process(crate::ProcessError::Timeout { .. }))
+        )
+    }
+
+    /// A call queued behind a command that never releases the checkout gets
+    /// its timeout_ms failure from the wall alarm, and never runs.
+    #[tokio::test]
+    async fn queued_call_fails_at_its_deadline_without_running() -> Result<()> {
+        let state = StateArc::new(AsyncMutex::new(()));
+        let _dispatcher = lock_owned(StateArc::clone(&state)).await;
+        let clock = acyclic_stream::SystemUnixMillisClock;
+        let now = acyclic_stream::UnixMillisClock::now_unix_millis(&clock);
+        // Both a deadline that expired in the queue and one that expires
+        // while queued: the alarm event, not a recheck, fails the call.
+        for deadline in [now.saturating_sub(1), now.saturating_add(20)] {
+            let ran = std::sync::atomic::AtomicBool::new(false);
+            let result = serialized_until(&state, Some(deadline), async |_| {
+                ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+            assert!(
+                timed_out(&result),
+                "queued call did not time out: {result:?}"
+            );
+            assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+            assert!(
+                acyclic_stream::UnixMillisClock::now_unix_millis(&clock) >= deadline,
+                "deadline failure fired early"
+            );
+        }
+        Ok(())
     }
 }

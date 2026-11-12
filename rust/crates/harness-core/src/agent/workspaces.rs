@@ -155,7 +155,7 @@ impl WorkspaceEntry {
                 WorkspaceMode::ReadWrite
             },
             inherit: match role {
-                WorkspaceRole::User => WorkspaceInherit::Fork,
+                WorkspaceRole::User | WorkspaceRole::Home => WorkspaceInherit::Fork,
                 WorkspaceRole::Shared => WorkspaceInherit::Share,
                 _ => WorkspaceInherit::Own,
             },
@@ -197,10 +197,11 @@ impl WorkspaceEntry {
         }
         let valid_role = match self.role {
             WorkspaceRole::User => true,
-            WorkspaceRole::Home
-            | WorkspaceRole::Private
-            | WorkspaceRole::Internal
-            | WorkspaceRole::Jobs => {
+            WorkspaceRole::Home => {
+                self.mode == WorkspaceMode::ReadWrite
+                    && matches!(self.inherit, WorkspaceInherit::Fork | WorkspaceInherit::Own)
+            }
+            WorkspaceRole::Private | WorkspaceRole::Internal | WorkspaceRole::Jobs => {
                 self.mode == WorkspaceMode::ReadWrite && self.inherit == WorkspaceInherit::Own
             }
             WorkspaceRole::Output | WorkspaceRole::Tree => {

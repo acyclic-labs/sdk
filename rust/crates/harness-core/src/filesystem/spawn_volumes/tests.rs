@@ -87,6 +87,29 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
     tree.mode = WorkspaceMode::ReadOnly;
     tree.inherit = WorkspaceInherit::Own;
     entries.push(tree);
+    let home = VolumeRef::new(
+        host.provider.clone(),
+        "configuration".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(crate::AgentId::from_bytes(parent.id_bytes())),
+        &mut None,
+    )?;
+    host.create_volume(&home).await?;
+    host.apply(
+        &super::super::workspace_ref(host.provider.clone(), &home.storage_name(&mut None)?)?,
+        None,
+        &[super::super::WorkspaceMutation::PutFile {
+            path: "/agent.ts".into(),
+            bytes: acyclic_stream::OwnedBytes::from_static(b"inherited configuration"),
+        }],
+        &crate::IdempotencyKey::new("seed-configuration")?,
+    )
+    .await?;
+    entries.push(WorkspaceEntry::initial_volume(
+        WorkspaceRole::Home,
+        "configuration".into(),
+        home,
+    ));
     let state = AgentState::adopted(
         parent,
         &ForkAdopted {
@@ -253,6 +276,33 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
                 .iter()
                 .chain(&session_bindings)
                 .all(|binding| binding.as_volume() != Some(&journal))
+        );
+    }
+    for entry in [&bindings[5], &session_bindings[5]] {
+        assert_ne!(entry.volume()?, entries[5].volume()?);
+        assert_eq!(
+            host.read(&reference(entry)?, None, "/agent.ts", 64, None)
+                .await?
+                .as_ref(),
+            b"inherited configuration"
+        );
+    }
+    host.apply(
+        &reference(&bindings[5])?,
+        None,
+        &[super::super::WorkspaceMutation::PutFile {
+            path: "/agent.ts".into(),
+            bytes: acyclic_stream::OwnedBytes::from_static(b"child configuration"),
+        }],
+        &crate::IdempotencyKey::new("edit-configuration")?,
+    )
+    .await?;
+    for entry in [&entries[5], &session_bindings[5]] {
+        assert_eq!(
+            host.read(&reference(entry)?, None, "/agent.ts", 64, None)
+                .await?
+                .as_ref(),
+            b"inherited configuration"
         );
     }
     Ok(())

@@ -69,11 +69,6 @@ fn selection(args: &Args, registry: &Registry) -> Result<String, Failure> {
 const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a terminal to save a key in OS keychain service acyclic-harness, set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY (or GOOGLE_API_KEY), or pass --credentials FILE with an api_keys provider map";
 
 pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Option<Tty>, Failure> {
-    let selected = selection(args, registry)?;
-    args.model = Some(selected.clone());
-    if !registry.needs_credentials(&selected)? {
-        return Ok(None);
-    }
     if args.default_config
         || !onboarding::interactive()
         || args.input_format != InputFormat::Text
@@ -83,7 +78,11 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
             None | Some(Command::Run | Command::Exec { .. })
         )
     {
-        return Err(KEYS.into());
+        return Ok(None);
+    }
+    let selected = selection(args, registry)?;
+    if !registry.needs_credentials(&selected)? {
+        return Ok(None);
     }
     let mut terminal = Tty::open()?;
     let mut input = onboarding::Input::new(&mut terminal)?;

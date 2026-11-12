@@ -66,6 +66,7 @@ impl WorkspaceMounting {
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
     pub(super) topology: Option<crate::topology::Topology>,
+    pub(super) home_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
     pub(super) system_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
     pub(super) active_directory: String,
     pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
@@ -122,6 +123,15 @@ impl LocalProject {
 }
 
 impl LocalHarnessConfig {
+    /// Initializes a non-secret home file before settings and roles are read.
+    /// Files are published atomically through one stable initialization receipt.
+    /// Reopening preserves subsequent edits and deletions, regardless of new input bytes.
+    #[must_use]
+    pub fn home_file(mut self, path: impl Into<String>, bytes: acyclic_stream::OwnedBytes) -> Self {
+        self.home_files.insert(path.into(), bytes);
+        self
+    }
+
     /// Forces a run's delegation policy before its first model request.
     pub fn topology(mut self, topology: crate::topology::Topology) -> Result<Self> {
         topology.validate()?;
@@ -224,6 +234,7 @@ impl LocalHarnessConfig {
     fn configuration(workspace: PathBuf, model: Option<(Model, Arc<dyn ModelProvider>)>) -> Self {
         Self {
             topology: None,
+            home_files: Default::default(),
             system_files: Default::default(),
             active_directory: String::new(),
             goal_continuations: Some(Default::default()),

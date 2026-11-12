@@ -25,6 +25,11 @@ impl StockExecutor {
         )))
     }
 
+    /// Returns the selected model's published capacity without imposing a budget.
+    pub fn context_capacity(&self) -> Result<crate::context::ModelContextCapacity> {
+        self.provider.context_capacity(&self.model)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
