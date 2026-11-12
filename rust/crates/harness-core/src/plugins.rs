@@ -17,7 +17,6 @@
 //! admission names the hook; an enabled hook is never silently skipped.
 //! The authoring types are generated
 //! from these decode shapes by [`crate::config::typescript`].
-pub mod question;
 
 use crate::{
     Error, Result,

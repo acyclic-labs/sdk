@@ -699,7 +699,7 @@ impl ToolContext {
             if let ContentChange::CreateAbsent { bytes, .. }
             | ContentChange::UpdateExpected { bytes, .. } = change
             {
-                crate::plugins::question::authorize_publication(
+                crate::tool::question::authorize_publication(
                     volume,
                     change.path(),
                     bytes,

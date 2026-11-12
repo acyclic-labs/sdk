@@ -93,7 +93,7 @@ pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
         &WRITE,
         &REMOVE,
         &EDIT,
-        &crate::plugins::question::SPEC,
+        &crate::tool::question::SPEC,
         &CODE,
     ];
     #[cfg(target_arch = "wasm32")]
@@ -104,7 +104,7 @@ pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
         &WRITE,
         &REMOVE,
         &EDIT,
-        &crate::plugins::question::SPEC,
+        &crate::tool::question::SPEC,
     ];
     specs.into_iter()
 }

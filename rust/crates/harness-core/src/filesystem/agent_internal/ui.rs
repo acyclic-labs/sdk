@@ -2,7 +2,7 @@
 //! the same execution after a crash names the same immutable file versions.
 use super::*;
 use crate::executor::{ExecutionEvent, ExecutionJournal};
-use crate::plugins::question::input_fence;
+use crate::tool::question::input_fence;
 use std::collections::BTreeMap;
 
 #[derive(serde::Deserialize)]

@@ -9,7 +9,7 @@ impl FileTool {
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(Option<FileRef>, acyclic_fs::NativeCustody)> {
         if invocation.name == "ask_question"
-            && !crate::plugins::question::valid_path(&invocation.arguments)
+            && !crate::tool::question::valid_path(&invocation.arguments)
         {
             return Err(super::executor::rejection(
                 work,

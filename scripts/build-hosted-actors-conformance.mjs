@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {accessSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
-import {wasmAssetClosure} from './artifact-assets.mjs';
+import {wasmAssetClosure, loadHostedArtifact} from './artifact-assets.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const fixture = join(root, 'rust/crates/conformance/hosted-actors');
@@ -60,7 +60,7 @@ export async function bundleHostedActors(input, output) {
   writeFileSync(join(out, 'agent-deploy.json'), text, {flag:'wx'});
   // The deployed loader gets exactly these sealed modules. All must initialize
   // before an empty environment refuses the first selected binding.
-  const {actor} = await import(pathToFileURL(join(out, 'harness-actor.mjs')).href);
+  const {actor} = await loadHostedArtifact(join(out, 'harness-actor.mjs'), entry.assets);
   const refused = await actor.restore(null, {env:{}, actor:{id:'conformance-controller'}})
     .then(() => null, error => error);
   if (refused?.message !== `ActorBindingUnserved: ${bindings.names[0]}`)

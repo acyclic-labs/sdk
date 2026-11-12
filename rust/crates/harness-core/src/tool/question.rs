@@ -1,4 +1,4 @@
-//! The optional question plugin: one file-backed ask surface, selected at session start.
+//! Shared file-backed question admission and settlement on every host.
 use crate::{
     tool::{
         files::{FileProjection, FileResult, FileTool, WriteFileInput},
@@ -60,7 +60,7 @@ pub(crate) static SPEC: ToolSpec = ToolSpec {
 /// Conservative byte scan: no markdown parse, no reads beyond committed writes.
 /// Inspect fence runs anywhere on a line, including list/blockquote containers.
 /// This deliberately overapproximates markdown: settlement never parses it.
-pub fn input_fence(bytes: &[u8]) -> bool {
+pub(crate) fn input_fence(bytes: &[u8]) -> bool {
     bytes.split(|b| *b == b'\n').any(|line| {
         let mut rest = line;
         while let Some((&marker, tail)) = rest.split_first() {

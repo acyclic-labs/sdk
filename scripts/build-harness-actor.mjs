@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { wasmAssetClosure } from "./artifact-assets.mjs";
+import { wasmAssetClosure, loadHostedArtifact } from "./artifact-assets.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { values } = parseArgs({ options: { config: { type: "string" }, out: { type: "string" } } });
@@ -56,7 +56,7 @@ try {
   write(staged, [HARNESS_MODULE.file, ...declared]);
   verifyArtifact(manifest, deployment.environment, deployment.entry, entry, declared,
     declared.map(path => readFileSync(join(staged, path))));
-  const { actor } = await import(pathToFileURL(join(staged, HARNESS_MODULE.file)).href);
+  const { actor } = await loadHostedArtifact(join(staged, HARNESS_MODULE.file), [...assets.values()]);
   // The modules instantiate from declared assets; the unbound authority is then refused typed.
   const env = Object.fromEntries(Object.values(HARNESS_BINDINGS).filter(name => name !== HARNESS_BINDINGS.authority)
     .map(name => [name, {}]));
