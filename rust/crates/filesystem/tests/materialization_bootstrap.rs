@@ -135,6 +135,7 @@ async fn capture_in_fresh_process<
         source_root: source.path().to_path_buf(),
         expected_root_identity: capture_root_identity(source.path())?,
         source_namespace: None,
+        materialized_view: None,
         maximum_paths: None,
         maximum_extent_spans: None,
     };
