@@ -101,6 +101,7 @@ async fn referenced_message_search_pins_chunks_and_keeps_file_authority() -> Res
         },
         id: IntentId::try_from("decision".to_owned())
             .map_err(|error| Error::Invalid(error.to_string()))?,
+        re: None,
         body: Box::new(file.clone()),
         attachments: None,
     });
