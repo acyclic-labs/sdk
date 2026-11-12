@@ -33,7 +33,7 @@ impl TurnDriver for Spawner {
                     vec![Out::Spawn {
                         profile: None,
                         history: None,
-                        intent: intent("c"),
+                        intent: intent("c").into(),
                         brief: None,
                         volumes: Vec::new(),
                     }]
@@ -358,7 +358,7 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
                     .map(|name| Out::Spawn {
                         profile: None,
                         history: None,
-                        intent: intent(name),
+                        intent: intent(name).into(),
                         brief: None,
                         volumes: Vec::new(),
                     })
@@ -605,7 +605,7 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
                     .map(|name| Out::Spawn {
                         profile: None,
                         history: None,
-                        intent: intent(name),
+                        intent: intent(name).into(),
                         brief: None,
                         volumes: Vec::new(),
                     })
@@ -735,7 +735,7 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
     let spawn = |name: &str| Out::Spawn {
         profile: None,
         history: None,
-        intent: intent(name),
+        intent: intent(name).into(),
         brief: None,
         volumes: Vec::new(),
     };

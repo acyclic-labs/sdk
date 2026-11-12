@@ -26,7 +26,7 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
             outs: vec![Out::Spawn {
                 profile: None,
                 history: None,
-                intent: intent("spawn:invalid-host"),
+                intent: intent("spawn:invalid-host").into(),
                 brief: None,
                 volumes: vec![],
             }],
@@ -86,7 +86,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
         outs: vec![Out::Spawn {
             profile: None,
             history: None,
-            intent: recorded.clone(),
+            intent: recorded.clone().into(),
             brief: None,
             volumes: vec![],
         }],
@@ -190,7 +190,7 @@ async fn admission_schedules_preserve_every_spawn_and_replay() -> Result {
                             .map(|intent| Out::Spawn {
                                 profile: None,
                                 history: None,
-                                intent: intent.clone(),
+                                intent: intent.clone().into(),
                                 brief: None,
                                 volumes: Vec::new(),
                             })

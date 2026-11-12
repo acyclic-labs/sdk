@@ -236,17 +236,17 @@ pub fn spawn(
     at_tail: u64,
     adopted: ForkAdopted,
 ) -> Result<Spawn, Error> {
-    spawn_at(parent, intent, at_tail, adopted, None)
+    spawn_at(parent, intent.as_str(), at_tail, adopted, None)
 }
 
 pub(super) fn spawn_at(
     parent: &AgentPath,
-    intent: &IntentId,
+    intent: &str,
     at_tail: u64,
     mut adopted: ForkAdopted,
     history: Option<&super::HistorySelection>,
 ) -> Result<Spawn, Error> {
-    let child_id = AgentId::derive(&parent.id(), intent.as_str());
+    let child_id = AgentId::derive(&parent.id(), intent);
     let child = parent.child(&child_id)?;
     adopted.agent = child_id;
     adopted.parent = Some(parent.clone());
@@ -304,7 +304,7 @@ pub(super) fn spawn_at(
         request: CommitRequest {
             deadline_unix_millis: None,
             effects: vec![CommitEffect::hard(conditions, mutations)],
-            idempotency_key: intent_key("spawn", &[parent.as_str(), intent.as_str()])?,
+            idempotency_key: intent_key("spawn", &[parent.as_str(), intent])?,
         },
         child,
     })

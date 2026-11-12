@@ -306,7 +306,7 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
             Out::Spawn {
                 profile: None,
                 history: None,
-                intent: intent(name),
+                intent: intent(name).into(),
                 brief: None,
                 volumes: Vec::new(),
             },
@@ -425,7 +425,7 @@ fn a_step_cannot_write_into_a_child_it_spawns() -> Result {
             Out::Spawn {
                 profile: None,
                 history: None,
-                intent: intent("s1"),
+                intent: intent("s1").into(),
                 brief: None,
                 volumes: Vec::new(),
             },
@@ -1026,7 +1026,7 @@ fn spawn_request(sequence: u64) -> Wake {
 fn spawns(outs: &[Out]) -> Vec<IntentId> {
     outs.iter()
         .filter_map(|out| match out {
-            Out::Spawn { intent, .. } => Some(intent.clone()),
+            Out::Spawn { intent, .. } => Some(IntentId::try_from(intent.clone()).unwrap()),
             _ => None,
         })
         .collect()
@@ -1050,7 +1050,7 @@ impl TurnDriver for ToolSpawner {
                 outs: vec![Out::Spawn {
                     profile: None,
                     history: None,
-                    intent: intent("spawn:tool"),
+                    intent: intent("spawn:tool").into(),
                     brief: None,
                     volumes: Vec::new(),
                 }],
@@ -1345,7 +1345,7 @@ async fn a_wait_parks_only_on_children_that_can_settle() -> Result {
             vec![Out::Spawn {
                 profile: None,
                 history: None,
-                intent: intent("w1"),
+                intent: intent("w1").into(),
                 brief: None,
                 volumes: Vec::new(),
             }]

@@ -327,7 +327,7 @@ impl AgentState {
     /// preserve that decision after the child settles or the parent archives.
     #[must_use]
     pub async fn spawn_outcome(&self, intent: &IntentId) -> Result<SpawnOutcome, Error> {
-        let child = self.spawned(intent)?;
+        let child = self.spawned(intent.as_str())?;
         Ok(if self.spawned_children.contains(&child).await? {
             SpawnOutcome::Spawned { child }
         } else if self.topology_refusals.contains(&child).await? {
@@ -344,9 +344,9 @@ impl AgentState {
     }
 
     /// The child a spawn named `intent` creates.
-    fn spawned(&self, intent: &IntentId) -> Result<AgentPath, Error> {
+    fn spawned(&self, intent: &str) -> Result<AgentPath, Error> {
         self.path
-            .child(&super::AgentId::derive(&self.path.id(), intent.as_str()))
+            .child(&super::AgentId::derive(&self.path.id(), intent))
     }
 
     /// Whether the input window holds `input` next: always as its front, then
@@ -468,8 +468,9 @@ pub enum Out {
     },
     /// Spawn a child.
     Spawn {
-        /// Spawning intent; names the child.
-        intent: IntentId,
+        /// Stable spawning name, hashed into the child's identity. It is not
+        /// an inbox request identity and is never copied into its settlement.
+        intent: String,
         /// Task brief, staged on the spawning agent's private volume; the
         /// child's adoption names it.
         brief: Option<FileRef>,
@@ -909,7 +910,7 @@ async fn draft_step<T: TurnDriver + ?Sized>(
             },
         ) => {
             outs.push(Out::Spawn {
-                intent: requested_intent(sequence)?,
+                intent: requested_intent(sequence)?.into(),
                 brief: spawn.brief.map(|brief| *brief),
                 profile: Some(spawn.profile),
                 volumes: Vec::new(),

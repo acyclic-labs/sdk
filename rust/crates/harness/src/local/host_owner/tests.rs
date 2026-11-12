@@ -462,7 +462,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     let recovered = fixture.owner.dispatch(operation, next()).await?;
     let view = cwd(&recovered)?;
     // A remounted view has a fresh, never-reused name. Only the physical
-    // location changes; the accepted claim and its entire payload survive.
+    // location and its derived environment change; the accepted claim survives.
     assert_ne!(view, retired);
     assert!(matches!(
         std::fs::metadata(&retired),
@@ -470,6 +470,11 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     ));
     let mut expected = first;
     expected["cwd"] = json!(view);
+    assert_eq!(
+        recovered["environment"]["ACYCLIC_VOLUME_PROJECT"],
+        json!(view)
+    );
+    expected["environment"]["ACYCLIC_VOLUME_PROJECT"] = json!(view);
     assert_eq!(recovered, expected);
     let first = recovered;
     assert!(matches!(

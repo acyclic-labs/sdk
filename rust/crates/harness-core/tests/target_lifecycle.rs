@@ -373,7 +373,7 @@ impl TurnDriver for Spawner {
                     vec![Out::Spawn {
                         profile: None,
                         history: None,
-                        intent: intent("c"),
+                        intent: intent("c").into(),
                         brief: None,
                         volumes: Vec::new(),
                     }]

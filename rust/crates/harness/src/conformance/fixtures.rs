@@ -111,7 +111,7 @@ impl TurnDriver for Driver {
             if matches!(id.as_str(), "spawn" | "respawn") {
                 outs.push(Out::Spawn {
                     profile: None,
-                    intent: IntentId::try_from("child")?,
+                    intent: IntentId::try_from("child")?.into(),
                     brief: match id.as_str() {
                         "respawn" => Some(
                             super::vectors::prompt()

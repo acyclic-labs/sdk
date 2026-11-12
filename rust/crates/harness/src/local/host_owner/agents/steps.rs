@@ -57,7 +57,6 @@ pub(super) async fn apply(
     session.rejected = None;
     match event {
         Event::Spawn { reference, brief } => {
-            let intent = IntentId::try_from(reference.as_str()).map_err(storage)?;
             if agent
                 .open_children
                 .contains(&child(&agent.path, &reference)?)
@@ -68,7 +67,7 @@ pub(super) async fn apply(
             }
             outs.push(Out::Spawn {
                 profile: None,
-                intent,
+                intent: reference,
                 brief: Some(brief),
                 volumes: Vec::new(),
                 history: None,

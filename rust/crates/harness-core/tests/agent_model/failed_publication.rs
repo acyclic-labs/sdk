@@ -109,7 +109,7 @@ impl TurnDriver for Parent {
                     vec![Out::Spawn {
                         profile: None,
                         history: None,
-                        intent: intent("child"),
+                        intent: intent("child").into(),
                         brief: Some(
                             driver::file("child").map_err(|error| Error::Turn(Box::new(error)))?,
                         ),
@@ -264,7 +264,7 @@ async fn a_refused_archive_keeps_unfinished_children_without_rearming_its_alarm(
             .map(|index| Out::Spawn {
                 profile: None,
                 history: None,
-                intent: intent(&format!("child-{index}")),
+                intent: intent(&format!("child-{index}")).into(),
                 brief: None,
                 volumes: Vec::new(),
             })

@@ -717,7 +717,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
             resumed
                 .outs
                 .iter()
-                .any(|out| matches!(out, Out::Spawn { intent, .. } if intent == &promised))
+                .any(|out| matches!(out, Out::Spawn { intent, .. } if intent == promised.as_str()))
         );
         assert_eq!(resumed.state.reserved_spawns, 0);
         assert_eq!(

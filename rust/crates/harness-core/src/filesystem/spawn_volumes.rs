@@ -9,7 +9,7 @@
 use super::FilesystemHost;
 use crate::{
     agent::{
-        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, IntentId, Out, SpawnVolumes,
+        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, Out, SpawnVolumes,
         WorkspaceEntry, WorkspaceInherit, WorkspaceSource,
     },
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
@@ -218,7 +218,7 @@ const SPAWN: &str = "acyclic.harness.agent.volumes.v1";
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Requested {
-    intent: IntentId,
+    intent: String,
     history: Option<crate::agent::HistorySelection>,
 }
 

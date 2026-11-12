@@ -469,7 +469,7 @@ pub(super) fn expand_pathspecs(paths: &[String], tracked_paths: &BTreeSet<String
         let path = path.trim_matches('/');
         let mut matched = false;
         for tracked in tracked_paths {
-            if tracked == path || is_path_below(tracked, path) {
+            if path.is_empty() || path == "." || tracked == path || is_path_below(tracked, path) {
                 expanded.insert(tracked.clone());
                 matched = true;
             }

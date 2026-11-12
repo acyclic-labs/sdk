@@ -101,7 +101,7 @@ impl TurnDriver for Waiter {
                     vec![Out::Spawn {
                         profile: None,
                         history: None,
-                        intent: intent("c"),
+                        intent: intent("c").into(),
                         brief: None,
                         volumes: Vec::new(),
                     }],
@@ -269,7 +269,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
                             .map(|n| Out::Spawn {
                                 profile: None,
                                 history: None,
-                                intent: intent(&format!("child-{n}")),
+                                intent: intent(&format!("child-{n}")).into(),
                                 brief: None,
                                 volumes: Vec::new(),
                             })

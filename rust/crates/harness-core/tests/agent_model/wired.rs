@@ -1404,6 +1404,61 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
 }
 
 #[tokio::test]
+async fn accepted_context_request_identity_survives_settlement() -> Result {
+    let request_id = IntentId::try_from("r".repeat(128))?;
+    // Reject before admission, rather than accepting an inbox record whose
+    // identity leaves no room for the larger conversation settlement.
+    assert!(IntentId::try_from("r".repeat(129)).is_err());
+    assert!(IntentId::try_from("r".repeat(55 * 1024)).is_err());
+    let path = AgentPath::root(&id(3));
+    let stream = Arc::new(MemoryStream::default());
+    let model = Arc::new(ScriptedModelProvider::new([]));
+    let (host, binding) = private_in(&stream, &path).await?;
+    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+        stream.clone(),
+        within(),
+        host.clone(),
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
+        TurnAdmission::LocalRoot,
+        executors(model.clone())?,
+        LIMITS,
+        Default::default(),
+    ));
+    let mut adoption = adopted(id(3));
+    adoption.volumes = vec![binding];
+    let host = committing(&stream, &host, driver)?;
+    host.create(&intent("root"), adoption).await?;
+    let record = InboxRecord::Context(ContextRequest {
+        by: super::user(),
+        id: request_id.clone(),
+        action: ContextAction::Clear,
+    });
+    let record = InboxRecord::decode(&record.encode()?)?;
+    let settled = deliver(
+        &host,
+        &path,
+        Wake::Inbox {
+            sequence: 1,
+            record,
+        },
+    )
+    .await?;
+    assert_eq!(settled.phase, Phase::Idle);
+    let entries = super::values(stream.as_ref(), path.conversation()?).await?;
+    let entry = ConversationEntry::decode(entries.last().ok_or("request did not settle")?)?;
+    assert!(matches!(entry.input, TurnInput::Context { id, .. } if id == request_id));
+    assert!(model.requests().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn every_request_retains_the_roster_across_history_and_compaction_boundaries() -> Result {
     use acyclic_harness_core::runtime::InProcessTargets;
 

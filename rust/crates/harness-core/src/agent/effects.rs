@@ -138,7 +138,7 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
             } => {
                 if spawned.insert(intent.clone()) {
                     outs.push(Out::Spawn {
-                        intent,
+                        intent: intent.into(),
                         brief: Some(*brief),
                         profile: Some(profile),
                         volumes: Vec::new(),
