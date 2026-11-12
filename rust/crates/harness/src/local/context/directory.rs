@@ -70,7 +70,7 @@ impl LocalHarness {
                     local.authorize_checkout_context(&workspace, view.workspace(), &io, (&verifier, &scope)).await?;
                     let Some(page) = page else { break; };
                     cursor = page.next;
-                    yield entries(page.entries);
+                    yield acyclic_harness_client::DirectoryQueryPage { entries: entries(page.entries), has_more: cursor.is_some() };
                     if cursor.is_none() { break; }
                 }
             }));
@@ -92,7 +92,7 @@ impl LocalHarness {
                 let Some(page) = source.page(&path, revision.as_ref(), cursor.take(), rows).await? else { break; };
                 revision = Some(page.revision);
                 cursor = page.next;
-                yield entries(page.entries);
+                yield acyclic_harness_client::DirectoryQueryPage { entries: entries(page.entries), has_more: cursor.is_some() };
                 if cursor.is_none() { break; }
             }
         }))

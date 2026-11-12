@@ -3,7 +3,7 @@
   "workspace": {
     "kind": "plain",
     "files": {
-      "mention.txt": "PTY_MENTION_CONTENT\n"
+      "docs a/mention.txt": "PTY_MENTION_CONTENT\n"
     }
   },
   "model": {
@@ -22,18 +22,48 @@
       "actions": [
         {
           "when": {
+            "cursor": true,
             "contains": [
               "GraphCoder"
+            ]
+          },
+          "send": "\u001b[200~inspect @docs\u001b[201~"
+        },
+        {
+          "when": {
+            "contains": [
+              "Completions",
+              "docs a/"
+            ]
+          },
+          "send": "\t"
+        },
+        {
+          "when": {
+            "contains": [
+              "Completions",
+              "docs a/mention.txt"
+            ]
+          },
+          "send": "\t"
+        },
+        {
+          "when": {
+            "contains": [
+              "inspect @\"docs a/mention.txt\""
+            ],
+            "absent": [
+              "Completions"
             ],
             "cursor": true
           },
-          "prompt": "inspect @mention.txt"
+          "send": "\r"
         },
         {
           "when": {
             "contains": [
               "MENTION_RENDERED",
-              "\u25cb"
+              "○"
             ]
           },
           "detach": true

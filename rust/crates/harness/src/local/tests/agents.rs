@@ -79,8 +79,9 @@ async fn project_directory_queries_pin_pages_and_keep_consumers_independent() ->
     let retained_page = retained.next().await.map_err(agent)?.ok_or_else(|| {
         Error::Invalid("independent directory ended before its first name".into())
     })?;
-    assert_eq!(first_page, retained_page);
-    assert_eq!(first_page.len(), 1);
+    assert_eq!(first_page.entries, retained_page.entries);
+    assert!(first_page.has_more && retained_page.has_more);
+    assert_eq!(first_page.entries.len(), 1);
     drop(first);
     harness
         .files
@@ -95,12 +96,13 @@ async fn project_directory_queries_pin_pages_and_keep_consumers_independent() ->
         )
         .await?;
     let mut names = retained_page
+        .entries
         .into_iter()
         .map(|entry| entry.name)
         .collect::<Vec<_>>();
     while let Some(entries) = retained.next().await.map_err(agent)? {
-        assert!(entries.len() <= 1);
-        names.extend(entries.into_iter().map(|entry| entry.name));
+        assert!(entries.entries.len() <= 1);
+        names.extend(entries.entries.into_iter().map(|entry| entry.name));
     }
     assert_eq!(names, ["a.md", "b.md", "c.md"]);
     assert!(retained.next().await.map_err(agent)?.is_none());
@@ -110,7 +112,7 @@ async fn project_directory_queries_pin_pages_and_keep_consumers_independent() ->
         .map_err(agent)?;
     let mut names = Vec::new();
     while let Some(entries) = fresh.next().await.map_err(agent)? {
-        names.extend(entries.into_iter().map(|entry| entry.name));
+        names.extend(entries.entries.into_iter().map(|entry| entry.name));
     }
     assert_eq!(names, ["a.md", "b.md", "c.md", "later.md"]);
     // Negative controls: insufficient original byte credit and a foreign root

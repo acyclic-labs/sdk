@@ -154,19 +154,28 @@ fn directory_frames(
     page: AgentPageRequest,
 ) -> acyclic_stream::BoxProviderStream<'static, crate::Result<Bytes>> {
     Box::pin(async_stream::try_stream! {
-        while let Some(entries) = source.next().await {
-            let entries = entries?;
-            if entries.is_empty() { yield diff::frame(4, Vec::new(), &page)?; continue; }
-            let mut body = vec![b'['];
+        let mut produced = false;
+        let mut terminal = false;
+        while let Some(selected) = source.next().await {
+            let selected = selected?;
+            if terminal { Err(crate::Error::Storage("directory source continued past its final page".into()))?; }
+            produced = true;
+            terminal = !selected.has_more;
+            if selected.entries.is_empty() {
+                if selected.has_more { yield diff::frame(4, Vec::new(), &page)?; }
+                else { yield diff::frame(10, vec![0, b'[', b']'], &page)?; }
+                continue;
+            }
+            let mut body = vec![1, b'['];
             let mut count = 0;
-            for entry in entries {
+            for entry in selected.entries {
                 let encoded = serde_json::to_vec(&entry).map_err(|error| crate::Error::Storage(error.to_string()))?;
                 let separator = usize::from(count != 0);
                 if body.len() + separator + encoded.len() + 1 > page.bytes() as usize || count == page.items() {
                     if count == 0 { Err(crate::Error::Invalid("directory name exceeds page byte credit".into()))?; }
                     body.push(b']');
                     yield diff::frame(10, body, &page)?;
-                    body = vec![b'['];
+                    body = vec![1, b'['];
                     count = 0;
                 }
                 if body.len() + encoded.len() + 1 > page.bytes() as usize { Err(crate::Error::Invalid("directory name exceeds page byte credit".into()))?; }
@@ -174,9 +183,13 @@ fn directory_frames(
                 body.extend_from_slice(&encoded);
                 count += 1;
             }
-            if count != 0 { body.push(b']'); yield diff::frame(10, body, &page)?; }
+            if count != 0 {
+                body[0] = u8::from(selected.has_more);
+                body.push(b']'); yield diff::frame(10, body, &page)?;
+            }
         }
-        yield diff::frame(9, Vec::new(), &page)?;
+        if produced && !terminal { Err(crate::Error::Storage("directory source ended with a continuation".into()))?; }
+        if !produced { yield diff::frame(10, vec![0, b'[', b']'], &page)?; }
     })
 }
 

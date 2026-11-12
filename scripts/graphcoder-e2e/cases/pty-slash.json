@@ -3,7 +3,8 @@
   "workspace": {
     "kind": "plain",
     "files": {
-      ".claude/commands/marker.md": "PTY_SLASH_MARKER $ARGUMENTS\n"
+      ".claude/commands/marker.md": "PTY_SLASH_MARKER $ARGUMENTS\n",
+      ".codex/prompts/collect/review.md": "NESTED_SLASH_MARKER $ARGUMENTS\n"
     }
   },
   "model": {
@@ -12,6 +13,12 @@
         "when": {},
         "text": [
           "SLASH_RENDERED"
+        ]
+      },
+      {
+        "when": {},
+        "text": [
+          "NESTED_RENDERED"
         ]
       }
     ]
@@ -27,7 +34,16 @@
             ],
             "cursor": true
           },
-          "prompt": "/marke"
+          "send": "\u001b[200~/marke\u001b[201~"
+        },
+        {
+          "when": {
+            "contains": [
+              "Completions",
+              "/marker"
+            ]
+          },
+          "send": "\u001b[27u\r"
         },
         {
           "when": {
@@ -42,7 +58,46 @@
           "when": {
             "contains": [
               "SLASH_RENDERED",
-              "\u25cb"
+              "○"
+            ]
+          },
+          "send": "\u001b[200~/col\u001b[201~"
+        },
+        {
+          "when": {
+            "contains": [
+              "Completions",
+              "/collect:"
+            ]
+          },
+          "send": "\t"
+        },
+        {
+          "when": {
+            "contains": [
+              "Completions",
+              "/collect:review"
+            ]
+          },
+          "send": "\t"
+        },
+        {
+          "when": {
+            "contains": [
+              "/collect:review "
+            ],
+            "absent": [
+              "Completions"
+            ],
+            "cursor": true
+          },
+          "send": "extra\r"
+        },
+        {
+          "when": {
+            "contains": [
+              "NESTED_RENDERED",
+              "○"
             ]
           },
           "detach": true
@@ -51,9 +106,10 @@
     }
   ],
   "assert": {
-    "requests": 1,
+    "requests": 2,
     "model_contains": [
-      "PTY_SLASH_MARKER extra"
+      "PTY_SLASH_MARKER extra",
+      "NESTED_SLASH_MARKER extra"
     ]
   }
 }

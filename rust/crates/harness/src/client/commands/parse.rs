@@ -35,7 +35,8 @@ pub(super) fn expand(body: &str, arguments: &str, maximum_bytes: u64) -> Result<
     Ok(text)
 }
 
-pub(super) fn validate_name(name: &str) -> Result<()> {
+/// Validate the same slash-free command namespace used by dispatch and completion.
+pub fn validate_name(name: &str) -> Result<()> {
     if name.split(':').any(|part| {
         part.is_empty()
             || !part

@@ -14,7 +14,7 @@ impl ProjectDirectory {
     pub async fn next(
         &mut self,
     ) -> std::result::Result<
-        Option<Vec<crate::conversation::PrivateDirectoryEntry>>,
+        Option<acyclic_harness_client::DirectoryQueryPage>,
         acyclic_harness_client::AgentExchangeError,
     > {
         self.query.next().await

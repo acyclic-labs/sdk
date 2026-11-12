@@ -32,6 +32,17 @@ pub enum CompletionKind {
     Mention,
 }
 
+impl CompletionKind {
+    /// The same matching rule for a source page and the ranked popup.
+    pub fn score(self, query: &str, candidate: &str) -> Option<usize> {
+        match self {
+            Self::Command => prefix(candidate, query).then_some(0),
+            Self::Theme => theme_prefix(candidate, query).then_some(0),
+            Self::Mention => fuzzy_score(query, candidate),
+        }
+    }
+}
+
 /// Exact prompt token and prefix to complete. Ranges include the slash or @.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionRequest {
@@ -287,6 +298,8 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<usize> {
 /// Popup file fold; acceptance checks the editor version to reject stale data.
 #[derive(Clone, Debug, Default)]
 pub struct CompletionMenu {
+    /// An admitted directory page's (more, continued) flags, for its popup hint.
+    pub directory_page: Option<(bool, bool)>,
     request: Option<CompletionRequest>,
     items: BTreeMap<Rank, Rc<Completion>>,
     files: BTreeMap<String, (u64, Vec<Entry>)>,
@@ -301,6 +314,12 @@ pub struct CompletionMenu {
 }
 
 impl CompletionMenu {
+    /// The incrementally parsed token, absent after dismissal or acceptance.
+    /// Query owners use this same selection rather than reparsing the prompt.
+    pub fn request(&self) -> Option<&CompletionRequest> {
+        self.request.as_ref()
+    }
+
     /// Handle popup keys using the editor's effective keymap. Returns true when
     /// consumed, so accepting with Enter never also submits the prompt.
     pub fn key(
@@ -563,7 +582,18 @@ impl CompletionMenu {
         if !editor.replace_range(range, &replacement, now_ms) {
             return false;
         }
+        let directory = !item.append_space
+            && match request.kind {
+                CompletionKind::Command => value.ends_with(':'),
+                CompletionKind::Mention => value.ends_with('/'),
+                CompletionKind::Theme => false,
+            };
         self.dismiss(editor);
+        if directory {
+            self.dismissed = None;
+            self.version = None;
+            self.refresh(editor);
+        }
         true
     }
 }
@@ -593,11 +623,7 @@ fn rank(
     {
         return None;
     }
-    let score = match request.kind {
-        CompletionKind::Command => prefix(&item.value, &request.query).then_some(0),
-        CompletionKind::Theme => theme_prefix(&item.value, &request.query).then_some(0),
-        CompletionKind::Mention => fuzzy_score(&request.query, &item.value),
-    }?;
+    let score = request.kind.score(&request.query, &item.value)?;
     Some((!item.tool, score, order, index))
 }
 

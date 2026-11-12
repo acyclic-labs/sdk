@@ -27,6 +27,19 @@ impl Entry {
 }
 
 impl CompletionMenu {
+    /// Replace one admitted directory page using the same ranking, selection
+    /// and insertion path as file-backed candidates. A directory keeps its
+    /// trailing separator open; a complete file or command ends with a space.
+    pub fn set_names(&mut self, path: &str, kind: CompletionKind, names: Vec<(String, bool)>) {
+        let present = !names.is_empty();
+        let entries = names
+            .into_iter()
+            .map(|(name, directory)| make(kind, name, String::new(), false, !directory))
+            .collect();
+        self.set_entries(path, present, entries);
+        self.repair_selection();
+    }
+
     /// Fold one command/workspace file from a snapshot or cursor-follow change.
     /// Paths are logical volume paths: commands/*.json, commands/**/*.md,
     /// workspace/**. `None` removes a file. A malformed replacement is atomic.
@@ -108,6 +121,7 @@ impl CompletionMenu {
 
     /// Replace a lost query's disposable fold before applying its new snapshot.
     pub fn clear_files(&mut self) {
+        self.directory_page = None;
         self.files.clear();
         self.theme_commands.clear();
         self.version = None;

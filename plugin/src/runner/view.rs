@@ -40,6 +40,7 @@ use std::{sync::Arc, time::Instant};
 type Failure = Box<dyn std::error::Error>;
 use acyclic_harness::completion::Exit;
 mod capabilities;
+mod completion;
 mod diff;
 mod query;
 mod session;
@@ -981,6 +982,8 @@ async fn run_current(
     let mut queries = QueryController::<query::Source, query::Context>::default();
     let query_loading = [Line::raw("Loading…")];
     let mut query_future = std::pin::pin!(None);
+    let mut completions = completion::State::default();
+    let mut completion_future = std::pin::pin!(None);
     if resume {
         view.notice = apply_open_view(
             ui.open_view(),
@@ -1051,6 +1054,14 @@ async fn run_current(
         usage_page.wrap(size.width);
         let busy = view.busy();
         input.busy = busy;
+        completions.refresh(
+            &mut input,
+            view.prompt.is_none()
+                && overlay.is_none()
+                && queries.source().is_none()
+                && !sidebar.focused,
+            completion_future.as_mut(),
+        );
         let shown = ui.tree.unwrap_or_else(|| sidebar.has_children());
         // The same layout as painting owns row credit, including a growing
         // prompt, the usage footer and a running tool's terminal strip.
@@ -1250,6 +1261,26 @@ async fn run_current(
                 Arc::clone(&ui.prices),
             )
         });
+        // The empty popup has no geometry yet. Credit uses the same available
+        // above/below prompt cells and owner-selected popup height as painting.
+        let completion_rows = if size.width < 3 {
+            0
+        } else {
+            areas
+                .prompt
+                .y
+                .max(size.height.saturating_sub(areas.prompt.bottom()))
+                .min(
+                    u16::try_from(input.editor.settings().completion_max_height)
+                        .unwrap_or(u16::MAX),
+                )
+                .saturating_sub(2)
+        };
+        completions.controller.start(
+            u32::from(completion_rows),
+            completion_future.as_mut(),
+            |source, rows| completion::load(Arc::clone(&conversation), source.clone(), rows),
+        );
         // Older turns page in as the view nears them: one read at a time,
         // started by the frame that showed the need, never retried.
         if older_future.is_none()
@@ -1266,6 +1297,16 @@ async fn run_current(
         let mut files_changed = false;
         let tree_deadline = sidebar.source.next_deadline();
         tokio::select! {
+            result = async {
+                match completion_future.as_mut().as_pin_mut() {
+                    Some(query) => query.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Err(error) = completions.finish(&mut input, result, completion_future.as_mut()) {
+                    view.notice = refusal(format_args!("Completion query ended: {error}"));
+                }
+            }
             Some((id, settled)) = settlement_queries.next(), if !settlement_queries.is_empty() => {
                 let settled: acyclic_harness::Result<acyclic_harness::local::agent_conversation::InputSettlement> = settled;
                 settlement_replies.push((id, settled?));
@@ -1410,6 +1451,10 @@ async fn run_current(
                 previous_layout = ui.layout_digest();
                 let (navigation, batch) = batch.ok_or("terminal input ended")??;
                 for event in navigation.into_iter().map(Err).chain(batch.into_iter().map(Ok)) {
+                    // Reconcile between keys in one batch, before Tab/Enter can
+                    // accept a candidate from another directory or token.
+                    completions.refresh(&mut input, view.prompt.is_none() && overlay.is_none()
+                        && queries.source().is_none() && !sidebar.focused, completion_future.as_mut());
                     if let Ok(InputEvent::SettlementQuery(id)) = &event {
                         let id = *id;
                         let root = Arc::clone(&root);
@@ -1494,6 +1539,7 @@ async fn run_current(
                             usage_future.set(Some(usage(conversation.usage_query_with_prices(Arc::clone(&usage_prices)))));
                             sidebar.focused = false;
                             input.editor = Editor::default();
+                            completions.refresh(&mut input, false, completion_future.as_mut());
                             unsent = None;
                             files_changed = true;
                         }
@@ -1816,6 +1862,9 @@ async fn run_current(
                             InputEffect::Quit => { view.prompt = Some(Prompt::StopOrDetach); }
                             InputEffect::Scroll(rows) if matches!(view.prompt, Some(Prompt::Feedback)) => {
                                 ui.feedback_page.page_boundary(&mut view.feedback_scroll, rows, areas.transcript.height.saturating_sub(2));
+                            }
+                            InputEffect::Scroll(rows) if completions.controller.source().is_some() => {
+                                completions.page(&mut input, rows > 0, completion_future.as_mut());
                             }
                             InputEffect::Scroll(rows) if queries.source().is_some() && credit != 0 => {
                                 queries.scroll(&mut overlay_top, rows, areas.overlay_rows(0),

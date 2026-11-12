@@ -20,7 +20,7 @@ pub use control::{
 
 mod diff_query;
 mod directory_query;
-pub use directory_query::DirectoryQuery;
+pub use directory_query::{DirectoryQuery, DirectoryQueryPage};
 mod query;
 pub use query::QueryProjection;
 mod input_query;

@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 mod name_index;
 mod parse;
 mod syntax;
-pub use parse::has_frontmatter;
-use parse::{expand, validate_name};
+use parse::expand;
+pub use parse::{has_frontmatter, validate_name};
 
 pub use crate::command_request::{
     CommandQuery, CommandRequest, CommandResolution, CommandTaskScope, CommandTool, ThemeMode,

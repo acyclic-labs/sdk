@@ -2,6 +2,56 @@ use super::*;
 use proptest::prelude::*;
 
 #[test]
+fn directory_pages_continue_quoted_paths_and_replace_the_previous_selection() {
+    let mut editor = Editor::new("inspect @docs");
+    let mut menu = CompletionMenu::default();
+    menu.refresh(&editor);
+    menu.set_names(
+        "query",
+        CompletionKind::Mention,
+        vec![("docs a/".into(), true)],
+    );
+    assert!(menu.accept(&mut editor, 0));
+    assert_eq!(editor.text(), "inspect @\"docs a/\"");
+    assert_eq!(
+        menu.request().map(|request| request.query.as_str()),
+        Some("docs a/")
+    );
+    menu.set_names(
+        "query",
+        CompletionKind::Mention,
+        vec![("docs a/日本語.md".into(), false)],
+    );
+    assert!(menu.accept(&mut editor, 1));
+    assert_eq!(editor.text(), "inspect @\"docs a/日本語.md\" ");
+    assert!(!menu.active(&editor));
+    editor.set_text("/collect", 2);
+    menu.refresh(&editor);
+    menu.set_names(
+        "query",
+        CompletionKind::Command,
+        vec![("collect:".into(), true)],
+    );
+    assert!(menu.accept(&mut editor, 3));
+    assert_eq!(editor.text(), "/collect:");
+    menu.set_names(
+        "query",
+        CompletionKind::Command,
+        vec![("collect:review".into(), false)],
+    );
+    assert!(menu.accept(&mut editor, 4));
+    assert_eq!(editor.text(), "/collect:review ");
+    editor.set_text("@other", 5);
+    menu.refresh(&editor);
+    assert!(
+        menu.items().next().is_none(),
+        "the previous directory cannot supply this token"
+    );
+    assert!(!menu.accept(&mut editor, 6));
+    assert_eq!(editor.text(), "@other");
+}
+
+#[test]
 fn ranking_borrows_catalog_entries_and_only_retains_matches() {
     let mut editor = Editor::new("@absent");
     let mut empty = CompletionMenu::default();

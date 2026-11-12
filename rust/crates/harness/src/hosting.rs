@@ -37,11 +37,11 @@ pub use diff::{DIFF_FILE_BYTES, DiffSource};
 pub type InputPreviewSource =
     acyclic_stream::BoxProviderStream<'static, crate::Result<crate::agent::InputPreviewStep>>;
 
-/// Credited names from one original directory. Empty pages represent consumed
-/// source work, never readiness probes or completion.
+/// Credited names from one original directory. `has_more` distinguishes
+/// consumed source progress from its final selection, never a readiness probe.
 pub type DirectorySource = acyclic_stream::BoxProviderStream<
     'static,
-    crate::Result<Vec<crate::conversation::PrivateDirectoryEntry>>,
+    crate::Result<acyclic_harness_client::DirectoryQueryPage>,
 >;
 
 use crate::{

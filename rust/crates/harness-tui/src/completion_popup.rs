@@ -89,7 +89,11 @@ impl Widget for CompletionPopup<'_> {
         Clear.render(area, buffer);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title("Completions")
+            .title(match self.menu.directory_page {
+                Some((true, _)) => "Completions · PgDn: more · PgUp: first",
+                Some((false, true)) => "Completions · PgUp: first",
+                _ => "Completions",
+            })
             .style(self.style);
         let inner = block.inner(area);
         block.render(area, buffer);
