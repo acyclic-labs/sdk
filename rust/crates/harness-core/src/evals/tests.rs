@@ -33,6 +33,7 @@ impl ViewChangeSink<()> for Changes {
 
 #[tokio::test]
 async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() -> TestResult {
+    acyclic_native_runtime::initialize_native_io_services()?;
     let agent = AgentPath::root(&AgentId::from_bytes([73; 16]));
     let stream = agent.conversation()?;
     let storage = MemoryHarnessStorage::new(agent.id(), 1_000_000).await?;

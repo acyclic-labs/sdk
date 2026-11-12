@@ -99,7 +99,7 @@ pub fn write_case(
             },
         },
     )
-    .map_err(|error| DemandError::Io(std::io::Error::other(error)))
+    .map_err(|error| DemandError::Io(error.into()))
 }
 
 /// Filesystem representation composed with the existing `Computed` adapter.
