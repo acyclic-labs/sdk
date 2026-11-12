@@ -166,9 +166,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         if write_receipt {
             for grants in [Some(scope.capabilities()), ceiling].into_iter().flatten() {
-                if !crate::core::volume_write_granted_with_work(
+                if !crate::core::volume_operation_granted_with_work(
                     grants,
                     volume,
+                    VolumeOperation::Write,
                     &mut Some(&mut io.history_io()),
                 )? {
                     return Err(stock_boundary(

@@ -214,7 +214,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant.require(volume, VolumeOperation::Write, io)?;
         if let Some(grants) = ceiling
             && !crate::executor::with_history_io(io, |work| {
-                crate::core::volume_write_granted_with_work(grants, volume, work)
+                crate::core::volume_operation_granted_with_work(
+                    grants,
+                    volume,
+                    VolumeOperation::Write,
+                    work,
+                )
             })?
         {
             return Err(stock_boundary(

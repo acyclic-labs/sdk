@@ -349,7 +349,19 @@ impl CheckoutTools {
                             "shell outcome requires reconciliation"
                         );
                         state.unsettled.insert(invocation.operation_id);
-                        return Err(Error::Indeterminate(invocation.operation_id));
+                        return Err(Error::CommandIndeterminate {
+                            operation_id: invocation.operation_id,
+                            cause: crate::CommandIndeterminacy {
+                                command: invocation.name.clone(),
+                                reason: match result {
+                                    Err(error) => crate::CommandIndeterminacyReason::Failed {
+                                        code: error.kind().into(),
+                                        error: error.to_string(),
+                                    },
+                                    Ok(_) => crate::CommandIndeterminacyReason::Unsettled,
+                                },
+                            },
+                        });
                     }
                     Ok(((result, state, files), claims))
                 })
@@ -551,7 +563,7 @@ impl ToolExecutor for CheckoutTools {
             let task = acyclic_native_runtime::TaskSpawner::current().spawn(async move {
                 let result = tools.run_checkout_command(command, &context)?.await;
                 if let Err(error) = &result {
-                    let terminal = serde_json::to_vec(&serde_json::json!({"error": error.to_string(), "indeterminate": matches!(error, Error::Indeterminate(_))})).map_err(storage)?;
+                    let terminal = serde_json::to_vec(&serde_json::json!({"error": error.to_string(), "indeterminate": error.leaves_outcome_uncertain()})).map_err(storage)?;
                     if let Err(cause) = output::writer::stage(&context, "result.json", &terminal, "application/json").await {
                         tracing::error!(?cause, "background shell terminal publication failed");
                     }

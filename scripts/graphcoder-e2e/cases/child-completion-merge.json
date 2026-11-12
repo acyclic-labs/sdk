@@ -92,6 +92,7 @@
     ]
   },
   "inputs": [
+    { "mode": "service" },
     {
       "mode": "headless",
       "text": "COMPLETION_PARENT",

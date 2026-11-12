@@ -130,7 +130,12 @@ impl ObjectContentStore {
     ) -> Result<()> {
         if let Some(grants) = ceiling
             && !crate::executor::with_history_io(io, |work| {
-                crate::core::volume_write_granted_with_work(grants, &self.volume, work)
+                crate::core::volume_operation_granted_with_work(
+                    grants,
+                    &self.volume,
+                    crate::conversation::VolumeOperation::Write,
+                    work,
+                )
             })?
         {
             return Err(crate::conversation::content_error(

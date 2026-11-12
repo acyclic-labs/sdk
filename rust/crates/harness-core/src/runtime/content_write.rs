@@ -530,7 +530,12 @@ fn can_write_volume(
     io: Option<&ContentIo>,
 ) -> Result<bool> {
     crate::executor::with_history_io(io, |work| {
-        crate::core::volume_write_granted_with_work(&scope.grants, volume, work)
+        crate::core::volume_operation_granted_with_work(
+            &scope.grants,
+            volume,
+            crate::conversation::VolumeOperation::Write,
+            work,
+        )
     })
 }
 

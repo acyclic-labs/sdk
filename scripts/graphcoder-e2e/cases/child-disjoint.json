@@ -147,10 +147,14 @@
     ]
   },
   "inputs": [
+    { "mode": "service" },
     {
-      "mode": "headless",
-      "text": "PARENT_E2E_TASK",
-      "answer": "done"
+      "mode": "pty",
+      "actions": [
+        { "when": { "contains": ["GraphCoder"], "cursor": true }, "prompt": "PARENT_E2E_TASK" },
+        { "when": { "contains": ["done", "○"], "cursor": true }, "prompt": "/merge " },
+        { "when": { "contains": ["Merged into checkout:"] }, "prompt": "/quit " }
+      ]
     }
   ],
   "assert": {
