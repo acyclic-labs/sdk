@@ -93,7 +93,7 @@ async fn cross_volume_merge_fails_before_any_candidate_write()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let base = put_root(&store, 8, 9, 10).await?;
-    let other = put_root(&store, 11, 9, 12).await?;
+    let other = put_root(&store, 11, 14, 12).await?;
     let failure = build_checkpoint(
         &store,
         CheckpointRequest {
@@ -239,7 +239,7 @@ async fn valid_merge_checkpoint_preserves_both_exact_parent_identities()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let base = put_root(&store, 1, 2, 3).await?;
-    let merge = put_root(&store, 1, 2, 4).await?;
+    let merge = put_root(&store, 6, 2, 4).await?;
     let receipt = build_checkpoint(
         &store,
         CheckpointRequest {

@@ -70,7 +70,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result
     }
 
-    /// Computes the plaintext source-parent digest used by a true merge.
+    /// Computes a plaintext source digest with the target's scalar identity.
     pub(crate) async fn workspace_normalized_join_parent(
         &self,
         source: &crate::Generation<A, O>,

@@ -267,7 +267,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Builds the original join candidate without submitting an authority write.
-    /// Its normalized history parent stays protected until publication finishes.
+    /// Its original source parent stays protected until publication finishes.
     pub(crate) fn prepare_workspace_join_with_accounting<E>(
         &self,
         request: WorkspaceJoinRequest<'_, A, O>,
@@ -387,31 +387,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 {
                     return Err(WorkspaceError::IncompatibleWorkspace.into());
                 }
-                // Normalize scalar identity in place, retaining decoded parent custody.
+                // Normalize only the borrowed comparison roots. History retains
+                // the original source identity so later joins find this cut.
                 base_root.value.required_features = base_root.value.continuation_features();
                 base_root.value.volume_id = target.id;
                 source_root.value.required_features = source_root.value.continuation_features();
                 source_root.value.volume_id = target.id;
-                let encoded =
-                    crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
-                        crate::kernel::encode_generation_root(
-                            &source_root.value,
-                            observe,
-                            allocation_error,
-                        )
-                    })?;
-                let normalized_source_object = self
-                    .put_encoded_with_accounting(
-                        ObjectKind::GenerationRoot,
-                        encoded,
-                        accounting,
-                        cancellation,
-                    )
-                    .await?;
-                if !preview
-                    && normalized_source_object == target_object
-                    && current_target == expected_target
-                {
+                if !preview && source_object == target_object && current_target == expected_target {
                     return workspace_join_scalar(
                         WorkspaceJoinOutcome::NoChanges(current_target),
                         accounting,
@@ -426,7 +408,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     base: &base_root.value,
                     ours_generation: Some(target_object),
                     ours: &target_root.value,
-                    theirs_generation: normalized_source_object,
+                    theirs_generation: source_object,
                     theirs: &source_root.value,
                     retain_theirs_parent: history == crate::workspace::JoinHistory::Merge,
                     maximum_changes,
@@ -523,11 +505,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     .map(WorkspaceJoinPreparation::Complete)
                     .map_err(E::from);
                 }
-                // Retain the normalized history parent through publication.
+                // Retain that original history parent through publication.
                 let source_hold = if history == crate::workspace::JoinHistory::Merge {
                     Some(
                         self.flush_join_parent_with_accounting(
-                            normalized_source_object,
+                            source_object,
                             accounting,
                             cancellation,
                         )

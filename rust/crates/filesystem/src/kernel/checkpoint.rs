@@ -18,7 +18,7 @@ pub struct CheckpointRequest {
     pub base: ObjectId,
     /// Candidate authenticated path-independent file-table root.
     pub file_table: ObjectId,
-    /// Optional distinct second parent for a three-way merge result.
+    /// Optional distinct second parent sharing the stable root identity, including a fork.
     pub merge_parent: Option<ObjectId>,
 }
 
@@ -223,7 +223,7 @@ fn validate_merge_parents(
     base: &GenerationRoot,
     parent: &GenerationRoot,
 ) -> Result<(), CheckpointError> {
-    if parent.volume_id != base.volume_id {
+    if parent.volume_id != base.volume_id && parent.root_file_id != base.root_file_id {
         return Err(CheckpointError::CrossVolumeMerge);
     }
     if parent.root_file_id != base.root_file_id {
@@ -244,8 +244,8 @@ pub enum CheckpointError {
     /// Merge repeats its base as second parent.
     #[error("checkpoint merge parents are duplicated")]
     DuplicateParent,
-    /// Merge parent belongs to another volume.
-    #[error("checkpoint cannot merge generations from different volumes")]
+    /// Merge parent belongs to another volume with an unrelated root identity.
+    #[error("checkpoint cannot merge unrelated volume roots")]
     CrossVolumeMerge,
     /// Merge parents disagree on the stable volume-root file identity.
     #[error("checkpoint merge parents have different root identities")]

@@ -26,6 +26,7 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
             .await?,
         JoinOutcome::Applied(_)
     ));
+    parent.write_text("/first.txt", "resolved").await?;
     child.write_text("/second.txt", "second").await?;
     let second = unbounded!(child.join_into(&parent), plan())?;
     assert!(matches!(
@@ -43,12 +44,26 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
     ));
     assert_eq!(
         unbounded!(parent, read("/first.txt", 64))?.as_ref(),
-        b"first"
+        b"resolved"
     );
     assert_eq!(
         unbounded!(parent, read("/second.txt", 64))?.as_ref(),
         b"second"
     );
+    let repeated = unbounded!(child.join_into(&parent), plan())?;
+    assert!(matches!(
+        repeated
+            .apply(
+                ApplyOptions {
+                    if_target: repeated.target_head(),
+                    idempotency_key: IdempotencyKey::from_bytes([0x6a; 16]),
+                },
+                std::collections::BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted
+            )
+            .await?,
+        JoinOutcome::NoChanges(_)
+    ));
     Ok(())
 }
 

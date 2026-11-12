@@ -9,6 +9,9 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Operation {
+    Read {
+        path: PathBuf,
+    },
     LineCount {
         path: PathBuf,
         prefix: String,
@@ -40,6 +43,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let operations: Vec<Operation> = serde_json::from_reader(File::open(plan)?)?;
     for operation in operations {
         match operation {
+            Operation::Read { path } => {
+                println!("{}", serde_json::to_string(&fs::read_to_string(path)?)?);
+            }
             Operation::LineCount { path, prefix } => {
                 println!(
                     "{prefix}{}",

@@ -3,7 +3,10 @@
   "workspace": {
     "kind": "git",
     "files": {
-      "seed.txt": "base\n"
+      "seed.txt": "base\n",
+      ".fixtures/fs.exe": { "binary_env": "E2E_FILESYSTEM_BINARY" },
+      ".fixtures/read-conflict.json": "[{\"op\":\"read\",\"path\":\"seed.txt\"}]",
+      ".fixtures/read-later.json": "[{\"op\":\"read\",\"path\":\"later.txt\"}]"
     }
   },
   "model": {
@@ -144,7 +147,7 @@
             "id": "inspect-conflict",
             "name": "code",
             "arguments": {
-              "code": "const result=await tools.shell({command:['node','-e',\"process.stdout.write(require('fs').readFileSync('seed.txt','utf8'))\"]}); if(!result.success||result.exit_code!==0||!result.text.includes('<<<<<<<'))throw Error('conflict projection missing: '+JSON.stringify(result)); export default {verified:'CONFLICT_PROJECTED'};"
+              "code": "const result=await tools.shell({command:['./.fixtures/fs.exe','.fixtures/read-conflict.json']}); if(!result.success||result.exit_code!==0||!JSON.parse(result.stdout).includes('<<<<<<<'))throw Error('conflict projection missing: '+JSON.stringify(result)); export default {verified:'CONFLICT_PROJECTED'};"
             }
           }
         ]
@@ -260,7 +263,7 @@
             "id": "verify-later-publication",
             "name": "code",
             "arguments": {
-              "code": "const result=await tools.shell({command:['node','-e',\"if(require('fs').readFileSync('later.txt','utf8')!=='later'+String.fromCharCode(10))process.exit(1)\"]}); if(!result.success||result.exit_code!==0)throw Error('deferred child work missing: '+JSON.stringify(result)); export default {verified:'LATER_IN_PARENT_WORKSPACE'};"
+              "code": "const result=await tools.shell({command:['./.fixtures/fs.exe','.fixtures/read-later.json']}); if(!result.success||result.exit_code!==0||JSON.parse(result.stdout)!=='later'+String.fromCharCode(10))throw Error('deferred child work missing: '+JSON.stringify(result)); export default {verified:'LATER_IN_PARENT_WORKSPACE'};"
             }
           }
         ]

@@ -4,6 +4,9 @@
     "kind": "git",
     "files": {
       "root.txt": "ROOT_KEPT\n",
+      ".fixtures/fs.exe": { "binary_env": "E2E_FILESYSTEM_BINARY" },
+      ".fixtures/write-child.json": "[{\"op\":\"write\",\"path\":\"child.txt\",\"text\":\"CHILD_COMPLETION_CONTENT\\n\"}]",
+      ".fixtures/read-parent.json": "[{\"op\":\"read\",\"path\":\"child.txt\"},{\"op\":\"read\",\"path\":\"root.txt\"}]",
       ".acyclic-sdk/control": "SDK_STATE\n"
     }
   },
@@ -52,7 +55,7 @@
             "id": "write-child",
             "name": "code",
             "arguments": {
-              "code": "const result = await tools.shell({command:['node','-e',\"require('fs').writeFileSync('child.txt','CHILD_COMPLETION_CONTENT' + String.fromCharCode(10))\"]}); if (!result.success || result.exit_code !== 0) throw Error('child write failed: '+JSON.stringify(result)); export default {written:'CHILD_WRITE_OK'}"
+              "code": "const result = await tools.shell({command:['./.fixtures/fs.exe','.fixtures/write-child.json']}); if (!result.success || result.exit_code !== 0) throw Error('child write failed: '+JSON.stringify(result)); export default {written:'CHILD_WRITE_OK'}"
             }
           }
         ]
@@ -76,7 +79,7 @@
             "id": "verify-parent",
             "name": "code",
             "arguments": {
-              "code": "const result = await tools.shell({command:['node','-e',\"const fs=require('fs');if(fs.readFileSync('child.txt','utf8')!=='CHILD_COMPLETION_CONTENT' + String.fromCharCode(10)||fs.readFileSync('root.txt','utf8')!=='ROOT_KEPT' + String.fromCharCode(10))process.exit(1);console.log('PARENT_HAS_CHILD_WORK')\"]}); if (!result.success || result.exit_code !== 0 || !result.text.includes('PARENT_HAS_CHILD_WORK')) throw Error('child completion did not publish into parent: '+JSON.stringify(result)); export default {verified:'PARENT_HAS_CHILD_WORK'}"
+              "code": "const result = await tools.shell({command:['./.fixtures/fs.exe','.fixtures/read-parent.json']}); if (!result.success || result.exit_code !== 0) throw Error('parent read failed: '+JSON.stringify(result)); const newline=String.fromCharCode(10); const [child,root] = result.stdout.trimEnd().split(newline).map(JSON.parse); if (child !== 'CHILD_COMPLETION_CONTENT'+newline || root !== 'ROOT_KEPT'+newline) throw Error('child completion did not publish into parent: '+JSON.stringify(result)); export default {verified:'PARENT_HAS_CHILD_WORK'}"
             }
           }
         ]
