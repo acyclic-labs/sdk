@@ -1161,6 +1161,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     // Give the host room for exactly one row while requesting many rows.
     let selected = AgentCommand::Directory {
         agent: root.clone(),
+        target: acyclic_harness_client::DirectoryTarget::Private,
         path: String::new(),
         generation: Some(first.generation.clone()),
         page: page(None)?,
@@ -1213,6 +1214,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     // Reusing the preceding page cannot pass the shared continuation boundary.
     let continued = acyclic_harness_client::AgentCommand::Directory {
         agent: root.clone(),
+        target: acyclic_harness_client::DirectoryTarget::Private,
         path: String::new(),
         generation: Some(first.generation.clone()),
         page: page(Some(last.clone()))?,

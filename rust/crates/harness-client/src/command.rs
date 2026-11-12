@@ -542,6 +542,8 @@ pub enum AgentCommand {
         /// Exact selected agent; paths never select a different private volume.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
+        /// Namespace selected before credential and policy admission.
+        target: DirectoryTarget,
         /// Normalized private-volume directory, or empty for its visible root.
         path: String,
         /// None selects the initial immutable generation.
@@ -624,6 +626,17 @@ pub enum AgentCommand {
         /// Length of the whole encoding.
         bytes: u64,
     },
+}
+
+/// A directory's original authority-bearing namespace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(rename_all = "snake_case")]
+pub enum DirectoryTarget {
+    /// The selected agent's original private volume.
+    Private,
+    /// The selected agent's project, through a source-owned query socket.
+    Project,
 }
 
 /// A file an agent's turns produced, as a frontend names it.
@@ -777,11 +790,17 @@ impl AgentCommand {
                 Ok(())
             }
             Self::Directory {
+                target,
                 path,
                 generation,
                 page,
                 ..
             } => {
+                if *target == DirectoryTarget::Project
+                    && (generation.is_some() || page.cursor().is_some())
+                {
+                    return Err(CommandError::Invalid);
+                }
                 if generation.is_none() && page.cursor().is_some() {
                     return Err(CommandError::Invalid);
                 }

@@ -3,6 +3,24 @@ use super::{Conversation, unexpected};
 use crate::{Result, conversation::PrivateDirectoryPage, resources::GenerationRef};
 use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
 
+/// The query and the original connection which serves its pinned selection.
+pub struct ProjectDirectory {
+    query: acyclic_harness_client::DirectoryQuery,
+    _connection: super::Connection,
+}
+
+impl ProjectDirectory {
+    /// Consume original source progress; an empty page is not completion.
+    pub async fn next(
+        &mut self,
+    ) -> std::result::Result<
+        Option<Vec<crate::conversation::PrivateDirectoryEntry>>,
+        acyclic_harness_client::AgentExchangeError,
+    > {
+        self.query.next().await
+    }
+}
+
 impl Conversation {
     /// Read a bounded completion page at an exact original status record.
     pub async fn child_wakes(
@@ -62,6 +80,7 @@ impl Conversation {
             .connection
             .execute(&AgentCommand::Directory {
                 agent: self.agent().clone(),
+                target: acyclic_harness_client::DirectoryTarget::Private,
                 path: path.to_owned(),
                 generation: generation.cloned(),
                 page,
@@ -71,5 +90,22 @@ impl Conversation {
             AgentReply::Directory { page } => Ok(page),
             _ => Err(unexpected()),
         }
+    }
+
+    /// Names in one project directory at its original source selection.
+    pub async fn project_directory(
+        &self,
+        path: String,
+        page: AgentPageRequest,
+    ) -> std::result::Result<ProjectDirectory, acyclic_harness_client::AgentExchangeError> {
+        let query = self
+            .connection
+            .controls
+            .directory_query(self.agent().clone(), path, page)
+            .await?;
+        Ok(ProjectDirectory {
+            query,
+            _connection: self.connection.clone(),
+        })
     }
 }

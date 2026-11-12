@@ -1,0 +1,92 @@
+//! Project names reuse the same native/volume directory adapters as context.
+use super::*;
+use crate::{
+    agent::{AgentPath, WorkspaceRole, WorkspaceTable},
+    context::{ContextRoot, DiscoveryKind, DiscoverySource, VolumeDiscovery},
+    conversation::{PrivateDirectoryEntry, PrivateDirectoryEntryKind},
+};
+
+fn entries(page: Vec<crate::context::DiscoveryEntry>) -> Vec<PrivateDirectoryEntry> {
+    page.into_iter()
+        .filter_map(|entry| {
+            if entry.name == ".system" {
+                return None;
+            }
+            Some(PrivateDirectoryEntry {
+                name: entry.name,
+                kind: match entry.kind {
+                    DiscoveryKind::File => PrivateDirectoryEntryKind::File,
+                    DiscoveryKind::Directory => PrivateDirectoryEntryKind::Directory,
+                    DiscoveryKind::Other => return None,
+                },
+            })
+        })
+        .collect()
+}
+
+impl LocalHarness {
+    pub(in crate::local) async fn project_directory_source(
+        self: &Arc<Self>,
+        agent: &AgentPath,
+        path: &str,
+        rows: u32,
+    ) -> Result<crate::hosting::DirectorySource> {
+        self.agents().await?;
+        let bound = self
+            .agents
+            .get()
+            .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+            .server
+            .bound();
+        let path = path.to_owned();
+        #[cfg(any(test, not(target_arch = "wasm32")))]
+        if self.checkout_context
+            && self.agents.get().map(|host| host.root()) == Some(agent)
+            && let Some(workspace) = self.workspace.clone()
+        {
+            let (scope, verifier) = bound.volume_scope(agent).await.map_err(storage)?;
+            let local = Arc::clone(self);
+            return Ok(Box::pin(async_stream::try_stream! {
+                let (selected, pending) = workspace.selected_view().await?;
+                if let Some((operation, _)) = pending { Err(Error::Indeterminate(OperationId::from_bytes(operation.into_bytes())))?; }
+                let view = selected.as_ref().unwrap_or_else(|| workspace.view());
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+                let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+                local.authorize_checkout_context(&workspace, view.workspace(), &io, (&verifier, &scope)).await?;
+                let cut = view.snapshot(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal { work: &work, cancellation: &cancellation }).await?;
+                let mut source = crate::context::native_discovery::LazyDiscovery { view, cut, work: &work };
+                let mut cursor = None;
+                loop {
+                    let Some(page) = source.page(&path, Some(&cut), cursor.take(), rows).await? else { break; };
+                    cursor = page.next;
+                    local.authorize_checkout_context(&workspace, view.workspace(), &io, (&verifier, &scope)).await?;
+                    yield entries(page.entries);
+                    if cursor.is_none() { break; }
+                }
+            }));
+        }
+        let state = self.agents().await?.0.state(agent).await.map_err(storage)?;
+        let project = WorkspaceTable::primary_in(&state.volumes)
+            .filter(|entry| entry.role == WorkspaceRole::User)
+            .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
+        let root = ContextRoot {
+            volume: project.volume()?.clone(),
+            directory: project.root.clone(),
+        };
+        let reader = bound.content_reader(agent).await.map_err(storage)?;
+        Ok(Box::pin(async_stream::try_stream! {
+            let mut source = VolumeDiscovery { reader: reader.as_ref(), root: &root, io: None };
+            let mut revision = None;
+            let mut cursor = None;
+            loop {
+                let Some(page) = source.page(&path, revision.as_ref(), cursor.take(), rows).await? else { break; };
+                revision = Some(page.revision);
+                cursor = page.next;
+                yield entries(page.entries);
+                if cursor.is_none() { break; }
+            }
+        }))
+    }
+}

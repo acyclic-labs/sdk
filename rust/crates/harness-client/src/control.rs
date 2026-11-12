@@ -421,6 +421,44 @@ impl AgentControls {
         Ok(crate::DiffQuery::new(socket, agent, page, projection))
     }
 
+    /// Open one source-owned project directory on this pool and credential.
+    /// Source cursors and native snapshot identities never become public data.
+    pub async fn directory_query(
+        &self,
+        agent: acyclic_harness_core::agent::AgentPath,
+        path: String,
+        page: crate::AgentPageRequest,
+    ) -> Result<crate::DirectoryQuery, AgentExchangeError> {
+        if page.cursor().is_some() {
+            return Err(CommandError::Invalid.into());
+        }
+        let page = crate::AgentPageRequest::new(
+            page.items(),
+            page.bytes().checked_sub(1).ok_or(CommandError::Capacity)?,
+            None,
+        )?;
+        let command = AgentCommand::Directory {
+            agent,
+            target: crate::DirectoryTarget::Project,
+            path,
+            generation: None,
+            page,
+        };
+        let prepared = self.prepare(PreparedCommand::new(&command)?)?;
+        let [invocation] = prepared.invocations() else {
+            return Err(CommandError::Invalid.into());
+        };
+        let socket = self
+            .client
+            .actor_socket(
+                crate::QueryProjection::Directory.open(invocation)?,
+                self.credential,
+            )
+            .await
+            .map_err(AgentExchangeError::Session)?;
+        Ok(crate::DirectoryQuery::new(socket, command))
+    }
+
     /// Open the bounded last-input projection of the original history context.
     pub async fn input_query(
         &self,

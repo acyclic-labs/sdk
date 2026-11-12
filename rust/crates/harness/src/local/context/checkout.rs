@@ -5,7 +5,7 @@ fn archive_path(name: &str, bytes: &[u8]) -> String {
 }
 
 impl LocalHarness {
-    async fn authorize_checkout_context(
+    pub(super) async fn authorize_checkout_context(
         &self,
         physical: &LocalWorkspace,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
