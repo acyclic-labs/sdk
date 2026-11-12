@@ -140,7 +140,8 @@
         "auto-compaction",
         "pty-manual-compaction",
         "compaction-background",
-        "context-agent-rewrite"
+        "context-agent-rewrite",
+        "context-auto-rewrite"
       ]
     },
     "A9": {
@@ -348,4 +349,3 @@
     }
   }
 }
-
