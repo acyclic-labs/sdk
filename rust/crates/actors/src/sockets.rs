@@ -10,7 +10,7 @@
 use crate::addressing::ActorReference;
 use crate::guest::{
     Delivery, GuestError, GuestEventResult, GuestSocketEvent, SocketCloseInitiator, SocketPayload,
-    SocketTransport, Trigger, WebSocketAutoResponse,
+    SocketTransport, WebSocketAutoResponse,
 };
 use crate::invocation::Invocation;
 use acyclic_stream::{AppendRecord, Attribute, RecordHeaders};
@@ -496,7 +496,7 @@ impl Delivery {
             return Ok(None);
         };
         if attributes.get(index).ok_or_else(invalid)?.value.as_ref() != VERSION
-            || !matches!(&self.trigger, Trigger::Record { sequence, .. } if *sequence == record.sequence)
+            || self.trigger.record_position().map(|(_, sequence)| sequence) != Some(record.sequence)
         {
             return Err(invalid());
         }

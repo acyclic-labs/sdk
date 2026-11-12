@@ -7,6 +7,9 @@ use crate::OwnedBytes as Bytes;
 use crate::StreamError;
 use crate::StreamProviderExt as _;
 use crate::query_sync::watch;
+#[cfg(feature = "serde")]
+#[path = "revision/serialization.rs"]
+mod serialization;
 
 /// Opaque identity of the authority that orders revisions.
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -33,10 +36,13 @@ impl RevisionScope {
 
 /// One committed publication of an authority in one physical incarnation.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Revision {
     /// The ordering authority.
     pub scope: RevisionScope,
     /// The authority's physical incarnation; a reset never reuses one.
+    #[cfg_attr(feature = "serde", serde(with = "serialization::incarnation"))]
     pub incarnation: u128,
     /// Monotonic publication index within that scope and incarnation.
     pub index: u64,

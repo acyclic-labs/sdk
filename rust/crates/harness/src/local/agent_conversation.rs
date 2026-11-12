@@ -20,8 +20,12 @@ mod inspect;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod pending_tests;
 mod recording;
+mod run;
+pub use run::RunOutcome;
 mod transcripts;
 mod tree;
+mod tree_feed;
+pub use tree_feed::{RootCut, SupervisionFeed, TreeFeed, TreeRecord};
 mod usage;
 mod usage_query;
 use crate::{

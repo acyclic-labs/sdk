@@ -916,21 +916,30 @@ where
             }
             AgentCommand::ClientFiles {
                 agent,
-                session,
+                root,
+                publication,
                 paths,
                 after,
             } => {
                 let agent = self.within_tree(agent)?;
                 Ok(AgentReply::ClientFiles {
-                    snapshot: self
-                        .bound
-                        .client_files(agent, *session, paths, after.as_ref())
-                        .await?,
+                    snapshot: match publication {
+                        Some(operation) => {
+                            self.bound
+                                .files_at_publication(agent, *root, paths, *operation)
+                                .await?
+                        }
+                        None => {
+                            self.bound
+                                .files(agent, *root, paths, after.as_ref())
+                                .await?
+                        }
+                    },
                 })
             }
             AgentCommand::PublishClientFiles {
                 agent,
-                session,
+                root,
                 operation,
                 changes,
             } => {
@@ -938,7 +947,7 @@ where
                 Ok(AgentReply::ClientFilesPublished {
                     generation: self
                         .bound
-                        .publish_client_files(agent, *session, *operation, changes)
+                        .publish_files(agent, *root, *operation, changes)
                         .await?,
                 })
             }

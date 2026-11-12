@@ -1,8 +1,8 @@
 //! Live per-agent files over the original membership and execution journals.
+use super::tree_feed::{MembershipFollow, MembershipUpdate as Update};
 use super::*;
 use acyclic_harness_client::{AgentCommand, AgentReply, EventProjection, ExecutionPosition};
-use acyclic_stream::{FollowRequest, RecordStream, records_only};
-use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _, future::LocalBoxFuture};
+use futures::{FutureExt as _, StreamExt as _, future::LocalBoxFuture};
 use std::{
     future::Future,
     io::{BufWriter, Write as _},
@@ -48,7 +48,6 @@ impl Conversation {
     }
 }
 
-type Update = Option<(AgentPath, MembershipFollow)>;
 type Job<'a> = LocalBoxFuture<'a, Result<Update>>;
 
 async fn export(
@@ -131,7 +130,8 @@ async fn add<'a>(
         }),
     )?;
     let bounded = *finish.borrow();
-    let follow = MembershipFollow::open(connection.clone(), 0, bounded).await?;
+    let follow =
+        MembershipFollow::open(connection.clone(), connection.root().clone(), 0, bounded).await?;
     jobs.push(follow.next(finish.clone()).boxed_local());
     let conversation = Conversation::open(connection);
     jobs.push(
@@ -142,60 +142,6 @@ async fn add<'a>(
         .boxed_local(),
     );
     Ok(())
-}
-
-struct MembershipFollow {
-    connection: Connection,
-    records: RecordStream,
-    next: u64,
-    bounded: bool,
-}
-
-impl MembershipFollow {
-    async fn open(connection: Connection, next: u64, bounded: bool) -> Result<Self> {
-        let mut request = FollowRequest::new(connection.root().membership().map_err(failed)?, next);
-        request.until = bounded.then_some(u64::MAX);
-        let records = records_only(connection.session.follow(request).await.map_err(failed)?);
-        Ok(Self {
-            connection,
-            records,
-            next,
-            bounded,
-        })
-    }
-
-    async fn next(mut self, mut finish: watch::Receiver<bool>) -> Result<Update> {
-        loop {
-            if !self.bounded && *finish.borrow() {
-                self = Self::open(self.connection, self.next, true).await?;
-            }
-            tokio::select! {
-                biased;
-                changed = finish.changed(), if !self.bounded => {
-                    changed.map_err(failed)?;
-                    self = Self::open(self.connection, self.next, true).await?;
-                }
-                record = self.records.try_next() => {
-                    let Some(record) = record.map_err(failed)? else {
-                        return if self.bounded {
-                            Ok(None)
-                        } else {
-                            Err(Error::Storage("membership follow ended".into()))
-                        };
-                    };
-                    self.next = record.sequence + 1;
-                    let member: crate::agent::Membership =
-                        serde_json::from_slice(&record.value).map_err(failed)?;
-                    if member.version != 1 || !self.connection.root().contains(&member.agent) {
-                        return Err(Error::Invalid("invalid agent membership".into()));
-                    }
-                    if &member.agent != self.connection.root() {
-                        return Ok(Some((member.agent, self)));
-                    }
-                }
-            }
-        }
-    }
 }
 
 async fn journal(

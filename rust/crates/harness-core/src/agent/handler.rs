@@ -111,10 +111,26 @@ impl Drop for DiagnosticAttempt<'_> {
     }
 }
 
+/// Host-owned companion actors created in the agent's original publication.
+/// They share the agent dispatcher; no separate process or registration scan
+/// is needed. Their handler must declare every input it consumes.
+pub trait Companions: Handler {
+    /// Whether this package owns this actor identity.
+    fn handles(&self, actor: &ActorReference) -> bool;
+    /// Pure creation contribution, composed with the original agent and volumes.
+    fn create(
+        &self,
+        actor: &ActorReference,
+        agent: &AgentPath,
+        volumes: &[super::WorkspaceEntry],
+    ) -> Result<Vec<CommitEffect>, Error>;
+}
+
 /// The agents' actor state under one store root: creation and observation,
 /// shared by a handler and by a host whose turns run elsewhere.
-pub(super) struct Agents<P: crate::store::JournalProvider + ?Sized> {
+pub(crate) struct Agents<P: crate::store::JournalProvider + ?Sized> {
     store: Store<P>,
+    pub(super) companions: Option<std::sync::Arc<dyn Companions>>,
 }
 
 impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
@@ -153,6 +169,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         self
     }
 
+    /// Add host-owned companion actors to the same creation and dispatch path.
+    pub fn with_companions(mut self, companions: std::sync::Arc<dyn Companions>) -> Self {
+        self.manifest
+            .subscriptions
+            .extend(companions.manifest().subscriptions.iter().cloned());
+        self.manifest
+            .interrupts
+            .extend(companions.manifest().interrupts.iter().cloned());
+        self.manifest.subscriptions.sort();
+        self.manifest.subscriptions.dedup();
+        self.agents.companions = Some(companions);
+        self
+    }
+
     /// Creates spawned children's volumes through `volumes`, in each spawn's
     /// commit; without it a child binds no volumes.
     #[must_use]
@@ -185,7 +215,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
 impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
     /// Over `store`'s root.
     pub(super) const fn new(store: Store<P>) -> Self {
-        Self { store }
+        Self {
+            store,
+            companions: None,
+        }
+    }
+
+    pub(super) fn with_companions(mut self, companions: std::sync::Arc<dyn Companions>) -> Self {
+        self.companions = Some(companions);
+        self
     }
 
     /// The same-commit effect that wakes `actor` after a write to its inbox.
@@ -204,7 +242,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         actor: &ActorReference,
         agent: &AgentPath,
         cursor: u64,
-    ) -> Result<[CommitEffect; 2], Error> {
+    ) -> Result<Vec<CommitEffect>, Error> {
         self.create_with_pause(actor, agent, cursor, false)
     }
 
@@ -214,7 +252,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         agent: &AgentPath,
         cursor: u64,
         paused: bool,
-    ) -> Result<[CommitEffect; 2], Error> {
+    ) -> Result<Vec<CommitEffect>, Error> {
         let creation = Creation {
             escrow: paused.then(|| acyclic_actors::escrow::Escrow::new(Some(0))),
             subscriptions: BTreeMap::from([(
@@ -232,7 +270,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             self.store.create(None, actor, creation)
         }
         .map_err(|_| Error::Record("agent actor state cannot be created"))?;
-        Ok([state, self.wake(actor)?])
+        Ok(vec![state, self.wake(actor)?])
     }
 
     /// One commit creating root agent `adopted.agent` as an actor in `within`'s
@@ -254,8 +292,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         adopted: ForkAdopted,
         peer: bool,
     ) -> Result<Spawn, Error> {
+        let volumes = adopted.volumes.clone();
         let created = super::create_root_with_peer(intent, adopted, peer)?;
-        self.root_actor(within, created, false)
+        self.root_actor(within, created, false, &volumes)
     }
 
     pub(super) fn prepare_root_history(
@@ -267,9 +306,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         history: &super::HistorySelection,
         peer: bool,
     ) -> Result<Spawn, Error> {
+        let volumes = adopted.volumes.clone();
         let created =
             super::commit::create_root_at(intent, adopted, Some((source, history)), peer)?;
-        self.root_actor(within, created, true)
+        self.root_actor(within, created, true, &volumes)
     }
 
     fn root_actor(
@@ -277,14 +317,19 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         within: &ActorReference,
         created: Spawn,
         paused: bool,
+        volumes: &[super::WorkspaceEntry],
     ) -> Result<Spawn, Error> {
         let actor = Self::actor(within, &created.child.id())?;
         let mut publish = PreparedPublish::foreign(created.request.idempotency_key.clone());
-        let effects = created
+        let mut effects: Vec<_> = created
             .request
             .effects
             .into_iter()
-            .chain(self.create_with_pause(&actor, &created.child, 0, paused)?);
+            .chain(self.create_with_pause(&actor, &created.child, 0, paused)?)
+            .collect();
+        if let Some(companions) = &self.companions {
+            effects.extend(companions.create(&actor, &created.child, volumes)?);
+        }
         for effect in effects {
             publish
                 .join(effect)
@@ -299,7 +344,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
     }
 
     /// The actor of `agent` in `actor`'s account and namespace.
-    pub(super) fn actor(within: &ActorReference, agent: &AgentId) -> Result<ActorReference, Error> {
+    pub(crate) fn actor(within: &ActorReference, agent: &AgentId) -> Result<ActorReference, Error> {
         ActorReference::new(
             within.account().as_bytes(),
             within.namespace().as_str().as_bytes(),
@@ -688,7 +733,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 });
             }
         }
+        let pause = step.outs.iter().any(|out| matches!(out, Out::Supervised { control, .. } if control.action == crate::supervision::Action::Pause));
         Ok(Transition {
+            pause,
             response: None,
             participant,
             checkpoint: prepared.into_checkpoint(),
@@ -709,6 +756,63 @@ where
 {
     fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+    fn admission_class(&self, actor: &ActorReference) -> acyclic_actors::guest::AdmissionClass {
+        self.agents
+            .companions
+            .as_ref()
+            .filter(|companions| companions.handles(actor))
+            .map_or(acyclic_actors::guest::AdmissionClass::Work, |companions| {
+                companions.admission_class(actor)
+            })
+    }
+
+    fn external_subscriptions(&self) -> &[String] {
+        self.agents
+            .companions
+            .as_ref()
+            .map_or(&[], |companions| companions.external_subscriptions())
+    }
+
+    fn retain_paused(&self, actor: &ActorReference, checkpoint: Option<&Checkpoint>) -> bool {
+        self.agents
+            .companions
+            .as_ref()
+            .filter(|companions| companions.handles(actor))
+            .is_none_or(|companions| companions.retain_paused(actor, checkpoint))
+    }
+    fn ordered_subscriptions(&self) -> &[String] {
+        self.agents
+            .companions
+            .as_ref()
+            .map_or(&[], |companions| companions.ordered_subscriptions())
+    }
+
+    fn revalidate_foreign_conflicts(&self, actor: &ActorReference) -> bool {
+        self.agents
+            .companions
+            .as_ref()
+            .filter(|companions| companions.handles(actor))
+            .is_none_or(|companions| companions.revalidate_foreign_conflicts(actor))
+    }
+
+    fn subscription_key(
+        &self,
+        id: &str,
+        checkpoint: Option<&Checkpoint>,
+    ) -> Result<Option<bytes::Bytes>, GuestError> {
+        match &self.agents.companions {
+            Some(companions)
+                if companions
+                    .manifest()
+                    .subscriptions
+                    .iter()
+                    .any(|declared| declared == id) =>
+            {
+                companions.subscription_key(id, checkpoint)
+            }
+            _ => Ok(None),
+        }
     }
 
     fn accepts_interrupt<'a>(
@@ -786,6 +890,11 @@ where
         checkpoint: Option<&'a Checkpoint>,
         cancellation: acyclic_actors::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
+        if let Some(companions) = &self.agents.companions
+            && companions.handles(&delivery.actor)
+        {
+            return companions.on_record(delivery, checkpoint, cancellation);
+        }
         Box::pin(async move {
             self.transition(delivery, checkpoint, cancellation, None)
                 .await
@@ -803,6 +912,11 @@ where
         checkpoint: Option<&'a Checkpoint>,
         failure: String,
     ) -> GuestFuture<'a, Option<Transition>> {
+        if let Some(companions) = &self.agents.companions
+            && companions.handles(&delivery.actor)
+        {
+            return companions.on_failure(delivery, checkpoint, failure);
+        }
         Box::pin(async move {
             self.transition(
                 delivery,

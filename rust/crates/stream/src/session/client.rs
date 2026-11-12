@@ -84,6 +84,7 @@ pub struct Client {
     pool: PoolHandle,
     /// Requirements owned by this operation, independently of the transport.
     revisions: Arc<crate::RevisionTracker>,
+    credential: u32,
 }
 
 /// The shared transport owners, without an operation's causal requirements.
@@ -112,6 +113,7 @@ impl PoolHandle {
             credential_owner: None,
             pool: self,
             revisions,
+            credential: 0,
         }
     }
 
@@ -343,6 +345,21 @@ impl Drop for Link {
     }
 }
 impl Client {
+    /// Credential slot used by this view's ordinary reads and follows.
+    #[must_use]
+    pub const fn credential(&self) -> u32 {
+        self.credential
+    }
+
+    /// Select an already registered slot without another registration or
+    /// transport. The server continues to verify its original capability.
+    #[must_use]
+    pub fn select_credential(&self, credential: u32) -> Self {
+        let mut selected = self.clone();
+        selected.credential = credential;
+        selected
+    }
+
     /// Selects one implicit authority while sharing this pool, credentials,
     /// channels and observations. Explicit minima are retained unchanged.
     #[must_use]
@@ -538,7 +555,7 @@ impl Client {
                 acknowledge,
                 false,
                 Some(crate::FollowFilter::default().transport_filter()?),
-                0,
+                self.credential,
             )
             .await?;
         let (snapshot, selection, has_bootstrap) = wire_codec::selection_from_opened(
@@ -590,7 +607,7 @@ impl Client {
                 acknowledge,
                 progress,
                 filter,
-                0,
+                self.credential,
             )
             .await?;
         let (snapshot, mut selection, has_bootstrap) = wire_codec::selection_from_opened(
@@ -680,7 +697,7 @@ impl Client {
             acknowledge,
             false,
             filter,
-            0,
+            self.credential,
         )
         .await
     }

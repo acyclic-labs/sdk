@@ -2,9 +2,9 @@ use super::*;
 
 /// One unpublished sparse atomic workspace transaction.
 pub struct Transaction<A: 'static, O: 'static> {
-    pub(super) workspace: Workspace<A, O>,
+    pub(crate) workspace: Workspace<A, O>,
     pub(crate) checkout: Checkout<A, O>,
-    pub(super) idempotency_key: IdempotencyKey,
+    pub(crate) idempotency_key: IdempotencyKey,
     pub(super) requires_rebase: bool,
 }
 

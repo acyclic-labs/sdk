@@ -36,9 +36,9 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
         futures::executor::block_on(crate::http_failure(response, bytes.len().max(1), None));
     let polls = polls.load(Ordering::Relaxed);
     assert!(polls <= bytes.len().div_ceil(width) + 1);
-    if !matches!(status, 400 | 408 | 413 | 429 | 500..=599) {
+    if !matches!(status, 400 | 413) {
         assert_eq!(polls, 0, "status-only refusal read its discarded body");
-    } else if failure && (matches!(status, 400 | 413) || bytes.len() < crate::EXCERPT_BYTES) {
+    } else if failure {
         assert_eq!(error.code(), ErrorCode::Unsupported);
     }
     if let Error::ModelUnavailable { excerpt, .. }
@@ -50,46 +50,14 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
         assert!(excerpt.len() <= crate::EXCERPT_BYTES);
         assert!(excerpt.chars().all(|character| !character.is_control()));
     }
-    let diagnostic = match &error {
+    match &error {
+        Error::ModelUnavailable { excerpt, .. } => assert!(excerpt.is_empty()),
         Error::Invalid(message) | Error::ModelDiagnostic { message, .. }
             if matches!(status, 400 | 413) && !failure =>
         {
-            Some((message, format!("model HTTP status {status}: ")))
+            assert_eq!(message, &format!("model HTTP status {status}"));
         }
-        Error::ModelUnavailable { excerpt, .. } => Some((excerpt, String::new())),
-        _ => None,
-    };
-    if let Some((actual, prefix)) = diagnostic {
-        // Normalize the raw prefix first, then remove only the replacement for
-        // an incomplete final scalar when there was no earlier invalid input.
-        // Production instead borrows the original valid byte prefix in that case.
-        let bounded = &bytes[..bytes.len().min(crate::EXCERPT_BYTES)];
-        let normalized = String::from_utf8_lossy(bounded);
-        let text = if std::str::from_utf8(bounded).is_err_and(|error| error.error_len().is_none()) {
-            normalized.strip_suffix('\u{fffd}').unwrap()
-        } else {
-            &normalized
-        };
-        let expected: String = prefix
-            .chars()
-            .chain(text.chars())
-            .map(|character| {
-                if character.is_control() {
-                    ' '
-                } else {
-                    character
-                }
-            })
-            .scan(0usize, |length, character| {
-                *length += character.len_utf8();
-                (*length <= crate::EXCERPT_BYTES).then_some(character)
-            })
-            .collect();
-        assert_eq!(
-            actual,
-            expected.trim(),
-            "HTTP refusal lost original diagnostic"
-        );
+        _ => {}
     }
     (error.code(), error.to_string())
 }
@@ -122,7 +90,7 @@ pub fn assert_http_failure_invariants(input: &[u8]) -> bool {
         assert_eq!(
             decode(status, &canonical, canonical.len().max(1), false).0,
             decode(status, &escaped, escaped.len().max(1), false).0,
-            "JSON spelling may change the original excerpt, never its class"
+            "JSON spelling cannot change the status or context class"
         );
         return true;
     }
@@ -226,7 +194,7 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
     }
 
     // Reclassify the captured authentication body as a non-context refusal.
-    // The original diagnostic must survive both HTTP statuses and chunking.
+    // The status survives chunking without retaining the captured response text.
     for status in [400u16, 413] {
         let mut input = include_bytes!("../../fuzz/corpus/http_failure/llamacpp-auth").to_vec();
         input[..2].copy_from_slice(&status.to_le_bytes());

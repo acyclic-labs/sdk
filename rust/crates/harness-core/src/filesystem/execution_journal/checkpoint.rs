@@ -37,6 +37,7 @@ pub(super) struct IndexState {
     pub(super) pending_dispatches: u64,
     pub(super) anchor: [u8; 32],
     pub(super) latest_response: Option<u32>,
+    pub(super) latest_response_output: bool,
     pub(super) model_dispatched: bool,
 }
 
@@ -55,6 +56,7 @@ impl ExecutionSummary {
         self.tail = state.tail;
         self.pending_dispatches = state.pending_dispatches;
         self.latest_response = state.latest_response;
+        self.latest_response_output = state.latest_response_output;
         self.model_dispatched = state.model_dispatched;
         self.partial = true;
         self.recovery = Some(Recovery {
