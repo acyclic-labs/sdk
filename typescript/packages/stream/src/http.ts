@@ -84,6 +84,7 @@ export class HttpStreamProvider implements StreamProvider {
     }
     const input = await validateWireRequest({
       kind: "children_page",
+      ...(request.offset === undefined ? {} : { offset: request.offset }),
       ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),

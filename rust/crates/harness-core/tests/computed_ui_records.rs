@@ -195,6 +195,71 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
         )
         .await?;
     assert_eq!(repeated.bytes, before.bytes);
+    // One visible turn page may cross the stream request ceiling. Reuse one
+    // real immutable output so the proof exercises paging, not file creation.
+    let file = storage
+        .stage(
+            OperationId::new(),
+            "turns/boundary.json",
+            br#"{"text":"boundary record"}"#,
+            "application/json",
+            "turn.json",
+        )
+        .await?;
+    let entry = ConversationEntry {
+        observed_through: 2,
+        inbox: 1,
+        input: TurnInput::Brief {
+            brief: Box::new(file.clone()),
+        },
+        output: file,
+        outcome: Default::default(),
+        goal: None,
+        targets: None,
+        tool_results: None,
+        steering: None,
+        notices: None,
+    };
+    let extra = acyclic_stream::MAX_ITEMS - 1;
+    streams
+        .append(AppendRequest {
+            path: agent.conversation()?,
+            records: vec![entry.encode()?.into(); extra],
+            if_tail: Some(2),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let wide = StreamUiProvider::new(
+        streams,
+        storage.content_bindings().reader,
+        agent,
+        View::new(u32::try_from(extra + 2)?)?,
+        [5; 16],
+        navigation,
+    )
+    .into_source();
+    let cut = wide.reference(&mut ctx).await?;
+    let node = wide
+        .lookup(cut.clone(), &path, &native, &cancellation)
+        .await?
+        .ok_or("missing wide turn page")?;
+    let bytes = wide
+        .read_range(
+            cut,
+            &path,
+            node.version,
+            0,
+            u64::MAX,
+            &native,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(
+        std::str::from_utf8(&bytes.bytes)?
+            .matches("boundary record")
+            .count(),
+        extra
+    );
     Ok(())
 }
 
