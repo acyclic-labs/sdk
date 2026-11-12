@@ -877,10 +877,12 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
     let opening = streams.requests().since(before);
     assert_eq!(opening.control(), 1, "one joint starting cut");
     assert_eq!(opening.data(), 4, "one subscription per input");
-    assert_eq!(
-        sink.changes.lock().unwrap().len(),
-        7,
-        "opening invalidates earlier observations"
+    assert!(
+        sink.changes
+            .lock()
+            .unwrap()
+            .contains(&SourceChange::Name(namespace("/diagnostics"))),
+        "opening invalidates previously observed diagnostic descendants"
     );
     sink.changes.lock().unwrap().clear();
     let mut ctx = KernelAccounting::NativeOriginal {

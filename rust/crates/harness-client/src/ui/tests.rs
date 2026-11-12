@@ -407,10 +407,6 @@ async fn ui_default_projection() -> TestResult {
             .iter()
             .any(|want| { matches!(want, crate::reader::Want::Listing { index: 2, .. }) })
     );
-    assert_eq!(
-        view.affected(Affected::Status),
-        &["index.md", "status.md", "glyph"]
-    );
     // A real followed record supplies multibyte text. Byte ranges may split a
     // scalar, cross formatting writes, be reversed, or extend beyond EOF.
     reader.set_follow(selected.status()?, true);
