@@ -578,6 +578,14 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         None
     }
 
+    /// Saves each bound workspace before parking on a pending operation.
+    fn park<'a>(
+        &'a self,
+        _agent: &'a AgentState,
+        _operation: OperationId,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Publishes each bound workspace before the original turn becomes terminal.
     fn settle<'a>(
         &'a self,
@@ -1981,6 +1989,13 @@ where
 {
     fn settle<'a>(&'a self, agent: &'a AgentState, turn: OperationId) -> BoxFuture<'a, Result<()>> {
         self.executors.settle(agent, turn)
+    }
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.executors.park(agent, operation)
     }
     fn open_control<'a>(
         &'a self,
