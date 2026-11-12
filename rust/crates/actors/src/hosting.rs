@@ -57,6 +57,13 @@ impl<P: StreamProvider + ?Sized> Host<P> {
         &*self.clock
     }
 
+    /// Admit this event host through the actor's explicit placement command.
+    /// Wakes never claim ownership on their own. The placement owner supplies
+    /// the actor-local command index and retains it through retries.
+    pub async fn place(&self, index: u64) -> Result<(), Error> {
+        self.runtime.place(self.actor.clone(), index).await
+    }
+
     /// Commit a pause/resume fence without waiting for an active event.
     /// This neither delivers nor consumes input. Resume needs a platform wake.
     pub async fn pause(&self, paused: bool) -> Result<(), Error> {

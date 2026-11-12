@@ -7,7 +7,7 @@ use acyclic_stream::ChildrenPageRequest;
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub(super) fn dispatcher_store(&self) -> Result<(Store<P>, ActorReference), Error> {
-        let actor = match &self.claims {
+        let actor = match &self.scope {
             None => ActorReference::new(b"runtime", b"dispatch", b"all"),
             Some((account, namespace)) => ActorReference::new(
                 account.as_bytes(),
@@ -115,7 +115,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 .await?;
             for child in page.children {
                 if let Ok(actor) = self.store.actor(&child.path)
-                    && self.claims(&actor)
+                    && self.includes(&actor)
                 {
                     self.track(actor)?;
                 }
