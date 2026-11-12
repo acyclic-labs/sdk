@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const OUTSTANDING: &str = "process_tree::scale_tests::outstanding_waits_hold_no_thread_per_child";
 const CONTROL: &str = "process_tree::scale_tests::a_thread_per_wait_starves_the_bounded_pool";
+const HELD: &str = "process_tree::scale_tests::held_host_io_never_delays_process_control";
 
 /// One blocked child and the writer whose close releases it.
 struct Blocked {
@@ -284,5 +285,73 @@ fn a_thread_per_wait_starves_the_bounded_pool() -> io::Result<()> {
     runtime
         .block_on(entry)
         .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "queued wait lost before entry"))?;
+    Ok(())
+}
+
+/// Host I/O includes file-lock transactions that wait on other owners. With
+/// every host I/O worker held, as such waits can hold them, an unrelated
+/// command still starts, drains and reaps; the holders release only after it
+/// finishes. Negative control: when capture shared the host I/O pool, its
+/// first turn queued behind the holders and this test never completed.
+#[test]
+fn held_host_io_never_delays_process_control() -> io::Result<()> {
+    if passed_in_exclusive_process(HELD)? {
+        return Ok(());
+    }
+    crate::initialize_native_io_services()?;
+    let pool = crate::workers(&crate::BLOCKING_WORKERS, false)?.exclusive_threads();
+    let runtime = runtime()?;
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let held = Arc::new(std::sync::Mutex::new(held));
+    let mut holders = Vec::with_capacity(pool);
+    for _ in 0..pool {
+        let held = Arc::clone(&held);
+        let (entered, mut entry) = tokio::sync::oneshot::channel();
+        let mut holder = crate::run_blocking_io(
+            move || {
+                let _ = entered.send(());
+                // Every holder waits until the release sender drops.
+                let _ = held
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv();
+            },
+            None,
+        )?;
+        runtime.block_on(std::future::poll_fn(|context| {
+            use std::future::Future as _;
+            use std::pin::Pin;
+            use std::task::Poll;
+            if let Poll::Ready(result) = Pin::new(&mut holder).poll(context) {
+                return Poll::Ready(Err(io::Error::other(format!(
+                    "holder ended before its release: {result:?}"
+                ))));
+            }
+            Pin::new(&mut entry).poll(context).map(|result| {
+                result.map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "holder lost"))
+            })
+        }))?;
+        holders.push(holder);
+    }
+    let Blocked {
+        tree,
+        release: input,
+    } = blocked()?;
+    drop(input);
+    let outcome = runtime.block_on(async move {
+        tree.capture(
+            &crate::TaskSpawner::current(),
+            CaptureSchedule::Unbounded,
+            0,
+            None,
+            Quiet,
+        )
+        .await
+    })?;
+    assert!(outcome.result.is_ok_and(|output| output.status.success()));
+    drop(release);
+    for holder in holders {
+        runtime.block_on(holder)?;
+    }
     Ok(())
 }
