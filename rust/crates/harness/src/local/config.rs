@@ -184,6 +184,13 @@ impl LocalHarnessConfig {
         settings: Option<&crate::native_settings::SettingsConfig>,
         injected: bool,
     ) -> Result<Self> {
+        let preferences = settings
+            .map(crate::native_settings::SettingsConfig::configured_model_preferences)
+            .transpose()?
+            .unwrap_or_default();
+        if self.compaction.is_none() {
+            self.compaction = preferences.compaction;
+        }
         let Some((models, selection)) = self.models.take() else {
             if let Some((model, _)) = &self.model {
                 let role = crate::templates::root()?.model;
@@ -198,10 +205,8 @@ impl LocalHarnessConfig {
         };
         let selection = match selection {
             Some(selection) => selection,
-            None => settings
-                .map(crate::native_settings::SettingsConfig::configured_model)
-                .transpose()?
-                .flatten()
+            None => preferences
+                .model
                 .unwrap_or_else(|| models.default_model().to_owned()),
         };
         let role = crate::templates::root()?.model;

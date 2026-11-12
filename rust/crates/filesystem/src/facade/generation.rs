@@ -78,6 +78,48 @@ fn generation_from_payload(
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    /// Reads one original authority position, fenced by its retained digest.
+    /// This is the effective serial predecessor, including unchanged roots and
+    /// independently composed publications; a generation parent is not that proof.
+    pub(crate) async fn workspace_generation_at_position(
+        &self,
+        volume: &Volume<A, O>,
+        position: Sequence,
+        digest: Digest,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<GenerationId, FsError> {
+        let after = position
+            .get()
+            .checked_sub(1)
+            .ok_or(FsError::InvalidAuthorityHistory)?;
+        let mut scope = accounting.allocation_scope()?;
+        let mut work = crate::async_storage::AuthorityFrame::borrow(&mut scope)?;
+        let result = self
+            .inner
+            .authority
+            .replay(
+                volume_authority_id(volume.id),
+                Sequence::new(after),
+                ReplayLimit {
+                    records: 1,
+                    payload_bytes: volume.config.limits.maximum_object_bytes,
+                },
+                &mut work,
+            )
+            .await;
+        finish_authority_work(work)?;
+        let (records, allocation) = result.map_err(FsError::from)?;
+        let result = match records.as_slice() {
+            [record] if record.sequence == position && record.digest == digest => {
+                generation_from_record(record, volume.id, &mut scope).map(GenerationId::from_root)
+            }
+            _ => Err(FsError::InvalidAuthorityHistory),
+        };
+        drop(records);
+        drop(allocation);
+        result
+    }
+
     pub(crate) fn observed_generation_closure(
         &self,
         volume: &Volume<A, O>,

@@ -231,12 +231,28 @@ is admitted; an unreported shell edit cannot become a successful history cut.
 
 `NativePublicationSnapshot` identifies the represented view.
 `LazySnapshotRef` identifies its authored/source/overlay/shadow projection.
+`LazyMount::sync_with_permit` accepts an optional caller operation. Selecting one
+records an empty capture too, so its replay returns the original receipt without
+publishing later pending edits. Without one, clean sync appends no DATA record.
+`LazyWorkspace::original_publication_cuts` recovers the original before/after
+views using the sealed prior overlay/shadow roots and one bounded authority read
+at the original predecessor's sequence and digest. A clean publication can retain
+its generation, so generation parents cannot establish that predecessor. Native
+publication evidence is version 4; unsupported versions refuse before fields
+are decoded, without migration.
 Neither value grants access, retains objects, certifies source coverage, or
 replaces the original publication proof. A current source with a matching
 identity cannot substitute for the retained epoch. If the source provider
 cannot preserve and reopen that epoch, retaining the cut must refuse before
 publication. Replaying a directory tree or reading today's paths cannot repair
 an incomplete historical cut.
+
+Source copy-up retains the observed bytes and source version in the shared
+identity-shadow index before exposing a mutable candidate. Observed records are
+independent of authored overrides: discarding a candidate does not freeze live
+source reads. Frozen reads use an observation only for its exact source and
+version; observing one path does not establish coverage for unobserved aliases.
+Collection must retain the original shadow roots and both record payloads.
 
 Preparation must contribute the complete root and companion through the same
 `FilesystemCommit` as the history descriptor, conversation selection and child

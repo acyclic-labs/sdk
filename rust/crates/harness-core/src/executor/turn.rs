@@ -15,6 +15,83 @@ pub(super) struct CollectedStep {
     pub(super) parts: bool,
 }
 
+struct OutputCalls<'a>(&'a [(ToolInvocation, usize)]);
+
+impl Serialize for OutputCalls<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq as _;
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for (invocation, _) in self.0 {
+            sequence.serialize_element(&(&invocation.name, &invocation.arguments))?;
+        }
+        sequence.end()
+    }
+}
+
+#[derive(Default)]
+struct OutputDigest {
+    text: blake3::Hasher,
+    visible: bool,
+}
+
+impl OutputDigest {
+    fn text(&mut self, value: &str, io: Option<&PreparationIo>) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters {
+                bytes_hashed: value.len() as u64,
+                ..Default::default()
+            })?;
+        }
+        let _ = io;
+        self.visible |= !value.is_empty();
+        self.text.update(value.as_bytes());
+        Ok(())
+    }
+
+    // Page boundaries must not alter the semantic output hash. Keep only the
+    // incremental hash across pages, without copying or rescanning history.
+    fn include(
+        &mut self,
+        page: &CollectedStep,
+        parts: &[ModelMessage],
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if !page.text.is_empty() || !page.parts {
+            self.text(&page.text, io)?;
+        } else {
+            for part in parts {
+                crate::model::charge_items(io, 1)?;
+                if let ModelContent::Part(ModelContentPart::Text { text, .. }) = &part.content {
+                    self.text(text, io)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(
+        &mut self,
+        calls: &[(ToolInvocation, usize)],
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<[u8; 32]>> {
+        let text = *std::mem::take(&mut self.text).finalize().as_bytes();
+        if !std::mem::take(&mut self.visible) && calls.is_empty() {
+            return Ok(None);
+        }
+        with_history_io(io, |work| {
+            json::canonical_json_digest(
+                &("harness:model-output:v2", text, OutputCalls(calls)),
+                None,
+                work,
+            )
+            .map(Some)
+        })
+    }
+}
 impl CollectedStep {
     fn retained_payload_bytes(&self) -> Result<u64> {
         let slots = self
@@ -48,7 +125,8 @@ impl StockExecution<'_> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
         let mut phase = DispatchPhase::new();
-        let result = self.execute_turn(input, journal, &mut phase).await;
+        let result =
+            ExecutionProgress::controlled(self.execute_turn(input, journal, &mut phase).await);
         phase
             .finish(result, journal, input.operation_id, self.io)
             .await
@@ -84,6 +162,7 @@ impl StockExecution<'_> {
         let mut steering = working_tail::retirement::SteeringHistory::default();
         let mut hook_context = Vec::new();
         let mut unfinished = String::new();
+        let mut output = OutputDigest::default();
         #[cfg(not(target_arch = "wasm32"))]
         let mut stop_active = false;
         #[cfg(not(target_arch = "wasm32"))]
@@ -93,6 +172,9 @@ impl StockExecution<'_> {
         let mut steps = 0_u32;
         let progress = async {
             while input.max_steps.is_none_or(|maximum| steps < maximum) {
+                if let Some(control) = journal.supervision().await? {
+                    return Ok(ExecutionProgress::Controlled(control));
+                }
                 let step = steps;
                 steps = steps.checked_add(1).ok_or_else(|| {
                     stock_boundary(
@@ -155,13 +237,20 @@ impl StockExecution<'_> {
                 };
                 self.retire_working_history(&mut prior_messages, Some(&mut steering))
                     .await?;
+                if let Some(control) = journal.supervision().await? {
+                    return Ok(ExecutionProgress::Controlled(control));
+                }
+                let part_start = prior_messages.len();
+                let collected =
+                    self.collect_step_events(input, step, model_events, &mut prior_messages)?;
+                output.include(&collected, &prior_messages[part_start..], self.io)?;
                 let CollectedStep {
                     calls,
                     text,
                     metadata,
                     completion,
                     parts,
-                } = self.collect_step_events(input, step, model_events, &mut prior_messages)?;
+                } = collected;
                 if completion == StepCompletion::Incomplete {
                     if !parts {
                         self.append_assistant_part(
@@ -180,6 +269,29 @@ impl StockExecution<'_> {
                     stock_retire_text(text, self.io)?;
                     stock_retire_event(ModelEvent::Completed { metadata }, self.io)?;
                     continue;
+                }
+                let digest = output.finish(&calls, self.io)?;
+                let key = with_history_io(self.io, |work| {
+                    preparation_format(format_args!("model:{step}:output"), work)
+                })?;
+                #[cfg(not(target_arch = "wasm32"))]
+                let _key_hold = self
+                    .io
+                    .map(|io| io.guard_owned(key.capacity() as u64))
+                    .transpose()?;
+                phase::run(journal, self.io, || async {
+                    journal
+                        .append(
+                            input.operation_id,
+                            &key,
+                            &ExecutionEvent::ModelOutput { step, digest },
+                            self.io,
+                        )?
+                        .await
+                })
+                .await?;
+                if let Some(control) = journal.supervision().await? {
+                    return Ok(ExecutionProgress::Controlled(control));
                 }
                 if calls.is_empty() {
                     // An explicit Stop denial supersedes the candidate answer.
@@ -245,6 +357,9 @@ impl StockExecution<'_> {
                         )
                         .await?
                     {
+                        ExecutionProgress::Controlled(control) => {
+                            return Ok(ExecutionProgress::Controlled(control));
+                        }
                         ExecutionProgress::Ready(()) => {}
                         ExecutionProgress::Pending(wait) => {
                             return Ok(ExecutionProgress::Pending(wait));
@@ -297,6 +412,7 @@ impl StockExecution<'_> {
                     transcript,
                 }))
             }
+            ExecutionProgress::Controlled(control) => Ok(ExecutionProgress::Controlled(control)),
             ExecutionProgress::Pending(wait) => Ok(ExecutionProgress::Pending(wait)),
             ExecutionProgress::Failed(reason) => Ok(ExecutionProgress::Failed(reason)),
             ExecutionProgress::PreDispatchFailed(failure) => Err(failure.into_error()),

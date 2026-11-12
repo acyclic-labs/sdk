@@ -27,6 +27,8 @@ pub use targets::{InProcessTargets, Target, TargetResolver};
 pub(crate) use targets::{call_target, is_workspace_call};
 mod tools;
 pub use tools::*;
+mod tool_output;
+pub use tool_output::{ToolOutputActivity, ToolOutputLog, tool_output_activity_path};
 mod task_context;
 pub use task_context::*;
 mod content_read;

@@ -83,6 +83,7 @@ pub use bounded_io::{PreparationCustody, PreparationIo};
 #[cfg(not(target_arch = "wasm32"))]
 pub use tool_output::{AgentObservation, session_authority, session_trust};
 mod memory;
+mod run_admission;
 pub use memory::MemoryHarnessStorage;
 mod text_tools;
 pub use text_tools::ExactTextReplacement;

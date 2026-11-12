@@ -40,6 +40,8 @@ pub(super) use diagnostic::check_diagnostic_read;
 mod settlement;
 #[path = "wired/spawn_names.rs"]
 mod spawn_names;
+#[path = "wired/supervision.rs"]
+mod supervision;
 
 const LIMITS: TurnLimits = TurnLimits {
     maximum_bytes: Some(64 * 1024),
@@ -319,9 +321,11 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
         let open = host
             .open(
                 &state,
-                OperationId::from_bytes([220; 16]),
-                0,
-                0,
+                acyclic_harness_core::agent::TurnIdentity::new(
+                    OperationId::from_bytes([220; 16]),
+                    0,
+                    0,
+                ),
                 &ModelContent::Text("test".into()),
                 acyclic_actors::guest::CancellationToken::new(),
             )
@@ -510,9 +514,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
     let open = host
         .open(
             &state,
-            operation,
-            0,
-            1,
+            acyclic_harness_core::agent::TurnIdentity::new(operation, 0, 1),
             &ModelContent::Text("initial".into()),
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -788,9 +790,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
     let reopened = host
         .open(
             &state,
-            operation,
-            0,
-            1,
+            acyclic_harness_core::agent::TurnIdentity::new(operation, 0, 1),
             &ModelContent::Text("initial".into()),
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -1082,9 +1082,7 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
         let open = host
             .open(
                 &state,
-                operation,
-                0,
-                1,
+                acyclic_harness_core::agent::TurnIdentity::new(operation, 0, 1),
                 &input,
                 acyclic_actors::guest::CancellationToken::new(),
             )
@@ -2512,16 +2510,14 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         fn open<'a>(
             &'a self,
             agent: &'a AgentState,
-            turn: OperationId,
-            inbox: u64,
-            cursor: u64,
+            identity: acyclic_harness_core::agent::TurnIdentity,
             input: &'a ModelContent,
             cancellation: acyclic_actors::guest::CancellationToken,
         ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
             Box::pin(async move {
                 let mut open = self
                     .original
-                    .open(agent, turn, inbox, cursor, input, cancellation)
+                    .open(agent, identity, input, cancellation)
                     .await?;
                 open.goal = open.goal.map(|original| {
                     Arc::new(EditedGoal {

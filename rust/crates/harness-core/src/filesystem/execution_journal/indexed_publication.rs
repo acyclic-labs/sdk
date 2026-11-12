@@ -32,11 +32,11 @@ async fn condition<P: crate::store::JournalProvider + ?Sized>(
     })
 }
 
-fn add_records(
+fn add_records<R: Clone + Into<acyclic_stream::AppendRecord>>(
     request: &mut acyclic_stream::CommitRequest,
     custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
     path: &StreamPath,
-    input: &[OwnedBytes],
+    input: &[R],
 ) -> Result<()> {
     custody.reserve(
         request.effects[0].mutations.len() + 1,
@@ -53,11 +53,11 @@ fn add_records(
 }
 
 /// The receipt assigns exactly `records` to `path`, starting at `start`.
-fn confirms(
+fn confirms<R>(
     append: &acyclic_stream::AppendRange,
     path: &StreamPath,
     start: u64,
-    records: &[OwnedBytes],
+    records: &[R],
 ) -> bool {
     append.path == *path
         && append.start == start
@@ -75,11 +75,18 @@ where
         summary: &mut ExecutionSummary,
         retry: [u8; 32],
         event: &ExecutionEvent,
+        inputs: (Option<&ModelEvent>, Option<&super::supervision::Inputs<'_>>),
         bytes: &OwnedBytes,
         contributions: &[Contribution<'_>],
         io: Option<&PreparationIo>,
     ) -> Result<Option<(Recovery, acyclic_stream::CommitId)>> {
         let operation = summary.operation.ok_or_else(|| invalid(io))?;
+        let (model, inputs) = inputs;
+        let source_key = super::model_calls::observation_key(event, model, io)?;
+        let _source_key_hold = source_key
+            .as_ref()
+            .map(|key| io.map(|io| io.guard_bytes(key)).transpose())
+            .transpose()?;
         let pages = self.index_path(operation, "pages", io)?;
         let head = self.index_path(operation, "head", io)?;
         let execution_hold;
@@ -115,6 +122,7 @@ where
             pending_dispatches: summary.pending_dispatches,
             anchor: crate::model::hash_bytes(bytes, io)?,
             latest_response: summary.latest_response,
+            latest_response_output: summary.latest_response_output,
             model_dispatched: summary.model_dispatched,
         };
         let checkpoint_hold;
@@ -129,6 +137,178 @@ where
         let execution_condition =
             condition(&self.stream, &execution, summary.tail - 1, &mut work).await?;
         let digest = publication_digest(&checkpoint, retry, io)?;
+        // This is a projection of the accepted source, never an independently
+        // submitted lifecycle write. A rejected/replayed cut has exactly the
+        // source journal's outcome and original commit identity.
+        let lifecycle = self
+            .agent_events
+            .as_ref()
+            .filter(|(_, _, _, start)| *start && matches!(event, ExecutionEvent::Started { .. }));
+        let lifecycle = lifecycle.map(|(agent, run, input, _)| crate::supervision::Event {
+            version: 1,
+            agent: agent.clone(),
+            run: Some(*run),
+            source: crate::supervision::Position {
+                stream: execution.clone(),
+                sequence: summary.tail - 1,
+            },
+            event: crate::supervision::Lifecycle::Started { input: *input },
+        });
+        let lifecycle_path = lifecycle
+            .as_ref()
+            .map(|event| crate::supervision::streams::path(&event.agent))
+            .transpose()?;
+        let lifecycle_bytes = lifecycle
+            .as_ref()
+            .map(|event| match io {
+                Some(io) => io.encode(event, acyclic_stream::MAX_RECORD_BYTES as u64, false),
+                None => serde_json::to_vec(event)
+                    .map(Into::into)
+                    .map_err(|_| invalid(io)),
+            })
+            .transpose()?;
+        let lifecycle_hold = lifecycle_bytes
+            .as_ref()
+            .map(|bytes| io.map(|io| io.guard_bytes(bytes)).transpose())
+            .transpose()?;
+        let lifecycle_record = lifecycle_bytes
+            .as_ref()
+            .map(|bytes| -> Result<_> {
+                Ok(acyclic_stream::AppendRecord {
+                    value: bytes.clone(),
+                    headers: supervision::indexed_headers(
+                        [super::super::bounded_io::clone_bytes(
+                            crate::supervision::RUN_KEY,
+                            io,
+                        )?],
+                        io,
+                    )?,
+                })
+            })
+            .transpose()?;
+        let source = crate::supervision::Position {
+            stream: execution.clone(),
+            sequence: summary.tail - 1,
+        };
+        let projection = self.supervision_projection(&source, inputs, io).await?;
+        let has_projection = projection.is_some();
+        let mut derived = projection.map(|projection| projection.effect);
+        if matches!(
+            event,
+            ExecutionEvent::ModelStarted { .. } | ExecutionEvent::ToolStarted { .. }
+        ) && let Some(path) = &self.actor_admission
+        {
+            // This one point observation buys a strict pause boundary: accepted
+            // calls may finish, but no new model/tool dispatch can race the
+            // actor's admission closure. Keep the original native read owner.
+            let observed = crate::store::operations::heads_with_work(
+                &self.stream,
+                acyclic_stream::HeadsRequest {
+                    paths: [path.clone()].into_iter().collect(),
+                    retained: Default::default(),
+                    durable_through: None,
+                    projection: acyclic_stream::HeadProjection::History,
+                    children: None,
+                    limit: 1,
+                    at_least: Default::default(),
+                },
+                &mut work,
+            )
+            .await?;
+            let head = observed
+                .heads
+                .first()
+                .and_then(Option::as_ref)
+                .ok_or_else(|| invalid(io))?;
+            let record = head.last.as_ref().ok_or_else(|| invalid(io))?;
+            let admission = acyclic_actors::local::AdmissionState::from_record(&record.value)
+                .map_err(|_| invalid(io))?;
+            if admission.paused {
+                return Err(Error::ExecutionControlled(crate::supervision::Control {
+                    source: crate::supervision::Position {
+                        stream: path.clone(),
+                        sequence: record.sequence,
+                    },
+                    action: crate::supervision::Action::Pause,
+                    signal: None,
+                }));
+            }
+            let effect = derived
+                .get_or_insert_with(|| acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new()));
+            crate::executor::stock_vec_push(
+                &mut effect.conditions,
+                CommitCondition::Head {
+                    path: path.clone(),
+                    expected: head.tail,
+                    commit_id: record.commit_id,
+                },
+                io,
+            )?;
+        }
+        if !has_projection
+            && matches!(
+                event,
+                ExecutionEvent::ModelStarted { .. } | ExecutionEvent::ToolStarted { .. }
+            )
+            && let Some((agent, run, _, _)) = &self.agent_events
+        {
+            let defaults = crate::supervision::Policy::default();
+            let policy = self
+                .run_admission
+                .as_ref()
+                .map(|source| &source.value)
+                .unwrap_or(&defaults);
+            let admission = crate::supervision::streams::Queries::new(&*self.stream, agent, *run)
+                .admission(policy)
+                .await?;
+            if let Some(control) = admission.control {
+                return Err(Error::ExecutionControlled(control));
+            }
+            let effect = derived
+                .get_or_insert_with(|| acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new()));
+            crate::executor::stock_vec_push(&mut effect.conditions, admission.condition, io)?;
+        }
+        if let Some((path, record)) = lifecycle_path.as_ref().zip(lifecycle_record.as_ref()) {
+            let effect = derived
+                .get_or_insert_with(|| acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new()));
+            if let Some(CommitMutation::Append { records, .. }) = effect.mutations.iter_mut().find(
+                |mutation| matches!(mutation, CommitMutation::Append { path: target, .. } if target == path)
+            ) {
+                // A run's original admission can itself exhaust a zero
+                // reservation. Started precedes its signals in one append;
+                // there are never two mutations for the same stream path.
+                crate::executor::stock_vec_prepare_push(records, io)?;
+                if let Some(io) = io {
+                    io.charge(acyclic_fs::WorkCounters {
+                        bytes_copied: (records.len() as u64)
+                            .checked_mul(std::mem::size_of::<acyclic_stream::AppendRecord>() as u64)
+                            .ok_or_else(|| invalid(Some(io)))?,
+                        ..Default::default()
+                    })?;
+                }
+                records.insert(0, record.clone().into());
+            } else {
+                let mut records = Vec::new();
+                crate::executor::stock_vec_push(&mut records, record.clone().into(), io)?;
+                crate::executor::stock_vec_push(
+                    &mut effect.mutations,
+                    CommitMutation::Append {
+                        path: path.clone(),
+                        records,
+                    },
+                    io,
+                )?;
+            }
+        }
+        if let Some(effect) = &mut derived {
+            effect.mutations.sort_by(|left, right| match (left, right) {
+                (
+                    CommitMutation::Append { path: left, .. },
+                    CommitMutation::Append { path: right, .. },
+                ) => left.cmp(right),
+                _ => std::cmp::Ordering::Equal,
+            });
+        }
         let cut = pages::Cut {
             operation,
             execution: &execution,
@@ -141,6 +321,8 @@ where
             base,
             digest,
             contributions,
+            derived: derived.as_ref(),
+            source_key: source_key.as_ref(),
         };
         let committed = cut
             .publish(
@@ -164,6 +346,8 @@ where
         } else {
             None
         };
+        drop(lifecycle_bytes);
+        drop(lifecycle_hold);
         drop(checkpoint);
         drop(checkpoint_hold);
         drop(execution);

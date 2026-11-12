@@ -3,6 +3,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, SanType,
 };
 use rustls::SupportedProtocolVersion;
+use tokio::net::TcpListener;
 
 type Outcome<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -244,7 +245,10 @@ async fn the_listener_yields_only_verified_connections_without_stalling() -> Out
     let fixture = Fixture::new()?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
-    let mut incoming = Box::pin(incoming(listener, config(&fixture.tls(fixture.peer()))?));
+    let mut incoming = Box::pin(incoming(
+        listener.into(),
+        config(&fixture.tls(fixture.peer()))?,
+    ));
     // The server polls its listener as it serves; its first connection is
     // the first that verified.
     let first = tokio::spawn(async move { incoming.next().await });

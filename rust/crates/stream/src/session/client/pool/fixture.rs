@@ -172,5 +172,6 @@ pub(in crate::session::client) fn client(pool: &Pool) -> Client {
             abandoned: Arc::clone(&pool.abandoned),
         },
         revisions: Arc::default(),
+        credential: 0,
     }
 }

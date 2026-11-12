@@ -16,6 +16,9 @@ pub struct Credentials {
     native_sources: bool,
     #[cfg(not(target_arch = "wasm32"))]
     #[serde(skip)]
+    environment_only: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    #[serde(skip)]
     path: Option<std::path::PathBuf>,
     #[cfg(not(target_arch = "wasm32"))]
     #[serde(skip)]
@@ -65,6 +68,8 @@ impl Default for Credentials {
             api_keys: BTreeMap::new(),
             keychain_service: None,
             native_sources: true,
+            #[cfg(not(target_arch = "wasm32"))]
+            environment_only: false,
             #[cfg(not(target_arch = "wasm32"))]
             path: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -161,11 +166,25 @@ impl Credentials {
             keychain_service: None,
             native_sources: false,
             #[cfg(not(target_arch = "wasm32"))]
+            environment_only: false,
+            #[cfg(not(target_arch = "wasm32"))]
             path: None,
             #[cfg(not(target_arch = "wasm32"))]
             watch: None,
             #[cfg(all(test, not(target_arch = "wasm32")))]
             source: None,
+        }
+    }
+    /// Read API keys only from the host process environment. No keychain,
+    /// credential file or subscription login is consulted. Custom provider
+    /// `example`, for example, reads `EXAMPLE_API_KEY`; provider punctuation becomes
+    /// underscores. Keys remain in host memory and HTTP authentication headers.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn environment() -> Self {
+        Self {
+            native_sources: false,
+            environment_only: true,
+            ..Self::default()
         }
     }
     /// Resolves OS keychain, then environment, then this configuration.
@@ -175,6 +194,12 @@ impl Credentials {
     }
 
     pub(crate) fn observe_key(&self, provider: &str) -> KeyResult {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.environment_only {
+            return self
+                .read(provider, Source::Environment)
+                .map(|key| key.filter(|key| !key.trim().is_empty()));
+        }
         if self.native_sources {
             #[cfg(not(target_arch = "wasm32"))]
             for source in [Source::Keychain, Source::Environment] {
@@ -216,14 +241,7 @@ impl Credentials {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Source::Environment => {
-                let variable = match provider {
-                    "anthropic" => "ANTHROPIC_API_KEY",
-                    "openai" => "OPENAI_API_KEY",
-                    "openrouter" => "OPENROUTER_API_KEY",
-                    "gemini" => "GEMINI_API_KEY",
-                    "morph" => "MORPH_API_KEY",
-                    _ => "",
-                };
+                let variable = environment_variable(provider);
                 if let Ok(key) = std::env::var(variable) {
                     if !key.trim().is_empty() {
                         return Ok(Some(key));
@@ -257,6 +275,66 @@ impl Credentials {
             Err(_) => Err(super::invalid("cannot read provider credential file")),
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn environment_variable(provider: &str) -> String {
+    let mut variable: String = provider
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    variable.push_str("_API_KEY");
+    variable
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+fn environment_only_custom_provider_has_no_configuration_fallback() -> Result<()> {
+    const CHILD: &str = "HARNESS_ENVIRONMENT_CREDENTIALS_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let mut credentials = Credentials::environment();
+        credentials
+            .api_keys
+            .insert("example".into(), "configuration-must-not-win".into());
+        credentials
+            .api_keys
+            .insert("missing".into(), "configuration-must-not-be-read".into());
+        assert!(credentials.api_key("example")?.as_deref() == Some("environment-only-planted-key"));
+        assert!(credentials.api_key("test-provider")?.as_deref() == Some("custom-provider-key"));
+        assert!(credentials.api_key("missing")?.is_none());
+        assert!(credentials.codex_login().is_none());
+        return Ok(());
+    }
+    let executable =
+        std::env::current_exe().map_err(|_| super::invalid("test executable missing"))?;
+    let result = std::process::Command::new(executable)
+        .args([
+            "--exact",
+            "credentials::environment_only_custom_provider_has_no_configuration_fallback",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env("EXAMPLE_API_KEY", "environment-only-planted-key")
+        .env("TEST_PROVIDER_API_KEY", "custom-provider-key")
+        .env_remove("MISSING_API_KEY")
+        .output()
+        .map_err(|_| super::invalid("credential test child failed to start"))?;
+    assert!(
+        result.status.success(),
+        "environment credential subprocess failed"
+    );
+    for output in [result.stdout, result.stderr] {
+        let output = String::from_utf8_lossy(&output);
+        assert!(!output.contains("environment-only-planted-key"));
+        assert!(!output.contains("custom-provider-key"));
+    }
+    Ok(())
 }
 
 #[cfg(all(test, unix))]

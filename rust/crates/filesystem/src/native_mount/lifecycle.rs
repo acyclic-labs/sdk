@@ -15,6 +15,12 @@ pub async fn initialize_native_mount_services_async() -> Result<(), NativeMountE
     run_native_control(initialize_native_mount_services).await?
 }
 
+/// Initializes shared source callbacks and watches without opening global mount
+/// state or blocking the caller's executor.
+pub async fn initialize_native_source_services_async() -> Result<(), NativeMountError> {
+    run_native_control(initialize_native_source_services).await?
+}
+
 /// Probes the target's one canonical native namespace mechanism.
 #[must_use]
 pub fn probe_native_mount() -> NativeMountCapabilities {

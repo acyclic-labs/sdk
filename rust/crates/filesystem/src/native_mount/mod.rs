@@ -45,7 +45,7 @@ mod cached_binding;
 pub(crate) use adapter::SharedCheckoutObservation;
 pub use adapter::{
     CheckoutMountSource, NativeSourceIoLease, SharedCheckout, SharedCheckoutGuard,
-    SharedCheckoutState, initialize_native_mount_services,
+    SharedCheckoutState, initialize_native_mount_services, initialize_native_source_services,
 };
 
 mod view_gate;

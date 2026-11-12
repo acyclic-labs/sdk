@@ -21,7 +21,7 @@ impl LazyNode for LazyOverlay {
 
 impl LazyNode for crate::LazyShadow {
     type Id = crate::LazyShadowId;
-    const FAMILY: &'static str = "lazy-shadows-v1";
+    const FAMILY: &'static str = "lazy-shadows-v2";
 
     fn address(id: Self::Id) -> [u8; 32] {
         id.into_bytes()
