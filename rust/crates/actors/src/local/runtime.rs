@@ -907,11 +907,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // unconsumed, however late an authority deferred its wake; it
             // moves back only for a resident alarm armed already past due.
             // Every alarm token, resident or parked, holds it at its window.
-            // In-flight deliveries are counted once, in the shared ready
-            // index, for every consumer (this loop, `drain`, direct
+            // In-flight and failed deliveries are counted once, in the shared
+            // ready index, for every consumer (this loop, `drain`, direct
             // deliveries), so no local view can let a checkpoint pass one.
             held = self.ready.busy();
-            if held || failure.is_some() {
+            if held || self.ready.failed() {
                 continue;
             }
             let now = self.clock.now_unix_ms();
@@ -995,25 +995,34 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             async {
                 self.handler.manifest().validate_interrupts()?;
                 // Every delivery counts in flight in the shared ready index,
-                // whichever consumer started it, until it settles.
-                let _flight = self.ready.flight();
+                // whichever consumer started it, until it settles; a failed
+                // one stops this incarnation's checkpoints.
+                let flight = self.ready.flight();
                 // Duplicate events for one actor wait outside global admission. Only
                 // an actor that can make progress may occupy an active delivery slot.
                 let inner = slot.inner.lock().await;
-                let _admission = match &self.admission {
-                    Some(admission) => Some(
-                        admission
-                            .acquire()
-                            .await
-                            .map_err(|_| Error::Invalid("runtime admission is closed"))?,
-                    ),
-                    None => None,
+                let result = match &self.admission {
+                    Some(admission) => admission
+                        .acquire()
+                        .await
+                        .map(Some)
+                        .map_err(|_| Error::Invalid("runtime admission is closed")),
+                    None => Ok(None),
                 };
-                let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
-                let result = self.deliver_retained(actor, slot, inner).await;
-                // Cancellation can interrupt a committed publication before its receipt
-                // is retained. A completed attempt handles its outcome in the loop.
-                refresh.0 = None;
+                let result = match result {
+                    Ok(_admission) => {
+                        let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
+                        let result = self.deliver_retained(actor, slot, inner).await;
+                        // Cancellation can interrupt a committed publication before its
+                        // receipt is retained. A completed attempt handles its outcome.
+                        refresh.0 = None;
+                        result
+                    }
+                    Err(error) => Err(error),
+                };
+                if result.is_err() {
+                    flight.fail();
+                }
                 result
             }
         )

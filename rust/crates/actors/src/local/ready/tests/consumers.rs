@@ -1,10 +1,11 @@
 //! Deterministic simulation of delivery accounting across consumers. The
 //! run loop and a concurrent `drain` both take work from the one shared ready
-//! index, and either may stall mid-delivery; producers commit input with its
-//! activation entry, and the host checkpoints and crashes at every point, to
-//! a bounded depth. The activation checkpoint, which advances only while the
-//! index reports nothing queued or in flight, never passes an entry whose
-//! input is undelivered, so a host restarted from it delivers every input.
+//! index, and either may stall or fail mid-delivery; producers commit input
+//! with its activation entry, and the host checkpoints and crashes at every
+//! point, to a bounded depth. The activation checkpoint, which advances only
+//! while the index reports nothing queued, in flight or failed, never passes
+//! an entry whose input is undelivered, so a host restarted from it delivers
+//! every input.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,6 +29,8 @@ enum Op {
     Take(Consumer),
     /// The consumer's delivery commits the actor's input, then settles.
     Deliver(Consumer),
+    /// The consumer's delivery fails, leaving the actor's input unconsumed.
+    Fail(Consumer),
     /// The dispatcher checkpoints the entries it has observed, if it may.
     Checkpoint,
     /// The host dies; a new host replays the log from its checkpoint.
@@ -45,7 +48,8 @@ struct World {
     seen: usize,
     /// The durable activation checkpoint.
     cursor: usize,
-    taken: BTreeMap<Consumer, Work<u8>>,
+    /// Each consumer's taken work and its delivery's flight.
+    taken: BTreeMap<Consumer, (Work<u8>, Flight<u8>)>,
     crashed: bool,
 }
 
@@ -88,7 +92,7 @@ impl World {
             Op::Send(_) => self.entries.len() < INPUTS,
             Op::Observe => self.seen < self.entries.len(),
             Op::Take(consumer) => !self.taken.contains_key(&consumer),
-            Op::Deliver(consumer) => self.taken.contains_key(&consumer),
+            Op::Deliver(consumer) | Op::Fail(consumer) => self.taken.contains_key(&consumer),
             Op::Checkpoint => true,
             Op::Crash => !self.crashed,
         }
@@ -111,19 +115,25 @@ impl World {
             }
             Op::Take(consumer) => {
                 if let Some(work) = self.set.take() {
-                    self.taken.insert(consumer, work);
+                    self.taken.insert(consumer, (work, self.set.flight()));
                 }
             }
             Op::Deliver(consumer) => {
-                let work = self.taken.remove(&consumer).ok_or("nothing taken")?;
+                let (work, flight) = self.taken.remove(&consumer).ok_or("nothing taken")?;
                 // A delivery reads its actor's whole committed input.
                 let actor = *work.key();
                 let entries = &self.entries;
                 self.undelivered.retain(|&entry| entries[entry] != actor);
+                drop(flight);
+                drop(work);
+            }
+            Op::Fail(consumer) => {
+                let (work, flight) = self.taken.remove(&consumer).ok_or("nothing taken")?;
+                flight.fail();
                 drop(work);
             }
             Op::Checkpoint => {
-                if !self.set.busy() {
+                if !self.set.busy() && !self.set.failed() {
                     self.cursor = self.seen;
                 }
             }
@@ -147,8 +157,10 @@ impl World {
         }
     }
 
-    /// Run the host to quiescence: every committed input is delivered.
+    /// Run the host to quiescence, then once more from its checkpoint, as
+    /// after a failed delivery: every committed input is delivered.
     fn finish(mut self) -> Outcome {
+        let mut restarted = false;
         loop {
             let op = [
                 Op::Deliver(Consumer::Run),
@@ -158,7 +170,14 @@ impl World {
             ]
             .into_iter()
             .find(|&op| self.enabled(op) && (!matches!(op, Op::Take(_)) || self.set.busy()));
-            let Some(op) = op else { break };
+            let Some(op) = op else {
+                if restarted {
+                    break;
+                }
+                restarted = true;
+                self.start()?;
+                continue;
+            };
             self.apply(op)?;
             self.check()?;
         }
@@ -204,6 +223,7 @@ fn no_consumer_lets_a_checkpoint_pass_an_in_flight_delivery() -> Outcome {
         Op::Take(Consumer::Drain),
         Op::Deliver(Consumer::Run),
         Op::Deliver(Consumer::Drain),
+        Op::Fail(Consumer::Drain),
         Op::Checkpoint,
         Op::Crash,
     ];

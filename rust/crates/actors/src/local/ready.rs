@@ -48,6 +48,9 @@ struct Index<K> {
     /// Deliveries in flight, for every consumer alike: each taken [`Work`]
     /// until it drops, and each [`Flight`] of a direct delivery.
     in_flight: usize,
+    /// A delivery failed, whichever consumer ran it: its input stays
+    /// unconsumed for the next incarnation, so no checkpoint may pass it.
+    failed: bool,
     waiter: Option<Waker>,
     /// Resident wakes, as `(wake_at, registration, serial)`.
     due: BTreeSet<(u64, Id, u64)>,
@@ -78,6 +81,7 @@ impl<K: 'static> Default for Index<K> {
             last: None,
             ready_count: 0,
             in_flight: 0,
+            failed: false,
             waiter: None,
             due: BTreeSet::new(),
             deadlines: BTreeSet::new(),
@@ -477,6 +481,16 @@ impl<K: Ord + Clone> ReadySet<K> {
         index.ready_count != 0 || index.in_flight != 0
     }
 
+    /// Whether a delivery of this incarnation failed: checkpoints stop for
+    /// good, so a restart replays the failed delivery's entries.
+    pub fn failed(&self) -> bool {
+        self.core
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failed
+    }
+
     /// Exact retained registration and ready counts, independent of actor heaps.
     pub fn counts(&self) -> (usize, usize) {
         let index = self
@@ -818,6 +832,18 @@ impl<K> Work<K> {
         &self.key
     }
 }
+impl<K> Flight<K> {
+    /// The delivery failed: it settles, and no later checkpoint of this
+    /// incarnation passes what it left unconsumed.
+    pub fn fail(self) {
+        self.core
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failed = true;
+    }
+}
+
 impl<K> Drop for Flight<K> {
     fn drop(&mut self) {
         let waiter = self
