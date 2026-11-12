@@ -10,7 +10,15 @@ use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, StreamProvider
 
 type Tools = FilesystemTools<MemoryStream, acyclic_fs::MemoryObjectBackend>;
 
-async fn fixture() -> Result<(Tools, ToolContext, acyclic_stream::StreamPath)> {
+struct Fixture {
+    tools: Tools,
+    context: ToolContext,
+    decision: acyclic_stream::StreamPath,
+    _issuer: AuthorityRoot,
+    _content: MemoryHarnessStorage,
+}
+
+async fn fixture() -> Result<Fixture> {
     let owner = crate::AgentId::from_bytes([51; 16]);
     let path = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([51; 16]));
     let child = path
@@ -63,12 +71,20 @@ async fn fixture() -> Result<(Tools, ToolContext, acyclic_stream::StreamPath)> {
     .agent_context(&Capabilities::default(), content.content_bindings())?
     .for_agent(path.clone(), Vec::new());
     let context = ToolContext::new(Arc::new(task), OperationId::new(), "search")?;
-    Ok((tools, context, decision))
+    Ok(Fixture {
+        tools,
+        context,
+        decision,
+        _issuer: issuer,
+        _content: content,
+    })
 }
 
 #[tokio::test]
 async fn scope_grep_pages_original_child_decisions_and_refuses_foreign_cursors() -> Result<()> {
-    let (tools, context, decision) = fixture().await?;
+    let fixture = fixture().await?;
+    let tools = &fixture.tools;
+    let context = fixture.context.clone();
     let invoke = |command: String| ToolInvocation {
         operation_id: context.operation_id(),
         call_id: "search".into(),
@@ -108,7 +124,7 @@ async fn scope_grep_pages_original_child_decisions_and_refuses_foreign_cursors()
         command = format!("grep --scope . accepted --page-size 2 --cursor {next}");
     }
     assert_eq!(found.len(), 1);
-    assert_eq!(found[0]["path"], decision.as_str());
+    assert_eq!(found[0]["path"], fixture.decision.as_str());
     assert_eq!(found[0]["sequence"], 0);
     let foreign = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([54; 16]));
     assert!(matches!(
