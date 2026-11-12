@@ -168,8 +168,11 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
             reserve_buffer(&mut journal.preimages, journal.plan.edits.len(), custody)
                 .map_err(MaterializationError::Native)?;
         }
+        // Capture only observes, and a Preparing journal recaptures from its
+        // first missing preimage, so the preimages persist once with the
+        // phase. A persist per preimage rewrote the whole journal each time.
+        self.verify_effect_context(&journal).await?;
         while journal.preimages.len() < journal.plan.edits.len() {
-            self.verify_effect_context(&journal).await?;
             let preimage = self
                 .backend
                 .capture(
@@ -200,7 +203,6 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                     .map_err(MaterializationError::Native)?;
             }
             journal.preimages.push(preimage);
-            journal = self.persist(journal).await?;
             guard().await?;
         }
         journal.phase = if journal.plan.edits.is_empty() {
