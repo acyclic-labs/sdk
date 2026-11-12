@@ -121,7 +121,9 @@ async fn dispatcher_creation_returns_the_competing_owners_actual_result() -> Tes
     *provider.inner().before_write.lock().unwrap() = Some(Competing::SameProposal);
     let before = provider.requests();
     assert!(matches!(
-        runtime.advance_dispatcher(&store, absent, 0, 1, 0).await,
+        runtime
+            .advance_dispatcher(&store, absent, 0, 1, 0, Vec::new())
+            .await,
         Err(Error::Conflict)
     ));
     let original = provider.requests().since(before);

@@ -2,11 +2,13 @@
 //! run loop and a concurrent `drain` both take work from the one shared ready
 //! index, and either may stall or fail mid-delivery; producers commit input
 //! with its activation entry, and the host checkpoints and crashes at every
-//! point, to a bounded depth. The activation checkpoint, which advances only
-//! while the index reports nothing queued, in flight or failed, never passes
-//! an entry whose input is undelivered, so a host restarted from it delivers
-//! every input.
+//! point, to a bounded depth. The activation checkpoint advances only while
+//! the index reports nothing queued or in flight, and keeps or carries
+//! forward a wake entry for every failed actor (`scheduling::checkpoint`), so
+//! a host restarted from it delivers every input, while a poisoned actor
+//! holds back only its own entry.
 use super::*;
+use crate::local::scheduling;
 use std::collections::{BTreeMap, BTreeSet};
 
 const ACTORS: [u8; 2] = [1, 2];
@@ -42,18 +44,24 @@ struct World {
     registrations: BTreeMap<u8, Registration<u8>>,
     /// The activation log, by entry: its actor.
     entries: Vec<u8>,
-    /// Entries whose input no delivery has committed yet.
+    /// Input entries no delivery has committed yet.
     undelivered: BTreeSet<usize>,
     /// The next entry the dispatcher observes.
     seen: usize,
     /// The durable activation checkpoint.
     cursor: usize,
+    /// Per actor, just past its latest entry observed or carried.
+    latest: BTreeMap<u8, usize>,
     /// Each consumer's taken work and its delivery's flight.
     taken: BTreeMap<Consumer, (Work<u8>, Flight<u8>)>,
     crashed: bool,
 }
 
 type Outcome = Result<(), String>;
+
+fn seq(index: usize) -> Result<u64, String> {
+    u64::try_from(index).map_err(|error| error.to_string())
+}
 
 impl World {
     fn new() -> Result<Self, String> {
@@ -64,6 +72,7 @@ impl World {
             undelivered: BTreeSet::new(),
             seen: 0,
             cursor: 0,
+            latest: BTreeMap::new(),
             taken: BTreeMap::new(),
             crashed: false,
         };
@@ -75,6 +84,7 @@ impl World {
     fn start(&mut self) -> Outcome {
         self.taken.clear();
         self.registrations.clear();
+        self.latest.clear();
         self.set = ReadySet::default();
         for actor in ACTORS {
             let registration = self
@@ -89,7 +99,7 @@ impl World {
 
     fn enabled(&self, op: Op) -> bool {
         match op {
-            Op::Send(_) => self.entries.len() < INPUTS,
+            Op::Send(_) => self.undelivered.len() < INPUTS && self.entries.len() < 2 * INPUTS,
             Op::Observe => self.seen < self.entries.len(),
             Op::Take(consumer) => !self.taken.contains_key(&consumer),
             Op::Deliver(consumer) | Op::Fail(consumer) => self.taken.contains_key(&consumer),
@@ -107,6 +117,8 @@ impl World {
             Op::Observe => {
                 let actor = self.entries[self.seen];
                 self.seen += 1;
+                let latest = self.latest.entry(actor).or_default();
+                *latest = (*latest).max(self.seen);
                 self.registrations
                     .get(&actor)
                     .ok_or("untracked actor")?
@@ -115,7 +127,8 @@ impl World {
             }
             Op::Take(consumer) => {
                 if let Some(work) = self.set.take() {
-                    self.taken.insert(consumer, (work, self.set.flight()));
+                    let flight = self.set.flight(work.key());
+                    self.taken.insert(consumer, (work, flight));
                 }
             }
             Op::Deliver(consumer) => {
@@ -124,19 +137,15 @@ impl World {
                 let actor = *work.key();
                 let entries = &self.entries;
                 self.undelivered.retain(|&entry| entries[entry] != actor);
-                drop(flight);
+                flight.finish(false);
                 drop(work);
             }
             Op::Fail(consumer) => {
                 let (work, flight) = self.taken.remove(&consumer).ok_or("nothing taken")?;
-                flight.fail();
+                flight.finish(true);
                 drop(work);
             }
-            Op::Checkpoint => {
-                if !self.set.busy() && !self.set.failed() {
-                    self.cursor = self.seen;
-                }
-            }
+            Op::Checkpoint => self.checkpoint()?,
             Op::Crash => {
                 self.start()?;
                 self.crashed = true;
@@ -145,16 +154,53 @@ impl World {
         Ok(())
     }
 
-    /// A restart replays only entries at or past the checkpoint, so it must
-    /// never pass an entry whose input is still undelivered.
-    fn check(&self) -> Outcome {
-        match self.undelivered.first() {
-            Some(&entry) if entry < self.cursor => Err(format!(
-                "checkpoint {} passed undelivered entry {entry} of actor {}",
-                self.cursor, self.entries[entry]
-            )),
-            _ => Ok(()),
+    /// The run loop's checkpoint: the shared rule over every failed actor's
+    /// latest entry, with each carry committed alongside the cursor.
+    fn checkpoint(&mut self) -> Outcome {
+        if self.set.busy() {
+            return Ok(());
         }
+        let from = self.cursor;
+        let failed = self.set.failed(0);
+        let holds = failed
+            .iter()
+            .map(|actor| {
+                self.latest
+                    .get(actor)
+                    .filter(|&&latest| latest > from)
+                    .map(|&latest| seq(latest - 1))
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let (cursor, carry) = scheduling::checkpoint(seq(self.seen)?, &holds);
+        let cursor = usize::try_from(cursor).map_err(|error| error.to_string())?;
+        if cursor <= from {
+            return Ok(());
+        }
+        if carry {
+            for actor in failed {
+                self.entries.push(actor);
+                let latest = self.latest.entry(actor).or_default();
+                *latest = (*latest).max(cursor + 1);
+            }
+        }
+        self.cursor = cursor;
+        Ok(())
+    }
+
+    /// A restart replays only entries at or past the checkpoint, so every
+    /// actor with undelivered input must keep an entry there.
+    fn check(&self) -> Outcome {
+        for &entry in &self.undelivered {
+            let actor = self.entries[entry];
+            if !self.entries[self.cursor..].contains(&actor) {
+                return Err(format!(
+                    "checkpoint {} passed undelivered entry {entry} of actor {actor}",
+                    self.cursor
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Run the host to quiescence, then once more from its checkpoint, as
@@ -234,6 +280,45 @@ fn no_consumer_lets_a_checkpoint_pass_an_in_flight_delivery() -> Outcome {
     assert!(
         runs > 10_000,
         "the simulation explored only {runs} schedules"
+    );
+    Ok(())
+}
+
+/// One actor's every delivery fails while another keeps receiving input:
+/// the checkpoint keeps advancing past the healthy actor's entries, and a
+/// restart replays at most the poisoned actor's one carried entry.
+#[test]
+fn a_poisoned_actor_holds_back_only_its_own_entry() -> Outcome {
+    const POISONED: u8 = 1;
+    let mut world = World::new()?;
+    world.apply(Op::Send(POISONED))?;
+    for _ in 0..64 {
+        world.apply(Op::Send(2))?;
+        while world.enabled(Op::Observe) || world.set.busy() {
+            if world.enabled(Op::Observe) {
+                world.apply(Op::Observe)?;
+            }
+            world.apply(Op::Take(Consumer::Run))?;
+            if let Some((work, _)) = world.taken.get(&Consumer::Run) {
+                let poisoned = *work.key() == POISONED;
+                world.apply(if poisoned {
+                    Op::Fail(Consumer::Run)
+                } else {
+                    Op::Deliver(Consumer::Run)
+                })?;
+            }
+        }
+        world.apply(Op::Checkpoint)?;
+        world.check()?;
+    }
+    let replay = world.entries.len() - world.cursor;
+    assert!(
+        replay <= 1,
+        "a restart replays {replay} entries behind a poisoned actor"
+    );
+    assert!(
+        world.undelivered.contains(&0),
+        "the poisoned input was lost"
     );
     Ok(())
 }

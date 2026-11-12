@@ -48,9 +48,10 @@ struct Index<K> {
     /// Deliveries in flight, for every consumer alike: each taken [`Work`]
     /// until it drops, and each [`Flight`] of a direct delivery.
     in_flight: usize,
-    /// A delivery failed, whichever consumer ran it: its input stays
-    /// unconsumed for the next incarnation, so no checkpoint may pass it.
-    failed: bool,
+    /// Keys whose last delivery failed, whichever consumer ran it: each one's
+    /// input stays unconsumed, so a checkpoint carries its wake forward.
+    /// Bounded by failed keys, never by residents.
+    failed: BTreeSet<K>,
     waiter: Option<Waker>,
     /// Resident wakes, as `(wake_at, registration, serial)`.
     due: BTreeSet<(u64, Id, u64)>,
@@ -81,7 +82,7 @@ impl<K: 'static> Default for Index<K> {
             last: None,
             ready_count: 0,
             in_flight: 0,
-            failed: false,
+            failed: BTreeSet::new(),
             waiter: None,
             due: BTreeSet::new(),
             deadlines: BTreeSet::new(),
@@ -298,6 +299,7 @@ pub struct Registration<K: Ord + Clone> {
 #[must_use]
 pub struct Flight<K> {
     core: Arc<Core<K>>,
+    key: K,
 }
 
 /// Running work retains notifications until its final durable-tail recheck completes.
@@ -458,8 +460,8 @@ impl<K: Ord + Clone> ReadySet<K> {
             .collect()
     }
 
-    /// Count a direct delivery in flight until the returned guard drops.
-    pub fn flight(&self) -> Flight<K> {
+    /// Count a delivery of `key` in flight until the returned guard drops.
+    pub fn flight(&self, key: &K) -> Flight<K> {
         self.core
             .index
             .lock()
@@ -467,6 +469,7 @@ impl<K: Ord + Clone> ReadySet<K> {
             .in_flight += 1;
         Flight {
             core: Arc::clone(&self.core),
+            key: key.clone(),
         }
     }
 
@@ -481,14 +484,20 @@ impl<K: Ord + Clone> ReadySet<K> {
         index.ready_count != 0 || index.in_flight != 0
     }
 
-    /// Whether a delivery of this incarnation failed: checkpoints stop for
-    /// good, so a restart replays the failed delivery's entries.
-    pub fn failed(&self) -> bool {
-        self.core
+    /// The keys of `group` whose last delivery failed: each checkpoint of
+    /// the group keeps or carries forward a wake entry for every one.
+    pub fn failed(&self, group: u16) -> Vec<K> {
+        let index = self
+            .core
             .index
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        index
             .failed
+            .iter()
+            .filter(|key| (index.group)(key) == group)
+            .cloned()
+            .collect()
     }
 
     /// Exact retained registration and ready counts, independent of actor heaps.
@@ -832,15 +841,20 @@ impl<K> Work<K> {
         &self.key
     }
 }
-impl<K> Flight<K> {
-    /// The delivery failed: it settles, and no later checkpoint of this
-    /// incarnation passes what it left unconsumed.
-    pub fn fail(self) {
-        self.core
+impl<K: Ord + Clone> Flight<K> {
+    /// The delivery settles: a failed one leaves its key's input for a
+    /// carried wake, a completed one clears that.
+    pub fn finish(self, failed: bool) {
+        let mut index = self
+            .core
             .index
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .failed = true;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if failed {
+            index.failed.insert(self.key.clone());
+        } else {
+            index.failed.remove(&self.key);
+        }
     }
 }
 

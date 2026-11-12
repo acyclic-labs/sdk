@@ -34,6 +34,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         shard: u16,
         seen: u64,
         deadline: u64,
+        carried: Vec<ActorReference>,
     ) -> Result<Snapshot, Error> {
         let mut state = match previous.state() {
             Some(state) => state.clone(),
@@ -80,15 +81,28 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         if !advanced {
             return Ok(previous);
         }
+        // Each failed actor's fresh wake commits with the cursor that passes
+        // its earlier entries, so a restart from it still replays the actor.
         // Competing dispatchers can observe different activation suffixes
-        // from the same state cut. Bind the key to the proposed cursor so
-        // their CAS conflict is not misclassified as changed request bytes.
-        let publication = store.prepare(
-            &previous,
-            state,
-            Vec::new(),
-            key(&previous, &format!("dispatch/{seen}/{deadline}"))?,
-        )?;
+        // from the same state cut. Bind the key to the proposed cursors and
+        // carries so their CAS conflict is not misclassified as changed
+        // request bytes.
+        let mut operation = format!("dispatch/{seen}/{deadline}");
+        let carried = carried
+            .iter()
+            .map(|actor| {
+                for byte in actor.encode() {
+                    operation.push_str(&format!("{byte:02x}"));
+                }
+                operation.push('/');
+                self.store.activation(actor)
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let mut publication =
+            store.prepare(&previous, state, Vec::new(), key(&previous, &operation)?)?;
+        for effect in carried {
+            publication.join_host(effect)?;
+        }
         // Conflict returns the original conditional result. Unknown retains
         // the exact publication and participant custody in the returned error.
         store
