@@ -125,9 +125,9 @@ async fn fixture() -> Result<(Host, AgentState)> {
 async fn append(host: &Host, path: acyclic_stream::StreamPath, bytes: Vec<u8>) -> Result<()> {
     host.stream
         .append(AppendRequest {
-            key: IdempotencyKey::new(path.as_str())?,
+            idempotency_key: IdempotencyKey::new(path.as_str())?,
             path,
-            expected_tail: Some(0),
+            if_tail: Some(0),
             records: vec![bytes.into()],
         })
         .await?;
