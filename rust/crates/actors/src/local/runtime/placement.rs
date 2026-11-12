@@ -11,6 +11,30 @@ struct Placement {
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
+    /// Reopening a dormant slot admits only the node named by the existing
+    /// command. This is a read of placement, never a new ownership claim.
+    pub(super) async fn admitted_epoch(&self, snapshot: &Snapshot) -> Result<u64, Error> {
+        let head = self
+            .store
+            .provider()
+            .head(StreamPath::new(format!("{}/placement", snapshot.path()))?)
+            .await
+            .map_err(|error| match error {
+                StreamError::NotFound => Error::Conflict,
+                error => error.into(),
+            })?;
+        let record = head.last.ok_or(Error::Conflict)?;
+        let placed: Placement = serde_json::from_slice(&record.value)
+            .map_err(|_| Error::Invalid("invalid placement record"))?;
+        if placed.index != head.tail
+            || placed.node != *self.instance.as_bytes()
+            || !snapshot.owns_epoch(placed.epoch)
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(placed.epoch)
+    }
+
     /// Admit this node through one explicit host placement command. The index
     /// belongs to this actor: first is one, then each successor is contiguous.
     /// Local and remote placement owners call this same path; a delivery or
@@ -53,6 +77,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             if placed.index != index
                 || placed.node != *self.instance.as_bytes()
                 || placed.epoch != state.epoch()
+                || !previous.owns_epoch(placed.epoch)
             {
                 return Err(Error::Conflict);
             }
