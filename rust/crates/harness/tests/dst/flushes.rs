@@ -24,13 +24,22 @@ fn flushes(writes: &[DurableWrite]) -> (usize, usize) {
     })
 }
 
-/// Settles five replies on one hosted actor, then commits one independent
-/// record. Each cut follows the same actor's committed settlement.
+#[derive(Debug)]
+struct Windows {
+    open: (usize, usize),
+    first: (usize, usize),
+    replies: [(usize, usize); 5],
+    reopen: (usize, usize),
+    reopened_first: (usize, usize),
+}
+
+/// Opens, settles five replies, commits one independent record, then reopens
+/// and settles one more reply. Each turn cut follows committed settlement.
 fn turns(
     schedule: acyclic_native_runtime::testing::Schedule,
     directory: &Path,
-    replies: [ScriptedTurn; 5],
-) -> EntryFuture<'_, Result<[usize; 6]>> {
+    replies: [ScriptedTurn; 6],
+) -> EntryFuture<'_, Result<[usize; 10]>> {
     entry(async move {
         let reference =
             ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -56,20 +65,25 @@ fn turns(
             })
             .collect();
         let provider = Arc::new(ScriptedModelProvider::new(replies));
-        let config = local_harness_config(directory.join("filesystem"), (model, provider))?
+        let config = || -> Result<_> {
+            Ok(local_harness_config(
+                directory.join("filesystem"),
+                (model.clone(), provider.clone()),
+            )?
             .without_user_settings()
-            .volume(volume)
-            .state_directory(directory.join("state"));
-        let harness = Arc::new(entry(LocalHarness::open(config)).await?);
+            .volume(volume.clone())
+            .state_directory(directory.join("state")))
+        };
+        let mut cuts = [0; 10];
+        cuts[0] = schedule.durable_write_count();
+        let harness = Arc::new(entry(LocalHarness::open(config()?)).await?);
+        cuts[1] = schedule.durable_write_count();
         let (agents, _) = entry(harness.agents()).await?;
-        let mut cuts = [0; 6];
-        for (turn, expected) in expected.iter().enumerate() {
+        for (turn, expected) in expected[..5].iter().enumerate() {
             prompt(&harness, &format!("turn-{turn}"), "reply", expected).await?;
-            // Reply visibility precedes delivery retirement and activation
-            // checkpoint publication. Join both through the serving dispatcher;
-            // a competing finite drain cannot establish that boundary.
+            // Join the serving dispatcher's delivery and committed checkpoint.
             entry(agents.runtime().complete()).await.map_err(storage)?;
-            cuts[turn] = schedule.durable_write_count();
+            cuts[turn + 2] = schedule.durable_write_count();
         }
         use acyclic_stream::StreamProviderExt as _;
         agents
@@ -82,14 +96,21 @@ fn turns(
             })
             .await
             .map_err(storage)?;
-        cuts[5] = schedule.durable_write_count();
+        cuts[7] = schedule.durable_write_count();
+        drop(harness);
+        let reopened = Arc::new(entry(LocalHarness::open(config()?)).await?);
+        cuts[8] = schedule.durable_write_count();
+        prompt(&reopened, "reopened", "reply", &expected[5]).await?;
+        let (agents, _) = entry(reopened.agents()).await?;
+        entry(agents.runtime().complete()).await.map_err(storage)?;
+        cuts[9] = schedule.durable_write_count();
         Ok(cuts)
     })
 }
 
-/// Observe four settled reply windows and the independent commit. Teardown
+/// Observe open, settled replies, the independent commit and reopen. Teardown
 /// drains every accepted worker outside those windows.
-fn measure(replies: [ScriptedTurn; 5]) -> Result<[(usize, usize); 5]> {
+fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
     let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
@@ -103,9 +124,14 @@ fn measure(replies: [ScriptedTurn; 5]) -> Result<[(usize, usize); 5]> {
         };
         let cuts = cuts?;
         let writes = driver.schedule.durable_writes();
-        Ok(std::array::from_fn(|index| {
-            flushes(&writes[cuts[index]..cuts[index + 1]])
-        }))
+        let window = |from: usize, to: usize| flushes(&writes[cuts[from]..cuts[to]]);
+        Ok(Windows {
+            open: window(0, 1),
+            first: window(1, 2),
+            replies: std::array::from_fn(|index| window(index + 2, index + 3)),
+            reopen: window(7, 8),
+            reopened_first: window(8, 9),
+        })
     })
 }
 
@@ -140,13 +166,45 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
         text("three"),
         streamed(2),
         streamed(32),
+        text("four"),
     ])?;
-    // Includes input publication through committed actor settlement. This
-    // absolute budget also rejects uniform added or missing reply drains.
-    // Thirty extra content parts need thirty extra ordering barriers.
     assert_eq!(
-        observed,
-        [(8, 11), (8, 11), (9, 11), (39, 11), (0, 1)],
+        observed.open,
+        (7, 11),
+        "fresh open flushes changed: {observed:?}"
+    );
+    assert_eq!(observed.reopen, (1, 5), "reopen flushes changed");
+    // Cold root setup adds policy, roster, epoch manifest and the shared
+    // request header, plus two namespace ordering barriers. Their publication
+    // cuts remain durable before the first reply; WAL drains may coalesce.
+    assert_eq!(
+        observed.first.0, 15,
+        "first-turn barriers changed: {observed:?}"
+    );
+    assert!(
+        observed.first.1 <= 19,
+        "first-turn drains changed: {observed:?}"
+    );
+    assert_eq!(
+        observed.reopened_first.0, 10,
+        "reopened ordering barriers changed: {observed:?}"
+    );
+    // Recovery and first publication can join an already-flushed WAL target.
+    // Requiring the redundant drain would reject valid group commit.
+    assert!(
+        (11..=12).contains(&observed.reopened_first.1),
+        "reopened physical drains changed: {observed:?}"
+    );
+    // Includes input publication through committed actor settlement. This
+    // absolute budget rejects uniform added or missing work. Nine publications
+    // own input, hooks, request messages and manifest, projection, three model
+    // event/usage payloads, and settled output. The segmented manifest replaces
+    // the old flat-request budget; the shared header is not republished.
+    // Thirty extra content parts need thirty extra ordering barriers, but no
+    // additional physical drains. Independent commits still need their own.
+    assert_eq!(
+        observed.replies,
+        [(9, 10), (9, 10), (10, 10), (40, 10), (0, 1)],
         "settled reply publication budget changed"
     );
     Ok(())
@@ -171,68 +229,71 @@ fn negative_control_native_drains_are_counted() -> Result<()> {
         fork_generation: generation,
         initial_generation: generation,
     };
+    let mut driver = driver::Driver::new(71, None);
+    let store = LocalCoreStateStore::new(directory.path());
     runtime.block_on(async {
-        // An owned commit leaves its durable WAL for the next owner's replay.
-        let store = LocalCoreStateStore::open_owned(directory.path()).map_err(storage)?;
-        assert!(
-            WorkspaceLineageStore::compare_and_swap(&store, workspace_id, 0, record.clone())
-                .await
-                .map_err(storage)?
-        );
-        Ok::<_, Error>(())
-    })?;
-    runtime.block_on(async {
-        let mut driver = driver::Driver::new(71, None);
         let driver::Outcome::Completed(result) = driver
             .run(entry(async {
-                let store = LocalCoreStateStore::open_owned(directory.path()).map_err(storage)?;
-                assert_eq!(
-                    WorkspaceLineageStore::load(&store, workspace_id)
-                        .await
-                        .map_err(storage)?,
-                    Some(record)
+                // Ordinary transactions checkpoint after their WAL commit is flushed.
+                assert!(
+                    WorkspaceLineageStore::compare_and_swap(
+                        &store,
+                        workspace_id,
+                        0,
+                        record.clone()
+                    )
+                    .await
+                    .map_err(storage)?
                 );
                 Ok::<_, Error>(())
             }))
             .await
         else {
-            panic!("uncut durable WAL reopen crashed");
+            panic!("uncut checkpoint crashed");
         };
-        result?;
-        let writes = driver.schedule.durable_writes();
-        let operation = if cfg!(target_os = "macos") {
-            "file:sync_checkpoint_batch"
-        } else {
-            "file:sync_all"
-        };
-        let checkpoint = writes
-            .iter()
-            .find(|write| write.operation == operation)
-            .expect("the reopened durable WAL must checkpoint its record");
-        assert_eq!(
-            flushes(std::slice::from_ref(checkpoint)),
-            (0, 1),
-            "the oracle missed the native checkpoint drain"
-        );
-        #[cfg(target_os = "linux")]
-        {
-            std::fs::write(directory.path().join("dirty"), b"durable").map_err(storage)?;
-            let start = driver.schedule.durable_write_count();
+        result
+    })?;
+    assert_eq!(
+        runtime
+            .block_on(WorkspaceLineageStore::load(&store, workspace_id))
+            .map_err(storage)?,
+        Some(record)
+    );
+    let writes = driver.schedule.durable_writes();
+    let operation = if cfg!(target_os = "macos") {
+        "file:sync_checkpoint_batch"
+    } else {
+        "file:sync_all"
+    };
+    let checkpoint = writes
+        .iter()
+        .find(|write| write.operation == operation)
+        .expect("the committed ordinary transaction must checkpoint its record");
+    assert_eq!(
+        flushes(std::slice::from_ref(checkpoint)),
+        (0, 1),
+        "the oracle missed the native checkpoint drain"
+    );
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::write(directory.path().join("dirty"), b"durable").map_err(storage)?;
+        let start = driver.schedule.durable_write_count();
+        runtime.block_on(async {
             let driver::Outcome::Completed(result) = driver
                 .run(entry(async {
                     acyclic_native_runtime::sync_filesystem(directory.path())
                 }))
                 .await
             else {
-                panic!("uncut filesystem drain crashed");
+                panic!("uncut filesystem sync crashed");
             };
-            result.map_err(storage)?;
-            assert_eq!(
-                flushes(&driver.schedule.durable_writes()[start..]),
-                (0, 1),
-                "the oracle missed the native filesystem-wide drain"
-            );
-        }
-        Ok(())
-    })
+            result.map_err(storage)
+        })?;
+        assert_eq!(
+            flushes(&driver.schedule.durable_writes()[start..]),
+            (0, 1),
+            "the oracle missed the native filesystem-wide drain"
+        );
+    }
+    Ok(())
 }

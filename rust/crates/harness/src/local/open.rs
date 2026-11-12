@@ -41,6 +41,7 @@ struct Storage {
     scratch: VolumeRef,
     journal: VolumeRef,
     shared: VolumeRef,
+    seed: (VolumeRef, crate::resources::GenerationRef),
     #[cfg(any(test, not(target_arch = "wasm32")))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
@@ -298,11 +299,25 @@ impl Opening {
                 id: owner.task.to_string(),
             },
         )?;
-        let SessionVolumes {
-            scratch,
-            journal,
-            shared,
-        } = SessionVolumes::open(&files, &owner).await?;
+        // Related session-volume and seed frames share one existing provider drain.
+        // The boundary precedes workspace/root observations of those references.
+        let (
+            SessionVolumes {
+                scratch,
+                journal,
+                shared,
+            },
+            seed,
+        ) = acyclic_stream::deferring_provider_durability(volume_stream.as_ref(), async {
+            Ok::<_, Error>((
+                SessionVolumes::open(&files, &owner).await?,
+                files.seed_layer().await?,
+            ))
+        })
+        .await?;
+        acyclic_stream::StreamProvider::durability_barrier(volume_stream.as_ref())
+            .await
+            .map_err(storage)?;
         #[cfg(any(test, not(target_arch = "wasm32")))]
         let workspace = self
             .workspace(
@@ -348,6 +363,7 @@ impl Opening {
             scratch,
             journal,
             shared,
+            seed,
             #[cfg(any(test, not(target_arch = "wasm32")))]
             workspace,
         })
@@ -437,11 +453,11 @@ impl Opening {
             scratch,
             journal,
             shared,
+            seed,
             #[cfg(any(test, not(target_arch = "wasm32")))]
             workspace,
         } = opened;
         let verifier = issuer.verifier(&mut None)?;
-        let seed = files.seed_layer().await?;
         let system = if self.config.system_files.is_empty() {
             None
         } else {

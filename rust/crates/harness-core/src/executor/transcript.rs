@@ -463,8 +463,7 @@ async fn previous_manifest(
     limits: Limits,
     verifier: Option<&crate::core::AuthorityVerifier>,
     io: Option<&PreparationIo>,
-) -> Result<Option<RequestManifest>> {
-    let _ = verifier;
+) -> Result<Option<(RequestManifest, bool)>> {
     Ok(match previous {
         Some(reference) if reference.descriptor().media_type() == REQUEST_MEDIA => {
             let manifest = load_manifest(journal, reference, io).await?;
@@ -479,7 +478,9 @@ async fn previous_manifest(
                 // prefix was admitted. Reconstruct and validate before reuse.
                 load_request(journal, reference, limits, io).await?;
             }
-            Some(manifest)
+            // Ordinary reuse needs the admission above; attested reuse also
+            // needs the requested authority's existing proof.
+            Some((manifest, verifier.is_none() || authenticated))
         }
         _ => None,
     })
@@ -497,20 +498,48 @@ async fn stage_request_inner(
         prepared,
         previous,
     } = staging;
+    let admitted =
+        previous_manifest(journal, previous, prepared.admitted_limits(), verifier, io).await?;
+    if let (Some(reference), Some((manifest, true))) = (previous, admitted.as_ref())
+        && manifest.request_digest == prepared.request_digest()
+    {
+        // An identical admitted request already owns its immutable manifest.
+        // Changing only the publication key buys no new persistence guarantee.
+        return crate::model::clone_file(reference, io);
+    }
+    let previous = admitted.map(|(manifest, _)| manifest);
     let request = prepared.request();
     let header = HeaderView::new(request);
     let header_digest = preparation_digest(&header, io)?;
-    let previous =
-        previous_manifest(journal, previous, prepared.admitted_limits(), verifier, io).await?;
     let header = match &previous {
         Some(previous) if previous.header_digest == header_digest => {
             crate::model::clone_file(&previous.header, io)?
         }
         _ => {
+            // Headers are immutable across turns as well as within one request
+            // chain. Use the ordinary publication receipt for their content
+            // identity instead of publishing the same model/tool schema again
+            // for every operation. The complete digest remains in the key, so
+            // a truncated operation identity cannot alias different headers.
+            let mut identity = [0; 16];
+            identity.copy_from_slice(&header_digest[..16]);
             let key = with_history_io(io, |work| {
-                preparation_format(format_args!("{key}:header"), work)
+                preparation_format(
+                    format_args!(
+                        "request-header:{}",
+                        blake3::Hash::from(header_digest).to_hex()
+                    ),
+                    work,
+                )
             })?;
-            stage_json(journal, operation, &key, &header, io).await?
+            stage_json(
+                journal,
+                OperationId::from_bytes(identity),
+                &key,
+                &header,
+                io,
+            )
+            .await?
         }
     };
     let messages = stage_messages(

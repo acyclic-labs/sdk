@@ -38,6 +38,26 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         None,
     )?;
     let seed = initial_request(journal, &prepared).await?;
+    let independent = initial_request(journal, &prepared).await?;
+    let seed_manifest = load_manifest(journal, &seed, None).await?;
+    let independent_manifest = load_manifest(journal, &independent, None).await?;
+    assert_ne!(
+        seed, independent,
+        "independent requests retain their own manifests"
+    );
+    assert_eq!(
+        seed_manifest.header, independent_manifest.header,
+        "independent turns must not republish an unchanged immutable header"
+    );
+    let mut changed = prepared.request().clone();
+    changed.max_output_tokens = Some(128);
+    let changed = crate::model::PreparedModelRequest::prepare(changed, Limits::default(), None)?;
+    let changed = initial_request(journal, &changed).await?;
+    assert_ne!(
+        seed_manifest.header,
+        load_manifest(journal, &changed, None).await?.header,
+        "different admitted call parameters must retain distinct headers"
+    );
     let file = stage_request(
         journal,
         OperationId::new(),
@@ -47,6 +67,57 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         None,
     )
     .await?;
+    assert_eq!(
+        file, seed,
+        "unchanged admission must not publish another manifest"
+    );
+    {
+        let verifier = storage.verifier();
+        let mut ordinary = load_manifest(journal, &file, None).await?;
+        ordinary.proof = None;
+        let ordinary = stage_manifest(
+            journal,
+            OperationId::new(),
+            "ordinary-request",
+            &ordinary,
+            None,
+        )
+        .await?;
+        let signed = stage_attested_request(
+            journal,
+            OperationId::new(),
+            "attested-request",
+            &prepared,
+            Some(&ordinary),
+            &verifier,
+            None,
+        )
+        .await?;
+        assert_ne!(
+            signed, ordinary,
+            "an ordinary admission cannot replace a proof"
+        );
+        assert!(load_manifest(journal, &signed, None).await?.authenticates(
+            &verifier,
+            prepared.admitted_limits(),
+            prepared.request_digest(),
+            None,
+        )?);
+        assert_eq!(
+            stage_attested_request(
+                journal,
+                OperationId::new(),
+                "reused-attested-request",
+                &prepared,
+                Some(&signed),
+                &verifier,
+                None,
+            )
+            .await?,
+            signed,
+            "an unchanged authenticated request must retain its original publication"
+        );
+    }
     assert_eq!(file.descriptor().media_type(), REQUEST_MEDIA);
     let manifest_bytes = journal.load(&file, None)?.await?;
     let manifest_text = std::str::from_utf8(&manifest_bytes).unwrap();

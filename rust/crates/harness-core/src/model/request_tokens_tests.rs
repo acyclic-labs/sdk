@@ -3,6 +3,74 @@ use super::*;
 use proptest::prelude::*;
 
 #[test]
+fn private_tool_validation_does_not_create_model_capacity_pressure() -> Result<()> {
+    let code = crate::tools::catalog()
+        .find(|tool| tool.name == "code")
+        .unwrap()
+        .definition()?;
+    let request = |size: usize, mixed: bool, visible: bool| -> Result<PreparedModelRequest> {
+        let mut dynamic = code.clone();
+        dynamic.name = "dynamic".into();
+        dynamic.description = "x".repeat(size);
+        let mut historical = code.clone();
+        historical.description = "y".repeat(size);
+        let mut notices = vec![crate::conversation::wire::Notice {
+            source: if visible { "other" } else { "tools" }.into(),
+            kind: "tools.bound".into(),
+            body: serde_json::json!({
+                "offset": 0,
+                "json": serde_json::to_string(&[historical]).unwrap(),
+                "complete": true,
+                "removed": [],
+            }),
+            wake: false,
+            coalesce_key: None,
+        }];
+        if mixed {
+            notices.push(crate::conversation::wire::Notice {
+                source: "files".into(),
+                kind: "changed".into(),
+                body: serde_json::json!({"paths":["visible.txt"]}),
+                wake: false,
+                coalesce_key: None,
+            });
+        }
+        PreparedModelRequest::prepare(
+            ModelRequest {
+                summary: false,
+                compose_tools: true,
+                model: Model::new("scripted".into(), "test".into(), "1".into())?,
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Part(ModelContentPart::Notices { notices }),
+                }],
+                tools: vec![code.clone(), dynamic],
+                sampling: Default::default(),
+                max_output_tokens: Some(1),
+            },
+            Limits::default(),
+            None,
+        )
+    };
+    for mixed in [false, true] {
+        let small = request(8, mixed, false)?;
+        let large = request(131_072, mixed, false)?;
+        let small_count = small.serialized_token_upper_bound(None)?.0;
+        let large_count = large.serialized_token_upper_bound(None)?.0;
+        assert_eq!(small_count.fixed_tokens, large_count.fixed_tokens);
+        assert_eq!(small_count.message_tokens, large_count.message_tokens);
+        assert!(large.bytes().len() > small.bytes().len() + 131_072);
+        let visible = request(131_072, mixed, true)?;
+        let visible_count = visible.serialized_token_upper_bound(None)?.0;
+        assert!(visible_count.input_tokens > large_count.input_tokens + 131_072);
+        if !mixed {
+            assert_eq!(large_count.message_tokens, [0]);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn continuing_an_admitted_request_transfers_every_history_buffer_at_one_to_one_thousand_messages()
 -> Result<()> {
     for count in [1, 10, 100, 1_000] {

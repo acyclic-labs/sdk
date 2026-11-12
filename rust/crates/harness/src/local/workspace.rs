@@ -370,7 +370,10 @@ pub(super) async fn open(
     existing: bool,
     state: OwnerState,
 ) -> Result<LocalWorkspace> {
-    let OwnerState { store, processes } = state;
+    let OwnerState {
+        mut store,
+        processes,
+    } = state;
     let &Attach {
         volume,
         native_mounts,
@@ -396,7 +399,8 @@ pub(super) async fn open(
             volumes::recover_after_crash(&binding_root, Path::new(&binding))?;
         }
     }
-    let (view, fresh) = lazy_view(filesystem, attach, root, existing, &store).await?;
+    let (view, fresh, durability) =
+        lazy_view(filesystem, attach, root, existing, &mut store).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     acyclic_fs::WorkspaceGraph::new(store.clone())
         .register_root(
@@ -436,6 +440,12 @@ pub(super) async fn open(
         None,
     )
     .await?;
+    // No view escapes setup before its binding and all root registrations are
+    // durable. Native crash cleanup above only retires old projections; it
+    // neither consumes this new lineage nor publishes new workspace effects.
+    if let Some(durability) = durability {
+        durability.commit().await.map_err(storage)?;
+    }
     let context_line = mounts.context_line();
     let mounts = Arc::new(mounts);
     let state = StateArc::new(AsyncMutex::new(super::checkout_tools::State::new(
@@ -479,8 +489,8 @@ async fn lazy_view(
     attach: &Attach<'_>,
     root: acyclic_fs::HeldRoot,
     existing: bool,
-    store: &LocalCoreStateStore,
-) -> Result<(View, bool)> {
+    store: &mut LocalCoreStateStore,
+) -> Result<(View, bool, Option<acyclic_fs::DeferredDurability>)> {
     let &Attach {
         volume, operation, ..
     } = attach;
@@ -521,6 +531,14 @@ async fn lazy_view(
     )
     .await?;
     let fresh = original.is_none();
+    // A new binding has no pending native effects to recover. Its metadata
+    // shares one durability boundary with the root registrations in `open`.
+    // Existing bindings retain ordinary durability during pending-remove recovery.
+    let durability = fresh.then(|| {
+        let (deferred, durability) = store.defer_durability();
+        *store = deferred;
+        durability
+    });
     let view = match selected {
         Some(workspace) if !fresh => {
             LazyWorkspace::open(workspace, source, store.clone(), &mut accounting).await
@@ -544,7 +562,7 @@ async fn lazy_view(
         .map(|(view, ..)| view),
     }
     .map_err(storage)?;
-    Ok((view, fresh))
+    Ok((view, fresh, durability))
 }
 
 /// Authored data is the source; its recorded recovery binding is excluded.

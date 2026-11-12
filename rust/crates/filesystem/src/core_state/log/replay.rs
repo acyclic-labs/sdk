@@ -84,9 +84,19 @@ impl CoreLog {
             slots: None,
             residents_control: None,
         };
-        log.replay_frames(bytes, paths, work)?;
+        let whole = log.replay_frames(bytes, paths, work)?;
         if !root.inspection && length != 0 {
-            log.checkpoint(root)?;
+            if whole && maximum.is_none() {
+                // The whole log stays the WAL and later frames continue its
+                // epoch. A crashed owner may have left frames unflushed, so
+                // one drain makes them durable before anything observes
+                // them; the record files wait for the next due checkpoint.
+                log.flush_physical(root)?;
+            } else {
+                // A torn or foreign tail cannot be appended after: the
+                // replayed prefix is checkpointed and the WAL restarts.
+                log.checkpoint(root)?;
+            }
         }
         if let Some(published) = published {
             {
@@ -98,18 +108,20 @@ impl CoreLog {
         }
         Ok(log)
     }
+    /// Replays the log's frames into the residents under the log's own
+    /// epoch, and returns whether every byte was a frame of that epoch in
+    /// sequence, so new frames may follow them.
     fn replay_frames(
         &mut self,
         bytes: &[u8],
         paths: RecordPaths<'_>,
         work: Option<&crate::NativeMaterializationWork>,
-    ) -> Result<(), LocalCoreStateStoreError> {
-        let mut epoch = None;
+    ) -> Result<bool, LocalCoreStateStoreError> {
         let mut sequence = 0;
         let mut line_start = 0;
         while line_start < bytes.len() {
             let Some(frame) = checked_log_frame(bytes, &mut line_start, work)? else {
-                break;
+                return Ok(false);
             };
             let (frame, allocation): (LogFrame<Change>, _) = match work {
                 Some(work) => match measured_decode_reader(
@@ -129,13 +141,17 @@ impl CoreLog {
             };
             // Payload drops before its allocation on every early exit.
             let frame = frame;
-            if *epoch.get_or_insert(frame.epoch) != frame.epoch || frame.sequence != sequence {
-                break;
+            if sequence == 0 {
+                self.epoch = frame.epoch;
+            }
+            if self.epoch != frame.epoch || frame.sequence != sequence {
+                return Ok(false);
             }
             self.apply_replayed(frame.change, allocation, work)?;
             sequence += 1;
+            self.sequence = sequence;
         }
-        Ok(())
+        Ok(true)
     }
 
     fn apply_replayed(

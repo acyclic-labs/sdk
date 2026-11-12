@@ -194,9 +194,7 @@ pub(crate) fn body_named<'a>(
         if let Some((notices, attachments)) = event {
             // Original native schemas authenticate history after a role change;
             // sending them again as prompt text would evict a reusable prefix.
-            let visible = |notice: &&acyclic_model_render::Notice| {
-                notice.source != "tools" || notice.kind != "tools.bound"
-            };
+            let visible = |notice: &&acyclic_model_render::Notice| notice.model_visible();
             if notices.iter().any(|notice| visible(&notice)) {
                 let filtered;
                 let notices = if notices.iter().all(|notice| visible(&notice)) {

@@ -956,60 +956,76 @@ impl LocalHarness {
         // model has no policy-update record, and replaying a creation with
         // another policy would refuse the reopen.
         let existing = AgentPath::root(&id);
-        let configured = self.root_policy(&id).await?;
-        let server = match bound.agents().state(&existing).await {
-            Ok(state) => {
-                if state
-                    .profile
-                    .as_ref()
-                    .and_then(|profile| profile.topology.as_ref())
-                    != self.topology.as_ref()
-                {
-                    return Err(Error::Invalid("this session has another topology; start with a fresh --host-state-directory".into()));
+        let root = async {
+            let configured = self.root_policy(&id).await?;
+            let server = match bound.agents().state(&existing).await {
+                Ok(state) => {
+                    if state
+                        .profile
+                        .as_ref()
+                        .and_then(|profile| profile.topology.as_ref())
+                        != self.topology.as_ref()
+                    {
+                        return Err(Error::Invalid("this session has another topology; start with a fresh --host-state-directory".into()));
+                    }
+                    self.require_shared_binding(&state)?;
+                    if state.policy.as_ref() != Some(&configured) {
+                        tracing::warn!(
+                            "the configured approval policy differs from the one this workspace's \
+                             root agent was created with; the agent keeps its original policy"
+                        );
+                    }
+                    // This runtime runs the reopened root; reopening only restores
+                    // its placement.
+                    bound.agents().host(&existing).map_err(storage)?;
+                    crate::hosting::reopen(bound, platform, existing)
+                        .await
+                        .map_err(storage)?
                 }
-                self.require_shared_binding(&state)?;
-                if state.policy.as_ref() != Some(&configured) {
-                    tracing::warn!(
-                        "the configured approval policy differs from the one this workspace's \
-                         root agent was created with; the agent keeps its original policy"
-                    );
-                }
-                // This runtime runs the reopened root; reopening only restores
-                // its placement.
-                bound.agents().host(&existing).map_err(storage)?;
-                crate::hosting::reopen(bound, platform, existing)
-                    .await
-                    .map_err(storage)?
-            }
-            Err(crate::agent::Error::NoSuchAgent) => {
-                let request = RootRequest {
-                    peer: true,
-                    agent: id,
-                    fresh: Vec::new(),
-                    retained: std::iter::once(WorkspaceEntry::initial_volume(
-                        crate::agent::WorkspaceRole::Private,
-                        PRIVATE_VOLUME.to_owned(),
-                        self.journal.clone(),
-                    ))
-                    .chain(self.session_bindings())
-                    .collect(),
-                    brief: None,
-                    policy: Some(configured),
-                };
-                let intent = IntentId::try_from("root").map_err(storage)?;
-                match crate::hosting::serve(bound, platform, &intent, request)
-                    .await
-                    .map_err(storage)?
-                {
-                    Serving::Served(server) => server,
-                    Serving::Unknown(_) => {
-                        return Err(Error::Storage(
-                            "the root agent's creation is uncertain; reopen to settle it".into(),
-                        ));
+                Err(crate::agent::Error::NoSuchAgent) => {
+                    let request = RootRequest {
+                        peer: true,
+                        agent: id,
+                        fresh: Vec::new(),
+                        retained: std::iter::once(WorkspaceEntry::initial_volume(
+                            crate::agent::WorkspaceRole::Private,
+                            PRIVATE_VOLUME.to_owned(),
+                            self.journal.clone(),
+                        ))
+                        .chain(self.session_bindings())
+                        .collect(),
+                        brief: None,
+                        policy: Some(configured),
+                    };
+                    let intent = IntentId::try_from("root").map_err(storage)?;
+                    match crate::hosting::serve(bound, platform, &intent, request)
+                        .await
+                        .map_err(storage)?
+                    {
+                        Serving::Served(server) => server,
+                        Serving::Unknown(_) => {
+                            return Err(Error::Storage(
+                                "the root agent's creation is uncertain; reopen to settle it"
+                                    .into(),
+                            ));
+                        }
                     }
                 }
+                Err(error) => return Err(storage(error)),
+            };
+            Ok::<_, Error>(server)
+        };
+        // All root-policy and creation frames are durable before serving a turn.
+        let server = match &self.agent_stream {
+            Some(stream) => {
+                let server =
+                    acyclic_stream::deferring_provider_durability(stream.as_ref(), root).await?;
+                acyclic_stream::StreamProvider::durability_barrier(stream.as_ref())
+                    .await
+                    .map_err(storage)?;
+                server
             }
-            Err(error) => return Err(storage(error)),
+            None => root.await?,
         };
         let runtime = crate::hosting::Runtime::start(Arc::clone(&server));
         Ok(Hosted { server, runtime })

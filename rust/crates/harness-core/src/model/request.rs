@@ -771,7 +771,8 @@ impl PreparedModelRequest {
     pub const fn request_digest(&self) -> [u8; 32] {
         self.request_digest
     }
-    /// Additive token bound including every pinned file.
+    /// Additive token bound including every pinned file. Private validation
+    /// metadata is retained for replay but does not consume the model window.
     pub fn serialized_token_upper_bound(
         &self,
         work: acyclic_fs::NativeWork<'_>,
@@ -788,6 +789,29 @@ impl PreparedModelRequest {
         }
         let mut message_tokens = Vec::new();
         let mut fixed_bytes = self.bytes.len() as u64;
+        fn encoded_bytes<T: Serialize>(value: &T, io: Option<&PreparationIo>) -> Result<u64> {
+            let maximum = io
+                .map(|io| io.remaining().map(|budget| budget.bytes_encoded))
+                .transpose()?;
+            with_history_io(io, |work| {
+                crate::executor::json::json_byte_length_at_depth(value, maximum, 256, work)
+            })
+        }
+        if self.request.compose_tools {
+            for tool in &self.request.tools {
+                charge_items(io, 1)?;
+                if !crate::tools::catalog::is_native_declaration(&tool.name) {
+                    // Dynamic schemas reach the model through tools.changed,
+                    // not through the native declarations as well. Keep the
+                    // original array framing as a conservative constant bound.
+                    fixed_bytes = fixed_bytes
+                        .checked_sub(encoded_bytes(tool, io)?)
+                        .ok_or_else(|| {
+                            Error::Invalid("tool framing exceeds prepared request".into())
+                        })?;
+                }
+            }
+        }
         for message in &self.request.messages {
             charge_items(io, 1)?;
             let bytes = match io {
@@ -808,6 +832,20 @@ impl PreparedModelRequest {
                 .checked_sub(bytes)
                 .ok_or_else(|| Error::Invalid("message framing exceeds prepared request".into()))?;
             let mut tokens = bytes;
+            if let Some((notices, attachments)) = message.content.notice_parts() {
+                if attachments.is_empty() && notices.iter().all(|notice| !notice.model_visible()) {
+                    tokens = 0;
+                } else {
+                    for notice in notices.iter().filter(|notice| !notice.model_visible()) {
+                        tokens =
+                            tokens
+                                .checked_sub(encoded_bytes(notice, io)?)
+                                .ok_or_else(|| {
+                                    Error::Invalid("notice framing exceeds prepared message".into())
+                                })?;
+                    }
+                }
+            }
             for file in message.content.file_refs() {
                 charge_items(io, 1)?;
                 tokens = tokens

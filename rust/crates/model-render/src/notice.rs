@@ -23,6 +23,14 @@ pub struct Notice {
 }
 
 impl Notice {
+    /// Whether this event contributes prompt content. Native tool bindings
+    /// authenticate historical exchanges; their schemas are already supplied
+    /// by the request's declarations and never enter the prompt a second time.
+    #[must_use]
+    pub fn model_visible(&self) -> bool {
+        self.source != "tools" || self.kind != "tools.bound"
+    }
+
     /// Checks producer identity and changed-path shape without closing the tag set.
     ///
     /// # Errors
