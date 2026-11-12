@@ -204,7 +204,7 @@ impl ContextEpoch {
                 change(
                     &key,
                     now.get(&key).copied(),
-                    serde_json::json!({"version": 1, "skill": skill.summary()}),
+                    serde_json::json!({"version": 1, "skill": skill.summary(&mut None)?}),
                 );
             }
         }
