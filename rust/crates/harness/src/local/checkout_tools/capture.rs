@@ -450,6 +450,14 @@ pub(in crate::local) fn configuration(
         maximum_paths: None,
         maximum_extent_spans: None,
     };
-    let policy = CapturePolicy::default();
+    let policy = CapturePolicy::excluding(vec![
+        acyclic_fs::NativeRecoveryRoot::prefix(
+            workspace.identity,
+            workspace.view().workspace().volume_config().profile,
+            workspace.view().workspace().volume_config().limits,
+        )
+        .map_err(storage)?,
+    ])
+    .map_err(storage)?;
     Ok((options, policy))
 }

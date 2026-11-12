@@ -18,6 +18,8 @@ mod bootstrap;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod performance_tests;
+#[cfg(all(test, not(loom)))]
+mod source_tests;
 
 mod children;
 pub(in crate::local) mod git;
@@ -498,6 +500,7 @@ async fn lazy_view(
     );
     let source = held_source(
         root,
+        store,
         config,
         original.as_ref().map(|state| state.source),
         &work,
@@ -531,14 +534,19 @@ async fn lazy_view(
     Ok((view, fresh))
 }
 
-/// The unmodified held checkout is the source. All harness state is external.
+/// Authored data is the source; its recorded recovery binding is excluded.
 async fn held_source(
     root: acyclic_fs::HeldRoot,
+    store: &LocalCoreStateStore,
     config: acyclic_fs::VolumeConfig,
     reference: Option<acyclic_fs::demand::SourceReference>,
     work: &NativeMaterializationWork,
     cancellation: &acyclic_fs::CancellationToken,
 ) -> Result<Arc<NativeDemandSource>> {
+    let identity = root.identity();
+    let prefix = acyclic_fs::NativeRecoveryRoot::prefix(identity, config.profile, config.limits)
+        .map_err(storage)?;
+    let (path, _custody) = work.path(root.path(), None)?;
     let source = NativeDemandSource::open_held(
         root,
         config.profile,
@@ -549,7 +557,13 @@ async fn held_source(
         cancellation,
     )
     .await
+    .map_err(storage)?
+    .exclude(vec![prefix], &work, cancellation)
     .map_err(storage)?;
+    store
+        .inspect_native_recovery_root(&path, identity, work)
+        .await
+        .map_err(storage)?;
     Ok(Arc::new(source))
 }
 

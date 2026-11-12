@@ -100,8 +100,6 @@ pub use workspace_access::{
 mod native_capture_bounds;
 mod native_contract;
 #[cfg(not(target_arch = "wasm32"))]
-mod native_directory;
-#[cfg(not(target_arch = "wasm32"))]
 pub use native_access::NativeMountAuthority;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_access::{
@@ -112,8 +110,6 @@ pub use native_contract::{
     NativeProcessStopKind, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
     NativeVolumeNamespace,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use native_directory::NativeDirectory;
 mod config;
 use config::*;
 pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};

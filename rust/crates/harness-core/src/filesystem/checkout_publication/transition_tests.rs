@@ -178,6 +178,9 @@ impl Fixture {
         }
         let identity = work.root_identity(&root)?;
         let state = LocalCoreStateStore::new(directory.path().join("core"));
+        state
+            .bind_native_recovery_root(&root, identity, &work)
+            .await?;
         Ok(Self {
             _directory: directory,
             root,
@@ -254,16 +257,14 @@ impl Fixture {
             .prepare(&self.from, &self.to, &self.state, &options, &self.work)
             .await?;
         assert_eq!(prepared.phase, acyclic_fs::MaterializationPhase::Prepared);
-        // The persisted v1 journal resumes from this same nested namespace.
-        let staging = self.root.parent().unwrap().join(".acyclic-m");
+        // Each operation owns one child of the verified recovery binding; workspace names
+        // remain authored data, and an unwritable parent is irrelevant.
         assert_eq!(
-            publication.directory().parent().unwrap().parent(),
-            Some(staging.as_path()),
-            "prepared journal changed its original staging namespace"
+            publication.directory().parent().and_then(Path::parent),
+            Some(self.root.as_path())
         );
         let shared_parent = publication.directory().parent().unwrap();
         let parent_identity = self.work.root_identity(shared_parent)?;
-        let staging_identity = self.work.root_identity(&staging)?;
         assert!(options.destination.exists());
         let pending = self.publication(OperationId::new())?;
         let pending_options = MaterializeOptions::native(pending.directory().join("target"));
@@ -342,11 +343,6 @@ impl Fixture {
             parent_identity,
             "cleanup invalidated a shared preparation parent"
         );
-        assert_eq!(
-            self.work.root_identity(&staging)?,
-            staging_identity,
-            "cleanup invalidated the shared staging root"
-        );
         std::fs::write(self.root.join("note"), "edit after acknowledgement")?;
         self.publish(adapter, operation, &self.to).await?;
         assert_eq!(
@@ -384,6 +380,312 @@ async fn git_adapter_resumes_original_checkout_and_preserves_acknowledged_edits(
         .await?
         .assert_resume_and_acknowledgement(Adapter::Git)
         .await
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn publication_needs_no_write_authority_in_the_checkout_parent() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
+        let fixture = Fixture::with_paths(&USER_PATHS).await?;
+        let parent = fixture.root.parent().unwrap();
+        std::fs::create_dir_all(parent.join("core"))?;
+        let original = std::fs::metadata(parent)?.permissions();
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o500))?;
+        let forbidden = std::fs::create_dir(parent.join("forbidden-sibling"));
+        if forbidden.is_ok() {
+            use std::os::unix::process::CommandExt as _;
+            std::fs::set_permissions(parent, original)?;
+            if std::env::var_os("ACYCLIC_PUBLICATION_PERMISSION_CHILD").is_some() {
+                return Err("unprivileged publication control bypassed chmod".into());
+            }
+            // An inherited executable descriptor also works when the build
+            // directory is private to root. No binary copy or privileged skip.
+            let executable = std::fs::File::open(std::env::current_exe()?)?;
+            let status = std::process::Command::new("/proc/self/fd/0")
+                .stdin(executable)
+                .args(["--exact", "filesystem::checkout_publication::transition_tests::publication_needs_no_write_authority_in_the_checkout_parent", "--nocapture"])
+                .env("ACYCLIC_PUBLICATION_PERMISSION_CHILD", "1")
+                .env("TMPDIR", "/tmp")
+                .current_dir("/tmp")
+                .uid(65534)
+                .gid(65534)
+                .status()?;
+            assert!(status.success(), "unprivileged publication control failed");
+            return Ok(());
+        }
+        let published = fixture
+            .publish(adapter, OperationId::new(), &fixture.from)
+            .await;
+        // Restore before checking either result so a failure retains cleanup authority.
+        std::fs::set_permissions(parent, original)?;
+        assert_eq!(
+            forbidden.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        published?;
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join("note"))?,
+            "candidate"
+        );
+        for path in USER_PATHS {
+            assert_eq!(
+                std::fs::read_to_string(fixture.root.join(path))?,
+                "candidate"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_binding_requires_original_ownership_and_is_created_lazily() -> TestResult {
+    for replacement in [false, true] {
+        let fixture = Fixture::new().await?;
+        let name = acyclic_fs::NativeRecoveryRoot::name(fixture.identity);
+        let binding = fixture.root.join(std::str::from_utf8(&name)?);
+        let retained = fixture.root.join("retained-directory");
+        std::fs::rename(&binding, &retained)?;
+        let state = if replacement {
+            fixture.state.clone()
+        } else {
+            LocalCoreStateStore::new(fixture.root.parent().unwrap().join("fresh-core"))
+        };
+        if !replacement {
+            state
+                .inspect_native_recovery_root(&fixture.root, fixture.identity, &fixture.work)
+                .await?;
+            assert!(
+                !binding.exists(),
+                "source inspection created recovery storage"
+            );
+        }
+        std::fs::create_dir(&binding)?;
+        std::fs::write(binding.join("authored"), "user-owned")?;
+        for _ in 0..2 {
+            assert!(
+                state
+                    .inspect_native_recovery_root(&fixture.root, fixture.identity, &fixture.work)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                state
+                    .bind_native_recovery_root(&fixture.root, fixture.identity, &fixture.work)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                std::fs::read_to_string(binding.join("authored"))?,
+                "user-owned"
+            );
+            assert!(retained.is_dir());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn staged_recovery_stays_out_of_capture_and_lazy_discovery_after_reopen() -> TestResult {
+    use acyclic_fs::demand::{DemandSource as _, native::NativeDemandSource};
+    use acyclic_fs::kernel::NamespacePath;
+    let fixture = Fixture::new().await?;
+    let operation = OperationId::new();
+    let publication = fixture.publication(operation)?;
+    let options = MaterializeOptions::native(publication.directory().join("target"));
+    publication
+        .prepare(
+            &fixture.from,
+            &fixture.to,
+            &fixture.state,
+            &options,
+            &fixture.work,
+        )
+        .await?;
+    std::fs::write(fixture.root.join("authored.txt"), "user-owned")?;
+    std::fs::create_dir(fixture.root.join(".acyclic-r-lookalike"))?;
+    std::fs::write(
+        fixture.root.join(".acyclic-r-lookalike/authored"),
+        "also user-owned",
+    )?;
+
+    // A fresh store handle must validate the persisted binding while the
+    // original operation is still Prepared; no process-local registry suffices.
+    LocalCoreStateStore::new(fixture.state.root().to_path_buf())
+        .bind_native_recovery_root(&fixture.root, fixture.identity, &fixture.work)
+        .await?;
+    let config = fixture.from.workspace().volume_config();
+    let prefix =
+        acyclic_fs::NativeRecoveryRoot::prefix(fixture.identity, config.profile, config.limits)?;
+    let policy = acyclic_fs::CapturePolicy::excluding(vec![prefix.clone()])?;
+    let stop = fixture.work.cancellation();
+    let source = NativeDemandSource::open(
+        std::borrow::Cow::Borrowed(&fixture.root),
+        config.profile,
+        config.limits,
+        None,
+        None,
+        &fixture.work,
+        stop,
+    )
+    .await?;
+    assert!(
+        source
+            .lookup(source.reference(), &prefix, &fixture.work, stop)
+            .await?
+            .is_some()
+    );
+    let source = source.exclude(vec![prefix.clone()], &(&fixture.work), stop)?;
+    assert!(
+        source
+            .lookup(source.reference(), &prefix, &fixture.work, stop)
+            .await?
+            .is_none()
+    );
+    let volume_root = NamespacePath::new(Vec::new(), config.limits)?;
+    let page = source
+        .list_page(
+            source.reference(),
+            &volume_root,
+            None,
+            16,
+            &fixture.work,
+            stop,
+        )
+        .await?;
+    assert!(
+        page.entries
+            .iter()
+            .all(|entry| entry.name != prefix.components()[0])
+    );
+
+    let mut checkout = fixture
+        .from
+        .workspace()
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Exact(fixture.from.id()),
+            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            WorkBudget::UNBOUNDED,
+            stop,
+        )
+        .await?
+        .value;
+    let capture = acyclic_fs::CaptureOptions {
+        source_root: fixture.root.clone(),
+        expected_root_identity: fixture.identity,
+        source_namespace: None,
+        maximum_paths: None,
+        maximum_extent_spans: None,
+    };
+    acyclic_fs::capture_baseline(
+        &mut checkout,
+        &capture,
+        &policy,
+        WorkBudget::UNBOUNDED,
+        stop,
+    )
+    .await?;
+    let relative = publication
+        .directory()
+        .strip_prefix(&fixture.root)?
+        .join("target/note");
+    let limits = checkout.volume_config().limits;
+    let path = |text: &str| -> TestResult<_> {
+        Ok(NamespacePath::from_text_in_profile(
+            text,
+            config.profile,
+            limits,
+        )?)
+    };
+    let staged = path(&format!(
+        "/{}",
+        relative.to_string_lossy().replace('\\', "/")
+    ))?;
+    for text in ["/authored.txt", "/.acyclic-r-lookalike/authored"] {
+        assert!(
+            checkout
+                .lookup_no_follow(&path(text)?, WorkBudget::UNBOUNDED, stop)
+                .await?
+                .value
+                .record
+                .is_some()
+        );
+    }
+    assert!(
+        checkout
+            .lookup_no_follow(&staged, WorkBudget::UNBOUNDED, stop)
+            .await?
+            .value
+            .record
+            .is_none()
+    );
+    // Actual former configuration imports the retained copy as project data.
+    // Each policy gets a clean candidate; capture refuses pending mutations.
+    drop(checkout);
+    let mut checkout = fixture
+        .from
+        .workspace()
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Exact(fixture.from.id()),
+            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            WorkBudget::UNBOUNDED,
+            stop,
+        )
+        .await?
+        .value;
+    acyclic_fs::capture_baseline(
+        &mut checkout,
+        &capture,
+        &acyclic_fs::CapturePolicy::default(),
+        WorkBudget::UNBOUNDED,
+        stop,
+    )
+    .await?;
+    assert!(
+        checkout
+            .lookup_no_follow(&staged, WorkBudget::UNBOUNDED, stop)
+            .await?
+            .value
+            .record
+            .is_some()
+    );
+    assert_eq!(
+        std::fs::read_to_string(options.destination.join("note"))?,
+        "candidate"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_name_collision_preserves_authored_data_before_publication() -> TestResult {
+    for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
+        for populated in [false, true] {
+            let fixture = Fixture::new().await?;
+            let operation = OperationId::new();
+            let publication = fixture.publication(operation)?;
+            std::fs::create_dir(publication.directory())?;
+            let sentinel = publication.directory().join("authored");
+            if populated {
+                std::fs::write(&sentinel, "user-owned")?;
+            }
+            for _ in 0..2 {
+                assert!(
+                    fixture
+                        .publish(adapter, operation, &fixture.from)
+                        .await
+                        .is_err()
+                );
+                assert!(!fixture.root.join("note").exists());
+                assert!(publication.directory().is_dir());
+                if populated {
+                    assert_eq!(std::fs::read_to_string(&sentinel)?, "user-owned");
+                } else {
+                    assert_eq!(std::fs::read_dir(publication.directory())?.count(), 0);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // Internal authority model for the publication boundary. Real authenticated
@@ -490,6 +792,54 @@ async fn preparation_and_journal_reads_keep_original_custody() -> TestResult {
             .is_some_and(|custody| !custody.work().shares_ledger(&fixture.work))
     );
     assert!(!fixture.root.join("note").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn obsolete_staging_binding_is_refused_before_publication() -> TestResult {
+    use acyclic_fs::MaterializationJournalStore as _;
+    for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
+        let fixture = Fixture::with_paths(&USER_PATHS).await?;
+        let operation = OperationId::new();
+        let publication = fixture.publication(operation)?;
+        let options = MaterializeOptions::native(publication.directory().join("target"));
+        let mut journal = publication
+            .prepare(
+                &fixture.from,
+                &fixture.to,
+                &fixture.state,
+                &options,
+                &fixture.work,
+            )
+            .await?;
+        assert_eq!(journal.version, 5);
+        journal.version = 4;
+        let expected = journal.revision;
+        journal.revision = expected + 1;
+        let (stored, _) = fixture
+            .state
+            .materialization(fixture.work.clone())
+            .compare_and_swap(operation, expected, journal)
+            .await?;
+        assert!(stored);
+        assert!(
+            fixture
+                .publish(adapter, operation, &fixture.from)
+                .await
+                .is_err()
+        );
+        assert!(!fixture.root.join("note").exists());
+        assert_eq!(
+            std::fs::read_to_string(options.destination.join("note"))?,
+            "candidate"
+        );
+        for path in USER_PATHS {
+            assert_eq!(
+                std::fs::read_to_string(fixture.root.join(path))?,
+                "original"
+            );
+        }
+    }
     Ok(())
 }
 
