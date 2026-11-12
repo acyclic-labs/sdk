@@ -797,7 +797,9 @@ impl Conversation {
     /// Original record, file authorization, host or decoding failures.
     pub async fn turn_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<Turn> {
         let prompt = match &entry.input {
-            TurnInput::Message { body, .. } => Some(self.selected_text(body, Some(sequence)).await?),
+            TurnInput::Message { body, .. } => {
+                Some(self.selected_text(body, Some(sequence)).await?)
+            }
             _ => None,
         };
         let output = self.output_at(sequence, entry).await?;
