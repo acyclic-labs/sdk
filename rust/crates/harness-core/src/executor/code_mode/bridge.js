@@ -40,7 +40,7 @@
     const exposed = lazy ? new Proxy(Object.freeze(tools), {
         get(target, name) {
             if (own(target, name)) return target[name];
-            if (typeof name !== 'string' || name === 'then') return undefined;
+            if (typeof name !== 'string') return undefined;
             return args => {
                 if (closed) throw new ErrorType('JavaScript calls are closed');
                 return invoke(name, args);
