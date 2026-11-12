@@ -5,7 +5,7 @@ use acyclic_native_runtime::terminal as ffi;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::os::windows::io::AsRawHandle;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 struct ConsoleIo {
@@ -50,12 +50,30 @@ impl super::console_owner::CloseWake for Arc<ffi::ConsoleClose> {
 }
 
 type ConsoleOwner = Owner<ConsoleIo, Arc<ffi::ConsoleClose>>;
-static CONSOLE: OnceLock<Arc<ConsoleOwner>> = OnceLock::new();
+type ConsoleSlot = Mutex<Option<Arc<ConsoleOwner>>>;
+static CONSOLE: OnceLock<io::Result<ConsoleSlot>> = OnceLock::new();
+
+fn close_console(owner: &Arc<ConsoleOwner>) -> io::Result<()> {
+    let Some(Ok(slot)) = CONSOLE.get() else {
+        return Err(io::ErrorKind::NotConnected.into());
+    };
+    let mut current = slot.lock().map_err(|_| io::ErrorKind::Other)?;
+    Owner::close(owner, ConsoleIo::restore)?;
+    if current
+        .as_ref()
+        .is_some_and(|live| Arc::ptr_eq(live, owner))
+    {
+        *current = None;
+    }
+    Ok(())
+}
+
 fn console_control(event: u32) -> bool {
     if matches!(event, 0 | 1 | 2 | 5 | 6)
-        && let Some(owner) = CONSOLE.get()
+        && let Some(Ok(slot)) = CONSOLE.get()
+        && let Some(owner) = slot.lock().ok().and_then(|current| current.clone())
     {
-        let _ = Owner::close(&owner, ConsoleIo::restore);
+        let _ = close_console(&owner);
     }
     #[cfg(test)]
     tests::observe_restored_console(event);
@@ -150,7 +168,7 @@ impl Write for Output {
 }
 impl Drop for Output {
     fn drop(&mut self) {
-        let _ = Owner::close(&self.owner, ConsoleIo::restore);
+        let _ = close_console(&self.owner);
     }
 }
 
@@ -177,6 +195,17 @@ impl Tty {
     }
     /// Capture modes and code pages before enabling VT and UTF-8.
     pub fn open() -> io::Result<Self> {
+        let slot = CONSOLE
+            .get_or_init(|| {
+                ffi::console_register(console_control)?;
+                Ok(Mutex::new(None))
+            })
+            .as_ref()
+            .map_err(|error| io::Error::new(error.kind(), error.to_string()))?;
+        let mut current = slot.lock().map_err(|_| io::ErrorKind::Other)?;
+        if current.is_some() {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
         let input = OpenOptions::new().read(true).write(true).open("CONIN$")?;
         let output = OpenOptions::new().read(true).write(true).open("CONOUT$")?;
         let original = ffi::console_state(
@@ -194,12 +223,11 @@ impl Tty {
         );
         let closed = Arc::new(ffi::ConsoleClose::new()?);
         let owner = Owner::notifying(guard, ffi::cancel_thread, Arc::clone(&closed));
-        CONSOLE
-            .set(Arc::clone(&owner))
-            .map_err(|_| io::ErrorKind::AlreadyExists)?;
-        ffi::console_register(console_control)?;
+        *current = Some(Arc::clone(&owner));
         if let Err(error) = Owner::run(&owner, None, |guard| guard.writer().reapply()) {
-            let _ = Owner::close(&owner, ConsoleIo::restore);
+            if Owner::close(&owner, ConsoleIo::restore).is_ok() {
+                *current = None;
+            }
             return Err(error);
         }
         Ok(Self {
@@ -231,7 +259,7 @@ impl Tty {
     }
     /// Fence the worker, then restore DEC/console modes and code pages.
     pub fn restore(&mut self) -> io::Result<()> {
-        Owner::close(&self.owner, ConsoleIo::restore)
+        close_console(&self.owner)
     }
     /// Read classified VT input; the decoder coalesces ConPTY CR/LF.
     /// None waits on input or owner close without a readiness deadline.
@@ -389,6 +417,28 @@ mod tests {
         assert_ne!(raw.input_mode & 512, 0);
         assert_ne!(raw.output_mode & 4, 0);
         assert_eq!((raw.input_page, raw.output_page), (65001, 65001));
+        if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("break") {
+            assert!(
+                matches!(Tty::open(), Err(error) if error.kind() == io::ErrorKind::AlreadyExists)
+            );
+            let (stale_input, first_output) = tty.split();
+            drop(first_output);
+            let (second, stale_output) = Tty::open()?.split();
+            drop(stale_input);
+            second.owner.check_open()?;
+            drop(second);
+            tty = Tty::open()?;
+            drop(stale_output);
+            tty.owner.check_open()?;
+            let reopened = ffi::console_state(
+                input.as_raw_handle() as usize,
+                output.as_raw_handle() as usize,
+            )?;
+            assert_eq!(reopened.input_mode, raw.input_mode);
+            assert_eq!(reopened.output_mode, raw.output_mode);
+            assert_eq!(reopened.input_page, raw.input_page);
+            assert_eq!(reopened.output_page, raw.output_page);
+        }
         if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("output-completion") {
             let ready = path.with_extension("output-ready");
             let start = Instant::now();

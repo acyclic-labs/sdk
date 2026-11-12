@@ -372,7 +372,7 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
         this: &Arc<Self>,
         os_restore: fn(&mut W) -> io::Result<()>,
     ) -> io::Result<()> {
-        let notified = {
+        {
             let mut state = this.state.lock().map_err(|_| io::ErrorKind::Other)?;
             while state.closing {
                 state = this.wake.wait(state).map_err(|_| io::ErrorKind::Other)?;
@@ -382,8 +382,8 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
             }
             state.closed = true;
             state.closing = true;
-            this.closed.close()
-        };
+        }
+        let notified = this.closed.close();
         let result = this.quiesce(true).and_then(|()| {
             let result = Self::execute(
                 this,
