@@ -229,7 +229,7 @@ pub(crate) use path_access::{
     PathBatchMode, PathQueries, lookup_path_async_with_accounting, lookup_paths_with_accounting,
     observe_path_async_with_accounting, observe_paths_async_with_accounting,
 };
-pub use persistent_pagination::PagePosition;
+pub(crate) use persistent_pagination::PagePosition;
 pub(crate) use persistent_point::key_at_position_with_accounting;
 pub(crate) use persistent_point::retire_allocation;
 pub use probe::{

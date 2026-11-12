@@ -24,6 +24,7 @@ async fn admit_tree_binding<O: AsyncObjectStore>(
                     }),
                     CASE_FOLD_COLLISION_SCAN_PAGE,
                     acyclic_collections::page::Direction::Ascending,
+                    false,
                 ),
                 limits,
                 accounting,

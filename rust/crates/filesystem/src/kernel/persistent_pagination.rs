@@ -21,7 +21,7 @@ use std::ops::{Bound, Range};
 /// A name-free address inside one immutable ordered tree.
 /// The root and each child index are checked again when the address is used.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PagePosition {
+pub(crate) struct PagePosition {
     pub(crate) root: ObjectId,
     pub(crate) path: acyclic_stream::OwnedBytes,
     pub(crate) offset: u32,
@@ -62,7 +62,7 @@ impl<K> Pending<K> {
 )]
 pub(crate) async fn paginate<F>(
     store: &dyn Source,
-    query: (ObjectId, Bound<&F::Key>, u32, Direction),
+    query: (ObjectId, Bound<&F::Key>, u32, Direction, bool),
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -71,11 +71,11 @@ pub(crate) async fn paginate<F>(
 where
     F: Format,
 {
-    let (root, bound, maximum_values, direction) = query;
+    let (root, bound, maximum_values, direction, position) = query;
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = paginate_with_accounting::<F>(
         store,
-        (root, bound, maximum_values, direction),
+        (root, bound, maximum_values, direction, position),
         limits,
         &mut accounting,
         cancellation,
@@ -93,7 +93,7 @@ where
 )]
 pub(crate) async fn paginate_with_accounting<F>(
     store: &dyn Source,
-    query: (ObjectId, Bound<&F::Key>, u32, Direction),
+    query: (ObjectId, Bound<&F::Key>, u32, Direction, bool),
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -102,18 +102,9 @@ pub(crate) async fn paginate_with_accounting<F>(
 where
     F: Format,
 {
-    let (root, bound, maximum_values, direction) = query;
     accounting.check()?;
-    let mut machine = Machine::<F>::new_with_accounting(
-        root,
-        bound,
-        maximum_values,
-        direction,
-        limits,
-        accounting,
-        data_custody,
-    )
-    .map_err(|failure| query_error(failure.error))?;
+    let mut machine = Machine::<F>::new_with_accounting(query, limits, accounting, data_custody)
+        .map_err(|failure| query_error(failure.error))?;
     let result: Result<(), Failure> = async {
         while machine.values.len() < machine.target && !machine.pending.value.is_empty() {
             cancellation
@@ -189,14 +180,12 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         reason = "The constructor admits and initializes its bounded seek state before exposing it."
     )]
     fn new_with_accounting(
-        root: ObjectId,
-        bound: Bound<&'a F::Key>,
-        maximum_values: u32,
-        direction: Direction,
+        query: (ObjectId, Bound<&'a F::Key>, u32, Direction, bool),
         limits: DecodeLimits,
         accounting: &'a mut KernelAccounting<'accounting>,
         data_custody: Option<&'a super::ProofDataCustody>,
     ) -> Result<Self, Failure> {
+        let (root, bound, maximum_values, direction, position) = query;
         let fail = |error| failed(error, accounting.spent());
         if root.kind != F::kind() {
             return Err(fail(Error::WrongRootKind));
@@ -312,7 +301,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             values_container_bytes: values.bytes,
             values_nested_bytes: 0,
             successor_page: None,
-            path: Some(Owned::new(Vec::new(), path_allocation, 0)),
+            path: position.then(|| Owned::new(Vec::new(), path_allocation, 0)),
             boundary: None,
             data_custody,
             accounting,

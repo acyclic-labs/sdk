@@ -1054,6 +1054,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                             .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                         *maximum_entries,
                         acyclic_collections::page::Direction::Ascending,
+                        false,
                     ),
                     self.limits.decode,
                     accounting,

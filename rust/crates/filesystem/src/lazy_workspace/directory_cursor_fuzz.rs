@@ -106,45 +106,39 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
             LazyOverlayId::from_bytes([8; 32]),
             LazyShadowId::from_bytes([9; 32]),
         );
-        for (profile_tag, profile) in PROFILES.into_iter().enumerate() {
-            for phase_tag in 0..4 {
-                let (directory, allocation) = NamespacePath::parse_in_profile(
-                    "/retained",
-                    profile,
-                    limits,
-                    &mut ctx,
-                    work.cancellation(),
-                )?;
-                let phase = match phase_tag {
-                    0 => LazyDirectoryPhase::Source(None),
-                    1 => {
-                        LazyDirectoryPhase::Source(Some(SourceCursor::detached(source.clone(), 11)))
-                    }
-                    2 => LazyDirectoryPhase::Authored(None),
-                    _ => LazyDirectoryPhase::Authored(Some(crate::kernel::PagePosition {
-                        root: ObjectId {
-                            kind: ObjectKind::TreePage,
-                            ..generation.object_id()
-                        },
-                        path: acyclic_stream::OwnedBytes::from_static(&[0, 0, 0, 0, 1, 0, 0, 0]),
-                        offset: 11,
-                    })),
-                };
-                let cursor = LazyDirectoryCursor {
-                    cut: cut.clone(),
-                    directory,
-                    phase,
-                    allocation,
-                };
-                let encoded = cursor.encode(&work)?;
-                let captured = encoded.0.clone();
-                drop(encoded);
-                seeds.push((
-                    format!("directory-cursor-{sealed}-{profile_tag}-{phase_tag}"),
-                    captured,
-                ));
-                cursor.retire(&mut ctx)?;
-            }
+        let profile = FilesystemProfile::Portable;
+        for phase_tag in 0..4 {
+            let (directory, allocation) = NamespacePath::parse_in_profile(
+                "/retained",
+                profile,
+                limits,
+                &mut ctx,
+                work.cancellation(),
+            )?;
+            let phase = match phase_tag {
+                0 => LazyDirectoryPhase::Source(None),
+                1 => LazyDirectoryPhase::Source(Some(SourceCursor::detached(source.clone(), 11))),
+                2 => LazyDirectoryPhase::Authored(None),
+                _ => LazyDirectoryPhase::Authored(Some(crate::kernel::PagePosition {
+                    root: ObjectId {
+                        kind: ObjectKind::TreePage,
+                        ..generation.object_id()
+                    },
+                    path: acyclic_stream::OwnedBytes::from_static(&[0, 0, 0, 0, 1, 0, 0, 0]),
+                    offset: 11,
+                })),
+            };
+            let cursor = LazyDirectoryCursor {
+                cut: cut.clone(),
+                directory,
+                phase,
+                allocation,
+            };
+            let encoded = cursor.encode(&work)?;
+            let captured = encoded.0.clone();
+            drop(encoded);
+            seeds.push((format!("directory-cursor-{sealed}-{phase_tag}"), captured));
+            cursor.retire(&mut ctx)?;
         }
     }
     assert_eq!(

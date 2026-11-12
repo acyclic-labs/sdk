@@ -43,7 +43,7 @@ impl LazyDirectoryCursor {
             cancellation: work.cancellation(),
         };
         let mut input = crate::kernel::decode_owned(&mut ctx, |mut observe| {
-            decode_fields(bytes, profile, limits, &mut observe)
+            decode_fields(bytes, limits, &mut observe)
         })?;
         input.0.0.source.retain_decoded(&mut input.1, &mut ctx)?;
         match &mut input.0.2 {
@@ -153,7 +153,6 @@ fn encode_fields(
 
 fn decode_fields(
     bytes: &[u8],
-    profile: crate::FilesystemProfile,
     limits: crate::VolumeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), crate::FsError>,
 ) -> Result<(LazySnapshotRef, String, LazyDirectoryPhase), crate::FsError> {

@@ -1,6 +1,5 @@
 use super::*;
 use crate::demand::SourceDirectoryPage;
-use std::ops::Bound;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "directory_cursor.rs"]
 pub(super) mod cursor_codec;
@@ -361,30 +360,15 @@ impl<
                         return Ok((entries, next.map(|phase| (phase, failure.allocation))));
                     }
                     LazyDirectoryPhase::Authored(position) => {
-                        let listed = match position {
-                            Some(position) => {
-                                checkout
-                                    .list_directory_after_position_with_accounting(
-                                        &directory.value,
-                                        &position,
-                                        maximum,
-                                        ctx,
-                                        cancellation(ctx),
-                                    )
-                                    .await
-                            }
-                            None => {
-                                checkout
-                                    .list_directory_with_accounting(
-                                        &directory.value,
-                                        Bound::Unbounded,
-                                        maximum,
-                                        ctx,
-                                        cancellation(ctx),
-                                    )
-                                    .await
-                            }
-                        };
+                        let listed = checkout
+                            .list_directory_from_position_with_accounting(
+                                &directory.value,
+                                position.as_ref(),
+                                maximum,
+                                ctx,
+                                cancellation(ctx),
+                            )
+                            .await;
                         let (page, mut guard) = match listed {
                             Ok(page) => page,
                             Err(crate::FsError::NotFound) => {

@@ -19,8 +19,8 @@ pub struct DirectoryPage {
     pub entries: Vec<TreeEntry>,
     /// Whether at least one additional entry exists.
     pub has_more: bool,
-    /// Name-free address of the final returned entry, when another entry exists.
-    pub position: Option<super::PagePosition>,
+    /// Requested name-free address of the final entry, when another entry exists.
+    pub(crate) position: Option<super::PagePosition>,
     /// Exact unvisited successor object, when the authenticated traversal exposed one without widening the requested listing.
     pub next_residency: Option<ResidencyHint>,
     /// Exact backend, traversal, copy, and logical-allocation work.
@@ -44,6 +44,7 @@ pub async fn list_tree_entries<S: AsyncObjectStore>(
             after.map_or(Bound::Unbounded, Bound::Excluded),
             maximum_entries,
             Direction::Ascending,
+            false,
         ),
         limits,
         budget,
@@ -61,7 +62,7 @@ pub(crate) async fn list_tree_entries_async_with_accounting<
 >(
     store: &'a S,
     root: ObjectId,
-    page: (Bound<&'a LogicalName>, u32, Direction),
+    page: (Bound<&'a LogicalName>, u32, Direction, bool),
     limits: DecodeLimits,
     accounting: &'a mut super::allocation::KernelAccounting<'accounting>,
     cancellation: &'a CancellationToken,
@@ -69,7 +70,7 @@ pub(crate) async fn list_tree_entries_async_with_accounting<
 ) -> Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError> {
     persistent_pagination::paginate_with_accounting::<TreeFormat>(
         store,
-        (root, page.0, page.1, page.2),
+        (root, page.0, page.1, page.2, page.3),
         limits,
         accounting,
         cancellation,

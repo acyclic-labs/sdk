@@ -593,7 +593,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                                     .as_ref()
                                     .map(|owned| &owned.0)
                                     .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
-                                CASE_FOLD_COLLISION_SCAN_PAGE,
+                                (CASE_FOLD_COLLISION_SCAN_PAGE, false),
                                 accounting,
                                 cancellation,
                             )
