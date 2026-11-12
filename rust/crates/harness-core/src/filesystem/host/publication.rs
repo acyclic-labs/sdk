@@ -59,43 +59,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         else {
             return Ok(None);
         };
-        let Some(original) = io.sdk(
+        let Some(publication) = io.sdk(
             workspace
-                .operation_generation(operation, io, io.cancellation())
+                .operation_publication(operation, io, io.cancellation())
                 .await,
         )?
         else {
             return Ok(None);
         };
-        let receipt_identity = if internal_class.is_some() {
-            expected_path
-                .ok_or_else(|| io.invalid("internal upload recovery requires its original path"))?
-        } else {
-            key.as_str()
-        };
-        let receipt_path = content_receipt_path_io(
-            volume,
-            receipt_identity,
-            internal_class.is_some(),
-            true,
-            Some(io),
-        )?;
-        let hold = io.guard_owned(receipt_path.capacity() as u64)?;
-        let receipt_path = (receipt_path, hold);
-        let receipt = read_generation(&original, &receipt_path.0, None, Some(io)).await?;
-        let receipt = if internal_class.is_some() {
-            recover_internal_upload_receipt(&original, volume, receipt_identity, receipt, Some(io))
-                .await?
-        } else {
-            receipt
-        };
-        let hold = io.guard_bytes(&receipt)?;
-        let receipt = (receipt, hold);
-        let recorded = io.decode(
-            PhantomData::<(FileRef, Option<GenerationRef>)>,
-            &receipt.0,
-            crate::wire::ErrorCode::Storage,
-        )?;
+        let receipt = publication
+            .evidence()
+            .ok_or_else(|| io.invalid("upload publication has no original evidence"))?;
+        let original = publication.generation();
+        let recorded = decode_publication_receipt(receipt, io)?;
         recorded.0.0.validate(&mut Some(&mut io.history_io()))?;
         let version = bounded_io::hex_key(&operation.into_bytes(), Some(io))?;
         let _version_hold = io.guard_owned(version.capacity() as u64)?;
@@ -133,9 +109,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(binding) = binding {
             bounded_io::retain(&binding, Some(io)).await?;
         }
-        verify_upload_metadata(&original, &recorded.0, &receipt.0, io).await?;
+        verify_upload_metadata(original, &recorded.0, receipt, io).await?;
         let recovered = self
-            .recovered_upload(&original, recorded, &request, io)
+            .recovered_upload(original, recorded, &request, io)
             .await?;
         super::super::access::require_current(&workspace, &view.0, io).await?;
         if let Some(view) = root_view {
@@ -249,61 +225,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 }
 
-// Older internal writes kept the FileRef index and the canonical receipt at
-// separate paths. New writes use the tuple-shaped index as their receipt.
-pub(in crate::filesystem) async fn recover_internal_upload_receipt<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
->(
-    original: &acyclic_fs::Generation<A, O>,
-    volume: &VolumeRef,
-    identity: &str,
-    receipt: acyclic_stream::OwnedBytes,
-    io: Option<&PreparationIo>,
-) -> Result<acyclic_stream::OwnedBytes> {
-    if receipt.trim_ascii_start().first() != Some(&b'{') {
-        return Ok(receipt);
-    }
-    drop(receipt);
-    let path = content_receipt_path_io(volume, identity, false, true, io)?;
-    let _hold = io
-        .map(|io| io.guard_owned(path.capacity() as u64))
-        .transpose()?;
-    read_generation(original, &path, None, io).await
-}
-
-pub(in crate::filesystem) fn content_metadata_matches(
-    metadata: &[u8],
-    file: &FileRef,
-    receipt: &[u8],
-    io: Option<&PreparationIo>,
-) -> Result<bool> {
-    if metadata == receipt {
-        return Ok(true);
-    }
-    let legacy = match io {
-        Some(io) => io.encode(file, io.remaining()?.bytes_encoded, false)?,
-        None => acyclic_stream::OwnedBytes::from(
-            serde_json::to_vec(file).map_err(|error| Error::Invalid(error.to_string()))?,
-        ),
-    };
-    Ok(metadata == legacy.as_ref())
-}
-
 async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     original: &acyclic_fs::Generation<A, O>,
     recorded: &(FileRef, Option<GenerationRef>),
-    receipt: &acyclic_stream::OwnedBytes,
+    receipt: &[u8],
     io: &PreparationIo,
 ) -> Result<()> {
     let canonical = io.encode(
-        &(&recorded.0, &recorded.1),
+        &(1_u8, (&recorded.0, &recorded.1)),
         io.remaining()?.bytes_encoded,
         true,
     )?;
     let hold = io.guard_bytes(&canonical)?;
     let canonical = (canonical, hold);
-    if canonical.0.as_ref() != receipt.as_ref() {
+    if canonical.0.as_ref() != receipt {
         return Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,
@@ -317,7 +252,7 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let metadata = read_generation(original, &metadata_path.0, None, Some(io)).await?;
     let hold = io.guard_bytes(&metadata)?;
     let metadata = (metadata, hold);
-    if !content_metadata_matches(&metadata.0, &recorded.0, &canonical.0, Some(io))? {
+    if metadata.0.as_ref() != receipt {
         return Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,
@@ -327,23 +262,27 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(())
 }
 
-/// Decode current publication records and the FileRef indexes written before them.
+fn decode_publication_receipt<'a>(
+    bytes: &[u8],
+    io: &'a PreparationIo,
+) -> Result<((FileRef, Option<GenerationRef>), DecodeReservation<'a>)> {
+    let ((version, record), hold) = io.decode(
+        PhantomData::<(u8, (FileRef, Option<GenerationRef>))>,
+        bytes,
+        crate::wire::ErrorCode::Storage,
+    )?;
+    if version != 1 {
+        return Err(io.invalid("unsupported upload publication evidence"));
+    }
+    Ok((record, hold))
+}
+
+/// Decodes the sole versioned metadata format; no legacy workspace receipt fallback.
 pub(in crate::filesystem) fn decode_content_metadata<'a>(
     bytes: &[u8],
     io: &'a PreparationIo,
 ) -> Result<(FileRef, DecodeReservation<'a>)> {
-    if bytes.trim_ascii_start().first() == Some(&b'{') {
-        return io.decode(
-            PhantomData::<FileRef>,
-            bytes,
-            crate::wire::ErrorCode::Storage,
-        );
-    }
-    let ((file, expected), mut hold) = io.decode(
-        PhantomData::<(FileRef, Option<GenerationRef>)>,
-        bytes,
-        crate::wire::ErrorCode::Storage,
-    )?;
+    let ((file, expected), mut hold) = decode_publication_receipt(bytes, io)?;
     drop(expected);
     hold.substitute(file.logical_owned_bytes()?)?;
     Ok((file, hold))

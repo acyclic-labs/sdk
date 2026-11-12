@@ -541,7 +541,7 @@ async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()
     Ok(())
 }
 
-struct InternalPublicationCase<'a> {
+struct PublicationCase<'a> {
     host: &'a MemoryHost,
     volume: &'a VolumeRef,
     write: &'a ContentGrant,
@@ -549,16 +549,16 @@ struct InternalPublicationCase<'a> {
     io: Option<&'a PreparationIo>,
 }
 
-impl InternalPublicationCase<'_> {
+impl PublicationCase<'_> {
     async fn put(
         &self,
         path: &str,
         bytes: &[u8],
         key: &IdempotencyKey,
-        class: InternalContentClass,
+        class: Option<InternalContentClass>,
     ) -> Result<FileRef> {
         self.host
-            .put_internal_content(
+            .put_content_impl(
                 self.volume,
                 self.write,
                 path,
@@ -568,43 +568,64 @@ impl InternalPublicationCase<'_> {
                 64,
                 key,
                 class,
+                None,
+                None,
                 self.io,
-            )
+            )?
             .await
     }
 
-    async fn single_record(&self, workspace: &WorkspaceRef, path: &str) -> Result<bool> {
+    async fn original_evidence(
+        &self,
+        workspace: &WorkspaceRef,
+        path: &str,
+        key: &IdempotencyKey,
+    ) -> Result<()> {
         let metadata_path = content_metadata_path_io(self.volume, path, true, None)?;
-        let receipt_path = content_receipt_path_io(self.volume, path, true, true, None)?;
-        let obsolete = format!(
-            "/.system/harness-uploads/{}.json",
-            blake3::hash(path.as_bytes()).to_hex()
-        );
-        let single_record = receipt_path == metadata_path
-            && matches!(
-                self.host.read(workspace, None, &obsolete, 4096, None).await,
-                Err(error) if error.code() == crate::wire::ErrorCode::NotFound
-            );
         let record = self
             .host
             .read(workspace, None, &metadata_path, 4096, None)
             .await?;
-        let (staged, expected): (FileRef, Option<GenerationRef>) =
+        let (version, (staged, expected)): (u8, (FileRef, Option<GenerationRef>)) =
             serde_json::from_slice(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(version, 1);
         assert_eq!(staged.path(), path);
         assert!(expected.is_none());
-        assert_eq!(
-            crate::contract::canonical_json_bytes(&(staged, expected))?,
-            record.as_ref()
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let io = PreparationIo::for_unmeasured(&cancellation)?;
+        let opened = self.host.open(workspace, None).await?;
+        let publication = io
+            .sdk(
+                opened
+                    .operation_publication(filesystem_key(key), &io, &cancellation)
+                    .await,
+            )?
+            .ok_or_else(|| io.invalid("publication evidence is absent"))?;
+        assert_eq!(publication.evidence(), Some(record.as_ref()));
+        assert!(
+            io.sdk(
+                publication
+                    .generation()
+                    .stat("/.system/harness-uploads", &io, &cancellation)
+                    .await
+            )
+            .is_err()
         );
-        Ok(single_record)
+        Ok(())
     }
 
-    async fn verify(&self, workspace: &WorkspaceRef, class: InternalContentClass) -> Result<bool> {
-        let path = format!("{}payload.json", class.prefix());
+    async fn verify(
+        &self,
+        workspace: &WorkspaceRef,
+        class: Option<InternalContentClass>,
+    ) -> Result<()> {
+        let path = format!(
+            "{}payload.json",
+            class.map_or("uploads/", |class| class.prefix())
+        );
         let key = IdempotencyKey::new(format!("first-{path}"))?;
         let original = self.put(&path, b"original", &key, class).await?;
-        let single_record = self.single_record(workspace, &path).await?;
+        self.original_evidence(workspace, &path, &key).await?;
         self.put(
             &path,
             b"replacement",
@@ -620,7 +641,7 @@ impl InternalPublicationCase<'_> {
                     key: &key,
                     expected_path: Some(&path),
                     maximum_bytes: 64,
-                    internal_class: Some(class),
+                    internal_class: class,
                     purpose: PublicationPurpose::Content,
                     scope: self.write.policy_scope(),
                     ceiling: None,
@@ -650,13 +671,13 @@ impl InternalPublicationCase<'_> {
             Err(error) if error.code() == crate::wire::ErrorCode::Conflict
         ));
         assert_eq!(self.host.resolve(workspace, None).await?, before);
-        Ok(single_record)
+        Ok(())
     }
 }
 
 #[tokio::test]
-async fn internal_publication_has_one_metadata_and_recovery_record_for_every_adapter() -> Result<()>
-{
+async fn publication_recovers_original_evidence_without_receipt_paths_for_every_adapter()
+-> Result<()> {
     for adapter in 0..3 {
         let provider =
             ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
@@ -673,9 +694,10 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
         let (write, read) = publication_grants(&volume, agent)?;
         let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
         for class in [
-            InternalContentClass::Interaction,
-            InternalContentClass::Execution,
-            InternalContentClass::ToolResult,
+            None,
+            Some(InternalContentClass::Interaction),
+            Some(InternalContentClass::Execution),
+            Some(InternalContentClass::ToolResult),
         ] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
@@ -686,24 +708,19 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
                 1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
                 _ => Some(PreparationIo::from_native_work(&native)?),
             };
-            let case = InternalPublicationCase {
+            let case = PublicationCase {
                 host: &host,
                 volume: &volume,
                 write: &write,
                 read: &read,
                 io: io.as_ref(),
             };
-            let single_record = case.verify(&workspace, class).await.map_err(|error| {
+            case.verify(&workspace, class).await.map_err(|error| {
                 Error::Storage(format!(
                     "adapter {adapter}, family {}: {error:?}",
-                    class.prefix()
+                    class.map_or("uploads/", |class| class.prefix())
                 ))
             })?;
-            assert!(
-                single_record,
-                "adapter {adapter}, family {} retained duplicate metadata and recovery indexes",
-                class.prefix()
-            );
         }
     }
     Ok(())
@@ -763,6 +780,63 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         let original = host
             .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
             .await?;
+        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
+        let opened = host.open(&workspace, None).await?;
+        let proof_io = PreparationIo::for_unmeasured(&cancellation)?;
+        let publication = proof_io
+            .sdk(
+                opened
+                    .operation_publication(filesystem_key(&key), &proof_io, &cancellation)
+                    .await,
+            )?
+            .ok_or_else(|| proof_io.invalid("conditional publication evidence is absent"))?;
+        assert!(
+            proof_io
+                .sdk(
+                    publication
+                        .generation()
+                        .stat("/.system/harness-uploads", &proof_io, &cancellation)
+                        .await
+                )
+                .is_err()
+        );
+        let former_receipt = format!(
+            "/.system/harness-uploads/{}.json",
+            blake3::hash(key.as_str().as_bytes()).to_hex()
+        );
+        host.apply(
+            &workspace,
+            None,
+            &[
+                WorkspaceMutation::CreateDirectory {
+                    path: "/.system/harness-uploads".into(),
+                },
+                WorkspaceMutation::PutFile {
+                    path: former_receipt.clone(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"ordinary authored bytes"),
+                },
+            ],
+            &IdempotencyKey::new("authored-former-receipt")?,
+        )
+        .await?;
+        let receipt_bytes = publication
+            .evidence()
+            .ok_or_else(|| proof_io.invalid("receipt absent"))?
+            .len() as u64;
+        assert!(
+            host.observe_changes(&volume, &write, &key, receipt_bytes - 1, create_access)?
+                .await
+                .is_err()
+        );
+        let observed = host
+            .observe_changes(&volume, &write, &key, receipt_bytes, create_access)?
+            .await?
+            .ok_or_else(|| proof_io.invalid("conditional receipt absent"))?;
+        assert_eq!(observed.generation, original.generation);
+        assert_eq!(
+            observed.files().collect::<Vec<_>>(),
+            original.files().collect::<Vec<_>>()
+        );
         let first = original.files().next().unwrap();
         assert_eq!(
             host.read_content(first, &read, 64, None).await?.as_ref(),
@@ -775,6 +849,12 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         assert_eq!(
             replay.files().collect::<Vec<_>>(),
             original.files().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            host.read(&workspace, None, &former_receipt, 64, None)
+                .await?
+                .as_ref(),
+            b"ordinary authored bytes"
         );
         let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
         let before = host.resolve(&workspace, None).await?;

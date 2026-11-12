@@ -30,6 +30,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mutations: &'a [WorkspaceMutation],
         key: IdempotencyKey,
         io: &'a PreparationIo,
+        evidence: acyclic_stream::OwnedBytes,
         staged: Option<(
             acyclic_fs::Transaction<A, O>,
             String,
@@ -43,6 +44,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             io,
             FilePublication::Authorized(authorization.0, authorization.1, authorization.2),
             root_cut,
+            Some(evidence),
             staged,
         )
     }
@@ -83,6 +85,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 publication,
                 None,
                 None,
+                None,
             )?
             .await
         })
@@ -96,6 +99,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: &'a PreparationIo,
         publication: FilePublication<'a>,
         root_cut: Option<acyclic_fs::PolicyCut>,
+        evidence: Option<acyclic_stream::OwnedBytes>,
         staged: Option<(
             acyclic_fs::Transaction<A, O>,
             String,
@@ -153,7 +157,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             .await,
                     )?;
                 }
-                Self::commit_publication(transaction, io, publication)?.await
+                let context = evidence
+                    .map(|evidence| publication_context(evidence, io))
+                    .transpose()?;
+                Self::commit_contextual_publication(transaction, io, publication, context)?.await
             };
             match root_cut {
                 Some(cut) => futures::future::Either::Left(cut.scope(operation)),
@@ -334,4 +341,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         })
     }
+}
+
+pub(in crate::filesystem::host) fn publication_context(
+    evidence: acyclic_stream::OwnedBytes,
+    io: &PreparationIo,
+) -> Result<(
+    acyclic_fs::Digest,
+    acyclic_stream::OwnedBytes,
+    acyclic_fs::PublicationPermit,
+)> {
+    let work = WorkCounters {
+        bytes_hashed: evidence.len() as u64,
+        ..Default::default()
+    };
+    io.preflight(work)?;
+    let fingerprint = acyclic_fs::Digest::from_bytes(*blake3::hash(&evidence).as_bytes());
+    io.charge(work)?;
+    Ok((
+        fingerprint,
+        evidence,
+        acyclic_fs::PublicationPermit::Unrestricted,
+    ))
 }

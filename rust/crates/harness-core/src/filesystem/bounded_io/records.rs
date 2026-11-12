@@ -215,3 +215,9 @@ impl PreparationRecord for crate::resources::GenerationRef {
         self.logical_owned_bytes().map(Some)
     }
 }
+
+impl PreparationRecord for (u8, (FileRef, Option<crate::resources::GenerationRef>)) {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        self.1.logical_owned_bytes().map(Some)
+    }
+}
