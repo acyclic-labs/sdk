@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(loom))]
+mod scaling;
 
 fn alarm(
     generation: u64,
