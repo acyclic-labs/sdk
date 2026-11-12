@@ -1046,11 +1046,9 @@ where
             stop.clone(),
             self.journal_storage(
                 &admitted,
-                retained.iter().chain(
-                    external
-                        .iter()
-                        .filter(|file| file.volume().is_agent_journal()),
-                ),
+                retained.iter().chain(external.iter().filter(|file| {
+                    file.volume().is_agent_journal() && file.volume() != &admitted.journal
+                })),
             ),
         )
         .await?;
