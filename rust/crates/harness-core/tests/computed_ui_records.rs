@@ -199,6 +199,227 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
 }
 
 #[tokio::test]
+async fn private_agent_fork_binds_child_views_without_replacing_companion_roots() -> Result {
+    use acyclic_fs::{
+        Fs, IdempotencyKey as FsKey, LazyWorkspace, LazyWorkspaceError, LocalCoreStateStore,
+        PublicationPermit, VolumeLimits,
+        demand::{Empty, Routed},
+        kernel::{LogicalName, NameEncoding},
+    };
+    use acyclic_harness_core::{
+        agent::{AgentId, IntentId, create_root, spawn},
+        conversation::private_volume,
+        filesystem::MemoryHarnessStorage,
+        ui::{StreamUiProvider, View},
+    };
+    use std::sync::Arc;
+
+    let streams = Arc::new(MemoryStream::default());
+    let root = create_root(
+        &IntentId::try_from("private-view-parent".to_owned())?,
+        adoption(AgentId::from_bytes([21; 16])),
+    )?;
+    let parent_agent = root.child;
+    streams.commit(root.request).await?;
+    let child = spawn(
+        &parent_agent,
+        &IntentId::try_from("private-view-child".to_owned())?,
+        1,
+        adoption(AgentId::from_bytes([22; 16])),
+    )?;
+    let child_agent = child.child;
+    streams.commit(child.request).await?;
+    for (agent, path) in [(&parent_agent, "parent.md"), (&child_agent, "child.md")] {
+        streams
+            .append(AppendRequest {
+                path: agent.status()?,
+                records: vec![status(path).encode()?.into()],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    let fs = Fs::memory();
+    let storage = MemoryHarnessStorage::from_providers(
+        acyclic_harness_core::AgentId::from_bytes(parent_agent.id().to_bytes()),
+        16_384,
+        fs.clone(),
+        streams.clone(),
+    )
+    .await?;
+    let source = |agent, navigation_identity| -> Result<_> {
+        Ok(Arc::new(Routed::new(
+            Empty,
+            LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255)?,
+            StreamUiProvider::new(
+                streams.clone(),
+                storage.content_bindings().reader,
+                agent,
+                View::new(2)?,
+                navigation_identity,
+                navigation,
+            )
+            .into_source(),
+            VolumeLimits::default(),
+        )))
+    };
+    let parent_source = source(parent_agent.clone(), [4; 16])?;
+    let child_source = source(child_agent.clone(), [4; 16])?;
+    let directory = tempfile::tempdir()?;
+    let store = LocalCoreStateStore::open_owned(directory.path())?;
+    let cancellation = CancellationToken::new();
+    let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut ctx = KernelAccounting::NativeOriginal {
+        work: &native,
+        cancellation: &cancellation,
+    };
+    let workspace = fs
+        .open_workspace(
+            &storage.volume().storage_name(&mut None)?,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let parent = LazyWorkspace::bind(workspace, parent_source, store.clone(), &mut ctx).await?;
+    let parent_status = parent.read("/ui/status.md", 4096, &mut ctx).await?;
+    assert!(std::str::from_utf8(parent_status.bytes.as_slice())?.contains("parent.md"));
+    parent
+        .write(
+            "/ui/title",
+            acyclic_stream::OwnedBytes::from_static(b"inherited title"),
+            FsKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut ctx,
+        )
+        .await?;
+    parent.hide_source_path("/ui/model", &mut ctx).await?;
+    let parent_cut = parent.snapshot(&mut ctx).await?;
+    let child_volume = private_volume(storage.volume().provider().clone(), &child_agent.id())?;
+    let child_name = child_volume.storage_name(&mut None)?;
+    let (inherited, inherited_cut) = parent
+        .fork(
+            &child_name,
+            FsKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut ctx,
+        )
+        .await?;
+    let original = inherited.state(&mut ctx).await?;
+    let child = inherited
+        .bind_fork_source(child_source.clone(), &mut ctx)
+        .await?;
+    let bound = child.state(&mut ctx).await?;
+    assert_eq!(bound.fork_origin, original.fork_origin);
+    assert_eq!(bound.parent_workspace_id, original.parent_workspace_id);
+    assert_eq!(bound.overlay, parent_cut.overlay);
+    assert_eq!(bound.shadows, parent_cut.shadows);
+    assert_eq!(bound.selected_import_roots, original.selected_import_roots);
+    let child_cut = child.snapshot(&mut ctx).await?;
+    assert_ne!(child_cut.source.identity, parent_cut.source.identity);
+    let frozen = child
+        .read_at_snapshot(&child_cut, "/ui/status.md", None, 4096, &mut ctx)
+        .await?
+        .0;
+    assert!(std::str::from_utf8(frozen.bytes.as_slice())?.contains("child.md"));
+    assert_eq!(
+        inherited
+            .read_at_snapshot(&inherited_cut, "/ui/status.md", None, 4096, &mut ctx)
+            .await?
+            .0
+            .bytes
+            .as_slice(),
+        parent_status.bytes.as_slice()
+    );
+    assert_eq!(
+        child
+            .read("/ui/title", 4096, &mut ctx)
+            .await?
+            .bytes
+            .as_slice(),
+        b"inherited title"
+    );
+    assert!(matches!(
+        child.stat("/ui/model", &mut ctx).await,
+        Err(LazyWorkspaceError::NotFound)
+    ));
+    let replay = inherited
+        .bind_fork_source(child_source.clone(), &mut ctx)
+        .await?;
+    assert_eq!(
+        replay.snapshot(&mut ctx).await?,
+        child.snapshot(&mut ctx).await?
+    );
+    assert!(matches!(
+        inherited
+            .bind_fork_source(source(child_agent.clone(), [5; 16])?, &mut ctx)
+            .await,
+        Err(LazyWorkspaceError::Concurrent)
+    ));
+    child.remove("/ui/title", None, &mut ctx).await?;
+    let title = child.read("/ui/title", 4096, &mut ctx).await?;
+    assert_eq!(
+        title.bytes.as_slice(),
+        child_agent
+            .as_str()
+            .rsplit('/')
+            .next()
+            .ok_or("child id")?
+            .as_bytes()
+    );
+    assert_eq!(
+        parent
+            .read("/ui/title", 4096, &mut ctx)
+            .await?
+            .bytes
+            .as_slice(),
+        b"inherited title"
+    );
+    streams
+        .append(AppendRequest {
+            path: child_agent.status()?,
+            records: vec![status("later-child.md").encode()?.into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    assert_eq!(
+        child
+            .read_at_snapshot(&child_cut, "/ui/status.md", None, 4096, &mut ctx)
+            .await?
+            .0
+            .bytes
+            .as_slice(),
+        frozen.bytes.as_slice()
+    );
+    let child_workspace = child.workspace().clone();
+    drop(replay);
+    drop(child);
+    drop(inherited);
+    drop(parent);
+    drop(store);
+    let reopened = LazyWorkspace::open(
+        child_workspace,
+        child_source,
+        LocalCoreStateStore::open_owned(directory.path())?,
+        &mut ctx,
+    )
+    .await?;
+    let current = reopened.read("/ui/status.md", 4096, &mut ctx).await?;
+    assert!(std::str::from_utf8(current.bytes.as_slice())?.contains("later-child.md"));
+    assert!(matches!(
+        reopened.stat("/ui/model", &mut ctx).await,
+        Err(LazyWorkspaceError::NotFound)
+    ));
+    assert_eq!(
+        reopened.state(&mut ctx).await?.fork_origin,
+        original.fork_origin
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> Result {
     use acyclic_fs::demand::{SourceChange, SourceChangeSink, SourceFence};
     use acyclic_harness_core::{

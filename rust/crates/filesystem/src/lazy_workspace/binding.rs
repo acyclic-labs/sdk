@@ -135,7 +135,10 @@ impl<
         let lazy = Self {
             workspace,
             source,
-            retained_source: state.fork_origin.map(|origin| origin.snapshot.source),
+            retained_source: state
+                .fork_origin
+                .filter(|origin| origin.snapshot.source.identity == state.source.identity)
+                .map(|origin| origin.snapshot.source),
             store,
             #[cfg(not(target_arch = "wasm32"))]
             _allocation: None,
@@ -157,6 +160,67 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Self, LazyWorkspaceError> {
         Self::open(workspace, Arc::clone(&self.source), self.store.clone(), ctx).await
+    }
+
+    /// Binds a ready fork to its own live source namespace, exactly once.
+    ///
+    /// Authored files, observations, tombstones, shadows and the immutable fork
+    /// origin remain unchanged. The new namespace must differ from the origin;
+    /// replaying the same binding succeeds, while a different claimant refuses.
+    /// Old source capabilities can still serve their explicitly retained cuts.
+    pub async fn bind_fork_source<E: DemandSource + 'static>(
+        &self,
+        source: Arc<E>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<LazyWorkspace<A, O, E, S>, LazyWorkspaceError> {
+        let mut state = self
+            .store
+            .load_lazy_workspace(self.workspace.id(), ctx)
+            .await?
+            .ok_or(LazyWorkspaceError::NotFound)?;
+        if state.schema_version != LAZY_STATE_SCHEMA
+            || state.workspace_id != self.workspace.id()
+            || state.pending_remove.is_some()
+        {
+            return Err(LazyWorkspaceError::Concurrent);
+        }
+        state.require_ready_fork()?;
+        let origin = state
+            .fork_origin
+            .as_ref()
+            .ok_or(LazyWorkspaceError::Concurrent)?;
+        let identity = source.identity();
+        if identity == origin.snapshot.source.identity {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        let bound = state.source.identity == identity;
+        if !bound && state.source != origin.snapshot.source {
+            return Err(LazyWorkspaceError::Concurrent);
+        }
+        let reference = source.reference(ctx).await?;
+        if reference.identity != identity || (bound && !reference.follows(&state.source)) {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        if !bound {
+            let revision = state.revision;
+            state.revision = revision.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+            state.source = reference;
+            if !self
+                .store
+                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, state, ctx)
+                .await?
+            {
+                return Err(LazyWorkspaceError::Concurrent);
+            }
+        }
+        Ok(LazyWorkspace {
+            workspace: self.workspace.clone(),
+            source,
+            retained_source: None,
+            store: self.store.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            _allocation: None,
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]

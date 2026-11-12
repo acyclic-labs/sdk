@@ -244,7 +244,9 @@ impl<
         };
         let (source, node, used) = match fact {
             Some(LazyOverlayChange::Observe { source, node })
-                if basis.retain_pinned_observation || source == state.source =>
+                if (basis.retain_pinned_observation
+                    && source.identity == state.source.identity)
+                    || source == state.source =>
             {
                 (source, Some(node), false)
             }
