@@ -6,7 +6,7 @@ const fn retryable_status(status: u16) -> bool {
     matches!(status, 408 | 429 | 500..=599)
 }
 
-/// One HTTP operation's recovery owner. Only permanent refusals end recovery.
+/// One HTTP operation's recovery owner. Only transient transport failures retry.
 pub(crate) struct Attempt {
     status: Option<u16>,
     redelivery: Redelivery,
@@ -42,17 +42,26 @@ impl Attempt {
         error: &Error,
         retry_after: Option<Duration>,
     ) -> Option<Duration> {
-        if self
-            .status
-            .is_some_and(|status| !(200..300).contains(&status) && !retryable_status(status))
-        {
+        if error.code() != ErrorCode::Unavailable {
             return None;
         }
-        let wait = self.redelivery.next(error, retry_after);
-        if wait.is_some() {
-            self.status = None;
+        let retryable = match self.status {
+            Some(status) if !(200..300).contains(&status) => retryable_status(status),
+            _ => match error {
+                Error::ModelUnavailable {
+                    failure: acyclic_harness_core::ModelTransportFailure::Status(status),
+                    ..
+                } => retryable_status(*status),
+                Error::ModelUnavailable { .. } => true,
+                _ => false,
+            },
+        };
+        if !retryable {
+            return None;
         }
-        wait
+        let wait = self.redelivery.next(retry_after);
+        self.status = None;
+        Some(wait)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -94,11 +103,8 @@ impl Redelivery {
         }
     }
 
-    /// The wait before redelivering after `error`, or `None` when `error` is final.
-    fn next(&mut self, error: &Error, retry_after: Option<Duration>) -> Option<Duration> {
-        if error.code() != ErrorCode::Unavailable {
-            return None;
-        }
+    /// The wait before redelivering a classified transient failure.
+    fn next(&mut self, retry_after: Option<Duration>) -> Duration {
         let wait = match retry_after {
             Some(wait) => wait,
             None => {
@@ -118,7 +124,7 @@ impl Redelivery {
             }
         };
         self.attempt = self.attempt.saturating_add(1);
-        Some(wait)
+        wait
     }
 }
 
@@ -237,6 +243,12 @@ mod tests {
                 Error::Unauthorized("auth".into()),
                 Error::Invalid("request".into()),
                 Error::Storage("storage".into()),
+                Error::ModelDiagnostic {
+                    code: ErrorCode::Unavailable,
+                    message: "credential owner closed".into(),
+                    custody: Default::default(),
+                },
+                unavailable(ModelTransportFailure::Status(400)),
             ] {
                 assert!(owner.next(&error, None).is_none());
             }
@@ -247,6 +259,27 @@ mod tests {
         assert_eq!(
             owner.next(&unavailable(ModelTransportFailure::Interrupted), None),
             None
+        );
+        // An observed transient refusal can have an opaque diagnostic body.
+        let mut owner = Attempt::generation(RetrySpec::DEFAULT, dispatch());
+        owner.observe(503);
+        assert!(
+            owner
+                .next(
+                    &Error::ModelDiagnostic {
+                        code: ErrorCode::Unavailable,
+                        message: "provider unavailable".into(),
+                        custody: Default::default(),
+                    },
+                    None,
+                )
+                .is_some()
+        );
+        owner.observe(503);
+        assert!(
+            owner
+                .next(&Error::Storage("refusal accounting failed".into()), None)
+                .is_none()
         );
     }
     proptest::proptest! {
