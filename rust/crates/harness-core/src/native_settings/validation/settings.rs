@@ -66,7 +66,7 @@ impl Files {
             .codex_home(&self.codex)
             .trust_project_hooks(hooks)
             .trust_project_mcp(mcp)
-            .maximum_file_bytes(maximum)
+            .maximum_file_bytes(Some(maximum))
     }
 }
 
@@ -295,12 +295,13 @@ pub fn exercise(bytes: &[u8]) {
                 "selected invalid UTF-8 must be refused"
             );
             write(&path, start);
-            for maximum in [0, u64::MAX] {
-                assert!(
-                    files.load_bounded(true, maximum).is_err(),
-                    "settings bounds must be positive and finite"
-                );
-            }
+            assert!(
+                files.load_bounded(true, 0).is_err(),
+                "a selected zero reservation is invalid"
+            );
+            files
+                .load_bounded(true, u64::MAX)
+                .expect("a full-width positive reservation is valid");
         }
     });
 }

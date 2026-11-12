@@ -6,7 +6,7 @@ use super::{Files, SettingsConfig, write};
 fn config(files: &Files, maximum: u64) -> SettingsConfig {
     SettingsConfig::new(&files.workspace, &files.home)
         .codex_home(&files.codex)
-        .maximum_file_bytes(maximum)
+        .maximum_file_bytes(Some(maximum))
 }
 
 fn replay(files: &Files, bytes: &[u8]) {
@@ -61,12 +61,14 @@ pub(super) fn check(bytes: &[u8]) {
         ] {
             replay(&files, input);
         }
-        for maximum in [0, u64::MAX] {
-            assert!(
-                config(&files, maximum).configured_model().is_err(),
-                "model reads require a finite positive byte bound"
-            );
-        }
+        assert!(
+            config(&files, 0).configured_model().is_err(),
+            "a selected zero reservation is invalid"
+        );
+        assert_eq!(
+            config(&files, u64::MAX).configured_model().unwrap(),
+            Some("chosen/v/m".into())
+        );
         for length in [512, 513] {
             let mut input = b"model='tiny'\n".to_vec();
             input.resize(length, b' ');
