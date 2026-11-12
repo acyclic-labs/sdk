@@ -28,7 +28,86 @@ pub(super) fn initialize() -> Result<(), NativeMountError> {
             });
         directory.map_err(Arc::new)
     });
-    directory().map(|_| ())
+    let directory = directory()?;
+    // Recovery below initializes again; only the first caller reaps.
+    if !REAPED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        reap(directory);
+    }
+    Ok(())
+}
+
+static REAPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+const FENCE_RECORD_V1: &[u8] = b"acyclic-fs/native-mount-fence/v1\0";
+
+/// The persisted destination of one mount fence, written by its owner.
+pub(super) fn fence_record(
+    #[cfg(unix)] canonical: &Path,
+    #[cfg(windows)] canonical: &[u16],
+) -> Vec<u8> {
+    let mut record = FENCE_RECORD_V1.to_vec();
+    #[cfg(unix)]
+    record.extend_from_slice(std::os::unix::ffi::OsStrExt::as_bytes(
+        canonical.as_os_str(),
+    ));
+    #[cfg(windows)]
+    record.extend(canonical.iter().flat_map(|unit| unit.to_le_bytes()));
+    record
+}
+
+pub(super) fn write_fence_record(file: &std::fs::File, record: &[u8]) -> std::io::Result<()> {
+    use std::io::{Seek as _, Write as _};
+    let mut file = file;
+    file.set_len(0)?;
+    file.seek(std::io::SeekFrom::Start(0))?;
+    file.write_all(record)
+}
+
+fn fence_destination(record: &[u8]) -> Option<PathBuf> {
+    let path = record.strip_prefix(FENCE_RECORD_V1)?;
+    #[cfg(unix)]
+    return Some(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(path).into());
+    #[cfg(windows)]
+    {
+        let (units, []) = path.as_chunks::<2>() else {
+            return None;
+        };
+        let units: Vec<u16> = units.iter().map(|unit| u16::from_le_bytes(*unit)).collect();
+        Some(std::os::windows::ffi::OsStringExt::from_wide(&units).into())
+    }
+}
+
+/// A mount whose owner died together with its exit action is detached no
+/// later than the next process that opens this registry. Liveness is the
+/// fence's kernel lock, held by the owner and by its exit action, and released
+/// only once both have exited: recovery of a live fence is refused as busy and
+/// the fence is left alone. Identity is that lock, never a name or path.
+fn reap(directory: &Path) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.as_encoded_bytes();
+        if !name.starts_with(NATIVE_FENCE_PREFIX.as_bytes())
+            || !name.ends_with(NATIVE_FENCE_SUFFIX.as_bytes())
+        {
+            continue;
+        }
+        // A live owner's lock can refuse this read; it is not reaped.
+        let Some(destination) = std::fs::read(entry.path())
+            .ok()
+            .and_then(|record| fence_destination(&record))
+        else {
+            continue;
+        };
+        match super::detach_native_mount_destination_after_crash(&destination) {
+            Ok(()) | Err(NativeMountError::DestinationBusy) => {}
+            Err(error) => {
+                tracing::warn!(%error, destination = %destination.display(), "dead native mount was not reaped");
+            }
+        }
+    }
 }
 
 fn directory() -> Result<&'static Path, NativeMountError> {
