@@ -89,7 +89,7 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
             assert!(tail > 0, "the child committed a conversation");
             let entries = saved.entries(0, tail).await?;
             let entry = entries.last().expect("saved child conversation");
-            assert!(!saved.output_text(entry).await?.is_empty());
+            assert!(!saved.output_text_at(tail - 1, entry).await?.is_empty());
             paths.push(child);
         }
         Ok::<_, Error>(paths)

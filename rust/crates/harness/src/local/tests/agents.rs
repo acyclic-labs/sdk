@@ -1050,7 +1050,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert!(client.turn(0, &output_only).await.is_err());
     assert_eq!(client.output_text(&output_only).await?, "done");
     output_only.output = absent(&entry.output)?;
-    assert!(client.output_text(&output_only).await.is_err());
+    assert!(client.output_text_at(0, &output_only).await.is_err());
     // The same live query started before this input. Its exact completion
     // replaces the original admission, rather than counting another call.
     while inspection.snapshot().usage.completed == 0 {

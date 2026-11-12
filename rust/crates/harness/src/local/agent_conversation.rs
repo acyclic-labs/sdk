@@ -835,6 +835,14 @@ impl Conversation {
         Ok(self.output(entry, Some(sequence)).await?.text)
     }
 
+    /// Reads every output field with its original committed sequence proof.
+    ///
+    /// # Errors
+    /// Original record, file authorization, host or output decoding failures.
+    pub async fn output_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<TurnOutput> {
+        self.output(entry, Some(sequence)).await
+    }
+
     async fn output(&self, entry: &ConversationEntry, sequence: Option<u64>) -> Result<TurnOutput> {
         let output = self.selected_text(&entry.output, sequence).await?;
         serde_json::from_str(&output).map_err(failed)
