@@ -53,6 +53,7 @@ pub mod experiments;
 pub mod input_watch;
 #[cfg(feature = "metrics-export")]
 pub use executor::metrics;
+pub mod evals;
 pub mod extension;
 pub mod filesystem;
 pub mod goal;
