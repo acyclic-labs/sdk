@@ -348,7 +348,19 @@ impl CheckoutTools {
                             "shell outcome requires reconciliation"
                         );
                         state.unsettled.insert(invocation.operation_id);
-                        return Err(Error::Indeterminate(invocation.operation_id));
+                        return Err(Error::CommandIndeterminate {
+                            operation_id: invocation.operation_id,
+                            cause: crate::CommandIndeterminacy {
+                                command: invocation.name.clone(),
+                                reason: match result {
+                                    Err(error) => crate::CommandIndeterminacyReason::Failed {
+                                        code: error.kind().into(),
+                                        error: error.to_string(),
+                                    },
+                                    Ok(_) => crate::CommandIndeterminacyReason::Unsettled,
+                                },
+                            },
+                        });
                     }
                     Ok(((result, state, files), claims))
                 })
