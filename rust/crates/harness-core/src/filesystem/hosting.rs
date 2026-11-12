@@ -1283,6 +1283,15 @@ where
                 .map_err(turn)?;
         authority.authorize_host_volume(&journal).map_err(turn)?;
         if let TurnAdmission::Admitted { scope, .. } = &self.admission {
+            crate::conversation::ContentGrant::authorize_agent_volume(
+                &self.issuer.verifier(&mut None).map_err(turn)?,
+                scope,
+                crate::AgentId::from_bytes(path.id_bytes()),
+                &journal,
+                crate::conversation::VolumeOperation::Write,
+                &mut None,
+            )
+            .map_err(turn)?;
             self.volumes
                 .authorize_volume_creation(scope, &journal)
                 .map_err(turn)?;
