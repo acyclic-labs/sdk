@@ -42,6 +42,8 @@
       "owner": "children-controller",
       "cases": [
         "child-fork-message-merge",
+        "bestofn-model-chosen",
+        "tree-search-depth2",
         "child-completion-merge",
         "explicit-session-keeps-checkout-unchanged",
         "child-result",
