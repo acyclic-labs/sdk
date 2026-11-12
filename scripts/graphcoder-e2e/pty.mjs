@@ -38,12 +38,12 @@ export function matches(screen, raw, condition, visible, diagnostic = visible, l
 export async function pty(processes, binary, fixture, input, capture) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const failures = new FailureHistory();
-  let unsubscribe, unsubscribeSignals, frames;
-  let firstPaint;
+  let unsubscribe, unsubscribeSignals, frames, running;
+  let firstPaint, primaryFailure;
   const launchStarted = performance.now();
   try {
     frames = new TerminalFrames(screen, frame);
-    const running = await processes.startTerminal(binary, [...fixture.args, ...(input.args ?? []), ...(input.resume ? ["--continue"] : [])],
+    running = await processes.startTerminal(binary, [...fixture.args, ...(input.args ?? []), ...(input.resume ? ["--continue"] : [])],
       { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
     screen.onData(data => running.child.stdin.write(data));
     const raw = new OutputWatch(rawNeedles(input.actions));
@@ -156,8 +156,10 @@ export async function pty(processes, binary, fixture, input, capture) {
     let result;
     // Interactive waits must stop on native failure; ordinary commands retain
     // their original exit status so declared refusal cases can assert it.
-    const signal = running.failure
-      ? AbortSignal.any([running.failure, ...(fixture.signal ? [fixture.signal] : [])]) : fixture.signal;
+    // A missing interaction is a failed case, never an indefinitely live PTY.
+    // This is only a protective bound; every successful action waits on frames.
+    const signal = AbortSignal.any([AbortSignal.timeout(120_000),
+      ...(running.failure ? [running.failure] : []), ...(fixture.signal ? [fixture.signal] : [])]);
     try { result = await withCancellation(running, signal); }
     catch (error) {
       (errors ??= []).push(error);
@@ -200,10 +202,18 @@ export async function pty(processes, binary, fixture, input, capture) {
       assert.ok(snapshots.at(-1)?.logical.includes(text), `settled screen missing ${text}`);
     }
     return result;
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
   } finally {
     unsubscribeSignals?.();
     unsubscribe?.();
-    frames?.dispose();
-    screen.dispose();
+    try { await running?.[Symbol.asyncDispose](); }
+    catch (error) {
+      // The action/completion path already retains its original failures.
+      // Joining the same rejected completion again must not replace them.
+      if (!primaryFailure) throw error;
+    }
+    finally { frames?.dispose(); screen.dispose(); }
   }
 }

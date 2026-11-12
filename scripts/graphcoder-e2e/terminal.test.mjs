@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:net";
+import { once } from "node:events";
 import test from "node:test";
 import { Processes, Spool, OutputWatch } from "./process.mjs";
 import { alive } from "./orphan-check.mjs";
@@ -139,6 +141,55 @@ test("terminal release observes active and retained original EOF", async t => {
 // A regression fails at the test deadline and still reaches cleanup.
 const bounded = (t, promise) => Promise.race([promise, new Promise((_, reject) =>
   t.signal.addEventListener("abort", () => reject(t.signal.reason), { once: true }))]);
+
+test("PTY session disposal and normal exit retire every child, unlike an unowned root", {
+  skip: process.platform === "win32" && (!process.env.E2E_CONPTY_HOST || !process.env.E2E_PROCESS_HOST),
+  timeout: 10000,
+}, async t => {
+  for (const mode of ["unowned", "dispose", "exit"]) {
+    const processes = new Processes(), server = createServer();
+    let socket, pid;
+    try {
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const connected = once(server, "connection");
+      const child = `const s=require('node:net').connect(${server.address().port},'127.0.0.1',()=>s.write(String(process.pid)+'\\n'));s.resume()`;
+      const program = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'});process.stdin.once('data',()=>process.exit(0));process.stdin.resume()`;
+      const running = await (mode === "unowned"
+        ? processes.start(process.execPath, ["-e", program])
+        : processes.startTerminal(process.execPath, ["-e", program]));
+      [socket] = await bounded(t, connected);
+      socket.setEncoding("utf8");
+      let identity = "";
+      for await (const chunk of socket.iterator({ destroyOnReturn: false })) {
+        identity += chunk;
+        if (identity.includes("\n")) break;
+      }
+      pid = Number(identity.trim());
+      assert.equal(alive(pid), true, "descendant must be running before retirement");
+      const retired = finished(socket, { readable: true, writable: false, cleanup: true });
+      socket.resume();
+      if (mode === "exit") {
+        running.child.stdin.write("quit\r");
+        assert.equal((await bounded(t, running.closed)).code, 0);
+      }
+      else await bounded(t, running[Symbol.asyncDispose]());
+      if (mode === "unowned") {
+        assert.equal(alive(pid), true, "negative control must expose the surviving child");
+        process.kill(pid, "SIGKILL");
+      }
+      await bounded(t, retired);
+      // This child never closes its socket while alive. EOF proves death;
+      // kill(pid, 0) can still see a dead macOS child awaiting collection.
+      pid = undefined;
+    } finally {
+      if (pid && alive(pid)) process.kill(pid, "SIGKILL");
+      socket?.destroy();
+      await processes.close();
+      await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  }
+});
 
 test("terminal root leads a sized session, takes raw input and drains output after exit", posix, async t => {
   const processes = new Processes();

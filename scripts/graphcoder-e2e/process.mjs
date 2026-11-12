@@ -199,6 +199,11 @@ export class Processes {
       cancel: process.platform === "win32" ? undefined : () => child.kill("SIGTERM") });
     return { child, input, exited, closed, reportReady: report?.ready, failure: report?.failure,
       requestReport: report ? deadline => report.request(deadline) : undefined,
+      async [Symbol.asyncDispose]() {
+        kill();
+        await reaped;
+        return closed;
+      },
       killExecutable: () => child.kill("SIGKILL") };
   }
   async run(program, args, options, input = "") {
