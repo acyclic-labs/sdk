@@ -14,6 +14,7 @@ pub(super) enum ModelStepHistory<'a> {
 pub(super) struct ModelStepRequest<'a> {
     pub history: ModelStepHistory<'a>,
     pub prepared: Option<crate::model::PreparedModelRequest>,
+    pub publish_reply: bool,
 }
 
 impl StockExecution<'_> {
@@ -45,6 +46,7 @@ impl StockExecution<'_> {
                 ModelStepRequest {
                     history: ModelStepHistory::Selected(prior_messages),
                     prepared: None,
+                    publish_reply: true,
                 },
                 ModelPurpose::Response,
                 phase,

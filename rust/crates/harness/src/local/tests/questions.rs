@@ -40,7 +40,7 @@ async fn headless_question_plugin_has_no_declaration_and_file_writes_cannot_ask(
         ScriptedTurn::Text("I chose blue within the given authority.".into()),
     ]);
     let harness = Arc::new(
-        LocalHarness::open(question_config(
+        open_scripted(question_config(
             directory.path(),
             volume(directory.path()).await?,
             provider.clone(),
@@ -82,7 +82,7 @@ async fn interactive_orchestrator_asks_directly_and_receives_a_generation_bound_
         ScriptedTurn::Text("Blue selected.".into()),
     ]);
     let harness = Arc::new(
-        LocalHarness::open(
+        open_scripted(
             question_config(
                 directory.path(),
                 volume(directory.path()).await?,
@@ -154,7 +154,7 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
         provider.clone(),
     )?
     .question_plugin(true);
-    let harness = Arc::new(LocalHarness::open(config).await?);
+    let harness = Arc::new(open_scripted(config).await?);
     let connection = harness.connect().await?;
     let root = connection.root().clone();
     let spawn = |parent: AgentPath, id: &str, role: &str| -> Result<AgentCommand> {
@@ -205,7 +205,7 @@ async fn sessions_pin_question_choice_independently_of_the_serving_workspace() -
         ["headless", "interactive", "headless again"].map(|text| ScriptedTurn::Text(text.into())),
     );
     let harness = Arc::new(
-        LocalHarness::open(question_config(
+        open_scripted(question_config(
             directory.path(),
             volume(directory.path()).await?,
             provider.clone(),
@@ -259,7 +259,7 @@ async fn question_tool_cannot_publish_workspace_files() -> Result<()> {
         ]
     }));
     let harness = Arc::new(
-        LocalHarness::open(
+        open_scripted(
             question_config(
                 directory.path(),
                 volume(directory.path()).await?,

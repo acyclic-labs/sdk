@@ -88,6 +88,7 @@ impl StockExecution<'_> {
                 request::ModelStepRequest {
                     history: request::ModelStepHistory::Selected(&[]),
                     prepared,
+                    publish_reply: false,
                 },
                 ModelPurpose::Summary,
                 phase,

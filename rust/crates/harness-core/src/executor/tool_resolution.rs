@@ -81,7 +81,7 @@ impl StockExecution<'_> {
         reason: ToolFailureKind,
         error: Error,
     ) -> Result<crate::model::ToolResultContent> {
-        if error.is_native_failure() {
+        if !error.is_tool_failure() {
             return Err(error);
         }
         self.settle_tool_failure(journal, operation_id, step, call_id, reason, error)

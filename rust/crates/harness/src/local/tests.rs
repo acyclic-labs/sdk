@@ -135,9 +135,19 @@ pub(super) async fn request_text(
             text.push('\n');
         }
         for part in message.content.parts() {
-            if let crate::model::ModelContentPart::Text { text: body, .. } = part {
-                text.push_str(body);
-                text.push('\n');
+            match part {
+                crate::model::ModelContentPart::Text { text: body, .. } => {
+                    text.push_str(body);
+                    text.push('\n');
+                }
+                crate::model::ModelContentPart::ToolResult { content, .. } => {
+                    text.push_str(
+                        &serde_json::to_string(content)
+                            .map_err(|error| Error::Storage(error.to_string()))?,
+                    );
+                    text.push('\n');
+                }
+                _ => {}
             }
             if let crate::model::ModelContentPart::ToolResult {
                 content: crate::model::ToolResultContent::Error { message },
@@ -346,3 +356,4 @@ async fn defaults_are_additive_and_opt_out_retains_custom_tools() -> Result<()> 
 }
 
 mod questions;
+mod settlement;

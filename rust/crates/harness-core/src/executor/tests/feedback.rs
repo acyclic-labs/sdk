@@ -1,5 +1,46 @@
 use super::*;
 
+struct PublishedReplies {
+    volume: VolumeRef,
+    text: Mutex<Vec<u8>>,
+}
+
+impl crate::conversation::ContentPublisher for PublishedReplies {
+    fn volume(&self) -> &VolumeRef {
+        &self.volume
+    }
+
+    fn stage_once<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        path: &'a str,
+        bytes: &'a [u8],
+        media_type: &'a str,
+        display_name: &'a str,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (FileRef, Option<crate::conversation::ContentHold<'a>>),
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(access.io, || async move {
+            self.text.lock().unwrap().extend_from_slice(bytes);
+            Ok((
+                FileRef::new(
+                    self.volume.clone(),
+                    path.into(),
+                    blake3::hash(bytes).to_hex().to_string(),
+                    FileDescriptor::from_bytes(bytes, media_type, &mut None)?,
+                    display_name.into(),
+                    &mut None,
+                )?,
+                None,
+            ))
+        })
+    }
+}
+
 const NOTICE: &str =
     "What slowed you down or blocked you? Append feedback records; reply none if nothing.";
 
@@ -53,13 +94,18 @@ async fn headless_feedback_retrospective_runs_once_per_settlement_and_preserves_
             }))
             .with_token_counter(fixture_token_count),
         );
+        let published = Arc::new(PublishedReplies {
+            volume: crate::runtime::test_context::private_volume(1)?,
+            text: Mutex::new(Vec::new()),
+        });
         let executor = uncompacted_executor(
             Model::new("test".into(), "feedback".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
         )
-        .with_plugins(plugins)?;
+        .with_plugins(plugins)?
+        .with_live_reply(LiveReply::new(published.clone(), "tools/turn".into()));
         let journal = Journal::default();
         let first = TurnInput {
             max_steps: None,
@@ -91,6 +137,10 @@ async fn headless_feedback_retrospective_runs_once_per_settlement_and_preserves_
                 &journal,
             )
             .await?;
+        assert_eq!(
+            &*published.text.lock().unwrap(),
+            b"task completetask complete"
+        );
         let requests = provider.requests();
         assert_eq!(requests.len(), 2 * per_settlement);
         assert!(
@@ -119,17 +169,51 @@ async fn headless_feedback_retrospective_runs_once_per_settlement_and_preserves_
 }
 
 #[tokio::test]
-async fn an_accepted_answer_survives_a_retrospective_step_limit_or_provider_failure() -> Result<()>
-{
-    for maximum in [Some(1), None] {
+async fn settlement_fallback_only_absorbs_definitive_provider_failures() -> Result<()> {
+    #[derive(Clone, Copy)]
+    enum Failure {
+        Provider,
+        Cancelled,
+        Storage,
+        Uncertain,
+    }
+    for (maximum, failure) in [
+        (Some(1), Failure::Provider),
+        (None, Failure::Provider),
+        (None, Failure::Cancelled),
+        (None, Failure::Storage),
+        (None, Failure::Uncertain),
+    ] {
+        let operation = OperationId::new();
+        let journal = Journal::default();
+        let cancellation = journal.10.clone();
+        let calls = AtomicUsize::new(0);
         let provider = Arc::new(
             ScriptedModelProvider::new([
                 ScriptedTurn::Text("task complete".into()),
-                ScriptedTurn::Events(vec![ScriptedEvent::Error {
-                    error: "response unavailable".into(),
+                ScriptedTurn::Events(vec![match failure {
+                    Failure::Provider => ScriptedEvent::Interrupted {
+                        error: "response unavailable".into(),
+                    },
+                    Failure::Storage => ScriptedEvent::Error {
+                        error: "storage unavailable".into(),
+                    },
+                    Failure::Cancelled | Failure::Uncertain => ScriptedEvent::Pending {},
                 }]),
             ])
-            .with_token_counter(fixture_token_count),
+            .with_token_counter(fixture_token_count)
+            .with_dispatch_observer(move |_| {
+                if calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    match failure {
+                        Failure::Cancelled => cancellation.cancel(),
+                        Failure::Uncertain => {
+                            return Box::pin(async move { Err(Error::Indeterminate(operation)) });
+                        }
+                        Failure::Provider | Failure::Storage => {}
+                    }
+                }
+                Box::pin(async { Ok(()) })
+            }),
         );
         let executor = uncompacted_executor(
             Model::new("test".into(), "feedback".into(), "1".into())?,
@@ -138,14 +222,30 @@ async fn an_accepted_answer_survives_a_retrospective_step_limit_or_provider_fail
             ToolRegistry::default(),
         )
         .with_plugins(crate::plugins::seed().await?.as_ref())?;
-        let journal = Journal::default();
         let input = TurnInput {
             max_steps: maximum,
-            operation_id: OperationId::new(),
+            operation_id: operation,
             input: ModelContent::Text("finish the task".into()),
             selected_context: None,
         };
-        let output = executor.execute(input.clone(), &journal).await?;
+        let output = executor.execute(input.clone(), &journal).await;
+        let expected = match failure {
+            Failure::Cancelled => Some(crate::wire::ErrorCode::InteractionCancelled),
+            Failure::Storage => Some(crate::wire::ErrorCode::Storage),
+            Failure::Uncertain => Some(crate::wire::ErrorCode::Indeterminate),
+            Failure::Provider => None,
+        };
+        if let Some(expected) = expected {
+            assert_eq!(
+                output
+                    .expect_err("control and storage failures must propagate")
+                    .code(),
+                expected
+            );
+            assert_eq!(provider.request_count(), 2);
+            continue;
+        }
+        let output = output?;
         assert_eq!(output.text, "task complete");
         assert_eq!(
             output

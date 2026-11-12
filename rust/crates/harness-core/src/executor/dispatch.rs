@@ -81,6 +81,7 @@ impl StockExecution<'_> {
             let request::ModelStepRequest {
                 history: mut prior_messages,
                 prepared,
+                publish_reply,
             } = request;
             let retained = self
                 .retained_dispatch_step(journal, input.operation_id, step, purpose)
@@ -231,7 +232,7 @@ impl StockExecution<'_> {
                 None
             };
             // Only a fresh provider generation streams; a continuation replays.
-            let live = continuation.is_none() && purpose == ModelPurpose::Response;
+            let live = publish_reply && continuation.is_none() && purpose == ModelPurpose::Response;
             let mut clock = super::model_usage::CallClock::unknown();
             let stream = if let Some(continuation) = continuation {
                 {
@@ -659,7 +660,7 @@ impl StockExecution<'_> {
                 }
                 if let Some(text) = text.as_mut() {
                     text.observe(event);
-                    if matches!(event, ModelEvent::Restarted) {
+                    if matches!(event, ModelEvent::Restarted | ModelEvent::Completed { .. }) {
                         text.flush().await?;
                     }
                 }
