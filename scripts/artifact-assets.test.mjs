@@ -37,16 +37,17 @@ export * from '../generated/wasm/acyclic_auth_wasm.js';`);
     for (const [path, bytes] of closure.files) writeFileSync(join(output, path), bytes);
     const assets = [...closure.assets.values()];
     assert.equal(assets.length, 1);
-    assert.equal((await loadHostedArtifact(artifact, assets)).ready(), true);
+    assert.equal((await loadHostedArtifact(artifact, assets, closure.files)).ready(), true);
     const corrupt = join(root, 'corrupt');
     mkdirSync(corrupt);
     writeFileSync(join(corrupt, 'actor.mjs'), closure.rewrite(await built.outputs[0].text()));
     writeFileSync(join(corrupt, assets[0].path), Buffer.from([0]));
-    await assert.rejects(loadHostedArtifact(join(corrupt, 'actor.mjs'), assets), /HostedWasmAssetChanged/);
+    // The verified original bytes survive a later change to the staged file.
+    assert.equal((await loadHostedArtifact(join(corrupt, 'actor.mjs'), assets, closure.files)).ready(), true);
     const undeclared = join(root, 'undeclared');
     mkdirSync(undeclared);
     writeFileSync(join(undeclared, 'other.wasm'), wasm);
     writeFileSync(join(undeclared, 'actor.mjs'), "import module from './other.wasm'; export default module;");
-    await assert.rejects(loadHostedArtifact(join(undeclared, 'actor.mjs'), []), /HostedWasmAssetUndeclared/);
+    await assert.rejects(loadHostedArtifact(join(undeclared, 'actor.mjs'), [], new Map()), /HostedWasmAssetUndeclared/);
   } finally {rmSync(root, {recursive:true, force:true});}
 });

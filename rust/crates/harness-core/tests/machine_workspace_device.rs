@@ -1266,7 +1266,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                 let (projected, _) = shell_tool.projection.project(&invocation, &bounded, None)?;
                 let projected = serde_json::to_string(&projected)?;
                 assert!(projected.len() <= 2048);
-                assert!(projected.contains("2 bytes omitted"));
+                assert!(projected.contains("2 earlier bytes omitted"));
                 assert!(projected.contains(&format!("tools/{operation}/device")));
                 assert!(projected.contains(storage.volume().id()));
             } else {

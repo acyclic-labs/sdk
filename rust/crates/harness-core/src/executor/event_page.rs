@@ -17,8 +17,8 @@ pub enum ExecutionPayloadField {
     Projection,
     /// Proof of the compacted context.
     Compaction,
-    /// Stored model request: its exact bytes, or for a later step the
-    /// segments it shares with the steps before it.
+    /// Stored model request manifest, sharing immutable headers and message
+    /// segments with earlier steps.
     Request,
     /// Exact canonical bytes of the admitted model request, reconstructed
     /// from [`Self::Request`] and verified against its digest. Derived, so

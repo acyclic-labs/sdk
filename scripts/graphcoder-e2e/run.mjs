@@ -67,13 +67,12 @@ mkdirSync(join(output, "transcripts"), { recursive: true });
 const contexts = new Map();
 const evidence = new Map();
 let server, events, port, committed;
-const caseFailures = new Map();
+const caseStates = new Map(cases.map(test => [test.id, { test, failure: new AbortController() }]));
 // Private to the original runner/server/native host chain. It is never part
 // of a case file, report, request body or retained provider configuration.
 const nativeCases = new Set(cases.filter(test => test.inputs.some(input => input.format === "installed-host" && input.host === "pi"))
   .map(test => test.id));
 const nativeCapability = nativeCases.size ? randomBytes(32).toString("hex") : undefined;
-const declaredCases = new Map(cases.map(test => [test.id, test]));
 const started = 0; // Process start: suite time includes module load, as the envelope does.
 const json = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + "\n");
 function expand(value, fixture) {
@@ -106,8 +105,7 @@ async function checkTree(test) {
 }
 async function prepare(test, gitOrigin) {
   const begin = performance.now();
-  const failure = new AbortController();
-  caseFailures.set(test.id, failure);
+  const { failure } = caseStates.get(test.id);
   const fixture = { id: test.id, signal: AbortSignal.any([cancellation.signal, failure.signal]),
     fail: error => failure.abort(error), workspace: join(test.root, test.id, "workspace"), settings: join(test.root, test.id, "settings"), catalog: join(test.root, test.id, "catalog.json") };
   const artifact = join(output, test.id); await mkdir(artifact, { recursive: true });
@@ -162,6 +160,14 @@ async function execute(test, prepared) {
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
       const inputFixture = { ...fixture, env: { ...fixture.env, ...input.environment } };
+      if (input.mode === "drive") {
+        result = await processes.runOwned(process.execPath,
+          [fileURLToPath(new URL("../graphcoder-pty/drive-case.mjs", import.meta.url)), binary, JSON.stringify(fixture.args)],
+          { cwd: fixture.workspace, env: inputFixture.env });
+        executionSucceeded(result);
+        captures.push(result);
+        continue;
+      }
       if (input.mode === "service") {
         // The service belongs to the case, rather than to a terminal whose
         // original custody owner correctly retires all of its descendants.
@@ -365,15 +371,16 @@ try { execution = await withOwnedCase({ processes, signal: cancellation.signal, 
   committed = await CommittedRequests.open(join(output, "requests.jsonl"));
   events.subscribe(event => {
     if (event.event !== "request") return;
+    const state = caseStates.get(event.case);
     committed.next(event).then(record => {
-      const test = declaredCases.get(record.case);
-      if (!test || !isGeneration(record)) return;
+      if (!state || !isGeneration(record)) return;
+      const { test } = state;
       for (const output of toolResults([record])) {
         let value;
         try { value = JSON.parse(output); } catch { value = output; }
         toolOutcome(value, test.assert.tool_errors, recovery.join(" "), test.id);
       }
-    }).catch(error => caseFailures.get(event.case)?.abort(error));
+    }).catch(error => state?.failure.abort(error));
   });
   let origin;
   if (cases.some(test => test.workspace?.kind === "git")) {

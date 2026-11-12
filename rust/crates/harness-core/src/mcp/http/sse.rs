@@ -23,12 +23,16 @@ fn tools_changed(value: &Value, generation: &std::sync::atomic::AtomicU64) {
 pub(super) async fn notifications(
     body: BoxProviderStream<'static, Result<Bytes>>,
     operation: OperationId,
-    maximum: u32,
+    maximum: Option<u32>,
     generation: &std::sync::atomic::AtomicU64,
 ) -> Result<()> {
     // The watch lives for the connection, so the protective bound applies to
     // each frame rather than the total number of notifications in its life.
-    let frames = crate::sse::frames(body, maximum as usize, crate::sse::Decoder::default());
+    let frames = crate::sse::frames(
+        body,
+        maximum.map(|maximum| maximum as usize),
+        crate::sse::Decoder::default(),
+    );
     futures::pin_mut!(frames);
     while let Some(frame) = frames.next().await {
         if let Some(value) = decode(frame, operation)? {
@@ -42,7 +46,7 @@ pub(super) async fn notifications(
 pub(super) async fn response(
     body: BoxProviderStream<'static, Result<Bytes>>,
     operation: OperationId,
-    maximum_bytes: u32,
+    maximum_bytes: Option<u32>,
     callbacks: Option<(&HttpMcpTransport, ToolContext)>,
     tools_generation: &std::sync::atomic::AtomicU64,
 ) -> Result<Value> {
@@ -51,7 +55,7 @@ pub(super) async fn response(
     let expected: &str = identity.hyphenated().encode_lower(&mut spelling);
     let events = crate::sse::frames(
         bounded(body, maximum_bytes, operation),
-        maximum_bytes as usize,
+        maximum_bytes.map(|maximum| maximum as usize),
         crate::sse::Decoder::default(),
     );
     let mut events = core::pin::pin!(events);

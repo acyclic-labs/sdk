@@ -53,41 +53,16 @@ async fn provider_scenarios() -> TestResult {
     paths.sort();
     assert!(!paths.is_empty());
     for path in paths {
-        run_provider_scenario(&root, &path).await?;
+        let mut value = scenario_data::load_value(&root, &path)?;
+        assert_eq!(
+            value.as_object_mut().ok_or("scenario")?.remove("driver"),
+            Some("provider".into())
+        );
+        let case = serde_json::from_value(value)?;
+        stall::guarded(&path, providers::run(case))
+            .await?
+            .map_err(|error| format!("{}: {error}", path.display()))?;
         println!("PASS {}", path.strip_prefix(&root)?.display());
     }
     Ok(())
-}
-
-async fn run_provider_scenario(root: &std::path::Path, path: &std::path::Path) -> TestResult {
-    let mut value = scenario_data::load_value(root, path)?;
-    assert_eq!(
-        value.as_object_mut().ok_or("scenario")?.remove("driver"),
-        Some("provider".into())
-    );
-    let case = serde_json::from_value(value)?;
-    stall::guarded(path, providers::run(case))
-        .await?
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn transient_provider_failures_recover_in_the_same_turn() -> TestResult {
-    let root = acyclic_test_support::crate_path!("tests/scenarios");
-    for name in [
-        "retry-500.json",
-        "stall-before-output.json",
-        "stall-after-output.json",
-        "unreachable-retry.json",
-    ] {
-        run_provider_scenario(&root, &root.join("providers/anthropic").join(name)).await?;
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn refused_provider_request_settles_failed() -> TestResult {
-    let root = acyclic_test_support::crate_path!("tests/scenarios");
-    run_provider_scenario(&root, &root.join("providers/anthropic/refused-400.json")).await
 }

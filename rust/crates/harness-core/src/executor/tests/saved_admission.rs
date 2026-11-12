@@ -6,13 +6,14 @@ async fn save_unaccounted_request(
     journal: &Journal,
     input: &TurnInput,
     single_request: bool,
+    version: &str,
 ) -> Result<crate::model::PreparedModelRequest> {
     let execution = StockExecution {
         single_request,
         ..StockExecution::ordinary(executor)
     };
     let mut binding = json!({
-        "executor": "acyclic.stock.v8",
+        "executor": version,
         "input": input,
         "model": executor.model,
         "max_output_tokens": executor.max_output_tokens,
@@ -55,15 +56,18 @@ async fn save_unaccounted_request(
         journal,
         input.operation_id,
         "context:0",
-        &ResponseProjection {
-            context,
-            steering: None,
-            canonical: None,
-            checkpoint: None,
-            working: None,
-            accounting: None,
-        },
-        &prepared,
+        (
+            &ResponseProjection {
+                context,
+                steering: None,
+                canonical: None,
+                checkpoint: None,
+                working: None,
+                accounting: None,
+            },
+            &prepared,
+        ),
+        None,
         None,
         None,
     )
@@ -110,7 +114,8 @@ async fn disabled_compaction_dispatches_fresh_and_saved_requests_without_account
                 selected_context: None,
             };
             if saved {
-                save_unaccounted_request(&executor, &journal, &input, false).await?;
+                save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v9")
+                    .await?;
             }
             let result = executor.execute(input.clone(), &journal).await?;
             assert_eq!(result.text, "done");
@@ -161,7 +166,8 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
         input: ModelContent::Text("x".repeat(5_000)),
         selected_context: None,
     };
-    let prepared = save_unaccounted_request(&executor, &journal, &input, false).await?;
+    let prepared =
+        save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v9").await?;
     let reference = transcript::stage_request(
         &journal,
         input.operation_id,
@@ -225,7 +231,7 @@ async fn saved_single_inference_keeps_its_capacity_binding() -> Result<()> {
         input: ModelContent::Text("input".into()),
         selected_context: None,
     };
-    save_unaccounted_request(&executor, &journal, &input, true).await?;
+    save_unaccounted_request(&executor, &journal, &input, true, "acyclic.stock.v9").await?;
     for _ in 0..2 {
         assert_eq!(
             executor.infer(&journal, &input, None).await?.text(),
@@ -238,5 +244,84 @@ async fn saved_single_inference_keeps_its_capacity_binding() -> Result<()> {
         executor.model_step(&journal, &input, 0, &[]).await,
         Err(Error::Conflict(_))
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn old_inline_projection_binding_is_refused_before_dispatch() -> Result<()> {
+    let journal = Journal::default();
+    let provider = Arc::new(ScriptedModelProvider::new([done_turn()]));
+    let executor = uncompacted_executor(
+        Model::new("test".into(), "binding".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        max_steps: None,
+        input: ModelContent::Text("saved".into()),
+        selected_context: None,
+    };
+    save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v8").await?;
+    assert!(matches!(
+        executor.execute(input, &journal).await,
+        Err(Error::Conflict(_))
+    ));
+    assert!(provider.requests().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn independent_nonzero_model_step_stages_a_new_prefix_and_replays() -> Result<()> {
+    let journal = Journal::default();
+    let provider = Arc::new(ScriptedModelProvider::new([done_turn()]));
+    let executor = uncompacted_executor(
+        Model::new("test".into(), "independent-step".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        max_steps: None,
+        input: ModelContent::Text("current".into()),
+        selected_context: None,
+    };
+    let prior = vec![ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Text("caller supplied history".into()),
+    }];
+    let first = executor.model_step(&journal, &input, 7, &prior).await?;
+    assert_eq!(
+        first,
+        executor.model_step(&journal, &input, 7, &prior).await?
+    );
+    assert_eq!(provider.requests().len(), 1);
+    assert!(provider.requests()[0].messages.contains(&prior[0]));
+    let records = journal
+        .replay(input.operation_id, 0, u32::MAX, None)?
+        .await?;
+    let projection = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ContextPrepared { projection, .. } => Some(projection),
+            _ => None,
+        })
+        .unwrap();
+    let request = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ModelStarted { request, .. } => Some(request),
+            _ => None,
+        })
+        .unwrap();
+    let bytes = journal.load(projection, None)?.await?;
+    let stored: Value =
+        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(
+        stored["request"],
+        serde_json::to_value(request).map_err(|error| Error::Invalid(error.to_string()))?
+    );
     Ok(())
 }

@@ -1,0 +1,9 @@
+{
+  "id": "pty-driver",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [
+    { "when": { "user": "DRIVE_PROMPT" }, "text": ["DRIVE_ANSWER"] }
+  ] },
+  "inputs": [{ "mode": "drive" }],
+  "assert": { "requests": 1 }
+}

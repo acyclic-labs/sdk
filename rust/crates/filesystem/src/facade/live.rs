@@ -167,7 +167,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         original_fingerprint_permit: Option<PublicationPermit>,
     ) -> Result<(LiveMutationOutcome, crate::NativeAllocation), E>
     where
-        E: From<FsError> + Send + 'static,
+        E: From<FsError> + acyclic_stream::ProviderTask + 'static,
         F: for<'materialization> FnMut(&'materialization crate::NativeMaterializationWork) -> Fut
             + Clone
             + Send

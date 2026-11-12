@@ -6,7 +6,9 @@ use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-const JOURNAL_VERSION: u32 = 4;
+// Version five binds native recovery to the excluded checkout namespace.
+// Earlier journals belong to their original runtime and are never relocated.
+pub(crate) const JOURNAL_VERSION: u32 = 5;
 /// Requires an absent endpoint during native preparation.
 #[cfg(not(target_arch = "wasm32"))]
 pub const NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX: &[u8] = b"acyclic.native.prepare-absent/v1\0";

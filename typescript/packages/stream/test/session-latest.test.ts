@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { create, equals, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "../src/session.js";
-import { SessionNode, checkpoint } from "./session-node.js";
+import { SessionNode, checkpoint, sessionInterest } from "./session-node.js";
 
 const latest = (path = "status") => create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.LATEST });
 
@@ -86,7 +86,7 @@ test("checked ALL confirms its anchor and reconnects with the last yielded commi
   peer.disconnect();
   await peer.until(() => peer.resumes.length === 2);
   expect((await data.next()).value?.after?.next).toBe(3n);
-  const interests = peer.received.flatMap(frame => frame.body.case === "interest" ? frame.body.value.upsert : []);
+  const interests = peer.received.flatMap(frame => sessionInterest(frame)?.upsert ?? []);
   expect(interests.map(interest => interest.resume?.next)).toEqual([1n, 2n]);
   expect(interests.map(interest => interest.kind.case === "follow" ? [...interest.kind.value.precedingCommitId] : [])).toEqual([...peer.history.get("events")!.slice(0, 2).map(record => [...record.commitId])]);
   await data.return(undefined);

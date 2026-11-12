@@ -219,6 +219,8 @@ pub use async_storage::{
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(not(target_arch = "wasm32"))]
+pub use core_state::NativeRecoveryRoot;
+#[cfg(not(target_arch = "wasm32"))]
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 pub use distributed::{
     AuthorityPlacement, FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome,

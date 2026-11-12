@@ -212,13 +212,17 @@ impl StockExecution<'_> {
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:compacted"), work)
         })?;
+        let previous = self
+            .response_projection(journal, input.operation_id, step)
+            .await?
+            .ok_or_else(|| self.invalid_working_cut())?;
         let projection = transcript::stage_projection(
             journal,
             input.operation_id,
             &projection_key,
-            compacted,
-            request,
+            (compacted, request),
             Some(accounting),
+            Some(&previous),
             self.io,
         )
         .await?;
@@ -285,7 +289,7 @@ impl StockExecution<'_> {
             compaction,
             &ContextAccounting {
                 capacity,
-                count: Some(count),
+                count: Some(count.into()),
             },
         )
         .await?;

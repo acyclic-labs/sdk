@@ -16,7 +16,7 @@ async fn read_with_budget(
     let tool = crate::tool::files::read()?;
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
-        call_id: "recon-read-replay".into(),
+        call_id: "read-replay".into(),
         name: "read".into(),
         arguments,
     };
@@ -70,15 +70,15 @@ async fn read_with_budget(
 }
 
 #[tokio::test]
-async fn recon_read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
+async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 2_000_000).await?;
     let private = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
-    // GC-4's recorded source length, with fewer than GC-2's 20,000 lines.
+    // A multi-page file with fewer than 20,000 lines.
     let mut source = vec![b'x'; 1_103_745];
     for byte in source.chunks_mut(128) {
         *byte.last_mut().unwrap() = b'\n';
     }
-    let path = ".recon/source-index.txt";
+    let path = "fixtures/source-index.txt";
     let file = storage
         .stage(
             OperationId::new(),
@@ -133,7 +133,7 @@ async fn recon_read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
         }
     ));
 
-    // GC-2: the original call, twice, also exercises an already published index.
+    // Replaying the same call also exercises an already published index.
     for offset in [20000, 20000, source.len().div_ceil(128) + 1] {
         let value = read(
             &task,
@@ -147,7 +147,7 @@ async fn recon_read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
             "offset":offset,"total":source.len(),"eof":true})
         );
     }
-    // GC-3: preserve both authored and content version identity while clipping
+    // Preserve both authored and content version identity while clipping
     // the recorded end (1,118,094) to the selected generation's actual EOF.
     let initial = read(
         &task,
@@ -188,7 +188,7 @@ async fn recon_read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
         assert_eq!(empty["page"]["start"], source.len());
         assert_eq!(empty["page"]["eof"], true);
     }
-    // GC-4/5/6: the first page is visibly incomplete; following only the
+    // The first page is visibly incomplete; following only the
     // returned cursor reconstructs the original generation exactly once.
     let mut cursor = 0;
     let mut assembled = Vec::new();

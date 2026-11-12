@@ -625,7 +625,7 @@ proptest::proptest! {
             } else { Ok(()) }
         };
         let result = catalog("1", &["a","b"]).install_checked(
-            &mut registry, None, &transport, &projection, Some((8, 8192)), &check,
+            &mut registry, None, &transport, &projection, (Some(8), Some(8192)), &check,
         );
         let definitions = registry.definitions(None).unwrap();
         if result.is_err() {
@@ -634,4 +634,59 @@ proptest::proptest! {
             proptest::prop_assert_eq!(definitions.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(), ["mcp.fixture.a", "mcp.fixture.b"]);
         }
     }
+}
+
+#[test]
+fn optional_catalog_reservations_are_independent_and_installation_remains_atomic() -> Result<()> {
+    let names: Vec<_> = (0..257).map(|n| format!("tool{n}")).collect();
+    let refs: Vec<_> = names.iter().map(String::as_str).collect();
+    let catalog = catalog("unreserved", &refs);
+    let bytes = u32::try_from(serde_json::to_vec(&catalog).unwrap().len()).unwrap();
+    catalog.validate(None, None)?;
+    catalog.validate(Some(257), Some(bytes))?;
+    assert!(catalog.validate(Some(256), None).is_err());
+    assert!(catalog.validate(None, Some(bytes - 1)).is_err());
+    assert!(catalog.validate(Some(0), None).is_err());
+    assert!(catalog.validate(None, Some(0)).is_err());
+    assert_eq!(catalog.model_definitions(None, None)?.len(), 257);
+    assert_ne!(
+        catalog.installation_digest(None, None, None)?,
+        catalog.installation_digest(None, Some(257), Some(bytes))?
+    );
+    let transport: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
+    let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
+    let mut registry = ToolRegistry::default();
+    assert!(
+        catalog
+            .install(
+                &mut registry,
+                None,
+                &transport,
+                &projection,
+                Some(256),
+                None
+            )
+            .is_err()
+    );
+    assert!(registry.definitions(None)?.is_empty());
+    catalog.install(&mut registry, None, &transport, &projection, None, None)?;
+    assert_eq!(registry.definitions(None)?.len(), 257);
+    assert!(
+        catalog
+            .install(
+                &mut registry,
+                Some(&catalog),
+                &transport,
+                &projection,
+                None,
+                Some(bytes - 1)
+            )
+            .is_err()
+    );
+    assert_eq!(
+        registry.definitions(None)?.len(),
+        257,
+        "refusal preserves the complete admitted catalog"
+    );
+    Ok(())
 }

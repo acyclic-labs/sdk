@@ -6,6 +6,13 @@
 //! and commits each step (checkpoint, conversation, status and every outgoing
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
+mod announce;
+pub(crate) use announce::InstructionManifest;
+pub use announce::{
+    AnnouncedDocument, AnnouncedInstructions, Announcement, AnnouncementDocument, AnnouncementKind,
+    WorkspaceAnnouncement, WorkspaceExposure, WorkspaceInstructions, WorkspaceUpdate,
+    announcement_messages, discover_workspace_instructions,
+};
 pub(crate) mod checkpoint;
 mod children;
 pub use children::Children;
@@ -97,8 +104,8 @@ pub use commit::{
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, NOTICE_MEDIA_TYPE, OpenControl,
     OpenTurn, TurnHost, TurnOutcome, TurnOutputs, USER_INPUT_MEDIA_TYPE, approval_intent,
-    encode_user_input, expand_attachments, model_input, roster_message, turn_id, turn_notices,
-    turn_roster, turn_segment,
+    encode_user_input, expand_attachments, model_input, turn_announcements, turn_id, turn_notices,
+    turn_segment,
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, InputProgress, actor_store};
@@ -132,7 +139,7 @@ pub enum Error {
     #[error("invalid agent record: {0}")]
     Record(&'static str),
     /// The retained checkpoint belongs to another artifact codec.
-    #[error("state format predates v1 table; start a fresh session")]
+    #[error("unsupported agent checkpoint format; start a fresh session")]
     IncompatibleCheckpointCodec,
     /// The recipient agent was never created.
     #[error("no such agent")]

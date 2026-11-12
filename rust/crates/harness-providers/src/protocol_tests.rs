@@ -120,10 +120,10 @@ async fn responses_content_filter_and_unknown_incomplete_reasons_are_invalid() {
     }
 }
 
-/// Replay the live swarm's refusal through every protocol, beyond both the old
+/// Replay transient refusals through every protocol, beyond both the old
 /// retry limit and the schedule counter's range, then finish the original turn.
 #[tokio::test]
-async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> Result<()> {
+async fn rate_limit_backpressure_preserves_the_turn_until_admission() -> Result<()> {
     use std::time::Duration;
     struct RateLimited {
         success: &'static str,

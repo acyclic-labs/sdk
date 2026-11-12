@@ -1,0 +1,12 @@
+--- a/rust/crates/harness/src/local/host_owner/agents.rs
++++ b/rust/crates/harness/src/local/host_owner/agents.rs
+@@ -527,6 +527,9 @@
+     super::super::host_workspace::child_reference(reference)?;
++    if reference.len() > 128 {
++        return Err(Error::Invalid("child reference exceeds unrelated intent bound".into()));
++    }
+     parent
+         .child(&AgentId::derive(&parent.id(), reference))
+         .map_err(storage)
+ }
+ 

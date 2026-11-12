@@ -161,10 +161,16 @@ fn spawned_volume(
 /// # Errors
 /// When the derived volume reference is invalid.
 pub fn spawned_binding(child: &AgentPath, binding: &WorkspaceEntry) -> Result<VolumeRef, Error> {
-    if binding.inherit == WorkspaceInherit::Share {
+    if binding.inherit == WorkspaceInherit::Share && !fresh_session_board(child, binding) {
         return Ok(binding.volume()?.clone());
     }
     Ok(spawned_volume(child, binding)?.0)
+}
+
+// A shared harness board belongs to one session tree. A new independent
+// root owns a fresh board; explicit user Share entries retain their source.
+fn fresh_session_board(child: &AgentPath, binding: &WorkspaceEntry) -> bool {
+    child.parent().is_none() && binding.role == crate::agent::WorkspaceRole::Shared
 }
 
 /// The child's binding of `parent`'s volume `binding`, and how it comes to exist.
@@ -183,7 +189,7 @@ fn plan(
         ));
     }
     let source = binding.volume()?;
-    if binding.inherit == WorkspaceInherit::Share {
+    if binding.inherit == WorkspaceInherit::Share && !fresh_session_board(child, binding) {
         return Ok((binding.clone(), None));
     }
     let (destination, key) = spawned_volume(child, binding)?;

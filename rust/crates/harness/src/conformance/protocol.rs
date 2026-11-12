@@ -116,7 +116,7 @@ async fn records(
         .await
     {
         Ok(records) => Ok(records.try_collect().await?),
-        Err(StreamError::NotFound) => Ok(Vec::new()),
+        Err(error) if error.category() == StreamError::NotFound => Ok(Vec::new()),
         Err(error) => Err(error.into()),
     }
 }
@@ -151,6 +151,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         }
 
         let prompt = AgentCommand::Prompt {
+            peer: None,
             agent: root.clone(),
             id: IntentId::try_from("prompt")?,
             body: ModelContent::Text("Call the shared tool, then reply".into()),

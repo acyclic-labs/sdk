@@ -7,7 +7,7 @@ use serde_json::Value;
 pub(super) async fn decode(
     response: McpHttpResponse,
     operation: OperationId,
-    maximum_bytes: u32,
+    maximum_bytes: Option<u32>,
     callbacks: Option<(&HttpMcpTransport, ToolContext)>,
     tools_generation: &std::sync::atomic::AtomicU64,
 ) -> Result<Value> {

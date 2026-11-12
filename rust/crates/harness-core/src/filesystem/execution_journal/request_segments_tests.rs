@@ -63,11 +63,7 @@ async fn admitted_request_append_reads_only_the_manifest_as_history_grows() -> R
             .await?;
         assert_eq!(
             request.descriptor().media_type(),
-            if step == 1 {
-                "application/json"
-            } else {
-                crate::executor::transcript::REQUEST_MEDIA
-            }
+            crate::executor::transcript::REQUEST_MEDIA
         );
         if [1, 100, 1000].contains(&step) {
             let io = PreparationIo::from_budget(

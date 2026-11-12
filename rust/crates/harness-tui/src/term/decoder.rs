@@ -131,6 +131,15 @@ impl Decoder {
     }
 
     fn input(&mut self, frame: &[u8]) -> io::Result<()> {
+        if let Some(id) = frame
+            .strip_prefix(b"\x1b[?7727;")
+            .and_then(|tail| tail.strip_suffix(b"n"))
+        {
+            if let Some(id) = std::str::from_utf8(id).ok().and_then(|id| id.parse().ok()) {
+                self.events.push(InputEvent::SettlementQuery(id));
+            }
+            return Ok(());
+        }
         if frame == b"\x1b[200~" {
             self.text.clear();
             self.alt = false;

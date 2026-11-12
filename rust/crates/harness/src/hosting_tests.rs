@@ -22,6 +22,9 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[path = "hosting_tests/session_pages.rs"]
 mod session_pages;
 
+#[path = "hosting_tests/peer_delivery.rs"]
+mod peer_delivery;
+
 struct Never;
 
 impl TurnExecutors for Never {
@@ -286,6 +289,7 @@ fn serving_reply_codec_preserves_invalid_and_capacity_refusals() -> Result {
     let oversized = AgentReply::Bound {
         binding: "x".repeat(acyclic_harness_client::MAX_AGENT_COMMAND_BYTES + 1),
         tools: String::new(),
+        observation: None,
     };
     assert!(matches!(
         super::reply(&call, &Ok(oversized)),
@@ -1163,6 +1167,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         Err(AgentControlFailure::Refused { code, .. }) if code == "invalid_agent_record"
     ));
     let prompt = AgentCommand::Prompt {
+        peer: None,
         agent: root.clone(),
         id: IntentId::try_from("p1")?,
         body: ModelContent::Text("hello".into()),

@@ -28,6 +28,7 @@ fn admission(request: &[u8]) -> Result<ExecutionRecord> {
         &mut None,
     )?;
     Ok(ExecutionRecord {
+        committed_at_micros: None,
         operation_id: OperationId::from_bytes([7; 16]),
         sequence: 9,
         idempotency_key: "generated-admission".into(),

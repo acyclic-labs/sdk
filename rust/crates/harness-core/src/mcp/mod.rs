@@ -13,7 +13,7 @@ mod layouts;
 mod paging;
 #[cfg(not(target_arch = "wasm32"))]
 pub use install::{McpClientLimits, McpInstallation, McpServerFailure};
-pub use paging::tool_pages;
+pub use paging::{McpDiscoveryLimits, tool_pages};
 pub mod http;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod oauth;

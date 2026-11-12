@@ -50,7 +50,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         W: FsWork,
         G: crate::AuthorityGuard,
         G::Error: Into<E>,
-        E: From<FsError> + From<WorkspaceError> + Send,
+        E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
     {
         let creation = creation.into();
         let crate::CreationOperation {

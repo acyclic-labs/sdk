@@ -35,7 +35,7 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
 ) -> Result<Option<SentMessage>, Error> {
     let head = match provider.head(sender.sent_message(id)?).await {
         Ok(head) => head,
-        Err(StreamError::NotFound) => return Ok(None),
+        Err(error) if error.category() == StreamError::NotFound => return Ok(None),
         Err(error) => return Err(Error::Stream(error)),
     };
     let record = head

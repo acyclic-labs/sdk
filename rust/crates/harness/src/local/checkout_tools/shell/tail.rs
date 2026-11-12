@@ -147,6 +147,48 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    #[test]
+    fn truncated_preview_identifies_retained_tails_before_output() -> crate::Result<()> {
+        use std::io::Read as _;
+        let directory = tempfile::tempdir().map_err(crate::Error::process_io)?;
+        let path = directory.path().join("spill");
+        let stdout = format!("beginning\n{}\nstdout end\n", "source line\n".repeat(4096));
+        let stderr = "diagnostic end\n";
+        let mut tail = Tail::new(path, 30_000);
+        tail.observe(stdout.as_bytes(), false)
+            .and_then(|()| tail.observe(stderr.as_bytes(), true))
+            .map_err(crate::Error::process_io)?;
+        let spill_path = "volume:///output/tools/command/spill.log";
+        let (result, spill) = tail.settle(
+            crate::tool::ToolResult {
+                value: serde_json::json!({"exit_code": 0, "spill": spill_path}),
+            },
+            4096,
+        )?;
+        let fields = &result.value;
+        let output = fields["stdout"].as_str().unwrap();
+        let error = fields["stderr"].as_str().unwrap();
+        assert!(!output.is_empty());
+        assert!(stdout.ends_with(output));
+        assert_eq!(error, stderr);
+        assert_eq!(
+            fields["omitted_bytes"].as_u64().unwrap(),
+            (stdout.len() + stderr.len() - output.len() - error.len()) as u64
+        );
+        let text = fields["text"].as_str().unwrap();
+        let (notice, shown) = text.split_once("]\n").unwrap();
+        assert!(notice.contains("earlier bytes omitted; stdout tail then stderr tail follow"));
+        assert!(notice.contains(spill_path));
+        assert_eq!(shown, format!("{output}{error}"));
+        let mut complete = String::new();
+        spill
+            .unwrap()
+            .read_to_string(&mut complete)
+            .map_err(crate::Error::process_io)?;
+        assert_eq!(complete, format!("{stdout}{stderr}"));
+        Ok(())
+    }
+
     proptest! {
         // Arbitrary chunk boundaries cannot change the retained suffix or
         // exact spill bytes, and storage stays independent of total output.

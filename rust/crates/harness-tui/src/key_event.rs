@@ -10,6 +10,9 @@ pub use crossterm::event::{
 /// paste so the editor never applies paste heuristics or folding to them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputEvent {
+    /// Ordered request for an application settlement fence. Private DSR 7727
+    /// carries the caller's correlation id; it never edits the prompt.
+    SettlementQuery(u64),
     /// A decoded key press, repeat or release with its complete modifiers.
     Key(KeyEvent),
     /// A complete, explicitly identified paste.

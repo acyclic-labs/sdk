@@ -6,6 +6,7 @@ fn accept(summary: &mut ExecutionSummary, event: ExecutionEvent) -> Result<()> {
     let sequence = summary.tail + 1;
     summary.accept(
         &ExecutionRecord {
+            committed_at_micros: None,
             operation_id: OperationId::from_bytes([3; 16]),
             sequence,
             idempotency_key: format!("event-{sequence}"),
@@ -71,6 +72,7 @@ proptest! {
         for index in 0..count {
             let sequence = state.tail + 1;
             let record = ExecutionRecord {
+                committed_at_micros: None,
                 operation_id: OperationId::from_bytes([3; 16]), sequence,
                 idempotency_key: format!("refusal-{index}"),
                 event: ExecutionEvent::ToolFailed {

@@ -3,6 +3,7 @@ use crate::{AppendRequest, MemoryStream, OwnedBytes, wire_codec};
 use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wire::stream_service_server::{StreamService, StreamServiceServer};
+use wire_codec::status::category;
 
 pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -289,12 +290,10 @@ async fn invalid_configuration_is_rejected_before_network_io() -> TestResult {
             Err(ConnectError::InvalidCredential)
         ));
     }
-    for pem in [Vec::new(), vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]] {
-        assert!(matches!(
-            Client::connect_eager_with_ca_certificate(&endpoint, "fixture", pem).await,
-            Err(ConnectError::InvalidCaCertificate)
-        ));
-    }
+    assert!(matches!(
+        Client::connect_eager_with_ca_certificate(&endpoint, "fixture", []).await,
+        Err(ConnectError::InvalidCaCertificate)
+    ));
     assert!(matches!(
         Client::connect_eager("http://127.0.0.1:1", "fixture").await,
         Err(ConnectError::InsecureEndpoint)
@@ -608,13 +607,15 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
         } else {
             assert!(platform.is_err(), "private endpoint unexpectedly trusted");
         }
-        let pinned =
-            Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", pem.as_bytes())
-                .await?;
-        assert_eq!(
-            pinned.inspect_idempotency(IdempotencyKey::unique()).await,
-            Ok(None)
-        );
+        let bundle = pem.repeat(65_536 / pem.len() + 1);
+        for roots in [pem.as_bytes(), bundle.as_bytes()] {
+            let pinned =
+                Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", roots).await?;
+            assert_eq!(
+                pinned.inspect_idempotency(IdempotencyKey::unique()).await,
+                Ok(None)
+            );
+        }
         let denied =
             Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", &unrelated).await;
         assert!(
@@ -790,8 +791,8 @@ fn every_member_refusal_round_trips_its_original_status() {
 }
 
 proptest::proptest! {
-    /// Every category's canonical status decodes to itself, and any
-    /// unavailable-class status encodes back to its original after decoding.
+    /// Every category's canonical status decodes to itself. Every original
+    /// status survives decoding, independently of recovery classification.
     #[test]
     fn status_decode_then_encode_is_the_identity(
         code in 0i32..17,
@@ -804,6 +805,7 @@ proptest::proptest! {
                 proptest::prop_assert_eq!(status(&encoded), error.clone());
             }
         }
+        proptest::prop_assert!(crate::codec_fuzz::grpc_status(&details));
         let mut relayed = Status::with_details(Code::from_i32(code), message, details.into());
         if let Some(reason) = reason {
             let value = tonic::metadata::MetadataValue::try_from(reason.as_str())
@@ -811,10 +813,10 @@ proptest::proptest! {
             relayed.metadata_mut().insert("acyclic-unserved-reason", value);
         }
         let decoded = status(&relayed);
+        proptest::prop_assert_eq!(decoded.category(), category(&relayed));
+        proptest::prop_assert_eq!(decoded.uncertain(), category(&relayed).uncertain());
         for encoded in [Status::from(&decoded), Status::from(decoded.clone())] {
-            if decoded.code() == "unavailable" {
-                proptest::prop_assert_eq!(original(&encoded), original(&relayed));
-            }
+            proptest::prop_assert_eq!(original(&encoded), original(&relayed));
             proptest::prop_assert_eq!(status(&encoded), decoded.clone());
         }
     }

@@ -13,6 +13,8 @@ mod catalog_document;
 mod codex;
 #[cfg(not(target_arch = "wasm32"))]
 mod credential_file;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod length_continuation_tests;
 mod model_spec;
 #[cfg(not(target_arch = "wasm32"))]
 mod refresh;

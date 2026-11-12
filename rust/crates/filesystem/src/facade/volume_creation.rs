@@ -195,7 +195,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         guard: Option<&mut G>,
     ) -> Result<(Volume<A, O>, ObjectId), E>
     where
-        E: From<FsError> + Send,
+        E: From<FsError> + acyclic_stream::ProviderTask,
         G: crate::AuthorityGuard,
         G::Error: Into<E>,
     {
@@ -245,7 +245,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         guard: Option<&mut G>,
     ) -> Result<Volume<A, O>, E>
     where
-        E: From<FsError> + Send,
+        E: From<FsError> + acyclic_stream::ProviderTask,
         G: crate::AuthorityGuard,
         G::Error: Into<E>,
     {
@@ -373,7 +373,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         finish_authority_work(work)?;
         let (records, _allocation) = result.map_err(|error| match error {
             #[cfg(not(target_arch = "wasm32"))]
-            AuthorityStoreError::NativeStream(acyclic_stream::StreamError::NotFound) => {
+            AuthorityStoreError::NativeStream(error)
+                if error.category() == acyclic_stream::StreamError::NotFound =>
+            {
                 AuthorityStoreError::Missing
             }
             error => error,

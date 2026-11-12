@@ -39,6 +39,47 @@ pub struct PeerMembershipHead {
 }
 
 impl PeerAdmission {
+    /// Verify that a caller-retained admission refers to enabled immutable
+    /// records. Current heads are checked by the inbox commit, not this read:
+    /// exact replay must still recover its original result after opt-out.
+    pub async fn validate<P: crate::store::JournalProvider + ?Sized>(
+        &self,
+        provider: &P,
+        sender: &AgentPath,
+        recipient: &AgentPath,
+    ) -> Result<(), super::Error> {
+        use super::AgentRecord as _;
+        use futures::TryStreamExt as _;
+        for (root, head) in [(sender, &self.sender), (recipient, &self.recipient)] {
+            let sequence = head
+                .tail
+                .checked_sub(1)
+                .ok_or(super::Error::Record("peer membership head is empty"))?;
+            let mut records = provider
+                .read(acyclic_stream::ReadRequest {
+                    key: None,
+                    path: root.peer_membership()?,
+                    from: sequence,
+                    limit: 1,
+                    at_least: Default::default(),
+                })
+                .await
+                .map_err(super::Error::Stream)?;
+            let record = records
+                .try_next()
+                .await
+                .map_err(super::Error::Stream)?
+                .ok_or(super::Error::Record("peer membership record is missing"))?;
+            if record.sequence != sequence
+                || record.commit_id.as_bytes() != &head.commit
+                || !PeerMembership::decode(&record.value)?.enabled
+            {
+                return Err(super::Error::Record("peer membership was not enabled"));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn conditions(
         &self,
         sender: &AgentPath,

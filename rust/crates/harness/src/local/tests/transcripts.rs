@@ -55,6 +55,16 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
                 panic!("spawn did not return a child");
             };
             agents::settled(&harness, &child).await?;
+            // Reopening either descendant for saved reads must keep the
+            // session's root audience while enrolling the child's read grant.
+            let saved = Conversation::open(connection.select(child.clone()).await?)
+                .observation()
+                .await?;
+            let tail = saved.settled().await?;
+            assert!(tail > 0, "the child committed a conversation");
+            let entries = saved.entries(0, tail).await?;
+            let entry = entries.last().expect("saved child conversation");
+            assert!(!saved.output_text(entry).await?.is_empty());
             paths.push(child);
         }
         Ok::<_, Error>(paths)

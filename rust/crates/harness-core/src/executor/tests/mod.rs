@@ -595,6 +595,7 @@ impl ExecutionJournal for Journal {
                 .count() as u64
                 + 1;
             records.push(ExecutionRecord {
+                committed_at_micros: None,
                 operation_id,
                 sequence,
                 idempotency_key,
@@ -631,6 +632,7 @@ impl ExecutionJournal for Journal {
                 return Ok(false);
             }
             records.push(ExecutionRecord {
+                committed_at_micros: None,
                 operation_id,
                 sequence: tail + 1,
                 idempotency_key,

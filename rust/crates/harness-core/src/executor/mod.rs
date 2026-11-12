@@ -81,6 +81,8 @@ pub(crate) use model_usage::validate as validate_model_usage;
 pub use model_usage::{
     ContextUsage, ModelTokenUsage, ModelUsagePage, ModelUsageRecord, usage_page,
 };
+mod tool_usage;
+pub use tool_usage::ToolUsage;
 pub(crate) mod phase;
 #[cfg(test)]
 pub(crate) use model_observation::append as append_model_event;
@@ -228,6 +230,10 @@ pub struct ExecutionRecord {
     pub operation_id: OperationId,
     /// Gapless one-based journal sequence.
     pub sequence: u64,
+    /// Original Stream commit time in Unix microseconds, carried through replay
+    /// and indexed selection without another clock sample or stored payload.
+    /// Unknown for journals that supply no original publication timestamp.
+    pub committed_at_micros: Option<u64>,
     /// Stable per-step retry identity.
     pub idempotency_key: String,
     /// Canonical observation.
@@ -676,7 +682,7 @@ pub(crate) struct ContextAccounting {
     pub(crate) capacity: crate::context::ModelContextCapacity,
     /// `None` records a typed provider context-overflow refusal for this projection.
     /// It never supplies an estimated admission count.
-    pub(crate) count: Option<crate::context::ModelTokenCount>,
+    pub(crate) count: Option<accounting::ContextCount>,
 }
 
 /// Validated retained model artifacts without provider dispatch.

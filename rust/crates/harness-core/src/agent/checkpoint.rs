@@ -18,8 +18,8 @@ pub(crate) fn codec() -> CodecIdentity {
 fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
-            name: "acyclic.harness.agent.workspaces".into(),
-            // Version-one workspace-aware actor state; old state is refused.
+            name: "acyclic.harness.agent.workspace-snapshot".into(),
+            // Version-one snapshot-backed actor state; embedded tables are refused.
             version: "1".into(),
         });
     &IDENTITY
@@ -225,6 +225,9 @@ mod tests {
     const FIXTURE_DEPTH: usize = 64;
     const FIXTURE_CHILDREN: usize = 256;
     const FIXTURE_VOLUMES: usize = 8;
+    // Wide escaping fixtures; labels and paths have no protocol size ceiling.
+    const FIXTURE_PATH_BYTES: usize = 4096;
+    const FIXTURE_LABEL_BYTES: usize = 255;
     use crate::agent::{
         AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
         ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
@@ -232,8 +235,7 @@ mod tests {
         StatusRecord, TurnInput, WorkspaceEntry,
     };
     use crate::conversation::{
-        FileDescriptor, FileRef, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES,
-        VolumeClass, VolumeOwner, VolumeRef,
+        FileDescriptor, FileRef, MAX_EXACT_JS_INTEGER, VolumeClass, VolumeOwner, VolumeRef,
     };
     use crate::resources::ProviderRef;
     use acyclic_actors::local::{SUBSCRIPTION_OVERHEAD, State};
@@ -287,22 +289,22 @@ mod tests {
     }
 
     fn volume() -> VolumeRef {
-        let part = || widest(MAX_LABEL_BYTES);
+        let part = || widest(FIXTURE_LABEL_BYTES);
         let provider = ProviderRef::new(part(), part(), part(), &mut None).expect("provider");
         let owner = VolumeOwner::Project(part());
         VolumeRef::new(provider, part(), VolumeClass::Project, owner, &mut None).expect("volume")
     }
 
     fn file() -> FileRef {
-        let media = format!("a/{}", "a".repeat(MAX_LABEL_BYTES - 2));
+        let media = format!("a/{}", "a".repeat(FIXTURE_LABEL_BYTES - 2));
         let descriptor =
             FileDescriptor::new([0xff; 32], MAX_EXACT_JS_INTEGER, media).expect("descriptor");
         FileRef::new(
             volume(),
-            widest(MAX_PATH_BYTES),
-            widest(MAX_LABEL_BYTES),
+            widest(FIXTURE_PATH_BYTES),
+            widest(FIXTURE_LABEL_BYTES),
             descriptor,
-            widest(MAX_LABEL_BYTES),
+            widest(FIXTURE_LABEL_BYTES),
             &mut None,
         )
         .expect("file")
@@ -333,20 +335,20 @@ mod tests {
         ]
     }
 
-    /// A maximal reference, independent of the staged event's logical size.
+    /// A wide reference fixture, independent of the staged event's logical size.
     fn widest_notice() -> NoticePayload {
         NoticePayload::Waking(Box::new(
             FileRef::new(
                 volume(),
-                widest(MAX_PATH_BYTES),
-                widest(MAX_LABEL_BYTES),
+                widest(FIXTURE_PATH_BYTES),
+                widest(FIXTURE_LABEL_BYTES),
                 FileDescriptor::new(
                     [0xff; 32],
                     MAX_EXACT_JS_INTEGER,
                     crate::agent::NOTICE_MEDIA_TYPE.into(),
                 )
                 .expect("descriptor"),
-                widest(MAX_LABEL_BYTES),
+                widest(FIXTURE_LABEL_BYTES),
                 &mut None,
             )
             .expect("notice file"),
@@ -389,7 +391,7 @@ mod tests {
         }
     }
 
-    /// Every record kind a step sends, each at its widest.
+    /// Every record kind a step sends, with wide escaping fixtures.
     fn inbox_records() -> Vec<InboxRecord> {
         let deepest = agent(FIXTURE_DEPTH);
         let mut records = vec![
@@ -496,7 +498,7 @@ mod tests {
         records
     }
 
-    /// Every turn input, each at its widest.
+    /// Every turn input, with wide escaping fixtures.
     fn turn_inputs() -> Vec<TurnInput> {
         let mut inputs = vec![TurnInput::Brief {
             brief: Box::new(file()),
@@ -510,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn every_record_a_step_writes_fits_its_limit_at_the_configured_maxima() {
+    fn wide_record_fixtures_fit_the_frame_and_round_trip() {
         assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
         // Names admit no control character, so `widest` is their worst case.
         let control = Sender::User {
@@ -577,7 +579,12 @@ mod tests {
                     message: widest_text(MAX_MESSAGE_BYTES),
                 },
                 goal: Some(crate::OperationId::from_bytes([255; 16])),
-                targets: Some(file()),
+                announcements: vec![crate::agent::AnnouncedDocument {
+                    kind: crate::agent::AnnouncementKind::Targets,
+                    digest: [255; 32],
+                    file: file(),
+                    instructions: None,
+                }],
                 steering: Some(crate::agent::SteeringTranscript {
                     through: u64::MAX,
                     file: file(),
@@ -634,7 +641,8 @@ mod tests {
                     pending_notices: Some(0..u64::MAX),
                     dropped_before: u64::MAX,
                     checkpoint: Some(u64::MAX),
-                    roster: Some([u8::MAX; 32]),
+                    announcements: [(crate::agent::AnnouncementKind::Targets, [u8::MAX; 32])]
+                        .into(),
                     status_tail: u64::MAX,
                     phase: Phase::Done { outcome },
                     archive_pending: open_children.clone(),
@@ -753,8 +761,8 @@ mod tests {
             text in proptest::sample::select(vec![0, 1, 8, 9, 10, 13, b'"', b'\\', b'a']),
             cursor in proptest::num::u64::ANY,
         ) {
-            // Every generated case includes every variant, at maximum field
-            // lengths; selection never accidentally omits a large record kind.
+            // Every generated case includes every variant, with wide fixture
+            // fields; selection never accidentally omits a large record kind.
             for record in inbox_records() {
                 let worst = assert_record_bound(&record);
                 let sample: InboxRecord = varied(&record, name, text);
@@ -767,7 +775,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             let phases = [Phase::Idle, Phase::Running,
-                Phase::WaitingUser { path: widest(crate::conversation::MAX_PATH_BYTES) },
+                Phase::WaitingUser { path: widest(FIXTURE_PATH_BYTES) },
                 Phase::WaitingApproval {
                     id: intent(),
                     binding: Some(crate::interaction::ApprovalBinding {
@@ -788,7 +796,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { observed_through: u64::MAX, inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Failed { message: widest_text(MAX_MESSAGE_BYTES) }, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
+                let record = ConversationEntry { observed_through: u64::MAX, inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Failed { message: widest_text(MAX_MESSAGE_BYTES) }, goal: Some(crate::OperationId::from_bytes([255; 16])), announcements: vec![crate::agent::AnnouncedDocument { kind: crate::agent::AnnouncementKind::Targets, digest: [255; 32], file: file(), instructions: None }], steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);

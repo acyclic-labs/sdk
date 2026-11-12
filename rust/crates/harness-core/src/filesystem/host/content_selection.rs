@@ -48,7 +48,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         else {
             return Ok(None);
         };
-        let bytes = read_generation(&binding, SELECTION_PATH, SELECTION_BYTES, Some(io)).await?;
+        let bytes =
+            read_generation(&binding, SELECTION_PATH, Some(SELECTION_BYTES), Some(io)).await?;
         let _hold = io.guard_bytes(&bytes)?;
         if bytes.len() != SELECTION_BYTES as usize || bytes[0] != 1 {
             return Err(stock_boundary(

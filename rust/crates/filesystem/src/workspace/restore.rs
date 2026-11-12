@@ -158,7 +158,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         before_publication: &mut F,
     ) -> Result<TransactionCommit<A, O>, E>
     where
-        E: From<FsError> + From<WorkspaceError> + Send + 'static,
+        E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask + 'static,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {

@@ -60,7 +60,7 @@ export async function bundleHostedActors(input, output) {
   writeFileSync(join(out, 'agent-deploy.json'), text, {flag:'wx'});
   // The deployed loader gets exactly these sealed modules. All must initialize
   // before an empty environment refuses the first selected binding.
-  const {actor} = await loadHostedArtifact(join(out, 'harness-actor.mjs'), entry.assets);
+  const {actor} = await loadHostedArtifact(join(out, 'harness-actor.mjs'), entry.assets, closure.files);
   const refused = await actor.restore(null, {env:{}, actor:{id:'conformance-controller'}})
     .then(() => null, error => error);
   if (refused?.message !== `ActorBindingUnserved: ${bindings.names[0]}`)

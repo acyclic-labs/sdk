@@ -4,21 +4,25 @@ use crate::{
     Error, Result,
     executor::{
         ContextUsage, ModelCostEstimate, ModelPrices, ModelPurpose, ModelUsageProjection,
-        ModelUsageRecord, ModelUsageTotals,
+        ModelUsageRecord, ModelUsageTotals, ToolUsage, UsageTotal,
     },
 };
 use acyclic_harness_client::{AgentCommand, AgentReply};
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 /// One selected conversation's live usage frontier. Storage is independent of
-/// history length: shared totals and one pending call per model purpose.
+/// history length: shared totals, one summary per admitted provider and one
+/// pending call per model purpose.
 /// No work occurs on redraw, and no transcript or child tree is traversed.
 pub struct UsageQuery {
-    conversation: Arc<Conversation>,
+    pub(super) conversation: Arc<Conversation>,
     input: u64,
     end: u64,
     pending: [Option<ModelUsageProjection<'static>>; 2],
     totals: ModelUsageTotals,
+    providers: BTreeMap<String, ModelUsageTotals>,
+    model_time_ns: UsageTotal,
+    tools: ToolUsage,
     context: Option<ContextUsage>,
     model: Option<(String, String)>,
     open_children: Option<u64>,
@@ -61,6 +65,9 @@ impl Conversation {
             end: 0,
             pending: [None, None],
             totals,
+            providers: BTreeMap::new(),
+            model_time_ns: UsageTotal::default(),
+            tools: ToolUsage::default(),
             context: None,
             synchronized: false,
             closed: false,
@@ -76,6 +83,24 @@ impl UsageQuery {
     #[must_use]
     pub const fn totals(&self) -> &ModelUsageTotals {
         &self.totals
+    }
+
+    /// Same original contributions grouped by admitted provider, without a
+    /// second source read or retained call history. Counters keep their original
+    /// provider conventions; no cache fraction is inferred from unknown units.
+    pub fn providers(&self) -> &BTreeMap<String, ModelUsageTotals> {
+        &self.providers
+    }
+
+    /// Sum of original monotonic completed-call durations. Unknown terminal
+    /// durations remain unknown; unfinished calls are not elapsed-time samples.
+    pub const fn model_time_ns(&self) -> UsageTotal {
+        self.model_time_ns
+    }
+
+    /// Original tool facts from the same bounded source pages as model usage.
+    pub fn tools(&self) -> &ToolUsage {
+        &self.tools
     }
 
     /// Latest original verified response occupancy, independent of cumulative usage.
@@ -153,6 +178,7 @@ impl UsageQuery {
         };
         let synchronized = self.synchronized || (!settled && page.next.is_none());
         let changed = !page.items.is_empty()
+            || !page.tools.is_empty()
             || page.context.is_some()
             || self.open_children != Some(open_children)
             || synchronized != self.synchronized;
@@ -162,37 +188,44 @@ impl UsageQuery {
             .rev()
             .find(|row| row.purpose == ModelPurpose::Response)
             .map(|row| (row.provider.clone(), row.model.clone()));
+        let tools = if page.tools.is_empty() {
+            None
+        } else {
+            Some(self.tools.merged(&page.tools)?)
+        };
         if !page.items.is_empty() {
-            // One fixed-size copy makes contribution admission atomic. Empty
-            // pages advance only their frontier, without copying any totals.
+            // Stage the summaries before installing this page's contributions.
+            // Empty pages advance only the frontier, without copying summaries.
             let mut totals = self.totals.clone();
+            let mut providers = self.providers.clone();
+            let mut model_time_ns = self.model_time_ns;
             let mut pending = [Pending::Existing; 2];
             for (index, row) in page.items.iter().enumerate() {
                 let purpose = purpose_slot(row.purpose);
                 let projection = row.estimate(self.prices.price(row)).map_err(failed)?;
+                let provider = providers
+                    .entry(row.provider.clone())
+                    .or_insert_with(|| self.prices.totals());
                 if row.completed {
-                    match pending[purpose] {
-                        Pending::Existing => totals.replace(
-                            self.pending[purpose]
-                                .as_ref()
-                                .ok_or_else(missing_admission)?,
-                            &projection,
-                        ),
-                        Pending::Row(previous) => totals.replace(
-                            &page.items[previous]
-                                .estimate(self.prices.price(&page.items[previous]))
-                                .map_err(failed)?,
-                            &projection,
-                        ),
+                    let previous = match pending[purpose] {
+                        Pending::Existing => self.pending[purpose]
+                            .as_ref()
+                            .ok_or_else(missing_admission)?,
+                        Pending::Row(previous) => &page.items[previous]
+                            .estimate(self.prices.price(&page.items[previous]))
+                            .map_err(failed)?,
                         Pending::None => return Err(missing_admission()),
-                    }
-                    .map_err(failed)?;
+                    };
+                    totals.replace(previous, &projection).map_err(failed)?;
+                    provider.replace(previous, &projection).map_err(failed)?;
+                    model_time_ns.push(row.latency_ns).map_err(failed)?;
                     pending[purpose] = Pending::None;
                 } else {
                     // A stopped producer has no terminal usage contribution.
                     // Its unknown counters already remain in the aggregate;
                     // the next admission takes this role's live slot.
                     totals.push(&projection).map_err(failed)?;
+                    provider.push(&projection).map_err(failed)?;
                     pending[purpose] = Pending::Row(index);
                 }
             }
@@ -213,9 +246,14 @@ impl UsageQuery {
                 }
             }
             self.totals = totals;
+            self.providers = providers;
+            self.model_time_ns = model_time_ns;
         }
         if finished {
             self.pending = [None, None];
+        }
+        if let Some(tools) = tools {
+            self.tools = tools;
         }
         if let Some(context) = page.context {
             self.context = Some(context);

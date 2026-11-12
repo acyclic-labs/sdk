@@ -132,7 +132,7 @@ async fn ui_default_projection() -> TestResult {
             output: reference,
             outcome: TurnOutcome::Completed,
             goal: None,
-            targets: None,
+            announcements: Vec::new(),
             tool_results: None,
             steering: None,
             notices: None,
@@ -351,6 +351,7 @@ fn ui_reply_roundtrip_with_unknown_kind_and_approval() -> TestResult {
         }
         .command(agent(1), IntentId::try_from("reply-1")?, &blocks)?;
         let AgentCommand::Prompt {
+            peer: None,
             agent: recipient,
             id,
             body: ModelContent::Text(body),
@@ -471,7 +472,7 @@ async fn ui_lazy_cost() -> TestResult {
             output: reference.clone(),
             outcome: TurnOutcome::Completed,
             goal: None,
-            targets: None,
+            announcements: Vec::new(),
             tool_results: None,
             steering: None,
             notices: None,

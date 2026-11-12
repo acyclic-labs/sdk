@@ -14,10 +14,13 @@ const BINDINGS: &str = ".bindings";
 /// checkout capture or Git facade ever reads them as authored content.
 const PHYSICAL_VIEW_ROOT: &str = ".physical";
 
+mod bindings;
 mod bootstrap;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod performance_tests;
+#[cfg(all(test, not(loom)))]
+mod source_tests;
 
 mod children;
 pub(in crate::local) mod git;
@@ -41,6 +44,8 @@ pub(super) struct MountedVolume {
     pub(super) users: StateArc<projection::Users>,
     /// Serializes preflight synchronization of the selected projection.
     pub(super) execution: StateArc<AsyncMutex<()>>,
+    // Retires the exact index entry after this physical source's fields.
+    _binding: Option<acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 
@@ -85,6 +90,12 @@ pub struct LocalWorkspace {
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
     pub(super) mounts: Arc<Mounts>,
+    /// Original auxiliary binding, retained while this view or its selections
+    /// can still execute against its shared physical projections.
+    pub(super) binding: Option<Arc<Mounts>>,
+    // Keyed custody outlives preparation, including views with no auxiliary mounts.
+    binding_owner: Option<acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>>,
+    bindings: acyclic_fs::kernel::allocation::RetainedArc<bindings::Bindings>,
     pub(super) context_line: String,
     /// Custody of this owner's tool process trees; absent in an embedded
     /// binding, whose state directory has no exclusive owner to fence it.
@@ -161,16 +172,15 @@ impl LocalWorkspace {
         project: &VolumeRef,
         bindings: &[crate::agent::WorkspaceEntry],
         authority: &crate::filesystem::NativeMountAuthority,
+        binding: &acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>,
     ) -> Result<Arc<Mounts>> {
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
-        let binding = blake3::hash(project.storage_name(&mut None)?.as_bytes())
-            .to_hex()
-            .to_string();
+        let directory = blake3::Hash::from_bytes(binding.key).to_hex();
         let root = self
             .held_task_mount_root()?
             .create_directories(
-                &Path::new(BINDINGS).join(binding),
+                &Path::new(BINDINGS).join(directory.as_str()),
                 acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;
@@ -208,6 +218,7 @@ impl LocalWorkspace {
             Some(authority),
             &self.task_view_admission,
             native,
+            Some(binding),
         )
         .await?;
         Ok(Arc::new(mounts))
@@ -422,6 +433,7 @@ pub(super) async fn open(
         mount_authority.as_ref(),
         &task_view_admission,
         native_mounts,
+        None,
     )
     .await?;
     let context_line = mounts.context_line();
@@ -453,6 +465,9 @@ pub(super) async fn open(
         state,
         context_line,
         mounts,
+        binding: None,
+        binding_owner: None,
+        bindings: bindings::Bindings::new(&cancellation)?,
         processes,
     })
 }
@@ -498,6 +513,7 @@ async fn lazy_view(
     );
     let source = held_source(
         root,
+        store,
         config,
         original.as_ref().map(|state| state.source),
         &work,
@@ -531,14 +547,19 @@ async fn lazy_view(
     Ok((view, fresh))
 }
 
-/// The unmodified held checkout is the source. All harness state is external.
+/// Authored data is the source; its recorded recovery binding is excluded.
 async fn held_source(
     root: acyclic_fs::HeldRoot,
+    store: &LocalCoreStateStore,
     config: acyclic_fs::VolumeConfig,
     reference: Option<acyclic_fs::demand::SourceReference>,
     work: &NativeMaterializationWork,
     cancellation: &acyclic_fs::CancellationToken,
 ) -> Result<Arc<NativeDemandSource>> {
+    let identity = root.identity();
+    let prefix = acyclic_fs::NativeRecoveryRoot::prefix(identity, config.profile, config.limits)
+        .map_err(storage)?;
+    let (path, _custody) = work.path(root.path(), None)?;
     let source = NativeDemandSource::open_held(
         root,
         config.profile,
@@ -549,7 +570,13 @@ async fn held_source(
         cancellation,
     )
     .await
+    .map_err(storage)?
+    .exclude(vec![prefix], &work, cancellation)
     .map_err(storage)?;
+    store
+        .inspect_native_recovery_root(&path, identity, work)
+        .await
+        .map_err(storage)?;
     Ok(Arc::new(source))
 }
 

@@ -1,5 +1,4 @@
 //! Bound native checkout publication, including original allocation custody.
-use super::NativeDirectory;
 use crate::{Error, Result};
 use acyclic_fs::{
     Generation, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend,
@@ -38,8 +37,9 @@ impl CheckoutPublication {
             });
         }
         let mut root = work.path(root, None)?;
-        let mut directory =
-            NativeDirectory(&root.0).publication_directory_with_native_work(operation, work)?;
+        let mut directory = acyclic_fs::NativeRecoveryRoot::operation_directory(
+            &root.0, identity, operation, work,
+        )?;
         root.1.absorb(&mut directory.1)?;
         Ok(Self {
             root: root.0,
@@ -86,6 +86,9 @@ impl CheckoutPublication {
         options: &MaterializeOptions,
         work: &NativeMaterializationWork,
     ) -> Result<MaterializationJournal> {
+        state
+            .bind_native_recovery_root(&self.root, self.identity, work)
+            .await?;
         let prepared = acyclic_fs::materializer::prepare_native_generation_transition(
             from,
             to,
@@ -206,8 +209,12 @@ impl CheckoutPublication {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let (directory, _custody) =
-            NativeDirectory(root).publication_directory_with_native_work(operation, &work)?;
+        let (directory, _custody) = acyclic_fs::NativeRecoveryRoot::operation_directory(
+            root,
+            work.root_identity(root)?,
+            operation,
+            &work,
+        )?;
         cleanup_directory(&directory)?;
         state.remove_materialization_async(operation).await?;
         Ok(())

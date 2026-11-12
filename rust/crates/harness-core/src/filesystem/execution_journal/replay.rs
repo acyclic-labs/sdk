@@ -120,7 +120,7 @@ where
             .await?
             {
                 Ok(entries) => entries,
-                Err(StreamError::NotFound) => {
+                Err(error) if error.category() == StreamError::NotFound => {
                     if let Some(io) = io {
                         io.check_cancellation()?;
                     }
@@ -291,6 +291,7 @@ where
                 }
                 result.push((
                     ExecutionRecord {
+                        committed_at_micros: Some(record.committed_at_micros),
                         operation_id,
                         sequence: record.sequence.checked_add(1).ok_or_else(|| {
                             stock_boundary(

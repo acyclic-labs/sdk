@@ -40,6 +40,19 @@ pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<StockExecutor>>;
 
+    /// Workspace exposures and newly discovered instructions for this context.
+    fn workspaces<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        seen: &'a std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]>,
+        content: &'a crate::runtime::ContentBindings,
+        issuer: &'a crate::core::RuntimeAuthority,
+        scope: &'a crate::core::Scope,
+    ) -> BoxProviderFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
+        let _ = (agent, seen, content, issuer, scope);
+        Box::pin(async { Ok(None) })
+    }
+
     /// The execution targets `agent`'s turns run on
     /// ([`TurnExecutors::roster`]); `None` binds no targets.
     fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {
@@ -285,12 +298,23 @@ impl TurnExecutors for StockExecutors {
     ) -> BoxProviderFuture<'a, Result<()>> {
         self.context.settle(agent, turn)
     }
-    fn render_bytes(&self) -> Option<u64> {
-        Some(self.limits.render_bytes)
+    fn content_limits(&self) -> Limits {
+        self.limits
     }
 
     fn templates(&self) -> bool {
         self.templates
+    }
+
+    fn workspaces<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        seen: &'a std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]>,
+        content: &'a crate::runtime::ContentBindings,
+        issuer: &'a crate::core::RuntimeAuthority,
+        scope: &'a crate::core::Scope,
+    ) -> BoxProviderFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
+        self.context.workspaces(agent, seen, content, issuer, scope)
     }
 
     fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {

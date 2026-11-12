@@ -96,6 +96,20 @@ Landlock ruleset; retained policies verify every root before launch. Cwd may
 select any granted root and is opened beneath that root's verified object.
 There are no per-agent processes, threads, mounts, scans, timers or new limits.
 
+Checkout publication stages recovery under a checkout-specific native binding,
+`.acyclic-r-<root-identity>/<operation>/`. A version 1 claim in external core
+state records the original checkout and binding directory identities. An
+unowned existing directory is refused before the claim is recorded. Source
+inspection creates no recovery directory; publication creates it lazily. This
+keeps recovery on the checkout filesystem without write access to its parent.
+Capture and lazy discovery exclude that exact binding before it is exposed;
+similar user-created names remain ordinary data. Reopen verifies the durable
+claim, so interrupted target and backup copies stay out of project generations.
+The materialization primitive refuses edits to the binding. Original work
+accounting, journal and checked cleanup cover each operation's recovery bytes.
+Materialization journals use version 5 for this binding. Earlier versions are
+refused before publication; finish their operations with the original runtime.
+
 `ToolPolicy::execution_grant` selects an optional, already authorized physical
 grant after the exact invocation's policy and approval allow it, before its
 first dispatch. It borrows the registry-selected tool, original task context,

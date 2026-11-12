@@ -142,6 +142,7 @@ fn bytes(
 fn accept(summary: &mut ExecutionSummary, retry: &str, event: ExecutionEvent) -> Result<[u8; 32]> {
     summary.accept(
         &ExecutionRecord {
+            committed_at_micros: None,
             operation_id: summary.operation.ok_or_else(|| missing(None))?,
             sequence: summary.tail + 1,
             idempotency_key: retry.into(),

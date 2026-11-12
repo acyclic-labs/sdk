@@ -265,6 +265,7 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
             &client,
             "agents",
             &AgentCommand::Prompt {
+                peer: None,
                 agent: root.clone(),
                 id: IntentId::try_from("shell-parent")?,
                 body: ModelContent::Text("shell".into()),

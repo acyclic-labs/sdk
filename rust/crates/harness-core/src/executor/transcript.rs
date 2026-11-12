@@ -1,4 +1,4 @@
-//! Immutable dispatched-request segments and stable inline projections.
+//! Immutable request segments shared by dispatch and context projections.
 use super::*;
 
 mod digests;
@@ -190,31 +190,63 @@ impl<'a> HeaderView<'a> {
 struct ProjectionRecord {
     #[serde(rename = "$version")]
     version: u32,
-    header: RequestHeader,
-    projection: ResponseProjection,
+    request: FileRef,
+    projection: ProjectionMetadata,
+}
+
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+struct ProjectionMetadata {
+    context: ContextMetadata,
+    steering: Option<SteeringPrefix>,
+    canonical: Option<FileRef>,
+    checkpoint: Option<FileRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    working: Option<FileRef>,
+    accounting: Option<ContextAccounting>,
+}
+
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+struct ContextMetadata {
+    metadata: std::collections::BTreeMap<String, FileRef>,
+    current_input_index: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+struct SteeringPrefix {
+    through: u64,
+    messages: Option<MessagePrefix>,
 }
 
 #[derive(Serialize)]
 struct ProjectionRecordView<'a> {
     #[serde(rename = "$version")]
     version: u32,
-    header: HeaderView<'a>,
+    request: &'a FileRef,
     projection: ProjectionView<'a>,
 }
 
-impl PreparationRecord for ProjectionRecord {
-    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::ProjectionRecord
-    }
-}
+impl PreparationRecord for ProjectionRecord {}
 
 async fn load_projection_record(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     io: Option<&PreparationIo>,
 ) -> Result<ProjectionRecord> {
-    let record = retain_preparation(load_json::<ProjectionRecord>(journal, reference, io).await?)?;
-    if record.version != 1 || record.header.version != 1 {
+    let bytes = super::payload::load_json_bytes(journal, reference, io).await?;
+    let _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
+    let unsupported = || {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "unsupported context projection format",
+        )
+    };
+    acyclic_auth::format::header(&bytes, b"{\"$version\":", b"2,", unsupported, unsupported)?;
+    let record = retain_preparation(super::payload::decode_json::<ProjectionRecord>(&bytes, io)?)?;
+    if record.version != 2 {
         return Err(invalid(io));
     }
     Ok(record)
@@ -245,7 +277,7 @@ struct SegmentView<'a> {
 #[derive(Serialize)]
 struct ProjectionView<'a> {
     context: ContextView<'a>,
-    steering: &'a Option<crate::agent::SteeringSnapshot>,
+    steering: &'a Option<SteeringPrefix>,
     canonical: &'a Option<FileRef>,
     checkpoint: &'a Option<FileRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -255,7 +287,6 @@ struct ProjectionView<'a> {
 
 #[derive(Serialize)]
 struct ContextView<'a> {
-    messages: &'a [ModelMessage],
     metadata: &'a std::collections::BTreeMap<String, FileRef>,
     current_input_index: Option<u32>,
 }
@@ -467,12 +498,6 @@ async fn stage_request_inner(
         previous,
     } = staging;
     let request = prepared.request();
-    // Without an existing prefix there is nothing to share. One private file
-    // avoids three generations and their admission work for the initial call.
-    // Continuations install the segmented prefix once and then append deltas.
-    if previous.is_none() {
-        return stage_json(journal, operation, key, request, io).await;
-    }
     let header = HeaderView::new(request);
     let header_digest = preparation_digest(&header, io)?;
     let previous =
@@ -530,6 +555,25 @@ async fn stage_messages(
             Some(digests) => digests,
             None => digests::messages(messages, previous_count, io)?,
         };
+    stage_message_delta(
+        journal,
+        operation,
+        key,
+        (messages, (content_digest, prefix_digest)),
+        previous,
+        io,
+    )
+    .await
+}
+
+async fn stage_message_delta(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    key: &str,
+    (messages, (content_digest, prefix_digest)): (&[ModelMessage], ([u8; 32], Option<[u8; 32]>)),
+    previous: Option<MessagePrefix>,
+    io: Option<&PreparationIo>,
+) -> Result<MessagePrefix> {
     let parent = previous.filter(|previous| Some(previous.content_digest) == prefix_digest);
     let count = u32::try_from(messages.len()).map_err(|_| invalid(io))?;
     let messages = match parent {
@@ -575,9 +619,34 @@ async fn load_request_inner(
     if header.version != 1 || preparation_digest(&header, io)? != manifest.header_digest {
         return Err(invalid(io));
     }
-    let expected_count = manifest.messages.count as usize;
-    let expected_content = manifest.messages.content_digest;
-    let mut cursor = Some(manifest.messages);
+    let messages = load_messages(journal, manifest.messages, io).await?;
+    let prepared = crate::model::PreparedModelRequest::prepare(
+        ModelRequest {
+            summary: header.summary,
+            compose_tools: header.compose_tools,
+            model: header.model,
+            tools: header.tools,
+            sampling: header.sampling,
+            max_output_tokens: header.max_output_tokens,
+            messages,
+        },
+        limits,
+        io,
+    )?;
+    if prepared.request_digest() != manifest.request_digest {
+        return Err(invalid(io));
+    }
+    Ok(prepared)
+}
+
+async fn load_messages(
+    journal: &dyn ExecutionJournal,
+    prefix: MessagePrefix,
+    io: Option<&PreparationIo>,
+) -> Result<Vec<ModelMessage>> {
+    let expected_count = prefix.count as usize;
+    let expected_content = prefix.content_digest;
+    let mut cursor = Some(prefix);
     let mut segments = Vec::new();
     while let Some(prefix) = cursor {
         let segment = load_segment(journal, &prefix.reference, io).await?;
@@ -604,23 +673,7 @@ async fn load_request_inner(
     if digests::messages(&messages, None, io)?.0 != expected_content {
         return Err(invalid(io));
     }
-    let prepared = crate::model::PreparedModelRequest::prepare(
-        ModelRequest {
-            summary: header.summary,
-            compose_tools: header.compose_tools,
-            model: header.model,
-            tools: header.tools,
-            sampling: header.sampling,
-            max_output_tokens: header.max_output_tokens,
-            messages,
-        },
-        limits,
-        io,
-    )?;
-    if prepared.request_digest() != manifest.request_digest {
-        return Err(invalid(io));
-    }
-    Ok(prepared)
+    Ok(messages)
 }
 
 async fn load_segment(
@@ -721,29 +774,79 @@ pub(crate) async fn stage_projection(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     key: &str,
-    projection: &ResponseProjection,
-    prepared: &crate::model::PreparedModelRequest,
+    (projection, prepared): (&ResponseProjection, &crate::model::PreparedModelRequest),
     accounting: Option<&ContextAccounting>,
+    previous: Option<&FileRef>,
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
+    let scope = crate::filesystem::PreparationScope::new(io)?;
+    let io = scope.io();
     // Admit projection metadata against the exact immutable request whose
     // message and instruction bounds were already established at preparation.
     crate::context::validate_projected_request(&projection.context, prepared, io)?;
-    let messages = &prepared.request().messages;
-    stage_json(
+    let previous = match previous {
+        Some(previous) => Some(load_projection_record(journal, previous, io).await?),
+        None => None,
+    };
+    let request_key = with_history_io(io, |work| {
+        preparation_format(format_args!("{key}:request"), work)
+    })?;
+    let request = stage_request(
+        journal,
+        operation,
+        &request_key,
+        prepared,
+        previous.as_ref().map(|previous| &previous.request),
+        io,
+    )
+    .await?;
+    let steering = match &projection.steering {
+        Some(snapshot) if !snapshot.messages.is_empty() => {
+            let previous = previous
+                .and_then(|previous| previous.projection.steering)
+                .and_then(|steering| steering.messages);
+            let digests = digests::messages(
+                &snapshot.messages,
+                previous.as_ref().map(|previous| previous.count as usize),
+                io,
+            )?;
+            let steering_key = with_history_io(io, |work| {
+                preparation_format(format_args!("{key}:steering"), work)
+            })?;
+            Some(SteeringPrefix {
+                through: snapshot.through,
+                messages: Some(
+                    stage_message_delta(
+                        journal,
+                        operation,
+                        &steering_key,
+                        (&snapshot.messages, digests),
+                        previous,
+                        io,
+                    )
+                    .await?,
+                ),
+            })
+        }
+        Some(snapshot) => Some(SteeringPrefix {
+            through: snapshot.through,
+            messages: None,
+        }),
+        None => None,
+    };
+    let reference = stage_json(
         journal,
         operation,
         key,
         &ProjectionRecordView {
-            version: 1,
-            header: HeaderView::new(prepared.request()),
+            version: 2,
+            request: &request,
             projection: ProjectionView {
                 context: ContextView {
-                    messages,
                     metadata: &projection.context.metadata,
                     current_input_index: projection.context.current_input_index,
                 },
-                steering: &projection.steering,
+                steering: &steering,
                 canonical: &projection.canonical,
                 checkpoint: &projection.checkpoint,
                 working: &projection.working,
@@ -752,7 +855,9 @@ pub(crate) async fn stage_projection(
         },
         io,
     )
-    .await
+    .await?;
+    scope.finish(reference.logical_owned_bytes()?)?;
+    Ok(reference)
 }
 
 /// Read checkpoint metadata without reconstructing the historical request.
@@ -789,37 +894,25 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        key: &str,
         prepared: &crate::model::PreparedModelRequest,
     ) -> Result<FileRef> {
-        let previous = if let Some(previous) = step.checked_sub(1) {
-            self.model_records(
-                journal,
-                input.operation_id,
-                previous,
-                ModelPurpose::Response,
-            )
+        let projection = self
+            .response_projection(journal, input.operation_id, step)
             .await?
-            .1
-        } else {
-            Vec::new()
-        };
-        let previous = previous.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ModelStarted {
-                request,
-                purpose: ModelPurpose::Response,
-                ..
-            } => Some(request),
-            _ => None,
-        });
-        stage_request(
-            journal,
-            input.operation_id,
-            key,
-            prepared,
-            previous,
-            self.io,
-        )
-        .await
+            .ok_or_else(|| self.invalid_working_cut())?;
+        let projection_hold = self
+            .io
+            .map(|io| io.guard_owned(projection.logical_owned_bytes()?))
+            .transpose()?;
+        let scope = crate::filesystem::PreparationScope::new(self.io)?;
+        let stored = load_projection_record(journal, &projection, scope.io()).await?;
+        let manifest = load_manifest(journal, &stored.request, scope.io()).await?;
+        if manifest.request_digest != prepared.request_digest() {
+            return Err(invalid(self.io));
+        }
+        scope.finish(stored.request.logical_owned_bytes()?)?;
+        drop(projection);
+        drop(projection_hold);
+        Ok(stored.request)
     }
 }

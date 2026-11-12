@@ -122,26 +122,43 @@ impl ModelTokenCount {
         request: &PreparedModelRequest,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<u64> {
-        if let Some(io) = work.as_deref_mut() {
-            io.check_cancellation()?;
-            io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-        }
-        if self.request_digest != request.request_digest()
-            || self.message_tokens.len() != request.request().messages.len()
-        {
-            return Err(token_count_invalid(
-                work,
-                "token count does not bind the prepared request",
-            ));
-        }
-        if self.input_tokens > crate::conversation::MAX_EXACT_JS_INTEGER {
-            return Err(token_count_invalid(
-                work,
-                "token count exceeds portable arithmetic",
-            ));
-        }
-        Ok(self.input_tokens)
+        validate_token_count(
+            self.request_digest,
+            self.message_tokens.len() as u64,
+            self.input_tokens,
+            request,
+            work,
+        )
     }
+}
+
+/// Shared binding check for provider counts and their fixed-size durable receipts.
+pub(crate) fn validate_token_count(
+    request_digest: [u8; 32],
+    message_count: u64,
+    input_tokens: u64,
+    request: &PreparedModelRequest,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<u64> {
+    if let Some(io) = work.as_deref_mut() {
+        io.check_cancellation()?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+    }
+    if request_digest != request.request_digest()
+        || message_count != request.request().messages.len() as u64
+    {
+        return Err(token_count_invalid(
+            work,
+            "token count does not bind the prepared request",
+        ));
+    }
+    if input_tokens > crate::conversation::MAX_EXACT_JS_INTEGER {
+        return Err(token_count_invalid(
+            work,
+            "token count exceeds portable arithmetic",
+        ));
+    }
+    Ok(input_tokens)
 }
 
 fn token_count_invalid(

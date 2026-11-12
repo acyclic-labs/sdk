@@ -15,7 +15,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         W: crate::facade::FsWork,
         G: crate::AuthorityGuard,
         G::Error: Into<E>,
-        E: From<FsError> + From<WorkspaceError> + Send,
+        E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
     {
         let mut accounting = work.accounting(cancellation);
         let result = self
@@ -41,7 +41,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     where
         G: crate::AuthorityGuard,
         G::Error: Into<E>,
-        E: From<FsError> + From<WorkspaceError> + Send,
+        E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
     {
         let mut frame = None;
         let (mut future, bytes) = crate::heap_future::in_heap_admitted(

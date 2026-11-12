@@ -190,6 +190,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
                 &client,
                 "agents",
                 &AgentCommand::Prompt {
+                    peer: None,
                     agent: root.clone(),
                     id,
                     body: ModelContent::Parts(vec![ModelContentPart::text("changed".into())]),
@@ -268,6 +269,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
     )?;
     let command = |id: &str, file| -> Result<_> {
         Ok(AgentCommand::Prompt {
+            peer: None,
             agent: root.clone(),
             id: IntentId::try_from(id)?,
             body: ModelContent::Part(ModelContentPart::File {

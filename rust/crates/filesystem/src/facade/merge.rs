@@ -70,7 +70,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             + Send
             + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<FsError> + From<WorkspaceError> + Send + 'static,
+        E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask + 'static,
     {
         let mut accounting = KernelAccounting::native(original, cancellation);
         let output = self
@@ -124,7 +124,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         + ProviderTask,
     ) -> Result<Owned<WorkspaceJoinOutcome>, E>
     where
-        E: From<FsError> + From<WorkspaceError> + Send,
+        E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
         Fut: Future<Output = MeasuredResult<OperationReceipt<LivePublicationObservation>, E>>
             + ProviderTask,
     {
@@ -217,7 +217,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         + ProviderTask,
     ) -> Result<Owned<WorkspaceJoinOutcome>, E>
     where
-        E: From<FsError> + From<WorkspaceError> + Send,
+        E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
         Fut: Future<Output = MeasuredResult<OperationReceipt<LivePublicationObservation>, E>>
             + ProviderTask,
     {
@@ -275,7 +275,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = Result<WorkspaceJoinPreparation, E>>
     where
-        E: From<FsError> + From<WorkspaceError> + Send,
+        E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
     {
         self.prepare_workspace_join(request, false, accounting, cancellation)
     }
@@ -297,7 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceJoinPreparation, E>
     where
-        E: From<FsError> + From<WorkspaceError> + Send,
+        E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
     {
         let mut scope = accounting.allocation_scope()?;
         scope.check()?;

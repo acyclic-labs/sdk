@@ -6,12 +6,6 @@ pub(crate) const DEFAULT_MODEL: &str = "openai/gpt-6.1-sol";
 
 const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
     (
-        "recon",
-        Adapter::Chat,
-        Authentication::ApiKey,
-        "https://api.morphllm.com/v1",
-    ),
-    (
         "anthropic",
         Adapter::Anthropic,
         Authentication::ApiKey,
@@ -61,28 +55,6 @@ const TOOLS_AND_IMAGES: ModelFeatures = ModelFeatures {
 };
 
 const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
-    (
-        "recon",
-        "morph-kimik31",
-        1_048_576,
-        8_192,
-        ModelFeatures {
-            tools: true,
-            images: false,
-        },
-        false,
-    ),
-    (
-        "recon",
-        "morph-dsv41flash",
-        1_048_576,
-        8_192,
-        ModelFeatures {
-            tools: true,
-            images: false,
-        },
-        false,
-    ),
     // https://platform.claude.com/docs/en/models/overview
     (
         "anthropic",

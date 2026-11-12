@@ -36,9 +36,10 @@ impl StdioMcpTransport {
     /// Selects the independent tool-exchange bounds after catalog discovery.
     pub fn with_tool_limits(
         mut self,
-        maximum_bytes: u32,
+        maximum_bytes: impl Into<Option<u32>>,
         timeout_ms: impl Into<Option<u64>>,
     ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
         let timeout_ms = timeout_ms.into();
         validate_bounds(maximum_bytes, timeout_ms)?;
         self.maximum_bytes.set(maximum_bytes);
@@ -82,9 +83,10 @@ impl StdioMcpTransport {
     pub async fn spawn(
         mut command: ProcessCommand,
         grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
-        maximum_bytes: u32,
+        maximum_bytes: impl Into<Option<u32>>,
         timeout_ms: impl Into<Option<u64>>,
     ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
         let timeout_ms = timeout_ms.into();
         validate_bounds(maximum_bytes, timeout_ms)?;
         if command.get_stderr().is_some_and(ProcessStdio::is_piped) {
@@ -154,7 +156,7 @@ impl StdioMcpTransport {
     async fn bind<R, W>(
         read: R,
         write: W,
-        maximum_bytes: u32,
+        maximum_bytes: Option<u32>,
         timeout: Option<Duration>,
         process: Option<ProcessOwner>,
     ) -> Result<Self>
@@ -382,16 +384,10 @@ fn drop_on_worker<T: Send + 'static>(runtime: &tokio::runtime::Handle, value: T)
 
 mod requests;
 
-fn validate_bounds(maximum_bytes: u32, timeout_ms: Option<u64>) -> Result<()> {
-    if maximum_bytes == 0
-        || timeout_ms == Some(0)
-        || usize::try_from(maximum_bytes)
-            .ok()
-            .and_then(|bytes| bytes.checked_add(1))
-            .is_none()
-    {
+fn validate_bounds(maximum_bytes: Option<u32>, timeout_ms: Option<u64>) -> Result<()> {
+    if maximum_bytes == Some(0) || timeout_ms == Some(0) {
         return Err(Error::Invalid(
-            "MCP stdio needs positive finite bounds".into(),
+            "MCP stdio requires positive configured allowances".into(),
         ));
     }
     Ok(())

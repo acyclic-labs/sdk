@@ -23,7 +23,10 @@ fn notice(index: usize, wake: bool) -> InboxRecord {
 #[tokio::test]
 async fn steering_review_sends_skip_closed_recipients() -> Result {
     for delivery in [MessageDelivery::Steer, MessageDelivery::FollowUp] {
+        #[cfg(not(feature = "test-support"))]
         let stream = MemoryStream::default();
+        #[cfg(feature = "test-support")]
+        let stream = super::hosting::Evidence::default();
         let sender = create(&stream, id(10)).await?;
         let recipient = create(&stream, id(11)).await?;
         let state = AgentState::adopted(sender.clone(), &adopted(sender.id())).expect("adopts");
@@ -36,6 +39,18 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
             body: Box::new(super::driver::file("message.md")?),
             attachments: None,
         };
+        #[cfg(feature = "test-support")]
+        {
+            let receipt = sender.sent_message(&expected.id)?;
+            stream.missing(receipt.clone(), StreamError::AccessDenied);
+            assert!(matches!(
+                sent(&stream, &sender, &expected.id).await,
+                Err(acyclic_harness_core::agent::Error::Stream(
+                    StreamError::AccessDenied
+                ))
+            ));
+            stream.missing(receipt, super::hosting::missing_refusal());
+        }
         assert!(sent(&stream, &sender, &expected.id).await?.is_none());
         let outs = effect_outs(
             &state,

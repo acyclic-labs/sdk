@@ -1,6 +1,5 @@
 ---
 version: 1
-model: recon/morph-dsv41flash
 context: fork
 may_spawn: [worker, advisor, reviewer]
 ---

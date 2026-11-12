@@ -393,6 +393,22 @@ impl<D: Present> FrameTerminal<D> {
         self.terminal.backend_mut().output.frame.push(0x07);
     }
 
+    /// Queue an application-query response in the next synchronized frame.
+    /// Control bytes are refused, so this cannot change restoration effects.
+    pub fn application_reply(&mut self, reply: &str) -> io::Result<()> {
+        if reply.chars().any(char::is_control) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "application reply contains a control character",
+            ));
+        }
+        let frame = &mut self.terminal.backend_mut().output.frame;
+        frame.extend_from_slice(b"\x1b]777;");
+        frame.extend_from_slice(reply.as_bytes());
+        frame.extend_from_slice(b"\x1b\\");
+        Ok(())
+    }
+
     /// Render at the current terminal size and present the frame at once.
     /// A size change repaints the whole screen exactly as ratatui's autoresize.
     pub fn draw(&mut self, size: Size, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<()> {

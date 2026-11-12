@@ -441,6 +441,13 @@ pub struct UsageTotal {
 }
 
 impl UsageTotal {
+    /// Add one original observation, preserving unknown values and refusing
+    /// overflow before changing the preceding subtotal.
+    pub fn push(&mut self, value: Option<u64>) -> Result<(), ModelPriceError> {
+        *self = self.update(None, value)?;
+        Ok(())
+    }
+
     /// Complete value only when every selected observation was known. UIs must
     /// use this rather than present the partial `known` subtotal as a total.
     pub fn value(self) -> Option<u64> {

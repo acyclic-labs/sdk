@@ -1,0 +1,11 @@
+--- a/rust/crates/harness/src/local/workspace/projection.rs
++++ b/rust/crates/harness/src/local/workspace/projection.rs
+@@ -182,7 +182,7 @@ impl MountedVolume {
+                 mount,
+                 discard: false,
+                 binding: None,
+-                _binding_owner: self._binding.clone(),
++                _binding_owner: None,
+             };
+             // This alias lives in host state. On restart it can still name the preceding process's
+             // retired root. Replace only the link itself; never follow it or

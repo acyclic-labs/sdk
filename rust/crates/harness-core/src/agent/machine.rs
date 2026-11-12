@@ -120,11 +120,10 @@ pub struct AgentState {
     /// context starts from, however far behind the tail it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<u64>,
-    /// Digest of the execution-target roster this agent's context last
-    /// announced ([`crate::agent::Roster`]); a context checkpoint clears it,
-    /// so the next turn announces the roster again.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub roster: Option<[u8; 32]>,
+    /// Digests of the documents this context last announced. A context
+    /// checkpoint clears them, so its next turn announces the new base.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub announcements: std::collections::BTreeMap<super::AnnouncementKind, [u8; 32]>,
     /// Exact status tail; the agent is its only writer.
     pub status_tail: u64,
     /// Last published phase.
@@ -272,8 +271,8 @@ impl AgentState {
             conversation_base: adopted.conversation_tail,
             committed_actions: false,
             checkpoint: adopted.checkpoint,
-            // A spawned agent announces its tree's roster in its first turn.
-            roster: None,
+            // A spawned agent selects its own announcement delta on its first turn.
+            announcements: Default::default(),
             // The creating commit wrote the first status (`Idle`).
             status_tail: 1,
             phase: Phase::Idle,
@@ -434,8 +433,8 @@ pub enum Out {
     Steered(u64),
     /// Append to this agent's conversation.
     Conversation(Vec<u8>),
-    /// The preceding conversation entry announced the roster of this digest.
-    Roster([u8; 32]),
+    /// Document identities announced by the preceding conversation entry.
+    Announced(Vec<(super::AnnouncementKind, [u8; 32])>),
     /// Consume a frozen Notice prefix with its original conversation append.
     Notices(super::NoticeSelection),
     /// Complete this goal run with the preceding conversation entry.
@@ -740,7 +739,7 @@ impl PreparedStep {
         let completion = (
             state.awaited,
             state.checkpoint,
-            state.roster,
+            state.announcements.clone(),
             outs.len(),
             state.pending_notices.clone(),
         );
@@ -774,7 +773,7 @@ impl PreparedStep {
             state.status_tail = tails.1;
             state.awaited = completion.0;
             state.checkpoint = completion.1;
-            state.roster = completion.2;
+            state.announcements = completion.2;
             state.pending_notices = completion.4;
             outs.truncate(completion.3);
             shed(&mut state, &mut outs, OVERSIZED_STATE);
@@ -1085,9 +1084,9 @@ fn finalize_step(
             }
             Out::Checkpoint => {
                 state.checkpoint = sequence.checked_sub(1);
-                state.roster = None;
+                state.announcements.clear();
             }
-            Out::Roster(digest) => state.roster = Some(*digest),
+            Out::Announced(documents) => state.announcements.extend(documents.iter().copied()),
             Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Send { .. }
             | Out::PeerGuard { .. }
@@ -1310,7 +1309,7 @@ fn admissible(out: &Out) -> bool {
         }
         Out::Archive { .. }
         | Out::Checkpoint
-        | Out::Roster(_)
+        | Out::Announced(_)
         | Out::Notices(_)
         | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes.iter()).is_ok(),

@@ -5,7 +5,7 @@ async fn initial_request(
     prepared: &crate::model::PreparedModelRequest,
 ) -> Result<FileRef> {
     let file = stage_request(journal, OperationId::new(), "seed", prepared, None, None).await?;
-    assert_eq!(file.descriptor().media_type(), "application/json");
+    assert_eq!(file.descriptor().media_type(), REQUEST_MEDIA);
     assert_eq!(
         load_model_request(journal, &file, Limits::default(), None)
             .await?
@@ -124,7 +124,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         signed.version = version;
         signed.admitted_limits = Limits {
             file_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
-            path_bytes: std::num::NonZeroUsize::new(crate::conversation::MAX_PATH_BYTES),
+            path_bytes: std::num::NonZeroUsize::new(4096),
             attachments: std::num::NonZeroUsize::new(8),
             render_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
             context_messages: std::num::NonZeroUsize::new(128),

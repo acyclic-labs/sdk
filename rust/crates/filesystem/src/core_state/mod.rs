@@ -771,6 +771,10 @@ mod native_log;
 use native_io::*;
 mod journal;
 pub use journal::LocalMaterializationActionCompletion;
+#[cfg(not(target_arch = "wasm32"))]
+mod recovery;
+#[cfg(not(target_arch = "wasm32"))]
+pub use recovery::NativeRecoveryRoot;
 mod decode;
 use decode::*;
 mod nodes;

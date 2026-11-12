@@ -31,19 +31,13 @@ impl NativeTreeMaterializationBackend {
     {
         let progress = journal
             .preparation_progress
-            .as_mut()
+            .as_ref()
             .expect("validated preparation");
         let resuming = progress.pending;
         let parent_identity = progress.parent;
-        if !resuming {
-            before_effect().await?;
-            progress.pending = true;
-            journal = persist_preparation(store, journal).await?;
-        }
         let expected_root = crate::NativeRootIdentity::from_bytes(
             journal.root_identity.expect("validated checkout identity"),
         );
-        let completion = store.prepare_action(journal).await?;
         let actual = work.root_identity(root)?;
         if actual != expected_root {
             return Err(NativeTreeMaterializationError::AllocationChanged {
@@ -71,6 +65,21 @@ impl NativeTreeMaterializationBackend {
                 .file_name()
                 .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
         );
+        if !resuming {
+            before_effect().await?;
+            // An existing authored directory must not become resumable merely
+            // because an exclusive mkdir failed on the first attempt.
+            if host_stat(&parent, leaf, work)?.is_some() {
+                return Err(NativeTreeMaterializationError::InvalidLayout.into());
+            }
+            journal
+                .preparation_progress
+                .as_mut()
+                .expect("validated preparation")
+                .pending = true;
+            journal = persist_preparation(store, journal).await?;
+        }
+        let completion = store.prepare_action(journal).await?;
         let mut identities = [[0; 16]; 3];
         let mut parent = parent;
         for (index, leaf) in [leaf, Path::new("target"), Path::new("backup")]

@@ -137,28 +137,12 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
         ScriptedTurn::Text("Worker reports ambiguity to its parent.".into()),
         ScriptedTurn::Text("Nested orchestrator ready.".into()),
     ]);
-    let mut config = volume_config(
+    let config = volume_config(
         directory.path(),
         volume(directory.path()).await?,
         provider.clone(),
     )?
     .question_plugin(true);
-    let scripted = provider.clone();
-    config.models = Some((
-        Arc::new(crate::model::ModelResolver::new(
-            "scripted/test",
-            move |selection| {
-                let (provider, name) = selection
-                    .split_once('/')
-                    .ok_or_else(|| Error::Invalid("model key".into()))?;
-                Ok((
-                    Model::new(provider.into(), name.into(), "1".into())?,
-                    scripted.clone(),
-                ))
-            },
-        )),
-        Some("scripted/test".into()),
-    ));
     let harness = Arc::new(LocalHarness::open(config).await?);
     let connection = harness.connect().await?;
     let root = connection.root().clone();
@@ -200,8 +184,7 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
             .iter()
             .any(|tool| tool.name == "ask_question")
     );
-    assert_eq!(requests[2].model.provider, "recon");
-    assert_eq!(requests[2].model.name, "morph-kimik31");
+    assert_eq!(requests[2].model, requests[0].model);
     Ok(())
 }
 #[tokio::test]

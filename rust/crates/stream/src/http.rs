@@ -94,7 +94,7 @@ impl HttpStream {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never());
         if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > MAX_CA_CERTIFICATE_BYTES {
+            if ca.is_empty() {
                 return Err(ConnectError);
             }
             client = client.add_root_certificate(

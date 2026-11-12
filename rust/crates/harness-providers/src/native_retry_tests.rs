@@ -89,9 +89,9 @@ impl HttpTransport for RetryTransport {
                 }
             }
             if attempt < self.failures && self.backpressure {
-                // GC-31/32/33/34/51/63: original refusal, without a live provider.
+                // Refused requests retain their original retry deadline.
                 let mut response = HttpResponse::with_native_body(429,
-                    futures::stream::iter([Ok(Bytes::from_static(br#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#))]), work)?;
+                    futures::stream::iter([Ok(Bytes::from_static(br#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 1000 input tokens/minute."}"#))]), work)?;
                 response.retry_after = self.hinted.then_some(Duration::from_secs(60));
                 return Ok(response);
             }

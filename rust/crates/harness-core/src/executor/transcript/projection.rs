@@ -1,8 +1,48 @@
-//! Versioned projections retain the original admitted request header and context.
+//! Projection metadata refers to the same immutable segments used by dispatch.
 use super::*;
 
 #[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 mod tests;
+
+impl SteeringPrefix {
+    async fn load(
+        self,
+        journal: &dyn ExecutionJournal,
+        io: Option<&PreparationIo>,
+    ) -> Result<crate::agent::SteeringSnapshot> {
+        Ok(crate::agent::SteeringSnapshot {
+            through: self.through,
+            messages: match self.messages {
+                Some(prefix) => load_messages(journal, prefix, io).await?,
+                None => Vec::new(),
+            },
+        })
+    }
+}
+
+impl ProjectionMetadata {
+    async fn load(
+        self,
+        journal: &dyn ExecutionJournal,
+        io: Option<&PreparationIo>,
+    ) -> Result<ResponseProjection> {
+        Ok(ResponseProjection {
+            context: crate::context::Context {
+                messages: Vec::new(),
+                metadata: self.context.metadata,
+                current_input_index: self.context.current_input_index,
+            },
+            steering: match self.steering {
+                Some(steering) => Some(steering.load(journal, io).await?),
+                None => None,
+            },
+            canonical: self.canonical,
+            checkpoint: self.checkpoint,
+            working: self.working,
+            accounting: self.accounting,
+        })
+    }
+}
 
 impl ResponseProjection {
     /// Recover the admitted steering without imposing a new context policy.
@@ -10,10 +50,14 @@ impl ResponseProjection {
         journal: &dyn ExecutionJournal,
         reference: &FileRef,
     ) -> Result<Option<crate::agent::SteeringSnapshot>> {
-        Ok(load_projection_record(journal, reference, None)
+        match load_projection_record(journal, reference, None)
             .await?
             .projection
-            .steering)
+            .steering
+        {
+            Some(steering) => Ok(Some(steering.load(journal, None).await?)),
+            None => Ok(None),
+        }
     }
 
     pub(in crate::executor) async fn continuation_metadata(
@@ -39,7 +83,6 @@ impl ResponseProjection {
             accounting: None,
         };
         drop((
-            stored.context.messages,
             stored.steering,
             stored.canonical,
             stored.checkpoint,
@@ -66,16 +109,16 @@ pub(crate) async fn load_projection<'a>(
 )> {
     let scope = crate::filesystem::PreparationScope::new(original)?;
     let io = scope.io();
-    let projection = load_projection_record(journal, reference, io)
-        .await?
-        .projection;
+    let stored = load_projection_record(journal, reference, io).await?;
+    let request = load_request(journal, &stored.request, limits, io).await?;
+    let mut projection = stored.projection.load(journal, io).await?;
+    projection.context.messages = request.into_messages();
 
     let retained = projection
         .decoded_owned_bytes()?
         .ok_or_else(|| invalid(io))?;
     crate::context::validate_projected_context(&projection.context, limits, io)?;
     let hold = {
-        // The header is no longer retained by checkpoint readers.
         scope.finish(retained)?;
         original.map(|io| io.guard_owned(retained)).transpose()?
     };
@@ -91,22 +134,10 @@ impl StockExecution<'_> {
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
 
         let io = scope.io();
-        let ProjectionRecord {
-            header,
-            mut projection,
-            ..
-        } = load_projection_record(journal, reference, io).await?;
-        crate::context::validate_projected_context(&projection.context, self.stock.limits, io)?;
-        let request = ModelRequest {
-            summary: header.summary,
-            compose_tools: header.compose_tools,
-            model: header.model,
-            tools: header.tools,
-            sampling: header.sampling,
-            max_output_tokens: header.max_output_tokens,
-            messages: std::mem::take(&mut projection.context.messages),
-        };
-        let prepared = crate::model::PreparedModelRequest::prepare(request, self.stock.limits, io)?;
+        let stored = load_projection_record(journal, reference, io).await?;
+        let prepared = load_request(journal, &stored.request, self.stock.limits, io).await?;
+        let projection = stored.projection.load(journal, io).await?;
+        crate::context::validate_projected_request(&projection.context, &prepared, io)?;
 
         {
             let retained = crate::core::owned_sum([

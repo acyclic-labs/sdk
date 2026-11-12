@@ -208,21 +208,71 @@ where
         }
     }
 
-    /// Stages the canonical roster `bytes` whose digest is `digest`, once per
-    /// distinct roster: the file a conversation entry announces it by.
-    pub(in crate::filesystem) async fn stage_roster(
+    /// Stages one canonical document once per semantic identity. Its immutable
+    /// file is shared by conversation deltas across history windows and forks.
+    pub(in crate::filesystem) async fn stage_announcement(
         &self,
+        kind: crate::agent::AnnouncementKind,
         digest: [u8; 32],
         bytes: &[u8],
     ) -> Result<FileRef> {
+        let (family, name) = match kind {
+            crate::agent::AnnouncementKind::Targets => ("targets", "targets.json"),
+            crate::agent::AnnouncementKind::Workspaces => ("workspaces", "workspaces.json"),
+        };
         let digest = blake3::Hash::from(digest).to_hex();
         self.conversation_file(
-            format!("targets/{digest}.json"),
-            "targets.json",
-            IdempotencyKey(format!("targets:{digest}")),
+            format!("{family}/{digest}.json"),
+            name,
+            IdempotencyKey(format!("{family}:{digest}")),
             bytes,
+            "application/json",
         )
         .await
+    }
+
+    /// Persist growing provenance and original verified bodies outside bounded
+    /// conversation records. Both files are immutable and selected together.
+    pub(in crate::filesystem) async fn stage_instructions(
+        &self,
+        entries: Vec<crate::agent::WorkspaceInstructions>,
+        reader: &dyn crate::conversation::ContentResidencyVerifier,
+    ) -> Result<Option<crate::agent::AnnouncedInstructions>> {
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        let manifest = crate::agent::InstructionManifest::new(entries)?;
+        let mut content = Vec::new();
+        for entry in &manifest.entries {
+            content.extend_from_slice(
+                format!("Instructions for workspace {}:\n", entry.entry).as_bytes(),
+            );
+            for file in &entry.files {
+                let bytes = reader
+                    .read(file, file.descriptor().byte_length(), None, None)?
+                    .await?;
+                content.extend_from_slice(format!("\n{}:\n", file.path()).as_bytes());
+                content.extend_from_slice(&bytes);
+                content.push(b'\n');
+            }
+        }
+        let manifest = crate::contract::canonical_json_bytes(&manifest)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let stage = |name, bytes: Vec<u8>, media_type| async move {
+            let digest = blake3::hash(&bytes).to_hex();
+            self.conversation_file(
+                format!("instructions/{digest}/{name}"),
+                name,
+                IdempotencyKey(format!("instructions:{digest}:{name}")),
+                &bytes,
+                media_type,
+            )
+            .await
+        };
+        Ok(Some(crate::agent::AnnouncedInstructions {
+            manifest: stage("manifest.json", manifest, "application/json").await?,
+            content: stage("instructions.md", content, "text/markdown").await?,
+        }))
     }
 
     /// Creates the conversation-area file `path` once, keyed by `key`.
@@ -232,6 +282,7 @@ where
         name: &'static str,
         key: IdempotencyKey,
         bytes: &[u8],
+        media_type: &'static str,
     ) -> Result<FileRef> {
         let path = format!("{}{path}", InternalContentClass::Conversation.prefix());
         self.host
@@ -240,7 +291,7 @@ where
                 &self.grant,
                 &path,
                 bytes,
-                "application/json",
+                media_type,
                 name,
                 bytes.len() as u64,
                 &key,
@@ -391,6 +442,7 @@ where
             "output.json",
             IdempotencyKey(format!("turn-output:{turn}")),
             bytes,
+            "application/json",
         ))
     }
 

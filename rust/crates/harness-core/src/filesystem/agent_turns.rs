@@ -394,10 +394,10 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
-    /// The executor's existing per-part render allowance, if finite. Selection
-    /// chunks pending events under this same allowance before request admission.
-    fn render_bytes(&self) -> Option<u64> {
-        None
+    /// The executor's admitted content bounds. Selection chunks announcements
+    /// and pending events under these same bounds before request admission.
+    fn content_limits(&self) -> crate::conversation::Limits {
+        Default::default()
     }
 
     /// Executor for `agent`'s turn `turn` on `input`.
@@ -408,6 +408,22 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
     ) -> BoxFuture<'a, Result<Arc<dyn Executor>>>;
+
+    /// Admitted workspace exposures and instructions not yet present in this
+    /// selected conversation. `seen` binds each slot to its latest discovered
+    /// source identity, as returned by `WorkspaceInstructions::source_for`.
+    /// Hosts without workspace exposure return none.
+    fn workspaces<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        seen: &'a std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]>,
+        content: &'a ContentBindings,
+        issuer: &'a RuntimeAuthority,
+        scope: &'a Scope,
+    ) -> BoxFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
+        let _ = (agent, seen, content, issuer, scope);
+        Box::pin(async { Ok(None) })
+    }
 
     /// Whether these turns use filesystem templates at agent creation.
     fn templates(&self) -> bool {
@@ -796,7 +812,7 @@ where
             if let Some(saved) = saved {
                 let source = saved
                     .iter()
-                    .find(|source| source.binding.name == binding.name)
+                    .find(|source| source.binding.id == binding.id)
                     .ok_or_else(|| Error::Unauthorized("saved project binding differs".into()))?;
                 let retained = io.sdk(
                     self.host
@@ -1059,10 +1075,22 @@ fn reply_part_id(turn: OperationId, part: usize) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
-/// Stable message identity of the roster announcement leading `turn`'s input.
-fn roster_id(turn: OperationId) -> uuid::Uuid {
+/// Stable message identity of the announcement delta leading the turn input.
+fn announcement_id(turn: OperationId) -> uuid::Uuid {
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.roster.v1");
     hasher.update(&turn.into_bytes());
+    let mut bytes = [0; 16];
+    hasher.finalize_xof().fill(&mut bytes);
+    uuid::Uuid::from_bytes(bytes)
+}
+
+fn announcement_part_id(turn: OperationId, part: usize) -> uuid::Uuid {
+    if part == 0 {
+        return announcement_id(turn);
+    }
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.announcement-part.v1");
+    hasher.update(&turn.into_bytes());
+    hasher.update(&(part as u64).to_le_bytes());
     let mut bytes = [0; 16];
     hasher.finalize_xof().fill(&mut bytes);
     uuid::Uuid::from_bytes(bytes)
@@ -1239,8 +1267,6 @@ struct TurnContext<'a> {
     checkpoint: Option<(OperationId, FileRef)>,
     /// Each settled turn, its original input and output, and its decoded transcript.
     settled: Vec<SettledTurn>,
-    /// Latest roster message in `settled`, indexed while selecting history.
-    roster_at: Option<usize>,
     /// Where a spawned agent's own conversation starts: after the summary
     /// and this many settled turns inherited from its parent, or before the
     /// summary when its own checkpoint replaced them. Its role directive sits
@@ -1258,7 +1284,7 @@ struct TurnContext<'a> {
 
 struct SettledTurn {
     turn: OperationId,
-    targets: Option<FileRef>,
+    announcements: Vec<crate::agent::AnnouncedDocument>,
     input: ModelContent,
     output: FileRef,
     steering: Option<FileRef>,
@@ -1298,7 +1324,6 @@ impl<'a> TurnContext<'a> {
             None => None,
         };
         // A cancelled checkpoint selects nothing and is no turn.
-        let mut roster_at = None;
         // Every turn stages its output on its own agent's private volume, so
         // the owner of an inherited output names the ancestor that ran it.
         let lineage: Vec<_> = std::iter::successors(agent.path.parent(), AgentPath::parent)
@@ -1326,12 +1351,9 @@ impl<'a> TurnContext<'a> {
                         previous = Some(owner.clone());
                     }
                 }
-                if entry.targets.is_some() {
-                    roster_at = Some(at);
-                }
                 Ok(SettledTurn {
                     turn: crate::agent::turn_id(agent, &entry.input).map_err(Error::from)?,
-                    targets: entry.targets,
+                    announcements: entry.announcements,
                     input: crate::agent::model_input(&entry.input).map_err(Error::from)?,
                     output: entry.output,
                     steering: entry.steering.map(|steering| steering.file),
@@ -1344,7 +1366,6 @@ impl<'a> TurnContext<'a> {
         Ok(Self {
             checkpoint,
             settled,
-            roster_at,
             fork,
             ancestors,
             turn,
@@ -1377,16 +1398,37 @@ impl<'a> TurnContext<'a> {
         Ok(())
     }
 
-    /// Compare the current bytes with the immutable roster actually rendered,
-    /// rather than an announcement outside this history window or checkpoint.
-    fn contains_roster(&self, bytes: &[u8]) -> Result<bool> {
-        match self
-            .roster_at
-            .and_then(|at| self.settled[at].targets.as_ref())
+    /// Only the latest selected delta of this kind can suppress a new one.
+    /// Compare semantic identities: a reroot can retain the displayed paths.
+    fn contains_announcement(
+        &self,
+        kind: crate::agent::AnnouncementKind,
+        digest: [u8; 32],
+    ) -> bool {
+        self.settled
+            .iter()
+            .rev()
+            .flat_map(|turn| turn.announcements.iter().rev())
+            .find(|document| document.kind == kind)
+            .is_some_and(|document| document.digest == digest)
+    }
+
+    async fn instruction_entries(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+    ) -> Result<std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]>> {
+        let mut seen = std::collections::BTreeMap::new();
+        for selection in self
+            .settled
+            .iter()
+            .flat_map(|turn| &turn.announcements)
+            .flat_map(|document| &document.instructions)
         {
-            Some(file) => file.descriptor().matches_bytes(bytes, &mut None),
-            None => Ok(false),
+            for entry in selection.entries(reader).await? {
+                seen.insert(entry.entry, entry.source);
+            }
         }
+        Ok(seen)
     }
 
     /// Every file the turn can reach, each by its exact version: the files
@@ -1399,8 +1441,9 @@ impl<'a> TurnContext<'a> {
             .map(|(_, summary)| summary)
             .chain(self.settled.iter().flat_map(|settled| {
                 settled
-                    .targets
+                    .announcements
                     .iter()
+                    .flat_map(crate::agent::AnnouncedDocument::files)
                     .chain(settled.input.file_refs())
                     .chain(std::iter::once(&settled.output))
                     .chain(
@@ -1435,9 +1478,10 @@ impl<'a> TurnContext<'a> {
         agent: &AgentState,
         reader: &dyn ContentResidencyVerifier,
         input: &ModelContent,
-        roster: Option<&FileRef>,
-        render_bytes: Option<u64>,
+        announcements: &[crate::agent::AnnouncedDocument],
+        content_limits: crate::conversation::Limits,
     ) -> Result<SelectedModelContext> {
+        let render_bytes = Some(content_limits.render_bytes);
         let Self {
             checkpoint,
             settled,
@@ -1456,7 +1500,7 @@ impl<'a> TurnContext<'a> {
             + 2
             + usize::from(summary.is_some())
             + usize::from(agent.parent.is_some())
-            + usize::from(roster.is_some());
+            + usize::from(!announcements.is_empty());
         let mut messages = Vec::with_capacity(capacity);
         let mut message_ids = Vec::with_capacity(messages.capacity());
         messages.push(ModelMessage {
@@ -1504,21 +1548,11 @@ impl<'a> TurnContext<'a> {
             });
             message_ids.push(message_id(checkpoint, ModelRole::Assistant));
         }
-        let announce = |messages: &mut Vec<ModelMessage>,
-                        message_ids: &mut Vec<uuid::Uuid>,
-                        turn: OperationId,
-                        roster: &FileRef| {
-            messages.push(ModelMessage {
-                role: ModelRole::User,
-                content: crate::agent::roster_message(roster),
-            });
-            message_ids.push(roster_id(turn));
-        };
         for (
             at,
             SettledTurn {
                 turn: settled,
-                targets: announced,
+                announcements: announced,
                 input: content,
                 transcript,
                 notices,
@@ -1532,8 +1566,19 @@ impl<'a> TurnContext<'a> {
             if let Some((_, ancestor)) = ancestors.iter().find(|(opened, _)| *opened == at) {
                 place(&mut messages, &mut message_ids, ancestor);
             }
-            if let Some(announced) = &announced {
-                announce(&mut messages, &mut message_ids, settled, announced);
+            if !announced.is_empty() {
+                for (part, content) in
+                    crate::agent::announcement_messages(&announced, reader, content_limits)
+                        .await?
+                        .into_iter()
+                        .enumerate()
+                {
+                    messages.push(ModelMessage {
+                        role: ModelRole::User,
+                        content,
+                    });
+                    message_ids.push(announcement_part_id(settled, part));
+                }
             }
             let (notices, content) =
                 selected_notices(stream, &agent.path, notices.as_ref(), content, render_bytes)
@@ -1566,8 +1611,19 @@ impl<'a> TurnContext<'a> {
         if fork == Some(forked) {
             directive(&mut messages, &mut message_ids);
         }
-        if let Some(roster) = roster {
-            announce(&mut messages, &mut message_ids, turn, roster);
+        if !announcements.is_empty() {
+            for (part, content) in
+                crate::agent::announcement_messages(announcements, reader, content_limits)
+                    .await?
+                    .into_iter()
+                    .enumerate()
+            {
+                messages.push(ModelMessage {
+                    role: ModelRole::User,
+                    content,
+                });
+                message_ids.push(announcement_part_id(turn, part));
+            }
         }
         let (notices, input) = selected_notices(
             stream,
@@ -1749,7 +1805,7 @@ where
                     || saved
                         .volumes
                         .iter()
-                        .filter(|value| value.binding.name == head.binding.name)
+                        .filter(|value| value.binding.id == head.binding.id)
                         .count()
                         != 1
                 {
@@ -1785,6 +1841,11 @@ where
                 // The turn's grant is derived from its context, before the turn
                 // can observe anything: every file the context can reach.
                 let mut context = TurnContext::new(agent, history, turn, input)?;
+                // An open turn pins its original delta, including instructions
+                // from sources no longer bound after a remove or re-root. Admit
+                // those exact files before constructing its reader.
+                let pinned_announcements =
+                    crate::agent::turn_announcements(agent).map_err(Error::from)?;
                 // Steering transcripts pin references admitted after the original
                 // turn opened. Read their manifests under exact grants, then include
                 // those references in this turn's ordinary authority derivation.
@@ -1820,6 +1881,12 @@ where
                 let external: Vec<FileRef> = context
                     .files()
                     .chain(
+                        pinned_announcements
+                            .iter()
+                            .flatten()
+                            .flat_map(crate::agent::AnnouncedDocument::files),
+                    )
+                    .chain(
                         agent
                             .profile
                             .as_ref()
@@ -1840,25 +1907,73 @@ where
                 let input =
                     std::mem::replace(&mut context.input, ModelContent::Text(String::new()));
                 let input = &input;
-                // Append a roster only when this rendered history lacks it. Losing
-                // its announcing turn or compacting starts a new base; no retained
-                // message is rewritten. Stage once per distinct roster. A
-                // turn decides it once, when it starts: a resumed turn keeps the
-                // announcement its checkpoint holds, so it sends the request it
-                // started with, and a roster change meanwhile is the next turn's.
-                let roster = match crate::agent::turn_roster(agent).map_err(Error::from)? {
+                // Compare with the documents actually retained by this history
+                // selection. Losing their turn or compacting starts a new base;
+                // retained messages are immutable. Pin the complete delta once
+                // so a resumed turn sends the request it originally opened.
+                use crate::agent::{
+                    AnnouncedDocument, AnnouncementDocument as _, AnnouncementKind,
+                };
+                let announcements = match pinned_announcements {
                     Some(kept) => kept,
-                    None => match self.executors.roster(agent) {
-                        Some(roster) => {
+                    None => {
+                        let mut changed = Vec::new();
+                        if let Some(roster) = self.executors.roster(agent) {
                             let (bytes, digest) = roster.canonical();
-                            if context.contains_roster(bytes)? {
-                                None
-                            } else {
-                                Some((files.stage_roster(digest, bytes).await?, digest))
+                            if !context.contains_announcement(AnnouncementKind::Targets, digest) {
+                                changed.push(AnnouncedDocument {
+                                    kind: AnnouncementKind::Targets,
+                                    digest,
+                                    file: files
+                                        .stage_announcement(
+                                            AnnouncementKind::Targets,
+                                            digest,
+                                            bytes,
+                                        )
+                                        .await?,
+                                    instructions: None,
+                                });
                             }
                         }
-                        None => None,
-                    },
+                        let seen = context
+                            .instruction_entries(bindings.content.reader.as_ref())
+                            .await?;
+                        if let Some(update) = self
+                            .executors
+                            .workspaces(
+                                agent,
+                                &seen,
+                                &bindings.content,
+                                &bindings.issuer,
+                                &bindings.scope,
+                            )
+                            .await?
+                        {
+                            let (bytes, digest) = update.document.canonical();
+                            if !context.contains_announcement(AnnouncementKind::Workspaces, digest)
+                                || !update.instructions.is_empty()
+                            {
+                                changed.push(AnnouncedDocument {
+                                    kind: AnnouncementKind::Workspaces,
+                                    digest,
+                                    file: files
+                                        .stage_announcement(
+                                            AnnouncementKind::Workspaces,
+                                            digest,
+                                            bytes,
+                                        )
+                                        .await?,
+                                    instructions: files
+                                        .stage_instructions(
+                                            update.instructions,
+                                            bindings.content.reader.as_ref(),
+                                        )
+                                        .await?,
+                                });
+                            }
+                        }
+                        changed
+                    }
                 };
                 let segment = crate::agent::turn_segment(agent).map_err(Error::from)?;
                 let effects = Arc::new(FilesystemTurnEffects::new(
@@ -1906,7 +2021,7 @@ where
                     Arc::clone(bindings.content.writer.as_ref().ok_or_else(|| {
                         Error::Invalid("agent turn has no private writer".into())
                     })?),
-                    self.executors.render_bytes(),
+                    Some(self.executors.content_limits().render_bytes),
                 );
                 // Each call dispatches only once the effects of the turn's earlier
                 // calls committed, so it reaches what they created, and a `wait`
@@ -1924,8 +2039,8 @@ where
                         agent,
                         &*bindings.content.reader,
                         input,
-                        roster.as_ref().map(|(file, _)| file),
-                        self.executors.render_bytes(),
+                        &announcements,
+                        self.executors.content_limits(),
                     )
                     .await?;
                 // The original selection validator requires the current input to
@@ -1967,7 +2082,7 @@ where
                     goal,
                     outputs,
                     input: Some(input),
-                    roster,
+                    announcements,
                 })
             },
         ))
@@ -2022,7 +2137,7 @@ where
                 .await
             {
                 Ok(_) => return Ok(()),
-                Err(acyclic_stream::StreamError::NotFound) => {}
+                Err(error) if error.category() == acyclic_stream::StreamError::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
             let mut records = acyclic_stream::records_only(

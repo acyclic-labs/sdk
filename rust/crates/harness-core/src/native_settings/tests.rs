@@ -104,6 +104,53 @@ fn executable<'a>(config: &'a McpConfig, name: &str) -> Option<&'a str> {
 }
 
 #[tokio::test]
+async fn settings_reservations_admit_complete_files_and_validate_before_io() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut document =
+        "model_provider = 'provider'\nmodel = 'selected'\n[mcp_servers.echo]\ncommand = 'echo'\n#"
+            .to_owned();
+    document.push_str(&"x".repeat(1_048_577));
+    document.push('\n');
+    let path = fixture.codex.join("config.toml");
+    write(&path, &document)?;
+    let bytes = document.len() as u64;
+    for reservation in [None, Some(bytes), Some(u64::MAX)] {
+        let config = fixture.config().maximum_file_bytes(reservation);
+        assert_eq!(config.configured_model()?, Some("provider/selected".into()));
+        let snapshot = NativeSettings::load(config).await?;
+        assert_eq!(executable(&snapshot.mcp, "echo"), Some("echo"));
+    }
+    assert!(
+        fixture
+            .config()
+            .maximum_file_bytes(Some(bytes - 1))
+            .configured_model()
+            .is_err()
+    );
+    assert!(
+        NativeSettings::load(fixture.config().maximum_file_bytes(Some(bytes - 1)))
+            .await
+            .is_err()
+    );
+    // No reader may accept a valid prefix and discard the original malformed tail.
+    let mut malformed = document.into_bytes();
+    malformed.push(0xff);
+    write(&path, malformed)?;
+    assert!(fixture.config().configured_model().is_err());
+    assert!(NativeSettings::load(fixture.config()).await.is_err());
+
+    let mut invalid = fixture.config().maximum_file_bytes(Some(0));
+    invalid.workspace = fixture.workspace.join("absent");
+    invalid.codex_home = fixture.codex.join("absent");
+    assert!(matches!(invalid.configured_model(), Err(Error::Invalid(_))));
+    assert!(matches!(
+        NativeSettings::load(invalid).await,
+        Err(Error::Invalid(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn user_project_and_local_scopes_have_whole_entry_precedence() -> Result<()> {
     let fixture = Fixture::new()?;
     let canonical = std::fs::canonicalize(&fixture.workspace).map_err(Error::process_io)?;

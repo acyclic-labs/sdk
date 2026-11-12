@@ -55,6 +55,29 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
         entry.inherit = inherit;
         entries.push(entry);
     }
+    let board = VolumeRef::new(
+        host.provider.clone(),
+        "session-board".into(),
+        VolumeClass::SessionShared,
+        VolumeOwner::Session(parent.id().to_string()),
+        &mut None,
+    )?;
+    host.create_volume(&board).await?;
+    host.apply(
+        &super::super::workspace_ref(host.provider.clone(), &board.storage_name(&mut None)?)?,
+        None,
+        &[super::super::WorkspaceMutation::PutFile {
+            path: "/parent.txt".into(),
+            bytes: acyclic_stream::OwnedBytes::from_static(b"parent contents"),
+        }],
+        &crate::IdempotencyKey::new("seed-board")?,
+    )
+    .await?;
+    entries.push(WorkspaceEntry::initial_volume(
+        WorkspaceRole::Shared,
+        "bulletin".into(),
+        board,
+    ));
     let mut tree = entries[0].clone();
     tree.id = crate::agent::EntryId::from_bytes([4; 16]);
     tree.name = "hierarchy".into();
@@ -86,7 +109,18 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
     assert_ne!(bindings[0].volume()?, entries[0].volume()?);
     assert_eq!(bindings[1].volume()?, entries[1].volume()?);
     assert_ne!(bindings[2].volume()?, entries[2].volume()?);
-    assert_eq!(bindings[3].source, WorkspaceSource::Subtree(child.clone()));
+    assert_eq!(bindings[3].volume()?, entries[3].volume()?);
+    assert_eq!(bindings[4].source, WorkspaceSource::Subtree(child.clone()));
+    let session = AgentPath::root(&AgentId::from_bytes([3; 16]));
+    let session_bindings = fork_bindings(&session, &entries, None)?;
+    assert_ne!(session_bindings[3].volume()?, entries[3].volume()?);
+    // User Share remains explicit, including across independent roots.
+    assert_eq!(session_bindings[1].volume()?, entries[1].volume()?);
+    let session_child = session.child(&AgentId::from_bytes([6; 16]))?;
+    assert_eq!(
+        fork_bindings(&session_child, &session_bindings, None)?[3].volume()?,
+        session_bindings[3].volume()?
+    );
     let request = CommitRequest {
         idempotency_key: acyclic_stream::IdempotencyKey::new(b"inheritance".to_vec())?,
         deadline_unix_millis: None,
@@ -134,5 +168,39 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
         Err(crate::Error::NotFound(_))
     ));
     assert_eq!(stream.tail(child.inbox()?).await?, 1);
+    let request = CommitRequest {
+        idempotency_key: acyclic_stream::IdempotencyKey::new(b"independent-session".to_vec())?,
+        deadline_unix_millis: None,
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![acyclic_stream::CommitCondition::Absent {
+                path: session.inbox()?,
+            }],
+            vec![acyclic_stream::CommitMutation::Append {
+                path: session.inbox()?,
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"session").into()],
+            }],
+        )],
+    };
+    let commit = spawn.root_volumes(&state, &session, None, request).await?;
+    assert!(matches!(
+        host.filesystem
+            .submit_commit(commit, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value,
+        acyclic_fs::FilesystemCommitOutcome::Committed(_)
+    ));
+    assert!(matches!(
+        host.stat(&reference(&session_bindings[3])?, None, "/parent.txt")
+            .await,
+        Err(crate::Error::NotFound(_))
+    ));
+    assert_eq!(
+        host.read(&reference(&entries[3])?, None, "/parent.txt", 64, None)
+            .await?
+            .as_ref(),
+        b"parent contents"
+    );
+    assert_eq!(stream.tail(session.inbox()?).await?, 1);
     Ok(())
 }

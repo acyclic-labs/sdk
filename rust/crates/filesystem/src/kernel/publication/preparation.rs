@@ -141,7 +141,7 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
         prepare_roots: &mut RootPreparation<'_, E>,
     ) -> Result<Prepared, E>
     where
-        E: From<crate::FsError> + Send,
+        E: From<crate::FsError> + acyclic_stream::ProviderTask,
     {
         let candidate = self.candidate(accounting).await.map_err(E::from)?;
         let proven_at = self.0.owner.objects().collection_sweeps();

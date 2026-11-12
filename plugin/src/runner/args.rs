@@ -211,6 +211,24 @@ impl Args {
         {
             return Err("--no-peer selects a client session, not a serving process");
         }
+        if let Some(Command::Inspect(inspect)) = &self.command {
+            if self.prompt.is_some()
+                || self.operation.is_some()
+                || self.host_workspace
+                || self.resume.is_some()
+                || self.continue_session
+                || self.new_session
+                || self.input_format != InputFormat::Text
+                || self.usage_jsonl.is_some()
+            {
+                return Err(
+                    "inspect selects existing streams without execution input; use acyclic inspect SESSION [--agent PATH]",
+                );
+            }
+            if !inspect.children && inspect.page.cursor.is_some() {
+                return Err("inspect --cursor requires --children");
+            }
+        }
         if self.override_file.is_some() && self.fork_from.is_none() {
             return Err("--override requires --fork-from AGENT_PATH@EVENT_OFFSET");
         }
@@ -452,6 +470,8 @@ pub enum Command {
     },
     /// Read one lazy page of this checkout's root sessions.
     Sessions(Sessions),
+    /// Inspect an existing session through its original authenticated streams.
+    Inspect(Inspect),
     /// Create a session and optionally author its title.
     #[command(name = "new")]
     NewSession { title: Option<String> },
@@ -490,6 +510,20 @@ pub struct Page {
     /// Encoded reply credit; increase it if one row and its continuation cannot fit.
     #[arg(long, default_value_t = AgentPageRequest::default().bytes())]
     pub page_bytes: u32,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct Inspect {
+    /// Existing canonical path, stable id or exact session alias.
+    pub session: String,
+    /// Follow committed changes, without periodic reads.
+    #[arg(long, conflicts_with = "children")]
+    pub follow: bool,
+    /// Read one direct-child page rather than the selected agent's measurements.
+    #[arg(long)]
+    pub children: bool,
+    #[command(flatten)]
+    pub page: Page,
 }
 
 #[derive(Debug, clap::Args)]

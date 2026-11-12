@@ -15,6 +15,7 @@ use tonic::{
 };
 use tracing::field::Empty;
 
+pub use crate::MAX_BEARER_TOKEN_BYTES;
 use crate::StreamProviderExt as _;
 use crate::obs;
 use crate::wire_codec::{
@@ -26,7 +27,6 @@ use crate::{
     AppendOutcome, CommitId, CommittedEnvelope, ForkRequest, IdempotencyKey,
     IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider, wire,
 };
-pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
 mod client;
 #[cfg(test)]
@@ -55,7 +55,7 @@ pub enum ConnectError {
     /// Bearer credential cannot be represented as HTTP metadata.
     #[error("invalid Stream bearer credential")]
     InvalidCredential,
-    /// Caller-supplied private CA bundle is empty or exceeds its fixed bound.
+    /// Caller-supplied private CA bundle is empty.
     #[error("invalid Stream private CA certificate")]
     InvalidCaCertificate,
     /// The platform certificate verifier could not be initialized.
@@ -192,11 +192,12 @@ impl Client {
         bearer_token: impl AsRef<str>,
         certificate_pem: impl AsRef<[u8]>,
     ) -> Result<Self, ConnectError> {
-        let pem = certificate_pem.as_ref();
-        if pem.is_empty() || pem.len() > MAX_CA_CERTIFICATE_BYTES {
-            return Err(ConnectError::InvalidCaCertificate);
-        }
-        Self::connect_tls(endpoint.as_ref(), bearer_token.as_ref(), Some(pem)).await
+        Self::connect_tls(
+            endpoint.as_ref(),
+            bearer_token.as_ref(),
+            Some(certificate_pem.as_ref()),
+        )
+        .await
     }
 
     /// Connects eagerly over plain HTTP/2 to a loopback endpoint on this
@@ -242,8 +243,7 @@ impl Client {
         endpoint: &str,
         certificate_pem: Option<&[u8]>,
     ) -> Result<Channel, ConnectError> {
-        if certificate_pem.is_some_and(|pem| pem.is_empty() || pem.len() > MAX_CA_CERTIFICATE_BYTES)
-        {
+        if certificate_pem.is_some_and(<[u8]>::is_empty) {
             return Err(ConnectError::InvalidCaCertificate);
         }
         channel_tls(endpoint, certificate_pem).await

@@ -79,7 +79,6 @@ export class CommittedRequests {
   #file;
   #position = 0;
   #tail = Buffer.alloc(0);
-  #parts = [];
   #pending = Promise.resolve();
   #closed = false;
   static async open(path) { return new CommittedRequests(await open(path, "r")); }
@@ -91,12 +90,12 @@ export class CommittedRequests {
     return pending;
   }
   async #read(event) {
+    const parts = [];
     for (;;) {
       const newline = this.#tail.indexOf(10);
       if (newline >= 0) {
-        this.#parts.push(this.#tail.subarray(0, newline));
-        const bytes = this.#parts.length === 1 ? this.#parts[0] : Buffer.concat(this.#parts);
-        this.#parts = [];
+        parts.push(this.#tail.subarray(0, newline));
+        const bytes = parts.length === 1 ? parts[0] : Buffer.concat(parts);
         this.#tail = this.#tail.subarray(newline + 1);
         const record = JSON.parse(bytes.toString("utf8"));
         assert.equal(record.sequence, event.sequence, "request notification sequence");
@@ -104,7 +103,7 @@ export class CommittedRequests {
         assert.equal(record.step, event.step, "request notification step");
         return record;
       }
-      if (this.#tail.length) this.#parts.push(this.#tail);
+      if (this.#tail.length) parts.push(this.#tail);
       const page = Buffer.alloc(64 * 1024);
       const { bytesRead } = await this.#file.read(page, 0, page.length, this.#position);
       assert.ok(bytesRead > 0, "acknowledged request lacks a complete JSONL record");
@@ -148,7 +147,7 @@ export function toolOutcome(value, expectedErrors, recovery, caseId) {
       toolFailure(`tool reported success=${value.success}, exit_code=${value.exit_code}`, expectedErrors, recovery, caseId);
   } else if (typeof value === "string") {
     const exit = /^Exit code: ([^\r\n]+)/.exec(value);
-    if (TOOL_FAILURE.test(value) || (exit && exit[1] !== "0"))
+    if (TOOL_FAILURE.test(value) || value.startsWith("tool executor rejected the admitted call (") || (exit && exit[1] !== "0"))
       toolFailure(value, expectedErrors, recovery, caseId);
   }
 }
@@ -177,7 +176,7 @@ export function toolResults(records) {
 export function modelInputs(expected, generations) {
   const contains = expected.default_conventions
     ? [...(expected.model_contains ?? []), ...JSON.parse(readFileSync(
-      new URL("../../rust/crates/harness-core/src/context/instructions.json", import.meta.url), "utf8"))]
+      new URL("../../rust/crates/harness-core/src/context/instructions.json", import.meta.url), "utf8")).map(text => JSON.stringify(text).slice(1, -1))]
     : expected.model_contains;
   const all = contains?.length || expected.model_absent?.length
     || expected.each_model_contains?.length || expected.each_model_absent?.length;

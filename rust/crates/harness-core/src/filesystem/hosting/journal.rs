@@ -45,6 +45,7 @@ impl Projection for Usage {
     fn empty(after: u64) -> Self::Page {
         ModelUsagePage {
             items: Vec::new(),
+            tools: Default::default(),
             context: None,
             end: after,
             next: None,

@@ -16,6 +16,7 @@ pub use client_files::VisibleFiles;
 mod directory;
 mod events;
 mod history;
+mod inspect;
 mod recording;
 mod transcripts;
 mod tree;
@@ -37,8 +38,19 @@ use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
 pub use history::{HistoryPage, PreparedHistoryAction};
+pub use inspect::{InspectQuery, Inspection};
 use std::sync::Arc;
 pub use usage_query::UsageQuery;
+
+/// One captured input fence, including the conversation frontier committed
+/// with its phase. Frontends can paint through this cut before acknowledging it.
+#[derive(Clone, Debug)]
+pub struct InputSettlement {
+    /// Exclusive conversation tail at the captured settlement.
+    pub conversation: u64,
+    /// Phase at that same actor checkpoint.
+    pub phase: Phase,
+}
 
 fn failed(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
@@ -74,6 +86,14 @@ pub enum Sent {
     /// Neither known to have committed nor refused: resending the same id
     /// and prompt answers it, and never commits it twice.
     Unknown,
+}
+
+/// An immutable peer message prepared on an authenticated sender connection.
+/// Keep this value until delivery is acknowledged; rebuilding it after an
+/// uncertain result would select different opt-out guards.
+pub struct PreparedPeerMessage {
+    sender: AgentPath,
+    command: AgentCommand,
 }
 
 /// A prompt's exchange as [`Sent`]: only the host's decoded refusal, or a
@@ -152,6 +172,67 @@ impl Conversation {
             query,
             _connection: self.connection.clone(),
         })
+    }
+
+    /// Prepare a message to a named member root, without writing its inbox.
+    /// This uses the connection's existing user authority and grants no new
+    /// directory, file, control or child access.
+    ///
+    /// # Errors
+    /// Invalid roots, disabled participation, or an authenticated query failure.
+    pub async fn prepare_peer_message(
+        &self,
+        recipient: AgentPath,
+        id: &str,
+        prompt: &str,
+    ) -> Result<PreparedPeerMessage> {
+        let sender = self.agent().clone();
+        if sender.depth() != 0 || recipient.depth() != 0 || sender == recipient {
+            return Err(Error::Invalid(
+                "peer messages require distinct session roots".into(),
+            ));
+        }
+        let admission = match self
+            .connection
+            .execute(&AgentCommand::PreparePeer {
+                sender: sender.clone(),
+                agent: recipient.clone(),
+            })
+            .await?
+        {
+            AgentReply::PeerAdmission {
+                admission: Some(admission),
+            } => admission,
+            AgentReply::PeerAdmission { admission: None } => {
+                return Err(Error::Refused(
+                    "the sessions do not admit peer messages".into(),
+                ));
+            }
+            _ => return Err(unexpected()),
+        };
+        Ok(PreparedPeerMessage {
+            sender: sender.clone(),
+            command: AgentCommand::Prompt {
+                agent: recipient,
+                id: intent(id)?,
+                body: ModelContent::Text(prompt.to_owned()),
+                peer: Some((sender, admission)),
+            },
+        })
+    }
+
+    /// Deliver or retry the exact prepared message through the existing inbox
+    /// path. Accepted messages wake the receiver and remain attributed as peers.
+    ///
+    /// # Errors
+    /// A different sender connection, preparation failure, or malformed reply.
+    pub async fn deliver_peer_message(&self, message: &PreparedPeerMessage) -> Result<Sent> {
+        if message.sender != *self.agent() {
+            return Err(Error::Invalid(
+                "the prepared message belongs to another sender".into(),
+            ));
+        }
+        sent(self.connection.exchange(&message.command).await)
     }
 
     /// Open a demand-driven diff on the original authenticated client socket.
@@ -333,6 +414,7 @@ impl Conversation {
             Err(error) => return Ok(Sent::Refused(error.to_string())),
         };
         let command = AgentCommand::Prompt {
+            peer: None,
             agent: self.agent().clone(),
             id: intent,
             body: ModelContent::Text(prompt.to_owned()),
@@ -640,8 +722,12 @@ impl Conversation {
     /// Wait for all inputs committed before this request, including queued or
     /// paused work. Inputs arriving later do not extend the captured fence.
     /// Dropping the request cancels observation without changing the agent.
-    pub async fn wait_current_input(&self) -> Result<Phase> {
-        Ok(self.settlement(true).await?.2)
+    pub async fn wait_current_input(&self) -> Result<InputSettlement> {
+        let (conversation, _, phase) = self.settlement(true).await?;
+        Ok(InputSettlement {
+            conversation,
+            phase,
+        })
     }
 
     async fn settlement(&self, wait: bool) -> Result<(u64, u64, Phase)> {

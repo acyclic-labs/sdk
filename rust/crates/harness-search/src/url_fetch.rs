@@ -83,7 +83,7 @@ pub struct FetchResponse {
     pub source_url: String,
     /// Final absolute source URL after bounded, validated redirects.
     pub final_url: String,
-    /// Successful HTTP status returned by the final source.
+    /// HTTP status returned by the final source, including error responses.
     pub status: u16,
     /// Final source's Content-Type header, when present.
     pub content_type: Option<String>,

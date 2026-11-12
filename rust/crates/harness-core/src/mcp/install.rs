@@ -1,8 +1,8 @@
 //! Native configuration to ordinary, additive registered tools.
 
 use super::{
-    McpCatalog, McpConfig, McpDiscoveryPolicy, McpSchemaExposure, McpServer, McpToolDefinition,
-    McpToolTransport,
+    McpCatalog, McpConfig, McpDiscoveryLimits, McpDiscoveryPolicy, McpSchemaExposure, McpServer,
+    McpToolDefinition, McpToolTransport,
 };
 use crate::{
     Capabilities, Error, Result,
@@ -22,25 +22,17 @@ mod watched;
 use cancellation::CancelOnDrop;
 
 /// Host-selected initialization credit and independent per-message bounds.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct McpClientLimits {
     /// Concurrent initialization credit, never a total server allowance.
     /// `None` starts every configured server without an implicit ceiling.
     pub servers: Option<u32>,
-    /// Maximum bytes in one discovery request or response, never the whole catalog.
-    pub frame_bytes: u32,
-    /// Maximum request or response bytes for an installed tool call.
-    pub tool_bytes: u32,
-}
-
-impl Default for McpClientLimits {
-    fn default() -> Self {
-        Self {
-            servers: None,
-            frame_bytes: 1_048_576,
-            tool_bytes: 1_048_576,
-        }
-    }
+    /// Optional bytes in one discovery request or response; `None` is unbounded.
+    pub frame_bytes: Option<u32>,
+    /// Optional bytes for an installed tool exchange; `None` is unbounded.
+    pub tool_bytes: Option<u32>,
+    /// Reservations for each complete advertised catalog, including live refreshes.
+    pub discovery: McpDiscoveryLimits,
 }
 
 /// A server that could not be installed; no connection configuration is retained.
@@ -100,11 +92,15 @@ impl McpConfig {
     where
         F: for<'a> Fn(&'a McpServer) -> BoxProviderFuture<'a, Result<Connected>>,
     {
-        if limits.servers == Some(0) || limits.frame_bytes == 0 || limits.tool_bytes == 0 {
+        if limits.servers == Some(0)
+            || limits.frame_bytes == Some(0)
+            || limits.tool_bytes == Some(0)
+        {
             return Err(Error::Invalid(
                 "MCP credit and message bounds must be positive".into(),
             ));
         }
+        limits.discovery.validate()?;
         let mut diagnostics = Vec::new();
         let mut capabilities = Capabilities::default();
         // Buffering requires positive credit even for an empty input. With no
@@ -228,13 +224,6 @@ fn register(
         projection_schema: crate::tool::json_projection_schema(json!({})),
         tools: std::mem::take(&mut connected.tools),
     };
-    catalog.tools.retain(|tool| {
-        server
-            .enabled_tools
-            .as_ref()
-            .is_none_or(|names| names.contains(&tool.name))
-            && !server.disabled_tools.contains(&tool.name)
-    });
     catalog.tools.sort_unstable_by(|a, b| a.name.cmp(&b.name));
     let revision = blake3::Hash::from_bytes(crate::executor::json::canonical_json_digest(
         &(
@@ -261,7 +250,7 @@ fn register(
         None,
         &connected.transport,
         &projection,
-        None,
+        (None, None),
         &check,
     )?;
     let mut capabilities = Capabilities::new(
@@ -288,6 +277,7 @@ fn recovery_binding(
                 binding,
                 server.tool_timeout_ms,
                 limits.tool_bytes,
+                limits.discovery,
                 &server.enabled_tools,
                 &server.disabled_tools,
             ),

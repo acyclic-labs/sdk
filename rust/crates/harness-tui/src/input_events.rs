@@ -19,6 +19,7 @@ impl PromptInput {
         self.input_width = usize::from(area.width);
         let mut wheel = None;
         let effects = match event {
+            InputEvent::SettlementQuery(_) => Vec::new(),
             InputEvent::Key(key) => self.key(key, now_ms, self.input_width),
             InputEvent::Paste(text) => self.paste(&text, now_ms),
             InputEvent::CommittedText(text) => self.committed_text(&text, now_ms),

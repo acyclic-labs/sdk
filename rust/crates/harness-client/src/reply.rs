@@ -66,6 +66,10 @@ pub enum AgentReply {
         binding: String,
         /// The `fs:/` resource whose follow announces the root's tool output.
         tools: String,
+        /// Optional sealed read-only observation enrollment, base64 standard
+        /// alphabet. Commands retain the original caller's credential. A host
+        /// whose platform credential already covers observation returns None.
+        observation: Option<String>,
     },
     /// The root admitted by the verified credential.
     Root {
@@ -185,6 +189,12 @@ pub enum AgentReply {
         page: Option<acyclic_harness_core::executor::ExecutionEventPage>,
         /// Original consumed-input fence, with no retained work at or before it.
         settled: bool,
+    },
+    /// The two enabled roots at one authority cut, or no peer admission.
+    PeerAdmission {
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
+        /// Retain these publication guards with the exact message on retry.
+        admission: Option<acyclic_harness_core::agent::PeerAdmission>,
     },
     /// How far an agent has settled, from one committed actor checkpoint.
     Settlement {
@@ -472,6 +482,14 @@ pub fn decode_agent_reply(
     }
 }
 
+fn base64_length(data: &str) -> Result<u64, CommandError> {
+    let mut decoder = base64::read::DecoderReader::new(
+        data.as_bytes(),
+        &base64::engine::general_purpose::STANDARD,
+    );
+    std::io::copy(&mut decoder, &mut std::io::sink()).map_err(|_| CommandError::Invalid)
+}
+
 fn validate_reply(
     reply: &AgentReply,
     command: &AgentCommand,
@@ -621,9 +639,17 @@ fn validate_reply(
                 Err(CommandError::Invalid)
             };
         }
+        (AgentReply::Bound { observation, .. }, AgentCommand::Bind { .. }) => {
+            if let Some(credential) = observation {
+                if base64_length(credential)? == 0 {
+                    return Err(CommandError::Invalid);
+                }
+            }
+            return Ok(());
+        }
         (AgentReply::Root { .. }, AgentCommand::Root {})
-        | (AgentReply::Bound { .. }, AgentCommand::Bind { .. })
         | (AgentReply::Settlement { .. }, AgentCommand::Settlement { .. })
+        | (AgentReply::PeerAdmission { .. }, AgentCommand::PreparePeer { .. })
         | (AgentReply::Staged {}, AgentCommand::Stage { .. })
         | (
             AgentReply::Delivered { .. },
@@ -678,12 +704,7 @@ fn validate_reply(
             };
         }
         (AgentReply::Content { data, length }, AgentCommand::Read { offset, .. }) => {
-            let mut decoder = base64::read::DecoderReader::new(
-                data.as_bytes(),
-                &base64::engine::general_purpose::STANDARD,
-            );
-            let bytes = std::io::copy(&mut decoder, &mut std::io::sink())
-                .map_err(|_| CommandError::Invalid)?;
+            let bytes = base64_length(data)?;
             return if bytes <= MAX_READ_BYTES
                 && offset.checked_add(bytes).is_some_and(|end| end <= *length)
                 && (bytes != 0 || *offset == *length)
@@ -756,6 +777,10 @@ fn validate_reply(
                 && page.end.checked_sub(*after).is_some_and(|visited| {
                     visited <= 32
                         && page.items.len() as u64 <= visited
+                        && page
+                            .tools
+                            .observations()
+                            .is_some_and(|tools| tools <= visited - page.items.len() as u64)
                         && page
                             .next
                             .is_none_or(|next| next == page.end && visited == 32)
@@ -1236,12 +1261,22 @@ mod tests {
                     open_children: 0,
                     page: Some(ModelUsagePage {
                         items: vec![],
+                        tools: Default::default(),
                         context: None,
                         end,
                         next: (visited == 32).then_some(end),
                     }),
                 };
                 let bytes = encode_agent_reply(&Ok(reply), &command)?;
+                let mut inflated_envelope = Envelope::decode(bytes.as_slice())?;
+                let Some(envelope::Value::Reply(inflated_body)) = &mut inflated_envelope.value
+                else {
+                    return Err("usage envelope lost its reply".into());
+                };
+                let mut inflated: serde_json::Value = serde_json::from_slice(inflated_body)?;
+                inflated["page"]["tools"]["started"] = (visited + 1).into();
+                *inflated_body = serde_json::to_vec(&inflated)?;
+                assert!(decode_agent_reply(&inflated_envelope.encode_to_vec(), &command).is_err());
                 assert!(matches!(decode_agent_reply(&bytes, &command)?,
                     Ok(AgentReply::Usage { page: Some(page), .. }) if page.end == end));
                 let live = AgentCommand::Usage {
@@ -1337,6 +1372,7 @@ mod tests {
                         next: (count == 8).then_some(end),
                         items: (0..count)
                             .map(|index| ExecutionRecord {
+                                committed_at_micros: None,
                                 operation_id: operation,
                                 sequence: after + index + 1,
                                 idempotency_key: index.to_string(),
@@ -1564,7 +1600,7 @@ mod tests {
             output: file.clone(),
             outcome: Default::default(),
             goal: Some(run),
-            targets: None,
+            announcements: Vec::new(),
             tool_results: None,
             steering: None,
             notices: None,
