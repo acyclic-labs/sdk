@@ -99,7 +99,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     )?;
     let read_input = ReadFileInput {
         wait: false,
-        include_body: false,
         path: file.path().into(),
         version: Some(serde_json::to_string(&file)?),
         range: Some(TextRange { start: 5, end: 9 }),
@@ -109,7 +108,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let read_invocation = invocation("read", value(&read_input)?);
     let read_result = ToolResult {
         value: value(ReadFileResult {
-            self_projection: false,
             file: files::FileReadSource::Content(file.clone()),
             text: read.into(),
             page: None,
@@ -124,7 +122,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let authored_invocation = invocation("read", value(&authored_input)?);
     let authored_result = ToolResult {
         value: value(ReadFileResult {
-            self_projection: false,
             file: files::FileReadSource::Authored(FilePathSelection {
                 volume: file.volume().clone(),
                 path: file.path().into(),
@@ -163,7 +160,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     };
     let exact_input = ReadFileInput {
         wait: false,
-        include_body: false,
         path: file.path().into(),
         version: Some(serde_json::to_string(&file)?),
         range: None,
@@ -172,7 +168,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let exact_invocation = invocation("read", value(&exact_input)?);
     let exact_result = ToolResult {
         value: value(ReadFileResult {
-            self_projection: false,
             file: files::FileReadSource::Content(file.clone()),
             text: source.into(),
             page: None,

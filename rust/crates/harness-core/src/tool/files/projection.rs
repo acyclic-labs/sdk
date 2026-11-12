@@ -27,10 +27,8 @@ impl FileProjection {
                     generator.subschema_for::<schema::JsonProjection<DirectoryReadResult>>();
                 let diagnostic =
                     generator.subschema_for::<schema::JsonProjection<DiagnosticReadResult>>();
-                let notice =
-                    generator.subschema_for::<schema::JsonProjection<SelfProjectionView<'_>>>();
                 Ok(
-                    json!({"oneOf":[content,authored,directory,diagnostic,notice],"$defs":generator.take_definitions(true)}),
+                    json!({"oneOf":[content,authored,directory,diagnostic],"$defs":generator.take_definitions(true)}),
                 )
             }
             Self::Read(ProjectionMode::Full) => {
@@ -42,10 +40,8 @@ impl FileProjection {
                     generator.subschema_for::<schema::JsonProjection<DirectoryReadResult>>();
                 let diagnostic =
                     generator.subschema_for::<schema::JsonProjection<DiagnosticReadResult>>();
-                let notice =
-                    generator.subschema_for::<schema::JsonProjection<SelfProjectionView<'_>>>();
                 Ok(
-                    json!({"oneOf":[file,directory,diagnostic,notice],"$defs":generator.take_definitions(true)}),
+                    json!({"oneOf":[file,directory,diagnostic],"$defs":generator.take_definitions(true)}),
                 )
             }
             Self::Publication(mode) => Self::model_schema(mode),
@@ -84,15 +80,6 @@ enum ReadProjection<'a> {
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct SelfProjectionView<'a> {
-    path: &'a str,
-    #[serde(rename = "self-projection")]
-    self_projection: bool,
-    text: &'a str,
-}
-
-#[derive(Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum MediaPart<'a> {
     Text {
@@ -113,7 +100,6 @@ struct NativePolicy {
 
 #[derive(Clone, Copy)]
 enum MediaText<'a> {
-    SelfProjection,
     Version(&'a str),
     Notebook {
         path: &'a str,
@@ -129,7 +115,6 @@ impl Serialize for MediaText<'_> {
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         match self {
-            Self::SelfProjection => serializer.serialize_str("self-projection: true"),
             Self::Version(version) => serializer.serialize_str(version),
             Self::Notebook { path, version, page, text } => serializer.collect_str(&format_args!(
                 "{version}\nFile {path}; cells from {}; source bytes {}..{} of {}; eof {}; next byte {:?}\n{text}",
@@ -140,7 +125,6 @@ impl Serialize for MediaText<'_> {
 }
 
 struct MediaParts<'a> {
-    self_projection: bool,
     text: MediaText<'a>,
     primary: Option<(&'a FileRef, &'a ReadSelection)>,
     outputs: &'a [NotebookOutput],
@@ -187,7 +171,6 @@ pub(super) fn notebook_text_budget(
     };
     let empty = ReadProjection::Parts {
         parts: MediaParts {
-            self_projection: false,
             text: MediaText::Notebook {
                 path,
                 version,
@@ -223,16 +206,9 @@ impl Serialize for MediaParts<'_> {
         let length = self
             .outputs
             .len()
-            .checked_add(
-                1 + usize::from(self.primary.is_some()) + usize::from(self.self_projection),
-            )
+            .checked_add(1 + usize::from(self.primary.is_some()))
             .ok_or_else(|| S::Error::custom("native read part count overflow"))?;
         let mut parts = serializer.serialize_seq(Some(length))?;
-        if self.self_projection {
-            parts.serialize_element(&MediaPart::Text {
-                text: MediaText::SelfProjection,
-            })?;
-        }
         parts.serialize_element(&MediaPart::Text { text: self.text })?;
         if let Some((file, selection)) = self.primary {
             let intent = match selection {
@@ -288,40 +264,6 @@ impl ToolProjection for FileProjection {
                 let result = decode::<ReadFileResult>(&result.value, work)?;
                 let file = &result.0.file;
                 let text = &result.0.text;
-                // The original executor validates the exact mounted path and
-                // volume before dispatch. A projector has no workspace and
-                // cannot compare that view path to a volume-relative path.
-                if let Some(version) = input.0.version.as_deref() {
-                    let original = super::version::decode_version(file.path(), version, work)?;
-                    if !original.0.matches_source(file) {
-                        return Err(super::executor::rejection(
-                            work,
-                            "read result belongs to another version",
-                        ));
-                    }
-                }
-                if result.0.self_projection && !input.0.include_body {
-                    if !text.is_empty()
-                        || result.0.page.is_some()
-                        || result.0.media.is_some()
-                        || !result.0.outputs.is_empty()
-                        || file.volume().class() != crate::conversation::VolumeClass::AgentPrivate
-                        || !file.path().starts_with("ui/")
-                    {
-                        return Err(super::executor::rejection(
-                            work,
-                            "self-projection pointer contains body data",
-                        ));
-                    }
-                    return schema::project_json(
-                        &SelfProjectionView {
-                            path: &input.0.path,
-                            self_projection: true,
-                            text: "Your human view repeats your context. Pull source files, or read this path with include_body: true.",
-                        },
-                        work,
-                    );
-                }
                 #[cfg(not(target_arch = "wasm32"))]
                 let owned_io = work
                     .map(crate::executor::PreparationIo::from_native_work)
@@ -473,6 +415,18 @@ impl ToolProjection for FileProjection {
                         previous = Some(position);
                     }
                 }
+                // The original executor validates the exact mounted path and
+                // volume before dispatch. A projector has no workspace and
+                // cannot compare that view path to a volume-relative path.
+                if let Some(version) = input.0.version.as_deref() {
+                    let original = super::version::decode_version(file.path(), version, work)?;
+                    if !original.0.matches_source(file) {
+                        return Err(super::executor::rejection(
+                            work,
+                            "read result belongs to another version",
+                        ));
+                    }
+                }
                 if mode == ProjectionMode::Full {
                     let version = super::version::encode_source(file, work)?;
                     if let Some(media) = &result.0.media {
@@ -485,7 +439,6 @@ impl ToolProjection for FileProjection {
                         return super::value(
                             &ReadProjection::Parts {
                                 parts: MediaParts {
-                                    self_projection: result.0.self_projection,
                                     text: MediaText::Version(&version.0),
                                     primary: Some((file, media)),
                                     outputs: &[],
@@ -505,7 +458,6 @@ impl ToolProjection for FileProjection {
                         return super::value(
                             &ReadProjection::Parts {
                                 parts: MediaParts {
-                                    self_projection: result.0.self_projection,
                                     text: MediaText::Notebook {
                                         path: &input.0.path,
                                         version: &version.0,
@@ -523,7 +475,6 @@ impl ToolProjection for FileProjection {
                     return super::value(
                         &ReadProjection::Json {
                             value: FileView {
-                                self_projection: result.0.self_projection,
                                 path: &input.0.path,
                                 version: &version.0,
                                 text: Some(text),
@@ -538,7 +489,6 @@ impl ToolProjection for FileProjection {
                     let version = super::version::encode_source(file, work)?;
                     return schema::project_json(
                         &FileView {
-                            self_projection: result.0.self_projection,
                             path: &input.0.path,
                             version: &version.0,
                             text: None,
@@ -557,12 +507,7 @@ impl ToolProjection for FileProjection {
                     file,
                     160,
                     format_args!(
-                        "{}Read {} UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection.",
-                        if result.0.self_projection {
-                            "self-projection: true\n"
-                        } else {
-                            ""
-                        },
+                        "Read {} UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection.",
                         text.len()
                     ),
                     work,
@@ -586,7 +531,6 @@ impl ToolProjection for FileProjection {
                         let version = super::version::encode_version(&value.0.file, work)?;
                         schema::project_json(
                             &FileView {
-                                self_projection: false,
                                 path: invocation
                                     .arguments
                                     .get("path")

@@ -3,8 +3,6 @@ use crate::{Capabilities, OperationId, conversation::Limits};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod effective;
-#[cfg(not(target_arch = "wasm32"))]
-mod self_projection;
 
 #[test]
 fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {

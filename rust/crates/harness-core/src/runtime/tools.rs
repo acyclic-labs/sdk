@@ -1323,20 +1323,6 @@ impl ToolContext {
             .map(|_| ())
     }
 
-    /// Human-facing projections in this task's own private output volume.
-    /// Resolve the authenticated mount first so aliases have the same semantics
-    /// and a project's unrelated `ui/` directory remains ordinary source.
-    pub(crate) fn is_self_projection(
-        &self,
-        path: &str,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<bool> {
-        let (volume, relative) = self.tool_path_selection(path, io)?;
-        Ok(volume == &self.task().output_content.volume
-            && volume.class() == crate::conversation::VolumeClass::AgentPrivate
-            && (relative == "ui" || relative.starts_with("ui/")))
-    }
-
     /// Resolves and reads one current workspace path through its original bound
     /// reader, without broadening this invocation's effective grants.
     pub(crate) async fn read_tool_path(
