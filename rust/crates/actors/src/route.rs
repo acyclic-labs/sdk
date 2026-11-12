@@ -3,8 +3,8 @@
 //! a record nor an actor reference is an authority credential.
 use crate::addressing::{ActorReference, IdentityError, ResourceId};
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, ReadRequest,
-    StreamError, StreamPath, StreamProvider,
+    AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey,
+    ReadRequest, StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -168,6 +168,45 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    /// Prepare one append to the owning node's relay after the account host
+    /// verified placement, sender authority, membership and storage credit.
+    /// Preparation conveys none of those authorities and does not write an inbox.
+    ///
+    /// The stage key is bound to the original intent in a separate domain: a
+    /// relay and its recipient inbox may share one provider, whose key namespace
+    /// is account-wide. The embedded delivery key and bytes remain unchanged.
+    pub fn relay_request(
+        &self,
+        paths: &Paths,
+        destination: &NodeId,
+    ) -> Result<CommitRequest, Error> {
+        use sha2::{Digest as _, Sha256};
+        if self.sender.account() != self.to.account() {
+            return Err(Error::InvalidRecord);
+        }
+        let path = paths.relay(destination)?;
+        let mut digest = Sha256::new();
+        digest.update(b"acyclic.actors.route.relay.v1\0");
+        for part in [
+            path.as_str().as_bytes(),
+            self.request.idempotency_key.as_bytes(),
+        ] {
+            digest.update((part.len() as u64).to_le_bytes());
+            digest.update(part);
+        }
+        Ok(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path,
+                    records: vec![self.encode().into()],
+                }],
+            )],
+            idempotency_key: IdempotencyKey::new(digest.finalize().to_vec())?,
+        })
+    }
+
     /// Canonical version-one transport record, without any credential material.
     pub fn encode(&self) -> Bytes {
         EnvelopeWire {

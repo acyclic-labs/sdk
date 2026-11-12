@@ -214,5 +214,65 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         ),
         "changed sender bytes reused a spent intent key",
     )?;
+    let relay = envelope
+        .relay_request(&paths, &placement.node)
+        .map_err(violation)?;
+    let relayed = provider.commit(relay.clone()).await.map_err(Error::from)?;
+    require(
+        matches!(relayed, CommitOutcome::Committed(_)),
+        "relay append did not commit",
+    )?;
+    require(
+        provider.commit(relay).await.map_err(Error::from)? == relayed,
+        "relay retry changed its receipt",
+    )?;
+    let records = values(provider, paths.relay(&placement.node).map_err(Error::from)?).await?;
+    require(
+        records.len() == 1,
+        "relay retry duplicated the original intent",
+    )?;
+    let restored = Envelope::decode(records[0].value.clone()).map_err(violation)?;
+    require(
+        restored == envelope,
+        "relay altered the original ordinary-delivery request",
+    )?;
+    let delivered = provider
+        .commit(restored.request.clone())
+        .await
+        .map_err(Error::from)?;
+    require(
+        matches!(delivered, CommitOutcome::Committed(_)),
+        "relay and inbox spent the same provider key",
+    )?;
+    // Reconstruct from the durable relay, as after loss between inbox commit
+    // and acknowledgement. Only the ordinary request is submitted again.
+    let replay = Envelope::decode(records[0].value.clone()).map_err(violation)?;
+    require(
+        provider.commit(replay.request).await.map_err(Error::from)? == delivered,
+        "ordinary delivery replay changed its receipt",
+    )?;
+    let inbox = StreamPath::new(format!("{root}/recipient-inbox")).map_err(Error::from)?;
+    require(
+        values(provider, inbox).await?.len() == 1,
+        "ordinary delivery replay duplicated input",
+    )?;
+    let mut changed = envelope;
+    changed.request.effects[0].mutations[0] = CommitMutation::Append {
+        path: StreamPath::new(format!("{root}/recipient-inbox")).map_err(Error::from)?,
+        records: vec!["different peer input".into()],
+    };
+    require(
+        matches!(
+            provider
+                .commit(
+                    changed
+                        .relay_request(&paths, &placement.node)
+                        .map_err(violation)?
+                )
+                .await,
+            Err(StreamError::IdempotencyMismatch)
+        ),
+        "changed relay bytes reused the original intent",
+    )?;
     Ok(())
 }
