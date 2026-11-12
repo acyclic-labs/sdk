@@ -28,9 +28,6 @@ fn admitted_environment(location: &serde_json::Value) -> Result<BTreeMap<String,
 fn event_log(claim: OperationId) -> PathBuf {
     PathBuf::from(format!("events-{claim}.jsonl"))
 }
-/// The native pipe's protective bound for one JSON event, shared by recovery.
-pub(crate) const EVENT_LINE_BYTES: usize = 65_536;
-
 /// Runs the interactive native root with its inherited console and process
 /// group. Native hosts retain terminal/job control; managed children use the
 /// separate, custodied session API below. Turn-end hooks capture root turns.
