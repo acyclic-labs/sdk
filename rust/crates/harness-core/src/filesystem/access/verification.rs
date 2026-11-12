@@ -72,7 +72,7 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
         roundtrip::<Capability>(byte_io, &io, bytes)?;
         roundtrip::<FileRef>(byte_io, &io, bytes)?;
         roundtrip::<GenerationRef>(byte_io, &io, bytes)?;
-        roundtrip::<(FileRef, Option<GenerationRef>)>(byte_io, &io, bytes)?;
+        roundtrip::<(u8, (FileRef, Option<GenerationRef>))>(byte_io, &io, bytes)?;
         roundtrip::<crate::Capabilities>(byte_io, &io, bytes)?;
     }
     assert_eq!(standalone.owned_bytes()?, 0);
