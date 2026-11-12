@@ -7,6 +7,41 @@
 
 use std::{error::Error, fmt, future::Future};
 
+/// Work permitted as an independently varied input grows. Keep unrelated
+/// inputs fixed: for example, vary history with a fixed viewport, or changed
+/// bytes with a fixed resident population.
+#[derive(Clone, Copy, Debug)]
+pub enum Bound {
+    /// No additional work as the input grows.
+    Constant,
+    /// Work per input unit must not grow.
+    Linear,
+}
+
+/// Compare original operation counters at two positive, increasing input sizes.
+/// Each pair is `(input_size, counted_work)`. Measure each relevant counter
+/// separately; an absent observation must never be supplied as zero.
+#[track_caller]
+pub fn assert_scales(bound: Bound, small: (u64, u64), large: (u64, u64)) {
+    assert!(
+        small.0 > 0 && large.0 > small.0,
+        "require increasing positive inputs"
+    );
+    let (before_units, after_units) = match bound {
+        Bound::Constant => (1, 1),
+        Bound::Linear => (small.0, large.0),
+    };
+    assert!(
+        !mean_grows(
+            u128::from(small.1),
+            before_units,
+            u128::from(large.1),
+            after_units
+        ),
+        "counted work exceeded {bound:?}: {small:?} -> {large:?}"
+    );
+}
+
 /// The complete qualification population vector, in fresh storage domains.
 pub const POPULATIONS: [u64; 3] = [1, 1_000, 100_000];
 /// Composed operations applied in lifecycle order by deterministic simulations.
