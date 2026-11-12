@@ -65,9 +65,10 @@ impl AgentGuest {
     #[wasm_bindgen(js_name = acceptsInterrupt)]
     pub async fn accepts_interrupt(
         &self,
-        query: Vec<u8>,
+        query: Uint8Array,
         #[wasm_bindgen(unchecked_param_type = "AbortSignal")] signal: JsValue,
     ) -> Result<bool, JsValue> {
+        let (query, ()) = acyclic_stream::javascript_bytes::snapshot(&query, |_| Ok(()))?;
         Listening::run(&signal, wire::accepts_interrupt(&self.handler, &query))
             .await?
             .map_err(guest_error)
@@ -81,10 +82,11 @@ impl AgentGuest {
     #[wasm_bindgen(js_name = onRecord)]
     pub async fn on_record(
         &self,
-        delivery: Vec<u8>,
+        delivery: Uint8Array,
         #[wasm_bindgen(unchecked_param_type = "AbortSignal | undefined")] signal: JsValue,
         #[wasm_bindgen(unchecked_param_type = "AbortSignal | undefined")] interrupt: JsValue,
     ) -> Result<Vec<u8>, JsValue> {
+        let (delivery, ()) = acyclic_stream::javascript_bytes::snapshot(&delivery, |_| Ok(()))?;
         let (delivery, checkpoint) = wire::decode_delivery(&delivery).map_err(guest_error)?;
         let cancellation = CancellationToken::new();
         let token = cancellation.clone();
@@ -197,9 +199,9 @@ mod tests {
         provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![b"seed".to_vec().into()],
+                records: vec![Vec::from(b"seed".as_slice()).into()],
                 if_tail: Some(0),
-                idempotency_key: IdempotencyKey::new(b"seed".to_vec()).unwrap(),
+                idempotency_key: IdempotencyKey::new(Vec::from(b"seed".as_slice())).unwrap(),
             })
             .await
             .unwrap();
