@@ -208,9 +208,17 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
         kernel::{LogicalName, NameEncoding},
     };
     use acyclic_harness_core::{
-        agent::{AgentId, IntentId, create_root, spawn},
-        conversation::private_volume,
-        filesystem::MemoryHarnessStorage,
+        Capabilities, OperationId,
+        agent::{AgentId, ConversationEntry, IntentId, TurnInput, create_root, spawn},
+        conversation::{
+            ContentAccess, ContentPublisher, ContentResidencyVerifier, VolumeOperation,
+            private_volume,
+        },
+        core::{AggregateKind, Authority, AuthorityRoot},
+        filesystem::{
+            FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost,
+            MemoryHarnessStorage,
+        },
         ui::{StreamUiProvider, View},
     };
     use std::sync::Arc;
@@ -248,24 +256,28 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
         streams.clone(),
     )
     .await?;
-    let source = |agent, navigation_identity| -> Result<_> {
-        Ok(Arc::new(Routed::new(
-            Empty,
-            LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255)?,
-            StreamUiProvider::new(
-                streams.clone(),
-                storage.content_bindings().reader,
-                agent,
-                View::new(2)?,
-                navigation_identity,
-                navigation,
-            )
-            .into_source(),
-            VolumeLimits::default(),
-        )))
-    };
-    let parent_source = source(parent_agent.clone(), [4; 16])?;
-    let child_source = source(child_agent.clone(), [4; 16])?;
+    let source =
+        |agent, navigation_identity, reader: Arc<dyn ContentResidencyVerifier>| -> Result<_> {
+            Ok(Arc::new(Routed::new(
+                Empty,
+                LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255)?,
+                StreamUiProvider::new(
+                    streams.clone(),
+                    reader,
+                    agent,
+                    View::new(2)?,
+                    navigation_identity,
+                    navigation,
+                )
+                .into_source(),
+                VolumeLimits::default(),
+            )))
+        };
+    let parent_source = source(
+        parent_agent.clone(),
+        [4; 16],
+        storage.content_bindings().reader,
+    )?;
     let directory = tempfile::tempdir()?;
     let store = LocalCoreStateStore::open_owned(directory.path())?;
     let cancellation = CancellationToken::new();
@@ -308,6 +320,83 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
         )
         .await?;
     let original = inherited.state(&mut ctx).await?;
+    // Bind the existing fork, rather than creating another volume for the child.
+    // Each reader has only its own volume's signed read authority.
+    let host = FilesystemHost::new(fs.clone(), storage.volume().provider(), None)?;
+    let child_owner = acyclic_harness_core::AgentId::from_bytes(child_agent.id().to_bytes());
+    let issuer = AuthorityRoot::new(
+        "private-view-child",
+        [22; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "private-view-child".into(),
+        },
+    );
+    let scope = issuer.bootstrap_scope(
+        "child",
+        &Capabilities::new([
+            child_volume.capability(VolumeOperation::Read, &mut None)?,
+            child_volume.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(child_owner),
+        &mut None,
+    )?;
+    let verifier = issuer.verifier(&mut None)?;
+    let child_reader =
+        FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 16_384, None)?;
+    let child_writer =
+        FilesystemContentPublisher::new(host, &child_volume, &verifier, &scope, 16_384, None)?;
+    let (child_output, _) = child_writer
+        .stage(
+            OperationId::new(),
+            "turns/0.json",
+            br#"{"text":"child-owned answer"}"#,
+            "application/json",
+            "turn.json",
+            ContentAccess::default(),
+        )?
+        .await?;
+    let parent_output = storage
+        .stage(
+            OperationId::new(),
+            "turns/0.json",
+            br#"{"text":"parent-owned answer"}"#,
+            "application/json",
+            "turn.json",
+        )
+        .await?;
+    assert!(
+        child_reader
+            .read(&parent_output, 16_384, None, None)?
+            .await
+            .is_err()
+    );
+    assert!(storage.read(&child_output).await.is_err());
+    for (agent, output) in [(&parent_agent, parent_output), (&child_agent, child_output)] {
+        let entry = ConversationEntry {
+            observed_through: 1,
+            inbox: 0,
+            input: TurnInput::Brief {
+                brief: Box::new(output.clone()),
+            },
+            output,
+            outcome: Default::default(),
+            goal: None,
+            targets: None,
+            tool_results: None,
+            steering: None,
+            notices: None,
+        };
+        streams
+            .append(AppendRequest {
+                path: agent.conversation()?,
+                records: vec![entry.encode()?.into()],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    let child_source = source(child_agent.clone(), [4; 16], child_reader.clone())?;
     let child = inherited
         .bind_fork_source(child_source.clone(), &mut ctx)
         .await?;
@@ -319,6 +408,11 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     assert_eq!(bound.selected_import_roots, original.selected_import_roots);
     let child_cut = child.snapshot(&mut ctx).await?;
     assert_ne!(child_cut.source.identity, parent_cut.source.identity);
+    let child_page = child.read("/ui/turns/0.md", 4096, &mut ctx).await?;
+    assert!(std::str::from_utf8(child_page.bytes.as_slice())?.contains("child-owned answer"));
+    assert!(!std::str::from_utf8(child_page.bytes.as_slice())?.contains("parent-owned answer"));
+    let parent_page = parent.read("/ui/turns/0.md", 4096, &mut ctx).await?;
+    assert!(std::str::from_utf8(parent_page.bytes.as_slice())?.contains("parent-owned answer"));
     let frozen = child
         .read_at_snapshot(&child_cut, "/ui/status.md", None, 4096, &mut ctx)
         .await?
@@ -354,7 +448,10 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     );
     assert!(matches!(
         inherited
-            .bind_fork_source(source(child_agent.clone(), [5; 16])?, &mut ctx)
+            .bind_fork_source(
+                source(child_agent.clone(), [5; 16], child_reader)?,
+                &mut ctx
+            )
             .await,
         Err(LazyWorkspaceError::Concurrent)
     ));
