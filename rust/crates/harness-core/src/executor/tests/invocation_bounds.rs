@@ -95,7 +95,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
                 &journal,
                 operation,
                 0,
-                invocation,
+                (invocation, None),
                 0,
                 &mut prior,
                 &mut Vec::new(),
