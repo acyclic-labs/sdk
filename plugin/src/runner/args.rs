@@ -104,6 +104,9 @@ pub struct Args {
     /// The provider enforces its context window.
     #[arg(global = true, long, conflicts_with_all = ["endpoint", "host_workspace"])]
     pub no_compaction: bool,
+    /// Opt this session out of seeing, sending to and receiving from peers.
+    #[arg(global = true, long)]
+    pub no_peer: bool,
     /// Export committed call usage for this conversation tree after headless
     /// settlement. A path is replaced with this snapshot; '-' writes JSONL to
     /// stdout and sends ordinary answers to stderr. Missing metrics stay null.
@@ -201,6 +204,13 @@ pub struct Args {
 impl Args {
     /// Normalize the exec shorthand before validating its input identity.
     pub fn prepare_input(&mut self) -> Result<(), &'static str> {
+        if self.no_peer
+            && (self.local_service
+                || self.host_workspace
+                || matches!(self.command, Some(Command::Serve(_))))
+        {
+            return Err("--no-peer selects a client session, not a serving process");
+        }
         if self.override_file.is_some() && self.fork_from.is_none() {
             return Err("--override requires --fork-from AGENT_PATH@EVENT_OFFSET");
         }
@@ -568,6 +578,14 @@ mod tests {
 
     #[test]
     fn product_commands_reject_execution_inputs_before_attach_or_serve() {
+        for argv in [
+            vec!["graphcoder", "--local-service", "--no-peer"],
+            vec!["graphcoder", "--no-peer", "--local-service"],
+            vec!["graphcoder", "--local-service", "exec", "task", "--no-peer"],
+        ] {
+            let mut args = Args::try_parse_from(&argv).unwrap();
+            assert!(args.prepare_input().is_err(), "{argv:?}");
+        }
         let mut run = Args::try_parse_from([
             "acyclic",
             "run",
@@ -578,6 +596,7 @@ mod tests {
             "--workspace-mounting",
             "physical",
             "--no-compaction",
+            "--no-peer",
             "-p",
             "task",
         ])
@@ -586,6 +605,7 @@ mod tests {
         assert_eq!(run.workspace, PathBuf::from("source"));
         assert_eq!(run.workspace_mounting, Mounting::Physical);
         assert!(run.no_compaction);
+        assert!(run.no_peer);
         assert_eq!(run.prompt.as_deref(), Some("task"));
 
         let mut attach =
@@ -613,6 +633,7 @@ mod tests {
             vec!["-r", "previous"],
             vec!["-c"],
             vec!["--new-session"],
+            vec!["--no-peer"],
         ] {
             let mut args = Args::try_parse_from(
                 ["acyclic", "serve", "127.0.0.1:0"]

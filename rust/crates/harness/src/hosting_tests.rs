@@ -304,6 +304,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         owner.clone(),
         &IntentId::try_from("output-root")?,
         RootRequest {
+            peer: true,
             agent,
             fresh: vec![WorkspaceEntry::initial_volume(
                 crate::agent::WorkspaceRole::Private,
@@ -596,6 +597,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         owner.clone(),
         &IntentId::try_from("root")?,
         RootRequest {
+            peer: true,
             agent,
             fresh: vec![private],
             retained: Vec::new(),
@@ -1256,6 +1258,7 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
         owner.clone(),
         &IntentId::try_from("root")?,
         RootRequest {
+            peer: true,
             agent,
             fresh: vec![private],
             retained: Vec::new(),

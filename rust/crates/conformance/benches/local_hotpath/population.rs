@@ -80,6 +80,7 @@ pub(super) fn id(value: usize) -> Result<AgentId> {
 impl Fixture {
     pub(super) fn root_request(&self, agent: AgentId) -> Result<RootRequest> {
         Ok(RootRequest {
+            peer: true,
             fresh: vec![self.volume(&agent)?],
             agent,
             retained: Vec::new(),

@@ -1,5 +1,5 @@
 //! Selection is a client operation over the root directory and authored files.
-use super::{Args, Command, Connection, InputFormat, OperationId, OutputFormat};
+use super::{Args, Command, Connection, OperationId};
 use acyclic_harness::{
     client::AgentPageRequest,
     local::sessions,
@@ -7,13 +7,208 @@ use acyclic_harness::{
 };
 type Failure = Box<dyn std::error::Error>;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_harness::{
+        LocalHarness,
+        agent::{AgentRecord as _, PeerMembership},
+        local::WorkspaceMounting,
+        model::Model,
+        test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
+    };
+    use acyclic_stream::StreamProviderExt as _;
+    use clap::Parser as _;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn launch_replay_preserves_peer_choice_and_checks_owner_execution_policy()
+    -> Result<(), Failure> {
+        let directory = tempfile::tempdir()?;
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace)?;
+        let provider = Arc::new(ScriptedModelProvider::new(
+            std::iter::empty::<ScriptedTurn>(),
+        ));
+        let local = Arc::new(
+            LocalHarness::open(
+                local_harness_config(
+                    &workspace,
+                    (
+                        Model::new("scripted".into(), "test".into(), "1".into())?,
+                        provider.clone(),
+                    ),
+                )?
+                .without_user_settings()
+                .state_directory(directory.path().join("state"))
+                .workspace_mounting(WorkspaceMounting::Physical),
+            )
+            .await?,
+        );
+        let owner = local.connect_sessions().await?;
+        let args = Args::try_parse_from([
+            "graphcoder",
+            "--model",
+            "scripted/test",
+            "--no-peer",
+            "--questions",
+            "true",
+            "--operation",
+            "launch",
+            "exec",
+            "task",
+        ])?;
+        let (first, _, created) = select(&args, owner.clone(), None).await?;
+        apply_peer_choice(&args, &first, created).await?;
+        sessions::set_peers(&first, "enable-later", true).await?;
+        let (replayed, _, created) = select(&args, owner.clone(), None).await?;
+        apply_peer_choice(&args, &replayed, created).await?;
+        assert_eq!(first.root(), replayed.root());
+        let (host, _) = local.agents().await?;
+        assert!(
+            host.state(first.root())
+                .await?
+                .profile
+                .ok_or("missing creation profile")?
+                .question_plugin
+        );
+        let head = host
+            .provider()
+            .head(replayed.root().peer_membership()?)
+            .await?
+            .last
+            .ok_or("missing membership")?;
+        assert!(PeerMembership::decode(&head.value)?.enabled);
+        assert_eq!(head.sequence, 1, "replay must not append a new opt-out");
+        let picker_args = Args::try_parse_from(["graphcoder", "--no-peer", "--resume"])?;
+        let (picked, created) = choose_entry(&owner, None, !picker_args.no_peer, false).await?;
+        assert!(created);
+        let initial = host
+            .provider()
+            .head(picked.root().peer_membership()?)
+            .await?
+            .last
+            .ok_or("missing picker membership")?;
+        assert!(!PeerMembership::decode(&initial.value)?.enabled);
+        assert_eq!(
+            initial.sequence, 0,
+            "picker must commit opt-out with creation"
+        );
+        sessions::set_peers(&picked, "picker-enable-later", true).await?;
+        apply_peer_choice(&picker_args, &picked, created).await?;
+        let current = host
+            .provider()
+            .head(picked.root().peer_membership()?)
+            .await?
+            .last
+            .ok_or("missing picker membership")?;
+        assert!(PeerMembership::decode(&current.value)?.enabled);
+        assert_eq!(
+            current.sequence, 1,
+            "creation must not issue a later opt-out"
+        );
+        let (_, created) = choose_entry(&owner, Some(picked.root().clone()), true, false).await?;
+        assert!(!created, "an existing picker row remains an attachment");
+        let before =
+            sessions::page(&owner, acyclic_harness::client::AgentPageRequest::default()).await?;
+        let mismatch = Args::try_parse_from([
+            "graphcoder",
+            "--model",
+            "scripted/other",
+            "--operation",
+            "other-model",
+            "exec",
+            "task",
+        ])?;
+        assert!(select(&mismatch, owner.clone(), None).await.is_err());
+        let no_compaction = Args::try_parse_from([
+            "graphcoder",
+            "--no-compaction",
+            "--operation",
+            "unchecked",
+            "exec",
+            "task",
+        ])?;
+        assert!(select(&no_compaction, owner.clone(), None).await.is_err());
+        let after =
+            sessions::page(&owner, acyclic_harness::client::AgentPageRequest::default()).await?;
+        assert_eq!(
+            before.items.len(),
+            after.items.len(),
+            "execution policy refusal precedes root creation"
+        );
+        assert_eq!(provider.request_count(), 0);
+
+        // This provider offers no context-capacity metadata. Only an explicitly
+        // unchecked owner can run it without calibration or compaction admission.
+        let unchecked_provider = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Text("unchecked answer".into())])
+                .without_accounting(),
+        );
+        let unchecked = Arc::new(
+            LocalHarness::open(
+                local_harness_config(
+                    &workspace,
+                    (
+                        Model::new("scripted".into(), "test".into(), "1".into())?,
+                        unchecked_provider.clone(),
+                    ),
+                )?
+                .without_user_settings()
+                .state_directory(directory.path().join("unchecked-state"))
+                .workspace_mounting(WorkspaceMounting::Physical)
+                .compaction(acyclic_harness::context::CompactionPolicy::Disabled),
+            )
+            .await?,
+        );
+        let (selected, _, _) =
+            select(&no_compaction, unchecked.connect_sessions().await?, None).await?;
+        selected
+            .require_execution(Some("scripted/test"), true)
+            .await?;
+        let conversation = acyclic_harness::local::agent_conversation::Conversation::open(selected);
+        let mut events = conversation.observe(None).await?;
+        let inbox = conversation.send("unchecked-prompt", "task").await?;
+        let settled = conversation
+            .settle("unchecked-prompt", inbox, &mut events)
+            .await?;
+        let acyclic_harness::local::agent_conversation::Settlement::Reply(
+            acyclic_harness::agent::Reply::Answered { entry, .. },
+        ) = settled
+        else {
+            return Err("unchecked prompt did not answer".into());
+        };
+        assert_eq!(conversation.output_text(&entry).await?, "unchecked answer");
+        assert_eq!(unchecked_provider.request_count(), 1);
+        Ok(())
+    }
+}
+
+/// Creation already committed the launch choice, including on an exact replay.
+/// Only attaching to an existing session issues a new user membership command.
+pub async fn apply_peer_choice(
+    args: &Args,
+    connection: &Connection,
+    created: bool,
+) -> Result<(), Failure> {
+    if args.no_peer && !created {
+        sessions::set_peers(
+            connection,
+            &format!("peers-off:{}", OperationId::new()),
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 pub async fn select(
     args: &Args,
     connection: Connection,
     terminal: Option<Tty>,
-) -> Result<(Connection, Option<Tty>), Failure> {
+) -> Result<(Connection, Option<Tty>, bool), Failure> {
     let original = connection.root().clone();
-    let (selected, terminal) = select_inner(args, connection, terminal).await?;
+    let (selected, terminal, created) = select_inner(args, connection, terminal).await?;
     if selected.root() != &original
         && args.agent.is_none()
         && selected.root().parent().is_none()
@@ -33,22 +228,32 @@ pub async fn select(
     {
         sessions::selected(&selected, &OperationId::new().to_string()).await?;
     }
-    Ok((selected, terminal))
+    Ok((selected, terminal, created))
 }
 
 async fn select_inner(
     args: &Args,
     connection: Connection,
     terminal: Option<Tty>,
-) -> Result<(Connection, Option<Tty>), Failure> {
+) -> Result<(Connection, Option<Tty>, bool), Failure> {
     if args.agent.is_some() || args.fork_from.is_some() {
-        return Ok((connection, terminal));
+        return Ok((connection, terminal, false));
     }
     if let Some(resume) = &args.resume {
         if let Some(name) = resume {
-            return Ok((sessions::select(&connection, name).await?, terminal));
+            return Ok((sessions::select(&connection, name).await?, terminal, false));
         }
-        return choose(connection, terminal, None, super::questions_enabled(args)).await;
+        connection
+            .require_execution(args.model.as_deref(), args.no_compaction)
+            .await?;
+        return choose(
+            connection,
+            terminal,
+            None,
+            super::questions_enabled(args),
+            !args.no_peer,
+        )
+        .await;
     }
     if args.continue_session
         || matches!(
@@ -59,31 +264,37 @@ async fn select_inner(
         let selected = sessions::latest(&connection)
             .await?
             .ok_or("No previous session for this checkout; start graphcoder or graphcoder new")?;
-        return Ok((selected, terminal));
+        return Ok((selected, terminal, false));
     }
-    let interactive = args.endpoint.is_none()
-        && args.command.is_none()
-        && args.prompt.is_none()
-        && args.input_format == InputFormat::Text
-        && args.output_format == OutputFormat::Text
-        && !acyclic_harness::tui::term::Environment::capture().is_dumb();
-    if args.new_session || interactive || matches!(args.command, Some(Command::NewSession { .. })) {
+    let local_execution = args.endpoint.is_none()
+        && matches!(
+            args.command,
+            None | Some(Command::Run | Command::Exec { .. })
+        );
+    if args.new_session
+        || local_execution
+        || matches!(args.command, Some(Command::NewSession { .. }))
+    {
+        connection
+            .require_execution(args.model.as_deref(), args.no_compaction)
+            .await?;
         let operation = args
             .operation
             .clone()
             .unwrap_or_else(|| OperationId::new().to_string());
-        let selected = sessions::create(
+        let selected = sessions::create_with_peer(
             &connection,
             &operation,
+            !args.no_peer,
             Some(super::questions_enabled(args)),
         )
         .await?;
         if let Some(Command::NewSession { title: Some(title) }) = &args.command {
             sessions::rename(&selected, OperationId::new(), title.clone()).await?;
         }
-        return Ok((selected, terminal));
+        return Ok((selected, terminal, true));
     }
-    Ok((connection, terminal))
+    Ok((connection, terminal, false))
 }
 
 /// The existing event-driven terminal chooser renders only the current page.
@@ -94,7 +305,7 @@ pub async fn picker(
     filter: Option<&str>,
     questions: bool,
 ) -> Result<(Connection, Option<Tty>), Failure> {
-    let (selected, terminal) = choose(connection, terminal, filter, questions).await?;
+    let (selected, terminal, _) = choose(connection, terminal, filter, questions, true).await?;
     sessions::selected(&selected, &OperationId::new().to_string()).await?;
     Ok((selected, terminal))
 }
@@ -104,7 +315,8 @@ async fn choose(
     terminal: Option<Tty>,
     filter: Option<&str>,
     questions: bool,
-) -> Result<(Connection, Option<Tty>), Failure> {
+    peer: bool,
+) -> Result<(Connection, Option<Tty>, bool), Failure> {
     let mut terminal = match terminal {
         Some(terminal) => terminal,
         None => Tty::open()?,
@@ -216,25 +428,40 @@ async fn choose(
             }
             continue;
         }
-        let selected = if choice == new_index {
-            sessions::create(
-                &connection,
+        let entry = if choice == new_index {
+            None
+        } else {
+            Some(
+                visible
+                    .get(choice)
+                    .ok_or("missing selected session")?
+                    .agent
+                    .clone(),
+            )
+        };
+        let (selected, created) = choose_entry(&connection, entry, peer, questions).await?;
+        return Ok((selected, Some(terminal), created));
+    }
+}
+
+async fn choose_entry(
+    connection: &Connection,
+    entry: Option<acyclic_harness::agent::AgentPath>,
+    peer: bool,
+    questions: bool,
+) -> Result<(Connection, bool), Failure> {
+    match entry {
+        Some(agent) => Ok((connection.select(agent).await?, false)),
+        None => Ok((
+            sessions::create_with_peer(
+                connection,
                 &OperationId::new().to_string(),
+                peer,
                 Some(questions),
             )
-            .await?
-        } else {
-            connection
-                .select(
-                    visible
-                        .get(choice)
-                        .ok_or("missing selected session")?
-                        .agent
-                        .clone(),
-                )
-                .await?
-        };
-        return Ok((selected, Some(terminal)));
+            .await?,
+            true,
+        )),
     }
 }
 

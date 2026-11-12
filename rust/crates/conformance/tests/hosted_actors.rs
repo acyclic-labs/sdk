@@ -196,6 +196,7 @@ fn composition_at(
         (
             IntentId::try_from("root")?,
             RootRequest {
+                peer: true,
                 agent: root,
                 fresh: vec![WorkspaceEntry::initial_volume(
                     acyclic_harness_core::agent::WorkspaceRole::Private,

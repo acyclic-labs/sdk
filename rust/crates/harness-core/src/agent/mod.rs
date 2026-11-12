@@ -64,7 +64,8 @@ mod messaging;
 mod steering;
 pub use messaging::{
     MessageDelivery, PeerAdmission, PeerMembership, PeerMembershipHead, SEND_PEER,
-    peer_send_allowed, session_peer_admission, session_peer_allowed, sibling_send_allowed,
+    initial_peer_membership, peer_send_allowed, session_peer_admission, session_peer_allowed,
+    sibling_send_allowed,
 };
 pub use steering::{
     BoundaryCut, BoundaryEnd, BoundarySelection, ModelBoundary, SteeringSnapshot,

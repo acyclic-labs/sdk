@@ -67,6 +67,33 @@ impl PeerAdmission {
     }
 }
 
+/// The immutable launch choice, independently of later user membership edits.
+/// Session creation replay must compare this original record, not today's head.
+pub async fn initial_peer_membership<P: crate::store::JournalProvider + ?Sized>(
+    provider: &P,
+    root: &AgentPath,
+) -> Result<PeerMembership, super::Error> {
+    use super::AgentRecord as _;
+    use futures::TryStreamExt as _;
+    let mut records = provider
+        .read(acyclic_stream::ReadRequest {
+            key: None,
+            path: root.peer_membership()?,
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await
+        .map_err(super::Error::Stream)?;
+    let record = records
+        .try_next()
+        .await
+        .map_err(super::Error::Stream)?
+        .filter(|record| record.sequence == 0)
+        .ok_or(super::Error::Record("root has no original peer choice"))?;
+    PeerMembership::decode(&record.value)
+}
+
 /// Check both membership heads at one authority cut, without directory reads.
 /// A child, absent record, or opted-out root cannot acquire automatic peer reach.
 pub async fn session_peer_allowed<P: crate::store::JournalProvider + ?Sized>(

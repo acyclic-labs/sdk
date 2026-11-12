@@ -30,6 +30,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
         owner.clone(),
         &IntentId::try_from("editor-root")?,
         RootRequest {
+            peer: true,
             agent,
             fresh: vec![WorkspaceEntry::initial_volume(
                 crate::agent::WorkspaceRole::Private,

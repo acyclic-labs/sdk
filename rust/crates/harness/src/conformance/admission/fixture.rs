@@ -87,6 +87,7 @@ impl Fixture {
             .create_root(
                 &vectors::intent("create")?,
                 RootRequest {
+                    peer: true,
                     agent,
                     fresh: vec![binding.clone()],
                     retained: Vec::new(),

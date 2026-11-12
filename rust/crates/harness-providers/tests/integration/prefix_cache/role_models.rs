@@ -209,6 +209,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         .create_root(
             &intent("root"),
             RootRequest {
+                peer: true,
                 agent: id.clone(),
                 fresh: vec![acyclic_harness::agent::WorkspaceEntry::initial_volume(
                     acyclic_harness_core::agent::WorkspaceRole::Private,

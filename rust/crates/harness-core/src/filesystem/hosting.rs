@@ -74,6 +74,8 @@ pub struct VerifiedCaller {
 /// the creation.
 #[derive(Clone, Debug)]
 pub struct RootRequest {
+    /// The user's launch-time peer choice, committed with the root itself.
+    pub peer: bool,
     /// The root agent.
     pub agent: AgentId,
     /// Volumes created, empty, in the root's own commit; the agent's private
@@ -1266,6 +1268,7 @@ where
             self.volumes.seed_layer().await.map_err(turn)?;
         }
         let RootRequest {
+            peer,
             agent,
             fresh,
             retained,
@@ -1273,7 +1276,7 @@ where
             policy,
         } = request;
         let volumes: Vec<WorkspaceEntry> = fresh.iter().chain(&retained).cloned().collect();
-        let Spawn { child, mut request } = self.agents.prepare_root(
+        let Spawn { child, mut request } = self.agents.prepare_root_with_peer(
             intent,
             ForkAdopted {
                 profile: None,
@@ -1287,6 +1290,7 @@ where
                 policy,
             },
             questions.unwrap_or(self.turns.question_plugin()),
+            peer,
         )?;
         if indexed {
             self.index_session(&child, &mut request)?;

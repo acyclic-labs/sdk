@@ -20,6 +20,9 @@ struct Descriptor {
     version: u32,
     endpoint: String,
     credential: String,
+    // Optional negotiation metadata: absence grants no configuration match.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    configuration: std::collections::BTreeMap<String, [u8; 32]>,
 }
 
 impl Directory {
@@ -74,6 +77,7 @@ impl Directory {
             .map_err(storage)?;
         Ok(Owner {
             directory: self.clone(),
+            configuration: Default::default(),
             _lock: lock,
             publication: std::sync::Mutex::new(Some(publication)),
         })
@@ -112,17 +116,18 @@ impl Directory {
     /// Attaches to the live owner or launches it once. `arguments` select the
     /// caller's executable's serving mode; the shared readiness protocol is
     /// appended by the native runtime. Call from a blocking worker.
-    pub fn start(&self, executable: &Path, arguments: &[OsString]) -> Result<()> {
+    /// Returns true only when this call started the owner with `arguments`.
+    pub fn start(&self, executable: &Path, arguments: &[OsString]) -> Result<bool> {
         let _startup = FileLock::acquire(self.file("startup.lock")?, FileLockMode::Exclusive)
             .map_err(storage)?;
         if self.running()? {
-            return Ok(());
+            return Ok(false);
         }
         match acyclic_native_runtime::spawn_service_process(executable, arguments)
             .and_then(acyclic_native_runtime::ServiceReadiness::wait)
             .map_err(storage)?
         {
-            ServiceStartOutcome::Ready => Ok(()),
+            ServiceStartOutcome::Ready => Ok(true),
             ServiceStartOutcome::Failed(reason) => Err(Error::Storage(reason)),
             ServiceStartOutcome::Exited => Err(Error::Storage(
                 "local server exited before readiness".into(),
@@ -133,13 +138,7 @@ impl Directory {
     /// Opens the owner's published capability through the ordinary client.
     /// Endpoint errors are returned as errors, never reinterpreted as death.
     pub async fn connect(&self) -> Result<Connection> {
-        let file = private_file::open(&self.0.join("endpoint.json"), false).map_err(storage)?;
-        let descriptor: Descriptor = serde_json::from_reader(file).map_err(storage)?;
-        if descriptor.version != 1 {
-            return Err(Error::Unsupported(
-                "local service descriptor requires version 1".into(),
-            ));
-        }
+        let descriptor = self.descriptor()?;
         let options = acyclic_harness_client::ConnectionOptions::from_env(
             Some(&descriptor.endpoint),
             Some(&descriptor.credential),
@@ -147,16 +146,43 @@ impl Directory {
         .map_err(|error| Error::Invalid(error.code().into()))?;
         Connection::connect(&options).await
     }
+
+    /// Non-secret configuration identities published by the live owner.
+    /// Call only after `existing` or `start` has waited for publication.
+    pub fn configuration(&self) -> Result<std::collections::BTreeMap<String, [u8; 32]>> {
+        Ok(self.descriptor()?.configuration)
+    }
+
+    fn descriptor(&self) -> Result<Descriptor> {
+        let file = private_file::open(&self.0.join("endpoint.json"), false).map_err(storage)?;
+        let descriptor: Descriptor = serde_json::from_reader(file).map_err(storage)?;
+        if descriptor.version != 1 {
+            return Err(Error::Unsupported(
+                "local service descriptor requires version 1".into(),
+            ));
+        }
+        Ok(descriptor)
+    }
 }
 
 /// OS ownership retained for the entire serving lifetime, including shutdown.
 pub struct Owner {
     directory: Directory,
+    configuration: std::collections::BTreeMap<String, [u8; 32]>,
     publication: std::sync::Mutex<Option<FileLock>>,
     _lock: FileLock,
 }
 
 impl Owner {
+    /// Binds configuration identities to this owner's readiness publication.
+    pub fn with_configuration(
+        mut self,
+        configuration: std::collections::BTreeMap<String, [u8; 32]>,
+    ) -> Self {
+        self.configuration = configuration;
+        self
+    }
+
     /// Publishes only after `server::serve` has admitted the runtime and client
     /// capability. The startup lock and readiness event hide partial writes.
     pub fn publish(&self, endpoint: &crate::server::Endpoint) -> Result<()> {
@@ -172,6 +198,7 @@ impl Owner {
                 version: 1,
                 endpoint: endpoint.endpoint.clone(),
                 credential: observation.credential.clone(),
+                configuration: self.configuration.clone(),
             },
         )
         .map_err(storage)?;
@@ -309,6 +336,7 @@ mod tests {
         assert!(
             tree.execute(&AgentCommand::NewSession {
                 questions: None,
+                peer: true,
                 id: crate::agent::IntentId::try_from("denied").map_err(storage)?
             })
             .await
@@ -387,6 +415,7 @@ mod tests {
             for index in 0..4 {
                 let create = AgentCommand::NewSession {
                     questions: None,
+                    peer: index != 0,
                     id: crate::agent::IntentId::try_from(format!("session-{index}"))
                         .map_err(storage)?,
                 };
@@ -397,6 +426,41 @@ mod tests {
                     return Err(Error::Invalid("missing replay".into()));
                 };
                 assert_eq!(agent, replay);
+                let expected_peer = index != 0;
+                assert_eq!(
+                    crate::agent::initial_peer_membership(&**hosted.agents().provider(), &agent,)
+                        .await
+                        .map_err(storage)?
+                        .enabled,
+                    expected_peer
+                );
+                let toggle = AgentCommand::SetPeerMembership {
+                    agent: agent.clone(),
+                    id: crate::agent::IntentId::try_from(format!("toggle-{index}"))
+                        .map_err(storage)?,
+                    enabled: !expected_peer,
+                };
+                connection.execute(&toggle).await?;
+                let AgentReply::Root {
+                    agent: after_toggle,
+                } = connection.execute(&create).await?
+                else {
+                    return Err(Error::Invalid(
+                        "missing creation replay after membership change".into(),
+                    ));
+                };
+                assert_eq!(
+                    after_toggle, agent,
+                    "creation replay must compare the original peer choice"
+                );
+                let mut changed = create.clone();
+                if let AgentCommand::NewSession { peer, .. } = &mut changed {
+                    *peer = !*peer;
+                }
+                assert!(
+                    connection.execute(&changed).await.is_err(),
+                    "same creation intent accepted a changed peer choice"
+                );
                 let AgentReply::LatestSession { agent: latest } =
                     connection.execute(&AgentCommand::LatestSession {}).await?
                 else {
@@ -795,6 +859,18 @@ mod tests {
 
     #[tokio::test]
     async fn detached_clients_share_one_owner_and_one_prompt_commit() -> Result<()> {
+        for configuration in [
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::from([("catalog".into(), [42; 32])]),
+        ] {
+            detached_clients(configuration).await?;
+        }
+        Ok(())
+    }
+
+    async fn detached_clients(
+        configuration: std::collections::BTreeMap<String, [u8; 32]>,
+    ) -> Result<()> {
         let workspace = tempfile::tempdir().map_err(storage)?;
         let state = tempfile::tempdir().map_err(storage)?;
         let (entered, entering) = tokio::sync::oneshot::channel();
@@ -832,7 +908,7 @@ mod tests {
             directory.0,
             Directory::for_workspace(workspace.path(), Some(state.path()))?.0
         );
-        let owner = directory.own()?;
+        let owner = directory.own()?.with_configuration(configuration.clone());
         assert!(
             directory.own().is_err(),
             "only one runtime may own the checkout"
@@ -866,11 +942,12 @@ mod tests {
         });
         let result = async {
             readiness.await.map_err(storage)??;
-            attachment.await.map_err(storage)??;
+            assert!(!attachment.await.map_err(storage)??);
+            assert_eq!(directory.configuration()?, configuration);
             // Reattachment observes the owner, never starts a replacement or
             // dispatches a model to decide whether that owner is ready.
             assert!(directory.existing()?);
-            directory.start(Path::new("nonexistent-service-executable"), &[])?;
+            assert!(!directory.start(Path::new("nonexistent-service-executable"), &[])?);
             let first = Conversation::open(directory.connect().await?);
             let second = Conversation::open(directory.connect().await?);
             assert!(!first.phase().await?.in_turn(), "adoption alone is not a turn");

@@ -134,15 +134,46 @@ fn unexpected() -> Error {
     Error::Invalid("session command returned another reply".into())
 }
 
+/// User-only membership change through the selected session's connection.
+/// No project settings or file-backed command can call this operation.
+pub async fn set_peers(connection: &Connection, operation: &str, enabled: bool) -> Result<()> {
+    let id = IntentId::try_from(operation).map_err(storage)?;
+    match connection
+        .execute(&AgentCommand::SetPeerMembership {
+            agent: connection.root().tree_root(),
+            id,
+            enabled,
+        })
+        .await?
+    {
+        AgentReply::PeerMembership { enabled: committed } if committed == enabled => Ok(()),
+        _ => Err(unexpected()),
+    }
+}
+
 /// Create a root through the host's one admitted volume/actor publication.
 pub async fn create(
     connection: &Connection,
     operation: &str,
     questions: Option<bool>,
 ) -> Result<Connection> {
+    create_with_peer(connection, operation, true, questions).await
+}
+
+/// Create with the user's launch choice in the root's original publication.
+pub async fn create_with_peer(
+    connection: &Connection,
+    operation: &str,
+    peer: bool,
+    questions: Option<bool>,
+) -> Result<Connection> {
     let id = IntentId::try_from(operation).map_err(storage)?;
     let AgentReply::Root { agent } = connection
-        .execute(&AgentCommand::NewSession { id, questions })
+        .execute(&AgentCommand::NewSession {
+            id,
+            peer,
+            questions,
+        })
         .await?
     else {
         return Err(unexpected());
@@ -161,6 +192,7 @@ pub async fn fork(
     let id = IntentId::try_from(operation).map_err(storage)?;
     let AgentReply::Root { agent } = connection
         .execute(&AgentCommand::ForkSession {
+            peer: true,
             agent: source,
             at,
             id,

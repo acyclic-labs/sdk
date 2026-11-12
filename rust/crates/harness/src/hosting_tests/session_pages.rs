@@ -15,6 +15,7 @@ async fn ten_thousand_sessions_keep_discovery_at_two_bounded_head_views() -> Res
             owner,
             &IntentId::try_from("directory-scale")?,
             RootRequest {
+                peer: true,
                 agent: AgentId::from_bytes([1; 16]),
                 fresh: vec![WorkspaceEntry::initial_volume(
                     crate::agent::WorkspaceRole::Private,

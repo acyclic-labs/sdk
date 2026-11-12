@@ -3933,6 +3933,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     assert_eq!(source.len(), 2);
     let connection = harness.connect_sessions().await?;
     let request = AgentCommand::ForkSession {
+        peer: true,
         agent: root.clone(),
         id: crate::agent::IntentId::try_from("rewind").map_err(agent)?,
         at: 0,
@@ -4035,6 +4036,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     );
     let AgentReply::Root { agent: repeated } = connection
         .execute(&AgentCommand::ForkSession {
+            peer: true,
             agent: branch,
             id: crate::agent::IntentId::try_from("repeated-rewind").map_err(agent)?,
             at: 0,

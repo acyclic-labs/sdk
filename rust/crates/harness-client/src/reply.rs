@@ -200,6 +200,9 @@ pub enum AgentReply {
         /// Immutable provider/model selection, absent for an externally owned loop.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// The host guarantees that context compaction and capacity checks are disabled.
+        #[serde(default)]
+        compaction_disabled: bool,
         /// Forced policy admitted at creation, when one was selected.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -64,6 +64,7 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
         .create_root(
             &IntentId::try_from("root")?,
             RootRequest {
+                peer: true,
                 agent: id.clone(),
                 fresh: vec![WorkspaceEntry::initial_volume(
                     crate::agent::WorkspaceRole::Private,

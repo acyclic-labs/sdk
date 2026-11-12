@@ -1,4 +1,5 @@
 [
+  {"name":"peers","description":"Join or leave peer sessions: on or off","arguments":"word","action":{"kind":"peers"}},
   {"name":"cost","aliases":[],"description":"Inspect original usage for this agent and descendants","arguments":"none","action":{"query":"cost","kind":"select"}},
   {"name":"compact","description":"Summarize the current context","arguments":"text","action":{"kind":"builtin","command":"compact"}},
   {"name":"rewind","aliases":["fork"],"description":"Fork at a settled turn with its files, retaining the current session","arguments":"none","action":{"request":{"kind":"rewind"},"kind":"request"}},

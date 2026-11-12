@@ -195,9 +195,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         adopted: ForkAdopted,
         source: &AgentPath,
         history: &super::HistorySelection,
+        peer: bool,
     ) -> Result<Spawn, Error> {
         let created =
-            super::commit::create_root_at(intent, adopted, Some((source, history)), true)?;
+            super::commit::create_root_at(intent, adopted, Some((source, history)), peer)?;
         self.root_actor(within, created, true)
     }
 

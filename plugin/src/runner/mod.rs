@@ -337,6 +337,11 @@ async fn run_inner(
         && args.output_format == OutputFormat::Text
         && !acyclic_harness::tui::term::Environment::capture().is_dumb();
     let session_client = interactive
+        || !args.local_service
+            && matches!(
+                args.command,
+                None | Some(Command::Run | Command::Exec { .. })
+            )
         || args.agent.is_some()
         || args.new_session
         || args.continue_session
@@ -358,6 +363,7 @@ async fn run_inner(
         )?;
         let existing = directory.clone();
         if tokio::task::spawn_blocking(move || existing.existing()).await?? {
+            require_existing_owner(&args, &directory)?;
             // A running session needs only its existing capability and files;
             // attaching never asks the user for the owner's model credentials.
             return connected(
@@ -375,10 +381,16 @@ async fn run_inner(
     };
     let mut registry = setup::registry(&args)?;
     let terminal = setup::first_run(&mut args, &mut registry)?;
+    let catalog = catalog_identity(&registry)?;
     let config = configure(&args, registry)?;
     if args.local_service {
         let directory = acyclic_harness::local::service::Directory::for_config(&config)?;
-        let owner = directory.own()?;
+        let owner = directory
+            .own()?
+            .with_configuration(std::collections::BTreeMap::from([(
+                "catalog".into(),
+                catalog,
+            )]));
         let signal = ready
             .take()
             .ok_or("local service requires its readiness channel")?;
@@ -433,7 +445,7 @@ async fn run_inner(
     if let Some(directory) = service {
         let starter = directory.clone();
         let arguments = service_arguments(&args);
-        tokio::task::spawn_blocking(move || {
+        let started = tokio::task::spawn_blocking(move || {
             starter.start(
                 &std::env::current_exe()
                     .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?,
@@ -441,6 +453,9 @@ async fn run_inner(
             )
         })
         .await??;
+        if !started {
+            require_existing_owner(&args, &directory)?;
+        }
         let connection = directory.connect().await?;
         return connected(&args, connection, output, event_output, terminal).await;
     }
@@ -464,55 +479,240 @@ fn questions_enabled(args: &Args) -> bool {
 // Only owner configuration crosses the process boundary. Prompt identities,
 // view selections and output destinations belong to the attaching client.
 fn service_arguments(args: &Args) -> Vec<std::ffi::OsString> {
+    std::iter::once("--local-service".into())
+        .chain(
+            owner_arguments(args)
+                .into_iter()
+                .flat_map(|argument| std::iter::once(argument.flag.into()).chain(argument.value)),
+        )
+        .collect()
+}
+
+struct OwnerArgument {
+    flag: &'static str,
+    value: Option<std::ffi::OsString>,
+    /// This choice selects the owner or has an explicit session admission check.
+    reusable: bool,
+}
+
+/// One inventory for owner startup and attachment: no forwarded override may
+/// silently disappear when another process already owns the checkout.
+fn owner_arguments(args: &Args) -> Vec<OwnerArgument> {
     let mut arguments = vec![
-        "--local-service".into(),
-        "--questions".into(),
-        questions_enabled(args).to_string().into(),
-        "--workspace".into(),
-        args.workspace.clone().into_os_string(),
+        OwnerArgument {
+            flag: "--questions",
+            value: Some(questions_enabled(args).to_string().into()),
+            reusable: true,
+        },
+        OwnerArgument {
+            flag: "--workspace",
+            value: Some(args.workspace.clone().into_os_string()),
+            reusable: true,
+        },
     ];
-    for (flag, path) in [
-        ("--host-state-directory", args.host_state_directory.as_ref()),
-        ("--catalog", args.catalog.as_ref()),
-        ("--credentials", args.credentials.as_ref()),
-        ("--settings-root", args.settings_root.as_ref()),
-        ("--approval-policy", args.approval_policy.as_ref()),
+    for (flag, path, reusable) in [
+        (
+            "--host-state-directory",
+            args.host_state_directory.as_ref(),
+            true,
+        ),
+        ("--catalog", args.catalog.as_ref(), false),
+        ("--credentials", args.credentials.as_ref(), false),
+        ("--settings-root", args.settings_root.as_ref(), false),
+        ("--approval-policy", args.approval_policy.as_ref(), false),
     ] {
         if let Some(path) = path {
-            arguments.extend([flag.into(), path.clone().into_os_string()]);
+            arguments.push(OwnerArgument {
+                flag,
+                value: Some(path.clone().into_os_string()),
+                reusable,
+            });
         }
     }
-    for (flag, value) in [
-        ("--model", args.model.as_ref()),
-        ("--directory", args.directory.as_ref()),
-        ("--topology", args.topology.as_ref()),
+    for (flag, value, reusable) in [
+        ("--model", args.model.as_ref(), true),
+        ("--directory", args.directory.as_ref(), false),
+        ("--topology", args.topology.as_ref(), true),
     ] {
         if let Some(value) = value {
-            arguments.extend([flag.into(), value.into()]);
+            arguments.push(OwnerArgument {
+                flag,
+                value: Some(value.into()),
+                reusable,
+            });
         }
     }
-    arguments.extend([
-        "--workspace-mounting".into(),
-        match args.workspace_mounting {
-            args::Mounting::Auto => "auto",
-            args::Mounting::Native => "native",
-            args::Mounting::Physical => "physical",
-        }
-        .into(),
-    ]);
+    arguments.push(OwnerArgument {
+        flag: "--workspace-mounting",
+        value: Some(
+            match args.workspace_mounting {
+                args::Mounting::Auto => "auto",
+                args::Mounting::Native => "native",
+                args::Mounting::Physical => "physical",
+            }
+            .into(),
+        ),
+        reusable: args.workspace_mounting == args::Mounting::Auto,
+    });
     if args.default_config {
-        arguments.push("--default-config".into());
+        arguments.push(OwnerArgument {
+            flag: "--default-config",
+            value: None,
+            reusable: false,
+        });
     }
     if args.no_compaction {
-        arguments.push("--no-compaction".into());
+        arguments.push(OwnerArgument {
+            flag: "--no-compaction",
+            value: None,
+            reusable: true,
+        });
     }
     if let Some(records) = args.diagnostic_records {
-        arguments.extend(["--diagnostic-records".into(), records.to_string().into()]);
+        arguments.push(OwnerArgument {
+            flag: "--diagnostic-records",
+            value: Some(records.to_string().into()),
+            reusable: false,
+        });
     }
     if let Some(bytes) = args.diagnostic_record_bytes {
-        arguments.extend(["--diagnostic-record-bytes".into(), bytes.to_string().into()]);
+        arguments.push(OwnerArgument {
+            flag: "--diagnostic-record-bytes",
+            value: Some(bytes.to_string().into()),
+            reusable: false,
+        });
     }
     arguments
+}
+
+fn catalog_identity(registry: &Registry) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    Ok(*blake3::hash(&serde_json::to_vec(&(
+        registry.default_model(),
+        registry.catalog(),
+    ))?)
+    .as_bytes())
+}
+
+fn require_existing_owner(
+    args: &Args,
+    directory: &acyclic_harness::local::service::Directory,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let catalog = if args.catalog.is_some() {
+        directory.configuration()?.get("catalog").copied()
+    } else {
+        None
+    };
+    require_owner_arguments(args, catalog)
+}
+
+fn require_owner_arguments(
+    args: &Args,
+    catalog: Option<[u8; 32]>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(path) = &args.catalog {
+        // Compare the effective catalog without resolving model credentials.
+        // The owner hashes the registry it actually configured, not a reread of
+        // a file which may have changed after startup.
+        let mut requested = Registry::new(Credentials::explicit(Default::default()))?;
+        requested.load_catalog(path)?;
+        if catalog != Some(catalog_identity(&requested)?) {
+            return Err("an existing local owner has a different --catalog; recovery: choose a fresh --host-state-directory".into());
+        }
+    }
+    if let Some(argument) = owner_arguments(args)
+        .into_iter()
+        .find(|argument| !argument.reusable && argument.flag != "--catalog")
+    {
+        return Err(format!("an existing local owner cannot apply {}; recovery: choose a fresh --host-state-directory", argument.flag).into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod owner_arguments_tests {
+    use super::*;
+    use clap::Parser as _;
+
+    #[test]
+    fn unchanged_catalog_attaches_but_changed_configuration_is_refused()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let catalog = tempfile::NamedTempFile::new()?;
+        std::fs::write(catalog.path(), b"{}")?;
+        let mut args = Args::try_parse_from(["graphcoder", "exec", "task"])?;
+        // Both argv and ACYCLIC_CATALOG populate this same parsed field.
+        args.catalog = Some(catalog.path().to_owned());
+        let mut registry = Registry::new(Credentials::explicit(Default::default()))?;
+        registry.load_catalog(catalog.path())?;
+        let admitted = catalog_identity(&registry)?;
+        require_owner_arguments(&args, Some(admitted))?;
+        assert!(require_owner_arguments(&args, None).is_err());
+
+        // Equality is of the loaded configuration, not its pathname or JSON
+        // formatting. No credentials or provider requests are needed to attach.
+        let equivalent = tempfile::NamedTempFile::new()?;
+        std::fs::write(equivalent.path(), b"{\n}\n")?;
+        args.catalog = Some(equivalent.path().to_owned());
+        require_owner_arguments(&args, Some(admitted))?;
+
+        let mut changed = registry.catalog()["openai"].as_ref().clone();
+        changed.base_url = "https://different.example/v1".into();
+        std::fs::write(
+            equivalent.path(),
+            serde_json::to_vec(&serde_json::json!({"openai": changed}))?,
+        )?;
+        assert!(require_owner_arguments(&args, Some(admitted)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn owner_configuration_cannot_disappear_on_attach() -> Result<(), Box<dyn std::error::Error>> {
+        for (flag, value) in [
+            ("--approval-policy", Some("restrictive.json")),
+            ("--directory", Some("scoped/subtree")),
+            ("--credentials", Some("credentials.json")),
+            ("--settings-root", Some("settings")),
+            ("--workspace-mounting", Some("physical")),
+            ("--default-config", None),
+        ] {
+            let mut argv = vec!["graphcoder", flag];
+            argv.extend(value);
+            argv.extend(["exec", "task"]);
+            let args = Args::try_parse_from(argv)?;
+            assert!(
+                require_owner_arguments(&args, None).is_err(),
+                "{flag} must not disappear"
+            );
+            let forwarded = service_arguments(&args);
+            let position = forwarded
+                .iter()
+                .position(|item| item == flag)
+                .ok_or("owner startup lost an override")?;
+            if let Some(value) = value {
+                assert_eq!(
+                    forwarded.get(position + 1),
+                    Some(&std::ffi::OsString::from(value))
+                );
+            }
+        }
+        let mut args = Args::try_parse_from([
+            "graphcoder",
+            "--model",
+            "test/model",
+            "--no-compaction",
+            "--no-peer",
+            "exec",
+            "task",
+        ])?;
+        // These fixtures have no owner catalog override, including via environment.
+        args.catalog = None;
+        require_owner_arguments(&args, None)?;
+        assert!(
+            !service_arguments(&args)
+                .iter()
+                .any(|item| item == "--no-peer")
+        );
+        Ok(())
+    }
 }
 
 async fn host_workspace(
@@ -608,7 +808,8 @@ async fn connected(
         .await?;
         return Ok(());
     }
-    let (connection, selected_terminal) = sessions::select(args, connection, terminal).await?;
+    let (connection, selected_terminal, peer_choice_applied) =
+        sessions::select(args, connection, terminal).await?;
     terminal = selected_terminal;
     let connection = match &args.agent {
         Some(agent) => {
@@ -643,6 +844,12 @@ async fn connected(
     } else {
         connection
     };
+    if !peer_choice_applied {
+        connection
+            .require_execution(args.model.as_deref(), args.no_compaction)
+            .await?;
+    }
+    sessions::apply_peer_choice(args, &connection, peer_choice_applied).await?;
     if args.endpoint.is_none() {
         connection
             .require_topology(&acyclic_harness::topology::Topology::select(

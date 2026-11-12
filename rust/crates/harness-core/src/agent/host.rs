@@ -636,6 +636,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         mut adopted: ForkAdopted,
         at: u64,
         saved: &super::HistoryCheckpoint,
+        peer: bool,
     ) -> Result<Spawn, Error> {
         if saved.conversation
             != at
@@ -662,8 +663,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             conversation: saved.conversation,
             checkpoint: saved.checkpoint,
         };
-        self.agents
-            .prepare_root_history(&self.within, intent, adopted, &source.path, &history)
+        self.agents.prepare_root_history(
+            &self.within,
+            intent,
+            adopted,
+            &source.path,
+            &history,
+            peer,
+        )
     }
 
     /// Create root agent `adopted.agent` in one commit, and start hosting it.

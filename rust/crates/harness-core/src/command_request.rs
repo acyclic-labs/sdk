@@ -83,6 +83,11 @@ pub enum CommandRequest {
         /// Provider/model identifier.
         model: String,
     },
+    /// User-only peer participation, sent through the session connection.
+    Peers {
+        /// True to rejoin, false to opt out symmetrically.
+        enabled: bool,
+    },
 }
 
 /// Which theme set the terminal shows, as `config/theme.json` records it.
@@ -364,6 +369,11 @@ impl CommandResolution {
         let config = |root, path: &str, contents| config_change(operation, root, path, contents);
         let publish_request = |root, contents| request_change(operation, root, contents);
         match request {
+            CommandRequest::Peers { .. } => {
+                return Err(Error::Unauthorized(
+                    "peer membership requires the user's live session connection".into(),
+                ));
+            }
             CommandRequest::Model { model } => {
                 let mut settings = document(snapshot, CommandFileRoot::Task, "settings.json")?;
                 settings.insert("model".into(), json!(model));

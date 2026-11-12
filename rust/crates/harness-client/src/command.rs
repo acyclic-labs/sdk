@@ -10,6 +10,10 @@ use acyclic_harness_core::{
 };
 use serde::{Deserialize, Serialize};
 
+fn peer_enabled() -> bool {
+    true
+}
+
 /// Most bytes a binding's routing adds to a command frame in its invocation.
 const MAX_ROUTING_BYTES: usize = 64 * 1024;
 /// One command frame: the encoded bytes one invocation carries beside its
@@ -173,6 +177,9 @@ pub enum AgentCommand {
         /// Stable creation identity; reuse exactly after an uncertain result.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
+        /// Launch-time peer participation; on unless the user opts out.
+        #[serde(default = "peer_enabled")]
+        peer: bool,
     },
     /// Change peer participation through the authenticated user connection.
     /// This operation is never a model tool or a file-backed request.
@@ -196,6 +203,9 @@ pub enum AgentCommand {
         id: IntentId,
         /// Zero-based inclusive settled conversation offset.
         at: u64,
+        /// The new independent root's user-selected peer participation.
+        #[serde(default = "peer_enabled")]
+        peer: bool,
     },
     /// Durably pause or explicitly resume the selected actor through its
     /// existing runtime, parking the same owned execution resources.
