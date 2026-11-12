@@ -630,3 +630,61 @@ async fn a_deferred_alarm_survives_a_crash_after_the_checkpoint() -> TestResult 
     );
     Ok(())
 }
+
+/// A malformed record or child in a runtime deadline stream refuses only
+/// itself: a restarted host still wakes the window's actor and keeps serving,
+/// rather than terminating on retained bytes.
+#[tokio::test]
+async fn a_malformed_window_record_refuses_only_itself() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?)
+        .with_scheduling_shards(std::num::NonZeroU16::MIN);
+    let actor = spawn_with(&store, "malformed", &[b"set 50000"]).await?;
+    let host = |now| {
+        let (clock, control) = ControlledClock::new(now);
+        let runtime = Runtime::new(
+            store.clone(),
+            Arc::new(Package::new()?),
+            Arc::new(clock) as Arc<dyn Clock>,
+        );
+        Ok::<_, Box<dyn std::error::Error>>((runtime, control))
+    };
+    let (earlier, _control) = host(100_000)?;
+    earlier.track(actor.clone())?;
+    earlier.drain_actor(&actor).await?;
+    // Window one holds only junk, window two the actor's 150000 alarm plus
+    // junk, and a non-window child sorts after both.
+    let shard = store.scheduling_path(0)?;
+    let mut corrupt = PreparedPublish::foreign(key("corrupt")?);
+    corrupt.join(CommitEffect::hard(
+        Vec::new(),
+        [
+            format!("{shard}/{:020}", 1),
+            format!("{shard}/{:020}", 2),
+            format!("{shard}/zz"),
+        ]
+        .into_iter()
+        .map(|path| {
+            Ok(CommitMutation::Append {
+                path: StreamPath::new(path)?,
+                records: vec![Bytes::from_static(b"junk").into()],
+            })
+        })
+        .collect::<Result<_, StreamError>>()?,
+    ))?;
+    store.submit(corrupt).await?;
+    let (restarted, _control) = host(240_000)?;
+    let mut serving = Box::pin(restarted.run(|_, error| panic!("delivery failed: {error}")));
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &actor, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
+    assert_eq!(
+        records(&*provider, "out/malformed").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    Ok(())
+}

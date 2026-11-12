@@ -488,7 +488,9 @@ impl PreparedPublish {
     }
     /// Add one effect. Hard effects join the canonical hard publication;
     /// soft effects apply or skip their entire mutation group together.
-    /// Guest effects cannot mutate host-owned failure or placement records.
+    /// Guest effects cannot mutate any runtime-owned stream: the actor's
+    /// failure, custody and placement records, or its root's runtime
+    /// namespaces (scheduling, dispatcher, sockets).
     pub fn join(&mut self, effect: CommitEffect) -> Result<(), Error> {
         if self
             .own
@@ -1210,17 +1212,16 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         {
             return Err(Error::Invalid("delivered record differs from its trigger"));
         }
-        let call = if let Some((path, completion)) = self.invocation_completion(
+        // The call's completion is a host record, joined past the guest check.
+        let (call, completion) = match self.invocation_completion(
             previous,
             trigger,
             delivered,
             transition.response.as_ref().map(Ok),
             &transition.effects,
         )? {
-            transition.effects.extend(completion);
-            Some(path)
-        } else {
-            None
+            Some((path, completion)) => (Some(path), completion),
+            None => (None, Vec::new()),
         };
         let previous_checkpoint = state.checkpoint.take();
         // A participant's custody intent rides in the publication itself.
@@ -1265,6 +1266,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             ),
         };
         let mut prepared = self.prepare(previous, state, transition.effects, key)?;
+        for effect in completion {
+            prepared.join_host(effect)?;
+        }
         if let Some(intent) = intent {
             prepared.join_host(CommitEffect::hard(
                 Vec::new(),
@@ -1487,12 +1491,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 idempotency_key: key,
             },
         };
-        for effect in created
-            .into_iter()
-            .chain(armed)
-            .chain(resumed)
-            .chain(effects)
-        {
+        for effect in created.into_iter().chain(armed).chain(resumed) {
+            prepared.join_host(effect)?;
+        }
+        for effect in effects {
             prepared.join(effect)?;
         }
         Ok(prepared)

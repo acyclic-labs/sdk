@@ -195,13 +195,15 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
 impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// One runtime per state root and handler package.
     pub fn new(store: Store<P>, handler: Arc<dyn Handler>, clock: Arc<dyn Clock>) -> Self {
+        let shards = store.scheduling_shards;
         Self {
             scheduling_shards: (0..store.scheduling_shards()).collect(),
+            // Each shard's deadline watermark is held only by its own alarms.
+            ready: ReadySet::grouped(move |actor| scheduling::shard(shards, actor)),
             store,
             scope: None,
             handler,
             clock,
-            ready: ReadySet::default(),
             actors: std::array::from_fn(|_| SyncMutex::new(HashMap::new())),
             shards: RandomState::new(),
             instance: crate::identity::fresh_uuid(),
@@ -657,6 +659,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         > = FuturesUnordered::new();
         let mut opening: FuturesUnordered<BoxProviderFuture<'_, Result<Opened, Error>>> =
             FuturesUnordered::new();
+        // Windows whose reads are in flight, as `(shard, window)`: a shard's
+        // watermark never passes one of its windows still being read.
+        let mut reading = BTreeSet::new();
         // The activation log is also every producer's wake entry: the cursor
         // only bounds restart replay, so consecutive entries coalesce into one
         // checkpoint in flight at the latest seen end.
@@ -845,6 +850,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         && scheduling::window_start(window) <= now
                     {
                         windows.pop_first();
+                        reading.insert((shard, window));
                         opening.push(Box::pin(self.open_window(shard, window, 0)));
                     }
                 }
@@ -877,9 +883,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             let from = window
                                 .checked_add(1)
                                 .ok_or(Error::Invalid("alarm window overflow"))?;
-                            if consumed
-                                .get(&shard)
-                                .is_some_and(|&consumed| consumed < from)
+                            reading.remove(&(shard, window));
+                            // An earlier window still being read keeps the
+                            // watermark; its own completion finds what follows.
+                            if reading.range((shard, 0)..(shard, window)).next().is_none()
+                                && consumed
+                                    .get(&shard)
+                                    .is_some_and(|&consumed| consumed < from)
                             {
                                 consumed.insert(shard, from);
                                 windows.extend(next.map(|next| (next, shard)));
@@ -950,10 +960,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             if !running.is_empty() || self.ready.counts().1 != 0 || failure.is_some() {
                 continue;
             }
-            let bound = self.ready.watermark(self.clock.now_unix_ms());
+            let now = self.clock.now_unix_ms();
             for (&shard, previous) in &mut dispatchers {
                 let cursor = seen[&shard];
-                let deadline = consumed[&shard].min(bound);
+                let deadline = consumed[&shard].min(self.ready.watermark(shard, now));
                 if let Some(previous) = previous.take_if(|previous| {
                     dispatcher::activation_cursor(previous) < cursor
                         || dispatcher::deadline_cursor(previous) != deadline

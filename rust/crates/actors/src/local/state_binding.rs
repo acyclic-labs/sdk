@@ -356,7 +356,10 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         self.fenced = true;
         let effects = self.effects(AlarmChange::Keep, None)?;
         let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
-        let prepared = self.store.prepare(&self.snapshot, state, effects, key)?;
+        let mut prepared = self.store.prepare(&self.snapshot, state, Vec::new(), key)?;
+        for effect in effects {
+            prepared.join_host(effect)?;
+        }
         self.snapshot = self
             .store
             .submit_retained(prepared)
@@ -394,9 +397,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                 "guest effect targets the host's actor journal",
             ));
         }
-        transition
-            .effects
-            .extend(self.effects(transition.alarm, Some(&journal))?);
+        let effects = self.effects(transition.alarm, Some(&journal))?;
         let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
         let mut prepared = self.store.prepare_publication(
             &self.snapshot,
@@ -409,6 +410,10 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                 key,
             },
         )?;
+        // The binding's journal and activation are host records.
+        for effect in effects {
+            prepared.join_host(effect)?;
+        }
         prepared.journal = Some(journal);
         Ok(prepared)
     }
