@@ -30,7 +30,7 @@ test("built namespace bundle loads through manifest and onRecord with one admitt
     [HARNESS_BINDINGS.objects]: { open: unexpected },
     [HARNESS_BINDINGS.streams]: { dispatch: unexpected, open: unexpected },
     [HARNESS_BINDINGS.workspace]: { admit: unexpected },
-    [MODEL_FETCH]: unexpected,
+    [MODEL_FETCH]: () => ({ credentialScope: new Uint8Array(32).fill(1), fetch: unexpected }),
   };
   try {
     const readiness = await module.manifest({ env });
