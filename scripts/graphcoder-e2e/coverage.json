@@ -7,6 +7,7 @@
       "owner": "e2e-gate",
       "cases": [
         "pty-status-line",
+        "pty-driver",
         "pty-status-priced",
         "session-cost-rollup",
         "usage-durable-on-provider-error",

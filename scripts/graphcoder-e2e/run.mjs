@@ -163,6 +163,14 @@ async function execute(test, prepared) {
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
       const inputFixture = { ...fixture, env: { ...fixture.env, ...input.environment } };
+      if (input.mode === "drive") {
+        result = await processes.runOwned(process.execPath,
+          [fileURLToPath(new URL("../graphcoder-pty/drive-case.mjs", import.meta.url)), binary, JSON.stringify(fixture.args)],
+          { cwd: fixture.workspace, env: inputFixture.env });
+        executionSucceeded(result);
+        captures.push(result);
+        continue;
+      }
       if (input.mode === "service") {
         // The service belongs to the case, rather than to a terminal whose
         // original custody owner correctly retires all of its descendants.

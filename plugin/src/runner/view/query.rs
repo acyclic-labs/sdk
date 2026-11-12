@@ -211,7 +211,7 @@ pub(super) async fn load(
         }
         Source::Wait(agent) => {
             let selected = root.select(agent).await?;
-            let phase = selected.wait_current_input().await?;
+            let phase = selected.wait_current_input().await?.phase;
             Ok(QueryPage::new(
                 vec![
                     Line::raw(format!("Captured inputs settled · {phase:?}")),

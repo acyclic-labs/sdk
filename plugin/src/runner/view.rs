@@ -916,6 +916,8 @@ async fn run_current(
         title.generation.clone()
     ));
     let root = Arc::clone(&conversation);
+    let mut settlement_queries = futures::stream::FuturesUnordered::new();
+    let mut settlement_replies = Vec::new();
     let mut sidebar = tree::Sidebar::new(&conversation)?;
     let mut ui = session::Session::open(&conversation).await?;
     if let Some(text) = price_file {
@@ -1007,6 +1009,19 @@ async fn run_current(
     let start = Instant::now();
     let tree_marker = [Line::raw("")];
     loop {
+        let mut awaiting_paint = Vec::new();
+        for (id, settled) in settlement_replies.drain(..) {
+            let settled: acyclic_harness::local::agent_conversation::InputSettlement = settled;
+            if conversation.agent() == root.agent() && events.seen() < settled.conversation {
+                awaiting_paint.push((id, settled));
+            } else {
+                terminal.application_reply(&format!(
+                    "acyclic;settled;{id};{}",
+                    serde_json::to_string(&settled.phase)?
+                ))?;
+            }
+        }
+        settlement_replies = awaiting_paint;
         // Any session read can first observe a price publication, including
         // a layout command racing the file follow. Replace the projection
         // once for that original file, never for a redraw or layout-only cut.
@@ -1221,6 +1236,10 @@ async fn run_current(
         let mut files_changed = false;
         let tree_deadline = sidebar.source.next_deadline();
         tokio::select! {
+            Some((id, settled)) = settlement_queries.next(), if !settlement_queries.is_empty() => {
+                let settled: acyclic_harness::Result<acyclic_harness::local::agent_conversation::InputSettlement> = settled;
+                settlement_replies.push((id, settled?));
+            }
             () = futures::future::poll_fn(|cx| sidebar.files.poll_changed(cx)) => {}
             () = futures::future::poll_fn(|cx| sidebar.source.poll_changed(now, cx)) => {}
             () = async {
@@ -1359,6 +1378,12 @@ async fn run_current(
                 previous_layout = ui.layout_digest();
                 let (navigation, batch) = batch.ok_or("terminal input ended")??;
                 for event in navigation.into_iter().map(Err).chain(batch.into_iter().map(Ok)) {
+                    if let Ok(InputEvent::SettlementQuery(id)) = &event {
+                        let id = *id;
+                        let root = Arc::clone(&root);
+                        settlement_queries.push(async move { (id, root.wait_current_input().await) });
+                        continue;
+                    }
                     let intent = match &event {
                         Err(agent) => Some(tree::Intent::Attach(agent.clone())),
                         Ok(event) if overlay.is_none() && queries.source().is_none() => sidebar.event(event, &input.keymap, areas.tree),

@@ -1207,7 +1207,8 @@ mod tests {
             selected = tree.select(agent).await?;
             let phase = Conversation::open(selected.clone())
                 .wait_current_input()
-                .await?;
+                .await?
+                .phase;
             assert!(
                 matches!(phase, crate::agent::Phase::Idle),
                 "{name} did not become idle: {phase:?}"
@@ -1382,11 +1383,11 @@ mod tests {
         let discarded = Conversation::open(descendants[1].clone());
         sessions::archive(parent.connection(), "discard-child-subtree").await?;
         assert!(matches!(
-            parent.wait_current_input().await?,
+            parent.wait_current_input().await?.phase,
             crate::agent::Phase::Done { .. }
         ));
         assert!(matches!(
-            discarded.wait_current_input().await?,
+            discarded.wait_current_input().await?.phase,
             crate::agent::Phase::Done { .. }
         ));
         assert!(matches!(

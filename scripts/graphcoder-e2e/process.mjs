@@ -275,9 +275,16 @@ export class Processes {
   // The one real-terminal transport: ConPTY inside native Job custody on
   // Windows, or a PTY whose root leads its own session under the POSIX owner.
   startTerminal(binary, args, options = {}) {
-    const env = { ...(options.env ?? process.env), TERM: "xterm-256color" };
+    const { cols = 80, rows = 24, ...ownedOptions } = options;
+    assert.ok([cols, rows].every(value => Number.isSafeInteger(value) && value > 0 && value <= 32767),
+      "terminal dimensions must fit positive native coordinates");
+    options = ownedOptions;
+    const env = { ...(options.env ?? process.env), TERM: "xterm-256color",
+      E2E_PTY_COLS: String(cols), E2E_PTY_ROWS: String(rows) };
     const start = options.scopeReport ? this.startReportedOwned.bind(this) : this.startOwned.bind(this);
-    if (process.platform !== "win32") return start(binary, args, { ...options, env, scopePty: true });
+    if (process.platform !== "win32") return start("/bin/sh", ["-c",
+      'stty cols "$E2E_PTY_COLS" rows "$E2E_PTY_ROWS" || exit; exec "$@"', "pty", binary, ...args],
+      { ...options, env, scopePty: true });
     const host = env.E2E_CONPTY_HOST;
     assert.ok(host && isAbsolute(host), "cross-build the ConPTY host and set E2E_CONPTY_HOST");
     // Kill only the shipping executable, as POSIX custody does: the ConPTY and

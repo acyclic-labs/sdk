@@ -16,6 +16,27 @@ fn key_events(text: &str) -> Vec<InputEvent> {
 }
 
 #[test]
+fn settlement_query_is_ordered_after_input_at_every_transport_cut() -> io::Result<()> {
+    let bytes = b"hi\r\x1b[?7727;17n\x1b[200~\x1b[?7727;18n\x1b[201~";
+    let mut expected = key_events("hi");
+    expected.push(InputEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    expected.push(InputEvent::SettlementQuery(17));
+    expected.push(InputEvent::Paste("\x1b[?7727;18n".into()));
+    for split in 0..=bytes.len() {
+        let mut decoder = Decoder::default();
+        decoder.feed(&bytes[..split])?;
+        let mut events = decoder.take_events();
+        decoder.feed(&bytes[split..])?;
+        events.extend(decoder.take_events());
+        assert_eq!(events, expected, "transport cut {split}");
+    }
+    Ok(())
+}
+
+#[test]
 fn da1_only_does_not_trust_environment_features() -> io::Result<()> {
     let env = Environment(
         [

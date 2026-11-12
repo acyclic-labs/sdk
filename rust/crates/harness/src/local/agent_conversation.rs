@@ -40,6 +40,16 @@ pub use history::{HistoryPage, PreparedHistoryAction};
 use std::sync::Arc;
 pub use usage_query::UsageQuery;
 
+/// One captured input fence, including the conversation frontier committed
+/// with its phase. Frontends can paint through this cut before acknowledging it.
+#[derive(Clone, Debug)]
+pub struct InputSettlement {
+    /// Exclusive conversation tail at the captured settlement.
+    pub conversation: u64,
+    /// Phase at that same actor checkpoint.
+    pub phase: Phase,
+}
+
 fn failed(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
@@ -592,8 +602,12 @@ impl Conversation {
     /// Wait for all inputs committed before this request, including queued or
     /// paused work. Inputs arriving later do not extend the captured fence.
     /// Dropping the request cancels observation without changing the agent.
-    pub async fn wait_current_input(&self) -> Result<Phase> {
-        Ok(self.settlement(true).await?.2)
+    pub async fn wait_current_input(&self) -> Result<InputSettlement> {
+        let (conversation, _, phase) = self.settlement(true).await?;
+        Ok(InputSettlement {
+            conversation,
+            phase,
+        })
     }
 
     async fn settlement(&self, wait: bool) -> Result<(u64, u64, Phase)> {
