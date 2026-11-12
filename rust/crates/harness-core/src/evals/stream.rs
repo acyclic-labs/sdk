@@ -14,6 +14,8 @@ mod watch;
 struct Prepared {
     record: NativeStreamOutput<Record>,
     entry: Retained<ConversationEntry>,
+    before: Option<Retained<HistoryCheckpoint>>,
+    after: Retained<HistoryCheckpoint>,
 }
 
 /// Only the original record requested by a file demand, plus its pinned tail.
@@ -37,12 +39,29 @@ impl Inputs for Snapshot {
             .ok_or(DemandError::SourceUnavailable)?;
         Ok((prepared.record.value(), &prepared.entry))
     }
+    fn checkpoint(&self, sequence: u64) -> Result<&HistoryCheckpoint, DemandError> {
+        let prepared = self
+            .prepared
+            .as_ref()
+            .ok_or(DemandError::SourceUnavailable)?;
+        if prepared.record.value().sequence == sequence {
+            Ok(&prepared.after)
+        } else if prepared.record.value().sequence.checked_sub(1) == Some(sequence) {
+            prepared
+                .before
+                .as_deref()
+                .ok_or(DemandError::SourceUnavailable)
+        } else {
+            Err(DemandError::SourceUnavailable)
+        }
+    }
 }
 
 /// A demand-only adapter over the caller's authenticated original provider.
 pub struct StreamProvider<P: ?Sized> {
     streams: Arc<P>,
     path: StreamPath,
+    history: StreamPath,
     identity: [u8; 16],
 }
 impl<P: ?Sized> StreamProvider<P> {
@@ -58,6 +77,7 @@ impl<P: ?Sized> StreamProvider<P> {
             streams,
             path,
             identity,
+            history: agent.history()?,
         })
     }
 }
@@ -90,6 +110,53 @@ impl<P: NativeStreamProvider + ?Sized + 'static> StreamProvider<P> {
             tail,
         ))
     }
+    async fn checkpoint(
+        &self,
+        sequence: u64,
+        revision: &Revision,
+        work: &NativeMaterializationWork,
+    ) -> Result<Retained<HistoryCheckpoint>, DemandError> {
+        let mut records = result(
+            self.streams
+                .native_read(
+                    ReadRequest {
+                        path: path(&self.history, work)?,
+                        from: sequence,
+                        limit: 1,
+                        key: None,
+                        at_least: RevisionCut::of(revision.clone()),
+                    },
+                    work.runtime_meter(),
+                )
+                .await,
+            work,
+        )?;
+        let record = result(
+            records
+                .value_mut()
+                .next()
+                .await
+                .ok_or(DemandError::StaleSource)?,
+            work,
+        )?;
+        if record.value().sequence != sequence {
+            return Err(DemandError::StaleSource);
+        }
+        let cancellation = work.cancellation();
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work,
+            cancellation: &cancellation,
+        };
+        let checkpoint = HistoryCheckpoint::decode_accounted(&record.value().value, &mut ctx)
+            .map_err(|error| match error {
+                MetadataDecodeError::Work(error) => DemandError::from(error),
+                MetadataDecodeError::Codec(_) => DemandError::InvalidRequest,
+            })?;
+        if checkpoint.conversation != sequence.checked_add(1).ok_or(DemandError::StaleSource)? {
+            return Err(DemandError::StaleSource);
+        }
+        Ok(checkpoint)
+    }
     async fn heads(
         &self,
         at: Option<Revision>,
@@ -103,12 +170,15 @@ impl<P: NativeStreamProvider + ?Sized + 'static> StreamProvider<P> {
                             .clone()
                             .map_or_else(RevisionCut::default, RevisionCut::of),
                         at,
-                        paths: HeadSet::from_buf([path(&self.path, work)?]),
+                        paths: HeadSet::from_buf([
+                            path(&self.path, work)?,
+                            path(&self.history, work)?,
+                        ]),
                         retained: HeadSet::new(),
                         durable_through: None,
                         projection: HeadProjection::Tail,
                         children: None,
-                        limit: 1,
+                        limit: 2,
                     },
                     work.runtime_meter(),
                 )
@@ -229,7 +299,7 @@ impl<P: NativeStreamProvider + ?Sized + 'static> ViewProvider for StreamProvider
                                 from: selected,
                                 limit: 1,
                                 key: None,
-                                at_least: RevisionCut::of(revision),
+                                at_least: RevisionCut::of(revision.clone()),
                             },
                             owner.work.runtime_meter(),
                         )
@@ -252,7 +322,17 @@ impl<P: NativeStreamProvider + ?Sized + 'static> ViewProvider for StreamProvider
                         MetadataDecodeError::Work(error) => DemandError::from(error),
                         MetadataDecodeError::Codec(_) => DemandError::InvalidRequest,
                     })?;
-                snapshot.prepared = Some(Prepared { record, entry });
+                let before = match selected.checked_sub(1) {
+                    Some(at) => Some(self.checkpoint(at, &revision, &owner.work).await?),
+                    None => None,
+                };
+                let after = self.checkpoint(selected, &revision, &owner.work).await?;
+                snapshot.prepared = Some(Prepared {
+                    record,
+                    entry,
+                    before,
+                    after,
+                });
             }
             Ok(snapshot)
         }
