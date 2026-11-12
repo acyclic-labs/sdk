@@ -89,7 +89,9 @@ impl LoadedProgram {
 /// Refuses an invalid manifest, a name mismatch, an escaping entry path, or a
 /// missing native form. Operational reads retain their original error.
 pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProgram> {
-    crate::conversation::validate_content_path(directory, &mut None)?;
+    crate::executor::with_history_io(tree.preparation_io(), |work| {
+        crate::conversation::validate_content_path(directory, work)
+    })?;
     let (kind, name) = directory
         .split_once('/')
         .filter(|(kind, name)| {
@@ -130,7 +132,9 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
             identity.update(&[0]);
             continue;
         };
-        crate::conversation::validate_content_path(&entry, &mut None)?;
+        crate::executor::with_history_io(tree.preparation_io(), |work| {
+            crate::conversation::validate_content_path(&entry, work)
+        })?;
         if !entry.ends_with(&format!(".{form}")) {
             return Err(Error::Invalid(format!(
                 "{path}: {form} entry has the wrong extension"
@@ -169,7 +173,7 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
         output_schema: serde_json::json!({}),
         projection_schema: serde_json::json!({}),
     };
-    definition.validate(&mut None)?;
+    crate::executor::with_history_io(tree.preparation_io(), |work| definition.validate(work))?;
     Ok(LoadedProgram {
         definition,
         run: HookRun::Shell {

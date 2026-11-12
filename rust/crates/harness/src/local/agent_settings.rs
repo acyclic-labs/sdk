@@ -178,6 +178,7 @@ impl<'a> Tree<'a> {
     }
     pub(super) async fn new(
         volumes: &'a Volumes<'a>,
+        entrypoint: &str,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<Self> {
         let read = Self::read_grant(volumes, io)?;
@@ -186,7 +187,7 @@ impl<'a> Tree<'a> {
             .select_private_generation(
                 volumes.home,
                 &read,
-                config::AGENT,
+                entrypoint,
                 None,
                 ContentAccess {
                     io,
@@ -454,6 +455,170 @@ mod tests {
     use crate::local::tests::{text, volume, volume_config};
 
     #[tokio::test]
+    async fn authored_programs_authorize_their_sources_and_share_the_callers_read_allowance()
+    -> Result<()> {
+        use crate::tool::ToolSource as _;
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let project = volume(directory.path()).await?;
+        let harness = Arc::new(
+            LocalHarness::open(
+                volume_config(directory.path(), project, text())?
+                    .compaction(crate::context::CompactionPolicy::Disabled),
+            )
+            .await?,
+        );
+        let grant = ContentGrant::verify(
+            &harness.verifier,
+            &harness.signed,
+            &harness.scratch,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        let files = [
+            ("program.ts", "import a from './first.ts'; import b from './second.ts'; export default {version: 1, name: 'budget', description: a+b, inputSchema: {type: 'object'}, entry: {sh: 'main.sh', ps1: 'main.ps1'}};".to_owned()),
+            ("first.ts", format!("export default '{}';", "a".repeat(4096))),
+            ("second.ts", format!("export default '{}';", "b".repeat(4096))),
+            ("main.sh", "cat".to_owned()),
+            ("main.ps1", "[Console]::Out.Write([Console]::In.ReadToEnd())".to_owned()),
+        ];
+        for (name, contents) in &files {
+            let path = format!("tools/budget/{name}");
+            harness
+                .files
+                .put_content(
+                    &harness.scratch,
+                    &grant,
+                    &path,
+                    contents.as_bytes(),
+                    "text/plain",
+                    name,
+                    u64::MAX,
+                    &crate::IdempotencyKey::new(format!("program-{name}"))?,
+                    None,
+                    ContentAccess::default(),
+                )
+                .await?;
+        }
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let workspace = harness
+            .workspace
+            .as_ref()
+            .expect("the fixture owns a workspace");
+        let home = workspace
+            .filesystem
+            .open_workspace(
+                &harness.scratch.storage_name(&mut None)?,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| storage(failure.error))?
+            .value;
+        let mut policy: acyclic_fs::access::Policy =
+            serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY).map_err(storage)?;
+        policy.version = 2;
+        let mut deny = policy.layers[0][0].clone();
+        deny.id = "private-settings".into();
+        deny.effect = acyclic_fs::access::Effect::Deny;
+        deny.actions = [
+            acyclic_fs::access::Action::Read,
+            acyclic_fs::access::Action::ReadHistory,
+            acyclic_fs::access::Action::List,
+        ]
+        .into_iter()
+        .collect();
+        deny.resource.path = crate::config::AGENT.into();
+        policy.layers[0].push(deny);
+        let mut writer = home
+            .checkout(
+                acyclic_fs::model::GenerationSelector::Head,
+                acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| storage(failure.error))?
+            .value;
+        writer
+            .write_access_policy(
+                &serde_json::to_vec(&policy).map_err(storage)?,
+                acyclic_fs::NamedAttributeWriteMode::Replace,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| storage(failure.error))?;
+        let publication = writer
+            .commit::<acyclic_fs::FsError, _, _>(
+                acyclic_fs::OperationId::new(),
+                None,
+                None,
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+                |_| {
+                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    }))
+                },
+            )
+            .await
+            .map_err(|failure| storage(failure.error))?
+            .value;
+        assert!(matches!(
+            publication,
+            acyclic_fs::LivePublicationObservation::Committed { .. }
+        ));
+        let volumes = Volumes {
+            files: &harness.files,
+            verifier: &harness.verifier,
+            signed: &harness.signed,
+            home: &harness.scratch,
+            journal: &harness.journal,
+            maximum_bytes: u64::MAX,
+        };
+        let refused = Tree::new(&volumes, crate::config::AGENT, None)
+            .await
+            .err()
+            .ok_or_else(|| Error::Invalid("private settings selection was authorized".into()))?;
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+        let source = super::super::programs::Programs {
+            local: Arc::downgrade(&harness),
+            home: harness.scratch.clone(),
+            journal: harness.journal.clone(),
+            verifier: harness.verifier.clone(),
+            scope: harness.signed.copy(&mut None)?,
+            shell: Arc::new(harness.tools.get("shell", None, None)?.unwrap().clone()),
+            catalog: crate::tool::ToolRegistry::default(),
+        };
+        let control = crate::executor::PreparationIo::from_budget(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )?;
+        assert!(source.load("budget", Some(&control)).await?.is_some());
+        let mut allowance = acyclic_fs::WorkBudget::UNBOUNDED;
+        allowance.output_bytes = control
+            .receipt()
+            .output_bytes
+            .checked_sub(1)
+            .ok_or_else(|| Error::Invalid("program reads produced no accounting".into()))?;
+        assert!(
+            files
+                .iter()
+                .all(|(_, contents)| (contents.len() as u64) < allowance.output_bytes)
+        );
+        let limited = crate::executor::PreparationIo::from_budget(allowance, &cancellation)?;
+        assert!(
+            source.load("budget", Some(&limited)).await.is_err(),
+            "a source must not reopen an unmeasured ledger for its imports"
+        );
+        assert!(limited.receipt().output_bytes <= allowance.output_bytes);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn imported_settings_keep_the_original_directory_read_refusal() -> Result<()> {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let project = volume(directory.path()).await?;
@@ -498,7 +663,7 @@ mod tests {
             bytes: Some(b"import {sampling} from './options.ts'; export default base => ({...base, sampling});"),
         }];
         for prefix in ["", "allowed"] {
-            let mut tree = Tree::new(&volumes, None).await?;
+            let mut tree = Tree::new(&volumes, crate::config::AGENT, None).await?;
             tree.read = ContentGrant::verify_directory_read(
                 &harness.verifier,
                 &harness.signed,
@@ -568,7 +733,7 @@ mod tests {
             journal: &harness.journal,
             maximum_bytes: None,
         };
-        let original = Tree::new(&volumes, None).await?;
+        let original = Tree::new(&volumes, crate::config::AGENT, None).await?;
         for (path, source) in [
             ("switch.ts", "export const enabled = false;"),
             (
@@ -599,7 +764,7 @@ mod tests {
             Some(0.25),
             "settings admission refreshed its pinned home generation"
         );
-        let current = Tree::new(&volumes, None).await?;
+        let current = Tree::new(&volumes, crate::config::AGENT, None).await?;
         assert!(
             plugins(false, None, &current, harness.root, clock)
                 .await?

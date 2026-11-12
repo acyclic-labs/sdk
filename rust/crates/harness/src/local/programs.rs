@@ -56,14 +56,15 @@ impl ToolSource for Programs {
                 journal: &self.journal,
                 maximum_bytes: local.limits.file_bytes,
             };
-            let tree = agent_settings::Tree::new(&volumes, io).await?;
             let directory = format!("tools/{name}");
+            let entrypoint = format!("{directory}/program.ts");
+            let tree = agent_settings::Tree::new(&volumes, &entrypoint, io).await?;
             match crate::plugins::load_program(&tree, &directory).await {
                 Ok(program) => program
                     .bind(Arc::clone(&self.shell))
                     .map(Arc::new)
                     .map(Some),
-                Err(Error::NotFound(path)) if path == format!("{directory}/program.ts") => Ok(None),
+                Err(Error::NotFound(path)) if path == entrypoint => Ok(None),
                 Err(error) => Err(error),
             }
         })
