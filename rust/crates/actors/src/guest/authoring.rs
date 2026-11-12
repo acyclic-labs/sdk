@@ -65,6 +65,10 @@ pub enum GuestError {
     /// Guest handler failed; the host must discard its heap.
     #[error("guest handler failed: {0}")]
     Handler(String),
+    /// A capability call named a request whose handler invocation ended:
+    /// it returned, timed out or was cancelled.
+    #[error("host request is revoked")]
+    Revoked,
 }
 
 /// Artifact codec hooks for exactly one checkpoint byte format.

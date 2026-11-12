@@ -1042,18 +1042,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             Error::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                // Every delivery counts in flight in the shared ready index,
-                // whichever consumer started it, until it settles; a failed
-                // or unfinished one keeps its actor's wake past every later
-                // checkpoint.
+                // Duplicate events for one actor wait outside global admission. Only
+                // an actor that can make progress may occupy an active delivery slot.
+                let mut inner = slot.inner.lock().await;
+                // The delivery starts once it owns the actor: a waiter owns
+                // nothing and settles nothing. From here it counts in flight
+                // in the shared ready index, whichever consumer started it,
+                // until it settles; a failed or unfinished one keeps its
+                // actor's wake past every later checkpoint.
                 let mut settlement = Settlement {
                     slot,
                     flight: Some(self.ready.flight(actor)),
                     failed: true,
                 };
-                // Duplicate events for one actor wait outside global admission. Only
-                // an actor that can make progress may occupy an active delivery slot.
-                let mut inner = slot.inner.lock().await;
                 let result = match &self.admission {
                     Some(admission) => admission
                         .acquire()
@@ -1227,31 +1228,35 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     return Ok(true);
                 }
             }
-            // The capability binding lives exactly as long as this attempt.
-            let request = self.requests.open(actor, epoch);
             // A handler past its manifest timeout (wall time, not the actor
             // clock) is abandoned with its input unconsumed; the actor lock is
             // released for the next attempt.
-            let handled = self.handler.on_record(
-                Delivery {
-                    request: request.id(),
-                    actor: actor.clone(),
-                    epoch,
-                    trigger: trigger.clone(),
-                    now_unix_ms: now,
-                    record: record.clone(),
-                    subscriptions: crate::guest::SubscriptionCuts::new(
-                        snapshot.path.clone(),
-                        snapshot
-                            .anchor
-                            .ok_or(Error::Invalid("actor state has no committed anchor"))?,
-                        state.subscriptions().clone(),
-                    ),
-                },
-                state.checkpoint(),
-                cancellation.clone(),
+            let subscriptions = crate::guest::SubscriptionCuts::new(
+                snapshot.path.clone(),
+                snapshot
+                    .anchor
+                    .ok_or(Error::Invalid("actor state has no committed anchor"))?,
+                state.subscriptions().clone(),
             );
-            let result = match self.handled(inner, cancellation.clone(), handled).await {
+            let invoked = |request| {
+                self.handler.on_record(
+                    Delivery {
+                        request,
+                        actor: actor.clone(),
+                        epoch,
+                        trigger: trigger.clone(),
+                        now_unix_ms: now,
+                        record: record.clone(),
+                        subscriptions: subscriptions.clone(),
+                    },
+                    state.checkpoint(),
+                    cancellation.clone(),
+                )
+            };
+            let result = match self
+                .handled(inner, actor, epoch, cancellation.clone(), invoked)
+                .await
+            {
                 Ok(mut transition) => self
                     .store
                     .resolve_starts(&mut transition)
@@ -1313,26 +1318,27 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             if let Err(error) = &result {
                 if inner.pending.is_none() && terminal(error) && !cancellation.is_cancelled() {
-                    let delivery = Delivery {
-                        request: request.id(),
-                        actor: actor.clone(),
-                        epoch,
-                        trigger: trigger.clone(),
-                        now_unix_ms: now,
-                        record: record.clone(),
-                        subscriptions: crate::guest::SubscriptionCuts::new(
-                            snapshot.path.clone(),
-                            snapshot
-                                .anchor
-                                .ok_or(Error::Invalid("actor state has no committed anchor"))?,
-                            state.subscriptions().clone(),
-                        ),
-                    };
                     self.interrupt_follows(inner, state, &trigger).await?;
-                    let handled =
-                        self.handler
-                            .on_failure(delivery, state.checkpoint(), error.to_string());
-                    let failure = match self.handled(inner, cancellation.clone(), handled).await {
+                    let failure = error.to_string();
+                    let invoked = |request| {
+                        self.handler.on_failure(
+                            Delivery {
+                                request,
+                                actor: actor.clone(),
+                                epoch,
+                                trigger: trigger.clone(),
+                                now_unix_ms: now,
+                                record: record.clone(),
+                                subscriptions,
+                            },
+                            state.checkpoint(),
+                            failure,
+                        )
+                    };
+                    let failure = match self
+                        .handled(inner, actor, epoch, cancellation.clone(), invoked)
+                        .await
+                    {
                         Ok(Some(mut transition)) => self
                             .store
                             .resolve_starts(&mut transition)
@@ -1392,13 +1398,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Every handler entry uses the same manifest deadline and control fence,
-    /// including recovery from a definitive publication refusal.
-    async fn handled<T>(
+    /// including recovery from a definitive publication refusal. Each
+    /// invocation gets its own capability binding, revoked when it returns,
+    /// times out or is cancelled, so a task it leaves behind holds nothing.
+    async fn handled<'f, T>(
         &self,
         inner: &mut Inner,
+        actor: &ActorReference,
+        epoch: u64,
         cancellation: crate::guest::CancellationToken,
-        handled: crate::guest::GuestFuture<'_, T>,
+        invoke: impl FnOnce(crate::guest::RequestId) -> crate::guest::GuestFuture<'f, T>,
     ) -> Result<T, Error> {
+        let request = self.requests.open(actor, epoch);
+        let handled = invoke(request.id());
         let interrupted = self.interrupt(inner, cancellation);
         let interrupted = core::pin::pin!(interrupted);
         let timeout: BoxProviderFuture<'_, ()> = Box::pin(async {
