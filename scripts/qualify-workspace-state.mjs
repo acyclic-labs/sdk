@@ -2,7 +2,7 @@
 // Shipping GraphCoder, a real shell and stock Git; no Git metadata workaround.
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { isAbsolute, join, resolve } from "node:path";
 import { Processes } from "./graphcoder-e2e/process.mjs";
@@ -29,6 +29,16 @@ function metadata(path, writable) {
   if (stat.isSymbolicLink()) return { mode, link: readlinkSync(path) };
   if (stat.isDirectory()) return { mode, entries: Object.fromEntries(readdirSync(path).sort().map(name => [name, metadata(join(path, name), writable)])) };
   return { mode, sha256: createHash("sha256").update(readFileSync(path)).digest("hex") };
+}
+
+// External state may retain native views with the checkout's read-only modes.
+// Delete only this fixture's tree, without following links or changing files.
+function removeFixture(path) {
+  const stat = lstatSync(path);
+  if (!stat.isDirectory()) { unlinkSync(path); return; }
+  chmodSync(path, stat.mode | 0o700);
+  for (const name of readdirSync(path)) removeFixture(join(path, name));
+  rmdirSync(path);
 }
 
 async function git(cwd, args) {
@@ -63,12 +73,19 @@ if (${expected}) {
 export default {proof:'WORKSPACE_STATE_OK',status,diff};`;
       response.write(sse({ type: "response.output_item.done", output_index: 0,
         item: { type: "function_call", call_id: `workspace-${active.git}`, name: "code", arguments: JSON.stringify({ code }) } }));
-    } else {
-      assert.equal(step, 1, "one model shell sequence before completion");
-      const outputs = body.input.filter(item => item.type === "function_call_output");
-      assert.ok(JSON.stringify(outputs).includes("WORKSPACE_STATE_OK"), JSON.stringify(outputs));
+    } else if (step === 1) {
+      const output = body.input.find(item => item.type === "function_call_output" && item.call_id === `workspace-${active.git}`);
+      assert.ok(output, JSON.stringify(body.input.slice(-3)));
+      assert.equal(JSON.parse(output.output).proof, "WORKSPACE_STATE_OK", output.output);
       response.write(sse({ type: "response.output_item.done", output_index: 0,
         item: { type: "message", role: "assistant", content: [{ type: "output_text", text: "WORKSPACE_STATE_DONE" }] } }));
+    } else {
+      assert.equal(step, 2, `one feedback settlement after completion: ${JSON.stringify(body.input.slice(-3))}`);
+      const notice = body.input.at(-1);
+      assert.equal(notice.role, "system");
+      assert.match(notice.content.map(part => part.text ?? "").join(""), /Append feedback records; reply none/);
+      response.write(sse({ type: "response.output_item.done", output_index: 0,
+        item: { type: "message", role: "assistant", content: [{ type: "output_text", text: "none" }] } }));
     }
     response.end(sse({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 64, output_tokens: 8 } } }));
   } catch (error) { rejectFailure(error); response.end(); }
@@ -101,7 +118,7 @@ try {
       "-p", "Edit tracked.txt, then inspect the workspace with real git through shell."], { env, cwd: workspace })]);
     captures.push({ repository, ...result });
     assert.equal(result.code, 0, result.stderr + result.stdout.slice(-4000));
-    assert.equal(active.requests, 2);
+    assert.equal(active.requests, 3, "one shell sequence, task answer and stock feedback settlement");
     assert.ok(result.stdout.includes("WORKSPACE_STATE_DONE"));
     assert.equal(readFileSync(join(workspace, "tracked.txt"), "utf8"), "model edit\n");
     assert.deepEqual(readdirSync(workspace).sort(), repository ? [".git", "tracked.txt"] : ["tracked.txt"]);
@@ -111,7 +128,6 @@ try {
     }
   }
   passed = true;
-  console.log("PASS read-only stock Git clone and non-Git workspace: edits only, external harness state");
 } finally {
   await processes.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   if (gitDirectory) metadata(gitDirectory, true);
@@ -119,6 +135,7 @@ try {
     const output = resolve(process.env.E2E_OUTPUT); mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "workspace-state.json"), JSON.stringify({ passed, captures, fixture: passed ? null : root }));
   }
-  if (passed) rmSync(root, { recursive: true, force: true });
+  if (passed) removeFixture(root);
   else console.error(`WORKSPACE_STATE_FAILURE_FIXTURE ${root}`);
 }
+console.log("PASS read-only stock Git clone and non-Git workspace: edits only, external harness state");
