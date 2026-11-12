@@ -37,6 +37,7 @@ pub mod persistence;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod postgres;
 pub mod preparation;
+pub mod search;
 #[cfg(not(target_arch = "wasm32"))]
 pub use pending::NativePending;
 pub use pending::Pending;
