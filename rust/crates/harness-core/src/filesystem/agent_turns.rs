@@ -999,6 +999,55 @@ where
         )))
     }
 
+    /// Host-only storage for announcement documents. Retained documents are
+    /// selected by the conversation, independently of current workspace roots.
+    /// This reader and its journal write grant never enter the tool bindings.
+    async fn announcement_storage(
+        &self,
+        agent: &AgentState,
+        retained: &[FileRef],
+    ) -> Result<(
+        Arc<AgentInternalFiles<A, O>>,
+        Arc<FilesystemContentVerifier<A, O>>,
+    )> {
+        let admitted = self.admit(agent)?;
+        let volume = crate::conversation::journal_volume(
+            admitted.private.volume()?.provider().clone(),
+            &crate::agent::AgentId::from_bytes(admitted.owner.into_bytes()),
+        )?;
+        admitted.authorize_volume(&volume)?;
+        let grants = match admitted.parent {
+            Some(parent) => parent.capabilities().clone(),
+            None => Capabilities::new(
+                [VolumeOperation::Read, VolumeOperation::Write]
+                    .into_iter()
+                    .map(|operation| volume.capability(operation, &mut None))
+                    .chain(retained.iter().map(|file| file.read_capability(&mut None)))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        };
+        let scope = admitted
+            .issuer
+            .issue(
+                admitted.parent,
+                "announcements",
+                &grants,
+                Some(admitted.owner),
+            )
+            .await?;
+        let verifier = admitted.issuer.verifier(&mut None)?;
+        Ok((
+            self.internal_files(&volume, &verifier, &scope)?,
+            FilesystemContentVerifier::new(
+                Arc::clone(&self.host),
+                &verifier,
+                &scope,
+                crate::conversation::MAX_EXACT_JS_INTEGER,
+                None,
+            )?,
+        ))
+    }
+
     /// The agent's settled turns from the current history page cut, with their
     /// sequences, oldest first.
     async fn history(
@@ -1446,7 +1495,9 @@ impl<'a> TurnContext<'a> {
         Ok(seen)
     }
 
-    /// Every file the turn can reach, each by its exact version: the files
+    /// Files supplied to the turn's model and tool content bindings, each by
+    /// its exact version. Announcement documents use the host-only reader.
+    /// This includes the files
     /// each message names, each settled output and the files its transcript
     /// names (an inherited turn's are staged on an ancestor's private volume,
     /// a child's result on the child's), and the approval policy.
@@ -1456,10 +1507,8 @@ impl<'a> TurnContext<'a> {
             .map(|(_, summary)| summary)
             .chain(self.settled.iter().flat_map(|settled| {
                 settled
-                    .announcements
-                    .iter()
-                    .flat_map(crate::agent::AnnouncedDocument::files)
-                    .chain(settled.input.file_refs())
+                    .input
+                    .file_refs()
                     .chain(std::iter::once(&settled.output))
                     .chain(
                         settled
@@ -1492,6 +1541,7 @@ impl<'a> TurnContext<'a> {
         stream: &P,
         agent: &AgentState,
         reader: &dyn ContentResidencyVerifier,
+        announcement_reader: &dyn ContentResidencyVerifier,
         input: &ModelContent,
         announcements: &[crate::agent::AnnouncedDocument],
         content_limits: crate::conversation::Limits,
@@ -1582,11 +1632,14 @@ impl<'a> TurnContext<'a> {
                 place(&mut messages, &mut message_ids, ancestor);
             }
             if !announced.is_empty() {
-                for (part, content) in
-                    crate::agent::announcement_messages(&announced, reader, content_limits)
-                        .await?
-                        .into_iter()
-                        .enumerate()
+                for (part, content) in crate::agent::announcement_messages(
+                    &announced,
+                    announcement_reader,
+                    content_limits,
+                )
+                .await?
+                .into_iter()
+                .enumerate()
                 {
                     messages.push(ModelMessage {
                         role: ModelRole::User,
@@ -1627,11 +1680,14 @@ impl<'a> TurnContext<'a> {
             directive(&mut messages, &mut message_ids);
         }
         if !announcements.is_empty() {
-            for (part, content) in
-                crate::agent::announcement_messages(announcements, reader, content_limits)
-                    .await?
-                    .into_iter()
-                    .enumerate()
+            for (part, content) in crate::agent::announcement_messages(
+                announcements,
+                announcement_reader,
+                content_limits,
+            )
+            .await?
+            .into_iter()
+            .enumerate()
             {
                 messages.push(ModelMessage {
                     role: ModelRole::User,
@@ -1893,14 +1949,32 @@ where
                             .map_err(|error| Error::Invalid(error.to_string()))?;
                     }
                 }
-                let external: Vec<FileRef> = context
-                    .files()
+                let retained: Vec<FileRef> = context
+                    .settled
+                    .iter()
+                    .flat_map(|settled| &settled.announcements)
+                    .flat_map(crate::agent::AnnouncedDocument::files)
                     .chain(
                         pinned_announcements
                             .iter()
                             .flatten()
                             .flat_map(crate::agent::AnnouncedDocument::files),
                     )
+                    .cloned()
+                    .collect();
+                let mut announcement_storage = if retained.is_empty() {
+                    None
+                } else {
+                    Some(
+                        crate::core::until_turn_stopped(
+                            Some(stop.clone()),
+                            self.announcement_storage(agent, &retained),
+                        )
+                        .await?,
+                    )
+                };
+                let external: Vec<FileRef> = context
+                    .files()
                     .chain(
                         agent
                             .profile
@@ -1932,28 +2006,22 @@ where
                 let announcements = match pinned_announcements {
                     Some(kept) => kept,
                     None => {
-                        let mut changed = Vec::new();
-                        if let Some(roster) = self.executors.roster(agent) {
-                            let (bytes, digest) = roster.canonical();
-                            if !context.contains_announcement(AnnouncementKind::Targets, digest) {
-                                changed.push(AnnouncedDocument {
-                                    kind: AnnouncementKind::Targets,
-                                    digest,
-                                    file: files
-                                        .stage_announcement(
-                                            AnnouncementKind::Targets,
-                                            digest,
-                                            bytes,
-                                        )
-                                        .await?,
-                                    instructions: None,
-                                });
-                            }
-                        }
+                        let roster = self.executors.roster(agent).filter(|roster| {
+                            !context.contains_announcement(
+                                AnnouncementKind::Targets,
+                                roster.canonical().1,
+                            )
+                        });
                         let seen = context
-                            .instruction_entries(bindings.content.reader.as_ref())
+                            .instruction_entries(
+                                announcement_storage
+                                    .as_ref()
+                                    .map_or(bindings.content.reader.as_ref(), |(_, reader)| {
+                                        reader.as_ref()
+                                    }),
+                            )
                             .await?;
-                        if let Some(update) = self
+                        let update = self
                             .executors
                             .workspaces(
                                 agent,
@@ -1963,22 +2031,54 @@ where
                                 &bindings.scope,
                             )
                             .await?
-                        {
-                            let (bytes, digest) = update.document.canonical();
-                            if !context.contains_announcement(AnnouncementKind::Workspaces, digest)
-                                || !update.instructions.is_empty()
-                            {
+                            .filter(|update| {
+                                !context.contains_announcement(
+                                    AnnouncementKind::Workspaces,
+                                    update.document.canonical().1,
+                                ) || !update.instructions.is_empty()
+                            });
+                        let mut changed = Vec::new();
+                        if roster.is_some() || update.is_some() {
+                            if announcement_storage.is_none() {
+                                announcement_storage = Some(
+                                    crate::core::until_turn_stopped(
+                                        Some(stop.clone()),
+                                        self.announcement_storage(agent, &retained),
+                                    )
+                                    .await?,
+                                );
+                            }
+                            let (announcement_files, _) = announcement_storage
+                                .as_ref()
+                                .expect("changed documents bind their journal storage");
+                            if let Some(roster) = roster {
+                                let (bytes, digest) = roster.canonical();
+                                changed.push(AnnouncedDocument {
+                                    kind: AnnouncementKind::Targets,
+                                    digest,
+                                    file: announcement_files
+                                        .stage_announcement(
+                                            AnnouncementKind::Targets,
+                                            digest,
+                                            bytes,
+                                        )
+                                        .await?,
+                                    instructions: None,
+                                });
+                            }
+                            if let Some(update) = update {
+                                let (bytes, digest) = update.document.canonical();
                                 changed.push(AnnouncedDocument {
                                     kind: AnnouncementKind::Workspaces,
                                     digest,
-                                    file: files
+                                    file: announcement_files
                                         .stage_announcement(
                                             AnnouncementKind::Workspaces,
                                             digest,
                                             bytes,
                                         )
                                         .await?,
-                                    instructions: files
+                                    instructions: announcement_files
                                         .stage_instructions(
                                             update.instructions,
                                             bindings.content.reader.as_ref(),
@@ -2053,6 +2153,11 @@ where
                         &*self.stream,
                         agent,
                         &*bindings.content.reader,
+                        announcement_storage
+                            .as_ref()
+                            .map_or(bindings.content.reader.as_ref(), |(_, reader)| {
+                                reader.as_ref()
+                            }),
                         input,
                         &announcements,
                         self.executors.content_limits(),

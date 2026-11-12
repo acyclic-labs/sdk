@@ -192,7 +192,7 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
     assert!(matches!(
         host.stat(&reference(&bindings[2])?, None, "/parent.txt")
             .await,
-        Err(crate::Error::NotFound(_))
+        Err(error) if error.code() == crate::wire::ErrorCode::NotFound
     ));
     assert_eq!(stream.tail(child.inbox()?).await?, 1);
     host.resolve(&child_journal, None).await?;
@@ -231,7 +231,7 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
     assert!(matches!(
         host.stat(&reference(&session_bindings[3])?, None, "/parent.txt")
             .await,
-        Err(crate::Error::NotFound(_))
+        Err(error) if error.code() == crate::wire::ErrorCode::NotFound
     ));
     assert_eq!(
         host.read(&reference(&entries[3])?, None, "/parent.txt", 64, None)
@@ -244,7 +244,7 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
     host.resolve(&session_journal, None).await?;
     assert!(matches!(
         host.stat(&session_journal, None, "/retained.json").await,
-        Err(crate::Error::NotFound(_))
+        Err(error) if error.code() == crate::wire::ErrorCode::NotFound
     ));
     for path in [&child, &session] {
         let journal = crate::conversation::journal_volume(host.provider.clone(), &path.id())?;

@@ -1,8 +1,8 @@
-//! Internal files of one agent on its private volume, in the internal
-//! interaction area: no content writer or tool write grant reaches it, so only
-//! the agent's host creates them. Approval files and the effects of agent tool
-//! calls both live here, each created exactly once. Settled turn outputs live
-//! in the inherited conversation area, which an exact-version grant reaches.
+//! Internal files published through one host-owned volume grant. Approvals
+//! and tool-call effects use the private interaction area; announcement
+//! documents use the agent's journal. Each uses the same create-once publisher.
+//! Settled turn outputs live in the inherited conversation area, which an
+//! exact-version grant reaches.
 
 use super::{FilesystemHost, InternalContentClass};
 use crate::{

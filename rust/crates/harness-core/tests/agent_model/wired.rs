@@ -116,6 +116,11 @@ async fn private_on(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
+    host.create_volume(&acyclic_harness_core::conversation::journal_volume(
+        volume.provider().clone(),
+        &path.id(),
+    )?)
+    .await?;
     Ok((
         host,
         WorkspaceEntry::initial_volume(
