@@ -1,5 +1,7 @@
 use super::*;
 #[cfg(not(loom))]
+mod consumers;
+#[cfg(not(loom))]
 mod ownership;
 #[cfg(not(loom))]
 mod reads;
