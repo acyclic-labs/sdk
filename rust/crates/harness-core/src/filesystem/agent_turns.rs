@@ -1903,11 +1903,19 @@ where
             } else {
                 None
             };
+            let control_volume = admitted.journal.clone();
+            let control_scope = crate::core::until_turn_stopped(
+                Some(stop.clone()),
+                admitted.control_scope(&Capabilities::default()),
+            )
+            .await?;
             let authority =
                 crate::core::until_turn_stopped(Some(stop), admitted.authority(&[])).await?;
             let outputs = self.internal_files(
+                &control_volume,
                 authority.private.volume()?,
                 &authority.verifier,
+                &control_scope,
                 &authority.scope,
             )?;
             Ok(crate::agent::OpenControl {

@@ -440,8 +440,11 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
         },
     )
     .into();
-    let authority =
-        agent_authority(&issuer, &TurnAdmission::LocalRoot, &agent, &volumes, &[]).await?;
+    let admitted = AdmittedAgent::verify(&issuer, &TurnAdmission::LocalRoot, &agent, &volumes)?;
+    let control_volume = admitted.journal.clone();
+    host.create_volume(&control_volume).await?;
+    let control_scope = admitted.control_scope(&Capabilities::default()).await?;
+    let authority = admitted.authority(&[]).await?;
     let grant = crate::conversation::ContentGrant::verify(
         &authority.verifier,
         &authority.scope,
@@ -451,8 +454,14 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
     )?;
     let files = Arc::new(AgentInternalFiles::new(
         host.clone(),
-        volume.clone(),
-        grant.clone(),
+        control_volume.clone(),
+        ContentGrant::verify(
+            &authority.verifier,
+            &control_scope,
+            &control_volume,
+            VolumeOperation::Write,
+            &mut None,
+        )?,
         volume,
         grant,
     ));
