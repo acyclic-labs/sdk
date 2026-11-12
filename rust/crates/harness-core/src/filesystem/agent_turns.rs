@@ -1495,7 +1495,9 @@ impl<'a> TurnContext<'a> {
         Ok(seen)
     }
 
-    /// Every file the turn can reach, each by its exact version: the files
+    /// Files supplied to the turn's model and tool content bindings, each by
+    /// its exact version. Announcement documents use the host-only reader.
+    /// This includes the files
     /// each message names, each settled output and the files its transcript
     /// names (an inherited turn's are staged on an ancestor's private volume,
     /// a child's result on the child's), and the approval policy.
