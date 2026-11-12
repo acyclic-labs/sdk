@@ -60,6 +60,9 @@ fn skill_catalog_credit_excludes_callable_fields_and_source_identity() -> Result
     let catalog_bytes = serde_json::to_vec(&expected)
         .map_err(|error| Error::Invalid(error.to_string()))?
         .len() as u64;
+    let identity_hash_bytes = 6 + serde_json::to_vec(&(&entry.name, &entry.identity))
+        .map_err(|error| Error::Invalid(error.to_string()))?
+        .len() as u64;
     let discovery = DiscoveredContext {
         skills: vec![entry],
         ..Default::default()
@@ -76,7 +79,13 @@ fn skill_catalog_credit_excludes_callable_fields_and_source_identity() -> Result
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = PreparationIo::from_native_work(&work)?;
+        let before_hashes = work.remaining()?.bytes_hashed;
         let messages = discovery.messages(limits, if native { Some(&io) } else { None })?;
+        assert_eq!(
+            before_hashes - work.remaining()?.bytes_hashed,
+            if native { identity_hash_bytes } else { 0 },
+            "catalog identity must hash once across sizing and rendering"
+        );
         let [
             ModelMessage {
                 role: ModelRole::System,
@@ -106,6 +115,16 @@ fn skill_catalog_credit_excludes_callable_fields_and_source_identity() -> Result
             "skills/private/provenance/inspect/SKILL.md"
         );
     }
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut budget = acyclic_fs::performance::work_budget(100_000, 1_000_000);
+    budget.bytes_hashed = identity_hash_bytes - 1;
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    assert!(
+        discovery.messages(limits, Some(&io)).is_err(),
+        "catalog hashing bypassed its exact native allowance"
+    );
     Ok(())
 }
 
