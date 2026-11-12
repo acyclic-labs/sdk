@@ -3,8 +3,8 @@
 //! cut and a depth-first frontier, and uses the caller's authorized provider.
 
 use crate::{
-    ChildrenPageRequest, HeadProjection, HeadsRequest, ReadRequest, Record, Revision, RevisionCut,
-    StreamError, StreamPath, StreamProvider,
+    ChildrenPageRequest, HeadProjection, Heads, HeadsRequest, ReadRequest, Record, Revision,
+    RevisionCut, StreamError, StreamPath, StreamProvider,
 };
 use futures::TryStreamExt as _;
 use std::num::NonZeroU32;
@@ -26,6 +26,9 @@ pub struct Cursor {
     at: Option<Revision>,
     frontier: Vec<Frame>,
 }
+
+#[cfg(feature = "serde")]
+mod codec;
 
 /// An addressable original record, without a second copy of its provenance.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +52,12 @@ pub struct Page {
 }
 
 impl Cursor {
+    /// Original subtree and literal selected by this continuation.
+    pub fn selection(&self) -> Option<(&StreamPath, &[u8])> {
+        self.frontier
+            .first()
+            .map(|root| (&root.path, self.pattern.as_slice()))
+    }
     /// Select a subtree and literal bytes. Construction performs no IO. Empty
     /// patterns select every record; there are no implicit result limits.
     pub fn new(root: StreamPath, pattern: Vec<u8>) -> Self {
@@ -77,6 +86,7 @@ impl Cursor {
         provider: &P,
         budget: NonZeroU32,
     ) -> Result<Page, StreamError> {
+        crate::memory::validate_limit(budget.get())?;
         let mut cursor = self.clone();
         let mut matches = Vec::new();
         let mut work = 0;
@@ -85,18 +95,8 @@ impl Cursor {
                 break;
             };
             if frame.tail.is_none() {
-                let request = HeadsRequest {
-                    at: cursor.at.clone(),
-                    retained: Default::default(),
-                    durable_through: None,
-                    projection: HeadProjection::Tail,
-                    paths: [frame.path.clone()].into_iter().collect(),
-                    children: None,
-                    limit: 1,
-                    at_least: Default::default(),
-                };
-                let observed = provider.heads(request.clone()).await?;
-                observed.validate_for(&request)?;
+                let observed =
+                    observe(provider, cursor.at.clone(), Some(frame.path.clone()), None).await?;
                 cursor.at = Some(observed.snapshot);
                 frame.tail = Some(
                     observed
@@ -111,46 +111,16 @@ impl Cursor {
             let tail = frame.tail.ok_or(StreamError::InvalidResponse)?;
             if frame.sequence < tail {
                 let count = u64::from(budget.get() - work).min(tail - frame.sequence) as u32;
-                let mut records = provider
-                    .read(ReadRequest {
-                        key: None,
-                        path: frame.path.clone(),
-                        from: frame.sequence,
-                        limit: count,
-                        at_least: RevisionCut::of(
-                            cursor.at.clone().ok_or(StreamError::InvalidResponse)?,
-                        ),
-                    })
-                    .await?;
-                for _ in 0..count {
-                    let record = records.try_next().await?.ok_or(StreamError::Unavailable)?;
-                    if record.sequence != frame.sequence {
-                        return Err(StreamError::InvalidResponse);
-                    }
-                    frame.sequence += 1;
-                    work += 1;
-                    if cursor.pattern.is_empty()
-                        || record
-                            .value
-                            .as_slice()
-                            .windows(cursor.pattern.len())
-                            .any(|bytes| bytes == cursor.pattern)
-                    {
-                        matches.push(Match {
-                            path: frame.path.clone(),
-                            record,
-                        });
-                    }
-                }
+                let at = cursor.at.clone().ok_or(StreamError::InvalidResponse)?;
+                matches.extend(scan(provider, frame, at, &cursor.pattern, count).await?);
+                work += count;
                 continue;
             }
-            let request = HeadsRequest {
-                at: cursor.at.clone(),
-                retained: Default::default(),
-                durable_through: None,
-                projection: HeadProjection::Tail,
-                paths: Default::default(),
-                children: Some(ChildrenPageRequest {
+            let observed = observe(
+                provider,
+                cursor.at.clone(),
+                None,
+                Some(ChildrenPageRequest {
                     tail_stream: None,
                     parent: Some(frame.path.clone()),
                     after: frame.after.clone(),
@@ -158,11 +128,8 @@ impl Cursor {
                     hierarchy_version: None,
                     limit: 1,
                 }),
-                limit: 1,
-                at_least: Default::default(),
-            };
-            let observed = provider.heads(request.clone()).await?;
-            observed.validate_for(&request)?;
+            )
+            .await?;
             let children = observed.children.ok_or(StreamError::InvalidResponse)?;
             work += 1;
             if let Some(child) = children.children.into_iter().next() {
@@ -186,6 +153,66 @@ impl Cursor {
             next: (!cursor.frontier.is_empty()).then_some(cursor),
         })
     }
+}
+
+async fn scan<P: StreamProvider + ?Sized>(
+    provider: &P,
+    frame: &mut Frame,
+    at: Revision,
+    pattern: &[u8],
+    count: u32,
+) -> Result<Vec<Match>, StreamError> {
+    let mut records = provider
+        .read(ReadRequest {
+            key: None,
+            path: frame.path.clone(),
+            from: frame.sequence,
+            limit: count,
+            at_least: RevisionCut::of(at),
+        })
+        .await?;
+    let mut matches = Vec::new();
+    for _ in 0..count {
+        let record = records.try_next().await?.ok_or(StreamError::Unavailable)?;
+        if record.sequence != frame.sequence {
+            return Err(StreamError::InvalidResponse);
+        }
+        frame.sequence += 1;
+        if pattern.is_empty()
+            || record
+                .value
+                .as_slice()
+                .windows(pattern.len())
+                .any(|bytes| bytes == pattern)
+        {
+            matches.push(Match {
+                path: frame.path.clone(),
+                record,
+            });
+        }
+    }
+    Ok(matches)
+}
+
+async fn observe<P: StreamProvider + ?Sized>(
+    provider: &P,
+    at: Option<Revision>,
+    path: Option<StreamPath>,
+    children: Option<ChildrenPageRequest>,
+) -> Result<Heads, StreamError> {
+    let request = HeadsRequest {
+        at,
+        retained: Default::default(),
+        durable_through: None,
+        projection: HeadProjection::Tail,
+        paths: path.into_iter().collect(),
+        children,
+        limit: 1,
+        at_least: Default::default(),
+    };
+    let observed = provider.heads(request.clone()).await?;
+    observed.validate_for(&request)?;
+    Ok(observed)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
