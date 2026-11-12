@@ -176,6 +176,17 @@ pub trait MaterializationJournalStore: Send + Sync {
         expected_revision: u64,
         replacement: MaterializationJournal,
     ) -> impl Future<Output = Result<(bool, MaterializationJournal), Self::Error>> + Send;
+
+    /// Advances only revision, phase, counters and work after capture. The plan,
+    /// allocation identities and preimages must remain those loaded or captured.
+    fn compare_and_swap_progress(
+        &self,
+        operation_id: OperationId,
+        expected_revision: u64,
+        replacement: MaterializationJournal,
+    ) -> impl Future<Output = Result<(bool, MaterializationJournal), Self::Error>> + Send {
+        self.compare_and_swap(operation_id, expected_revision, replacement)
+    }
 }
 
 /// Backend that can capture, apply, and restore every representable host fact.

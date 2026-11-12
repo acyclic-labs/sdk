@@ -3,7 +3,9 @@ use super::*;
 #[tokio::test]
 async fn materialization_steps_append_only_progress_and_recover_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
-    let store = LocalCoreStateStore::new(directory.path());
+    let owner = LocalCoreStateStore::open_owned(directory.path()).unwrap();
+    let (store, deferral) = owner.defer_durability();
+    drop(owner);
     let operation = OperationId::new();
     let mut journal = materialization_journal(operation);
     for index in 0..64 {
@@ -37,16 +39,25 @@ async fn materialization_steps_append_only_progress_and_recover_after_reopen() {
         } else {
             crate::MaterializationPhase::Applying
         };
-        let (stored, updated) =
-            MaterializationJournalStore::compare_and_swap(&store, operation, expected, journal)
-                .await
-                .unwrap();
+        let (stored, updated) = MaterializationJournalStore::compare_and_swap_progress(
+            &store, operation, expected, journal,
+        )
+        .await
+        .unwrap();
         assert!(stored);
         journal = updated;
+        let Ownership::Owned(owner) = &store.ownership else {
+            panic!("missing owner")
+        };
+        assert!(
+            !owner.pending.load(Ordering::Acquire),
+            "step acknowledgement must cross the group durability barrier even in a deferred scope"
+        );
         assert_eq!(std::fs::read(&paths.current).unwrap(), fixed);
     }
     drop(paths);
     drop(namespace);
+    drop(deferral);
     drop(store);
     let reopened = LocalCoreStateStore::new(directory.path());
     assert_eq!(

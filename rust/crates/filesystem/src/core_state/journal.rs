@@ -192,8 +192,31 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         &self,
         operation_id: OperationId,
         expected_revision: u64,
-        mut replacement: MaterializationJournal,
+        replacement: MaterializationJournal,
     ) -> Result<(bool, MaterializationJournal), Self::Error> {
+        self.swap_materialization(operation_id, expected_revision, replacement, false)
+            .await
+    }
+
+    async fn compare_and_swap_progress(
+        &self,
+        operation_id: OperationId,
+        expected_revision: u64,
+        replacement: MaterializationJournal,
+    ) -> Result<(bool, MaterializationJournal), Self::Error> {
+        self.swap_materialization(operation_id, expected_revision, replacement, true)
+            .await
+    }
+}
+
+impl LocalCoreStateStore {
+    async fn swap_materialization(
+        &self,
+        operation_id: OperationId,
+        expected_revision: u64,
+        mut replacement: MaterializationJournal,
+        progress_only: bool,
+    ) -> Result<(bool, MaterializationJournal), LocalCoreStateStoreError> {
         if let Some(work) = &self.journal_work {
             let custody = replacement
                 .custody
@@ -206,7 +229,8 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         self.transaction(move |mut namespace| {
             namespace.durability = Durability::Flushed;
             namespace.with_log(|log| {
-                if let Some(current) = progress(&namespace, log, operation_id)? {
+                let current_progress = progress(&namespace, log, operation_id)?;
+                if progress_only && let Some(current) = &current_progress {
                     if current.revision != expected_revision {
                         return Ok((false, replacement));
                     }
@@ -226,7 +250,11 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 let mut paths =
                     namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
                 let stored = with_lock(&mut paths, |paths| {
-                    let current = read_recoverable::<MaterializationJournal>(paths)?;
+                    let mut current = read_recoverable::<MaterializationJournal>(paths)?;
+                    if let (Some((journal, _)), Some(progress)) = (&mut current, &current_progress)
+                    {
+                        progress.apply(journal)?;
+                    }
                     if current.as_ref().map_or(0, |(journal, _)| journal.revision)
                         != expected_revision
                     {
@@ -248,12 +276,16 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 })?;
                 // Preparation can still discover directory identities and preimages.
                 // Once captured, this fixed image is never rewritten by a step.
-                if stored && replacement.phase != crate::MaterializationPhase::Preparing {
+                if stored
+                    && (current_progress.is_some()
+                        || replacement.phase != crate::MaterializationPhase::Preparing)
+                {
                     append_progress(
                         &namespace,
                         log,
                         operation_id,
-                        Some(Progress::new(&replacement)),
+                        (replacement.phase != crate::MaterializationPhase::Preparing)
+                            .then(|| Progress::new(&replacement)),
                     )?;
                 }
                 Ok((stored, replacement))

@@ -366,7 +366,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
             next_revision(&mut journal.revision).ok_or(MaterializationError::RevisionExhausted)?;
         let (stored, replacement) = self
             .store
-            .compare_and_swap(journal.plan.operation_id, expected, journal)
+            .compare_and_swap_progress(journal.plan.operation_id, expected, journal)
             .await
             .map_err(MaterializationError::Store)?;
         journal = replacement;
