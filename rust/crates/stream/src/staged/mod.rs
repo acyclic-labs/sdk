@@ -18,10 +18,12 @@ mod directory;
 mod effects;
 mod encode;
 mod registry;
+mod root;
 pub use decode::{Bookmark, Reader};
 pub use directory::{Cursor, Directory, Location};
 pub use effects::{Effect, Effects};
 pub use registry::{Binding, Registry};
+pub use root::ControlRoot;
 
 const MAGIC: &[u8] = b"acyclic-stream-staged-v1\0";
 

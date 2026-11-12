@@ -1274,3 +1274,26 @@ required guarantees. Do not add a speed cache, special small-write engine or
 per-backend planner. This branch has no open PR (gh head query returned []);
 the removal list is retained here for its eventual PR. Full goal remains
 incomplete: these simplifications do not supply final apply or backend cutover.
+
+### One control-root descriptor (before implementation)
+
+One fixed-size v1 descriptor binds namespace-index checkpoint, stage-registry
+checkpoint and terminal-decision-index checkpoint, plus an optional immutable
+pending-decision reference. Writing this descriptor is preparation only. The
+existing publication owner must durably install its reference once; individual
+component checkpoints never carry authority. Readers pin this descriptor.
+
+Reuse the staged root-reference codec, content-tree writer/cursor and existing
+index/registry checkpoint validation. Declare every supplied component root as
+a dependency; omit absent pending state rather than encoding a sentinel root.
+No cache, background task, alternate small-write path or backend-specific codec.
+Reopening validates the exact version, complete length and all three checkpoint
+shapes without scanning their descendants. The pending reference is opaque here;
+its decision codec/owner must validate the pinned cut and identity before use.
+
+Real-file controls retain/reopen all components, keep the predecessor descriptor
+valid after a successor, and reject every truncated frame plus extra bytes and
+invalid optional tags. A missing-component-edge mutant must lose reachability
+and fail the independent graph control. This is descriptor/recovery-codec
+coverage, not a claim that providers already publish through this root or that
+the required production crash/concurrency proofs have been completed.
