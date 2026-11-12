@@ -211,7 +211,7 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
             b"title",
             "text/plain",
             "title",
-            1024,
+            Some(1024),
             &acyclic_harness_core::IdempotencyKey::new("title")?,
             None,
             Default::default(),

@@ -829,7 +829,7 @@ async fn atomic_patch_uses_the_checkout_publisher_and_recovers_its_original_cut(
         .observe_changes(
             &harness.project,
             recovered_operation,
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             crate::conversation::ContentAccess {
                 ceiling: Some(&create_only),
                 io: None,

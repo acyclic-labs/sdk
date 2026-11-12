@@ -249,10 +249,10 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             private_grant,
         );
         files
-            .create("custody.json", b"original interaction", 4096)
+            .create("custody.json", b"original interaction", Some(4096))
             .await?;
         assert_eq!(
-            files.read("custody.json", 4096).await?.as_deref(),
+            files.read("custody.json", Some(4096)).await?.as_deref(),
             Some(b"original interaction".as_slice())
         );
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -295,7 +295,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 b"host data",
                 "application/json",
                 "control.json",
-                4096,
+                Some(4096),
                 &crate::IdempotencyKey::new("host-control")?,
                 None,
                 Default::default(),
@@ -330,7 +330,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 b"guest data",
                 "application/json",
                 "forged.json",
-                4096,
+                Some(4096),
                 &crate::IdempotencyKey::new("guest-forgery")?,
                 None,
                 Default::default(),
@@ -381,7 +381,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .is_err()
         );
         assert_eq!(
-            files.read("custody.json", 4096).await?.as_deref(),
+            files.read("custody.json", Some(4096)).await?.as_deref(),
             Some(b"original interaction".as_slice())
         );
     }

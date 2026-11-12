@@ -167,7 +167,9 @@ async fn fixture_with_pause(
     files.seed_layer().await?;
     let limits = acyclic_harness_core::conversation::Limits {
         file_bytes: if project {
-            LIMITS.maximum_bytes
+            LIMITS
+                .maximum_bytes
+                .expect("fixture selects a finite byte limit")
         } else {
             acyclic_harness_core::conversation::Limits::default().file_bytes
         },
@@ -380,7 +382,9 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             project,
             &authority.verifier,
             &authority.scope,
-            LIMITS.maximum_bytes,
+            LIMITS
+                .maximum_bytes
+                .expect("fixture selects a finite byte limit"),
             None,
         )?;
         let mut source = publisher
@@ -487,11 +491,20 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             files.clone(),
             &admitted.verifier,
             &admitted.scope,
-            LIMITS.maximum_bytes,
+            LIMITS
+                .maximum_bytes
+                .expect("fixture selects a finite byte limit"),
             None,
         )?;
         let bytes = reader
-            .read(manifest, LIMITS.maximum_bytes, None, None)?
+            .read(
+                manifest,
+                LIMITS
+                    .maximum_bytes
+                    .expect("fixture selects a finite byte limit"),
+                None,
+                None,
+            )?
             .await?;
         let items = acyclic_harness_core::conversation::decode_attachment_manifest(
             manifest, &bytes, None, None,
@@ -501,7 +514,14 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
         };
         assert_eq!(
             reader
-                .read(&item.file, LIMITS.maximum_bytes, None, None)?
+                .read(
+                    &item.file,
+                    LIMITS
+                        .maximum_bytes
+                        .expect("fixture selects a finite byte limit"),
+                    None,
+                    None
+                )?
                 .await?
                 .as_ref(),
             ORIGINAL
@@ -552,14 +572,28 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             .ok_or("child did not receive the immutable finding")?;
         assert_eq!(
             reader
-                .read(projected, LIMITS.maximum_bytes, None, None)?
+                .read(
+                    projected,
+                    LIMITS
+                        .maximum_bytes
+                        .expect("fixture selects a finite byte limit"),
+                    None,
+                    None
+                )?
                 .await?
                 .as_ref(),
             ORIGINAL
         );
         assert_eq!(
             reader
-                .read(&item.file, LIMITS.maximum_bytes, None, None)?
+                .read(
+                    &item.file,
+                    LIMITS
+                        .maximum_bytes
+                        .expect("fixture selects a finite byte limit"),
+                    None,
+                    None
+                )?
                 .await?
                 .as_ref(),
             ORIGINAL
