@@ -85,7 +85,9 @@ async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
                     lookup_projected_with_accounting::<FileTableFormat, _, _, _>(
                         &store,
                         root,
-                        |candidate| candidate.cmp(&selected),
+                        crate::kernel::persistent_point::PointQuery::Key(|candidate: &FileId| {
+                            candidate.cmp(&selected)
+                        }),
                         |value, accounting| {
                             assert_eq!(*value, record(2));
                             let mut output = Owned::<Vec<u8>>::allocate(37, accounting)?;

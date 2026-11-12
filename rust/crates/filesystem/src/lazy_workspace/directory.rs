@@ -697,13 +697,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Generation<A, O> {
         maximum: u32,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryListing, KernelOwnedAllocation), LazyWorkspaceError> {
-        crate::heap_future::in_borrowed_frame!(ctx, |ctx| async {
-            let cursor = decode_directory_cursor(&self.workspace, after, ctx)?;
-            let (page, allocation) = self
-                .list_directory_page_with_accounting(path, cursor, maximum, ctx)
-                .await?;
-            page.into_listing(allocation, ctx)
-        })
+        let cursor = decode_directory_cursor(&self.workspace, after, ctx)?;
+        let (page, allocation) = self
+            .list_directory_page_with_accounting(path, cursor, maximum, ctx)
+            .await?;
+        page.into_listing(allocation, ctx)
     }
     /// Uses the caller's existing accounting context for the authored page.
     pub(crate) async fn list_directory_page_with_accounting(

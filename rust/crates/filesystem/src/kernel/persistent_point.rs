@@ -456,7 +456,7 @@ where
     let value = lookup_projected_with_accounting::<F, _, _, _>(
         store,
         root,
-        |candidate| candidate.cmp(key),
+        PointQuery::Key(|candidate: &F::Key| candidate.cmp(key)),
         |value, accounting| {
             let (value, allocation) = persistent_io::clone_value::<F>(
                 value,
@@ -480,37 +480,7 @@ where
     })
 }
 
-/// Searches the same authenticated point path and projects only the selected
-/// value. Borrowed queries and inline projections need no copied output key.
-pub(super) async fn lookup_projected_with_accounting<F, T, C, P>(
-    store: &dyn Source,
-    root: ObjectId,
-    compare: C,
-    project: P,
-    limits: DecodeLimits,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-    data_custody: Option<&super::ProofDataCustody>,
-) -> Result<Option<Owned<T>>, crate::FsError>
-where
-    F: Format,
-    C: Fn(&F::Key) -> std::cmp::Ordering,
-    P: FnMut(&F::Value, &mut KernelAccounting<'_>) -> Result<Owned<T>, crate::FsError>,
-{
-    lookup_selected_with_accounting::<F, T, C, P>(
-        store,
-        root,
-        PointQuery::Key(compare),
-        project,
-        limits,
-        accounting,
-        cancellation,
-        data_custody,
-    )
-    .await
-}
-
-enum PointQuery<'a, C> {
+pub(super) enum PointQuery<'a, C> {
     Key(C),
     Position(&'a super::PagePosition),
 }
@@ -526,7 +496,7 @@ pub(crate) async fn key_at_position_with_accounting<F: Format>(
     cancellation: &CancellationToken,
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<Owned<F::Key>, crate::FsError> {
-    lookup_selected_with_accounting::<F, _, fn(&F::Key) -> std::cmp::Ordering, _>(
+    lookup_projected_with_accounting::<F, _, fn(&F::Key) -> std::cmp::Ordering, _>(
         store,
         root,
         PointQuery::Position(position),
@@ -550,7 +520,9 @@ pub(crate) async fn key_at_position_with_accounting<F: Format>(
     .ok_or_else(|| query_error(Error::InvalidRouting))
 }
 
-async fn lookup_selected_with_accounting<F, T, C, P>(
+/// Searches the same authenticated point path and projects only the selected
+/// value. Both query forms enter this walker directly, without a forwarding future.
+pub(super) async fn lookup_projected_with_accounting<F, T, C, P>(
     store: &dyn Source,
     root: ObjectId,
     query: PointQuery<'_, C>,
