@@ -11,7 +11,7 @@ pub(crate) struct PreparedInput {
     pub request: PreparedModelRequest,
     pub generation: Bytes,
     cache: Option<acyclic_harness_core::executor::ModelCacheObservation>,
-    count: Bytes,
+    count: Option<Bytes>,
 }
 
 impl PreparedInput {
@@ -20,7 +20,6 @@ impl PreparedInput {
         // Protected transports still resolve current authority on every send.
         let provider = Arc::new(provider.current_credentials()?);
         provider.validate(&request.request().model)?;
-        let spec = counting::specification(&provider.config, None)?;
         let names = crate::tool_names::Names::new(request.request());
         let auth = dispatch::authenticate(
             &provider,
@@ -33,7 +32,12 @@ impl PreparedInput {
         let body =
             projection::body_named(&provider, request.request(), &names, &origin, &mut files)?;
         let encoded = projection::cache::encode(&body, &provider, &origin)?;
-        let count = counting::wire::body(body, &provider.model.name, spec)?.into();
+        let count = provider
+            .config
+            .token_counter
+            .as_ref()
+            .map(|spec| counting::wire::body(body, &provider.model.name, spec).map(Bytes::from))
+            .transpose()?;
         drop(auth);
         drop(names);
         Ok(Self {
@@ -58,7 +62,10 @@ impl PreparedInput {
             method: http::Method::POST,
             url: counting::wire::endpoint(&provider.config, &provider.model.name, spec)?,
             headers: dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false),
-            body: self.count.clone(),
+            body: self
+                .count
+                .clone()
+                .ok_or_else(|| crate::invalid("prepared input has no token counter body"))?,
         };
         counting::send_count(
             provider,

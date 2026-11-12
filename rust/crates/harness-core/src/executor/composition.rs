@@ -1,6 +1,11 @@
 use super::*;
 
 impl StockExecutor {
+    /// Returns the selected model's published capacity without imposing a budget.
+    pub fn context_capacity(&self) -> Result<crate::context::ModelContextCapacity> {
+        self.provider.context_capacity(&self.model)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
@@ -20,7 +25,6 @@ impl StockExecutor {
             model,
             sampling: Default::default(),
             resolved_sampling: once_cell::sync::OnceCell::new(),
-            max_output_tokens: None,
             provider,
             context,
             tools,
@@ -64,15 +68,6 @@ impl StockExecutor {
         Ok(self)
     }
 
-    /// Sets the caller's output token budget for each model request.
-    pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
-        if maximum == 0 {
-            return Err(Error::Invalid("model output token budget is zero".into()));
-        }
-        self.max_output_tokens = Some(maximum);
-        Ok(self)
-    }
-
     /// Replaces or disables automatic compaction. Disabled compaction sends
     /// ordinary requests unchecked; single inference keeps capacity admission.
     #[must_use]
@@ -83,11 +78,10 @@ impl StockExecutor {
 
     pub(crate) fn with_automatic_compaction(mut self) -> Result<Self> {
         if self.compaction.is_none() {
-            self.compaction = Some(crate::context::CompactionPolicy::for_output(
+            self.compaction = Some(crate::context::CompactionPolicy::for_model(
                 None,
                 &self.model,
                 self.provider.as_ref(),
-                self.max_output_tokens,
             )?);
         }
         Ok(self)

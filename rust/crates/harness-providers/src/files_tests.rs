@@ -57,7 +57,7 @@ proptest! {
             let request = PreparedModelRequest::prepare(ModelRequest {
                 summary: false,
                 compose_tools: false,
-                model: provider.model().clone(), messages, tools, sampling: Default::default(), max_output_tokens: Some(64),
+                model: provider.model().clone(), messages, tools, sampling: Default::default(),
             }, Limits::default(), None).unwrap();
             let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, None).unwrap();
             let mut resolved = crate::files::FileText(vec![text.clone().into()].into_iter());
@@ -119,7 +119,6 @@ fn with_parts(
             }],
             tools: vec![],
             sampling: Default::default(),
-            max_output_tokens: Some(64),
         },
         Limits::default(),
         None,
@@ -870,7 +869,6 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
             model: provider.model().clone(),
             tools: vec![],
             sampling: Default::default(),
-            max_output_tokens: Some(64),
             messages: vec![ModelMessage {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {

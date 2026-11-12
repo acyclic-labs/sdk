@@ -16,7 +16,7 @@ proptest! {
             summary: false,
             compose_tools: false,
             model: Model::new("openai".into(), "fixture".into(), "1".into()).unwrap(),
-            messages: Vec::new(), tools: Vec::new(), sampling: Default::default(), max_output_tokens: None,
+            messages: Vec::new(), tools: Vec::new(), sampling: Default::default(),
         };
         request.messages = vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(input) }];
         let first = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
@@ -49,7 +49,7 @@ proptest! {
                 name: "extra".into(), revision: "1".into(), description: "Extra capability".into(),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({}), projection_schema: json!({}),
-            }], sampling: Default::default(), max_output_tokens: None,
+            }], sampling: Default::default(),
         };
         let first = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
         let counter = Counter::default();
@@ -59,12 +59,11 @@ proptest! {
             &json!({"usage":{"input_tokens":tokens,"cache_read_input_tokens":cache_read}})).unwrap();
         prop_assert_eq!(counter.bound(&first).unwrap(), Some(tokens + cache_read));
         // Every render option belongs to the observed input identity.
-        for variant in 0..4 {
+        for variant in 0..3 {
             let mut changed = request.clone();
             match variant {
-                0 => changed.max_output_tokens = Some(7),
-                1 => changed.sampling.temperature = Some(0.5),
-                2 => changed.summary = true,
+                0 => changed.sampling.temperature = Some(0.5),
+                1 => changed.summary = true,
                 _ => changed.tools[0].description.push_str(" changed"),
             }
             let changed = PreparedModelRequest::prepare(changed, Default::default(), None).unwrap();
@@ -96,7 +95,7 @@ proptest! {
             summary: false, compose_tools: false,
             model: Model::new("openai".into(), "fixture".into(), "1".into()).unwrap(),
             messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(input) }],
-            tools: Vec::new(), sampling: Default::default(), max_output_tokens: None,
+            tools: Vec::new(), sampling: Default::default(),
         };
         let first = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
         let counter = Counter::default();

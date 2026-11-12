@@ -4,7 +4,7 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) stock: &'a StockExecutor,
     pub(in crate::executor) context: Option<(&'a Arc<crate::runtime::TaskContext>, OperationId)>,
     pub(in crate::executor) io: Option<&'a PreparationIo>,
-    pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
+    pub(in crate::executor) summary: Option<ContextPipeline>,
     pub(in crate::executor) single_request: bool,
     /// Serializes journal transitions shared by response and summary producers.
     pub(in crate::executor) journal_writes: JournalWrites<'a>,
@@ -84,7 +84,7 @@ impl<'a> StockExecution<'a> {
     pub(in crate::executor) fn context_pipeline(&self) -> &ContextPipeline {
         self.summary
             .as_ref()
-            .map_or(&self.stock.context, |(pipeline, _)| pipeline)
+            .map_or(&self.stock.context, |pipeline| pipeline)
     }
     pub(in crate::executor) fn compaction_policy(
         &self,
@@ -138,11 +138,6 @@ impl<'a> StockExecution<'a> {
         })
     }
 
-    pub(in crate::executor) fn output_tokens(&self) -> Option<u32> {
-        self.summary
-            .as_ref()
-            .map_or(self.stock.max_output_tokens, |(_, tokens)| *tokens)
-    }
     pub(in crate::executor) fn inherited_prefix(
         &self,
     ) -> Option<&(

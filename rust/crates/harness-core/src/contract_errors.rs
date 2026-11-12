@@ -137,6 +137,9 @@ pub enum Error {
     /// The inference endpoint refused input exceeding its model context window.
     #[error("model context capacity exceeded")]
     ModelContextOverflow,
+    /// The provider has no input tokenizer for this request.
+    #[error("input token counting is unavailable for this model")]
+    ModelTokenCountUnavailable,
     /// The requested resource does not exist.
     #[error("resource not found: {0}")]
     NotFound(String),
@@ -727,6 +730,7 @@ impl Error {
             Self::Conflict(_) | Self::Refused(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
+            | Self::ModelTokenCountUnavailable
             | Self::GoalBlocked(_)
             | Self::UnsupportedRecordVersion(_)
             | Self::MountUnavailable { .. } => ErrorCode::Unsupported,
@@ -989,6 +993,7 @@ impl Error {
             Self::OutputOmitted(_) => true,
             Self::Cleanup(_) => true,
             Self::ModelContextOverflow
+            | Self::ModelTokenCountUnavailable
             | Self::NotFound(_)
             | Self::Conflict(_)
             | Self::Refused(_)

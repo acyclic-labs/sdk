@@ -29,7 +29,6 @@ fn writerless_summaries_reject_before_any_model_or_journal_work() -> Result<()> 
                     ContextPipeline::default(),
                     ToolRegistry::default(),
                 )
-                .with_max_output_tokens(64)?
                 .with_tool_authority(scope.clone(), allowed()?)?
                 .with_task_context(&context, operation)?;
                 if threshold {
@@ -94,14 +93,13 @@ async fn writerless_summary_negative_control_dispatches_when_resolution_is_defer
         ContextPipeline::default(),
         ToolRegistry::default(),
     )
-    .with_max_output_tokens(64)?
     .with_tool_authority(scope, allowed()?)?
     .with_task_context(&context, operation)?
     .with_compaction_policy(crate::context::CompactionPolicy::default());
     // Recreate the old ordering: enter the internal summary session (whose
     // compaction is Disabled), dispatch, and only then resolve the writer.
     let mut execution = StockExecution::ordinary(&executor);
-    execution.summary = Some((ContextPipeline::default(), Some(64)));
+    execution.summary = Some(ContextPipeline::default());
     let input = TurnInput {
         max_steps: None,
         operation_id: operation,

@@ -14,7 +14,6 @@ fn request(content: ModelContent) -> Result<ModelRequest> {
         compose_tools: false,
         tools: Vec::new(),
         sampling: Default::default(),
-        max_output_tokens: Some(32),
     })
 }
 

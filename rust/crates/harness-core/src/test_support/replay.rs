@@ -70,7 +70,6 @@ async fn check(schedule: &[u8], operation: OperationId) -> Result<()> {
                 }],
                 tools: Vec::new(),
                 sampling: Default::default(),
-                max_output_tokens: None,
             },
             Limits::default(),
             None,

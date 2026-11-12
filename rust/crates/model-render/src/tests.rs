@@ -544,17 +544,12 @@ proptest! {
     fn summary_keeps_the_epoch_prefix_and_disables_invocation(
         instruction in ".{1,160}",
         history in prop::collection::vec(".{0,40}", 0..30),
-        output in 1_u32..100_000,
+        temperature in 0_u32..200,
     ) {
         for family in FAMILIES {
             let mut fields = declarations(family, &["first", "second"]);
             // A call control the ordinary and summary trailers both carry.
-            let (control, value) = match family {
-                Family::Gemini => (Field::GenerationConfig, json!({"maxOutputTokens":output})),
-                Family::Anthropic => (Field::MaxTokens, json!(output)),
-                Family::Responses => (Field::MaxOutputTokens, json!(output)),
-                Family::Chat => (Field::MaxCompletionTokens, json!(output)),
-            };
+            let (control, value) = if family == Family::Gemini { (Field::GenerationConfig, json!({"temperature": f64::from(temperature) / 100.0})) } else { (Field::Temperature, json!(f64::from(temperature) / 100.0)) };
             fields.insert(control, value);
             if family != Family::Gemini {
                 // An ordinary tool choice is replaced, never duplicated.
@@ -665,8 +660,6 @@ proptest! {
             (Field::PreviousResponseId, "previous_response_id"),
             (Field::Truncation, "truncation"),
             (Field::AddGenerationPrompt, "add_generation_prompt"),
-            (Field::MaxCompletionTokens, "max_completion_tokens"),
-            (Field::MaxOutputTokens, "max_output_tokens"),
             (Field::MaxTokens, "max_tokens"),
             (Field::Temperature, "temperature"),
             (Field::TopP, "top_p"),

@@ -152,7 +152,6 @@ pub fn assert_stream_invariants(input: &[u8]) {
     if kind == b'K' {
         use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
         for field in [
-            TokenCountField::PromptTokens,
             TokenCountField::InputTokens,
             TokenCountField::TotalTokens,
             TokenCountField::Count,
@@ -165,9 +164,6 @@ pub fn assert_stream_invariants(input: &[u8]) {
             };
             if let Ok(count) = response(input, &spec) {
                 let encoded = match field {
-                    TokenCountField::PromptTokens => {
-                        serde_json::json!({"usage":{"prompt_tokens":count}})
-                    }
                     TokenCountField::InputTokens => serde_json::json!({"input_tokens":count}),
                     TokenCountField::TotalTokens => serde_json::json!({"totalTokens":count}),
                     TokenCountField::Count => serde_json::json!({"count":count}),

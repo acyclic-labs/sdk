@@ -197,9 +197,7 @@ async fn stock(broken: bool) -> Result<()> {
     // This fixture declares an 8192-token context in its catalog. Enable
     // automatic counting with explicit compaction budgets inside that window.
     let policy = acyclic_harness_core::context::CompactionPolicy::Capacity(
-        acyclic_harness_core::context::CapacityCompaction {
-            response_reserve_tokens: 1024,
-        },
+        acyclic_harness_core::context::CapacityCompaction {},
     );
     let objects = acyclic_objects::MemoryObjects::memory();
     let filesystem = acyclic_fs::Fs::new(

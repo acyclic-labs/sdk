@@ -53,16 +53,13 @@ pub(super) async fn review_model(
         crate::executor::stock_string_copy("1", io)?,
         io,
     )?;
-    let mut executor = StockExecutor::new(
+    let executor = StockExecutor::new(
         crate::model::clone_model(model, io)?,
         provider.clone(),
         pipeline,
         ToolRegistry::default(),
     )
     .with_limits(limits);
-    if let Some(maximum) = profile.and_then(|profile| profile.max_output_tokens()) {
-        executor = executor.with_max_output_tokens(maximum)?;
-    }
     let binding = crate::executor::with_history_io(io, |work| {
         crate::executor::preparation_format(format_args!("{}:{principal}", request.id()), work)
     })?;
@@ -333,7 +330,6 @@ mod tests {
                     );
                     assert_eq!(provider.requests().len(), 1);
                     assert_eq!(counts.load(Ordering::SeqCst), 1);
-                    assert_eq!(provider.requests()[0].max_output_tokens, None);
                 }
                 if let Some(io) = &io {
                     assert_eq!(io.owned_bytes()?, 0, "review scratch survived case {case}");

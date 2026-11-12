@@ -3,7 +3,6 @@ export {
   WasmModelProvider,
   WasmModelAlloy,
   defaultCompactionPolicy,
-  validateCapacityCompaction,
   validateModelTokenCount,
   type AlloySpec,
   type AlloySelection,

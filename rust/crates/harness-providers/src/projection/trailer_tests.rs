@@ -102,7 +102,10 @@ fn freeze_effort(provider: &ResolvedModel, fields: &mut Fields) {
         "renderer-v1",
     )
     .unwrap();
-    let role = RoleFile::parse("---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\nmax_output_tokens: 64\n---\n").unwrap();
+    let role = RoleFile::parse(
+        "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\n---\n",
+    )
+    .unwrap();
     let project = ProjectLayer::parse("---\nversion: 1\n---\n").unwrap();
     let approvals = ApprovalPolicy::default().bind().unwrap();
     let agent = AgentOverride::parse("---\nversion: 1\n---\n", &approvals).unwrap();
@@ -167,7 +170,7 @@ proptest! {
     #[test]
     fn deterministic_configuration_preserves_protocol_and_progress(
         text in ".{1,80}", temperature in 0_u32..201, top in 1_u32..101,
-        output in 1_u32..1025, seed in any::<i32>(),
+        seed in any::<i32>(),
     ) {
         static PIN: std::sync::Once = std::sync::Once::new();
         PIN.call_once(configuration_pin);
@@ -190,7 +193,6 @@ proptest! {
                         top_p: Some(f64::from(top) / 100.0),
                         seed: matches!(family, Adapter::Chat | Adapter::Gemini).then_some(i64::from(seed)),
                     } } else { ModelSampling::default() };
-                    request.max_output_tokens = Some(if changed { output } else { 1024 });
                     let admitted = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
                     let names = crate::tool_names::Names::new(admitted.request());
                     let origin = provider.reasoning_origin(provider.key.as_deref(), None);
@@ -227,7 +229,7 @@ proptest! {
                     expected.push(conversation(family));
                     if family == Adapter::Gemini { expected.push("generationConfig"); }
                     else {
-                        expected.push(limit);
+                        if family == Adapter::Anthropic { expected.push(limit); }
                         if changed {
                             expected.extend(["temperature", "top_p"]);
                             if family == Adapter::Chat { expected.push("seed"); }
@@ -255,7 +257,7 @@ proptest! {
                     } else {
                         &actual
                     };
-                    prop_assert_eq!(&config[limit], &json!(request.max_output_tokens.unwrap()));
+                    if family == Adapter::Anthropic { prop_assert_eq!(&config[limit], &json!(provider.capacity.output_tokens.unwrap())); } else { prop_assert!(config.get(limit).is_none()); }
                     if changed {
                         prop_assert_eq!(&config["temperature"], &json!(request.sampling.temperature.unwrap()));
                         prop_assert_eq!(&config[if family == Adapter::Gemini { "topP" } else { "top_p" }], &json!(request.sampling.top_p.unwrap()));

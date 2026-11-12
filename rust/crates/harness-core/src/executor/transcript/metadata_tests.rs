@@ -393,7 +393,7 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
                     context_tokens: 65_536,
                     output_tokens: Some(4096),
                 },
-                count: Some(
+                count: InputAccounting::Counted(
                     crate::context::ModelTokenCount {
                         request_digest: [9; 32],
                         input_tokens: 128,
@@ -417,7 +417,6 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
                 messages: projection.context.messages.clone(),
                 tools: Vec::new(),
                 sampling: Default::default(),
-                max_output_tokens: None,
             },
             Limits::default(),
             None,

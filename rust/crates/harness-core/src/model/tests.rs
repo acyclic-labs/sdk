@@ -84,7 +84,6 @@ fn request() -> Result<ModelRequest> {
                 "required":["kind","value"],"additionalProperties":false}),
         }],
         sampling: Default::default(),
-        max_output_tokens: Some(32),
     })
 }
 fn exchange(request: &mut ModelRequest) {
@@ -491,7 +490,6 @@ fn projection_envelopes_enforce_the_render_bound() -> Result<()> {
 fn malformed_exchanges_and_bounds_fail_closed() -> Result<()> {
     let mut valid = request()?;
     exchange(&mut valid);
-    valid.max_output_tokens = None;
     let prepared = PreparedModelRequest::prepare(valid.clone(), Limits::default(), None)?;
     assert_eq!(
         PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?.request(),
@@ -512,7 +510,6 @@ fn malformed_exchanges_and_bounds_fail_closed() -> Result<()> {
             *content = ToolResultContent::Json { value: json!(42) };
         },
         |request| request.tools.push(request.tools[0].clone()),
-        |request| request.max_output_tokens = Some(0),
         |request| request.model.revision.clear(),
         |request| {
             let ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall {

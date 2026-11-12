@@ -64,7 +64,6 @@ fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Resu
             .map(|binding| binding.tool().definition.clone())
             .collect(),
         sampling: Default::default(),
-        max_output_tokens: None,
     };
     bound.validate_request(&request)?;
     request.tools.swap(0, 1);
@@ -149,10 +148,6 @@ fn role_changes_append_policy_without_rewriting_the_model_prefix() -> Result<()>
         ["shell", "edit"]
     );
     assert_eq!(base.overlay.allowed_tools, None);
-    assert_eq!(
-        base.overlay.max_output_tokens, None,
-        "retain capacity semantics"
-    );
     let restricted = resolve(&model, &orchestrator, &project, &agent)?;
     assert!(
         !restricted
@@ -221,44 +216,23 @@ proptest! {
         let selected = resolve(&model, &role, &project, &agent).unwrap();
         prop_assert_eq!(selected.prefix.capacity.budget_tokens, budget);
         prop_assert_eq!(selected.prefix.capacity.watermark_tokens, watermark);
-        prop_assert_eq!(selected.overlay.max_output_tokens, None);
         let overflow = AgentOverride::parse(&format!("---\nversion: 1\nbudget_tokens: {}\n---\n", u64::from(context)+1), &approvals);
         prop_assert!(overflow.is_err() || resolve(&model, &role, &project, &overflow.unwrap()).is_err());
         let no_watermark = AgentOverride::parse("---\nversion: 1\nwatermark_tokens: 0\n---\n", &approvals).unwrap();
         prop_assert!(resolve(&model, &role, &project, &no_watermark).is_err());
-        let oversized_role = RoleFile::parse(&WORKER.replacen("version: 1", &format!("version: 1\nmax_output_tokens: {}", output+1), 1)).unwrap();
-        prop_assert!(resolve(&model, &oversized_role, &project, &agent).is_err());
     }
 }
 
 #[test]
-fn unverified_output_and_untyped_override_paths_refuse() -> Result<()> {
+fn output_metadata_does_not_restrict_profiles_and_untyped_overrides_refuse() -> Result<()> {
     let role = RoleFile::parse(WORKER)?;
     let project = ProjectLayer::parse(EMPTY)?;
     let approvals = crate::approvals::ApprovalPolicy::default().bind()?;
     let agent = AgentOverride::parse(EMPTY, &approvals)?;
     let unknown = profile(FAMILY, None)?;
-    let explicit_role =
-        RoleFile::parse(&WORKER.replacen("version: 1", "version: 1\nmax_output_tokens: 100", 1))?;
-    assert_eq!(
-        resolve(&unknown, &explicit_role, &project, &agent)?
-            .overlay
-            .max_output_tokens,
-        Some(100)
-    );
-    assert!(
-        resolve(&unknown, &role, &project, &agent).is_err(),
-        "no guessed output reserve"
-    );
-    let exhausted = profile(FAMILY, Some(500))?;
-    assert!(
-        resolve(&exhausted, &role, &project, &agent).is_err(),
-        "prepare before the output reservation exhausts input capacity"
-    );
-    let exhausted_role =
-        RoleFile::parse(&WORKER.replacen("version: 1", "version: 1\nmax_output_tokens: 400", 1))?;
-    let larger = profile(FAMILY, Some(500))?;
-    assert!(resolve(&larger, &exhausted_role, &project, &agent).is_err());
+    resolve(&unknown, &role, &project, &agent)?;
+    let full = profile(FAMILY, Some(1_000))?;
+    resolve(&full, &role, &project, &agent)?;
     assert!(
         AgentOverride::parse("---\nversion: 1\noptions: {tools: []}\n---\n", &approvals).is_err()
     );

@@ -140,16 +140,6 @@ impl Request<'_> {
     /// The count endpoint's subset of this same request, in place.
     pub(crate) fn into_count(mut self, model: &str, spec: &crate::TokenCounterSpec) -> Self {
         let adapter = spec.adapter;
-        if spec.response_field == crate::TokenCountField::PromptTokens {
-            // Count the generation's actual input, including tool choice and
-            // response schema. Only output/transport controls change.
-            self.fields.insert(Field::Stream, Value::Bool(false));
-            self.fields.remove(Field::StreamOptions);
-            self.fields.remove(Field::MaxTokens);
-            self.fields
-                .insert(Field::MaxCompletionTokens, Value::from(1));
-            return self;
-        }
         if adapter == crate::Adapter::Gemini {
             self.fields
                 .insert(Field::Model, Value::String(format!("models/{model}")));

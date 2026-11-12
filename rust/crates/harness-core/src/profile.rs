@@ -79,8 +79,6 @@ struct Role {
     allowed_tools: Option<Vec<String>>,
     #[serde(default)]
     effort: Option<Effort>,
-    #[serde(default)]
-    max_output_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -243,7 +241,7 @@ impl<'a> AgentOverride<'a> {
 pub struct Capacity {
     /// Hard capacities from the original selected provider.
     pub model: ModelContextCapacity,
-    /// User-admitted total input plus output reservation.
+    /// User-admitted context window.
     pub budget_tokens: u32,
     /// Input boundary for summary preparation, below the output-reserved budget.
     pub watermark_tokens: u32,
@@ -280,8 +278,6 @@ pub struct RoleOverlay<'a> {
     pub allowed_tools: Option<&'a [String]>,
     /// Appended effort update, encoded only by a supporting provider binding.
     pub effort: Option<Effort>,
-    /// Role's output reservation; absent means the selected model's capacity.
-    pub max_output_tokens: Option<u32>,
     /// The existing owner-bound gate; text cannot create a replacement.
     pub approval_policy: &'a ApprovalGate,
 }
@@ -336,7 +332,7 @@ fn capacity(model: &ModelProfile, project: &Override, agent: &Override) -> Resul
         || watermark >= budget
     {
         return Err(invalid(
-            "profile budget, watermark or output reservation exceeds capacity",
+            "profile context budget or watermark exceeds capacity",
         ));
     }
     Ok(Capacity {
@@ -359,16 +355,6 @@ pub fn resolve<'a>(
     let selected = &model.model.metadata;
     let role_meta = &role.0.metadata;
     let capacity = capacity(model, &project.0.metadata, &agent.file.metadata)?;
-    let output = role_meta
-        .max_output_tokens
-        .or(model.capacity.output_tokens)
-        .ok_or_else(|| invalid("unknown output capacity requires a role output reservation"))?;
-    if output >= capacity.budget_tokens
-        || capacity.watermark_tokens >= capacity.budget_tokens - output
-        || !model.capacity.permits_output(output)
-    {
-        return Err(invalid("role output reservation exceeds capacity"));
-    }
     let prefix = PrefixProfile {
         key: selected
             .key
@@ -425,7 +411,6 @@ pub fn resolve<'a>(
             directives: [&role.0.body, &agent.file.body],
             allowed_tools: role_meta.allowed_tools.as_deref(),
             effort: role_meta.effort,
-            max_output_tokens: role_meta.max_output_tokens,
             approval_policy: agent.approvals,
         },
     })

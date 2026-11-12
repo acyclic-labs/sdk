@@ -39,7 +39,6 @@ pub(super) struct WasmModelRequestInput {
         skip_serializing_if = "crate::model::ModelSampling::is_default"
     )]
     sampling: crate::model::ModelSampling,
-    max_output_tokens: Option<u32>,
 }
 
 impl From<WasmModelRequestInput> for crate::model::ModelRequest {
@@ -51,7 +50,6 @@ impl From<WasmModelRequestInput> for crate::model::ModelRequest {
             messages: input.messages,
             tools: input.tools.into_iter().map(ToolDefinition::from).collect(),
             sampling: input.sampling,
-            max_output_tokens: input.max_output_tokens,
         }
     }
 }
@@ -102,24 +100,6 @@ pub fn prepare_model_request(request: JsValue, limits: JsValue) -> Result<Vec<u8
 #[wasm_bindgen(js_name = defaultCompactionPolicy, unchecked_return_type = "CompactionPolicy")]
 pub fn default_compaction_policy() -> Result<JsValue, JsValue> {
     to_js(&crate::context::CompactionPolicy::default())
-}
-
-/// Checks reserved headroom against actual selected capacity, returning its finite output ceiling.
-#[wasm_bindgen(js_name = validateCapacityCompaction)]
-pub fn validate_capacity_compaction(
-    #[wasm_bindgen(unchecked_param_type = "CapacityCompaction")] config: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "ModelContextCapacity")] capacity: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number | undefined")] output_tokens: JsValue,
-) -> Result<u32, JsValue> {
-    let config: crate::context::CapacityCompaction = from_js(config)?;
-    let output_tokens = if output_tokens.is_undefined() {
-        None
-    } else {
-        from_js(output_tokens)?
-    };
-    config
-        .validate(from_js(capacity)?, output_tokens)
-        .map_err(js_error)
 }
 
 /// Validates provider-owned counts against the exact canonical prepared request.

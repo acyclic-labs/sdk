@@ -118,7 +118,6 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
                 ),
             }],
             sampling: Default::default(),
-            max_output_tokens: Some(1_024),
         },
         limits,
         None,

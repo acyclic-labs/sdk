@@ -39,9 +39,7 @@ async fn initialize(text: &[String; 3], invalid: bool) -> State {
             crate::context::ContextPlacement::Prepend,
         )) as Arc<dyn crate::context::ContextStage>]),
         ToolRegistry::default(),
-    )
-    .with_max_output_tokens(512)
-    .unwrap();
+    );
     let input = TurnInput {
         max_steps: None,
         operation_id: OperationId::from_bytes([3; 16]),

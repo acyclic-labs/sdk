@@ -34,9 +34,9 @@ fn response_count_request_keeps_every_input_field_without_generation_controls() 
         "tool_choice":"required", "parallel_tool_calls":false,
         "reasoning":{"effort":"high"}, "personality":"pragmatic", "truncation":"disabled",
         "text":{"format":{"type":"json_schema", "name":"result", "schema":{"type":"object"}}},
-        "stream":true, "store":false, "max_output_tokens":128});
+        "stream":true, "store":false});
     let mut expected = original.clone();
-    for field in ["stream", "store", "max_output_tokens"] {
+    for field in ["stream", "store"] {
         expected.as_object_mut().unwrap().remove(field);
     }
     assert_eq!(
@@ -60,10 +60,10 @@ fn gemini_counts_the_full_generate_request_with_system_tools_and_schema() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
-    fn borrowed_count_serialization_matches_the_protocol_and_preserves_generation(text in ".{0,64}", model in ".{1,64}", output in any::<u32>()) {
+    fn borrowed_count_serialization_matches_the_protocol_and_preserves_generation(text in ".{0,64}", model in ".{1,64}") {
         for adapter in [Adapter::Chat, Adapter::Anthropic, Adapter::Responses, Adapter::Gemini] {
             let field = match adapter { Adapter::Responses => "input", Adapter::Gemini => "contents", _ => "messages" };
-            let mut original = json!({"model":model, "stream":true, "max_output_tokens":output,
+            let mut original = json!({"model":model, "stream":true,
                 "tools":[], "reasoning":{"effort":"high"}, "text":{"format":{"type":"text"}}});
             original[field] = json!([{"role":"user","content":text}]);
             let counted: Value = serde_json::from_slice(

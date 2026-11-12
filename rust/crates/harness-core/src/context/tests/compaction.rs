@@ -37,7 +37,7 @@ fn every_cut_of_the_only_protected_exchange_retains_all_input() -> Result<()> {
     let input_bytes = source.messages.iter().try_fold(100_u64, |total, message| {
         Ok::<_, crate::Error>(total + crate::contract::canonical_json_bytes(message)?.len() as u64)
     })?;
-    assert!(policy.needs_compaction(capacity, input_bytes, None)?);
+    assert!(policy.needs_compaction(capacity, input_bytes)?);
     // Exhaust all prefix cuts through the production selector: the current
     // input and latest result pin the entire connected call/result exchange.
     for covered in 0..=source.messages.len() {
@@ -396,7 +396,6 @@ fn compaction_keeps_fragmented_schemas_only_for_retained_exchanges() -> Result<(
                 messages,
                 tools,
                 sampling: Default::default(),
-                max_output_tokens: None,
             },
             Limits::default(),
             None,

@@ -159,7 +159,6 @@ impl<'a> Call<'a> {
             model: &self.request.model.name,
             agent_path: Some(self.source.agent_path),
             sampling: Some(self.request.sampling),
-            max_output_tokens: self.request.max_output_tokens,
         };
         if usage.version != ModelUsageRecord::VERSION
             || !usage.completed
@@ -189,7 +188,6 @@ impl<'a> Call<'a> {
             replay_key: &'a str,
             requested_model: &'a crate::model::Model,
             sampling: crate::model::ModelSampling,
-            max_output_tokens: Option<u32>,
             usage: Option<&'a ModelUsageRecord>,
             terminal_sequence: Option<u64>,
             terminal_metadata: Option<&'a serde_json::Value>,
@@ -263,7 +261,6 @@ impl<'a> Call<'a> {
                     replay_key: key.as_str(),
                     requested_model: &self.request.model,
                     sampling: self.request.sampling,
-                    max_output_tokens: self.request.max_output_tokens,
                     usage,
                     terminal_sequence: settlement.map(|(sequence, _)| sequence),
                     terminal_metadata: settlement.map(|(_, metadata)| metadata),

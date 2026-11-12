@@ -80,8 +80,6 @@ fields! {
     }
     // Call controls follow the conversation, in the one trailer encoder.
     controls {
-        MaxCompletionTokens(max_completion_tokens) => "max_completion_tokens",
-        MaxOutputTokens(max_output_tokens) => "max_output_tokens",
         MaxTokens(max_tokens) => "max_tokens",
         Temperature(temperature) => "temperature",
         TopP(top_p) => "top_p",

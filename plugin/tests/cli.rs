@@ -1350,6 +1350,8 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     let mut catalog: Value =
         serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
     catalog["default_model"] = json!("graphcoder-qual/tiny");
+    catalog["graphcoder-qual"]["models"]["tiny"]["capacity"] =
+        json!({"context_tokens":1_048_576,"output_tokens":1_048_576});
     std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
     let mut command = graphcoder_command(&fixture);
     command.arg("--catalog").arg(&model.catalog).args([
@@ -1398,6 +1400,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         .all(|field| left.get(field) == right.get(field))
     };
     assert_eq!(cli["model"], "tiny");
+    assert!(cli.get("max_output_tokens").is_none());
     assert!(!cli["tools"].as_array().unwrap().is_empty());
     assert!(cli.to_string().contains("Preserve Unicode Ï€"));
     assert!(

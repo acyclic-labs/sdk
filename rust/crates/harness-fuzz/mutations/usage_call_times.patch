@@ -1,9 +1,8 @@
 diff --git a/rust/crates/harness-core/src/executor/model_usage.rs b/rust/crates/harness-core/src/executor/model_usage.rs
 --- a/rust/crates/harness-core/src/executor/model_usage.rs
 +++ b/rust/crates/harness-core/src/executor/model_usage.rs
-@@ -80,8 +80,6 @@ pub(crate) struct ModelCallUsage<'a> {
-     /// Original requested output ceiling; absent remains unbounded.
-     pub max_output_tokens: Option<u32>,
+@@ -80,7 +80,5 @@ pub(crate) struct ModelCallUsage<'a> {
+     pub sampling: crate::model::ModelSampling,
      pub tokens: ModelTokenUsage,
 -    pub started_at: Option<u64>,
 -    pub completed_at: Option<u64>,
@@ -13,9 +12,8 @@ diff --git a/rust/crates/harness-core/src/executor/model_usage.rs b/rust/crates/
 diff --git a/rust/crates/harness-core/src/executor/dispatch.rs b/rust/crates/harness-core/src/executor/dispatch.rs
 --- a/rust/crates/harness-core/src/executor/dispatch.rs
 +++ b/rust/crates/harness-core/src/executor/dispatch.rs
-@@ -623,8 +623,6 @@ impl<'a> StockExecution<'a> {
+@@ -623,7 +623,5 @@ impl<'a> StockExecution<'a> {
                              sampling,
-                             max_output_tokens,
                              tokens: super::model_usage::ModelTokenUsage::reported(metadata),
 -                            started_at: clock.started_at(),
 -                            completed_at,
@@ -25,9 +23,8 @@ diff --git a/rust/crates/harness-core/src/executor/dispatch.rs b/rust/crates/har
 diff --git a/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs b/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs
 --- a/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs
 +++ b/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs
-@@ -549,8 +549,6 @@
+@@ -549,7 +549,5 @@
          sampling: request.sampling,
-         max_output_tokens: None,
          tokens: super::super::super::ModelTokenUsage::reported(&metadata),
 -        started_at: None,
 -        completed_at: None,

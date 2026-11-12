@@ -241,6 +241,41 @@ impl HttpTransport for Sends {
 }
 
 #[tokio::test]
+async fn reported_usage_preserves_compaction_pressure_without_a_count_endpoint() -> Result<()> {
+    for (adapter, _) in fixtures() {
+        let (mut provider, script) = provider(adapter, 200);
+        Arc::make_mut(&mut provider.config).token_counter = None;
+        provider.capacity = acyclic_harness_core::context::ModelContextCapacity {
+            context_tokens: 4096,
+            output_tokens: Some(4096),
+        };
+        let (prepared, _) = request(&provider)?;
+        let mut long = prepared.request().clone();
+        long.messages.last_mut().unwrap().content = ModelContent::Text("text ".repeat(4096));
+        let long = PreparedModelRequest::prepare(long, Limits::default(), None)?;
+        assert!(matches!(
+            provider.count_tokens(&long, 4096).await,
+            Err(Error::ModelTokenCountUnavailable)
+        ));
+        provider.accounting.usage.observe(
+            adapter,
+            &prepared,
+            &json!({"usage":{
+                "input_tokens":4097,"prompt_tokens":4097,"promptTokenCount":4097
+            }}),
+        )?;
+        let count = provider.count_tokens(&prepared, 4096).await?;
+        assert_eq!(count.input_tokens, 4097);
+        assert!(
+            acyclic_harness_core::context::CapacityCompaction {}
+                .needs_compaction(provider.capacity, count.input_tokens)?
+        );
+        assert!(script.sent.lock().unwrap().is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
     for (adapter, _) in fixtures() {
         let (mut provider, _) = provider(adapter, 200);

@@ -268,7 +268,6 @@ fn prepare(
                 Vec::new()
             },
             sampling: Default::default(),
-            max_output_tokens: Some(128),
         },
         Limits::default(),
         None,

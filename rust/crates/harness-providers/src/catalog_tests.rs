@@ -20,7 +20,6 @@ async fn captured_container_catalog_keeps_exact_host_grants_on_every_route() -> 
     let selected = registry.resolve("benchmark/fixture")?;
     let (request, _) = request(&selected)?;
     let mut request = request.request().clone();
-    request.max_output_tokens = Some(10);
     let request = PreparedModelRequest::prepare(request, Limits::default(), None)?;
     let dispatch = ModelDispatch {
         operation_id: acyclic_harness_core::OperationId::new(),

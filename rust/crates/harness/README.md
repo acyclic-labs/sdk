@@ -106,12 +106,9 @@ recovery; it never reloads sources or transforms. New projections require new
 admissions. A custom loop must finish each tool exchange before requesting the
 next model step or publishing a child prefix.
 
-Stock output-token budgets are caller-controlled: Rust exposes
-`StockExecutor::with_max_output_tokens`, and TypeScript exposes
-`HarnessBuilder.modelOutputTokens`. Neither adds an output-token ceiling when
-the caller omits the budget; explicit budgets accept any positive value
-representable by the model request's `u32` field. Rust binds the
-budget into the durable execution identity; admitted requests retain it on replay.
+The harness sends no output-token cap. Messages requires an output field, so that
+protocol receives the model's published catalog maximum. A length-stopped response
+continues the original turn; compaction uses the context window independently.
 
 Default admission and projection limits use representable values, with counts
 fitting the 32-bit WASM runtime and byte lengths fitting exact JavaScript integers.

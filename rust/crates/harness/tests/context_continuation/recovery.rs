@@ -23,7 +23,6 @@ pub(super) async fn local_journal_compaction_preserves_context_settlement_and_re
                 }],
                 tools: Vec::new(),
                 sampling: Default::default(),
-                max_output_tokens: Some(32),
             },
             Limits::default(),
             None,

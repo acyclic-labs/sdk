@@ -42,7 +42,6 @@ fn call() -> (ContextAdmission, ModelUsageRecord, ModelPriceRecord) {
         model: "generated-model".into(),
         agent_path: None,
         sampling: None,
-        max_output_tokens: None,
         tokens: ModelTokenUsage {
             input: Some(100),
             cached: Some(30),

@@ -262,12 +262,7 @@ fn executors(
         acyclic_harness::filesystem::StockExecutors::new(
             (model.model().clone(), model),
             tools,
-            (
-                limits,
-                CompactionPolicy::Capacity(CapacityCompaction {
-                    response_reserve_tokens: 1024,
-                }),
-            ),
+            (limits, CompactionPolicy::Capacity(CapacityCompaction {})),
             Arc::new(Tasks(bindings)),
         )
         .with_agent_tools(&selected)

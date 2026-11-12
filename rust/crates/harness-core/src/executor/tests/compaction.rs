@@ -215,8 +215,7 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
                 Limits::default(),
             )?,
             allowed()?,
-        )?
-        .with_max_output_tokens(1024)?;
+        )?;
         let storage =
             crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
         let journal = storage.journal();
@@ -316,15 +315,10 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
             )) as Arc<dyn crate::context::ContextStage>]),
             ToolRegistry::default(),
         );
-        let requested_output = output_capacity.is_none().then_some(4096);
-        let executor = match requested_output {
-            Some(output) => executor.with_max_output_tokens(output)?,
-            None => executor,
-        };
         let input = TurnInput {
             max_steps: None,
             operation_id: OperationId::new(),
-            input: ModelContent::Text("c".repeat(5_000)),
+            input: ModelContent::Text("c".repeat(6_000)),
             selected_context: None,
         };
         let (output, _trace) =
@@ -355,12 +349,11 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
         };
         assert_eq!(capacity_tokens, 65_536);
         assert!(
-            input_tokens < 6_000,
+            input_tokens < 7_000,
             "occupancy kept the pre-rewrite input count"
         );
         let requests = provider.requests();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].max_output_tokens, requested_output);
         assert_eq!(
             provider.context_capacity(&requests[0].model)?.output_tokens,
             output_capacity
@@ -381,7 +374,7 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
         );
         assert_eq!(
             requests[0].messages.last().map(|message| &message.content),
-            Some(&ModelContent::Text("c".repeat(5_000)))
+            Some(&ModelContent::Text("c".repeat(6_000)))
         );
         #[cfg(not(target_arch = "wasm32"))]
         assert_eq!(
@@ -605,7 +598,7 @@ async fn actual_compacted_accounting_blocks_the_response_without_a_model_call() 
     let input = TurnInput {
         max_steps: None,
         operation_id: OperationId::new(),
-        input: ModelContent::Text("c".repeat(5_000)),
+        input: ModelContent::Text("c".repeat(6_000)),
         selected_context: None,
     };
     // The block is the turn's durable, visible outcome, the same on replay.
@@ -682,7 +675,7 @@ async fn oversized_mandatory_instruction_or_native_media_rejects_before_summary(
         let input = TurnInput {
             max_steps: None,
             operation_id,
-            input: ModelContent::Text("c".repeat(5_000)),
+            input: ModelContent::Text("c".repeat(6_000)),
             selected_context: None,
         };
         assert!(matches!(executor.execute_progress(input, &journal).await?,
@@ -708,8 +701,7 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
-    )
-    .with_max_output_tokens(1_024)?;
+    );
     let message = |length| ModelMessage {
         role: ModelRole::User,
         content: ModelContent::Text("x".repeat(length)),
@@ -776,11 +768,9 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    for (capacity, output, source_length, fault, counts) in [
-        (100, 1_024, 1, None, 0),
-        (131_072, 8_192, 1, None, 0),
-        (4_096, 1_024, 5_000, None, 1),
-        (131_072, 1_024, 1, Some(AccountingFault::Digest), 1),
+    for (capacity, source_length, fault, counts) in [
+        (4_096, 5_000, None, 1),
+        (131_072, 1, Some(AccountingFault::Digest), 1),
     ] {
         let (provider, accounting_calls) = counted_model(capacity, fault, [], []);
         let executor = uncompacted_executor(
@@ -788,8 +778,7 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
-        )
-        .with_max_output_tokens(output)?;
+        );
         let journal = Journal::default();
         let source = crate::context::Context {
             messages: vec![ModelMessage {
@@ -820,8 +809,7 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
-    )
-    .with_max_output_tokens(1_024)?;
+    );
     let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
         crate::AgentId::new(),
         65_536,
@@ -888,8 +876,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
-    )
-    .with_max_output_tokens(1024)?;
+    );
     let storage =
         crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
     let journal = storage.journal();
@@ -960,8 +947,7 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
         provider.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
-    )
-    .with_max_output_tokens(1024)?;
+    );
     let journal = Journal::default();
     let parent = TurnInput {
         max_steps: None,

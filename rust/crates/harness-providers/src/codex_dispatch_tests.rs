@@ -230,7 +230,11 @@ async fn api_key_precedence_uses_public_responses_without_reading_cli_login()
     assert_eq!(requests[0].url, "https://api.openai.com/v1/responses");
     assert_eq!(requests[0].headers["authorization"], "Bearer api-key");
     assert!(!requests[0].headers.contains_key("chatgpt-account-id"));
-    assert_eq!(crate::json(&requests[0].body)?["max_output_tokens"], 64);
+    assert!(
+        crate::json(&requests[0].body)?
+            .get("max_output_tokens")
+            .is_none()
+    );
     Ok(())
 }
 

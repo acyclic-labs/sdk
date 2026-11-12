@@ -100,7 +100,7 @@ impl StockExecution<'_> {
             }
             Some(ContextAccounting {
                 capacity,
-                count: Some(count.into()),
+                count: InputAccounting::Counted(count.into()),
             })
         } else {
             None
@@ -292,11 +292,7 @@ impl StockExecution<'_> {
                 {
                     return Ok(retained);
                 }
-                let token_pressure = policy.needs_compaction(
-                    accounting.capacity,
-                    input_tokens,
-                    self.output_tokens(),
-                )?;
+                let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
                 let possible_message_pressure = projection.canonical.is_some()
                     && self
                         .compaction_message_limit(true, 0)

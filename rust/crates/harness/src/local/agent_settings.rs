@@ -80,10 +80,6 @@ pub(super) async fn admit(
     agent: AgentId,
     started: (Model, Arc<dyn ModelProvider>),
     resolve: Resolve<'_>,
-    compaction: (
-        &crate::context::CompactionPolicy,
-        &Option<crate::context::CompactionPolicy>,
-    ),
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<Settings> {
     let seed = Layer {
@@ -93,7 +89,7 @@ pub(super) async fn admit(
     };
     let home = tree.home(config::AGENT).await?;
     let Some((version, bytes)) = home else {
-        return settle(&[seed], tree, started, resolve, compaction)
+        return settle(&[seed], tree, started, resolve)
             .await
             .map_err(Refused::seed);
     };
@@ -109,7 +105,7 @@ pub(super) async fn admit(
         tree.volumes,
         agent,
         (config::AGENT, &version),
-        settle(&layers, tree, started, resolve, compaction).await,
+        settle(&layers, tree, started, resolve).await,
         clock,
     )
     .await
@@ -314,10 +310,6 @@ async fn settle(
     tree: &dyn config::Tree,
     started: (Model, Arc<dyn ModelProvider>),
     resolve: Resolve<'_>,
-    compaction: (
-        &crate::context::CompactionPolicy,
-        &Option<crate::context::CompactionPolicy>,
-    ),
 ) -> std::result::Result<Settings, Refused> {
     let selection = format!("{}/{}", started.0.provider, started.0.name);
     let invalid =
@@ -356,11 +348,6 @@ async fn settle(
             "replay is chosen when the session starts, not here",
         ));
     }
-    if let Some(sampling) = settings.sampling {
-        if sampling.max_output_tokens == Some(0) {
-            return Err(rejected("sampling.maxOutputTokens must be positive"));
-        }
-    }
     let unchanged_model = settings.model == selection;
     let model = if unchanged_model {
         started
@@ -379,34 +366,6 @@ async fn settle(
                 .map(|profile| profile.sampling()),
         )
         .map_err(Refused::selection)?;
-    }
-    let compaction = if unchanged_model {
-        compaction.0.clone()
-    } else {
-        crate::context::CompactionPolicy::for_model(
-            compaction.1.clone(),
-            &model.0,
-            model.1.as_ref(),
-        )
-        .map_err(Refused::selection)?
-    };
-    if let Some(output) = settings
-        .sampling
-        .and_then(|sampling| sampling.max_output_tokens)
-    {
-        let capacity = model.1.context_capacity(&model.0)?;
-        match &compaction {
-            crate::context::CompactionPolicy::Disabled => {
-                capacity
-                    .output_reservation(Some(output))
-                    .map_err(Refused::selection)?;
-            }
-            crate::context::CompactionPolicy::Capacity(policy) => {
-                policy
-                    .validate(capacity, Some(output))
-                    .map_err(Refused::selection)?;
-            }
-        }
     }
     Ok(Settings {
         model,
@@ -463,7 +422,6 @@ mod tests {
             generation: "original",
             bytes: Some(b"import {sampling} from './options.ts'; export default base => ({...base, sampling});"),
         }];
-        let disabled = crate::context::CompactionPolicy::Disabled;
         for prefix in ["", "allowed"] {
             let mut tree = Tree::new(&volumes).await?;
             tree.read = ContentGrant::verify_directory_read(
@@ -473,14 +431,7 @@ mod tests {
                 prefix,
                 &mut None,
             )?;
-            let result = settle(
-                &layers,
-                &tree,
-                harness.agent()?.clone(),
-                None,
-                (&disabled, &None),
-            )
-            .await;
+            let result = settle(&layers, &tree, harness.agent()?.clone(), None).await;
             match (prefix, result) {
                 ("", Ok(settings)) => assert_eq!(
                     settings.sampling.and_then(|sampling| sampling.temperature),
@@ -553,7 +504,6 @@ mod tests {
         ] {
             crate::local::tests::settings::write(&harness, path, source).await?;
         }
-        let disabled = crate::context::CompactionPolicy::Disabled;
         let clock = harness.clock.as_ref();
         let enabled = plugins(false, &original, harness.root, clock).await?;
         assert!(
@@ -565,7 +515,6 @@ mod tests {
             harness.root,
             harness.agent()?.clone(),
             None,
-            (&disabled, &None),
             clock,
         )
         .await?;
@@ -585,7 +534,6 @@ mod tests {
             harness.root,
             harness.agent()?.clone(),
             None,
-            (&disabled, &None),
             clock,
         )
         .await?;

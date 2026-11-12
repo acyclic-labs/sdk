@@ -53,7 +53,6 @@ fn usage() -> ModelUsageRecord {
         model: "generated-model".into(),
         agent_path: Some("agents/original".into()),
         sampling: None,
-        max_output_tokens: None,
         tokens: ModelTokenUsage {
             input: Some(10),
             cached: Some(3),

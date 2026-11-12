@@ -95,7 +95,6 @@ mod tests {
             ContextPipeline::default(),
             ToolRegistry::default(),
         )
-        .with_max_output_tokens(64)?
         .with_compaction_policy(crate::context::CompactionPolicy::Disabled)
         .with_tool_authority(
             scope,

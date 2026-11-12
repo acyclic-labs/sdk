@@ -190,27 +190,6 @@ fn model() -> Result<Model> {
     Model::new("scripted".into(), "test".into(), "1".into())
 }
 
-#[tokio::test]
-async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let project = volume(directory.path()).await?;
-    let provider = text();
-    let mut config = volume_config(directory.path(), project, provider.clone())?;
-    let owner_path = config.resolved_state_directory()?.join("owner.v3");
-    config = config.compaction(crate::context::CompactionPolicy::Capacity(
-        crate::context::CapacityCompaction {
-            response_reserve_tokens: capacity().context_tokens,
-        },
-    ));
-    assert!(matches!(
-        LocalHarness::open(config).await,
-        Err(Error::Invalid(_))
-    ));
-    assert!(!owner_path.exists());
-    assert_eq!(provider.requests().len(), 0);
-    Ok(())
-}
-
 struct Echo;
 impl ToolExecutor for Echo {
     fn execute<'a>(
