@@ -907,19 +907,41 @@ mod tests {
             authorized.clauses().iter().rev().cloned().collect(),
         )));
         let single = FollowFilter(Some(Arc::new(vec![authorized.clauses()[0].clone()])));
-        for filter in [&authorized, &reversed, &single, &FollowFilter::default()] {
+        let projected = authorized.including_projection_key(b"a").unwrap();
+        let other_projection = authorized.including_projection_key(b"b").unwrap();
+        for filter in [
+            &authorized,
+            &reversed,
+            &single,
+            &projected,
+            &other_projection,
+            &FollowFilter::default(),
+        ] {
             // Independent v1 framing oracle: preserve the public digest format.
             let mut hash = Sha256::new();
             hash.update(b"acyclic.stream.follow-filter.v1\0");
             hash.update((filter.clauses().len() as u64).to_le_bytes());
             for clause in filter.clauses() {
                 hash.update([u8::from(clause.all_keys)]);
+                hash.update([u8::from(clause.projection.is_some())]);
+                if let Some(range) = &clause.projection {
+                    hash.update((range.start.len() as u64).to_le_bytes());
+                    hash.update(&range.start);
+                }
                 let bytes = clause.filter.encode_to_vec();
                 hash.update((bytes.len() as u64).to_le_bytes());
                 hash.update(bytes);
             }
             assert_eq!(filter.digest(), <[u8; 32]>::from(hash.finalize()));
         }
+        assert_ne!(authorized.digest(), projected.digest());
+        assert_ne!(projected.digest(), other_projection.digest());
+        assert_eq!(
+            projected.digest(),
+            FollowFilter::new(projected.transport_filter().unwrap())
+                .unwrap()
+                .digest()
+        );
         #[cfg(not(target_arch = "wasm32"))]
         {
             let empty = acyclic_test_support::measure(|| {
