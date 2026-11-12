@@ -45,7 +45,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         clock: Arc<dyn UnixMillisClock>,
         calls: Option<&str>,
     ) -> Result<AgentObservation> {
-        self.client_observation(authority, agent, volume, clock, calls, None)
+        self.client_observation(authority, agent, volume, clock, calls.as_slice(), None)
             .await
     }
 
@@ -58,7 +58,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         agent: &crate::agent::AgentPath,
         volume: &VolumeRef,
         clock: Arc<dyn UnixMillisClock>,
-        calls: Option<&str>,
+        calls: &[&str],
         directory: Option<&str>,
     ) -> Result<AgentObservation> {
         let issuer = authority.issuer.native().ok_or_else(|| {
@@ -93,7 +93,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         agent: &'a crate::agent::AgentPath,
         volume: &'a VolumeRef,
         clock: &'a dyn UnixMillisClock,
-        calls: Option<&'a str>,
+        calls: &'a [&'a str],
         directory: Option<&'a str>,
         audience: String,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<(String, Vec<u8>, String)>> {
@@ -159,7 +159,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 path.map(|path| acyclic_stream::wire_codec::session::stream_resource(path.as_str()))
                     .map_err(|error| Error::Invalid(format!("agent stream: {error}")))
             };
-            let observed = stream(if calls.is_some() {
+            let observed = stream(if !calls.is_empty() {
                 agent.inbox()
             } else {
                 agent.conversation()
@@ -177,23 +177,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let observe: &[&str] = &["streams/list", "streams/read", "streams/follow"];
             let read: &[&str] = &["fs/list", "fs/read"];
             let invoke: &[&str] = &["actors/invoke"];
-            let mut grants = match calls {
-                Some(calls) => vec![
+            let mut grants = if !calls.is_empty() {
+                vec![
                     (observed.as_str(), true, observe),
                     (status.as_str(), true, observe),
                     (children.as_str(), true, observe),
                     (membership.as_str(), tree, observe),
                     (resource.as_str(), true, read),
-                    (calls, false, invoke),
-                ],
-                None => vec![
+                ]
+            } else {
+                vec![
                     (observed.as_str(), false, follow),
                     (status.as_str(), false, follow),
                     (membership.as_str(), tree, follow),
                     (resource.as_str(), true, read),
-                ],
+                ]
             };
             grants.push((diagnostics.as_str(), true, &["streams/read"]));
+            grants.extend(calls.iter().map(|calls| (*calls, false, invoke)));
             let directory_streams = [
                 acyclic_stream::wire_codec::session::stream_resource(crate::agent::AGENTS),
                 acyclic_stream::wire_codec::session::stream_resource(crate::agent::STATUSES),

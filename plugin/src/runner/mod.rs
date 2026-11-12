@@ -833,7 +833,15 @@ async fn connected(
         return self::inspect::run(connection, inspect, args.agent.as_deref()).await;
     }
     if let Some(Command::Sessions(list)) = &args.command {
-        let page = acyclic_harness::local::sessions::page_filtered(
+        let connection = match &args.agent {
+            Some(agent) => {
+                connection
+                    .select(acyclic_harness::agent::AgentPath::try_from(agent.clone())?)
+                    .await?
+            }
+            None => connection,
+        };
+        let page = acyclic_harness::local::sessions::page_scoped(
             &connection,
             acyclic_harness::client::AgentPageRequest::new(
                 list.page.page_size,
@@ -846,6 +854,11 @@ async fn connected(
                 created_after: list.created_after,
                 created_before: list.created_before,
                 updated_after: list.updated_after,
+            },
+            if list.peers {
+                acyclic_harness::client::SessionsScope::Peers
+            } else {
+                acyclic_harness::client::SessionsScope::Owned
             },
         )
         .await?;

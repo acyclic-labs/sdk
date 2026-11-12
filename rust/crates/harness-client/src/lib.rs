@@ -28,7 +28,7 @@ pub use input_query::{InputPreview, InputPreviewStep, InputQuery};
 mod command;
 pub use command::{
     AgentCommand, AgentPageRequest, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
-    MAX_READ_BYTES, PreparedCommand, ReadTarget,
+    MAX_READ_BYTES, PreparedCommand, ReadTarget, SessionsScope,
 };
 mod reply;
 pub use reply::{

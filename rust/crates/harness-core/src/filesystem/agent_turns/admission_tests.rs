@@ -6,6 +6,147 @@ use crate::{
 };
 
 #[tokio::test]
+async fn announcement_publication_preserves_workload_and_delegated_authority() -> Result<()> {
+    struct NoDispatch;
+    impl TurnExecutors for NoDispatch {
+        fn executor<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: OperationId,
+            _: &'a ModelContent,
+            _: &'a TurnAuthority,
+        ) -> BoxFuture<'a, Result<Arc<dyn Executor>>> {
+            panic!("announcement publication must not dispatch an executor")
+        }
+    }
+    for delegated in [false, true] {
+        let path = AgentPath::root(&crate::agent::AgentId::from_bytes([180; 16]));
+        let provider = ProviderRef::new(
+            "host-documents".into(),
+            "filesystem".into(),
+            "2".into(),
+            &mut None,
+        )?;
+        let private = private_volume(provider.clone(), &path.id())?;
+        let journal = crate::conversation::journal_volume(provider.clone(), &path.id())?;
+        let files = FilesystemHost::<
+            acyclic_fs::MemoryAuthorityBackend,
+            acyclic_fs::MemoryObjectBackend,
+        >::new(acyclic_fs::Fs::memory(), &provider, None)?;
+        files.create_volume(&private).await?;
+        files.create_volume(&journal).await?;
+        let audience = Authority {
+            kind: AggregateKind::Conversation,
+            id: path.id().to_string(),
+        };
+        let root = AuthorityRoot::new("host-documents", [181; 32], audience.clone());
+        let grants = if delegated {
+            Capabilities::new([acyclic_fs::access::Capability::whole_volume(
+                None,
+                &acyclic_fs::access::Action::ALL,
+            )
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?])
+        } else {
+            Capabilities::new([
+                private.capability(VolumeOperation::Read, &mut None)?,
+                private.capability(VolumeOperation::Write, &mut None)?,
+            ])
+        };
+        let scope = root.bootstrap_scope(
+            "workload",
+            &grants,
+            Some(crate::AgentId::from_bytes(path.id_bytes())),
+            &mut None,
+        )?;
+        let (_producer, stopped) = futures::channel::oneshot::channel::<()>();
+        let runtime = if delegated {
+            let context = acyclic_auth::operation::Context::from_stopped(
+                root.verifier(&mut None)?
+                    .expiry(&scope)?
+                    .saturating_mul(1000),
+                async move {
+                    let _ = stopped.await;
+                    acyclic_auth::operation::Stopped::Cancelled
+                },
+            );
+            RuntimeAuthority::admitted(
+                root.admit(scope.clone(), context)?,
+                OperationId::from_bytes([182; 16]),
+            )
+        } else {
+            root.clone().into()
+        };
+        let state = AgentState::adopted(
+            path.clone(),
+            &crate::agent::ForkAdopted {
+                agent: path.id(),
+                parent: None,
+                profile: None,
+                forked_at: 0,
+                conversation_tail: 0,
+                checkpoint: None,
+                volumes: vec![WorkspaceEntry::initial_volume(
+                    crate::agent::WorkspaceRole::Private,
+                    PRIVATE_VOLUME.into(),
+                    private,
+                )],
+                brief: None,
+                policy: None,
+            },
+        )
+        .map_err(Error::from)?;
+        let host = FilesystemTurnHost::new(
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            acyclic_actors::addressing::ActorReference::new(b"host-documents", b"agents", b"owner")
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            files,
+            runtime,
+            TurnAdmission::Admitted {
+                audience,
+                scope: scope.clone(),
+            },
+            Arc::new(NoDispatch),
+            TurnLimits {
+                maximum_bytes: 64 * 1024,
+                history_turns: 8,
+            },
+            Default::default(),
+        );
+        let (documents, _) = host.announcement_storage(&state, &[]).await?;
+        assert!(
+            documents
+                .create("targets.json", br#"{"targets":[]}"#, 1024)
+                .await?
+                .is_none()
+        );
+        let document = documents
+            .read("targets.json", 1024)
+            .await?
+            .ok_or_else(|| Error::NotFound("host announcement".into()))?;
+        assert_eq!(document.as_ref(), br#"{"targets":[]}"#);
+        let authority =
+            agent_authority(&host.issuer, &host.admission, &path, &state.volumes, &[]).await?;
+        assert!(authority.grants.is_subset_of(scope.capabilities()));
+        if !delegated {
+            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+                assert!(
+                    ContentGrant::verify(
+                        &authority.verifier,
+                        &authority.scope,
+                        &journal,
+                        operation,
+                        &mut None
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result<()> {
     use crate::agent::{
         EntryId, WorkspaceInherit, WorkspaceKind, WorkspaceMode, WorkspaceRole, WorkspaceSource,

@@ -13,6 +13,14 @@ enum Entry {
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bound<P, O> {
+    /// Read-only discovery resource for participating roots in this account.
+    pub fn peer_resource(&self) -> String {
+        format!(
+            "actors:/peer-directory/{}",
+            acyclic_auth::encode_component(self.within.account().as_bytes())
+        )
+    }
+
     /// A directory exposes every root on this placement, so enrollment requires
     /// its original unbound whole-volume owner, before any storage observation.
     pub fn admit_sessions(&self) -> Result<(), Error> {
@@ -60,6 +68,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     /// Scope-directory entries created atomically with their independent roots.
     pub fn session_roots(&self) -> Result<acyclic_stream::StreamPath, Error> {
         self.admit_sessions()?;
+        self.peer_roots()
+    }
+
+    /// Root-directory location for host-authorized peer discovery. Unlike
+    /// directory admission this conveys no authority to control other roots.
+    /// The host must check peer-resource authority and live membership.
+    pub fn peer_roots(&self) -> Result<acyclic_stream::StreamPath, Error> {
         acyclic_stream::StreamPath::new(format!("{}/roots", self.session_directory()?.as_str()))
             .map_err(Error::Stream)
     }

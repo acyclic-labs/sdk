@@ -4,7 +4,7 @@ use crate::agent::Phase;
 use acyclic_stream::{CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey};
 
 #[tokio::test]
-async fn ten_thousand_sessions_keep_discovery_at_two_bounded_head_views() -> Result {
+async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Result {
     async fn work(count: u128) -> Result<acyclic_stream::testing::Requests> {
         let bound = binding()?;
         let stream = bound.agents().provider().clone();
@@ -70,8 +70,18 @@ async fn ten_thousand_sessions_keep_discovery_at_two_bounded_head_views() -> Res
                     path: agent.status()?,
                     records: vec![status.clone()],
                 },
+                CommitMutation::Append {
+                    path: agent.peer_membership()?,
+                    records: vec![
+                        crate::agent::PeerMembership {
+                            enabled: index >= 16,
+                        }
+                        .encode()?
+                        .into(),
+                    ],
+                },
             ]);
-            if mutations.len() == 128 || index + 1 == count {
+            if mutations.len() >= 128 || index + 1 == count {
                 assert!(matches!(
                     stream
                         .commit(CommitRequest {
@@ -105,6 +115,8 @@ async fn ten_thousand_sessions_keep_discovery_at_two_bounded_head_views() -> Res
             &client,
             "agents",
             &AgentCommand::Sessions {
+                requester: None,
+                scope: acyclic_harness_client::SessionsScope::Owned,
                 page: AgentPageRequest::new(16, 64 * 1024, None)?,
             },
         )
@@ -128,8 +140,167 @@ async fn ten_thousand_sessions_keep_discovery_at_two_bounded_head_views() -> Res
             0,
             "discovery must not read transcripts or volumes"
         );
+        // Exercise ordinary client enrollment, rather than supplying the peer
+        // grant in a test credential. It must not enroll directory authority.
+        let enrolled = server
+            .bound()
+            .client_credential(
+                server.root(),
+                server.resource(),
+                Arc::new(acyclic_stream::SystemUnixMillisClock),
+            )
+            .await?;
+        let client = Client::in_process_with_products(
+            stream.clone(),
+            enrolled.authority,
+            None,
+            server.clone(),
+            Some(server.clone()),
+            Arc::new(acyclic_stream::runtime::PlatformExecutor),
+            None,
+        );
+        client.register_credential(0, enrolled.credential.into())?;
+        assert!(!matches!(
+            call(
+                &client,
+                "agents",
+                &AgentCommand::Sessions {
+                    requester: None,
+                    scope: acyclic_harness_client::SessionsScope::Owned,
+                    page: AgentPageRequest::default(),
+                }
+            )
+            .await,
+            Ok(Ok(_))
+        ));
+        let mut cursor = None;
+        for expected in [0, 16] {
+            let before = stream.requests();
+            let AgentReply::Children { items, next } = call(
+                &client,
+                "agents",
+                &AgentCommand::Sessions {
+                    requester: None,
+                    scope: acyclic_harness_client::SessionsScope::Peers,
+                    page: AgentPageRequest::new(16, 64 * 1024, cursor)?,
+                },
+            )
+            .await??
+            else {
+                return Err("peer discovery returned another result".into());
+            };
+            let reads = stream.requests().since(before);
+            assert_eq!(reads.control(), 2);
+            assert_eq!(reads.data(), 0);
+            assert_eq!(items.len(), expected);
+            if expected == 0 {
+                assert!(
+                    next.is_some(),
+                    "filtered pages must advance without scanning ahead"
+                );
+                use base64::{Engine as _, engine::general_purpose::STANDARD};
+                let mut sealed = STANDARD.decode(next.as_ref().ok_or("missing continuation")?)?;
+                let hidden = AgentId::from_bytes(17_u128.to_be_bytes()).to_string();
+                assert!(
+                    !sealed
+                        .windows(hidden.len())
+                        .any(|bytes| bytes == hidden.as_bytes())
+                );
+                sealed[25] ^= 1;
+                assert!(!matches!(
+                    call(
+                        &client,
+                        "agents",
+                        &AgentCommand::Sessions {
+                            requester: None,
+                            scope: acyclic_harness_client::SessionsScope::Peers,
+                            page: AgentPageRequest::new(
+                                16,
+                                64 * 1024,
+                                Some(STANDARD.encode(sealed))
+                            )?,
+                        }
+                    )
+                    .await,
+                    Ok(Ok(_))
+                ));
+            }
+            cursor = next;
+        }
+        let state = server.bound().agents().state(server.root()).await?;
+        let authority = crate::filesystem::agent_authority(
+            server.bound().issuer(),
+            server.bound().admission(),
+            server.root(),
+            &state.volumes,
+            &[],
+        )
+        .await?;
+        let observation = server
+            .bound()
+            .volumes()
+            .agent_observation(
+                &authority,
+                server.root(),
+                authority.private.volume()?,
+                Arc::new(acyclic_stream::SystemUnixMillisClock),
+                Some(server.resource()),
+            )
+            .await?;
+        let observer = Client::in_process_with_products(
+            stream.clone(),
+            observation.authority,
+            None,
+            server.clone(),
+            Some(server.clone()),
+            Arc::new(acyclic_stream::runtime::PlatformExecutor),
+            None,
+        );
+        observer.register_credential(0, observation.credential.into())?;
+        assert!(matches!(
+            call(&observer, "agents", &AgentCommand::Root {}).await?,
+            Ok(AgentReply::Root { .. })
+        ));
+        assert!(!matches!(
+            call(
+                &observer,
+                "agents",
+                &AgentCommand::Sessions {
+                    requester: None,
+                    scope: acyclic_harness_client::SessionsScope::Peers,
+                    page: AgentPageRequest::default(),
+                }
+            )
+            .await,
+            Ok(Ok(_))
+        ));
+        server
+            .bound()
+            .agents()
+            .set_peer_membership(
+                server.root(),
+                &crate::agent::Sender::User {
+                    principal: "owner".into(),
+                },
+                &IntentId::try_from("discovery-off")?,
+                false,
+            )
+            .await?;
+        assert!(!matches!(
+            call(
+                &client,
+                "agents",
+                &AgentCommand::Sessions {
+                    requester: None,
+                    scope: acyclic_harness_client::SessionsScope::Peers,
+                    page: AgentPageRequest::default(),
+                }
+            )
+            .await,
+            Ok(Ok(_))
+        ));
         Ok(work)
     }
-    assert_eq!(work(32).await?, work(10_000).await?);
+    assert_eq!(work(32).await?, work(100_000).await?);
     Ok(())
 }

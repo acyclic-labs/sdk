@@ -254,6 +254,16 @@ impl<'v> AdmittedAgent<'v> {
         }
         Ok(())
     }
+
+    /// Host-owned storage is outside the workload's tool grant. Native custody
+    /// checks the persisted owner; a delegated host retains its original ceiling.
+    pub(super) fn authorize_host_volume(&self, volume: &VolumeRef) -> Result<()> {
+        if self.issuer.native().is_some() {
+            volume.require_writer(Some(self.owner), &None)
+        } else {
+            self.authorize_volume(volume)
+        }
+    }
 }
 
 /// The filesystem's decision over `scope`'s structured grant, if it has one:
@@ -1015,8 +1025,17 @@ where
             admitted.private.volume()?.provider().clone(),
             &crate::agent::AgentId::from_bytes(admitted.owner.into_bytes()),
         )?;
-        admitted.authorize_volume(&volume)?;
-        let grants = match admitted.parent {
+        admitted.authorize_host_volume(&volume)?;
+        let parent = if admitted.issuer.native().is_some() {
+            None
+        } else {
+            admitted
+                .parent
+                .or_else(|| admitted.issuer.caller().map(|(_, scope)| scope))
+        };
+        let grants = match parent {
+            // A structured filesystem scope carries its limits in its label.
+            // Replacing it with bare volume labels would widen that ceiling.
             Some(parent) => parent.capabilities().clone(),
             None => Capabilities::new(
                 [VolumeOperation::Read, VolumeOperation::Write]
@@ -1028,12 +1047,7 @@ where
         };
         let scope = admitted
             .issuer
-            .issue(
-                admitted.parent,
-                "announcements",
-                &grants,
-                Some(admitted.owner),
-            )
+            .issue(parent, "announcements", &grants, Some(admitted.owner))
             .await?;
         let verifier = admitted.issuer.verifier(&mut None)?;
         Ok((

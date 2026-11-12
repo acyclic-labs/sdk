@@ -328,6 +328,8 @@ mod tests {
             .map_err(|error| Error::Storage(format!("tree client connect: {error}")))?;
         assert!(
             tree.execute(&AgentCommand::Sessions {
+                requester: None,
+                scope: acyclic_harness_client::SessionsScope::Owned,
                 page: AgentPageRequest::default()
             })
             .await
@@ -489,8 +491,13 @@ mod tests {
             let mut cursor = None;
             loop {
                 let page = AgentPageRequest::new(2, 65536, cursor).map_err(storage)?;
-                let AgentReply::Children { items, next } =
-                    connection.execute(&AgentCommand::Sessions { page }).await?
+                let AgentReply::Children { items, next } = connection
+                    .execute(&AgentCommand::Sessions {
+                        requester: None,
+                        scope: acyclic_harness_client::SessionsScope::Owned,
+                        page,
+                    })
+                    .await?
                 else {
                     return Err(Error::Invalid("missing directory page".into()));
                 };

@@ -25,6 +25,8 @@ acyclic-differential = { version = "=0.2.0", path = "../differential", optional 
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 base64 = "0.23.1"
 bytes.workspace = true
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+getrandom.workspace = true
 http.workspace = true
 ed25519-dalek = { version = "=3.0.0", features = ["zeroize"] }
 futures.workspace = true
@@ -50,6 +52,7 @@ arc-swap = "=1.9.2"
 reqwest = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
 js-sys = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }

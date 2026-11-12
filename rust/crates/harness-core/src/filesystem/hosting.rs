@@ -476,6 +476,8 @@ where
     /// actor resource of the server of this binding's tree, and observes
     /// `root`'s stream subtree, matching status subtree and tool output; with the session
     /// authority admitting it.
+    /// Independent roots also receive read-only peer discovery; child enrollment
+    /// never inherits that resource or session-directory authority.
     ///
     /// # Errors
     /// When `root` is absent or its scope does not cover its observation.
@@ -543,13 +545,20 @@ where
         )
         .await
         .map_err(turn)?;
+        let peers = self.peer_resource();
+        let invocations = [calls, peers.as_str()];
+        let calls = if root.depth() == 0 {
+            &invocations[..]
+        } else {
+            &invocations[..1]
+        };
         self.volumes
             .client_observation(
                 &authority,
                 &state.path,
                 authority.private.volume()?,
                 clock,
-                Some(calls),
+                calls,
                 directory,
             )
             .await
@@ -618,7 +627,7 @@ where
                     &state.path,
                     authority.private.volume()?,
                     &clock,
-                    None,
+                    &[],
                     None,
                     audience,
                 )
@@ -1272,7 +1281,7 @@ where
         let journal =
             crate::conversation::journal_volume(self.volumes.provider.clone(), &request.agent)
                 .map_err(turn)?;
-        authority.authorize_volume(&journal).map_err(turn)?;
+        authority.authorize_host_volume(&journal).map_err(turn)?;
         if request
             .fresh
             .iter()

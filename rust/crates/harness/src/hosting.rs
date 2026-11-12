@@ -221,6 +221,7 @@ pub struct Server<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     platform: Arc<dyn Platform>,
     root: AgentPath,
     resource: String,
+    cursor_key: acyclic_auth::cursor::CursorKey,
     /// Only uncertain root publications retain process state; settled sessions
     /// are discovered directly from the stream directory.
     pending_roots:
@@ -307,7 +308,7 @@ where
     if platform.sessions() {
         bound.initialize_sessions().await?;
     }
-    Ok(Serving::Served(server(bound, platform, root)))
+    Ok(Serving::Served(server(bound, platform, root)?))
 }
 
 /// Restores a platform's durable placement of an already adopted tree.
@@ -328,14 +329,14 @@ where
     if platform.sessions() {
         bound.initialize_sessions().await?;
     }
-    Ok(server(bound, platform, root))
+    server(bound, platform, root)
 }
 
 fn server<P, O>(
     bound: Bound<P, O>,
     platform: Arc<dyn Platform>,
     root: AgentPath,
-) -> Arc<Server<P, O>>
+) -> Result<Arc<Server<P, O>>, Error>
 where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
@@ -344,14 +345,17 @@ where
         "actors:/{}",
         acyclic_auth::encode_component(bound.within().namespace().as_str().as_bytes())
     );
-    Arc::new_cyclic(|this| Server {
+    let cursor_key = acyclic_auth::cursor::CursorKey::new()
+        .map_err(|_| Error::Record("cursor key generation failed"))?;
+    Ok(Arc::new_cyclic(|this| Server {
         this: this.clone(),
         bound,
         platform,
         root,
         resource,
+        cursor_key,
         pending_roots: Default::default(),
-    })
+    }))
 }
 
 impl<P, O> Server<P, O>
@@ -453,6 +457,15 @@ where
     fn command_resource(&self, command: &AgentCommand) -> String {
         if matches!(
             command,
+            AgentCommand::Sessions {
+                scope: acyclic_harness_client::SessionsScope::Peers,
+                ..
+            }
+        ) {
+            return self.peer_resource();
+        }
+        if matches!(
+            command,
             AgentCommand::Sessions { .. }
                 | AgentCommand::NewSession { .. }
                 | AgentCommand::ForkSession { .. }
@@ -475,6 +488,11 @@ where
         }
     }
 
+    /// Read-only peer discovery is independent of session-directory control.
+    pub fn peer_resource(&self) -> String {
+        self.bound.peer_resource()
+    }
+
     fn authorize_command(
         &self,
         authorization: &CallAuthorization,
@@ -483,6 +501,24 @@ where
         policy: PolicyDecision,
     ) -> Result<(), StreamError> {
         authorization.authorize(&self.resource, &[], attributes, policy)?;
+        if let AgentCommand::Sessions {
+            scope: acyclic_harness_client::SessionsScope::Peers,
+            requester: Some(requester),
+            ..
+        } = command
+            && requester != &self.root
+        {
+            let directory = self.session_resource();
+            authorization
+                .dependent_resource(
+                    acyclic_auth::contract::ResourcePattern {
+                        name: directory.clone(),
+                        prefix: false,
+                    },
+                    "actors/invoke",
+                )?
+                .authorize(&directory, &[], attributes, policy)?;
+        }
         let selected = self.command_resource(command);
         if selected != self.resource {
             authorization
@@ -1267,21 +1303,57 @@ where
                 let next = history_cursor(&cursor)?;
                 Ok(AgentReply::History { items, next })
             }
-            AgentCommand::Children { page, .. } | AgentCommand::Sessions { page } => {
+            AgentCommand::Children { page, .. } | AgentCommand::Sessions { page, .. } => {
                 let sessions = matches!(command, AgentCommand::Sessions { .. });
+                let peers = matches!(
+                    command,
+                    AgentCommand::Sessions {
+                        scope: acyclic_harness_client::SessionsScope::Peers,
+                        ..
+                    }
+                );
+                let requester = match command {
+                    AgentCommand::Sessions { requester, .. } => {
+                        requester.as_ref().unwrap_or(&self.root)
+                    }
+                    _ => &self.root,
+                };
+                if peers && requester.parent().is_some() {
+                    return Err(Error::Record("peer discovery requires a root requester"));
+                }
                 let parent = match command {
                     AgentCommand::Children { agent, .. } => self.within_tree(agent)?.children()?,
+                    AgentCommand::Sessions { .. } if peers && self.platform.sessions() => {
+                        self.bound.peer_roots()?
+                    }
                     AgentCommand::Sessions { .. } if self.platform.sessions() => {
                         self.bound.session_roots()?
                     }
                     _ => return Err(Error::Record("this host serves one tree")),
                 };
+                use base64::{Engine as _, engine::general_purpose::STANDARD};
+                let cursor_context =
+                    peers.then(|| format!("peer-page-v1\0{}\0{}", requester, parent));
                 let mut credit = PageCredit::new(page, |next| AgentReply::Children {
                     items: Vec::new(),
                     next,
                 })?;
                 let (hierarchy_version, after) = match page.cursor() {
                     Some(cursor) => {
+                        let decrypted;
+                        let cursor = if let Some(context) = &cursor_context {
+                            let sealed = STANDARD
+                                .decode(cursor)
+                                .map_err(|_| Error::Record("invalid peer cursor"))?;
+                            decrypted = self
+                                .cursor_key
+                                .open(context.as_bytes(), &sealed)
+                                .map_err(|_| Error::Record("invalid peer cursor"))?;
+                            std::str::from_utf8(&decrypted)
+                                .map_err(|_| Error::Record("invalid peer cursor"))?
+                        } else {
+                            cursor
+                        };
                         let (version, after) = parse_children_cursor(cursor)?;
                         (Some(version), Some(after))
                     }
@@ -1339,6 +1411,9 @@ where
                     if sessions {
                         paths.push(child.path);
                     }
+                    if peers {
+                        paths.push(agent.peer_membership()?);
+                    }
                     items.push(ChildAgent {
                         agent,
                         status: None,
@@ -1346,7 +1421,11 @@ where
                         updated_at_micros: None,
                     });
                 }
-                if !items.is_empty() {
+                let last_scanned = listed_paths.last().cloned();
+                if !items.is_empty() || peers {
+                    if peers {
+                        paths.push(requester.peer_membership()?);
+                    }
                     // Status is published outside each child's fork destination.
                     // Observe its actual canonical path, at or after the page's
                     // creation cut, in one bounded view for the returned rows.
@@ -1356,7 +1435,15 @@ where
                         projection: HeadProjection::History,
                         paths,
                         children: None,
-                        limit: page.items() * if sessions { 2 } else { 1 },
+                        limit: page.items()
+                            * if peers {
+                                3
+                            } else if sessions {
+                                2
+                            } else {
+                                1
+                            }
+                            + u32::from(peers),
                         at_least: RevisionCut::of(view.snapshot),
                     };
                     let statuses = provider
@@ -1365,6 +1452,7 @@ where
                         .map_err(Error::Stream)?;
                     statuses.validate_for(&request).map_err(Error::Stream)?;
                     let mut heads = statuses.heads.into_iter();
+                    let mut eligible = Vec::with_capacity(items.len());
                     for item in &mut items {
                         let record = heads
                             .next()
@@ -1386,33 +1474,99 @@ where
                             }
                             item.created_at_micros = Some(member.committed_at_micros);
                         }
+                        if peers {
+                            let member = heads.next().flatten().and_then(|head| head.last);
+                            eligible.push(
+                                member
+                                    .map(|record| {
+                                        crate::agent::PeerMembership::decode(&record.value)
+                                    })
+                                    .transpose()?
+                                    .is_some_and(|member| member.enabled)
+                                    && &item.agent != requester,
+                            );
+                        }
+                    }
+                    if peers {
+                        let member = heads.next().flatten().and_then(|head| head.last);
+                        if !member
+                            .map(|record| crate::agent::PeerMembership::decode(&record.value))
+                            .transpose()?
+                            .is_some_and(|member| member.enabled)
+                        {
+                            return Err(Error::Record("peer discovery requires an enabled root"));
+                        }
+                        let mut index = 0;
+                        items.retain(|_| {
+                            let keep = eligible[index];
+                            index += 1;
+                            keep
+                        });
+                        let mut index = 0;
+                        listed_paths.retain(|_| {
+                            let keep = eligible[index];
+                            index += 1;
+                            keep
+                        });
                     }
                 }
                 for (index, item) in items.iter().enumerate() {
                     let next_bytes =
                         (index + 1 < items.len() || listed.next_after.is_some()).then(|| {
-                            children_cursor_bytes(
+                            let bytes = children_cursor_bytes(
                                 &listed.hierarchy_version,
                                 listed_paths[index].as_str(),
-                            ) as u64
+                            );
+                            (if peers {
+                                acyclic_auth::cursor::CursorKey::sealed_len(bytes).div_ceil(3) * 4
+                            } else {
+                                bytes
+                            }) as u64
                         });
                     if !credit.accept(item, next_bytes)? {
                         break;
                     }
                 }
-                let continued = credit.items < items.len() || listed.next_after.is_some();
+                let all_fit = credit.items == items.len();
+                let continued = !all_fit || listed.next_after.is_some();
                 items.truncate(credit.items);
                 let next = if continued {
-                    let last =
+                    let last = if all_fit {
+                        last_scanned.as_ref().ok_or(Error::Record(
+                            "children page cannot continue without a source row",
+                        ))?
+                    } else {
                         listed_paths
                             .get(items.len().checked_sub(1).ok_or(Error::Record(
                                 "children page cannot continue without a row",
                             ))?)
-                            .ok_or(Error::Record("children page lost its source cursor"))?;
-                    Some(children_cursor(&listed.hierarchy_version, last.as_str()))
+                            .ok_or(Error::Record("children page lost its source cursor"))?
+                    };
+                    let cursor = children_cursor(&listed.hierarchy_version, last.as_str());
+                    Some(if let Some(context) = &cursor_context {
+                        STANDARD.encode(
+                            self.cursor_key
+                                .seal(context.as_bytes(), cursor.as_bytes())
+                                .map_err(|_| Error::Record("peer cursor encryption failed"))?,
+                        )
+                    } else {
+                        cursor
+                    })
                 } else {
                     None
                 };
+                if items.is_empty()
+                    && next.is_some()
+                    && !acyclic_harness_client::encoded_agent_reply_size(page_json_bytes(
+                        &AgentReply::Children {
+                            items: Vec::new(),
+                            next: next.clone(),
+                        },
+                    )?)
+                    .is_ok_and(|bytes| bytes <= u64::from(page.bytes()))
+                {
+                    return Err(Error::Stream(StreamError::Capacity));
+                }
                 Ok(AgentReply::Children { items, next })
             }
             AgentCommand::Spawn {

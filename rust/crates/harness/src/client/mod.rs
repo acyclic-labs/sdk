@@ -5,7 +5,7 @@
 pub use acyclic_harness_client::{
     AgentCommand, AgentPageRequest, AgentReply, ApprovalVerdict, DiffProjection, DiffQuery,
     DiffQueryEvent, DiffSnapshot, DiffSummary, EventCursor, ExecutionPosition, InputPreview,
-    InputPreviewStep, InputQuery, MAX_READ_BYTES,
+    InputPreviewStep, InputQuery, MAX_READ_BYTES, SessionsScope,
 };
 pub use acyclic_harness_core::preset::Preset;
 

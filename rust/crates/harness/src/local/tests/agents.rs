@@ -19,6 +19,100 @@ async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> 
 }
 
 #[tokio::test]
+async fn peer_pages_expose_members_without_private_titles_or_directory_authority() -> Result<()> {
+    use crate::client::{AgentPageRequest, SessionsScope};
+    use crate::local::sessions::{self, Filter};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let harness = Arc::new(
+        super::open_scripted(
+            volume_config(
+                directory.path(),
+                volume(directory.path()).await?,
+                super::scripted([]),
+            )?
+            .without_default_tools(),
+        )
+        .await?,
+    );
+    let owner = harness.connect_sessions().await?;
+    let visible = sessions::create(&owner, "visible-session", None).await?;
+    let hidden = sessions::create_with_peer(&owner, "private-session", false, None).await?;
+    sessions::rename(&visible, crate::OperationId::new(), "private title".into()).await?;
+    let client = harness.connect().await?;
+    assert!(
+        sessions::page(&client, AgentPageRequest::default())
+            .await
+            .is_err()
+    );
+    let peers = sessions::page_scoped(
+        &client,
+        AgentPageRequest::default(),
+        &Filter::default(),
+        SessionsScope::Peers,
+    )
+    .await?;
+    assert_eq!(peers.items.len(), 1);
+    assert_eq!(peers.items[0].agent, *visible.root());
+    assert_ne!(peers.items[0].agent, *hidden.root());
+    assert!(peers.items[0].title.is_none());
+    assert!(peers.items[0].status.is_some());
+    assert!(
+        sessions::page_scoped(
+            &hidden,
+            AgentPageRequest::default(),
+            &Filter::default(),
+            SessionsScope::Peers,
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        client
+            .execute(&crate::client::AgentCommand::Sessions {
+                scope: SessionsScope::Peers,
+                requester: Some(visible.root().clone()),
+                page: AgentPageRequest::default(),
+            })
+            .await
+            .is_err()
+    );
+    sessions::set_peers(&client, "host-off", false).await?;
+    let selected = sessions::page_scoped(
+        &visible,
+        AgentPageRequest::default(),
+        &Filter::default(),
+        SessionsScope::Peers,
+    )
+    .await?;
+    assert!(
+        selected.items.is_empty(),
+        "the selected root excludes itself"
+    );
+    sessions::set_peers(&client, "host-on", true).await?;
+    sessions::set_peers(&visible, "member-off", false).await?;
+    let peers = sessions::page_scoped(
+        &client,
+        AgentPageRequest::default(),
+        &Filter::default(),
+        SessionsScope::Peers,
+    )
+    .await?;
+    assert!(peers.items.is_empty());
+    sessions::set_peers(&client, "requester-off", false).await?;
+    assert!(
+        sessions::page_scoped(
+            &client,
+            AgentPageRequest::default(),
+            &Filter::default(),
+            SessionsScope::Peers,
+        )
+        .await
+        .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn workspace_deltas_keep_local_turns_on_the_same_primary() -> Result<()> {
     use crate::agent::{
         InboxRecord, WorkspaceChanged, WorkspaceEntry, WorkspaceOp, WorkspaceRole, WorkspaceTable,

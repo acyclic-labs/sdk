@@ -566,6 +566,9 @@ pub struct Inspect {
 
 #[derive(Debug, clap::Args)]
 pub struct Sessions {
+    /// List participating peer sessions using read-only discovery authority.
+    #[arg(long)]
+    pub peers: bool,
     #[command(flatten)]
     pub page: Page,
     /// Case-insensitive title or root-id substring within each requested page.

@@ -1460,6 +1460,8 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         .unwrap()
         .without_user_settings()
         .state_directory(&state)
+        .topology(acyclic_harness::topology::Topology::select("swarm").unwrap())
+        .unwrap()
         .working_directory(&fixture.workspace)
         .unwrap();
     let local = Arc::new(LocalHarness::open(config).await.unwrap());
@@ -1472,27 +1474,80 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         .await
         .unwrap();
 
-    for command in ["sessions", "history"] {
-        let output = graphcoder(
-            &fixture,
-            &model.catalog,
-            vec![
-                "--default-config",
-                "--host-state-directory",
-                state.to_str().unwrap(),
-                "--agent",
-                &agent,
-                command,
-            ],
-            "",
-        )
-        .await;
+    let output = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec![
+            "--default-config",
+            "--host-state-directory",
+            state.to_str().unwrap(),
+            "--agent",
+            &agent,
+            "sessions",
+        ],
+        "",
+    )
+    .await;
+    let reply: Value = serde_json::from_str(&succeeded(&output)).unwrap();
+    assert_eq!(reply["items"], json!([]));
+    assert!(reply["next"].is_null());
+    let query = |agent: &str, command: &str, peers: bool| {
+        let mut process = graphcoder_command(&fixture);
+        process
+            .arg("--host-state-directory")
+            .arg(&state)
+            .args(["--agent", agent, command]);
+        if peers {
+            process.arg("--peers");
+        }
+        process
+    };
+    for (command, peers) in [("sessions", true), ("history", false)] {
+        let output = capture(query(&agent, command, peers), "").await;
         let reply: Value = serde_json::from_str(&succeeded(&output)).unwrap();
         if command == "history" {
             assert_eq!(reply["kind"], "history");
         }
         assert_eq!(reply["items"], json!([]));
         assert!(reply["next"].is_null());
+    }
+    let directory =
+        acyclic_harness::local::service::Directory::for_workspace(&fixture.workspace, Some(&state))
+            .unwrap();
+    let owner = directory.connect().await.unwrap();
+    let selected = acyclic_harness::local::sessions::create(&owner, "selected-query", None)
+        .await
+        .unwrap();
+    let other = acyclic_harness::local::sessions::create(&owner, "other-query", None)
+        .await
+        .unwrap();
+    let selected_agent = selected.root().to_string();
+    for enabled in [false, true] {
+        acyclic_harness::local::sessions::set_peers(
+            &owner,
+            if enabled {
+                "host-enabled"
+            } else {
+                "host-disabled"
+            },
+            enabled,
+        )
+        .await
+        .unwrap();
+        let output = capture(query(&selected_agent, "sessions", true), "").await;
+        let reply: Value = serde_json::from_str(&succeeded(&output)).unwrap();
+        let rows = reply["items"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{reply}");
+        assert_eq!(rows[0]["agent"], other.root().as_str());
+        assert_eq!(
+            acyclic_harness::local::sessions::latest(&owner)
+                .await
+                .unwrap()
+                .unwrap()
+                .root(),
+            other.root(),
+            "read-only query recorded an attach"
+        );
     }
     assert_eq!(model.generated(), 0, "observation dispatched model work");
     model.close().await;

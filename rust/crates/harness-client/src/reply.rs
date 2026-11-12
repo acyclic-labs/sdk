@@ -931,7 +931,7 @@ fn validate_reply(
             }
             (items.len(), next, page)
         }
-        (AgentReply::Children { items, next }, AgentCommand::Sessions { page }) => {
+        (AgentReply::Children { items, next }, AgentCommand::Sessions { page, .. }) => {
             let mut seen = std::collections::BTreeSet::new();
             if items
                 .iter()

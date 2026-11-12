@@ -14,6 +14,18 @@ fn peer_enabled() -> bool {
     true
 }
 
+/// The authority and membership used by a root-session page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum SessionsScope {
+    /// The explicitly admitted session directory.
+    #[default]
+    Owned,
+    /// Participating roots, without granting session-directory control.
+    Peers,
+}
+
 /// Most bytes a binding's routing adds to a command frame in its invocation.
 const MAX_ROUTING_BYTES: usize = 64 * 1024;
 /// One command frame: the encoded bytes one invocation carries beside its
@@ -164,6 +176,13 @@ pub enum AgentCommand {
     },
     /// Page the explicitly admitted root-session directory.
     Sessions {
+        /// Selected root whose peer membership governs discovery. Selecting
+        /// another root requires the owner's session-directory authority.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requester: Option<AgentPath>,
+        /// Select directory authority or read-only peer discovery.
+        #[serde(default)]
+        scope: SessionsScope,
         /// Bounded directory credit and its opaque continuation.
         #[serde(default)]
         page: AgentPageRequest,

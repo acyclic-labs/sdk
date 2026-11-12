@@ -263,14 +263,45 @@ pub async fn page_filtered(
     page: AgentPageRequest,
     filter: &Filter,
 ) -> Result<Page> {
-    let AgentReply::Children { items, next } =
-        connection.execute(&AgentCommand::Sessions { page }).await?
+    page_scoped(
+        connection,
+        page,
+        filter,
+        acyclic_harness_client::SessionsScope::Owned,
+    )
+    .await
+}
+
+/// Page one discovery scope. Peer rows expose only published metadata: they
+/// never read another session's private title file or prompt preview.
+pub async fn page_scoped(
+    connection: &Connection,
+    page: AgentPageRequest,
+    filter: &Filter,
+    scope: acyclic_harness_client::SessionsScope,
+) -> Result<Page> {
+    let AgentReply::Children { items, next } = connection
+        .execute(&AgentCommand::Sessions {
+            requester: Some(connection.root().tree_root()),
+            scope,
+            page,
+        })
+        .await?
     else {
         return Err(unexpected());
     };
     let items =
         futures::future::try_join_all(items.into_iter().filter(|item| filter.metadata(item)).map(
             |item| async move {
+                if scope == acyclic_harness_client::SessionsScope::Peers {
+                    return Ok(Session {
+                        agent: item.agent,
+                        title: None,
+                        status: item.status,
+                        created_at_micros: item.created_at_micros,
+                        updated_at_micros: item.updated_at_micros,
+                    });
+                }
                 let AgentReply::FilePreviews { snapshot } = connection
                     .execute(&AgentCommand::AgentFilePreviews {
                         agent: item.agent.clone(),
@@ -439,6 +470,8 @@ pub async fn pause_all(connection: &Connection, paused: bool) -> Result<()> {
     loop {
         let AgentReply::Children { items, next } = connection
             .execute(&AgentCommand::Sessions {
+                requester: None,
+                scope: acyclic_harness_client::SessionsScope::Owned,
                 page: AgentPageRequest::new(32, 32 * 1024, cursor).map_err(storage)?,
             })
             .await?
