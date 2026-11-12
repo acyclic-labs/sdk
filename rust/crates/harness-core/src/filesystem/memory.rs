@@ -179,7 +179,7 @@ impl<
             hook_names: &[],
             definition: ToolDefinition {
                 name: "acyclic.list_files".into(),
-                revision: "2".into(),
+                revision: "3".into(),
                 description: "List one bounded, generation-pinned page of the agent-private volume"
                     .into(),
                 input_schema: json!({

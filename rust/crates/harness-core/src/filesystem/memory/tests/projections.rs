@@ -814,7 +814,7 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
         8,
     ))?;
     assert_eq!(pages.entries.len(), 4);
-    assert!(!pages.has_more);
+    assert!(pages.next.is_none());
 
     let (warm, warm_ranges) =
         acyclic_test_support::differential::observe::<_, _, (&'static str, u64, u64)>(
