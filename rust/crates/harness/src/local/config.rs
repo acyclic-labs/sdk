@@ -193,7 +193,10 @@ impl LocalHarnessConfig {
                 .flatten()
                 .unwrap_or_else(|| models.default_model().to_owned()),
         };
-        self.model = Some(models.resolve(&selection)?);
+        let role = crate::templates::root()?.model;
+        let selection = crate::templates::resolve_model(role.as_deref(), Some(&selection))
+            .ok_or_else(|| Error::Invalid("root model absent".into()))?;
+        self.model = Some(models.resolve(selection)?);
         for model in self.approval_policy.models() {
             self.approval_models
                 .insert(model.into(), models.resolve(model)?);
@@ -617,7 +620,7 @@ mod resolver_tests {
     // 1k compositions over one resolver construct each selection's provider
     // once; a changed selection, here a changed settings model, resolves anew.
     #[test]
-    fn shared_resolver_reuses_providers_and_resolves_changed_models_anew() -> Result<()> {
+    fn role_model_wins_over_settings_and_session_selection_with_one_provider() -> Result<()> {
         let constructed = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&constructed);
         let models = Arc::new(ModelResolver::new("first", move |selection| {
@@ -643,13 +646,19 @@ mod resolver_tests {
         };
         for _ in 0..1000 {
             let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
-            assert_eq!(selected(config.resolve(Some(&settings()), true)?)?, "first");
+            assert_eq!(
+                selected(config.resolve(Some(&settings()), true)?)?,
+                "morph/morph-kimik31"
+            );
         }
         assert_eq!(constructed.load(Ordering::Relaxed), 1);
         std::fs::write(codex.path().join("config.toml"), "model = \"second\"\n")
             .map_err(storage)?;
         let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
-        assert!(selected(config.resolve(Some(&settings()), true)?)?.ends_with("second"));
+        assert_eq!(
+            selected(config.resolve(Some(&settings()), true)?)?,
+            "morph/morph-kimik31"
+        );
         let explicit = LocalHarnessConfig::resolving(
             workspace.path(),
             Arc::clone(&models),
@@ -657,12 +666,15 @@ mod resolver_tests {
         );
         assert_eq!(
             selected(explicit.resolve(Some(&settings()), true)?)?,
-            "first"
+            "morph/morph-kimik31"
         );
         let defaults = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None)
             .without_user_settings();
-        assert_eq!(selected(defaults.resolve(None, true)?)?, "first");
-        assert_eq!(constructed.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            selected(defaults.resolve(None, true)?)?,
+            "morph/morph-kimik31"
+        );
+        assert_eq!(constructed.load(Ordering::Relaxed), 1);
         Ok(())
     }
 }

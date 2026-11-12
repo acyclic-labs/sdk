@@ -919,7 +919,10 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         inspection.snapshot().waits.elapsed_ns(),
         Some(2_007_000_000)
     );
-    assert_eq!(inspection.snapshot().model, Some(("scripted", "test")));
+    assert_eq!(
+        inspection.snapshot().model,
+        Some(("morph", "morph-kimik31"))
+    );
     assert_eq!(inspection.snapshot().open_children, Some(0));
     assert_eq!(
         inspection.snapshot().context,

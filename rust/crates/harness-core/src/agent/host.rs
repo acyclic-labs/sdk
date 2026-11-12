@@ -618,7 +618,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                     .and_then(|templates| templates.topology()),
             )
             .map_err(|error| Error::Turn(Box::new(error)))?;
-            profile.model.clone_from(&self.model);
+            profile.model =
+                crate::templates::resolve_model(profile.model.as_deref(), self.model.as_deref())
+                    .map(str::to_owned);
             profile.question_plugin = question_plugin;
             adopted.profile = Some(profile);
         }

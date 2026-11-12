@@ -56,14 +56,16 @@ fn settings(args: &Args) -> Result<Option<SettingsConfig>, Failure> {
 }
 
 fn selection(args: &Args, registry: &Registry) -> Result<String, Failure> {
-    if let Some(model) = &args.model {
-        return Ok(model.clone());
-    }
-    Ok(settings(args)?
+    let role = acyclic_harness::templates::root()?.model;
+    let configured = args.model.clone().or(settings(args)?
         .map(|settings| settings.configured_model())
         .transpose()?
-        .flatten()
-        .unwrap_or_else(|| registry.default_model().to_owned()))
+        .flatten());
+    Ok(
+        acyclic_harness::templates::resolve_model(role.as_deref(), configured.as_deref())
+            .unwrap_or_else(|| registry.default_model())
+            .to_owned(),
+    )
 }
 
 const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a terminal to save a key in OS keychain service acyclic-harness, set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY (or GOOGLE_API_KEY), or pass --credentials FILE with an api_keys provider map";

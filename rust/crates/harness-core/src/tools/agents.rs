@@ -55,7 +55,7 @@ pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnAgentInput {
-    /// Optional provider/model overriding the role's model and parent inheritance.
+    /// Optional fallback provider/model; a configured role model always wins.
     #[serde(default)]
     pub model: Option<String>,
     /// Child name, unique under this agent; reusable after a setup failure
@@ -270,9 +270,16 @@ impl AgentTool {
                     Ok(peers) => peers,
                     Err(rejected) => return Ok(rejected),
                 };
+                let mut fallback = std::borrow::Cow::Borrowed(parent);
+                if let Some(model) = input.model {
+                    if let Err(error) = crate::model::selection::validate(&model) {
+                        return Ok(super::rejected_input(error));
+                    }
+                    fallback.to_mut().model = Some(model);
+                }
                 let mut profile = match templates
                     .child(
-                        parent,
+                        &fallback,
                         &turn.agent,
                         &turn.volumes,
                         &input.role,
@@ -285,12 +292,6 @@ impl AgentTool {
                     Ok(profile) => profile,
                     Err(error) => return Ok(super::rejected_input(error)),
                 };
-                if let Some(model) = input.model {
-                    if let Err(error) = crate::model::selection::validate(&model) {
-                        return Ok(super::rejected_input(error));
-                    }
-                    profile.model = Some(model);
-                }
                 profile.peers = peers;
                 let brief = turn
                     .writer

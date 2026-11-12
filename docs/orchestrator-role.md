@@ -11,3 +11,5 @@ Human views prioritize orchestrators through the existing paged explorer and imm
 Headless orchestrators decide within their authority and report assumptions in their final result. Manual approval on closed input retains the existing declined-tool result and continues the model loop. The question plugin does not change approval policy, LLM approvers or the approval chain.
 
 Each session root records its question-plugin choice independently of the serving workspace. The ask tool accepts only canonical private ui/ paths and uses the existing Write hook aliases. Role-filtered explorer paging advances the underlying window even when every row in a window is collapsed.
+
+Coordinator resolution (2026-11-12), checked against GC-107: Home role files remain the source of child policy. Explicit spawn model choices cannot bypass a configured role model. The configured Morph provider is shared by the shipped Kimi/DeepSeek defaults and recon Home overrides; no second provider alias or routing mechanism is added.

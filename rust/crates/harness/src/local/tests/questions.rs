@@ -195,7 +195,8 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
             .iter()
             .any(|tool| tool.name == "ask_question")
     );
-    assert_eq!(requests[2].model, requests[0].model);
+    assert_eq!(requests[0].model.name, "morph-dsv41flash");
+    assert_eq!(requests[2].model.name, "morph-kimik31");
     Ok(())
 }
 #[tokio::test]

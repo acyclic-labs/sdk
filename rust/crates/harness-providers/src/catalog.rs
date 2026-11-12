@@ -61,6 +61,28 @@ const TOOLS_AND_IMAGES: ModelFeatures = ModelFeatures {
 };
 
 const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
+    (
+        "morph",
+        "morph-kimik31",
+        1_048_576,
+        8_192,
+        ModelFeatures {
+            tools: true,
+            images: false,
+        },
+        false,
+    ),
+    (
+        "morph",
+        "morph-dsv41flash",
+        1_048_576,
+        8_192,
+        ModelFeatures {
+            tools: true,
+            images: false,
+        },
+        false,
+    ),
     // https://platform.claude.com/docs/en/models/overview
     (
         "anthropic",
