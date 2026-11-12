@@ -158,7 +158,7 @@ pub(super) async fn command<P: StreamProvider + ?Sized>(
                     ],
                 }],
             );
-            store
+            let claimed = store
                 .claim_control(
                     &previous,
                     epoch,
@@ -166,7 +166,9 @@ pub(super) async fn command<P: StreamProvider + ?Sized>(
                     vec![effect],
                     key(&previous, &format!("placement/{index}/{}", owner.node))?,
                 )
-                .await?
+                .await?;
+            store.recover_custody(&claimed).await?;
+            claimed
         }
     };
     inner.epoch = snapshot.state().ok_or(Error::Conflict)?.epoch();

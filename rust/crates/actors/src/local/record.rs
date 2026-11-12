@@ -45,6 +45,8 @@ struct Record {
     placement_branch: Option<Vec<u8>>,
     #[prost(bytes = "bytes", optional, tag = "11")]
     escrow: Option<bytes::Bytes>,
+    #[prost(bool, tag = "12")]
+    custody: bool,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -147,6 +149,7 @@ impl State {
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
             journal_tail: self.journal_tail,
+            custody: self.custody,
             placement_branch: self
                 .placement_branch
                 .map(|commit| commit.as_bytes().to_vec()),
@@ -210,6 +213,7 @@ impl State {
             paused: record.paused,
             metadata: record.metadata,
             journal_tail: record.journal_tail,
+            custody: record.custody,
         })
     }
 
@@ -224,6 +228,85 @@ impl State {
         metadata_bytes: usize,
     ) -> usize {
         STATE_RECORD_OVERHEAD + checkpoint_bytes + subscription_bytes + metadata_bytes
+    }
+}
+
+// Custody intents live on `<actor state>/custody`, never in state records,
+// under their own magic.
+const CUSTODY_FORMAT_V1: &[u8] = b"\xffAPC\x01";
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct IntentRecord {
+    #[prost(string, tag = "1")]
+    kind: String,
+    #[prost(bytes = "bytes", tag = "2")]
+    plan: bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    key: bytes::Bytes,
+    #[prost(string, optional, tag = "4")]
+    delivered_path: Option<String>,
+    #[prost(uint64, optional, tag = "5")]
+    delivered_sequence: Option<u64>,
+}
+
+/// A composed publication's durable participant custody. It is appended by
+/// that publication itself, so it exists exactly when the publication applied,
+/// under the same actor head and epoch fence; recovery needs no other phase.
+/// The publication's retained envelope supplies everything else: the
+/// receipt, the next checkpoint, and the state record it replaced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Intent {
+    /// The participant request the composer opened.
+    pub(super) participant: crate::guest::Participant,
+    /// The publication's retry identity, whose retained outcome is its receipt.
+    pub(super) key: acyclic_stream::IdempotencyKey,
+    /// The delivered input record, by stream and sequence.
+    pub(super) delivered: Option<(StreamPath, u64)>,
+}
+
+impl Intent {
+    pub(super) fn encode(&self) -> Vec<u8> {
+        let payload = IntentRecord {
+            kind: self.participant.kind.clone(),
+            plan: self.participant.plan.clone(),
+            key: bytes::Bytes::copy_from_slice(self.key.as_bytes()),
+            delivered_path: self
+                .delivered
+                .as_ref()
+                .map(|(path, _)| path.as_str().to_owned()),
+            delivered_sequence: self.delivered.as_ref().map(|(_, sequence)| *sequence),
+        };
+        let mut record = Vec::with_capacity(CUSTODY_FORMAT_V1.len() + payload.encoded_len());
+        record.extend_from_slice(CUSTODY_FORMAT_V1);
+        payload.encode_raw(&mut record);
+        record
+    }
+
+    pub(super) fn decode(record: &[u8]) -> Result<Self, Error> {
+        let record = acyclic_stream::persistence::header(
+            record,
+            &CUSTODY_FORMAT_V1[..4],
+            &CUSTODY_FORMAT_V1[4..],
+        )?;
+        let record = IntentRecord::decode(record)
+            .map_err(|_| Error::Invalid("malformed actor custody record"))?;
+        let delivered = match (record.delivered_path, record.delivered_sequence) {
+            (Some(path), Some(sequence)) => Some((
+                StreamPath::new(path)
+                    .map_err(|_| Error::Invalid("custody input is not a stream path"))?,
+                sequence,
+            )),
+            (None, None) => None,
+            _ => return Err(Error::Invalid("malformed actor custody input")),
+        };
+        Ok(Self {
+            participant: crate::guest::Participant {
+                kind: record.kind,
+                plan: record.plan,
+            },
+            key: acyclic_stream::IdempotencyKey::new(record.key)?,
+            delivered,
+        })
     }
 }
 
@@ -243,6 +326,7 @@ mod tests {
             ),
             metadata: BTreeMap::from([("durable".into(), bytes::Bytes::from_static(b"value"))]),
             journal_tail: u64::MAX,
+            custody: true,
             epoch: u64::MAX,
             checkpoint: Some(Checkpoint {
                 codec: CodecIdentity {
