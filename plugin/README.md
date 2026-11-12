@@ -8,6 +8,10 @@ The thin `graphcoder` executable is `acyclic run --template graphcoder`: with
 terminal input and output it opens the same TUI as `acyclic attach`; with pipes
 it runs headless. It forwards options to the shared parser. Submit a headless task
 with `-p 'TASK'`, or use `acyclic exec --operation OPERATION` with JSONL input.
+Successful fresh local batch runs integrate their session fork into the selected
+checkout through the harness's shared merge before reporting completion. Merge
+conflicts fail the run. `--new-session`, explicit agent or fork selection, resume,
+and remote attachment keep their independent workspace until explicitly merged.
 With no task, closing stdin exits; unexpected text is refused with a recovery
 command. Text stdin otherwise answers pending approvals.
 

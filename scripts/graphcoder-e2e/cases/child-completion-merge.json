@@ -20,7 +20,8 @@
             "arguments": {
               "name": "worker",
               "task": "COMPLETION_CHILD",
-              "role": "worker"
+              "role": "worker",
+              "model": "e2e/tiny"
             }
           }
         ]

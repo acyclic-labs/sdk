@@ -1087,6 +1087,24 @@ async fn drive(
     } else {
         run.await
     };
+    // A fresh local batch returns its artifact to the checkout through the
+    // harness's ordinary fork merge. Explicit session/fork selections retain
+    // their independent workspace until the user integrates them.
+    let result = if result.is_ok()
+        && args.endpoint.is_none()
+        && args.agent.is_none()
+        && args.fork_from.is_none()
+        && args.resume.is_none()
+        && !args.continue_session
+        && !args.new_session
+    {
+        phase(|| acyclic_harness::local::sessions::merge(conversation.connection(), &operation))
+            .await
+            .map(|_| ())
+            .map_err(Into::into)
+    } else {
+        result
+    };
     if let Some(mut usage) = usage.take() {
         // A refused/failed run can still have committed admissions. Exporting
         // them never changes its result into success or fabricates completion.

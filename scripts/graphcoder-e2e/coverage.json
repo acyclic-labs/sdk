@@ -43,6 +43,7 @@
       "cases": [
         "child-fork-message-merge",
         "child-completion-merge",
+        "explicit-session-keeps-checkout-unchanged",
         "child-result",
         "child-discard",
         "nested-children",
