@@ -414,3 +414,68 @@ fn running_dispatcher_reports_its_original_clock_retirement() -> TestResult {
     })?;
     Ok(())
 }
+
+/// A checkpoint past an alarm's activation must not lose it: the replacement
+/// host finds the pending deadline in its shard's window, not by replaying
+/// activations or reading actor states.
+#[tokio::test]
+async fn a_replacement_host_fires_alarms_armed_before_the_checkpoint() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let armed = spawn_with(&store, "bucket-armed", &[b"set 50"]).await?;
+    let shard = store.scheduling_shard(&armed);
+    let host = |now| {
+        let (clock, control) = ControlledClock::new(now);
+        let runtime = Runtime::new(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(Package::new()?),
+            Arc::new(clock) as Arc<dyn Clock>,
+        )
+        .with_scheduling_shards([shard]);
+        Ok::<_, Box<dyn std::error::Error>>((runtime, control))
+    };
+    let (first, _control) = host(100)?;
+    let tail = provider.tail(store.scheduling_path(shard)?).await?;
+    let (checkpoint, dispatcher) = first.dispatcher_store(shard)?;
+    {
+        let mut serving = Box::pin(first.run(|_, error| panic!("delivery failed: {error}")));
+        observe_while_running(
+            serving.as_mut(),
+            state_after(&checkpoint, &dispatcher, |state| {
+                state.cursor("activation") == Some(tail)
+            }),
+        )
+        .await?;
+    }
+    let pending = store.load(&armed).await?;
+    assert_eq!(
+        pending.state().and_then(|state| state.alarm().pending()),
+        Some(150)
+    );
+    assert!(records(&*provider, "out/bucket-armed").await?.is_empty());
+
+    // The replacement starts a window later, so the watermark may pass it.
+    let (replacement, _control) = host(60_000)?;
+    let mut serving = Box::pin(replacement.run(|_, error| panic!("delivery failed: {error}")));
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &armed, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
+    assert_eq!(
+        records(&*provider, "out/bucket-armed").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    // The delivered bucket moves the watermark, so a later restart pages
+    // past it instead of waking the actor again.
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&checkpoint, &dispatcher, |state| {
+            state.cursor("deadline") == Some(151)
+        }),
+    )
+    .await?;
+    Ok(())
+}
