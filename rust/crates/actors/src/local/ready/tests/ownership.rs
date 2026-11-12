@@ -1,10 +1,12 @@
 //! Deterministic simulation of alarm ownership. Every interleaving of
 //! registration, retirement (hibernation), arming, window opening, timer
 //! wakes, authority refusal (deferral), consumption and crash, to a bounded
-//! depth, keeps two properties: a checkpoint at any point never passes the
-//! window of a durably pending alarm, and every pending alarm is still woken.
+//! depth, keeps three properties: a checkpoint at any point never passes the
+//! window of a durably pending alarm, every pending alarm is still woken, and
+//! once alarms are delivered the checkpoint passes every window they filed,
+//! even when startup found none (windows are learned as alarms are armed).
 use super::*;
-use crate::local::scheduling::{window, window_start};
+use crate::local::scheduling::{learn, window, window_start};
 use std::collections::BTreeSet;
 
 const WINDOW: u64 = 60_000;
@@ -37,6 +39,8 @@ struct World {
     live: Vec<Registration<u8>>,
     alarm: crate::local::Alarm,
     filed: BTreeSet<u64>,
+    /// The dispatcher's known windows, as `(window, shard)`.
+    windows: BTreeSet<(u64, u16)>,
     consumed: u64,
     time: usize,
     crashed: bool,
@@ -53,6 +57,7 @@ impl World {
             live: Vec::new(),
             alarm: crate::local::Alarm::default(),
             filed: BTreeSet::new(),
+            windows: BTreeSet::new(),
             consumed: 0,
             time: 0,
             crashed: false,
@@ -64,11 +69,23 @@ impl World {
     }
 
     fn openable(&self) -> Option<u64> {
-        self.filed
-            .range(self.consumed..)
-            .next()
-            .copied()
-            .filter(|&filed| window_start(filed) <= self.now())
+        self.windows
+            .first()
+            .map(|&(known, _)| known)
+            .filter(|&known| window_start(known) <= self.now())
+    }
+
+    /// The store's next filed window at or past `from`: one children page.
+    fn next_window(&self, from: u64) -> Option<(u64, u16)> {
+        self.filed.range(from..).next().map(|&filed| (filed, 0))
+    }
+
+    /// Startup discovery from the checkpoint, as the dispatcher does.
+    fn start(&mut self, consumed: u64) {
+        self.set = ReadySet::default();
+        self.set.dispatch();
+        self.consumed = consumed;
+        self.windows = self.next_window(consumed).into_iter().collect();
     }
 
     fn due(&self) -> bool {
@@ -131,10 +148,14 @@ impl World {
             Op::Tick => self.time += 1,
             Op::Open => {
                 if let Some(opened) = self.openable() {
+                    self.windows.pop_first();
                     let registration = self.host()?;
                     registration.claim_alarm(window_start(opened));
                     registration.waker().wake_by_ref();
-                    self.consumed = opened + 1;
+                    if self.consumed < opened + 1 {
+                        self.consumed = opened + 1;
+                        self.windows.extend(self.next_window(opened + 1));
+                    }
                 }
             }
             Op::Due => {
@@ -167,11 +188,13 @@ impl World {
             Op::Crash => {
                 let checkpoint = self.checkpoint();
                 self.live.clear();
-                self.set = ReadySet::default();
-                self.set.dispatch();
-                self.consumed = checkpoint;
+                self.start(checkpoint);
                 self.crashed = true;
             }
+        }
+        // The dispatcher learns every newly armed deadline's window.
+        for (deadline, _) in self.set.take_armed() {
+            learn(&mut self.windows, self.consumed, 0, window(deadline));
         }
         Ok(())
     }
@@ -193,9 +216,14 @@ impl World {
         }
     }
 
-    /// Run the host to the end of time: a pending alarm must still be woken.
+    /// Run the host to the end of time: a pending alarm must still be woken,
+    /// and once it is delivered the checkpoint passes every filed window.
     fn finish(mut self) -> Outcome {
         self.time = TIMES.len();
+        // Lingering predecessors retire, as their last references drop.
+        while self.live.len() > 1 {
+            drop(self.live.remove(0));
+        }
         while self.openable().is_some() {
             self.apply(Op::Open)?;
         }
@@ -203,7 +231,15 @@ impl World {
         if self.alarm.pending().is_some() && self.set.take().is_none() {
             return Err("pending alarm never woken".to_owned());
         }
-        Ok(())
+        // The woken delivery observes the committed alarm, consuming it.
+        self.apply(Op::Deliver(true))?;
+        match self.filed.last() {
+            Some(&last) if self.checkpoint() <= last => Err(format!(
+                "checkpoint stuck at {} behind delivered window {last}",
+                self.checkpoint()
+            )),
+            _ => Ok(()),
+        }
     }
 }
 

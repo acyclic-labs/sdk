@@ -902,3 +902,68 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
     );
     Ok(())
 }
+
+/// Crash before settlement, then an activation replay with nothing to
+/// deliver: the dead owner's publication consumed the final input, so the
+/// replacement finds no input or alarm (or a paused actor) and never admits
+/// placement. Its replay still settles the committed participant.
+#[tokio::test]
+async fn a_replay_with_nothing_to_deliver_settles_a_dead_owners_participant() -> Result<(), Failure>
+{
+    for paused in [false, true] {
+        let provider = Arc::new(Faulty {
+            inner: MemoryStream::default(),
+            plan: vec![Fault::None, Fault::None, Fault::LoseAck],
+            calls: AtomicUsize::new(0),
+        });
+        let counts = Arc::new(Counts::default());
+        let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+        let result = store
+            .publish(
+                &store.load(&actor).await?,
+                1,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: 0,
+                },
+                None,
+                transition(false)?,
+                key("final-input")?,
+            )
+            .await;
+        let Err(Error::Unknown { publication, .. }) = result else {
+            return Err("publication must commit without settling custody".into());
+        };
+        // The owner dies before settlement.
+        drop(publication);
+        if paused {
+            store
+                .set_paused(&store.load(&actor).await?, 1, true, key("paused")?)
+                .await?;
+        }
+        assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
+        let runtime = super::super::runtime::Runtime::new(
+            store.clone(),
+            Arc::new(crate::conformance::Package::new()?),
+            Arc::new(super::super::runtime::SystemClock),
+        );
+        runtime.track(actor.clone())?;
+        runtime.drain_actor(&actor).await?;
+        assert_eq!(
+            counts.committed.load(Ordering::SeqCst),
+            1,
+            "paused: {paused}"
+        );
+        assert_eq!(
+            runtime
+                .store()
+                .load(&actor)
+                .await?
+                .state()
+                .map(State::epoch),
+            Some(1),
+            "the replay admitted no placement"
+        );
+    }
+    Ok(())
+}

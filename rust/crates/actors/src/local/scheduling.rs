@@ -33,6 +33,24 @@ pub(super) const fn window_start(window: u64) -> u64 {
     window.saturating_mul(WINDOW_MS)
 }
 
+/// Learn a deadline window of `shard` that alarms now occupy. `windows` holds
+/// each shard's earliest unopened known window; an opened window's
+/// consumption finds the next one, so only an earlier window is new.
+pub(super) fn learn(
+    windows: &mut std::collections::BTreeSet<(u64, u16)>,
+    consumed: u64,
+    shard: u16,
+    window: u64,
+) {
+    if window >= consumed
+        && !windows
+            .iter()
+            .any(|&(known, owner)| owner == shard && known <= window)
+    {
+        windows.insert((window, shard));
+    }
+}
+
 impl<P: StreamProvider + ?Sized> Store<P> {
     /// Use `count` scheduling partitions. The count is a deployment chunking
     /// parameter: every producer and host sharing this state root must use
