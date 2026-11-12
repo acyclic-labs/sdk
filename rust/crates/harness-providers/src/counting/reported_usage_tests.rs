@@ -125,14 +125,13 @@ async fn reported_chat_usage_counts_original_input_on_every_preparation_path() -
         assert_eq!(count.input_tokens, 41);
         drop(count);
         drop(custody);
-        assert_eq!(work.live_allocation_bytes(), baseline);
         let shared = crate::prepared::PreparedInput::new(Arc::new(provider), request).await?;
         assert_eq!(shared.count().await?.input_tokens, 41);
         let mut expected = generation;
         expected["stream"] = json!(false);
         expected["max_completion_tokens"] = json!(1);
         expected.as_object_mut().unwrap().remove("stream_options");
-        let sent = transport.sent.lock().unwrap();
+        let mut sent = transport.sent.lock().unwrap();
         assert_eq!(sent.len(), 3);
         for exchange in sent.iter() {
             assert!(exchange.url.ends_with("/v1/chat/completions"));
@@ -142,6 +141,9 @@ async fn reported_chat_usage_counts_original_input_on_every_preparation_path() -
                 "input changed while counting"
             );
         }
+        // Captured native request bytes retain their original custody.
+        sent.clear();
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())
 }
