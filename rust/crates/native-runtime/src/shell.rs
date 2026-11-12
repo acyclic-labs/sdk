@@ -50,13 +50,19 @@ pub fn shell_command(command: &str, selected: Option<&str>) -> io::Result<crate:
     };
     let mut shell = crate::ProcessCommand::new(program);
     shell.args(arguments);
+    let command = acyclic_host_platform::shell::source_argument(
+        selected.unwrap_or(PLATFORM.language),
+        command,
+        |_| Ok::<_, io::Error>(()),
+    )?
+    .ok_or(io::ErrorKind::InvalidInput)?;
     if selected == Some("cmd") {
         #[cfg(windows)]
         shell.raw_arg(format!("\"{command}\""));
         #[cfg(not(windows))]
-        shell.arg(command);
+        shell.arg(command.as_ref());
     } else {
-        shell.arg(command);
+        shell.arg(command.as_ref());
     }
     Ok(shell)
 }
