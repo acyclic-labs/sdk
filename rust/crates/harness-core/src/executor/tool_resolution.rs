@@ -204,9 +204,10 @@ impl StockExecution<'_> {
         invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
         hook_context: &mut Vec<ModelMessage>,
+        selection: Option<&ToolSelection<'_>>,
     ) -> Result<ExecutionProgress<()>> {
         let span = obs_span!("acyclic.harness.executor.tool_call", step = step);
-        let call = self.settle_tool_call(
+        let call = self.settle_selected_tool_call(
             journal,
             operation_id,
             step,
@@ -214,6 +215,7 @@ impl StockExecution<'_> {
             invocation_index,
             prior_messages,
             hook_context,
+            selection,
         );
         #[cfg(not(target_arch = "wasm32"))]
         if self.native_work().is_some() {

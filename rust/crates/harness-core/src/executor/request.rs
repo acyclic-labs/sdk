@@ -16,7 +16,7 @@ pub(super) struct ModelStepRequest<'a> {
     pub prepared: Option<crate::model::PreparedModelRequest>,
 }
 
-impl StockExecution<'_> {
+impl<'io> StockExecution<'io> {
     /// Runs one admitted model step independently of the stock control loop.
     pub async fn model_step(
         &self,
@@ -51,7 +51,7 @@ impl StockExecution<'_> {
             )?
             .await?;
         execution.release();
-        Ok(events)
+        Ok(events.events)
     }
 
     pub(super) fn run_model_step<'a>(
@@ -62,7 +62,7 @@ impl StockExecution<'_> {
         request: ModelStepRequest<'a>,
         purpose: ModelPurpose,
         phase: &'a mut DispatchPhase,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelEvent>>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, AdmittedModelStep<'io>>> {
         crate::conversation::BoundedContentFuture::new(self.io, || {
             let span = obs_span!(
                 "acyclic.harness.executor.model_step",
@@ -362,11 +362,11 @@ impl StockExecution<'_> {
     }
 }
 
-fn completed_model_events(
-    events: Vec<ModelEvent>,
+fn completed_model_events<'a>(
+    events: AdmittedModelStep<'a>,
     operation_id: OperationId,
-) -> Result<Vec<ModelEvent>> {
-    if !matches!(events.last(), Some(ModelEvent::Completed { .. })) {
+) -> Result<AdmittedModelStep<'a>> {
+    if !matches!(events.events.last(), Some(ModelEvent::Completed { .. })) {
         return Err(Error::Indeterminate(operation_id));
     }
     Ok(events)

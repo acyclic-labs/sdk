@@ -123,6 +123,15 @@ pub(crate) async fn retained_model_step<'a>(
             started = Some((*request_digest, request, *context));
         }
         if super::model_observation::matches_turn(&record.event, step, purpose) {
+            #[cfg(test)]
+            if purpose == ModelPurpose::Response {
+                let bytes = match &record.event {
+                    ExecutionEvent::Model { event, .. } => event.descriptor().byte_length(),
+                    ExecutionEvent::ModelInline { event, .. } => event.len() as u64,
+                    _ => 0,
+                };
+                acyclic_test_support::differential::record(("response observation read", bytes));
+            }
             let event = super::model_observation::load(journal, &record.event, io)
                 .await?
                 .ok_or_else(|| {
@@ -160,6 +169,13 @@ pub(crate) async fn retained_model_step<'a>(
     }
     let request = if let Some((digest, reference, context)) = started {
         let mut recorded = load_model_request(journal, reference, limits, io).await?;
+        #[cfg(test)]
+        if purpose == ModelPurpose::Response {
+            acyclic_test_support::differential::record((
+                "response request read",
+                recorded.bytes().len() as u64,
+            ));
+        }
         if recorded.request_digest() != digest {
             return Err(stock_boundary(
                 io,

@@ -31,8 +31,9 @@ impl<'a> StockExecution<'a> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        prior: usize,
+        prior: u64,
         request: crate::model::PreparedModelRequest,
+        hold: Option<crate::conversation::ContentHold<'a>>,
     ) -> Result<()> {
         let Some(identity) = journal.cache_identity() else {
             return Ok(());
@@ -41,11 +42,6 @@ impl<'a> StockExecution<'a> {
         if !cache.enabled {
             return Ok(());
         }
-        let prior = self.absolute_prior_count(prior).await?;
-        let hold = self
-            .io
-            .map(|io| io.guard_owned(request.preparation_owned_bytes(io)?))
-            .transpose()?;
         cache.retained = Some(RetainedRequest {
             operation: input.operation_id,
             journal: identity,

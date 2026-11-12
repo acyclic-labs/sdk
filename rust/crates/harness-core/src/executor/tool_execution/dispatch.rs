@@ -10,6 +10,7 @@ impl<'io> StockExecution<'io> {
         context: &mut Option<crate::runtime::ToolContext>,
         started: bool,
         _hook_context: &mut Vec<ModelMessage>,
+        selection: Option<&ToolSelection<'_>>,
     ) -> Result<ToolInvocationOutcome<'io>> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
@@ -156,7 +157,7 @@ impl<'io> StockExecution<'io> {
         #[cfg(not(target_arch = "wasm32"))]
         let composed = if prepared.is_none() && tool.executor.is_code_mode() {
             match self
-                .code(journal, identity, invocation, _hook_context)
+                .code_selected(journal, identity, invocation, _hook_context, selection)
                 .await
             {
                 Ok(ExecutionProgress::Ready(result)) => Some(Ok(Some(result))),

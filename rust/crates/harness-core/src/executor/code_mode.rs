@@ -251,12 +251,24 @@ impl StockExecution<'_> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn code<'a>(
         &'a self,
         journal: &'a dyn ExecutionJournal,
         identity: (OperationId, u32),
         parent: &'a ToolInvocation,
         hook_context: &'a mut Vec<ModelMessage>,
+    ) -> BoxFuture<'a, Result<ExecutionProgress<ToolResult>>> {
+        self.code_selected(journal, identity, parent, hook_context, None)
+    }
+
+    pub(super) fn code_selected<'a>(
+        &'a self,
+        journal: &'a dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        parent: &'a ToolInvocation,
+        hook_context: &'a mut Vec<ModelMessage>,
+        selection: Option<&'a ToolSelection<'a>>,
     ) -> BoxFuture<'a, Result<ExecutionProgress<ToolResult>>> {
         Box::pin(async move {
             let code = parent
@@ -357,7 +369,7 @@ impl StockExecution<'_> {
                         };
                         ordinal = ordinal.checked_add(1).ok_or_else(|| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "JavaScript call identity overflow"))?;
                         let input_bytes = call.arguments.value.len();
-                        let result = self.js_call(journal, identity, parent, ordinal, &call, &mut inner_context).await?;
+                        let result = self.js_call(journal, identity, parent, ordinal, &call, &mut inner_context, selection).await?;
                         let result = match result {
                             ExecutionProgress::Ready(result) => result,
                             ExecutionProgress::Pending(operation) => {
@@ -500,6 +512,7 @@ impl StockExecution<'_> {
         ordinal: u64,
         call: &Call,
         hook_context: &mut Vec<ModelMessage>,
+        selection: Option<&ToolSelection<'_>>,
     ) -> Result<ExecutionProgress<CallResult<'a>>> {
         // A separate hash domain keeps inner identities disjoint from provider
         // call IDs. Replaying the script reuses the exact ordinal and receipt.
@@ -569,7 +582,7 @@ impl StockExecution<'_> {
                 crate::model::ToolCall::new(call_id.clone(), name.clone(), Value::Null),
             )),
         }];
-        let result = match Box::pin(self.settle_tool_call(
+        let result = match Box::pin(self.settle_selected_tool_call(
             journal,
             operation,
             step,
@@ -577,6 +590,7 @@ impl StockExecution<'_> {
             0,
             &mut messages,
             hook_context,
+            selection,
         ))
         .await?
         {

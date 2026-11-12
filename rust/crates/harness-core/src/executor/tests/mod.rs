@@ -839,6 +839,8 @@ mod request_ownership;
 mod summary_authorization;
 mod target_replay;
 #[cfg(not(target_arch = "wasm32"))]
+mod tool_admission;
+#[cfg(not(target_arch = "wasm32"))]
 mod tool_metadata;
 mod tools_1;
 mod tools_2;

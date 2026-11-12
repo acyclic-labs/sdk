@@ -34,7 +34,7 @@ struct ModelStepScope<'a> {
     boundary: Option<&'a dyn crate::agent::ModelBoundary>,
 }
 
-impl StockExecution<'_> {
+impl<'io> StockExecution<'io> {
     /// Cancellation covers boundary reads, preparation, headers and chunks.
     pub(super) async fn cancellable_model_step(
         &self,
@@ -44,7 +44,7 @@ impl StockExecution<'_> {
         request: request::ModelStepRequest<'_>,
         purpose: ModelPurpose,
         phase: &mut DispatchPhase,
-    ) -> Result<Vec<ModelEvent>> {
+    ) -> Result<AdmittedModelStep<'io>> {
         let completion = super::phase::PreparedPhase::new(journal, self.io)?;
         completion
             .run(async {
@@ -75,7 +75,7 @@ impl StockExecution<'_> {
         request: request::ModelStepRequest<'_>,
         purpose: ModelPurpose,
         phase: &mut DispatchPhase,
-    ) -> Result<Vec<ModelEvent>> {
+    ) -> Result<AdmittedModelStep<'io>> {
         crate::conversation::BoundedContentFuture::new(self.io, || async {
             let io = self.io;
             let request::ModelStepRequest {
@@ -184,17 +184,7 @@ impl StockExecution<'_> {
                     phase.1 = journal_cut;
                 }
                 crate::obs::obs_record!("items" = replayed.len());
-                if purpose == ModelPurpose::Response {
-                    self.retain_response_request(
-                        journal,
-                        input,
-                        step,
-                        prior_messages.len(),
-                        request,
-                    )
-                    .await?;
-                }
-                return Ok(replayed);
+                return AdmittedModelStep::new(replayed, request, prior_messages.len(), io);
             }
             let dispatch = crate::model::ModelDispatch {
                 operation_id: purpose.attempt_operation(input.operation_id, io)?,
@@ -298,12 +288,8 @@ impl StockExecution<'_> {
                     phase,
                 )
                 .await?;
-            if purpose == ModelPurpose::Response && admission.completed {
-                self.retain_response_request(journal, input, step, prior_messages.len(), request)
-                    .await?;
-            }
             crate::obs::obs_record!("items" = observed.len());
-            Ok(observed)
+            AdmittedModelStep::new(observed, request, prior_messages.len(), io)
         })?
         .await
     }

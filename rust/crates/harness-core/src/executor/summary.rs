@@ -92,7 +92,8 @@ impl StockExecution<'_> {
                 ModelPurpose::Summary,
                 phase,
             )?
-            .await?;
+            .await?
+            .events;
         if events.iter().any(|event| {
             matches!(event, ModelEvent::Completed { metadata } if metadata["finish_reason"] == "length")
         }) {

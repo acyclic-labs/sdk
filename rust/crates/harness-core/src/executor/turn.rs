@@ -96,7 +96,12 @@ impl StockExecution<'_> {
                     "model step identity exhausted",
                 )
             })?;
-            let model_events = self
+            let AdmittedModelStep {
+                events: model_events,
+                request,
+                prior,
+                hold,
+            } = self
                 .run_model_step(
                     journal,
                     input,
@@ -112,6 +117,7 @@ impl StockExecution<'_> {
                     phase,
                 )?
                 .await?;
+            let prior = self.absolute_prior_count(prior).await?;
             self.retire_working_history(&mut prior_messages, Some(&mut steering))
                 .await?;
             let CollectedStep {
@@ -144,6 +150,8 @@ impl StockExecution<'_> {
                 )?;
                 stock_retire_text(text, self.io)?;
                 stock_retire_event(ModelEvent::Completed { metadata }, self.io)?;
+                self.retain_response_request(journal, input, step, prior, request, hold)
+                    .await?;
                 continue;
             }
             if calls.is_empty() {
@@ -160,6 +168,8 @@ impl StockExecution<'_> {
                     stock_retire_text(text, self.io)?;
                     stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
                     stop_active = true;
+                    self.retain_response_request(journal, input, step, prior, request, hold)
+                        .await?;
                     continue;
                 }
                 let transcript =
@@ -190,6 +200,7 @@ impl StockExecution<'_> {
             }
             stock_retire_text(text, self.io)?;
             stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
+            let selected = ToolSelection::new(&request.request().tools, self.io);
             for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
                 match self
                     .resolve_tool_call(
@@ -200,6 +211,7 @@ impl StockExecution<'_> {
                         invocation_index,
                         &mut prior_messages,
                         &mut hook_context,
+                        Some(&selected),
                     )
                     .await?
                 {
@@ -215,6 +227,9 @@ impl StockExecution<'_> {
                     }
                 }
             }
+            drop(selected);
+            self.retain_response_request(journal, input, step, prior, request, hold)
+                .await?;
             append_step_context(&mut prior_messages, &mut hook_context, self.io)?;
         }
         Err(stock_boundary(
