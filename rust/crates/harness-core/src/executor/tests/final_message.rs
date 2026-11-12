@@ -49,7 +49,8 @@ async fn length_stops_continue_the_original_turn_and_replay_without_dispatch() -
                     allowed()?,
                 )?;
                 let storage =
-                    crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+                    crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), Some(65_536))
+                        .await?;
                 let journal = storage.journal();
                 let input = TurnInput {
                     operation_id: OperationId::new(),

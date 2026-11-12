@@ -254,7 +254,7 @@ where
             );
             for file in &entry.files {
                 let bytes = reader
-                    .read(file, file.descriptor().byte_length(), None, None)?
+                    .read(file, Some(file.descriptor().byte_length()), None, None)?
                     .await?;
                 content.extend_from_slice(format!("\n{}:\n", file.path()).as_bytes());
                 content.extend_from_slice(&bytes);

@@ -133,7 +133,7 @@ impl AnnouncedInstructions {
         let bytes = reader
             .read(
                 &self.manifest,
-                self.manifest.descriptor().byte_length(),
+                Some(self.manifest.descriptor().byte_length()),
                 None,
                 None,
             )?
@@ -178,11 +178,11 @@ pub async fn announcement_messages(
                 .map(|selection| &selection.content),
         ) {
             let bytes = reader
-                .read(file, file.descriptor().byte_length(), None, None)?
+                .read(file, Some(file.descriptor().byte_length()), None, None)?
                 .await?;
             let text = std::str::from_utf8(&bytes)
                 .map_err(|_| crate::Error::Invalid("announcement is not UTF-8".into()))?;
-            for part in ModelContent::bounded_text_parts(text, Some(limits.render_bytes))? {
+            for part in ModelContent::bounded_text_parts(text, limits.render_bytes)? {
                 if message.len() == maximum {
                     messages.push(ModelContent::Parts(std::mem::take(&mut message)));
                 }

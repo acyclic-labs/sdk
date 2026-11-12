@@ -146,7 +146,7 @@ async fn projection_append_writes_only_new_content_and_metadata_reads_skip_histo
     );
     let storage = crate::filesystem::MemoryHarnessStorage::from_providers(
         crate::AgentId::new(),
-        16 * 1024 * 1024,
+        Some(16 * 1024 * 1024),
         filesystem,
         stream,
     )

@@ -56,7 +56,8 @@ async fn conservative_admission_never_launches_an_unrequested_summary() -> Resul
         )?,
         allowed()?,
     )?;
-    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let input = TurnInput {
         operation_id: OperationId::new(),

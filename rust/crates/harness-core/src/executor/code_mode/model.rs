@@ -668,7 +668,7 @@ fn check_logs(frame: &str) {
         .unwrap();
     assert!(
         ProgramLogs::default()
-            .observe(raw, Some(frame.len() + 128), Some(&io))
+            .observe(raw, Some(frame.len() as u64 + 128), Some(&io))
             .is_err()
     );
     ProgramLogs::default()
