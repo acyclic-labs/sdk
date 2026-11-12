@@ -1,6 +1,6 @@
 # Orchestrators and questions
 
-Orchestrators are the root and user-facing role and can spawn orchestrators. Shipped roles inherit the session model. A user home `agent.ts`, role override or explicit model selection can select a different model.
+Orchestrators are the root and user-facing role and can spawn orchestrators. The shipped orchestrator role selects `morph/morph-kimik31`; worker, advisor and reviewer roles select `morph/morph-dsv41flash`. A configured role model wins over session and explicit spawn selections. Only roles without a model inherit their parent. Fixed-provider embeddings must supply the role model or use `LocalHarnessConfig::resolving` to resolve configured role models.
 
 Only the orchestrator role grants the question plugin. The plugin owns the ask declaration, input-fence recognition and attention policy. TUI, web and IDE hosts select it when starting a session with a user surface; non-interactive hosts leave it disabled. CLI --questions=true/false overrides selection. Browser session options user_surface and questions provide the same start-time choice. Later attachment never changes a session's toolset. Ordinary messages remain available.
 

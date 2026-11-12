@@ -217,6 +217,7 @@ fn resolution_rejects_mutated_model_identity() -> Result<()> {
             ("openai".into(), "fixture".into()),
             ("anthropic".into(), "fixture".into()),
             ("gemini".into(), "fixture".into()),
+            ("morph".into(), "fixture".into()),
         ])),
         script,
     );
@@ -287,6 +288,7 @@ fn stock_registry() -> (Registry, Arc<Script>) {
             ("openai".into(), "fixture".into()),
             ("anthropic".into(), "fixture".into()),
             ("gemini".into(), "fixture".into()),
+            ("morph".into(), "fixture".into()),
         ])),
         transport.clone(),
     );
@@ -312,7 +314,14 @@ fn stock_catalog_alloys_support_tools_and_images_and_overrides_fail_closed() -> 
         tools: true,
         images: true,
     };
-    let models = stock_models(&registry);
+    let models = stock_models(&registry)
+        .into_iter()
+        .filter(|selection| {
+            let (provider, name) = selection.split_once('/').unwrap();
+            let features = registry.catalog()[provider].models[name].features;
+            features.tools && features.images
+        })
+        .collect::<Vec<_>>();
     assert!(models.iter().any(|model| model == "openai/gpt-5"));
     registry.resolve_alloy(
         AlloySpec {
@@ -367,15 +376,23 @@ proptest! {
     ) {
         let (registry, transport) = stock_registry();
         let mut expected = ModelContextCapacity { context_tokens: u32::MAX, output_tokens: None};
+        let mut supported = true;
         for selection in &models {
             let (provider, name) = selection.split_once('/').unwrap();
             let entry = &registry.catalog()[provider].models[name];
+            supported &= (!tools || entry.features.tools) && (!images || entry.features.images);
             expected.context_tokens = expected.context_tokens.min(entry.capacity.context_tokens);
             expected.output_tokens = expected.output_tokens.into_iter().chain(entry.capacity.output_tokens).min();
         }
-        let alloy = registry.resolve_alloy(AlloySpec {
+        let resolved = registry.resolve_alloy(AlloySpec {
             models: models.clone(), select: AlloySelection::RoundRobin,
-        }, ModelFeatures { tools, images }).unwrap();
+        }, ModelFeatures { tools, images });
+        if !supported {
+            prop_assert!(resolved.is_err());
+            prop_assert!(transport.sent.lock().unwrap().is_empty());
+            return Ok(());
+        }
+        let alloy = resolved.unwrap();
         prop_assert_eq!(alloy.capacity(), expected);
         let selected = alloy.select(AlloyTurn {
             operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]), ordinal, role: "worker",

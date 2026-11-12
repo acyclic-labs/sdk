@@ -183,6 +183,15 @@ impl LocalHarnessConfig {
         injected: bool,
     ) -> Result<Self> {
         let Some((models, selection)) = self.models.take() else {
+            if let Some((model, _)) = &self.model {
+                let role = crate::templates::root()?.model;
+                let fixed = format!("{}/{}", model.provider, model.name);
+                if crate::templates::resolve_model(role.as_deref(), Some(&fixed))
+                    != Some(fixed.as_str())
+                {
+                    return Err(Error::Invalid("configured role model differs from the fixed binding; use LocalHarnessConfig::resolving with a catalog that resolves the role model".into()));
+                }
+            }
             return Ok(self);
         };
         let selection = match selection {
@@ -675,6 +684,38 @@ mod resolver_tests {
             "morph/morph-kimik31"
         );
         assert_eq!(constructed.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod fixed_role_binding_tests {
+    use super::*;
+
+    #[test]
+    fn incompatible_fixed_binding_requires_a_role_resolver_before_opening() -> Result<()> {
+        let provider: Arc<dyn ModelProvider> =
+            Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
+        let model = Model::new("other".into(), "fixed".into(), "1".into())?;
+        let config = LocalHarnessConfig::new(".", (model, provider));
+        let error = match config.resolve(None, true) {
+            Err(error) => error,
+            Ok(_) => return Err(Error::Invalid("incompatible binding admitted".into())),
+        };
+        assert!(error.to_string().contains("LocalHarnessConfig::resolving"));
+        Ok(())
+    }
+
+    #[test]
+    fn fixed_binding_for_the_configured_role_remains_supported() -> Result<()> {
+        let provider: Arc<dyn ModelProvider> =
+            Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
+        let model = Model::new("morph".into(), "morph-kimik31".into(), "1".into())?;
+        let config = LocalHarnessConfig::new(".", (model.clone(), provider));
+        assert_eq!(
+            config.resolve(None, true)?.model.map(|binding| binding.0),
+            Some(model)
+        );
         Ok(())
     }
 }

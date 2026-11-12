@@ -68,7 +68,7 @@ fn selection(args: &Args, registry: &Registry) -> Result<String, Failure> {
     )
 }
 
-const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a terminal to save a key in OS keychain service acyclic-harness, set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY (or GOOGLE_API_KEY), or pass --credentials FILE with an api_keys provider map";
+const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a terminal to save a key in OS keychain service acyclic-harness, set MORPH_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY (or GOOGLE_API_KEY), or pass --credentials FILE with an api_keys provider map";
 
 pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Option<Tty>, Failure> {
     if args.default_config
@@ -88,31 +88,43 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
     }
     let mut terminal = Tty::open()?;
     let mut input = onboarding::Input::new(&mut terminal)?;
-    print!("GraphCoder first run: choose a provider\r\n");
-    let providers: Vec<String> = registry
-        .catalog()
-        .iter()
-        .filter(|(_, spec)| !spec.models.is_empty())
-        .map(|(name, _)| name.clone())
-        .collect();
-    let index = input.choose("Provider", &providers)?;
-    let provider = providers
-        .get(index)
-        .ok_or("provider selection unavailable")?;
-    let spec = registry
-        .catalog()
-        .get(provider)
-        .ok_or("provider selection unavailable")?;
-    let models: Vec<String> = spec
-        .models
-        .keys()
-        .map(|model| format!("{provider}/{model}"))
-        .collect();
-    let index = input.choose("Model", &models)?;
-    let selected = models
-        .get(index)
-        .ok_or("model selection unavailable")?
-        .clone();
+    let role = acyclic_harness::templates::root()?.model;
+    let selected =
+        if let Some(role) = acyclic_harness::templates::resolve_model(role.as_deref(), None) {
+            print!("GraphCoder first run: credentials for role model {role}\r\n");
+            role.to_owned()
+        } else {
+            print!("GraphCoder first run: choose a provider\r\n");
+            let providers: Vec<String> = registry
+                .catalog()
+                .iter()
+                .filter(|(_, spec)| !spec.models.is_empty())
+                .map(|(name, _)| name.clone())
+                .collect();
+            let index = input.choose("Provider", &providers)?;
+            let provider = providers
+                .get(index)
+                .ok_or("provider selection unavailable")?;
+            let spec = registry
+                .catalog()
+                .get(provider)
+                .ok_or("provider selection unavailable")?;
+            let models: Vec<String> = spec
+                .models
+                .keys()
+                .map(|model| format!("{provider}/{model}"))
+                .collect();
+            let index = input.choose("Model", &models)?;
+            let selected = models
+                .get(index)
+                .ok_or("model selection unavailable")?
+                .clone();
+            selected
+        };
+    let provider = selected
+        .split_once('/')
+        .ok_or("model selection requires provider/model")?
+        .0;
     if registry.needs_credentials(&selected)? {
         if !Credentials::keychain_available() {
             return Err("OS keychain unavailable; recovery: unlock/start the OS credential service, or configure an environment key or --credentials FILE before starting graphcoder".into());
