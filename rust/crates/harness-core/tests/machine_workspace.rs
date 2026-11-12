@@ -178,7 +178,7 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                 1024,
             )
             .await?,
-        1024,
+        Some(1024),
     )
     .await
     .map_err(Error::Machines)?;

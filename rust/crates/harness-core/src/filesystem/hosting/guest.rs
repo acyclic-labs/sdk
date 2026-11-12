@@ -255,7 +255,7 @@ where
                         scope,
                         &volume,
                         operation,
-                        self.maximum_bytes,
+                        io.remaining()?.bytes_encoded,
                         &mut Some(&mut io.history_io()),
                     )?;
                 }

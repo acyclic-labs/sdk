@@ -502,15 +502,21 @@ async fn shared_shell_selects_textual_exec_and_captures_empty_text_and_output_li
     let sandbox = SandboxRef::new(reference.clone(), machine().as_bytes().into(), None).unwrap();
     let host = MachinesHost::new(Arc::new(provider), reference).unwrap();
     let command = ExecCommand::new(vec!["bash".into(), "-c".into(), ":".into()], None).unwrap();
-    let output = capture_exec(host.exec(&sandbox, command.clone()).await.unwrap(), 1024)
-        .await
-        .unwrap();
+    let output = capture_exec(
+        host.exec(&sandbox, command.clone()).await.unwrap(),
+        Some(1024),
+    )
+    .await
+    .unwrap();
     assert_eq!(output.exit_code, Some(0));
     assert!(output.stdout.is_empty() && output.stderr.is_empty());
     server.state.lock().unwrap().exec_output = "combined text".into();
-    let output = capture_exec(host.exec(&sandbox, command.clone()).await.unwrap(), 1024)
-        .await
-        .unwrap();
+    let output = capture_exec(
+        host.exec(&sandbox, command.clone()).await.unwrap(),
+        Some(1024),
+    )
+    .await
+    .unwrap();
     assert_eq!(output.exit_code, Some(0));
     assert_eq!(output.stdout, b"combined text");
     assert!(output.stderr.is_empty());
@@ -518,7 +524,7 @@ async fn shared_shell_selects_textual_exec_and_captures_empty_text_and_output_li
         host.exec(&sandbox, command.with_output_limit(3))
             .await
             .unwrap(),
-        3,
+        Some(3),
     )
     .await
     .unwrap();

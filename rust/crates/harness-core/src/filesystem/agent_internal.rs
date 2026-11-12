@@ -6,7 +6,7 @@
 
 use super::{FilesystemHost, InternalContentClass};
 use crate::{
-    IdempotencyKey, OperationId, Result,
+    Error, IdempotencyKey, OperationId, Result,
     agent::TurnOutputs,
     approvals::{ApprovalCreate, ApprovalFiles},
     conversation::{ContentGrant, FileRef, VolumeRef},
@@ -486,7 +486,7 @@ where
                     for entry in &page.entries {
                         let chunk = filename(entry.name.as_bytes())?;
                         if let Some(bytes) =
-                            Self::read_at(&head, &format!("{reply}/{chunk}"), u64::MAX).await?
+                            Self::read_at(&head, &format!("{reply}/{chunk}"), None).await?
                         {
                             text.extend_from_slice(&bytes);
                         }

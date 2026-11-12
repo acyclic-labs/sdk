@@ -58,7 +58,7 @@ where
                     volume: &self.volume,
                     key: &key,
                     expected_path: Some(&path),
-                    maximum_bytes: super::MAXIMUM_PAYLOAD_BYTES,
+                    maximum_bytes: Some(super::MAXIMUM_PAYLOAD_BYTES),
                     internal_class: Some(payload_class(&path)),
                     purpose: super::super::PublicationPurpose::Content,
                     scope: &self.scope,

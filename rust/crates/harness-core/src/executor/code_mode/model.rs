@@ -668,10 +668,12 @@ fn check_logs(frame: &str) {
         .unwrap();
     assert!(
         ProgramLogs::default()
-            .observe(raw, frame.len() + 128, Some(&io))
+            .observe(raw, Some(frame.len() + 128), Some(&io))
             .is_err()
     );
-    ProgramLogs::default().observe(raw, 0, Some(&io)).unwrap();
+    ProgramLogs::default()
+        .observe(raw, Some(0), Some(&io))
+        .unwrap();
     drop(held);
     drop(io);
     assert_eq!(work.live_allocation_bytes(), baseline);

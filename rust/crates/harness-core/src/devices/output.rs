@@ -13,7 +13,7 @@ pub(super) struct Output {
     operation: OperationId,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-    remaining: u64,
+    remaining: Option<u64>,
     omitted: u64,
     destination: Option<(VolumeRef, String)>,
 }
@@ -42,9 +42,13 @@ impl Output {
                 "device output exceeds its protective chunk".into(),
             ));
         }
-        // RuntimeScope admits only a positive file limit.
-        let maximum =
-            usize::try_from(context.effective_scope().limits().file_bytes).unwrap_or(usize::MAX);
+        // A selected file limit is positive; otherwise retain this whole chunk.
+        let maximum = context
+            .effective_scope()
+            .limits()
+            .file_bytes
+            .and_then(|maximum| usize::try_from(maximum).ok())
+            .unwrap_or(data.len());
         let channel = if stderr { "stderr" } else { "stdout" };
         let directory = directory(self.operation);
         for (index, piece) in data.chunks(maximum).enumerate() {
@@ -81,9 +85,15 @@ impl Output {
                 self.destination = Some((file.volume().clone(), parent.to_owned()));
             }
         }
-        let take = self.remaining.min(data.len() as u64) as usize;
-        self.remaining -= take as u64;
-        self.omitted = self.omitted.saturating_add((data.len() - take) as u64);
+        let take = self
+            .remaining
+            .map_or(data.len() as u64, |maximum| maximum.min(data.len() as u64))
+            as usize;
+        self.remaining = self.remaining.map(|remaining| remaining - take as u64);
+        self.omitted = self
+            .omitted
+            .checked_add((data.len() - take) as u64)
+            .ok_or_else(|| Error::Invalid("omitted device output byte count overflow".into()))?;
         let output = if stderr {
             &mut self.stderr
         } else {
@@ -263,6 +273,27 @@ mod tests {
                 .is_err()
         );
         assert_eq!(task.read_file(&original, None).await?.as_ref(), b"ou");
+        let mut bindings = Bindings::local();
+        bindings.scope = RuntimeScope::new(
+            storage.owner_scope().capabilities().clone(),
+            Limits::default(),
+        )?;
+        let task = Arc::new(
+            bindings
+                .build()?
+                .agent_context(&Capabilities::default(), storage.content_bindings())?,
+        );
+        let context = ToolContext::new(task, OperationId::new(), "complete-output")?;
+        let mut complete = Output::new(&context);
+        complete.append(&context, 1, false, b"out").await?;
+        complete.append(&context, 2, true, b"err").await?;
+        let complete = complete.finish(ToolResult {
+            value: serde_json::json!({"exit_code": 7}),
+        })?;
+        assert_eq!(complete.value["stdout"], "out");
+        assert_eq!(complete.value["stderr"], "err");
+        assert_eq!(complete.value["omitted_bytes"], 0);
+        assert_eq!(complete.value["truncated"], false);
         Ok(())
     }
 }

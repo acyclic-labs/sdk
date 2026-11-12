@@ -238,7 +238,7 @@ mod tests {
             &state,
             (effects.clone(), None),
             writer.clone(),
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            None,
             (&["spawn".into()], Some(templates.clone())),
         )?;
         let tool = registry

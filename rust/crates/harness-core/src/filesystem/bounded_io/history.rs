@@ -191,14 +191,19 @@ impl HistoryIo for &PreparationIo {
         verifier: &'a dyn ContentResidencyVerifier,
         file: &'a FileRef,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        verifier.verify(file, file.descriptor().byte_length(), Some(*self))
+        verifier.verify(file, Some(file.descriptor().byte_length()), Some(*self))
     }
     fn read_content<'a>(
         &'a mut self,
         verifier: &'a dyn ContentResidencyVerifier,
         file: &'a FileRef,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        verifier.read(file, file.descriptor().byte_length(), None, Some(*self))
+        verifier.read(
+            file,
+            Some(file.descriptor().byte_length()),
+            None,
+            Some(*self),
+        )
     }
 }
 

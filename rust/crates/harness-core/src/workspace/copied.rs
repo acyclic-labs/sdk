@@ -107,7 +107,7 @@ async fn run<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let command = ExecCommand::new(argv, None)
         .map_err(Error::Machines)?
         .with_expiry(deadline);
-    let output = acyclic_machines::capture_exec(host.exec(sandbox, command).await?, u64::MAX)
+    let output = acyclic_machines::capture_exec(host.exec(sandbox, command).await?, None)
         .await
         .map_err(Error::Machines)?;
     if output.exit_code != Some(0) || output.stop.is_some() {
