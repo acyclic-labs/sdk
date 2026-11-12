@@ -50,6 +50,7 @@ mod binding;
 mod compaction;
 mod composition;
 mod content;
+mod context_files;
 mod dispatch;
 pub(crate) use tool_changes::decode_tool_table;
 mod event_page;

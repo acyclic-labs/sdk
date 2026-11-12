@@ -102,6 +102,10 @@ mod stream_tests {
 pub(crate) struct PrivateContent<'a>(&'a ContentBindings);
 
 impl PrivateContent<'_> {
+    pub(crate) fn bindings(&self) -> &ContentBindings {
+        self.0
+    }
+
     pub(crate) fn volume(&self) -> &VolumeRef {
         &self.0.volume
     }

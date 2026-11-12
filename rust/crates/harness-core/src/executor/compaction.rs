@@ -68,6 +68,7 @@ impl StockExecution<'_> {
                 (input.operation_id, step),
             )
             .await?;
+        let files = self.rewrite_files(journal, (input, step)).await?;
         let (summary, maximum) = self
             .managed_summary(
                 journal,
@@ -119,7 +120,15 @@ impl StockExecution<'_> {
                 (input, step),
                 &compacted,
                 compaction,
-                accounting.capacity,
+                (
+                    accounting.capacity,
+                    files
+                        .as_ref()
+                        .map(|files| context_files::RewritePublication {
+                            files,
+                            proof: &reference,
+                        }),
+                ),
                 &mut request,
             )
             .await?
@@ -332,10 +341,14 @@ impl StockExecution<'_> {
         turn: (&TurnInput, u32),
         compacted: &ResponseProjection,
         compaction: FileRef,
-        capacity: crate::context::ModelContextCapacity,
+        admission: (
+            crate::context::ModelContextCapacity,
+            Option<context_files::RewritePublication<'_>>,
+        ),
         request: &mut crate::model::PreparedModelRequest,
     ) -> Result<bool> {
         let (input, step) = turn;
+        let (capacity, publication) = admission;
         let crate::context::CompactionPolicy::Capacity(policy) = self.compaction_policy()? else {
             return Err(stock_boundary(
                 self.io,
@@ -359,6 +372,10 @@ impl StockExecution<'_> {
             Ok(None) => {}
             Err(Error::ModelContextOverflow) => return Ok(false),
             Err(error) => return Err(error),
+        }
+        if let Some(publication) = publication {
+            self.publish_rewrite_files(journal, turn, publication)
+                .await?;
         }
         self.publish_compacted_context(
             journal,
