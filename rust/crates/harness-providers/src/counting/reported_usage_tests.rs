@@ -54,6 +54,20 @@ async fn reported_chat_usage_counts_original_input_on_every_preparation_path() -
         let (original, _) = request(&provider)?;
         let mut source = original.request().clone();
         source.messages[1].content = ModelContent::Text("dense input ".repeat(256));
+        source.messages.push(ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(ModelContentPart::Reasoning {
+                block: ReasoningBlock {
+                    kind: ReasoningKind::Readable,
+                    text: Some("retained reasoning ".repeat(4096)),
+                    origin: provider.reasoning_origin(None, None),
+                    continuity: serde_json::to_vec(&json!({
+                        "reasoning_content": "retained reasoning ".repeat(4096)
+                    }))?,
+                    outcome: ReasoningOutcome::PreservedReadable,
+                },
+            }),
+        });
         source
             .tools
             .push(acyclic_harness_core::tool::ToolDefinition {

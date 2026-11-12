@@ -13,6 +13,9 @@ pub struct ReasoningBlock {
     /// Provider family, model and credential ownership of the native payload.
     pub origin: ReasoningOrigin,
     /// Exact native continuation bytes; projection never edits this payload.
+    #[serde(with = "acyclic_auth::credential::capability_serde")]
+    #[heap_layout(as = crate::heap_layout::markers::Base64Bytes)]
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub continuity: Vec<u8>,
     /// What the origin adapter could preserve.
     pub outcome: ReasoningOutcome,
@@ -42,6 +45,9 @@ pub struct NativePart {
     /// Provider family, model and credential ownership of the bytes.
     pub origin: ReasoningOrigin,
     /// Exact native part bytes; projection never edits them.
+    #[serde(with = "acyclic_auth::credential::capability_serde")]
+    #[heap_layout(as = crate::heap_layout::markers::Base64Bytes)]
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub continuity: Vec<u8>,
 }
 
