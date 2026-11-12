@@ -350,37 +350,9 @@ impl LocalHarness {
             .await?;
         let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
         manifest.tools = tools;
-        let mode = match self.preset.approval_policy.approvers.as_slice() {
-            [
-                crate::approvals::Approver::Rules {
-                    rules,
-                    fallback: crate::approvals::RuleVerdict::Allow,
-                    ..
-                },
-            ] if rules.is_empty() => "all admitted actions allowed",
-            _ => "policy-controlled approvals",
-        };
-        // A physical workspace projects no home volume.
-        #[cfg(any(test, not(target_arch = "wasm32")))]
-        let home = binding
-            .workspace
-            .as_ref()
-            .is_none_or(|workspace| workspace.mounting == super::WorkspaceMounting::Native);
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-        let home = true;
-        let home = if home {
-            " volume:///home is your private retained home volume and is never merged into the project."
-        } else {
-            ""
-        };
-        let sandbox = if cfg!(any(target_os = "linux", target_os = "macos")) {
-            "Shell commands and lifecycle hooks run in a workspace-write OS sandbox."
-        } else {
-            "Shell commands retain the host boundary; native OS confinement is not yet available."
-        };
-        manifest.conventions.push(format!(
-            "Approval mode: {mode}. {sandbox} A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home} volume:///shared belongs to this session tree and is shared with its descendants; condition edits on the exact version you read."
-        ));
+        manifest.conventions.push(
+            "volume:///shared belongs to this session tree and is shared with its descendants; condition edits on the exact version you read.".into(),
+        );
         #[cfg(any(test, not(target_arch = "wasm32")))]
         if let Some(workspace) = &binding.workspace {
             manifest
