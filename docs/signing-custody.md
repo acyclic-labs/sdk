@@ -45,10 +45,11 @@ numeric statuses. Apple interaction-not-allowed is
 InteractionRequired(-25308); it cannot distinguish a locked keychain from an
 unavailable prompt. Credential contents never enter diagnostics.
 
-The current owner.v5 record admits external native preparation and host-owned
-interaction journals, and retains
-the same store-owned seed reference. If that record is absent but owner.json,
-owner.v2, owner.v3 or owner.v4 exists, both opening and explicit deletion
+The current owner.v6 record admits external native preparation and host-owned
+interaction journals, retains the same store-owned seed reference, and is the
+first generation holding the v1 actor records. If that record is absent but
+owner.json, owner.v2, owner.v3, owner.v4 or owner.v5 exists, both opening and
+explicit deletion
 return Error::Conflict with: local state at <dir> uses an older format; remove
 that directory to start fresh. Refusal happens before decoding the older
 record or accessing credentials, and leaves its bytes unchanged. There is
