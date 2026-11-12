@@ -84,6 +84,14 @@
               "+DIFF_E2E_CONTENT"
             ]
           },
+          "prompt": "/merge "
+        },
+        {
+          "when": {
+            "contains": [
+              "Merged into checkout:"
+            ]
+          },
           "send": "\u0004\u0004"
         }
       ],

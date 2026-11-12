@@ -106,6 +106,14 @@
               "large.txt (modified)"
             ]
           },
+          "prompt": "/merge "
+        },
+        {
+          "when": {
+            "contains": [
+              "Merged into checkout:"
+            ]
+          },
           "send": "\u0004\u0004"
         }
       ]

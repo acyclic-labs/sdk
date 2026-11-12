@@ -50,6 +50,14 @@
               "○"
             ]
           },
+          "prompt": "/merge "
+        },
+        {
+          "when": {
+            "contains": [
+              "Merged into checkout:"
+            ]
+          },
           "send": "\u0004"
         }
       ]

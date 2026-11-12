@@ -4,6 +4,11 @@ A workspace file may use `{ "source": "capture.mjs" }` to seed an asset from
 this support directory. Programs executed by confined tools belong in the
 workspace fixture; the controller's checkout grants no implicit read authority.
 
+Interactive sessions edit isolated volume forks. Cases that assert edited files
+in the original checkout issue `/merge` and wait for its receipt before exiting.
+Rendering and resumed-diff assertions precede that merge; the file assertions
+continue to verify the original checkout, without an implicit harness merge.
+
 `node scripts/qualify-topology-modes.mjs GRAPHCODER MOCK_MODEL FRESH_OUTPUT`
 runs forced single and team cases plus a generated swarm with 257 siblings
 and depth 65. Team workers settle and retire across independent root turns before the
