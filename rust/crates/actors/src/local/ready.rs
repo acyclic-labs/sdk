@@ -45,6 +45,9 @@ struct Index<K> {
     first: Option<Id>,
     last: Option<Id>,
     ready_count: usize,
+    /// Deliveries in flight, for every consumer alike: each taken [`Work`]
+    /// until it drops, and each [`Flight`] of a direct delivery.
+    in_flight: usize,
     waiter: Option<Waker>,
     /// Resident wakes, as `(wake_at, registration, serial)`.
     due: BTreeSet<(u64, Id, u64)>,
@@ -74,6 +77,7 @@ impl<K: 'static> Default for Index<K> {
             first: None,
             last: None,
             ready_count: 0,
+            in_flight: 0,
             waiter: None,
             due: BTreeSet::new(),
             deadlines: BTreeSet::new(),
@@ -144,6 +148,16 @@ impl<K> Index<K> {
             self.last = previous;
         }
         self.ready_count -= 1;
+    }
+    /// One delivery settled. The last wakes the dispatcher, whose checkpoint
+    /// waits for every consumer's deliveries.
+    fn settle(&mut self) -> Option<Waker> {
+        self.in_flight -= 1;
+        if self.in_flight == 0 {
+            self.waiter.take()
+        } else {
+            None
+        }
     }
 }
 impl<K: Ord + Clone> Index<K> {
@@ -230,6 +244,7 @@ impl<K: Ord + Clone> Index<K> {
             Phase::Running { .. } | Phase::Idle => return None,
         };
         self.unlink(None, next);
+        self.in_flight += 1;
         let entry = self.entries.get_mut(&id)?;
         entry.phase = Phase::Running { notified: false };
         Some((id, entry.key.clone()))
@@ -272,6 +287,13 @@ impl<K: 'static> ReadySet<K> {
 pub struct Registration<K: Ord + Clone> {
     core: Arc<Core<K>>,
     id: Id,
+}
+
+/// A direct delivery of one actor, taken without [`Work`]: it counts in
+/// flight like work, so no checkpoint passes what it may still commit.
+#[must_use]
+pub struct Flight<K> {
+    core: Arc<Core<K>>,
 }
 
 /// Running work retains notifications until its final durable-tail recheck completes.
@@ -432,6 +454,29 @@ impl<K: Ord + Clone> ReadySet<K> {
             .collect()
     }
 
+    /// Count a direct delivery in flight until the returned guard drops.
+    pub fn flight(&self) -> Flight<K> {
+        self.core
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .in_flight += 1;
+        Flight {
+            core: Arc::clone(&self.core),
+        }
+    }
+
+    /// Whether any work is queued or any delivery is in flight, whichever
+    /// consumer took it: the one bound every checkpoint waits on.
+    pub fn busy(&self) -> bool {
+        let index = self
+            .core
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        index.ready_count != 0 || index.in_flight != 0
+    }
+
     /// Exact retained registration and ready counts, independent of actor heaps.
     pub fn counts(&self) -> (usize, usize) {
         let index = self
@@ -547,6 +592,8 @@ impl<K> Core<K> {
         } else {
             None
         };
+        let settled = index.settle();
+        let waiter = waiter.or(settled);
         drop(index);
         if let Some(waiter) = waiter {
             waiter.wake();
@@ -769,6 +816,19 @@ impl<K> Work<K> {
     /// Identity to replay using its durable cursor before parking this work.
     pub const fn key(&self) -> &K {
         &self.key
+    }
+}
+impl<K> Drop for Flight<K> {
+    fn drop(&mut self) {
+        let waiter = self
+            .core
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .settle();
+        if let Some(waiter) = waiter {
+            waiter.wake();
+        }
     }
 }
 impl<K> Drop for Work<K> {

@@ -140,6 +140,8 @@ enum Event {
     Rearm(Option<u64>),
     Due(Result<(), ClockError>),
     Armed(Vec<(u64, ActorReference)>),
+    /// Every consumer's deliveries settled while a checkpoint waited.
+    Quiet,
     Opened(Result<Opened, Error>),
     Failed(StreamError),
     Completion(Completion),
@@ -631,6 +633,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         // only bounds restart replay, so consecutive entries coalesce into one
         // checkpoint in flight at the latest seen end.
         let mut running = FuturesUnordered::new();
+        // A checkpoint is waiting for deliveries to settle.
+        let mut held = false;
         let mut timer: Option<(u64, BoxProviderFuture<'static, Result<(), ClockError>>)> = None;
         let mut next_class = 0;
         let mut steps = 0;
@@ -643,6 +647,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // Alarm changes must wake us even when active admission is
                 // full and the ready queue cannot currently be consumed.
                 self.ready.listen(context);
+                // The last delivery to settle, whichever consumer took it,
+                // wakes this listener so a held checkpoint is retried.
+                if held && !self.ready.busy() {
+                    return Poll::Ready(Event::Quiet);
+                }
                 for _ in 0..5 {
                     let class = next_class;
                     next_class = (next_class + 1) % 5;
@@ -724,7 +733,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                 }
                 if !completing.is_empty()
-                    && running.is_empty()
+                    && !self.ready.busy()
                     && dispatching.is_empty()
                     && opening.is_empty()
                     && completion_tail
@@ -768,7 +777,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     report(&actor, &error);
                     failure.get_or_insert_with(|| Arc::new(error));
                 }
-                Event::Done(Ok(())) => {}
+                Event::Done(Ok(())) | Event::Quiet => {}
                 Event::Armed(armed) => {
                     // A newly armed alarm's window is learned as it is armed,
                     // so its opening advances the watermark even when startup
@@ -898,7 +907,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // unconsumed, however late an authority deferred its wake; it
             // moves back only for a resident alarm armed already past due.
             // Every alarm token, resident or parked, holds it at its window.
-            if !running.is_empty() || self.ready.counts().1 != 0 || failure.is_some() {
+            // In-flight deliveries are counted once, in the shared ready
+            // index, for every consumer (this loop, `drain`, direct
+            // deliveries), so no local view can let a checkpoint pass one.
+            held = self.ready.busy();
+            if held || failure.is_some() {
                 continue;
             }
             let now = self.clock.now_unix_ms();
@@ -981,6 +994,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
                 self.handler.manifest().validate_interrupts()?;
+                // Every delivery counts in flight in the shared ready index,
+                // whichever consumer started it, until it settles.
+                let _flight = self.ready.flight();
                 // Duplicate events for one actor wait outside global admission. Only
                 // an actor that can make progress may occupy an active delivery slot.
                 let inner = slot.inner.lock().await;
