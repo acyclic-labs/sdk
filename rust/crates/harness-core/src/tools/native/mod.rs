@@ -16,6 +16,55 @@ mod adapter;
 #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 mod allocation;
 mod arguments;
+
+/// The same canonical adapter used for model declarations, with the original
+/// capability retaining execution, grants, hooks, replay and result contracts.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn alias(
+    mut definition: ToolDefinition,
+    original: Arc<Tool>,
+    template: Value,
+) -> Result<Tool> {
+    let mut identity = blake3::Hasher::new_derive_key("acyclic.harness.tool-alias.v1");
+    for revision in [&definition.revision, &original.definition.revision] {
+        identity.update(&(revision.len() as u64).to_be_bytes());
+        identity.update(revision.as_bytes());
+    }
+    identity.update(&crate::contract::canonical_json_bytes(&template)?);
+    definition.revision = identity.finalize().to_hex().to_string();
+    let arguments = Arc::new(arguments::Arguments::new(template, Vec::new())?);
+    Ok(adapted(
+        definition,
+        Arc::clone(&original),
+        original,
+        arguments,
+    ))
+}
+
+fn adapted(
+    mut definition: ToolDefinition,
+    capability: Arc<Tool>,
+    original: Arc<Tool>,
+    arguments: Arc<arguments::Arguments>,
+) -> Tool {
+    definition
+        .output_schema
+        .clone_from(&original.definition.output_schema);
+    definition
+        .projection_schema
+        .clone_from(&original.definition.projection_schema);
+    let adapter = Arc::new(adapter::Adapter {
+        arguments,
+        capability,
+        original,
+    });
+    Tool {
+        hook_names: adapter.original.hook_names,
+        definition,
+        executor: adapter.clone(),
+        projection: adapter,
+    }
+}
 /// Exercises production native declarations with hostile argument values.
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[doc(hidden)]
@@ -212,29 +261,12 @@ impl NativeTools {
             let original = implementation
                 .clone()
                 .unwrap_or_else(|| Arc::clone(&capability));
-            let mut definition = definition.clone();
-            // Results are the capability's, so their contracts are too.
-            definition
-                .output_schema
-                .clone_from(&original.definition.output_schema);
-            definition
-                .projection_schema
-                .clone_from(&original.definition.projection_schema);
+            let definition = definition.clone();
             let native = definition.name.clone();
             let revision = definition.revision.clone();
-            let adapter = Arc::new(adapter::Adapter {
-                arguments: Arc::clone(arguments),
-                capability,
-                original,
-            });
             tools.register(
                 (
-                    Tool {
-                        hook_names: adapter.original.hook_names,
-                        definition,
-                        executor: adapter.clone(),
-                        projection: adapter,
-                    },
+                    adapted(definition, capability, original, Arc::clone(arguments)),
                     None,
                 ),
                 &mut None,

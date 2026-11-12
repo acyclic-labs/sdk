@@ -9,12 +9,19 @@ pub use acyclic_host_platform::shell::{PLATFORM, ShellSpec};
 #[derive(
     Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
 )]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum ShellCommand {
     /// Source in the selected target's command language.
     Source(String),
     /// Executable followed by literal arguments.
     Argv(Vec<String>),
+    /// Literal executable and arguments, with separate UTF-8 standard input.
+    Input {
+        /// Executable followed by literal arguments.
+        argv: Vec<String>,
+        /// Data delivered on stdin, never interpreted as shell source.
+        stdin: String,
+    },
 }
 
 impl From<String> for ShellCommand {
@@ -35,21 +42,21 @@ impl ShellCommand {
         shell: &ShellSpec,
     ) -> Result<(Option<String>, Vec<String>, Option<Vec<u8>>)> {
         self.validate()?;
-        Ok(match self {
+        let (mut argv, stdin) = match self {
             Self::Source(source) => {
                 let (arguments, stdin) = shell.prepare(source);
-                (None, arguments.collect(), stdin)
+                return Ok((None, arguments.collect(), stdin));
             }
-            Self::Argv(mut argv) => {
-                let program = argv.remove(0);
-                (Some(program), argv, None)
-            }
-        })
+            Self::Argv(argv) => (argv, None),
+            Self::Input { argv, stdin } => (argv, Some(stdin.into_bytes())),
+        };
+        let program = argv.remove(0);
+        Ok((Some(program), argv, stdin))
     }
     fn validate(&self) -> Result<()> {
         let valid = match self {
             Self::Source(source) => !source.is_empty() && !source.contains('\0'),
-            Self::Argv(argv) => {
+            Self::Argv(argv) | Self::Input { argv, .. } => {
                 argv.first().is_some_and(|program| !program.is_empty())
                     && argv.iter().all(|argument| !argument.contains('\0'))
             }
