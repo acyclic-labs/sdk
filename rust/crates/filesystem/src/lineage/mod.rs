@@ -71,7 +71,7 @@ fn lineage_shape_is_valid(
 /// Durable optimistic-concurrency adapter for workspace lineage.
 pub trait WorkspaceLineageStore: acyclic_stream::ProviderPlatform {
     /// Adapter error.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 
     /// Loads the record for one workspace, if registered.
     fn load(
