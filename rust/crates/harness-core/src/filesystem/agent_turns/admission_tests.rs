@@ -708,6 +708,8 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             &foreign.storage_name(&mut None)?,
         )?;
         let source_before = host.resolve(&source_reference, None).await?;
+        let source_volume =
+            uuid::Uuid::from_bytes(source_workspace.id().volume_id().into_bytes()).to_string();
         let label = crate::core::filesystem_scope_label(parent.capabilities(), &mut None)?;
         let mut read_only: Vec<_> = parent
             .capabilities()
@@ -719,12 +721,17 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
         read_only.push(source_input.read_capability(&mut None)?);
         if structured {
             let mut capability = acyclic_fs::access::Capability::whole_volume(
-                Some(private.id().into()),
+                Some(
+                    uuid::Uuid::from_bytes(private_workspace.id().volume_id().into_bytes())
+                        .to_string(),
+                ),
                 &acyclic_fs::access::Action::ALL,
             );
             capability.layers[0].extend(
                 acyclic_fs::access::Capability::whole_volume(
-                    Some(journal.id().into()),
+                    Some(
+                        uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string(),
+                    ),
                     &acyclic_fs::access::Action::ALL,
                 )
                 .layers
@@ -733,7 +740,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             );
             capability.layers[0].extend(
                 acyclic_fs::access::Capability::whole_volume(
-                    Some(foreign.id().into()),
+                    Some(source_volume.clone()),
                     &[
                         acyclic_fs::access::Action::Read,
                         acyclic_fs::access::Action::ReadHistory,
@@ -815,7 +822,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 .map_err(|error| Error::Invalid(error.to_string()))?
                 .expect("typed source capability");
             for rule in capability.layers.iter_mut().flatten() {
-                if rule.resource.volume.as_deref() == Some(foreign.id()) {
+                if rule.resource.volume.as_deref() == Some(source_volume.as_str()) {
                     rule.actions = acyclic_fs::access::Action::ALL.into_iter().collect();
                     rule.resource.generations = acyclic_fs::access::Generations::Range(
                         acyclic_fs::access::GenerationRange {
