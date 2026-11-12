@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub enum WorkspaceRole {
     /// A user repository or directory; the first one is primary.
     User,
-    /// Agent configuration, goals, plugins and skills.
+    /// Agent configuration, goals, plugins and skills; forked by default.
     Home,
     /// Model-visible UI state.
     Private,
