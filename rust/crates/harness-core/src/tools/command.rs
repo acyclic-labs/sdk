@@ -123,7 +123,7 @@ mod tests {
             ]).collect::<Vec<_>>().join(" ");
             let args = parse_command(&command).unwrap();
             let args = if args.first().is_some_and(|arg| arg == "git") { &args[1..] } else { &args[..] };
-            prop_assert_eq!(has_prefix(&command, [&["grep", "--scope"], &["git", "grep", "--scope"]]).unwrap(), args.starts_with(&["grep".into(), "--scope".into()]));
+            prop_assert_eq!(has_prefix(&command, [&["grep"], &["git", "grep"]]).unwrap(), args.starts_with(&["grep".into()]));
         }
 
         #[test]

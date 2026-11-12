@@ -58,39 +58,43 @@ impl LocalHarness {
 
     /// Each of `paths` present in the project, from the selected checkout
     /// view or the project volume's current generation.
-    async fn project_files(
-        &self,
-        paths: &[String],
+    // Keep the native read's generated state out of every command caller's
+    // future layout. This is the filesystem IO boundary, not a larger stack.
+    fn project_files<'a>(
+        &'a self,
+        paths: &'a [String],
         maximum: Option<u64>,
-    ) -> Result<Vec<(usize, Vec<u8>)>> {
-        #[cfg(any(test, not(target_arch = "wasm32")))]
-        if self.checkout_context
-            && let Some(workspace) = &self.workspace
-        {
-            return self.checkout_files(workspace, paths, maximum).await;
-        }
-        let workspace = crate::filesystem::workspace_ref(
-            self.project.provider().clone(),
-            &self.project.storage_name(&mut None)?,
-        )?;
-        let generation = self.files.resolve(&workspace, None).await?.generation;
-        let reader = self.context_reader()?;
-        let mut found = Vec::new();
-        for (index, path) in paths.iter().enumerate() {
-            let read = reader
-                .read_private_path(
-                    &self.project,
-                    "",
-                    path,
-                    Some(&generation),
-                    maximum,
-                    crate::conversation::ContentAccess::default(),
-                )?
-                .await?;
-            if let Some((_, bytes, _)) = read {
-                found.push((index, bytes.as_ref().to_vec()));
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Vec<(usize, Vec<u8>)>>> {
+        Box::pin(async move {
+            #[cfg(any(test, not(target_arch = "wasm32")))]
+            if self.checkout_context
+                && let Some(workspace) = &self.workspace
+            {
+                return self.checkout_files(workspace, paths, maximum).await;
             }
-        }
-        Ok(found)
+            let workspace = crate::filesystem::workspace_ref(
+                self.project.provider().clone(),
+                &self.project.storage_name(&mut None)?,
+            )?;
+            let generation = self.files.resolve(&workspace, None).await?.generation;
+            let reader = self.context_reader()?;
+            let mut found = Vec::new();
+            for (index, path) in paths.iter().enumerate() {
+                let read = reader
+                    .read_private_path(
+                        &self.project,
+                        "",
+                        path,
+                        Some(&generation),
+                        maximum,
+                        crate::conversation::ContentAccess::default(),
+                    )?
+                    .await?;
+                if let Some((_, bytes, _)) = read {
+                    found.push((index, bytes.as_ref().to_vec()));
+                }
+            }
+            Ok(found)
+        })
     }
 }
