@@ -124,6 +124,10 @@ impl SubscriptionCuts {
 /// Invocation-scoped host input; it contains no deployment credentials.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivery {
+    /// This attempt's host-issued request handle. Host capability calls name
+    /// it, never an actor: only the host's live binding (see `Requests`)
+    /// grants authority, and it closes when the attempt ends.
+    pub request: super::RequestId,
     /// Complete account/namespace/id address.
     pub actor: ActorReference,
     /// Placement fence admitted by the host.
