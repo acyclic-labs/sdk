@@ -61,7 +61,7 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
 reqwest.workspace = true
 rustls.workspace = true
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "transport", "tls-ring"] }
+tonic = { version = "=0.14.9", default-features = false, features = ["codegen", "router", "transport", "tls-ring"] }
 tracing.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
