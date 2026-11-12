@@ -205,6 +205,21 @@ impl ContextEpoch {
                 );
             }
         }
+        for file in &live.documents {
+            let key = document_key(file)?;
+            if told.get(&key) == now.get(&key) {
+                continue;
+            }
+            let length = file.descriptor().byte_length();
+            let mut body = serde_json::json!({"version": 1, "document": file});
+            if length <= INLINE_TEXT_BYTES {
+                let bytes = reader.read(file, length, None, None)?.await?;
+                if let Ok(text) = std::str::from_utf8(&bytes) {
+                    body["text"] = Value::String(text.to_owned());
+                }
+            }
+            change(&key, now.get(&key).copied(), body);
+        }
         if told.get("conventions") != now.get("conventions") {
             change(
                 "conventions",
@@ -265,6 +280,12 @@ fn instruction_key(instruction: &crate::model::ProjectInstruction) -> Result<Str
     Ok(format!("instructions:{identity}"))
 }
 
+fn document_key(file: &FileRef) -> Result<String> {
+    let identity = serde_json::to_string(&(file.volume(), file.path()))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(format!("document:{identity}"))
+}
+
 impl ContextManifest {
     /// The digest of each model-visible source, keyed by source: each
     /// instruction file by its original volume and path, each skill by name and original source, and the
@@ -281,6 +302,12 @@ impl ContextManifest {
             // A retained body can change without changing its path or
             // frontmatter. Its exact source identity is part of freshness.
             digests.insert(skill_key(skill)?, digest(skill)?);
+        }
+        for file in &self.documents {
+            digests.insert(
+                document_key(file)?,
+                digest(&(file.descriptor().sha256(), file.descriptor().media_type()))?,
+            );
         }
         digests.insert("conventions".into(), digest(&self.conventions)?);
         Ok(digests)

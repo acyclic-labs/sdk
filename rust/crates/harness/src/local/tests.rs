@@ -21,6 +21,7 @@ use std::{path::Path, sync::Arc};
 
 mod agents;
 mod context;
+mod context_documents;
 mod history_retry;
 mod replay;
 pub(super) mod settings;
