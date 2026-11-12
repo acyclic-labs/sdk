@@ -42,6 +42,22 @@ impl acyclic_harness_core::filesystem::TurnContext for InstructionTools {
                     acyclic_harness_core::Error::Invalid("missing private entry".into())
                 })?
                 .volume()?;
+            let journal = acyclic_harness_core::conversation::journal_volume(
+                private.provider().clone(),
+                &agent.path.id(),
+            )?;
+            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+                assert!(
+                    ContentGrant::verify(
+                        &authority.issuer.verifier(&mut None)?,
+                        &authority.scope,
+                        &journal,
+                        operation,
+                        &mut None,
+                    )
+                    .is_err()
+                );
+            }
             executor.with_tool_authority(
                 acyclic_harness_core::runtime::RuntimeScope::new(
                     Capabilities::new([
@@ -621,6 +637,17 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
         let entries = super::super::values(stream.as_ref(), path.conversation()?).await?;
         let entry = ConversationEntry::decode(entries.last().ok_or("missing settled entry")?)?;
         assert_eq!(entry.outcome, TurnOutcome::Completed);
+        let journal = acyclic_harness_core::conversation::journal_volume(
+            users[0].volume()?.provider().clone(),
+            &path.id(),
+        )?;
+        assert!(
+            entry
+                .announcements
+                .iter()
+                .flat_map(AnnouncedDocument::files)
+                .all(|file| file.volume() == &journal)
+        );
         let document = entry
             .announcements
             .iter()
