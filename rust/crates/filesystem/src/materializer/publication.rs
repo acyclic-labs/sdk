@@ -195,9 +195,10 @@ where
     } else {
         let (plan, custody) =
             publication_step(work, || generation_plan(from, to, &request, work)).await?;
-        if plan.edits.is_empty() {
-            // An empty physical transition has no effects to recover. Its
-            // immutable generation witness and root check need no journal.
+        if plan.edits.is_empty() && from.id() == to.id() {
+            // Equal generations stay empty on every retry, independent of
+            // later host edits. Changed generations still need a durable
+            // acknowledgement even when their files already match the host.
             return Ok((
                 None,
                 MaterializationJournal {

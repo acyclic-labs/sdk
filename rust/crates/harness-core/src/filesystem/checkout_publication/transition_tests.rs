@@ -851,8 +851,13 @@ async fn obsolete_staging_binding_is_refused_before_publication() -> TestResult 
 
 #[tokio::test]
 async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult {
-    for promoted in [false, true] {
+    for (promoted, unchanged) in [(true, true), (true, false), (false, false)] {
         let fixture = Fixture::new().await?;
+        let from = if unchanged {
+            &fixture.to
+        } else {
+            &fixture.from
+        };
         if promoted {
             std::fs::write(fixture.root.join("note"), "candidate")?;
         }
@@ -861,7 +866,7 @@ async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult 
         let paths = vec!["note".into()];
         let journal = publication
             .prepare_selected(
-                &fixture.from,
+                from,
                 &fixture.to,
                 &fixture.state,
                 &options,
@@ -871,7 +876,7 @@ async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult 
             .await?;
         assert_eq!(journal.plan.edits.is_empty(), promoted);
         let approval =
-            publication.approval_value(&fixture.from, &fixture.to, &paths, &journal, "creator")?;
+            publication.approval_value(from, &fixture.to, &paths, &journal, "creator")?;
         let digest = approval.digest(&fixture.work)?;
         let interaction = crate::InteractionId::new();
         let verifier = PublicationDecision {
@@ -891,7 +896,10 @@ async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult 
             .await;
         if promoted {
             assert!(result?.plan.edits.is_empty());
-            assert!(state.materialization_operations_async().await?.is_empty());
+            assert_eq!(
+                state.materialization_operations_async().await?.is_empty(),
+                unchanged
+            );
         } else {
             assert!(matches!(result, Err(Error::Unauthorized(_))));
         }
@@ -901,12 +909,28 @@ async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult 
         );
         // Rebuilding instead of carrying approval really would overwrite the
         // later edit: exercise the former unbound publication argument shape.
-        if promoted {
+        if promoted && !unchanged {
+            // The original namespace retains completion even without an
+            // approval handle, protecting later edits on a cold retry.
             publication
                 .publish(
-                    &fixture.from,
+                    from,
                     &fixture.to,
                     state,
+                    &options,
+                    (&fixture.work, None),
+                    || std::future::ready(Ok(())),
+                )
+                .await?;
+            assert_eq!(
+                std::fs::read_to_string(fixture.root.join("note"))?,
+                "edit after approval"
+            );
+            publication
+                .publish(
+                    from,
+                    &fixture.to,
+                    &missing,
                     &options,
                     (&fixture.work, None),
                     || std::future::ready(Ok(())),
