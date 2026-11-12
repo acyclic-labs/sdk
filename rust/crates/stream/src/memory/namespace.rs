@@ -484,13 +484,26 @@ fn index_put(
     .map(Some)
 }
 impl Namespace {
-    fn node<Q: std::borrow::Borrow<str> + ?Sized>(&self, path: &Q) -> Option<&Arc<NamespaceNode>> {
-        let mut parts = path.borrow().split('/');
-        let mut node = lookup(&self.roots, parts.next()?)?;
-        for part in parts {
-            node = lookup(&node.children, part)?;
+    fn descend(&self, path: &str) -> Result<&Arc<NamespaceNode>, usize> {
+        let mut index = &self.roots;
+        let mut end = 0;
+        let mut found = None;
+        for part in path.split('/') {
+            #[cfg(test)]
+            NAMESPACE_SEGMENT_VISITS.with(|count| count.set(count.get() + 1));
+            end += part.len();
+            let Some(node) = lookup(index, part) else {
+                return Err(end);
+            };
+            found = Some(node);
+            index = &node.children;
+            end += 1;
         }
-        Some(node)
+        found.ok_or(0)
+    }
+
+    fn node<Q: std::borrow::Borrow<str> + ?Sized>(&self, path: &Q) -> Option<&Arc<NamespaceNode>> {
+        self.descend(path.borrow()).ok()
     }
     fn get<Q: std::borrow::Borrow<str> + ?Sized>(&self, path: &Q) -> Option<&PathState> {
         Some(&self.node(path)?.data)

@@ -83,6 +83,47 @@ proptest! {
 }
 
 #[test]
+fn missing_leaf_planning_visits_existing_ancestors_once() {
+    use acyclic_test_support::scale::{Bound, assert_scales};
+
+    let mut samples = Vec::new();
+    let mut controls = Vec::new();
+    for depth in [16_u64, 128] {
+        let ancestor =
+            StreamPath::new(vec!["part"; usize::try_from(depth).unwrap()].join("/")).unwrap();
+        let destination = StreamPath::new(format!("{}/leaf", ancestor.as_str())).unwrap();
+        let provider = provider(std::slice::from_ref(&ancestor));
+        let state = futures::executor::block_on(provider.state.read());
+        let explicit = |prefix: &str| destination.as_str() == prefix;
+        NAMESPACE_SEGMENT_VISITS.with(|count| count.set(0));
+        let planned = result(missing_paths(
+            &state,
+            std::iter::once(&destination),
+            explicit,
+        ));
+        let visits = NAMESPACE_SEGMENT_VISITS.with(std::cell::Cell::get) as u64;
+        assert_eq!(visits, depth + 1, "namespace traversal counter is inactive");
+        assert_eq!(planned, vec![destination.as_str().to_owned()]);
+        samples.push((depth, visits));
+
+        NAMESPACE_SEGMENT_VISITS.with(|count| count.set(0));
+        let original = result(old_missing_paths(&state, std::iter::once(&destination)));
+        let repeated = NAMESPACE_SEGMENT_VISITS.with(std::cell::Cell::get) as u64;
+        assert_eq!(original, planned);
+        assert!(
+            repeated > visits,
+            "original prefix scan must perform extra work"
+        );
+        controls.push((depth, repeated));
+    }
+    assert_scales(Bound::Linear, samples[0], samples[1]);
+    assert!(
+        controls[1].1 * controls[0].0 > controls[0].1 * controls[1].0,
+        "original repeated descent passed the linear bound"
+    );
+}
+
+#[test]
 fn ten_thousand_existing_appends_do_one_path_lookup_each() {
     let path = StreamPath::new("swarm/a00000/files").unwrap();
     let provider = provider(std::slice::from_ref(&path));
