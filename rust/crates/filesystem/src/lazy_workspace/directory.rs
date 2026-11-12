@@ -21,6 +21,21 @@ pub enum LazyDirectoryNode {
     /// Source metadata captured by this bounded page.
     Source(SourceNode),
 }
+impl LazyDirectoryNode {
+    /// Whether this original fact names a directory, without following links.
+    pub fn is_directory(self) -> bool {
+        matches!(
+            self,
+            Self::Authored {
+                kind: FileKind::Directory,
+                ..
+            } | Self::Source(SourceNode {
+                kind: SourceNodeKind::Directory,
+                ..
+            })
+        )
+    }
+}
 /// A bounded merged page and its continuation.
 #[derive(Debug)]
 pub struct LazyDirectoryPage {
@@ -706,7 +721,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Generation<A, O> {
         let result = async {
             let (mut checkout, directory) = self
                 .workspace
-                .open_read_path(crate::GenerationSelector::Exact(self.id()), path, ctx, &cxl)
+                .open_read_path(
+                    crate::model::GenerationSelector::Exact(self.id()),
+                    path,
+                    ctx,
+                    &cxl,
+                )
                 .await?;
             let listed = async {
                 let position = match cursor {

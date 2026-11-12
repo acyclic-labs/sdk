@@ -363,7 +363,7 @@ impl<
                                 }
                                 let index = paths.value.len();
                                 crate::Transaction::<A, O>::push_mutation(&mut paths, path, ctx)?;
-                                if entry.kind == SourceNodeKind::Directory {
+                                if entry.node.is_directory() {
                                     directories.ensure_for_push(usize::MAX, ctx)?;
                                     directories.value.push(index);
                                 }

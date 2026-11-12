@@ -42,7 +42,10 @@ async fn directory_pages_keep_authored_phase_and_reject_changed_cuts() {
                 .await
                 .unwrap();
             assert_eq!(authored.entries.len(), 1);
-            assert!(authored.entries[0].authored);
+            assert!(matches!(
+                authored.entries[0].node,
+                crate::LazyDirectoryNode::Authored { .. }
+            ));
             assert!(authored.next.is_none());
         }
     }
