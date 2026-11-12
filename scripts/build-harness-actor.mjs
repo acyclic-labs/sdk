@@ -56,13 +56,16 @@ try {
   write(staged, [HARNESS_MODULE.file, ...declared]);
   verifyArtifact(manifest, deployment.environment, deployment.entry, entry, declared,
     declared.map(path => readFileSync(join(staged, path))));
-  const { actor } = await loadHostedArtifact(join(staged, HARNESS_MODULE.file), [...assets.values()], files);
-  // The modules instantiate from declared assets; the unbound authority is then refused typed.
+  const guest = await loadHostedArtifact(join(staged, HARNESS_MODULE.file), [...assets.values()], files);
+  if (typeof guest.manifest !== "function" || typeof guest.onRecord !== "function" || "actor" in guest) {
+    throw new Error("STEP conformance failed: strict-wire guest exports required; recovery: bun scripts/build-harness-actor.mjs");
+  }
+  // The loader installs admitted bindings once at readiness, never an actor identity.
   const env = Object.fromEntries(Object.values(HARNESS_BINDINGS).filter(name => name !== HARNESS_BINDINGS.authority)
     .map(name => [name, {}]));
-  const refused = await actor.restore(null, { env, actor: { id: "root" } }).then(() => null, error => error);
+  const refused = await guest.manifest({ env }).then(() => null, error => error);
   if (refused?.code !== "failed_precondition" || refused.subject !== HARNESS_BINDINGS.authority) {
-    throw new Error(`STEP conformance failed: ${refused?.stack ?? "restore admitted an unbound environment"}; recovery: bun scripts/build-harness-actor.mjs`);
+    throw new Error(`STEP conformance failed: ${refused?.stack ?? "manifest admitted an unbound environment"}; recovery: bun scripts/build-harness-actor.mjs`);
   }
 } finally {
   rmSync(staged, { recursive: true, force: true });
