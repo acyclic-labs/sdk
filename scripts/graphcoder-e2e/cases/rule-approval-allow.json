@@ -2,7 +2,7 @@
   "id": "rule-approval-allow",
   "workspace": {
     "kind": "plain",
-    "files": {}
+    "files": {".fixtures/hook.exe": {"binary_env": "E2E_HOOK_BINARY"}}
   },
   "model": {
     "steps": [
@@ -48,6 +48,6 @@
     }
   },
   "settings": {
-    ".claude/settings.json": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" allow\"}]}]}}"
+    ".claude/settings.json": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl allow\"}]}]}}"
   }
 }

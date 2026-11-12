@@ -2,7 +2,7 @@
   "id": "session-approval-reattach",
   "workspace": {
     "kind": "plain",
-    "files": {}
+    "files": {".fixtures/hook.exe": {"binary_env": "E2E_HOOK_BINARY"}}
   },
   "model": {
     "steps": [
@@ -90,6 +90,6 @@
     ]
   },
   "settings": {
-    ".claude/settings.json": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"hooks.jsonl\\\" ask\"}]}]}}"
+    ".claude/settings.json": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"./.fixtures/hook.exe hooks.jsonl ask\"}]}]}}"
   }
 }
