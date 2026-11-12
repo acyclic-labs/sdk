@@ -10,8 +10,10 @@
 
 use super::{
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
-    FilesystemHost, FilesystemJournalBinding, agent_effects::FilesystemTurnEffects,
-    agent_goal::FilesystemTurnGoal, agent_internal::AgentInternalFiles,
+    FilesystemHost, FilesystemJournalBinding,
+    agent_effects::FilesystemTurnEffects,
+    agent_goal::FilesystemTurnGoal,
+    agent_internal::{AgentInternalFiles, AgentTurnOutputs},
 };
 use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use crate::{
@@ -236,6 +238,41 @@ impl<'v> AdmittedAgent<'v> {
             verifier,
             private,
         })
+    }
+
+    /// Host authority over this agent's journal and retained conversation files.
+    async fn journal_authority(
+        &self,
+        retained: &[FileRef],
+    ) -> Result<(VolumeRef, AgentAuthority<'v>)> {
+        let volume = crate::conversation::journal_volume(
+            self.private.volume()?.provider().clone(),
+            &crate::agent::AgentId::from_bytes(self.owner.into_bytes()),
+        )?;
+        let grants = match self.parent {
+            Some(parent) => parent.capabilities().clone(),
+            None => Capabilities::new(
+                [VolumeOperation::Read, VolumeOperation::Write]
+                    .into_iter()
+                    .map(|operation| volume.capability(operation, &mut None))
+                    .chain(retained.iter().map(|file| file.read_capability(&mut None)))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        };
+        let scope = self
+            .issuer
+            .issue(self.parent, "journal", &grants, Some(self.owner))
+            .await?;
+        Ok((
+            volume,
+            AgentAuthority {
+                issuer: self.issuer.clone(),
+                verifier: self.issuer.verifier(&mut None)?,
+                scope,
+                grants,
+                private: self.private,
+            },
+        ))
     }
 
     /// Pure admission for a proposed volume. Local enrollment already owns
@@ -774,6 +811,13 @@ where
         Ok(journal)
     }
 
+    pub(super) async fn journal_authority<'a>(
+        &'a self,
+        agent: &'a AgentState,
+    ) -> Result<(VolumeRef, AgentAuthority<'a>)> {
+        self.admit(agent)?.journal_authority(&[]).await
+    }
+
     /// Read current project roots through the agent's signed grant and persisted
     /// filesystem policy. A write selection additionally requires whole-volume
     /// publication authority; the returned generation is the policy's own cut.
@@ -1029,25 +1073,10 @@ where
         admitted: &AdmittedAgent<'_>,
         retained: &[FileRef],
     ) -> Result<JournalStorage<A, O>> {
-        let volume = crate::conversation::journal_volume(
-            admitted.private.volume()?.provider().clone(),
-            &crate::agent::AgentId::from_bytes(admitted.owner.into_bytes()),
-        )?;
-        let grants = match admitted.parent {
-            Some(parent) => parent.capabilities().clone(),
-            None => Capabilities::new(
-                [VolumeOperation::Read, VolumeOperation::Write]
-                    .into_iter()
-                    .map(|operation| volume.capability(operation, &mut None))
-                    .chain(retained.iter().map(|file| file.read_capability(&mut None)))
-                    .collect::<Result<Vec<_>>>()?,
-            ),
-        };
-        let scope = admitted
-            .issuer
-            .issue(admitted.parent, "journal", &grants, Some(admitted.owner))
-            .await?;
-        let verifier = admitted.issuer.verifier(&mut None)?;
+        let (volume, authority) = admitted.journal_authority(retained).await?;
+        let AgentAuthority {
+            scope, verifier, ..
+        } = authority;
         let files = self.internal_files(&volume, &verifier, &scope)?;
         let reader = FilesystemContentVerifier::new(
             Arc::clone(&self.host),
@@ -1840,17 +1869,13 @@ where
             } else {
                 None
             };
-            let authority =
-                crate::core::until_turn_stopped(Some(stop), admitted.authority(&[])).await?;
-            let outputs = self.internal_files(
-                authority.private.volume()?,
-                &authority.verifier,
-                &authority.scope,
-            )?;
+            let storage =
+                crate::core::until_turn_stopped(Some(stop), self.journal_storage(&admitted, &[]))
+                    .await?;
             Ok(crate::agent::OpenControl {
-                outputs,
+                outputs: storage.files,
                 checkpoint,
-                custody: Some(authority.issuer),
+                custody: Some(admitted.issuer),
             })
         })
     }
@@ -2118,7 +2143,10 @@ where
                     None => None,
                 };
                 let (policy, resolved) = self.approvals(agent, &bindings.content).await?;
-                let outputs = Arc::clone(&files);
+                let outputs = Arc::new(AgentTurnOutputs {
+                    ui: Arc::clone(&files),
+                    journal: Arc::clone(&bindings.journal.files),
+                });
                 let boundary = super::agent_steering::FilesystemBoundary::new(
                     Arc::clone(&self.stream),
                     Arc::clone(&self.host),

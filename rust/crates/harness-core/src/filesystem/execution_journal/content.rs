@@ -450,17 +450,17 @@ where
                 "turn input file exceeds journal limit",
             ));
         }
-        if reference.volume().provider() != &self.host.provider {
-            let verifier = self.input_verifier.as_ref().ok_or_else(|| {
-                canonical_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unsupported,
-                    "turn input file belongs to another content provider",
-                )
-            })?;
+        if let Some(verifier) = &self.input_verifier {
             return verifier
                 .verify(reference, super::MAXIMUM_PAYLOAD_BYTES, io)?
                 .await;
+        }
+        if reference.volume().provider() != &self.host.provider {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "turn input file belongs to another content provider",
+            ));
         }
         if let Some(io) = io {
             crate::model::charge_items(Some(io), 1)?;

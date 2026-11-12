@@ -91,6 +91,62 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
 }
 
 #[tokio::test]
+async fn tool_result_reads_keep_the_settled_journal_cut() -> TestResult {
+    use crate::{agent::TurnHost, executor::ExecutionJournal};
+    let (bound, root) = binding().await?;
+    let state = bound.agents().state(&root).await?;
+    let journal = bound.turns().query_journal(&state).await?;
+    let operation = OperationId::from_bytes([51; 16]);
+    let result = journal
+        .stage(
+            operation,
+            "tool:read:result",
+            b"original",
+            "text/plain",
+            None,
+        )?
+        .await?;
+    let output = bound
+        .turns()
+        .open_control(
+            &state,
+            &crate::agent::ContextAction::Clear,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?
+        .outputs
+        .stage(operation, b"{}")
+        .await?;
+    assert_eq!(result.volume(), output.volume());
+    assert_ne!(state.volumes[0].as_volume(), Some(output.volume()));
+    let later = journal
+        .stage(operation, "tool:later:result", b"later", "text/plain", None)?
+        .await?;
+    let (bytes, length) = bound
+        .read_tool_output(&root, result.path(), Some(&output), 2, 3)
+        .await?;
+    assert_eq!(bytes, b"igi");
+    assert_eq!(length, 8);
+    assert!(
+        bound
+            .read_tool_output(&root, later.path(), Some(&output), 0, 32)
+            .await
+            .is_err()
+    );
+    assert!(
+        bound
+            .read_tool_output(&root, result.path(), None, 0, 32)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        bound.tool_resource(&root).await?,
+        bound.volumes().tool_resource(output.volume()).await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn input_previews_pin_pending_messages_without_reading_the_whole_body() -> TestResult {
     use crate::agent::{InputPreview, InputPreviewStep, Message};
     use futures::StreamExt as _;

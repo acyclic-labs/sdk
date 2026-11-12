@@ -360,7 +360,7 @@ pub struct ConversationEntry {
     pub inbox: u64,
     /// Input that started the turn.
     pub input: TurnInput,
-    /// The executor's output, staged on the agent's private volume:
+    /// The executor's output, staged on its host-owned output volume:
     /// complete, or as far as a cancelled turn streamed it.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
     pub output: FileRef,

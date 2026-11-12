@@ -131,7 +131,7 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
         VolumeOperation::Write,
         &mut None,
     )?;
-    files
+    let ui = files
         .put_content(
             private.volume()?,
             &write,
@@ -145,6 +145,17 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
             Default::default(),
         )
         .await?;
+    reopened.journal.verify_input_file(&ui, None)?.await?;
+    assert!(reopened.journal.load(&ui, None)?.await.is_err());
+    assert!(
+        reopened
+            .journal
+            .verify_input_file(&payload, None)?
+            .await
+            .is_err()
+    );
+    let output = reopened.outputs.stage(operation, b"{}").await?;
+    assert_eq!(output.volume(), &journal);
     files
         .stat(&workspace(private.volume()?)?, None, "ui/title")
         .await?;

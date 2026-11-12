@@ -1,5 +1,5 @@
 //! Live observation of an agent or its hosted tree, with immutable diagnostic
-//! pages and tool output, `tools/` on its private volume.
+//! pages and tool output, `tools/` on its host-selected output volume.
 use super::*;
 use crate::core::AuthorityRoot;
 use acyclic_auth::{
@@ -27,7 +27,7 @@ pub struct AgentObservation {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
-    /// Native enrollment derives an [`AgentObservation`] of `agent`, whose private volume is
+    /// Native enrollment derives an [`AgentObservation`] of `agent`, whose output volume is
     /// `volume`, from `authority`'s scope at `clock`'s time. With `calls`, the
     /// credential also invokes that actor resource, the hosting server of
     /// `agent`'s tree, and lists, reads and follows the tree's streams. The

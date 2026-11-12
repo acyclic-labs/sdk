@@ -1,8 +1,7 @@
 //! Internal files published through one host-owned volume grant. Approvals
 //! use the private interaction area; tool-call effects and announcement
 //! documents use the agent's journal. Each uses the same create-once publisher.
-//! Settled turn outputs live in the inherited conversation area, which an
-//! exact-version grant reaches.
+//! Settled turn outputs share the journal generation of their tool results.
 
 use super::{FilesystemHost, InternalContentClass};
 use crate::{
@@ -22,11 +21,45 @@ mod ui;
 /// Directory entries read per listing page.
 const PAGE: u32 = 256;
 
-/// Internal files of one agent, under its owner's private-volume write grant.
+/// Internal files of one agent, under its host-selected volume write grant.
 pub(in crate::filesystem) struct AgentInternalFiles<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     grant: ContentGrant,
+}
+
+/// UI remains model-writable; settled and streamed outputs share journal cuts.
+pub(super) struct AgentTurnOutputs<A: 'static, O: 'static> {
+    pub(super) ui: Arc<AgentInternalFiles<A, O>>,
+    pub(super) journal: Arc<AgentInternalFiles<A, O>>,
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> TurnOutputs
+    for AgentTurnOutputs<A, O>
+{
+    fn waiting_user<'a>(
+        &'a self,
+        turn: OperationId,
+        journal: &'a dyn crate::executor::ExecutionJournal,
+    ) -> BoxProviderFuture<'a, Result<Option<String>>> {
+        self.ui.waiting_user(turn, journal)
+    }
+
+    fn tool_results(&self, turn: OperationId) -> Option<String> {
+        self.journal.tool_results(turn)
+    }
+
+    fn stage<'a>(
+        &'a self,
+        turn: OperationId,
+        bytes: &'a [u8],
+    ) -> BoxProviderFuture<'a, Result<FileRef>> {
+        self.journal.stage(turn, bytes)
+    }
+
+    fn partial(&self, turn: OperationId) -> BoxProviderFuture<'_, Result<String>> {
+        self.journal.partial(turn)
+    }
 }
 
 /// Reads from one original private-volume generation, including its directory
