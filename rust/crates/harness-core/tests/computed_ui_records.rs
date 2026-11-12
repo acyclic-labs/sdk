@@ -87,7 +87,12 @@ async fn computed_role_reads_the_agents_own_adoption_after_its_fork_origin() -> 
     let root = create_root(&IntentId::try_from("role-root".to_owned())?, adopted)?;
     let parent = root.child;
     streams.commit(root.request).await?;
-    let storage = MemoryHarnessStorage::with_stream(parent.id(), 16_384, streams.clone()).await?;
+    let storage = MemoryHarnessStorage::with_stream(
+        acyclic_harness_core::AgentId::from_bytes(parent.id().to_bytes()),
+        16_384,
+        streams.clone(),
+    )
+    .await?;
     let template = storage
         .stage(
             OperationId::new(),
