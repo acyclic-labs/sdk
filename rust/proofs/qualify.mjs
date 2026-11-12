@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { loomEnvironment } from "../../scripts/loom-environment.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const nativeHarness = ["--features", "test-support"];
@@ -1850,15 +1851,12 @@ if (claim === "--help" && extra.length === 0) {
         cwd: instrumented && program === "cargo" ? fileURLToPath(new URL("rust/codec-fuzz/", new URL("../../", import.meta.url))) : root, encoding: "utf8",
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
         env: {
-          ...environment, PROPTEST_RNG_SEED: environment.PROPTEST_RNG_SEED ?? "1697",
+          ...(options.loom ? loomEnvironment(environment) : environment),
+          PROPTEST_RNG_SEED: environment.PROPTEST_RNG_SEED ?? "1697",
           ...(options.fuzz ? {
             // RUSTFLAGS replaces Cargo configuration, including replay's Tokio support.
             RUSTFLAGS: `${environment.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? environment.RUSTFLAGS
               : `${environment.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`} --cfg tokio_unstable`,
-          } : {}),
-          ...(options.loom ? {
-            RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
-              `../../scripts/loom-rustc.${process.platform === "win32" ? "cmd" : "sh"}`, import.meta.url)),
           } : {}),
         },
       });

@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loomCompilerEnvironment, loomEnvironment } from "./loom-environment.mjs";
+export { loomEnvironment } from "./loom-environment.mjs";
 
 /** @typedef {(command: string, args: string[], options: {
  * encoding: 'utf8', maxBuffer?: number, env?: NodeJS.ProcessEnv
@@ -29,10 +31,6 @@ export const gateQualifications = [
 ];
 // Cargo's workspace wrapper leaves registry dependencies (including Tokio's own
 // independent cfg(loom) mode) untouched. One opt-in compiles each SDK model crate.
-export function loomEnvironment(env = process.env) {
-  return { ...env, RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
-    process.platform === "win32" ? "./loom-rustc.cmd" : "./loom-rustc.sh", import.meta.url)) };
-}
 const planOnly = Symbol("qualification plan");
 
 export function qualificationPlan(args) {
@@ -520,12 +518,12 @@ function qualifyLoom(crate, target, features, run, options = {}) {
     args: filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [],
     passed: options.exact === false ? (options.passed ?? 4) : filter ? 1 : null,
   }));
-  const env = options.env ?? process.env;
+  const env = loomCompilerEnvironment(options.env ?? process.env);
   const plan = { args, target, tests, rustflags: env.RUSTFLAGS ?? "", wrapper: env.RUSTC_WORKSPACE_WRAPPER ?? null };
   if (options.expectedFailure) plan.expectedFailure = options.expectedFailure;
   if (run === planOnly) return plan;
   const buildStarted = performance.now();
-  const build = run("cargo", args, { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, ...(options.env ? { env: options.env } : {}) });
+  const build = run("cargo", args, { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, env });
   console.log("MODEL_CHECK_PHASE " + JSON.stringify({ phase: "build", crate, target,
     seconds: (performance.now() - buildStarted) / 1000, status: build.status === 0 ? "PASS" : "FAIL" }));
   if (build.error) throw build.error;

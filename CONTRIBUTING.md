@@ -33,6 +33,13 @@ obligations. The command emits `MODEL_CHECK_PHASE` build/search timings and one
 terminal `MODEL_CHECK_RESULT` with `status: "PASS"` or `"FAIL"`; absence of that
 terminal is incomplete execution. A zero-test or incomplete suite cannot pass.
 
+Use that qualifier or `RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh` with
+`--features model-checking` for Loom builds. A global `RUSTFLAGS='--cfg loom'`
+also switches registry runtimes into their separate model configurations (some
+unsupported), rather than just selecting the SDK's synchronization shims. The
+qualifier scopes inherited Loom flags to the selected SDK models and preserves
+other compiler flags.
+
 An operator can set `SDK_CHECKER_RUNNER` to an installed shared Node runner for
 libtest obligations. It receives `-- <binary> <original arguments>` after Cargo
 builds the selected target, and must return the original complete test summary.

@@ -236,9 +236,10 @@ case "$lane" in
     node scripts/check-hermetic-clippy.mjs
     RUSTFLAGS="$warning_rustflags" \
       cargo check --locked -p acyclic-harness-fuzz --bins
-    # Stream Loom models are crate-private; only a cfg(loom) build compiles them.
+    # Compile crate-private models and the native runtime's compio/synchrony
+    # dependency closure. cfg(loom) belongs only on opted-in workspace crates.
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" \
- cargo check --locked -p acyclic-stream --features model-checking --lib
+ cargo check --locked -p acyclic-stream -p acyclic-native-runtime --features model-checking --lib
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
  cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features model-checking --lib
     # Compile native implementations and their unit tests together.

@@ -7,9 +7,44 @@ import { spawnSync } from "node:child_process";
 import { loomEnvironment, qualificationMain, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
 import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyNativeHostLoom, qualifyNativeExecutor, qualifyNativeSources } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualificationPlan, qualifyMcpLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
+import { loomCompilerEnvironment } from "./loom-environment.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+test("global Loom flags are scoped without losing other compiler flags or model instrumentation", t => {
+  for (const [name, separator] of [["RUSTFLAGS", " "], ["CARGO_ENCODED_RUSTFLAGS", "\x1f"]]) {
+    const flags = ["--cfg", "tokio_unstable", "--cfg", "loom", "--cfg=loom", "-Copt-level=1"];
+    const env = { [name]: flags.join(separator), OTHER: "unchanged" };
+    const scoped = loomEnvironment(env);
+    assert.equal(scoped[name], ["--cfg", "tokio_unstable", "-Copt-level=1"].join(separator));
+    assert.equal(scoped.OTHER, "unchanged");
+    assert.equal(env[name], flags.join(separator), "do not mutate the caller's environment");
+    assert.equal(loomCompilerEnvironment({ [name]: "--cfg=loom" })[name], undefined);
+    assert.equal(loomCompilerEnvironment({ [name]: "" })[name], "");
+    const original = process.env[name];
+    process.env[name] = flags.join(separator);
+    t.after(() => {
+      if (original === undefined) delete process.env[name];
+      else process.env[name] = original;
+    });
+    // Both routing modes must keep Loom on their model target, never on the
+    // registry dependency closure (notably compio's synchrony dependency).
+    for (const selector of [[], ["--native-owner"]]) {
+      const plan = qualificationPlan(selector);
+      assert.ok(plan.wrapper || plan.args.slice(-3).join(" ") === "-- --cfg loom");
+      if (name === "RUSTFLAGS") assert.equal(plan.rustflags, "--cfg tokio_unstable -Copt-level=1");
+    }
+    qualifyMcpLoom([], (command, args, options) => {
+      if (command === "cargo") {
+        assert.equal(options.env[name], scoped[name]);
+        assert.ok(options.env.RUSTC_WORKSPACE_WRAPPER);
+        return { status: 0, stdout: JSON.stringify(artifact) };
+      }
+      return { status: 0, stdout: summary(6) };
+    });
+  }
+});
 
 beforeEach(t => {
   const runner = process.env.SDK_CHECKER_RUNNER;
