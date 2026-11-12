@@ -135,9 +135,20 @@ async fn assert_request(
         serde_json::from_str::<serde_json::Value>(catalog)
             .map_err(|error| Error::Invalid(error.to_string()))?,
         serde_json::json!([
-            {"name":"inspect","description":"Inspect files"},
-            {"name":"hidden","description":"Hidden skill"}
+            {"name":"inspect","description":"Inspect files","source":manifest.discovery.skills[0].source},
+            {"name":"hidden","description":"Hidden skill","source":manifest.discovery.skills[1].source}
         ])
+    );
+    let listing: serde_json::Value =
+        serde_json::from_str(catalog).map_err(|error| Error::Invalid(error.to_string()))?;
+    let source: acyclic_harness::context::PinnedContextPath =
+        serde_json::from_value(listing[1]["source"].clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let (_, body) = source.read(reader, 4096).await?;
+    assert!(
+        std::str::from_utf8(&body)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .contains("UNSELECTED BODY")
     );
     for ((message, pinned), (path, expected)) in request
         .messages
