@@ -104,9 +104,9 @@ async fn headless_feedback_retrospective_runs_once_per_settlement_and_preserves_
             ContextPipeline::default(),
             ToolRegistry::default(),
         )
-        .with_plugins(plugins)?
-        .with_live_reply(LiveReply::new(published.clone(), "tools/turn".into()));
-        let journal = Journal::default();
+        .with_plugins(plugins)?;
+        let mut journal = Journal::default();
+        journal.11 = Some(LiveReply::new(published.clone(), "tools/turn".into()));
         let first = TurnInput {
             max_steps: None,
             operation_id: OperationId::new(),

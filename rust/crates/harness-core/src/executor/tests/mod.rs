@@ -376,6 +376,7 @@ pub(crate) struct Journal(
     Option<crate::core::AuthorityVerifier>,
     ExecutionJournalCacheId,
     tokio_util::sync::CancellationToken,
+    Option<LiveReply>,
 );
 
 impl Journal {
@@ -388,7 +389,7 @@ impl Journal {
             Mutex::new(self.2.lock().unwrap().clone()),
             AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
             ExecutionClaims::default(), AtomicUsize::new(0), None,
-            ExecutionJournalCacheId::default(), Default::default(),
+            ExecutionJournalCacheId::default(), Default::default(), self.11.clone(),
         )
     }
     fn stage_source<'a>(
@@ -449,6 +450,10 @@ impl crate::context::ContextSource for ChangingContextSource {
 }
 
 impl ExecutionJournal for Journal {
+    fn live_reply(&self, _: OperationId) -> Result<Option<LiveReply>> {
+        Ok(self.11.clone())
+    }
+
     fn model_cancellation(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async {
             self.10.cancelled().await;
