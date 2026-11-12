@@ -83,14 +83,29 @@ pub(super) fn publish(
     }
     if current.is_none() {
         let paths = data_paths(namespace, operation, None)?;
+        let relative = paths
+            .directory()
+            .strip_prefix(&namespace.root)
+            .map_err(|_| LocalCoreStateStoreError::Integrity)?;
         match &paths.allocation {
             Some(allocation) => {
-                crate::native_host::create_directories(
-                    paths.directory(),
-                    &mut &*allocation.work(),
+                let mut work = &*allocation.work();
+                let root = crate::native_host::HostRoot::open(&namespace.root, &mut work)?;
+                root.create_directories(
+                    relative,
+                    crate::native_host::NativeDurability::Durable,
+                    &mut work,
                 )?;
             }
-            None => std::fs::create_dir_all(paths.directory())?,
+            None => {
+                let mut work = crate::native_host::ordinary_work();
+                let root = crate::native_host::HostRoot::open(&namespace.root, &mut work)?;
+                root.create_directories(
+                    relative,
+                    crate::native_host::NativeDurability::Durable,
+                    &mut work,
+                )?;
+            }
         }
         write_journaled(&paths, &journal.plan)?;
     }
