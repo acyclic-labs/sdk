@@ -130,8 +130,8 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
             return Err("OS keychain unavailable; recovery: unlock/start the OS credential service, or configure an environment key or --credentials FILE before starting graphcoder".into());
         }
         let key = input.read_secret("API key (hidden)")?;
-        Credentials::store_api_key(provider, &key)?;
-        print!("Key saved in OS keychain service acyclic-harness.\r\n");
+        credentials(args)?.store_api_key_in_service(provider, &key)?;
+        print!("Key saved in OS keychain.\r\n");
     }
     drop(input);
     // Discard cached missing-source observations after publishing a credential,

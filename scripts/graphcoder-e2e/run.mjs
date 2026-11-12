@@ -113,7 +113,12 @@ async function prepare(test, gitOrigin) {
   fixture.binary = binary;
   fixture.output = artifact;
   fixture.env = environment(fixture.settings, hostEnvironment);
-  fixture.provider = test.keychain ? `e2e-first-run-${randomUUID()}` : "e2e";
+  fixture.provider = "e2e";
+  if (test.keychain) {
+    fixture.credentials = join(fixture.settings, "credentials.json");
+    await mkdir(fixture.settings, { recursive: true });
+    await json(fixture.credentials, { api_keys: {}, keychain_service: `e2e-first-run-${randomUUID()}` });
+  }
   if (nativeCases.has(test.id)) {
     fixture.url = `http://127.0.0.1:${port}/native-${test.id}/v1`;
     fixture.nativeCapability = nativeCapability;
@@ -144,7 +149,8 @@ async function prepare(test, gitOrigin) {
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
   const selection = ["--workspace", fixture.workspace, "--catalog", fixture.catalog,
     ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`])];
-  const extra = expand(test.extra_args ?? [], fixture);
+  const extra = [...expand(test.extra_args ?? [], fixture),
+    ...(test.keychain ? ["--credentials", fixture.credentials] : [])];
   fixture.clientArgs = [...selection, ...extra];
   fixture.args = [...selection, "--settings-root", fixture.settings,
     ...mountingArguments(test), ...extra];
@@ -310,7 +316,7 @@ async function execute(test, prepared) {
       try {
         assert.ok(process.env.E2E_CREDENTIALS_FIXTURE && isAbsolute(process.env.E2E_CREDENTIALS_FIXTURE),
           "E2E_CREDENTIALS_FIXTURE must name the absolute native provider credential fixture");
-        const removed = await processes.run(process.env.E2E_CREDENTIALS_FIXTURE, [fixture.provider], { env: fixture.env });
+        const removed = await processes.run(process.env.E2E_CREDENTIALS_FIXTURE, [fixture.credentials], { env: fixture.env });
         assert.equal(removed.code, 0, removed.stderr);
       } catch (error) {
         result = { ...result, status: "fail", credential_cleanup: failureReport(error) };

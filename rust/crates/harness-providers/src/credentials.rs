@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 pub struct Credentials {
     /// Provider ID to API key. Deliberately not Debug or Serialize.
     pub api_keys: BTreeMap<String, String>,
+    /// Native credential namespace shared by discovery and first-run storage.
+    #[serde(default = "keychain_service")]
+    pub keychain_service: String,
     #[serde(skip, default = "native_sources")]
     native_sources: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -51,6 +54,10 @@ pub(crate) enum Source {
     CodexHome,
 }
 
+fn keychain_service() -> String {
+    "acyclic-harness".into()
+}
+
 fn native_sources() -> bool {
     true
 }
@@ -59,6 +66,7 @@ impl Default for Credentials {
     fn default() -> Self {
         Self {
             api_keys: BTreeMap::new(),
+            keychain_service: keychain_service(),
             native_sources: true,
             #[cfg(not(target_arch = "wasm32"))]
             path: None,
@@ -82,14 +90,20 @@ impl Credentials {
     /// Stores a host credential in the same OS service used by discovery.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn store_api_key(provider: &str, key: &str) -> Result<()> {
+        Self::default().store_api_key_in_service(provider, key)
+    }
+
+    /// Stores a credential in this configuration's native namespace.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn store_api_key_in_service(&self, provider: &str, key: &str) -> Result<()> {
         if key.trim().is_empty() || key.trim().chars().any(char::is_control) {
             return Err(super::invalid(
                 "API key must be nonempty and single-line; recovery: paste a provider API key",
             ));
         }
-        keyring::Entry::new("acyclic-harness", provider)
+        keyring::Entry::new(&self.keychain_service, provider)
             .and_then(|entry| entry.set_password(key.trim()))
-            .map_err(|_| super::invalid("cannot store provider key in OS keychain service acyclic-harness; recovery: unlock the OS keychain and run graphcoder again"))?;
+            .map_err(|_| super::invalid("cannot store provider key in configured OS keychain service; recovery: unlock the OS keychain and run graphcoder again"))?;
         Self::changed();
         Ok(())
     }
@@ -97,7 +111,13 @@ impl Credentials {
     /// Removes only this provider's entry, for host credential lifecycle owners.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn remove_api_key(provider: &str) -> Result<()> {
-        match keyring::Entry::new("acyclic-harness", provider)
+        Self::default().remove_api_key_in_service(provider)
+    }
+
+    /// Removes a credential only from this configuration's native namespace.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn remove_api_key_in_service(&self, provider: &str) -> Result<()> {
+        match keyring::Entry::new(&self.keychain_service, provider)
             .and_then(|entry| entry.delete_credential())
         {
             Ok(()) | Err(keyring::Error::NoEntry) => {
@@ -128,6 +148,7 @@ impl Credentials {
     pub fn explicit(api_keys: BTreeMap<String, String>) -> Self {
         Self {
             api_keys,
+            keychain_service: keychain_service(),
             native_sources: false,
             #[cfg(not(target_arch = "wasm32"))]
             path: None,
@@ -167,7 +188,7 @@ impl Credentials {
         match source {
             #[cfg(not(target_arch = "wasm32"))]
             Source::Keychain => {
-                if let Ok(entry) = keyring::Entry::new("acyclic-harness", provider) {
+                if let Ok(entry) = keyring::Entry::new(&self.keychain_service, provider) {
                     match entry.get_password() {
                         Ok(key) if !key.trim().is_empty() => return Ok(Some(key)),
                         Ok(_)
