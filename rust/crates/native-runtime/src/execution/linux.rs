@@ -580,6 +580,13 @@ const fn compile_filter<const N: usize>(network: FilterNetwork) -> Filter<N> {
         libc::SYS_clone3,
         0x0005_0000 | libc::ENOSYS as u32,
     );
+    // io_uring bypasses syscall mediation. Advertise its absence so runtimes
+    // use ordinary mediated I/O, without creating a ring or continuing a request.
+    verdict(
+        &mut code,
+        libc::SYS_io_uring_setup,
+        0x0005_0000 | libc::ENOSYS as u32,
+    );
     code.extend(&[
         instruction(EQUAL, 0, 4, number(libc::SYS_clone)),
         instruction(LOAD, 0, 0, 16),
@@ -981,12 +988,15 @@ const ALLOWED_SYSCALLS: &[libc::c_long] = &[
     libc::SYS_getgid,
     libc::SYS_getegid,
     libc::SYS_getgroups,
+    // Capability inspection is read-only; capability changes remain denied.
+    libc::SYS_capget,
     libc::SYS_getrusage,
     #[cfg(target_arch = "x86_64")]
     libc::SYS_getrlimit,
     libc::SYS_getrandom,
     libc::SYS_getcpu,
     libc::SYS_uname,
+    libc::SYS_sysinfo,
     libc::SYS_prctl,
     // Socket creation is separately restricted to Internet families;
     // Landlock checks TCP connections and the port-only mode's listeners.

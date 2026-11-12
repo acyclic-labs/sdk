@@ -99,19 +99,25 @@ impl std::error::Error for ExecutionRefusal {}
 #[derive(Debug)]
 pub enum ExecutionViolation {
     /// A forbidden syscall or syscall argument crossed the boundary.
-    Syscall,
+    Syscall {
+        /// Kernel-reported syscall number in the execution host's native ABI.
+        number: i32,
+    },
     /// A Unix socket would acquire host IPC outside the execution domain.
     HostIpc,
 }
 
 impl std::fmt::Display for ExecutionViolation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Syscall => "sandbox syscall filter denied execution; command tree terminated",
-            Self::HostIpc => {
-                "sandbox syscall filter denied host IPC (Unix socket); command tree terminated"
-            }
-        })
+        match self {
+            Self::Syscall { number } => write!(
+                formatter,
+                "sandbox syscall filter denied syscall {number}; command tree terminated"
+            ),
+            Self::HostIpc => formatter.write_str(
+                "sandbox syscall filter denied host IPC (Unix socket); command tree terminated",
+            ),
+        }
     }
 }
 

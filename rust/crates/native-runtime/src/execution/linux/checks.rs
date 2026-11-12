@@ -242,7 +242,7 @@ proptest! {
             && !attributes.contains(&i64::from(syscall))
             && ![libc::SYS_read, libc::SYS_write, libc::SYS_fcntl, libc::SYS_ioctl,
                 libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid,
-                libc::SYS_clone3].contains(&(i64::from(syscall))) {
+                libc::SYS_clone3, libc::SYS_io_uring_setup].contains(&(i64::from(syscall))) {
             prop_assert_eq!(evaluate(code, ARCH, syscall, arguments)?, DENY);
         }
         for call in attributes {
@@ -254,7 +254,7 @@ proptest! {
             libc::SYS_semget, libc::SYS_semop, libc::SYS_semctl,
             libc::SYS_mq_open, libc::SYS_mq_unlink, libc::SYS_process_vm_writev,
             libc::SYS_process_madvise, libc::SYS_process_mrelease,
-            libc::SYS_setpgid, libc::SYS_setsid] {
+            libc::SYS_setpgid, libc::SYS_setsid, libc::SYS_capset] {
             prop_assert_eq!(evaluate(code, ARCH, u32::try_from(call).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, DENY);
         }
         for call in [libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid] {
@@ -368,6 +368,8 @@ proptest! {
             prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_clone).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, clone)?, DENY);
         }
         prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_clone3).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?,
+            0x0005_0000 | libc::ENOSYS as u32);
+        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_io_uring_setup).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?,
             0x0005_0000 | libc::ENOSYS as u32);
         let mut socket = arguments;
         socket[0] = libc::AF_UNIX as u64;
