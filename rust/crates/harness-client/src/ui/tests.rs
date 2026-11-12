@@ -222,7 +222,7 @@ async fn terminal_diagnostic_is_discoverable_and_lazily_readable_without_losing_
         );
         assert!(
             view.project(&cut, &UiPath::new("turns/0.md")?)?
-                .contains(&format!("(../diagnostics/{digest}/0.md)"))
+                .contains("[Current status](../status.md)")
         );
         let forged = UiPath::new(&format!("diagnostics/{}/0.md", "0".repeat(64)))?;
         assert!(view.project(&cut, &forged).is_err());
