@@ -184,6 +184,24 @@ mod tests {
                 named_child(&foreign_parent, foreign["agents"][0].as_str().unwrap()).unwrap();
             let parent = AgentPath::try_from(parent).unwrap();
             let worker = named_child(&parent, "worker").unwrap();
+            for reference in ["worker", worker.as_str()] {
+                assert_eq!(named_child(&parent, reference).as_ref(), Some(&worker));
+            }
+            for reference in ["other", "agents/", foreign.as_str()] {
+                assert_ne!(named_child(&parent, reference).as_ref(), Some(&worker));
+            }
+            let prefixed = named_child(&parent, "agents/worker").unwrap();
+            assert_ne!(
+                prefixed, worker,
+                "a literal spawn name cannot alias a branch operand"
+            );
+            for reference in ["agents/worker", prefixed.as_str()] {
+                assert_eq!(named_child(&parent, reference).as_ref(), Some(&prefixed));
+            }
+            check_value(
+                &parent,
+                json!({"agents":["worker", worker, "agents/worker", prefixed]}),
+            );
             let names = ["worker".to_owned(), worker.to_string()];
             // Exhaust every alias ordering through length six, then vary the
             // quorum on both sides of the actual distinct-child count.
