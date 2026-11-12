@@ -996,6 +996,7 @@ const ALLOWED_SYSCALLS: &[libc::c_long] = &[
     libc::SYS_getrandom,
     libc::SYS_getcpu,
     libc::SYS_uname,
+    libc::SYS_sysinfo,
     libc::SYS_prctl,
     // Socket creation is separately restricted to Internet families;
     // Landlock checks TCP connections and the port-only mode's listeners.
