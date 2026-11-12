@@ -77,6 +77,7 @@ const FILES: &[(&str, &[u8])] = &[
     skill!("context-checkpoint"),
     skill!("debugging"),
     skill!("fresh-context-review"),
+    skill!("memory"),
     skill!("swarm-topology"),
     skill!("ui"),
     skill!("verify-before-done"),
