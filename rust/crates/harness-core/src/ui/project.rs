@@ -30,7 +30,11 @@ pub trait Cut {
     /// Exactly one cached `children_page`, never a flattened subtree.
     fn children(&self, page: u32) -> Result<Option<Children<'_>>>;
     /// One original diagnostic interval from this selected cut.
-    fn diagnostic(&self, _: &crate::agent::Diagnostic, _: u64) -> Result<crate::agent::DiagnosticRead> {
+    fn diagnostic(
+        &self,
+        _: &crate::agent::Diagnostic,
+        _: u64,
+    ) -> Result<crate::agent::DiagnosticRead> {
         Err(Error::Pending)
     }
 }
@@ -157,7 +161,9 @@ impl View {
             wants.push(Want::Range {
                 stream: crate::agent::Diagnostic::stream_path(agent, &digest)?,
                 from: first,
-                to: first.checked_add(2).ok_or(Error::Invalid("diagnostic cursor overflow"))?,
+                to: first
+                    .checked_add(2)
+                    .ok_or(Error::Invalid("diagnostic cursor overflow"))?,
             });
             return Ok(wants);
         }
@@ -256,7 +262,11 @@ impl View {
                 return Err(Error::Invalid("unknown diagnostic directory").into());
             };
             if cursor == 0 {
-                emit(NodeRef { name, directory, agent: None })?;
+                emit(NodeRef {
+                    name,
+                    directory,
+                    agent: None,
+                })?;
             }
             return Ok(None);
         }
@@ -428,7 +438,9 @@ impl View {
                         outcome: crate::agent::AgentOutcome::Succeeded { .. },
                     } => "✓",
                     Phase::Done {
-                        outcome: crate::agent::AgentOutcome::Failed { .. } | crate::agent::AgentOutcome::FailedDiagnostic { .. },
+                        outcome:
+                            crate::agent::AgentOutcome::Failed { .. }
+                            | crate::agent::AgentOutcome::FailedDiagnostic { .. },
                     } => "✗",
                     Phase::Done { .. } => "■",
                 }
@@ -560,15 +572,21 @@ fn status(cut: &impl Cut, root: &str, sink: &mut impl Write) -> Result<()> {
             "Waiting for approval\n\n```input choose id=approval approval={}\n- allow once\n- allow rule\n- deny\n```",
             id.as_str()
         ),
-        Phase::WaitingUser { path } => writeln!(sink, "Waiting for your reply: [{path}]({root}{path})"),
+        Phase::WaitingUser { path } => {
+            writeln!(sink, "Waiting for your reply: [{path}]({root}{path})")
+        }
         Phase::Idle => sink.write_all(b"Idle\n"),
         Phase::Running => sink.write_all(b"Running\n"),
         Phase::WaitingHost { .. } => sink.write_all(b"Waiting for host\n"),
         Phase::Waiting { input: true, .. } => sink.write_all(b"Waiting for input or alarm\n"),
         Phase::Waiting { .. } => sink.write_all(b"Waiting\n"),
-        Phase::Done { outcome: crate::agent::AgentOutcome::FailedDiagnostic { diagnostic } } => writeln!(sink,
+        Phase::Done {
+            outcome: crate::agent::AgentOutcome::FailedDiagnostic { diagnostic },
+        } => writeln!(
+            sink,
             "Failed\n\n[Read complete diagnostic]({root}diagnostics/{}/0.md)",
-            blake3::Hash::from_bytes(diagnostic.digest).to_hex()),
+            blake3::Hash::from_bytes(diagnostic.digest).to_hex()
+        ),
         Phase::Done { .. } => sink.write_all(b"Done\n"),
     }?;
     Ok(())
@@ -577,13 +595,15 @@ fn status(cut: &impl Cut, root: &str, sink: &mut impl Write) -> Result<()> {
 fn diagnostic_source(cut: &impl Cut) -> Result<Cow<'_, crate::agent::Diagnostic>> {
     match cut.status()? {
         Cow::Borrowed(status) => match &status.phase {
-            Phase::Done { outcome: crate::agent::AgentOutcome::FailedDiagnostic { diagnostic } }
-                if diagnostic.agent == *cut.agent() => Ok(Cow::Borrowed(diagnostic)),
+            Phase::Done {
+                outcome: crate::agent::AgentOutcome::FailedDiagnostic { diagnostic },
+            } if diagnostic.agent == *cut.agent() => Ok(Cow::Borrowed(diagnostic)),
             _ => Err(Error::Invalid("selected agent has no published diagnostic")),
         },
         Cow::Owned(status) => match status.phase {
-            Phase::Done { outcome: crate::agent::AgentOutcome::FailedDiagnostic { diagnostic } }
-                if diagnostic.agent == *cut.agent() => Ok(Cow::Owned(diagnostic)),
+            Phase::Done {
+                outcome: crate::agent::AgentOutcome::FailedDiagnostic { diagnostic },
+            } if diagnostic.agent == *cut.agent() => Ok(Cow::Owned(diagnostic)),
             _ => Err(Error::Invalid("selected agent has no published diagnostic")),
         },
     }
