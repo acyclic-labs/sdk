@@ -23,7 +23,6 @@ mod retry;
 mod subscriptions;
 
 mod conditional;
-mod placement;
 mod scheduling;
 
 fn root() -> Result<StreamPath, StreamError> {
@@ -305,7 +304,10 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
 
 async fn memory_backend() -> Result<LocalTarget<Counted<MemoryStream>>, Box<dyn std::error::Error>>
 {
-    let provider = Counted::new(MemoryStream::default());
+    // The authority's alarm rule is part of the provider under test.
+    let memory = MemoryStream::default();
+    memory.install_commit_admission(crate::local::alarm_admission())?;
+    let provider = Counted::new(memory);
     let requests = provider.ledger();
     Ok(LocalTarget::start(
         &Arc::new(provider),
@@ -351,7 +353,9 @@ impl Target for DurableBackend {
 
 async fn durable_backend() -> Result<DurableBackend, Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let provider = Counted::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let local = LocalStream::open(directory.path(), Default::default()).await?;
+    local.install_commit_admission(crate::local::alarm_admission())?;
+    let provider = Counted::new(local);
     let requests = provider.ledger();
     let provider = Arc::new(provider);
     Ok(DurableBackend {
@@ -662,6 +666,109 @@ async fn reservation_package_commits_over_strict_wire_and_cleans_up_on_reopen() 
         return Err("cleanup did not restore capacity".into());
     };
     assert!(next_grant.generation() > grant.generation());
+    Ok(())
+}
+
+/// Deletion is terminal and directly reachable: one conditional write at the
+/// actor's own path, no scan. It fences the running owner, after which no
+/// placement, claim, control write, second deletion or re-creation succeeds,
+/// and every scheduling entry that still names the actor resolves.
+#[tokio::test]
+async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
+    let provider = Arc::new(Counted::new(MemoryStream::default()));
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let actor = spawn_with(&store, "deleted", &[b"set 60000"]).await?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
+    runtime.track(actor.clone())?;
+    runtime.drain_actor(&actor).await?;
+    let live = store.load(&actor).await?;
+    assert!(
+        live.state()
+            .and_then(|state| state.alarm().pending())
+            .is_some()
+    );
+
+    let before = provider.requests();
+    store
+        .submit(store.delete(&live, key("delete")?).await?)
+        .await?;
+    let work = provider.requests().since(before);
+    assert_eq!(work.data() + work.control(), 1, "one conditional write");
+    let deleted = store.load(&actor).await?;
+    let state = deleted.state().cloned().ok_or("deleted state")?;
+    assert!(state.deleted() && state.paused());
+    assert!(state.alarm().pending().is_none() && state.subscriptions().is_empty());
+
+    // The running owner finds nothing to do, and its next write is fenced.
+    runtime.drain_actor(&actor).await?;
+    assert!(matches!(
+        runtime.place(actor.clone(), 2).await,
+        Err(Error::Deleted)
+    ));
+    assert!(matches!(
+        store.claim(&deleted, 2, key("claim")?).await,
+        Err(Error::Conflict)
+    ));
+    assert!(matches!(
+        store
+            .set_paused(&deleted, state.epoch(), false, key("resume")?)
+            .await,
+        Err(Error::Conflict)
+    ));
+    assert!(matches!(
+        store.delete(&deleted, key("again")?).await,
+        Err(Error::Deleted)
+    ));
+    let mut again = PreparedPublish::foreign(key("recreate")?);
+    again.join(store.create(
+        None,
+        &actor,
+        crate::local::Creation {
+            subscriptions: BTreeMap::new(),
+            checkpoint: Some(ledger("out/deleted")?),
+            escrow: None,
+        },
+    )?)?;
+    assert!(store.submit(again).await.is_err());
+    assert_eq!(store.load(&actor).await?.state(), Some(&state));
+    assert!(records(provider.as_ref(), "out/deleted").await?.is_empty());
+    assert_eq!(
+        crate::local::tests::orphans(&store, &[actor]).await?,
+        Vec::<String>::new()
+    );
+    Ok(())
+}
+
+/// An event host under external placement never claims on a wake: only the
+/// placement owner's explicit command admits it, and then the wake delivers.
+#[tokio::test]
+async fn an_externally_placed_event_host_serves_only_after_its_command() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "external-host", &[b"emit"]).await?;
+    let host = crate::hosting::Host::new(
+        Store::new(Arc::clone(&provider), root()?),
+        address.clone(),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+        RuntimeLimits::new(1, 1)?,
+    )
+    .with_external_placement();
+    assert!(matches!(host.wake().await, Err(Error::Conflict)));
+    assert_eq!(
+        store.load(&address).await?.state().map(State::epoch),
+        Some(0)
+    );
+    host.place(1).await?;
+    assert_eq!(host.wake().await?, None);
+    assert_eq!(
+        records(provider.as_ref(), "out/external-host").await?.len(),
+        1
+    );
     Ok(())
 }
 

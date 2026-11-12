@@ -52,10 +52,7 @@ impl MemoryStream {
                 receipt.destination.as_str() == prefix
             })?;
         let retained = self.reserve_retained(state)?;
-        let time = crate::preparation::committed_time(
-            state.last_committed_at_micros,
-            self.commit_clock.now_unix_millis(),
-        );
+        let time = self.admitted_time(state, [])?;
         bind_envelope(&mut envelope, commit_id, time);
         let mut namespace = stage_namespace(
             state,
