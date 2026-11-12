@@ -569,8 +569,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         for agent in woken {
             effects.push(
                 self.agents
-                    .wake(&Agents::<P>::actor(&delivery.actor, &agent)?)
-                    .map_err(guest)?,
+                    .wake(&Agents::<P>::actor(&delivery.actor, &agent)?)?,
             );
         }
         let alarm = step.alarm;

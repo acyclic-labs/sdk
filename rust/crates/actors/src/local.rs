@@ -763,6 +763,33 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         )
     }
 
+    /// Load several actors at one authority snapshot: one request for any count.
+    pub async fn load_all(&self, actors: &[ActorReference]) -> Result<Vec<Snapshot>, Error> {
+        let paths = actors
+            .iter()
+            .map(|actor| self.path(actor))
+            .collect::<Result<acyclic_stream::HeadSet<_>, _>>()?;
+        let request = acyclic_stream::HeadsRequest {
+            retained: Default::default(),
+            durable_through: None,
+            projection: acyclic_stream::HeadProjection::History,
+            limit: u32::try_from(paths.len())
+                .map_err(|_| Error::Invalid("too many actors in one load"))?
+                .max(1),
+            paths,
+            children: None,
+            at_least: Default::default(),
+        };
+        let view = self.provider.heads(request.clone()).await?;
+        view.validate_for(&request)?;
+        request
+            .paths
+            .into_iter()
+            .zip(view.heads)
+            .map(|(path, head)| Snapshot::from_head(path, head))
+            .collect()
+    }
+
     async fn load_path(&self, path: StreamPath) -> Result<Snapshot, Error> {
         let head = self.head(&path).await?;
         Snapshot::from_head(path, head)
