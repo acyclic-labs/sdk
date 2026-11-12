@@ -38,8 +38,9 @@ pub enum LaunchFailure<H> {
         /// The original handler, already retired with cleanup completed.
         handler: H,
     },
-    /// The original owner rejected the launch before spawn. Preserve its
-    /// typed error, including cancellation and a dropped control producer.
+    /// The original owner, or the execution grant's preparation, rejected the
+    /// launch before spawn. Preserve its typed error, including cancellation,
+    /// a dropped control producer and an execution refusal.
     Control {
         /// The owner's original error.
         error: io::Error,
@@ -264,12 +265,17 @@ impl CaptureRequest {
                 return Ok(owner.answered(CaptureOutcome::new(handler, result)));
             }
         }
-        let tree = match (&self.execution_grant, &self.custody) {
-            (Some(grant), custody) => {
-                ProcessTree::spawn_granted(command, grant, custody.as_deref())
-            }
-            (None, Some(custody)) => ProcessTree::spawn_in_custody(&mut command, custody),
-            (None, None) => ProcessTree::spawn(&mut command),
+        // Grant preparation precedes spawn: its refusal is definitive and
+        // keeps its typed cause. Only the spawn itself can be indeterminate.
+        if let Some(grant) = &self.execution_grant
+            && let Err(error) = ProcessTree::prepare_granted(&mut command, grant, None)
+        {
+            pump::retire(&mut handler, true, Some(&error));
+            return Err(LaunchFailure::Control { error, handler });
+        }
+        let tree = match &self.custody {
+            Some(custody) => ProcessTree::spawn_in_custody(&mut command, custody),
+            None => ProcessTree::spawn(&mut command),
         };
         let tree = match tree {
             Ok(tree) => tree,
