@@ -5,6 +5,7 @@ use crate::{
     BlockKind, TranscriptRows,
     key_event::{KeyCode, KeyEvent, KeyModifiers},
 };
+use acyclic_test_support::scale::{Bound, assert_scales};
 
 #[derive(Debug, PartialEq, Eq)]
 struct Work {
@@ -93,10 +94,18 @@ fn scene(length: usize, width: u16, height: u16, rewrap: bool, scan: bool) -> [W
 fn independent_of_history(width: u16, height: u16, rewrap: bool, scan: bool) {
     let small = scene(100, width, height, rewrap, scan);
     let large = scene(10_000, width, height, rewrap, scan);
-    assert_eq!(
-        small, large,
-        "input/delta paint work grew with retained history"
-    );
+    for (before, after) in small.iter().zip(&large) {
+        assert_scales(
+            Bound::Constant,
+            (100, before.rows as u64),
+            (10_000, after.rows as u64),
+        );
+        assert_scales(
+            Bound::Constant,
+            (100, before.wrapped_bytes as u64),
+            (10_000, after.wrapped_bytes as u64),
+        );
+    }
     for work in large {
         assert!(
             work.rows <= usize::from(height),
@@ -117,7 +126,7 @@ fn rejects_each_viewport(rewrap: bool, scan: bool) {
             .or_else(|| rejection.downcast_ref::<&str>().copied())
             .unwrap_or("non-text panic");
         assert!(
-            message.contains("input/delta paint work grew with retained history"),
+            message.contains("counted work exceeded Constant"),
             "unexpected failure at {width}x{height}: {message}"
         );
     }

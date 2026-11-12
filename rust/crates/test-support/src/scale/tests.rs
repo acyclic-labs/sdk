@@ -5,6 +5,44 @@ use proptest::prelude::*;
 const RECOVERY: &str = "cargo test -p acyclic-test-support scale::tests";
 const OPERATIONS: [Operation; 1] = [Operation::ObjectHead];
 
+proptest! {
+    #[test]
+    fn pairwise_linear_bound_detects_one_extra_count(
+        input in 1_u64..=u64::from(u32::MAX),
+        factor in 2_u64..=16,
+        rate in 1_u64..=u64::from(u16::MAX),
+    ) {
+        let small = (input, input * rate);
+        let large = (input * factor, input * factor * rate);
+        assert_scales(Bound::Linear, small, large);
+        prop_assert!(std::panic::catch_unwind(|| {
+            assert_scales(Bound::Linear, small, (large.0, large.1 + 1));
+        }).is_err(), "linear bound accepted one extra count");
+        // Choosing the constant branch for a linear bound must be detected too.
+        prop_assert!(std::panic::catch_unwind(|| {
+            assert_scales(Bound::Constant, small, large);
+        }).is_err(), "constant bound accepted proportional growth");
+    }
+}
+
+#[test]
+fn pairwise_bounds_reject_invalid_input_sizes() {
+    for bound in [Bound::Constant, Bound::Linear] {
+        for (small, large) in [(0, 1), (0, 0), (1, 1), (2, 1), (1, 0)] {
+            let panic = std::panic::catch_unwind(|| {
+                assert_scales(bound, (small, 0), (large, 0));
+            })
+            .expect_err("invalid sizes must be rejected even for zero measured work");
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .expect("assertion diagnostic");
+            assert!(message.contains("require increasing positive inputs"));
+        }
+    }
+}
+
 // These observations are inputs to the shipped report checker, not a model of
 // provider operations or a claim about their physical work and progress.
 fn observed(values: &[Vec<u64>; 3], metric: usize, operation: Operation) -> Report {
