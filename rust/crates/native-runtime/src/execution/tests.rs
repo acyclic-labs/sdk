@@ -115,10 +115,8 @@ fn sandbox_policy() {
             if confined {
                 let failure = captured.unwrap_err();
                 assert!(
-                    failure
-                        .error
-                        .get_ref()
-                        .is_some_and(|cause| cause.is::<ExecutionViolation>()),
+                    matches!(failure.error.get_ref().and_then(|cause| cause.downcast_ref::<ExecutionViolation>()),
+                        Some(ExecutionViolation::Syscall { number }) if i64::from(*number) == libc::SYS_socket),
                     "{failure:?}"
                 );
                 assert!(failure.cleanup_completed);

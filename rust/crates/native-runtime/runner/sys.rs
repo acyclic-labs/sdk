@@ -808,7 +808,7 @@ pub fn notification_transfer(socket: Fd, listener: Option<Fd>) -> Result<Fd, Err
 
 /// Reads the kernel's denied call, never a guest pointer. The task stays
 /// blocked until the warden terminates the tree; no syscall is continued.
-pub fn host_ipc_denial(listener: Fd) -> bool {
+pub fn syscall_denial(listener: Fd) -> Result<(i32, bool), Errno> {
     #[repr(C, align(8))]
     struct Notification([u8; 80]);
     let mut notification = Notification([0; 80]);
@@ -830,17 +830,17 @@ pub fn host_ipc_denial(listener: Fd) -> bool {
             )
         } {
             Err(Errno(EINTR)) => continue,
-            Err(_) => return false,
+            Err(error) => return Err(error),
             Ok(_) => break,
         }
     }
     let bytes = notification.0;
-    let syscall = usize::try_from(i32::from_ne_bytes([
-        bytes[16], bytes[17], bytes[18], bytes[19],
-    ]))
-    .ok();
+    let syscall = i32::from_ne_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
     let family = u64::from_ne_bytes([
         bytes[32], bytes[33], bytes[34], bytes[35], bytes[36], bytes[37], bytes[38], bytes[39],
     ]);
-    (syscall == Some(number::SOCKET) || syscall == Some(number::SOCKETPAIR)) && family == 1
+    let host_ipc = usize::try_from(syscall)
+        .is_ok_and(|call| call == number::SOCKET || call == number::SOCKETPAIR)
+        && family == 1;
+    Ok((syscall, host_ipc))
 }
