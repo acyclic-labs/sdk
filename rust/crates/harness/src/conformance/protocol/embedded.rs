@@ -11,7 +11,7 @@ use acyclic_harness_core::{
     conversation::Limits,
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{Grants, PRIVATE_VOLUME, TurnLimits},
-    model::{Model, ModelDispatch, ModelProvider, PreparedModelRequest},
+    model::{ModelDispatch, ModelProvider, PreparedModelRequest},
     preset::Preset,
     tool::{JsonToolProjection, Tool, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
 };
@@ -136,16 +136,15 @@ pub async fn open<B: Backend + ?Sized>(
         &mut None,
         None,
     )?;
+    let (model, models) = crate::conformance::fixtures::models(Arc::new(Scripted))?;
     let executors = crate::filesystem::StockExecutors::new(
-        (
-            Model::new("conformance".into(), "scripted".into(), "1".into())?,
-            Arc::new(Scripted),
-        ),
+        model,
         tools,
         (Limits::default(), CompactionPolicy::Disabled),
         Arc::new(Grants(vec![format!("tool:call:{TOOL}")])),
     )
-    .with_templates();
+    .with_templates()
+    .with_models(models);
     let bound = Bound::admitted(
         issuer,
         VerifiedCaller { audience, scope },

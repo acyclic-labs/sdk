@@ -88,6 +88,24 @@ pub fn request(id: &str) -> Result<InboxRecord> {
     }))
 }
 
+/// Route role-selected models through the fixture's original deterministic provider.
+pub(super) fn models(
+    provider: Arc<dyn crate::model::ModelProvider>,
+) -> crate::Result<(crate::model::ModelBinding, Arc<crate::model::ModelResolver>)> {
+    let model = crate::model::Model::new("conformance".into(), "scripted".into(), "1".into())?;
+    let selected = provider.clone();
+    let models = crate::model::ModelResolver::new("conformance/scripted", move |selection| {
+        let (family, name) = selection
+            .split_once('/')
+            .ok_or_else(|| crate::Error::Invalid("expected fixture provider/model".into()))?;
+        Ok((
+            crate::model::Model::new(family.into(), name.into(), "1".into())?,
+            selected.clone(),
+        ))
+    });
+    Ok(((model, provider), Arc::new(models)))
+}
+
 pub(super) fn entry(
     agent: &AgentState,
     queued: Queued,

@@ -7,7 +7,6 @@ use acyclic_harness_core::{
         Grants, StockExecutors,
         hosting::{Bound, Placement, RootRequest, RootSubmission, Turns},
     },
-    model::Model,
     test_support::{ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
 };
@@ -37,17 +36,17 @@ impl Fixture {
         )?;
         let objects = storage.objects().await?;
         let capabilities = objects.capabilities;
+        let (model, models) =
+            crate::conformance::fixtures::models(Arc::new(ScriptedModelProvider::new([
+                ScriptedTurn::Text("history".into()),
+            ])))?;
         let executors = StockExecutors::new(
-            (
-                Model::new("conformance".into(), "scripted".into(), "1".into())?,
-                Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
-                    "history".into(),
-                )])),
-            ),
+            model,
             ToolRegistry::default(),
             (Limits::default(), CompactionPolicy::Disabled),
             Arc::new(Grants(Vec::new())),
-        );
+        )
+        .with_models(models);
         let bound = Bound::local_root(
             AuthorityRoot::new(
                 "conformance",
