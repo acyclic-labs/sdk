@@ -38,3 +38,13 @@ volume or host configuration. Text matching is not a substitute for custody.
 Agents may pull cases, inspect original decisions and outcomes, and propose an
 ordinary `skills/<name>/SKILL.md` write for review through `ui/`. Cases are never
 automatically inserted into model context.
+
+Scope export composes the existing immutable filesystem operations. Resolve the
+selected original context/outcome generations with current authority, then use
+`ForkOptions::from_generation(...).inherit_paths(...)` to select only the scope's
+files. Export the selected fork's pinned checkout using `export_manifest` and
+page its canonical closure with `export_generation_batch`. Do not export the
+unfiltered source manifest: a post-export filename filter cannot remove bodies
+already present in a transfer closure. Selection uses the original pinned
+generation even when the source changes concurrently. Parent generation IDs are
+provenance; omitted parents' file bodies are not part of the selected closure.
