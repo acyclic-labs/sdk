@@ -56,6 +56,21 @@ test("renderState includes task, diff, and probe", () => {
   writeFileSync(join(base, "a.py"), "def add(a, b):\n    return a - b\n"); writeFileSync(join(fork, "a.py"), "def add(a, b):\n    return a + b\n");
   const s = renderState("fix add", base, [{ fork: { id: "1", path: fork, base: "", label: "A" }, model: "m", changes: [{ status: "M", path: "a.py" }], probe: "1 passed" }], 12, 2000);
   assert.match(s, /^Task:\nfix add/); assert.match(s, /=== fork A \(m\)/); assert.match(s, /-    return a - b/); assert.match(s, /\+    return a \+ b/); assert.match(s, /1 passed/);
+  const changes = Array.from({ length: 13 }, (_, i) => ({ status: "M", path: `file-${i}.txt` }));
+  for (const { path } of changes) {
+    writeFileSync(join(base, path), "before\n");
+    writeFileSync(join(fork, path), "x".repeat(2001) + "complete-diff-tail\n");
+  }
+  const reports = [{ fork: { id: "1", path: fork, base: "", label: "A" }, model: "m", changes, probe: "complete-probe-tail", worker: { ok: false, error: "e".repeat(201) + "complete-error-tail" } }];
+  const complete = renderState("all changes", base, reports);
+  assert.match(complete, /file-12\.txt/);
+  assert.equal(complete.match(/complete-diff-tail/g)?.length, 13);
+  assert.match(complete, /complete-probe-tail/);
+  assert.match(complete, /complete-error-tail/);
+  const excerpt = renderState("selected excerpt", base, reports, 2, 80);
+  assert.match(excerpt, /11 more/);
+  assert.match(excerpt, /chars\)/);
+  assert.doesNotMatch(excerpt, /file-12\.txt/);
 });
 
 test("board aggregates wins, safety, tests, cost, and derives routing", () => {
