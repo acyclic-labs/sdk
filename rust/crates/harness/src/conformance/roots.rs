@@ -1,7 +1,7 @@
 //! Admitted root preparation: one placement builds the agents and their
 //! volumes, and a root's fresh volumes and adoption are one commit prepared
-//! without stream IO. An admission that does not cover the root is refused
-//! before any provider read or write.
+//! without stream IO. Workload volumes retain the admission's ceiling. Native
+//! custody owns the hidden journal; an admitted port must grant it explicitly.
 use crate::conformance::{Backend, Result, observe::Observed, vectors};
 use acyclic_actors::{addressing::ActorReference, local::SystemClock};
 use acyclic_harness_core::{
@@ -45,6 +45,7 @@ enum Case {
     ReadOnlyPrivate,
     ReadOnlyShared,
     ReadOnlyJournal,
+    NativeJournalCustody,
     WrongAudience,
     OtherAgent,
     Expired,
@@ -61,6 +62,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         Case::ReadOnlyPrivate,
         Case::ReadOnlyShared,
         Case::ReadOnlyJournal,
+        Case::NativeJournalCustody,
         Case::WrongAudience,
         Case::OtherAgent,
         Case::Expired,
@@ -139,7 +141,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
                 .capability(VolumeOperation::Write, &mut None)?,
         );
     }
-    if case != Case::ReadOnlyJournal {
+    if !matches!(case, Case::ReadOnlyJournal | Case::NativeJournalCustody) {
         grants.push(journal.capability(VolumeOperation::Write, &mut None)?);
     }
     if case == Case::StructuredPrivateOnly {
@@ -175,29 +177,51 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
     let capabilities = objects.capabilities;
     let objects = Counted::new(objects.into_store(storage.as_ref())?);
     let object_requests = objects.ledger();
-    let bound = Bound::admitted(
-        issuer,
-        VerifiedCaller { audience, scope },
-        Placement {
-            filesystem: acyclic_fs::Fs::new(
-                acyclic_fs::StreamAuthorityStore::new(stream.clone()),
-                objects,
-                capabilities,
-            ),
-            provider: private.volume()?.provider().clone(),
-            within: ActorReference::new(b"conformance", b"agents", b"host")?,
+    let placement = Placement {
+        filesystem: acyclic_fs::Fs::new(
+            acyclic_fs::StreamAuthorityStore::new(stream.clone()),
+            objects,
+            capabilities,
+        ),
+        provider: private.volume()?.provider().clone(),
+        within: ActorReference::new(b"conformance", b"agents", b"host")?,
+    };
+    let turns = Turns {
+        executors: Arc::new(Never),
+        limits: TurnLimits {
+            maximum_bytes: 64 * 1024,
+            history_turns: 8,
         },
-        Turns {
-            executors: Arc::new(Never),
-            limits: TurnLimits {
-                maximum_bytes: 64 * 1024,
-                history_turns: 8,
+        actors: vectors::limits()?,
+        clock: Arc::new(SystemClock),
+        approval_policy: Default::default(),
+    };
+    let (_running, stopped) = futures::channel::oneshot::channel::<()>();
+    let bound = if case == Case::ReadOnlyJournal {
+        // The same native issuer stays behind its admitted operation port.
+        // This is not native enrollment: only the original caller's grant
+        // can authorize journal creation, even though it has the host role.
+        let context = acyclic_auth::operation::Context::from_stopped(
+            issuer
+                .verifier(&mut None)?
+                .expiry(&scope)?
+                .saturating_mul(1000),
+            async move {
+                let _ = stopped.await;
+                acyclic_auth::operation::Stopped::Cancelled
             },
-            actors: vectors::limits()?,
-            clock: Arc::new(SystemClock),
-            approval_policy: Default::default(),
-        },
-    )?;
+        );
+        Bound::platform_admitted(
+            acyclic_harness_core::core::RuntimeAuthority::admitted(
+                issuer.admit(scope, context)?,
+                OperationId::from_bytes([9; 16]),
+            ),
+            placement,
+            turns,
+        )?
+    } else {
+        Bound::admitted(issuer, VerifiedCaller { audience, scope }, placement, turns)?
+    };
     let request = || RootRequest {
         peer: true,
         agent: agent.clone(),
@@ -224,7 +248,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         return Err(format!("{case:?}: root preparation performed provider IO").into());
     }
     match (case, prepared) {
-        (Case::Covering, Ok(first)) => {
+        (Case::Covering | Case::NativeJournalCustody, Ok(first)) => {
             let again = bound.prepare_root(&intent, request()).await?;
             if again.request() != first.request() {
                 return Err("root preparation is not exact".into());
@@ -250,7 +274,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
             }
             Ok(())
         }
-        (Case::Covering, Err(error)) => {
+        (Case::Covering | Case::NativeJournalCustody, Err(error)) => {
             Err(format!("covering admission was refused: {error}").into())
         }
         (_, Ok(_)) => Err(format!("{case:?}: admission prepared a root it does not cover").into()),
