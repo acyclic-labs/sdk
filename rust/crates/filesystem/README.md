@@ -10,6 +10,13 @@ cargo add acyclic-fs
 
 Choose the backend for your deployment: embedded storage for local durability, hosted authority and Objects for a remote workspace, or embedded native mount integration. Transactions stage edits before commit; forks branch from a generation. The provider determines persistence, isolation, and mount guarantees.
 
+Named attributes include an `annotation` class for application metadata stored
+in the authenticated object tree. Annotations use the same sparse attribute
+index, mutations, generations and retention as native attributes. Native mounts
+and materialization never expose their names or fetch their values; ordinary
+native attributes with identical names remain independent. This provides a home
+for application metadata without reserving filenames or writing OS attributes.
+
 For GraphCoder in stock Docker or an RL sandbox without native mount authority,
 select plain directories explicitly with `--workspace-mounting physical`; run
 `graphcoder --workspace-mounting physical doctor` with the same provider flags
