@@ -208,25 +208,11 @@ impl ModelRequest {
                     )?;
                     if notice.body.get("complete").and_then(Value::as_bool) == Some(true) {
                         *open = false;
-
-                        let funded = io
-                            .map(|io| {
-                                io.decode(
-                                    std::marker::PhantomData::<Vec<crate::tool::ToolDefinition>>,
-                                    fragments.as_bytes(),
-                                    Storage,
-                                )
-                            })
-                            .transpose()?;
-                        let table = match funded {
-                            Some((table, hold)) => {
-                                hold.into_retained()?;
-                                table
-                            }
-                            None => serde_json::from_str(fragments).map_err(|_| {
-                                Error::Invalid("tool notice schemas are invalid".into())
-                            })?,
-                        };
+                        let table = crate::executor::decode_tool_table(
+                            fragments.as_bytes(),
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                        )?;
                         crate::executor::stock_vec_push(
                             &mut tables,
                             (index, notice.kind == "tools.bound", table),

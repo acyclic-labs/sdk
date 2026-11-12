@@ -277,7 +277,7 @@ where
         operation: OperationId,
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
-    ) -> Result<Option<ModelEvent>> {
+    ) -> Result<(Option<ModelEvent>, Option<u64>)> {
         #[cfg(not(target_arch = "wasm32"))]
         let recheck = io
             .and_then(PreparationIo::original_native_work)
@@ -290,6 +290,26 @@ where
         let result = async {
             let io = check_io;
             let refs = match event {
+                ExecutionEvent::Progress { publication } => {
+                    crate::executor::with_history_io(io, |work| publication.validate(work))?;
+                    use crate::resources::ResourceKind;
+                    if !matches!(
+                        publication.kind(),
+                        ResourceKind::Generation
+                            | ResourceKind::Artifact
+                            | ResourceKind::Checkpoint
+                            | ResourceKind::Context
+                    ) && !(publication.kind() == ResourceKind::Stream
+                        && publication.version().is_some())
+                    {
+                        return Err(canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "progress must name an immutable publication",
+                        ));
+                    }
+                    [None, None, None]
+                }
                 ExecutionEvent::ConversationItem {
                     envelope: projection,
                     ..
@@ -312,6 +332,7 @@ where
                 | ExecutionEvent::ModelInline { .. }
                 | ExecutionEvent::ModelWait { .. }
                 | ExecutionEvent::ModelStopped { .. }
+                | ExecutionEvent::ModelOutput { .. }
                 | ExecutionEvent::ToolFailed { .. } => [None, None, None],
             };
             let mut model = match event {
@@ -415,6 +436,7 @@ where
                     });
                 }
             }
+            let mut usd_nanos = None;
             if let ExecutionEvent::Model {
                 step,
                 purpose,
@@ -446,12 +468,31 @@ where
                     })?,
                     io,
                 )?;
+                let price = self.run_admission.as_ref().and_then(|admission| {
+                    admission
+                        .value
+                        .prices
+                        .get(&record.0.provider)?
+                        .get(&record.0.model)
+                });
+                usd_nanos = record
+                    .0
+                    .estimate(price)
+                    .map_err(|_| {
+                        canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "usage price differs from its admitted binding",
+                        )
+                    })?
+                    .estimated_cost
+                    .token_nano_units;
             }
-            Ok(model)
+            Ok((model, usd_nanos))
         }
         .await;
         #[cfg(not(target_arch = "wasm32"))]
-        if let (Ok(model), Some(recheck), Some(io)) = (&result, recheck, io) {
+        if let (Ok((model, _)), Some(recheck), Some(io)) = (&result, recheck, io) {
             let held = model
                 .as_ref()
                 .map_or(Ok(0), ModelEvent::logical_owned_bytes)?;

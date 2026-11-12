@@ -148,9 +148,9 @@ impl From<FsError> for MountSourceError {
 
 mod runtime;
 pub(super) use crate::heap_future::native_future;
-pub use runtime::initialize_native_mount_services;
 use runtime::invoke;
 pub(super) use runtime::{CallbackRuntime, PreparedCallbackWait};
+pub use runtime::{initialize_native_mount_services, initialize_native_source_services};
 mod source_io;
 pub(super) use source_io::CaptureProducer;
 pub use source_io::NativeSourceIoLease;

@@ -306,7 +306,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work: W,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
-        self.compare_file(original, path, false, false, work, cancellation)
+        self.compare_file(original, path, false, false, None, work, cancellation)
+    }
+
+    /// Compares optional regular-file bytes independently of storage layout.
+    /// Matching absence is equal; creation or removal differs. Shared chunks
+    /// skip body reads; partial chunks retain the same bounded byte admission
+    /// as `matches_content`. Metadata-only changes do not affect equality.
+    pub fn matches_optional_content<W: crate::facade::FsWork>(
+        &self,
+        original: &Self,
+        path: &str,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
+        self.compare_file(original, path, false, true, None, work, cancellation)
     }
 
     /// Compares the exact file identity, kind and payload without reading bodies.
@@ -318,7 +332,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work: W,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
-        self.compare_file(original, path, true, false, work, cancellation)
+        self.compare_file(original, path, true, false, None, work, cancellation)
     }
 
     /// Compares an optional file's exact identity, kind and payload without
@@ -331,7 +345,29 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work: W,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
-        self.compare_file(original, path, true, true, work, cancellation)
+        self.compare_file(original, path, true, true, None, work, cancellation)
+    }
+
+    /// Compare exactly the first `bytes` of two regular files, independently
+    /// of storage layout. Both must contain the complete prefix. Shared chunks
+    /// skip body reads; partial chunks use the caller's bounded byte admission.
+    pub fn matches_content_prefix<W: crate::facade::FsWork>(
+        &self,
+        original: &Self,
+        path: &str,
+        bytes: u64,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
+        self.compare_file(
+            original,
+            path,
+            false,
+            false,
+            Some(bytes),
+            work,
+            cancellation,
+        )
     }
 
     async fn compare_file<W: crate::facade::FsWork>(
@@ -340,6 +376,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         path: &str,
         exact_payload: bool,
         allow_absent: bool,
+        prefix: Option<u64>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<bool, WorkspaceError> {
@@ -360,6 +397,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             path,
             exact_payload,
             allow_absent,
+            prefix,
             work,
             cancellation,
         )

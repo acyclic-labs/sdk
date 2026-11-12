@@ -1,7 +1,7 @@
 //! Fixed-width private checkpoint frames avoid decimal encoding of digests.
 use super::*;
 
-const STATE_BYTES: usize = 335;
+const STATE_BYTES: usize = 336;
 const FRAME_BYTES: usize = STATE_BYTES + 64;
 
 pub(super) fn state_bytes(
@@ -26,7 +26,7 @@ pub(super) fn state_bytes(
         cursor += value.len();
         Ok(())
     };
-    put(b"EXC6")?;
+    put(b"EXC8")?;
     put(&state.operation.into_bytes())?;
     put(&state.turn.into_bytes())?;
     put(&state.volume)?;
@@ -52,6 +52,7 @@ pub(super) fn state_bytes(
         None => put(&[0; 5])?,
     }
     put(&[u8::from(state.model_dispatched)])?;
+    put(&[u8::from(state.latest_response_output)])?;
     Ok(bytes)
 }
 
@@ -91,7 +92,7 @@ pub(super) fn decode(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Checkpo
     acyclic_auth::format::header(
         bytes,
         b"EXC",
-        b"6",
+        b"8",
         || missing(io),
         || {
             canonical_boundary(
@@ -147,6 +148,11 @@ pub(super) fn decode(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Checkpo
         [1] => true,
         _ => return Err(missing(io)),
     };
+    let latest_response_output = match take::<1>(&mut input, io)? {
+        [0] => false,
+        [1] if latest_response.is_some() => true,
+        _ => return Err(missing(io)),
+    };
     let proof = take(&mut input, io)?;
     Ok(Checkpoint {
         state: IndexState {
@@ -159,6 +165,7 @@ pub(super) fn decode(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Checkpo
             pending_dispatches,
             anchor,
             latest_response,
+            latest_response_output,
             model_dispatched,
         },
         proof,

@@ -322,6 +322,7 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
                 abandoned: Arc::clone(&pool.abandoned),
             },
             revisions: Arc::default(),
+            credential: 0,
         };
         let a = client.cursor(1, a_progress, receiver)?;
         let b_progress = Arc::clone(&pool.routes.get(&3).unwrap().progress);

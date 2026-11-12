@@ -14,8 +14,9 @@ use rustls::{
     },
 };
 use std::{sync::Arc, time::Duration};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
+use tonic::transport::server::TcpIncoming;
 
 /// A protective bound on one handshake, so a stalled peer cannot hold its
 /// connection open unverified; a live peer never comes near it.
@@ -63,22 +64,18 @@ pub(super) fn config(tls: &TlsIdentity) -> Result<rustls::ServerConfig> {
     Ok(config)
 }
 
-/// The connections `listener` accepts, each yielded once its handshake
+/// The accepted TCP connections, each yielded once its handshake
 /// under `config` completes. A failed handshake drops only its connection;
 /// handshakes run concurrently, so a slow peer delays no other.
 pub(super) fn incoming(
-    listener: TcpListener,
+    incoming: TcpIncoming,
     config: rustls::ServerConfig,
 ) -> impl Stream<Item = std::io::Result<TlsStream<TcpStream>>> {
     let acceptor = TlsAcceptor::from(Arc::new(config));
     let (sender, mut handshaken) = tokio::sync::mpsc::unbounded_channel();
-    let accepted = stream::unfold(listener, |listener| async {
-        let accepted = listener.accept().await;
-        Some((accepted, listener))
-    })
-    .filter_map(move |accepted| {
+    let accepted = incoming.filter_map(move |accepted| {
         future::ready(match accepted {
-            Ok((socket, _)) => {
+            Ok(socket) => {
                 let (acceptor, sender) = (acceptor.clone(), sender.clone());
                 acyclic_native_runtime::spawn(async move {
                     if let Ok(Ok(tls)) =

@@ -19,6 +19,8 @@ pub(crate) struct LazyPublicationCut {
     pub(crate) source: SourceReference,
     pub(crate) overlay: LazyOverlayId,
     pub(crate) shadows: LazyShadowId,
+    pub(crate) prior_overlay: LazyOverlayId,
+    pub(crate) prior_shadows: LazyShadowId,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -109,6 +111,51 @@ impl<
     S: LazyWorkspaceStore,
 > LazyWorkspace<A, O, D, S>
 {
+    /// Recover both logical cuts of an original native publication. The DATA
+    /// receipt owns the immutable generation and its exact predecessor; its sealed
+    /// context retains the prior overlay and identity shadows after cleanup.
+    /// Missing or collected evidence is refused, never replaced by the head.
+    pub async fn original_publication_cuts(
+        &self,
+        operation: crate::OperationId,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<(LazySnapshotRef, LazySnapshotRef)>, LazyWorkspaceError> {
+        let Some((publication, prior, digest)) =
+            self.load_original_publication(operation, None, ctx).await?
+        else {
+            return Ok(None);
+        };
+        let cut = match publication.context {
+            NativeSnapshotContext::Lazy(cut) | NativeSnapshotContext::Selected { cut, .. } => cut,
+            NativeSnapshotContext::Authored { .. } => {
+                return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
+            }
+        };
+        let after = publication
+            .lazy_snapshot(ctx)?
+            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+        let parent = self
+            .workspace
+            .volume
+            .fs
+            .workspace_generation_at_position(&self.workspace.volume, prior, digest, ctx)
+            .await?;
+        ctx.charge(WorkCounters {
+            bytes_hashed: LazySnapshotRef::hash_bytes(parent),
+            ..WorkCounters::UNCHARGED
+        })?;
+        let before = LazySnapshotRef::new(
+            cut.workspace_id,
+            parent,
+            cut.source,
+            cut.prior_overlay,
+            cut.prior_shadows,
+        );
+        self.validate_snapshot(before, ctx).await?;
+        self.validate_snapshot(after, ctx).await?;
+        Ok(Some((before, after)))
+    }
+
     /// Captures a publication view without rebinding or modifying companion state.
     pub async fn publication_snapshot(
         &self,
@@ -175,6 +222,8 @@ impl<
             Some(pending)
                 if state.source == cut.source
                     && pending.prepared_overlay == cut.overlay
+                    && cut.prior_overlay == pending.prior_overlay
+                    && cut.prior_shadows == pending.prior_shadows
                     && matches!(pending.kind, PendingLazyRemoveKind::Mounted { idempotency_key }
                     if idempotency_key.operation_id() == operation) =>
             {
@@ -235,6 +284,14 @@ impl<
             source: state.source,
             overlay: state.overlay,
             shadows: state.shadows,
+            prior_overlay: state
+                .pending_remove
+                .as_ref()
+                .map_or(state.overlay, |pending| pending.prior_overlay),
+            prior_shadows: state
+                .pending_remove
+                .as_ref()
+                .map_or(state.shadows, |pending| pending.prior_shadows),
         })
     }
 }

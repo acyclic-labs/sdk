@@ -83,10 +83,9 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
             assert_eq!(handler.active.load(Ordering::SeqCst), active);
             assert_eq!(handler.peak.load(Ordering::SeqCst), active);
             assert_eq!(
-                runtime
-                    .admission
+                runtime.admission[0]
                     .as_ref()
-                    .expect("explicit concurrency reservation")
+                    .expect("reserved work credit")
                     .available_permits(),
                 0
             );
@@ -107,10 +106,9 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
         }
         assert_eq!(handler.active.load(Ordering::SeqCst), 0);
         assert_eq!(
-            runtime
-                .admission
+            runtime.admission[0]
                 .as_ref()
-                .expect("explicit concurrency reservation")
+                .expect("reserved work credit")
                 .available_permits(),
             active
         );
@@ -164,10 +162,9 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
         }
         assert_eq!(handler.active.load(Ordering::SeqCst), 0);
         assert_eq!(
-            runtime
-                .admission
+            runtime.admission[0]
                 .as_ref()
-                .expect("explicit concurrency reservation")
+                .expect("reserved work credit")
                 .available_permits(),
             active
         );
