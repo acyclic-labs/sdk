@@ -647,10 +647,9 @@ impl ToolExecutor for CheckoutTools {
                 .filter(|timeout| *timeout != 0)
                 .map(|timeout| admitted_unix_ms.saturating_add(u64::from(timeout)));
             let (started, launched) = tokio::sync::oneshot::channel();
-            let expiry = match (deadline_unix_ms, self.expiry_unix_ms) {
-                (Some(deadline), Some(expiry)) => Some(deadline.min(expiry)),
-                (deadline, expiry) => deadline.or(expiry),
-            };
+            let expiry = deadline_unix_ms.map_or(self.expiry_unix_ms, |deadline| {
+                deadline.min(self.expiry_unix_ms)
+            });
             let control = shell
                 .as_ref()
                 .map(|_| acyclic_native_runtime::ProcessControl::open(expiry))
@@ -684,27 +683,27 @@ impl ToolExecutor for CheckoutTools {
                 if let Err(error) = &result {
                     let terminal = serde_json::to_vec(&serde_json::json!({"error": error.to_string(), "indeterminate": error.leaves_outcome_uncertain()})).map_err(storage)?;
                     if let Err(cause) = output::writer::stage(&context, "result.json", &terminal, "application/json").await {
-                        tracing::error!(?cause, "background shell terminal publication failed");
+                        tracing::error!(?cause, "shell terminal publication failed");
                     }
                 }
                 result
             });
             tokio::pin!(task);
-            if !background {
-                return observe_until(deadline_unix_ms, self.clock.as_ref(), async {
-                    task.await.map_err(storage)?
-                })
-                .await;
-            }
-            tokio::select! {
-                result = &mut task => result.map_err(storage)?,
-                result = launched => {
-                    match result {
-                        Ok(result) => Ok(result),
-                        Err(_) => task.await.map_err(storage)?,
+            observe_until(deadline_unix_ms, self.clock.as_ref(), async {
+                if !background {
+                    return task.await.map_err(storage)?;
+                }
+                tokio::select! {
+                    result = &mut task => result.map_err(storage)?,
+                    result = launched => {
+                        match result {
+                            Ok(result) => Ok(result),
+                            Err(_) => task.await.map_err(storage)?,
+                        }
                     }
                 }
-            }
+            })
+            .await
         })
     }
 
