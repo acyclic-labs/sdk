@@ -15,6 +15,7 @@ struct Frame {
     sequence: u64,
     tail: Option<u64>,
     after: Option<StreamPath>,
+    content: Option<Vec<u8>>,
 }
 
 /// Immutable continuation for one literal subtree search. Cloning/replaying a
@@ -25,6 +26,7 @@ pub struct Cursor {
     pattern: Vec<u8>,
     at: Option<Revision>,
     frontier: Vec<Frame>,
+    matcher: Option<[u8; 32]>,
 }
 
 #[cfg(feature = "serde")]
@@ -32,23 +34,82 @@ mod codec;
 
 /// An addressable original record, without a second copy of its provenance.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Match {
+pub struct Match<T = ()> {
     /// Selected path, which can differ from the inherited record's origin.
     pub path: StreamPath,
     /// Original sequence, publication, origin and bytes.
     pub record: Record,
+    /// Exact linked source selected by the matcher, absent for record bytes.
+    pub source: Option<T>,
 }
 
 /// Results through one bounded work frontier. An empty page with `next` is
 /// progress, not exhaustion; a sparse query never scans to its next match.
 #[derive(Clone, Debug)]
-pub struct Page {
+pub struct Page<T = ()> {
     /// Matches in depth-first path order, then ascending record sequence.
-    pub matches: Vec<Match>,
+    pub matches: Vec<Match<T>>,
     /// Record inspections plus namespace observations charged to this page.
     pub work: u32,
     /// Continuation at the original cut, absent only when traversal is complete.
     pub next: Option<Cursor>,
+}
+
+/// One bounded inspection of an original record or its linked content.
+pub struct Step<T> {
+    /// Whether the literal occurred in this original source.
+    pub matched: bool,
+    /// Exact linked source identity, when the hit was outside the record bytes.
+    pub source: Option<T>,
+    /// Opaque progress within the same record; never an index of derived data.
+    pub next: Option<Vec<u8>>,
+}
+
+/// Shared adapters can resolve original linked files without a second traversal
+/// or index. Each step must bound its reads and retain source authorization.
+pub trait Matcher: crate::ProviderPlatform {
+    /// Address callers can open through the original content reader.
+    type Source: crate::ProviderTask;
+    /// Original typed source failure.
+    type Error: From<StreamError> + crate::ProviderTask;
+    /// Versioned matching semantics, bound into every continuation.
+    fn identity(&self) -> [u8; 32];
+    /// One bounded step. A continuation must advance; a match ends this record.
+    fn step<'a>(
+        &'a self,
+        record: &'a Record,
+        pattern: &'a [u8],
+        after: Option<&'a [u8]>,
+    ) -> impl std::future::Future<Output = Result<Step<Self::Source>, Self::Error>>
+    + crate::ProviderTask
+    + 'a;
+}
+
+/// The same literal byte predicate used by record and linked-content adapters.
+pub fn contains(bytes: &[u8], pattern: &[u8]) -> bool {
+    pattern.is_empty() || bytes.windows(pattern.len()).any(|bytes| bytes == pattern)
+}
+
+struct Raw;
+impl Matcher for Raw {
+    type Source = ();
+    type Error = StreamError;
+    fn identity(&self) -> [u8; 32] {
+        [0; 32]
+    }
+    fn step<'a>(
+        &'a self,
+        record: &'a Record,
+        pattern: &'a [u8],
+        _: Option<&'a [u8]>,
+    ) -> impl std::future::Future<Output = Result<Step<()>, StreamError>> + crate::ProviderTask + 'a
+    {
+        std::future::ready(Ok(Step {
+            matched: contains(record.value.as_slice(), pattern),
+            source: None,
+            next: None,
+        }))
+    }
 }
 
 impl Cursor {
@@ -64,11 +125,13 @@ impl Cursor {
         Self {
             pattern,
             at: None,
+            matcher: None,
             frontier: vec![Frame {
                 path: root,
                 sequence: 0,
                 tail: None,
                 after: None,
+                content: None,
             }],
         }
     }
@@ -86,8 +149,25 @@ impl Cursor {
         provider: &P,
         budget: NonZeroU32,
     ) -> Result<Page, StreamError> {
-        crate::memory::validate_limit(budget.get())?;
+        self.page_with(provider, budget, &Raw).await
+    }
+
+    /// The same cursor and paging mechanism over authorized linked content.
+    /// A step counts against the caller's budget even when it yields no hit.
+    pub async fn page_with<P: StreamProvider + ?Sized, M: Matcher>(
+        &self,
+        provider: &P,
+        budget: NonZeroU32,
+        matcher: &M,
+    ) -> Result<Page<M::Source>, M::Error> {
+        if self
+            .matcher
+            .is_some_and(|identity| identity != matcher.identity())
+        {
+            return Err(StreamError::InvalidArgument.into());
+        }
         let mut cursor = self.clone();
+        cursor.matcher = Some(matcher.identity());
         let mut matches = Vec::new();
         let mut work = 0;
         while work < budget.get() {
@@ -110,10 +190,11 @@ impl Cursor {
             }
             let tail = frame.tail.ok_or(StreamError::InvalidResponse)?;
             if frame.sequence < tail {
-                let count = u64::from(budget.get() - work).min(tail - frame.sequence) as u32;
+                let count = (budget.get() - work).min(crate::MAX_ITEMS as u32);
                 let at = cursor.at.clone().ok_or(StreamError::InvalidResponse)?;
-                matches.extend(scan(provider, frame, at, &cursor.pattern, count).await?);
-                work += count;
+                let batch = scan(provider, frame, at, &cursor.pattern, count, matcher).await?;
+                matches.extend(batch.matches);
+                work += batch.work;
                 continue;
             }
             let observed = observe(
@@ -139,6 +220,7 @@ impl Cursor {
                     sequence: 0,
                     tail: None,
                     after: None,
+                    content: None,
                 });
             } else if let Some(after) = children.next_after {
                 // Authorization can hide every child in a provider page.
@@ -155,43 +237,65 @@ impl Cursor {
     }
 }
 
-async fn scan<P: StreamProvider + ?Sized>(
+struct Scan<T> {
+    matches: Vec<Match<T>>,
+    work: u32,
+}
+
+async fn scan<P: StreamProvider + ?Sized, M: Matcher>(
     provider: &P,
     frame: &mut Frame,
     at: Revision,
     pattern: &[u8],
     count: u32,
-) -> Result<Vec<Match>, StreamError> {
+    matcher: &M,
+) -> Result<Scan<M::Source>, M::Error> {
+    let tail = frame.tail.ok_or(StreamError::InvalidResponse)?;
     let mut records = provider
         .read(ReadRequest {
             key: None,
             path: frame.path.clone(),
             from: frame.sequence,
-            limit: count,
+            limit: u64::from(count).min(tail - frame.sequence) as u32,
             at_least: RevisionCut::of(at),
         })
         .await?;
     let mut matches = Vec::new();
-    for _ in 0..count {
+    let mut work = 0;
+    while work < count && frame.sequence < tail {
         let record = records.try_next().await?.ok_or(StreamError::Unavailable)?;
         if record.sequence != frame.sequence {
-            return Err(StreamError::InvalidResponse);
+            return Err(StreamError::InvalidResponse.into());
         }
-        frame.sequence += 1;
-        if pattern.is_empty()
-            || record
-                .value
-                .as_slice()
-                .windows(pattern.len())
-                .any(|bytes| bytes == pattern)
-        {
-            matches.push(Match {
-                path: frame.path.clone(),
-                record,
-            });
+        loop {
+            let step = matcher
+                .step(&record, pattern, frame.content.as_deref())
+                .await?;
+            work += 1;
+            if step.matched {
+                matches.push(Match {
+                    path: frame.path.clone(),
+                    record,
+                    source: step.source,
+                });
+                frame.sequence += 1;
+                frame.content = None;
+                break;
+            }
+            if step.next.is_some() && step.next == frame.content {
+                return Err(StreamError::InvalidResponse.into());
+            }
+            frame.content = step.next;
+            if frame.content.is_none() {
+                frame.sequence += 1;
+                break;
+            }
+            if work == count {
+                return Ok(Scan { matches, work });
+            }
         }
     }
-    Ok(matches)
+    Ok(Scan { matches, work })
 }
 
 async fn observe<P: StreamProvider + ?Sized>(

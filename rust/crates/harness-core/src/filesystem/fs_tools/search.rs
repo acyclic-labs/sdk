@@ -11,7 +11,7 @@ pub(super) fn selected(command: &crate::tools::FsCommand) -> bool {
 mod tests;
 
 impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> FilesystemTools<P, O> {
-    fn search_selection(
+    pub(super) fn search_selection(
         &self,
         command: &crate::tools::FsCommand,
         context: &ToolContext,
@@ -87,18 +87,26 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         ))
     }
 
-    async fn search(
+    pub(super) async fn search(
         &self,
         command: &crate::tools::FsCommand,
         context: &ToolContext,
     ) -> Result<ToolResult> {
         let (cursor, size) = self.search_selection(command, context)?;
         let provider = self.host.filesystem.stream_provider();
+        let reader = super::super::FilesystemContentVerifier::new(
+            Arc::clone(&self.host),
+            &self.verifier,
+            &self.scope,
+            u64::MAX,
+            None,
+        )?;
+        let matcher = crate::search::ContentMatcher::new(
+            reader.as_ref(),
+            Some(context.effective_scope().grants()),
+        );
         let page = read_before_effect(&mut context.model_cancellation(None)?, async {
-            cursor
-                .page(provider.as_ref(), size)
-                .await
-                .map_err(Error::from)
+            cursor.page_with(provider.as_ref(), size, &matcher).await
         })
         .await?;
         self.verifier.verify(&self.scope, &mut None)?;
@@ -111,6 +119,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                     "sequence": found.record.sequence,
                     "commit": hex::encode(found.record.commit_id.as_bytes()),
                     "origin": found.record.origin.as_str(),
+                    "file": found.source,
                 })
             })
             .collect::<Vec<_>>();
