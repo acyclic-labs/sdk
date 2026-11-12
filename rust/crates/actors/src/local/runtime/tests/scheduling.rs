@@ -376,3 +376,134 @@ async fn pause_control_files_an_inherited_alarm_in_the_stores_shard() -> TestRes
     );
     Ok(())
 }
+
+/// Fails every delivery to one actor, then delegates.
+struct Poisons {
+    package: Package,
+    poisoned: ActorReference,
+}
+
+impl Handler for Poisons {
+    fn manifest(&self) -> &Manifest {
+        self.package.manifest()
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        if delivery.actor == self.poisoned {
+            return futures::future::ready(Err(crate::guest::GuestError::Handler(
+                "poisoned".into(),
+            )))
+            .boxed();
+        }
+        self.package.on_record(delivery, checkpoint, cancellation)
+    }
+}
+
+/// An actor whose every delivery fails holds back only its own wake: real
+/// dispatcher checkpoints pass the healthy actor's entries by committing one
+/// carried entry for it, and a restarted host replays just that entry and
+/// delivers the retained input.
+///
+/// Negative control: committing the checkpoint without its carried entry
+/// stalled it behind the poisoned actor's missing entry, short of the
+/// healthy actor's entries from the next round on.
+#[tokio::test]
+async fn a_poisoned_actor_is_carried_through_checkpoints_and_restart() -> TestResult {
+    const ROUNDS: usize = 4;
+    let one = std::num::NonZeroU16::MIN;
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one);
+    let poisoned = spawn_with(&store, "poisoned", &[b"emit"]).await?;
+    let healthy = spawn_with(&store, "healthy", &[b"emit"]).await?;
+    let log = store.scheduling_path(0)?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
+        Arc::new(Poisons {
+            package: Package::new()?,
+            poisoned: poisoned.clone(),
+        }),
+        Arc::new(SystemClock),
+    );
+    let (checkpoints, dispatcher) = runtime.dispatcher_store(0)?;
+    let failures = AtomicUsize::new(0);
+    let mut serving = Box::pin(runtime.run(|actor, error| {
+        assert_eq!(actor, &poisoned, "{error}");
+        failures.fetch_add(1, Ordering::SeqCst);
+    }));
+    for round in 0..=ROUNDS {
+        if round > 0 {
+            let mut input = PreparedPublish::foreign(key(&format!("poisoned/healthy-{round}"))?);
+            input.join(CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: StreamPath::new("agents/healthy")?,
+                    records: vec![Bytes::from_static(b"emit").into()],
+                }],
+            ))?;
+            input.join(store.activation(&healthy)?)?;
+            PreparedPublish::settle(&provider.commit(input.into_request()?).await?)?;
+        }
+        // At quiescence every healthy entry committed so far is passed.
+        let tail = provider.tail(log.clone()).await?;
+        let completed = observe_while_running(serving.as_mut(), async {
+            Ok::<_, Box<dyn std::error::Error>>(runtime.complete().await)
+        })
+        .await?;
+        assert!(matches!(completed, Err(Error::CompletionFailed(_))));
+        let cursor = checkpoints
+            .load(&dispatcher)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("activation"));
+        assert!(
+            cursor >= Some(tail),
+            "round {round}: checkpoint {cursor:?} is short of {tail}"
+        );
+    }
+    drop(serving);
+    assert!(failures.load(Ordering::SeqCst) > 0, "no delivery failed");
+    assert!(records(&*provider, "out/poisoned").await?.is_empty());
+    assert_eq!(records(&*provider, "out/healthy").await?.len(), ROUNDS + 1);
+    let cursors = records(&*provider, checkpoints.path(&dispatcher)?.as_str())
+        .await?
+        .iter()
+        .map(|record| Ok(State::decode(record)?.cursor("activation")))
+        .collect::<Result<Vec<_>, Error>>()?;
+    let cursor = cursors.last().copied().flatten().ok_or("no checkpoint")?;
+    let passing = cursors.windows(2).filter(|pair| pair[1] > pair[0]).count() + 1;
+    let entries = records(&*provider, log.as_str()).await?;
+    let (poisoned_entry, healthy_entry) = (poisoned.encode(), healthy.encode());
+    let replayed = &entries[usize::try_from(cursor)?..];
+    assert!(
+        replayed.iter().any(|entry| entry[..] == poisoned_entry[..]),
+        "the checkpoint passed every entry of the poisoned actor"
+    );
+    assert!(
+        !replayed.iter().any(|entry| entry[..] == healthy_entry[..]),
+        "a restart would replay the healthy actor's entries"
+    );
+    let carried = entries
+        .iter()
+        .filter(|entry| entry[..] == poisoned_entry[..])
+        .count()
+        - 1;
+    assert!(
+        (1..=passing).contains(&carried),
+        "{carried} carried entries over {passing} passing checkpoints"
+    );
+    // A restarted host without the poison replays the carried entry alone.
+    serve_to_checkpoint(&Runtime::new(
+        Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    ))
+    .await?;
+    assert_eq!(records(&*provider, "out/poisoned").await?.len(), 1);
+    assert_eq!(records(&*provider, "out/healthy").await?.len(), ROUNDS + 1);
+    Ok(())
+}
