@@ -1,6 +1,76 @@
 use super::*;
 use crate::{NativeMaterializationWork, NativeTreeMaterializationError};
 
+/// The append-only v1 progress record owns no plan or preimage bytes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Progress {
+    version: u32,
+    revision: u64,
+    phase: crate::MaterializationPhase,
+    applied: u32,
+    restored: u32,
+    work: crate::WorkCounters,
+}
+
+impl Progress {
+    fn new(journal: &MaterializationJournal) -> Self {
+        Self {
+            version: 1,
+            revision: journal.revision,
+            phase: journal.phase,
+            applied: journal.applied,
+            restored: journal.restored,
+            work: journal.work,
+        }
+    }
+
+    pub(super) fn apply(
+        &self,
+        journal: &mut MaterializationJournal,
+    ) -> Result<(), LocalCoreStateStoreError> {
+        if self.version != 1 || self.revision < journal.revision {
+            return Err(LocalCoreStateStoreError::Integrity);
+        }
+        journal.revision = self.revision;
+        journal.phase = self.phase;
+        journal.applied = self.applied;
+        journal.restored = self.restored;
+        journal.work = self.work;
+        Ok(())
+    }
+}
+
+pub(super) fn progress(
+    namespace: &Namespace,
+    log: &mut CoreLog,
+    operation: OperationId,
+) -> Result<Option<Progress>, LocalCoreStateStoreError> {
+    Ok(log
+        .get::<Progress>(namespace, operation, None, None)?
+        .map(|(value, _)| value))
+}
+
+pub(super) fn append_progress(
+    namespace: &Namespace,
+    log: &mut CoreLog,
+    operation: OperationId,
+    value: Option<Progress>,
+) -> Result<(), LocalCoreStateStoreError> {
+    let mut change = match &namespace._allocation {
+        Some(allocation) => Change::new(allocation.work())?,
+        None => Change::default(),
+    };
+    change.put(
+        (
+            RecordKey::MaterializationProgress(operation),
+            value.map(RecordValue::MaterializationProgress),
+        )
+            .into(),
+    )?;
+    log.commit(namespace, change)
+}
+
 impl MaterializationJournalStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
 
@@ -131,26 +201,59 @@ impl MaterializationJournalStore for LocalCoreStateStore {
             }
         }
         self.transaction(move |namespace| {
-            let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
-            let stored = with_lock(&mut paths, |paths| {
-                let current = read_recoverable::<MaterializationJournal>(paths)?;
-                if current.as_ref().map_or(0, |(journal, _)| journal.revision) != expected_revision
-                {
-                    return Ok(false);
+            namespace.with_log(|log| {
+                if let Some(current) = progress(namespace, log, operation_id)? {
+                    if current.revision != expected_revision {
+                        return Ok((false, replacement));
+                    }
+                    if let Some(allocation) = &namespace._allocation {
+                        let work = allocation.work();
+                        work.set_original_work(current.work);
+                        replacement.work = work.journal_work()?;
+                    }
+                    append_progress(
+                        namespace,
+                        log,
+                        operation_id,
+                        Some(Progress::new(&replacement)),
+                    )?;
+                    return Ok((true, replacement));
                 }
-                if let Some(allocation) = &paths.allocation {
-                    let work = allocation.work();
-                    work.set_original_work(
-                        current
-                            .as_ref()
-                            .map_or_else(crate::WorkCounters::default, |(journal, _)| journal.work),
-                    );
-                    replacement.work = work.journal_work()?;
+                let mut paths =
+                    namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
+                let stored = with_lock(&mut paths, |paths| {
+                    let current = read_recoverable::<MaterializationJournal>(paths)?;
+                    if current.as_ref().map_or(0, |(journal, _)| journal.revision)
+                        != expected_revision
+                    {
+                        return Ok(false);
+                    }
+                    if let Some(allocation) = &paths.allocation {
+                        let work = allocation.work();
+                        work.set_original_work(
+                            current
+                                .as_ref()
+                                .map_or_else(crate::WorkCounters::default, |(journal, _)| {
+                                    journal.work
+                                }),
+                        );
+                        replacement.work = work.journal_work()?;
+                    }
+                    write_journaled(paths, &replacement)?;
+                    Ok(true)
+                })?;
+                // Preparation can still discover directory identities and preimages.
+                // Once captured, this fixed image is never rewritten by a step.
+                if stored && replacement.phase != crate::MaterializationPhase::Preparing {
+                    append_progress(
+                        namespace,
+                        log,
+                        operation_id,
+                        Some(Progress::new(&replacement)),
+                    )?;
                 }
-                write_journaled(paths, &replacement)?;
-                Ok(true)
-            })?;
-            Ok((stored, replacement))
+                Ok((stored, replacement))
+            })
         })
         .await
     }
@@ -276,28 +379,42 @@ impl LocalCoreStateStore {
         operation_id: OperationId,
     ) -> Result<Option<MaterializationJournal>, LocalCoreStateStoreError> {
         self.transaction(move |namespace| {
-            let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
-            if paths.allocation.is_none() {
-                return read_locked(&mut paths);
-            }
-            with_lock(&mut paths, |paths| {
-                let journal = read_recoverable::<MaterializationJournal>(paths)?.map(
-                    |(mut journal, allocation)| {
-                        journal.custody = allocation;
-                        journal
-                    },
-                );
-                paths
-                    .allocation
-                    .as_ref()
-                    .ok_or(NativeTreeMaterializationError::MissingCustody)?
-                    .work()
-                    .set_original_work(
-                        journal
-                            .as_ref()
-                            .map_or_else(crate::WorkCounters::default, |record| record.work),
+            namespace.with_log(|log| {
+                let mut paths =
+                    namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
+                if paths.allocation.is_none() {
+                    let mut journal = read_locked::<MaterializationJournal>(&mut paths)?;
+                    if let (Some(journal), Some(progress)) =
+                        (&mut journal, progress(namespace, log, operation_id)?)
+                    {
+                        progress.apply(journal)?;
+                    }
+                    return Ok(journal);
+                }
+                with_lock(&mut paths, |paths| {
+                    let mut journal = read_recoverable::<MaterializationJournal>(paths)?.map(
+                        |(mut journal, allocation)| {
+                            journal.custody = allocation;
+                            journal
+                        },
                     );
-                Ok(journal)
+                    if let (Some(journal), Some(progress)) =
+                        (&mut journal, progress(namespace, log, operation_id)?)
+                    {
+                        progress.apply(journal)?;
+                    }
+                    paths
+                        .allocation
+                        .as_ref()
+                        .ok_or(NativeTreeMaterializationError::MissingCustody)?
+                        .work()
+                        .set_original_work(
+                            journal
+                                .as_ref()
+                                .map_or_else(crate::WorkCounters::default, |record| record.work),
+                        );
+                    Ok(journal)
+                })
             })
         })
         .await

@@ -102,6 +102,7 @@ impl RecordValue {
             Some(Self::ChildIndex(value)) => serde_json::to_writer(writer, value),
             Some(Self::Lineage(value)) => serde_json::to_writer(writer, value),
             Some(Self::LazyWorkspace(value)) => serde_json::to_writer(writer, value),
+            Some(Self::MaterializationProgress(value)) => serde_json::to_writer(writer, value),
         }
     }
 }

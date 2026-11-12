@@ -184,7 +184,7 @@ impl CoreLog {
         // The durable WAL owns recovery until every record file and every
         // changed family directory has crossed its barrier. A directory flush
         // covers all names in that family, including earlier record writes.
-        let mut families: [Option<CheckpointFamily>; 6] = std::array::from_fn(|_| None);
+        let mut families: [Option<CheckpointFamily>; 7] = std::array::from_fn(|_| None);
         for key in &self.dirty {
             if let Some(work) = work {
                 work.charge(crate::WorkCounters {
@@ -200,6 +200,7 @@ impl CoreLog {
                 RecordKey::ChildIndex => 3,
                 RecordKey::Lineage(_) => 4,
                 RecordKey::LazyWorkspace(_) => 5,
+                RecordKey::MaterializationProgress(_) => 6,
             };
             if families[family].is_none() {
                 families[family] = Some(CheckpointFamily::open(*key, &paths, work)?);

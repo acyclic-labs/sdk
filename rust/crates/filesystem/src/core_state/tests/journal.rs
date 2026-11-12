@@ -1,5 +1,72 @@
 use super::*;
 
+#[tokio::test]
+async fn materialization_steps_append_only_progress_and_recover_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalCoreStateStore::new(directory.path());
+    let operation = OperationId::new();
+    let mut journal = materialization_journal(operation);
+    for index in 0..64 {
+        journal
+            .plan
+            .edits
+            .push(crate::MaterializationEdit::Install {
+                path: format!("file-{index}"),
+                image: vec![7; 1024],
+            });
+        journal.preimages.push(crate::MaterializationPreimage {
+            image: vec![3; 1024],
+            custody: None,
+        });
+    }
+    let (_, mut journal) =
+        MaterializationJournalStore::compare_and_swap(&store, operation, 0, journal)
+            .await
+            .unwrap();
+    let namespace = store.namespace().unwrap();
+    let paths = namespace
+        .record(MATERIALIZATION_FAMILY, &operation.into_bytes())
+        .unwrap();
+    let fixed = std::fs::read(&paths.current).unwrap();
+    for applied in 1..=64 {
+        let expected = journal.revision;
+        journal.revision += 1;
+        journal.applied = applied;
+        journal.phase = if applied == 64 {
+            crate::MaterializationPhase::Applied
+        } else {
+            crate::MaterializationPhase::Applying
+        };
+        let (stored, updated) =
+            MaterializationJournalStore::compare_and_swap(&store, operation, expected, journal)
+                .await
+                .unwrap();
+        assert!(stored);
+        journal = updated;
+        assert_eq!(std::fs::read(&paths.current).unwrap(), fixed);
+    }
+    drop(paths);
+    drop(namespace);
+    drop(store);
+    let reopened = LocalCoreStateStore::new(directory.path());
+    assert_eq!(
+        MaterializationJournalStore::load(&reopened, operation)
+            .await
+            .unwrap(),
+        Some(journal)
+    );
+    reopened
+        .remove_materialization_async(operation)
+        .await
+        .unwrap();
+    assert!(
+        MaterializationJournalStore::load(&reopened, operation)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 async fn native_write_count(image: Vec<u8>) -> u64 {
     let directory = tempfile::tempdir().unwrap();
     let work = crate::NativeMaterializationWork::new(

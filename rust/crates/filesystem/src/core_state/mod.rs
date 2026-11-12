@@ -28,7 +28,7 @@ const GIT_COMPAT_NAMESPACE: &str = "git-compat-v9";
 const MULTI_ROOT_PARENT_CLAIM_FAMILY: &str = "multi-root-parent-claims";
 const MULTI_ROOT_PUBLICATION_FAMILY: &str = "multi-root-publications";
 const LAZY_WORKSPACE_FAMILY: &str = "lazy-workspaces";
-const MATERIALIZATION_FAMILY: &str = "materialization";
+const MATERIALIZATION_FAMILY: &str = "materialization-plan-v1";
 const OWNER_LOCK: &str = "owner.lock";
 
 /// One journaled private namespace shared by core control-plane state.
@@ -493,19 +493,29 @@ impl LocalCoreStateStore {
         operation_id: OperationId,
     ) -> Result<(), LocalCoreStateStoreError> {
         self.transaction(move |namespace| {
-            let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
-            with_lock(&mut paths, |paths| {
-                let journal = read_recoverable::<MaterializationJournal>(paths)?;
-                if journal.as_ref().is_some_and(|(journal, _)| {
-                    !matches!(
-                        journal.phase,
-                        crate::MaterializationPhase::Applied
-                            | crate::MaterializationPhase::RolledBack
-                    )
-                }) {
-                    return Err(LocalCoreStateStoreError::MaterializationInProgress);
-                }
-                remove_record(paths)
+            namespace.with_log(|log| {
+                let mut paths =
+                    namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
+                with_lock(&mut paths, |paths| {
+                    let mut journal = read_recoverable::<MaterializationJournal>(paths)?;
+                    if let (Some((journal, _)), Some(progress)) = (
+                        &mut journal,
+                        journal::progress(namespace, log, operation_id)?,
+                    ) {
+                        progress.apply(journal)?;
+                    }
+                    if journal.as_ref().is_some_and(|(journal, _)| {
+                        !matches!(
+                            journal.phase,
+                            crate::MaterializationPhase::Applied
+                                | crate::MaterializationPhase::RolledBack
+                        )
+                    }) {
+                        return Err(LocalCoreStateStoreError::MaterializationInProgress);
+                    }
+                    remove_record(paths)?;
+                    journal::append_progress(namespace, log, operation_id, None)
+                })
             })
         })
         .await

@@ -199,9 +199,10 @@ pub(super) fn native_record_owned_bytes(value: &RecordValue, work: &Work) -> Res
         // These payloads have only fixed identifiers/scalars/Copy metadata.
         // Their enclosing resident vector, output or source Box funds its
         // compiled inline storage; they own no additional dynamic backing.
-        RecordValue::ChildCount(_) | RecordValue::ChildIndex(_) | RecordValue::LazyWorkspace(_) => {
-            0
-        }
+        RecordValue::ChildCount(_)
+        | RecordValue::ChildIndex(_)
+        | RecordValue::LazyWorkspace(_)
+        | RecordValue::MaterializationProgress(_) => 0,
     })
 }
 

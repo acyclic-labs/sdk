@@ -13,6 +13,7 @@ impl RecordKey {
             Self::ChildIndex => (3, [0; 16]),
             Self::Lineage(id) => (4, id.into_bytes()),
             Self::LazyWorkspace(id) => (5, id.into_bytes()),
+            Self::MaterializationProgress(id) => (6, id.into_bytes()),
         };
         let mut bytes = [0; KEY_BYTES];
         bytes[0] = tag;

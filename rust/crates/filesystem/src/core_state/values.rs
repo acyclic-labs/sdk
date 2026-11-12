@@ -9,6 +9,7 @@ pub(super) enum RecordKey {
     ChildIndex,
     Lineage(WorkspaceId),
     LazyWorkspace(WorkspaceId),
+    MaterializationProgress(OperationId),
 }
 
 impl RecordKey {
@@ -23,6 +24,9 @@ impl RecordKey {
             Self::ChildIndex => root.record(CONTEXT_CHILDREN_INDEX_FAMILY, &[0; 16]),
             Self::Lineage(id) => root.record(LINEAGE_FAMILY, &id.into_bytes()),
             Self::LazyWorkspace(id) => root.record(LAZY_WORKSPACE_FAMILY, &id.into_bytes()),
+            Self::MaterializationProgress(id) => {
+                root.record("materialization-progress-v1", &id.into_bytes())
+            }
         }
     }
 }
@@ -36,6 +40,7 @@ pub(super) enum RecordValue {
     ChildIndex(ContextChildIndex),
     Lineage(WorkspaceLineageRecord),
     LazyWorkspace(LazyWorkspaceState),
+    MaterializationProgress(journal::Progress),
 }
 
 /// A record type served through the core-state log, bound to its key.
@@ -121,6 +126,12 @@ logged!(WorkspaceLineageRecord, WorkspaceId, Lineage, |id| {
 logged!(LazyWorkspaceState, WorkspaceId, LazyWorkspace, |id| {
     RecordKey::LazyWorkspace(id)
 });
+logged!(
+    journal::Progress,
+    OperationId,
+    MaterializationProgress,
+    |id| { RecordKey::MaterializationProgress(id) }
+);
 
 /// Complete after-images of the records one commit changes; `None` records an absence.
 #[derive(Debug, Default, Deserialize)]
@@ -255,6 +266,10 @@ impl RecordValue {
                 | (RecordKey::ChildIndex, Self::ChildIndex(_))
                 | (RecordKey::Lineage(_), Self::Lineage(_))
                 | (RecordKey::LazyWorkspace(_), Self::LazyWorkspace(_))
+                | (
+                    RecordKey::MaterializationProgress(_),
+                    Self::MaterializationProgress(_)
+                )
         )
     }
 }
