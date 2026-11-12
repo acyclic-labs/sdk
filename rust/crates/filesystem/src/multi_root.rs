@@ -188,7 +188,7 @@ pub trait MultiRootPublicationStore: Send + Sync {
 /// Root-specific publisher backed by the ordinary join and materializer APIs.
 pub trait MultiRootPublisher: acyclic_stream::ProviderPlatform {
     /// Publisher error.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 
     /// Atomically validates and reserves the exact pinned target.
     fn prepare(
@@ -268,7 +268,7 @@ pub trait MultiRootPublisher: acyclic_stream::ProviderPlatform {
 /// Resolves one authenticated workspace identity for core publication.
 pub trait WorkspaceResolver<A: 'static, O: 'static>: acyclic_stream::ProviderPlatform {
     /// Resolver failure.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 
     /// Opens the exact workspace or fails closed.
     fn resolve(
@@ -462,7 +462,7 @@ pub enum WorkspaceMultiRootPublisherError<E: std::error::Error + 'static> {
 /// Authorization boundary for direct-parent and root-binding validation.
 pub trait MultiRootPublicationAuthorizer: Send + Sync {
     /// Authorizer error.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 
     /// Verifies that the plan publishes the exact child's bound roots only to its exact direct parent.
     fn authorize(
