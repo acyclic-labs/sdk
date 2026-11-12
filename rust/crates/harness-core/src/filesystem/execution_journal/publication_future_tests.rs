@@ -106,5 +106,24 @@ async fn separately_composed_journals_exclude_the_same_live_operation() -> Resul
         finished.terminated().now_or_never(),
         Some(acyclic_fs::OperationTermination::Released)
     );
+    let first = first.with_turn(operation, operation);
+    let second = second.with_turn(operation, operation);
+    let effect = OperationId::new();
+    let child = first
+        .acquire_effect(operation, effect, None)?
+        .into_owner(None)?;
+    assert!(matches!(
+        second.acquire_effect(operation, effect, None)?,
+        crate::executor::ExecutionAttempt::Observed(_)
+    ));
+    assert!(matches!(
+        second.acquire_effect(OperationId::new(), effect, None),
+        Err(Error::Unauthorized(_))
+    ));
+    child.release();
+    second
+        .acquire_effect(operation, effect, None)?
+        .into_owner(None)?
+        .release();
     Ok(())
 }

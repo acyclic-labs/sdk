@@ -61,6 +61,8 @@ pub(crate) fn approval_identity(manifest: [u8; 32]) -> crate::registry::Componen
 /// so they do not run again, and the `interrupted` outcome (each hook's
 /// failure policy) is recorded in their place. A reconciling turn that finds
 /// no outcome returns `None`.
+/// The original execution journal's child-effect claim excludes concurrent
+/// attempts before any replay read; a live duplicate refuses with conflict.
 pub async fn run_once<F, Fut>(
     context: &crate::runtime::ToolContext,
     event: HookEvent,
@@ -72,13 +74,19 @@ where
     Fut: std::future::Future<Output = crate::Result<HookOutput>>,
 {
     let operation = phase_operation(context.operation_id(), event);
+    let owner = context
+        .task()
+        .claim_effect(context.turn_id(), operation, None)?;
     if let (Some(file), _) = context.observe_staged_file_once(operation, None).await? {
         let bytes = context.task().read_file(&file, None).await?;
-        return serde_json::from_slice(&bytes)
+        let output = serde_json::from_slice(&bytes)
             .map(Some)
-            .map_err(|error| crate::Error::Invalid(format!("retained hook outcome: {error}")));
+            .map_err(|error| crate::Error::Invalid(format!("retained hook outcome: {error}")))?;
+        owner.release();
+        return Ok(output);
     }
     if reconcile_only {
+        owner.release();
         return Ok(None);
     }
     let started = start_operation(operation);
@@ -115,6 +123,7 @@ where
             None,
         )
         .await?;
+    owner.release();
     Ok(Some(output))
 }
 

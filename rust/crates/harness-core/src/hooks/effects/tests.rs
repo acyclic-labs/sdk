@@ -100,13 +100,26 @@ async fn followed_hook_records_retain_outcomes_and_do_not_repeat_interrupted_eff
             // The producer's own follow wakes this read; no readiness polling.
             let record = follow.next().await.ok_or("missing followed event")??;
             let operation = record_operation(&account, &source, &record, "hooks/notify");
-            let context = ToolContext::new(Arc::new(task()?), operation, "event")?;
+            let context = ToolContext::new(
+                Arc::new(task()?.with_execution_journal(storage.journal(), operation)?),
+                operation,
+                "event",
+            )?;
+            let competing = ToolContext::new(
+                Arc::new(task()?.with_execution_journal(storage.journal(), operation)?),
+                operation,
+                "event",
+            )?;
+            let (entered, running) = tokio::sync::oneshot::channel();
+            let (resume, ready) = tokio::sync::oneshot::channel();
             let initial = run_once(
                 &context,
                 event,
                 false,
                 (
                     || async {
+                        entered.send(()).expect("contender remains live");
+                        ready.await.expect("contender checked original claim");
                         let output = hooks
                             .run(event, workspace.path(), workspace.path(), &input, &registry)
                             .await?;
@@ -120,14 +133,33 @@ async fn followed_hook_records_retain_outcomes_and_do_not_repeat_interrupted_eff
                     },
                     || hooks.interrupted(event, &input, &registry),
                 ),
-            )
-            .await;
+            );
+            let contender = async {
+                running.await.expect("producer reached admitted execution");
+                let duplicate = run_once(
+                    &competing,
+                    event,
+                    false,
+                    (
+                        || async { panic!("concurrent delivery executed twice") },
+                        || panic!("live producer was mistaken for an interrupted one"),
+                    ),
+                )
+                .await;
+                assert!(matches!(duplicate, Err(Error::Conflict(_))));
+                resume.send(()).expect("original producer remains live");
+            };
+            let (initial, ()) = tokio::join!(initial, contender);
             if interrupted {
                 assert!(initial.is_err());
             }
             // Rebuild the whole task context. Replaying cannot launch a process;
             // unfinished starts retain an interrupted outcome instead.
-            let rebuilt = ToolContext::new(Arc::new(task()?), operation, "event")?;
+            let rebuilt = ToolContext::new(
+                Arc::new(task()?.with_execution_journal(storage.journal(), operation)?),
+                operation,
+                "event",
+            )?;
             let retained = run_once(
                 &rebuilt,
                 event,

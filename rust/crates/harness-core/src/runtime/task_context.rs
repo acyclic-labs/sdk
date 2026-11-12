@@ -14,6 +14,28 @@ pub struct TaskContext {
 }
 
 impl TaskContext {
+    /// Owns one child effect through the same journal and claim registry as
+    /// its enclosing execution. A missing original journal grants no custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn claim_effect(
+        &self,
+        parent: OperationId,
+        effect: OperationId,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<crate::executor::ExecutionClaim<'_>> {
+        self.journal
+            .as_ref()
+            .ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "task has no original execution journal",
+                )
+            })?
+            .acquire_effect(parent, effect, io)?
+            .into_owner(io)
+    }
+
     /// Binds the host's shared name resolver for filesystem tools.
     #[must_use]
     pub fn with_agent_children(
