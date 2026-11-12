@@ -197,7 +197,6 @@ async fn provider_drains_during_publication_and_groups_without_payload_reloads()
         );
         assert_eq!(work(&seen, "payload_loads"), 0);
         samples.push((count as u64, work(&seen, "journal_publications")));
-        drop(capture);
         let records = journal.replay(operation, 2, 256, None)?.await?;
         assert_eq!(records.len(), events.len());
         let mut replayed = Vec::new();
@@ -209,6 +208,11 @@ async fn provider_drains_during_publication_and_groups_without_payload_reloads()
             );
         }
         assert_eq!(replayed, events);
+        assert!(
+            work(&seen, "payload_loads") >= events.len() as u64,
+            "replay must exercise the original load counter that was zero on publication"
+        );
+        drop(capture);
     }
     acyclic_test_support::scale::assert_scales(
         acyclic_test_support::scale::Bound::Constant,
