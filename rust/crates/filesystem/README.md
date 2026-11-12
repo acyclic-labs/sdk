@@ -16,6 +16,11 @@ index, mutations, generations and retention as native attributes. Native mounts
 and materialization never expose their names or fetch their values; ordinary
 native attributes with identical names remain independent. This provides a home
 for application metadata without reserving filenames or writing OS attributes.
+`Generation::read_named_attribute` enforces an optional value-size bound before
+reading its payload; `named_attribute_value` compares authenticated blob
+identities without reading payloads. `Transaction::change_named_attribute`
+publishes attributes atomically with file edits. These use the same checkout
+operations and caller accounting as other metadata access.
 
 For GraphCoder in stock Docker or an RL sandbox without native mount authority,
 select plain directories explicitly with `--workspace-mounting physical`; run

@@ -581,19 +581,30 @@ impl PublicationCase<'_> {
         path: &str,
         key: &IdempotencyKey,
     ) -> Result<()> {
-        let metadata_path = content_metadata_path_io(self.volume, path, true, None)?;
-        let record = self
-            .host
-            .read(workspace, None, &metadata_path, 4096, None)
-            .await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let io = PreparationIo::for_unmeasured(&cancellation)?;
+        let opened = self.host.open(workspace, None).await?;
+        let selected = io.sdk(opened.head(&io, &cancellation).await)?;
+        let metadata_key = content_metadata_key_io(self.volume, path, Some(&io))?;
+        let record = read_file_annotation(&selected, path, &metadata_key, Some(4096), Some(&io))
+            .await?
+            .ok_or_else(|| io.invalid("file annotation is absent"))?;
+        let absolute = format!("/{path}");
+        let limited = selected
+            .read_named_attribute(&absolute, &metadata_key, Some(0), &io, &cancellation)
+            .await;
+        assert!(matches!(
+            &limited.0,
+            Err(WorkspaceError::Filesystem(acyclic_fs::FsError::Decode(
+                acyclic_fs::kernel::CanonicalDecodeError::ObjectTooLarge { maximum: 0, .. }
+            )))
+        ));
+        assert!(io.sdk(limited).is_err());
         let (version, (staged, expected)): (u8, (FileRef, Option<GenerationRef>)) =
             serde_json::from_slice(&record).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(version, 1);
         assert_eq!(staged.path(), path);
         assert!(expected.is_none());
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let io = PreparationIo::for_unmeasured(&cancellation)?;
-        let opened = self.host.open(workspace, None).await?;
         let publication = io
             .sdk(
                 opened
@@ -612,9 +623,15 @@ impl PublicationCase<'_> {
             .is_err()
         );
         if !crate::conversation::is_internal_path(path) {
-            // A populated previous index can contain either historical shape.
-            // The new index owns another namespace and never reinterprets them.
-            let previous_path = metadata_path.replace("/v2/", "/v1/");
+            assert!(
+                io.sdk(selected.stat("/.system", &io, &cancellation).await)
+                    .is_err()
+            );
+            // Both former index layouts are ordinary caller-authored files.
+            // They cannot shadow the annotation or be parsed as host metadata.
+            let hash =
+                std::str::from_utf8(&metadata_key.as_bytes()[metadata_key.as_bytes().len() - 64..])
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
             let directory_grant = ContentGrant::verify_directory_read(
                 &self.read.copy_verifier(&mut None)?,
                 self.read.policy_scope(),
@@ -622,13 +639,9 @@ impl PublicationCase<'_> {
                 "",
                 &mut None,
             )?;
-            for (index, previous) in [
-                crate::contract::canonical_json_bytes(&(&staged, &expected))?,
-                crate::contract::canonical_json_bytes(&staged)?,
-            ]
-            .into_iter()
-            .enumerate()
-            {
+            for (index, version) in ["v1", "v2"].into_iter().enumerate() {
+                let previous_path = format!("/.system/harness-file-metadata/{version}/{hash}.json");
+                let previous = b"ordinary user bytes".to_vec();
                 self.host
                     .apply(
                         workspace,

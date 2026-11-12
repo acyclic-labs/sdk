@@ -31,6 +31,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         key: IdempotencyKey,
         io: &'a PreparationIo,
         evidence: acyclic_stream::OwnedBytes,
+        metadata_key: AttributeName,
         staged: Option<(
             acyclic_fs::Transaction<A, O>,
             String,
@@ -44,7 +45,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             io,
             FilePublication::Authorized(authorization.0, authorization.1, authorization.2),
             root_cut,
-            Some(evidence),
+            Some((evidence, metadata_key)),
             staged,
         )
     }
@@ -99,7 +100,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: &'a PreparationIo,
         publication: FilePublication<'a>,
         root_cut: Option<acyclic_fs::PolicyCut>,
-        evidence: Option<acyclic_stream::OwnedBytes>,
+        evidence: Option<(acyclic_stream::OwnedBytes, AttributeName)>,
         staged: Option<(
             acyclic_fs::Transaction<A, O>,
             String,
@@ -150,15 +151,48 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     pause().await;
                 }
                 Self::publish_mutations(&mut transaction, mutations, io)?.await?;
-                if let Some((path, content)) = content {
+                if let Some((path, content)) = &content {
                     io.sdk(
                         transaction
-                            .write_staged(&path, &[content], io, io.cancellation())
+                            .write_staged(
+                                path,
+                                std::slice::from_ref(content),
+                                io,
+                                io.cancellation(),
+                            )
+                            .await,
+                    )?;
+                }
+                if let Some((evidence, metadata_key)) = &evidence {
+                    // This path publishes one uploaded file, staged or inline.
+                    // Reuse its destination rather than allocate a second path.
+                    let path = content
+                        .as_ref()
+                        .map(|(path, _)| path.as_str())
+                        .or_else(|| {
+                            mutations.iter().find_map(|mutation| match mutation {
+                                WorkspaceMutation::PutFile { path, .. } => Some(path.as_str()),
+                                _ => None,
+                            })
+                        })
+                        .ok_or_else(|| io.invalid("upload publication has no file destination"))?;
+                    io.sdk(
+                        transaction
+                            .change_named_attribute(
+                                path,
+                                metadata_key,
+                                Some((
+                                    evidence.as_ref(),
+                                    acyclic_fs::NamedAttributeWriteMode::Upsert,
+                                )),
+                                io,
+                                io.cancellation(),
+                            )
                             .await,
                     )?;
                 }
                 let context = evidence
-                    .map(|evidence| publication_context(evidence, io))
+                    .map(|(evidence, _)| publication_context(evidence, io))
                     .transpose()?;
                 Self::commit_contextual_publication(transaction, io, publication, context)?.await
             };

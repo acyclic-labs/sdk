@@ -108,7 +108,8 @@ impl AttributeName {
         &self.bytes
     }
 
-    pub(crate) fn retained_bytes(&self) -> usize {
+    /// Retained name backing, excluding the fixed-size name value.
+    pub fn retained_bytes(&self) -> usize {
         self.bytes.capacity()
     }
 }

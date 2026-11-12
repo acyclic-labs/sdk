@@ -44,12 +44,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         range: acyclic_fs::ByteRange,
         io: &PreparationIo,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        let metadata_path =
-            content_metadata_path_io(reference.volume(), reference.path(), true, Some(io))?;
+        let metadata_key = content_metadata_key_io(reference.volume(), reference.path(), Some(io))?;
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
         })?;
-        let metadata = read_generation_if_present(selected, &metadata_path, None, io).await?;
+        let metadata =
+            read_file_annotation(selected, reference.path(), &metadata_key, None, Some(io)).await?;
         let original = if let Some(metadata) = metadata {
             let (staged, _staged_hold) = decode_content_metadata(&metadata, io)?;
             if staged.volume() != reference.volume() || staged.path() != reference.path() {
@@ -60,7 +60,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ));
             }
             let original =
-                matching_publication(opened, selected, &staged, &metadata_path, &metadata, io)
+                matching_publication(opened, selected, &staged, &metadata_key, &metadata, io)
                     .await?;
             if let Some(original) = original {
                 if staged.descriptor() != reference.descriptor()
@@ -100,7 +100,7 @@ pub(super) async fn matching_publication<A: AsyncAuthorityStore, O: AsyncObjectS
     opened: &Workspace<A, O>,
     selected: &acyclic_fs::Generation<A, O>,
     staged: &FileRef,
-    metadata_path: &str,
+    metadata_key: &AttributeName,
     metadata: &[u8],
     io: &PreparationIo,
 ) -> Result<Option<acyclic_fs::Generation<A, O>>> {
@@ -130,8 +130,9 @@ pub(super) async fn matching_publication<A: AsyncAuthorityStore, O: AsyncObjectS
             )
         })?;
     if selected.id() != original.id() {
-        let original_metadata = read_generation(&original, metadata_path, None, Some(io)).await?;
-        if original_metadata.as_ref() != metadata {
+        let original_metadata =
+            read_file_annotation(&original, staged.path(), metadata_key, None, Some(io)).await?;
+        if original_metadata.as_deref() != Some(metadata) {
             return Err(stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Conflict,

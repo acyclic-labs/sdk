@@ -15,13 +15,13 @@ pub enum NamedAttributeWriteMode {
     Replace,
 }
 
-pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn attribute_value<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     metadata: FileMetadata,
     name: &AttributeName,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<Option<OwnedSourceChunk>, FsError> {
+) -> Result<Option<(ObjectId, u64)>, FsError> {
     let MetadataField::Value(root) = metadata.named_attributes else {
         return Ok(None);
     };
@@ -45,10 +45,37 @@ pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .as_ref()
             .map(|entry| (entry.value, entry.value_bytes));
         entry.retire(accounting)?;
-        readonly_cleanup_standalone(accounting, before, 0)?;
-        let Some((value, length)) = value else {
+        Ok(value)
+    }
+    .await;
+    readonly_cleanup_standalone(accounting, before, 0)?;
+    result
+}
+
+pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    volume: &Volume<A, O>,
+    metadata: FileMetadata,
+    name: &AttributeName,
+    maximum_bytes: Option<u64>,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<Option<OwnedSourceChunk>, FsError> {
+    let before = readonly_standalone_live(accounting);
+    let result = async {
+        let Some((value, length)) =
+            attribute_value(volume, metadata, name, accounting, cancellation).await?
+        else {
             return Ok(None);
         };
+        if let Some(maximum) = maximum_bytes
+            && length > maximum
+        {
+            return Err(CanonicalDecodeError::ObjectTooLarge {
+                observed: length,
+                maximum,
+            }
+            .into());
+        }
         let read = read_blob_range_with_accounting(
             &volume.fs.inner.objects,
             value,
@@ -319,6 +346,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
+    pub(crate) async fn named_attribute_value_with_accounting<F: ContentFile>(
+        &mut self,
+        file: F,
+        name: &AttributeName,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(ObjectId, u64)>, FsError> {
+        let metadata = self
+            .read_metadata_with_accounting(file, accounting, cancellation)
+            .await?;
+        attribute_value(&self.volume, metadata, name, accounting, cancellation).await
+    }
+
     /// Reads one exact named attribute by path or stable identity.
     pub async fn read_named_attribute<F: ContentFile, W: FsWork>(
         &mut self,
@@ -328,14 +368,32 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         cancellation: &CancellationToken,
     ) -> W::Output<Option<OwnedSourceChunk>, FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            let metadata = self
-                .read_metadata_with_accounting(file, &mut accounting, cancellation)
-                .await?;
-            read_attribute(&self.volume, metadata, name, &mut accounting, cancellation).await
-        }
-        .await;
+        let result = self
+            .read_named_attribute_with_accounting(file, name, None, &mut accounting, cancellation)
+            .await;
         budget.finish(result, &accounting)
+    }
+
+    pub(crate) async fn read_named_attribute_with_accounting<F: ContentFile>(
+        &mut self,
+        file: F,
+        name: &AttributeName,
+        maximum_bytes: Option<u64>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<OwnedSourceChunk>, FsError> {
+        let metadata = self
+            .read_metadata_with_accounting(file, accounting, cancellation)
+            .await?;
+        read_attribute(
+            &self.volume,
+            metadata,
+            name,
+            maximum_bytes,
+            accounting,
+            cancellation,
+        )
+        .await
     }
 
     /// Lists one bounded page of named attributes by path or stable identity.
@@ -392,43 +450,55 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         cancellation: &CancellationToken,
     ) -> W::Output<(), FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.validate_native_work(original)?;
-            }
-            let (id, metadata) = match file.address() {
-                ContentAddress::File(id) => (
-                    id,
-                    self.read_metadata_with_accounting(id, &mut accounting, cancellation)
-                        .await?,
-                ),
-                ContentAddress::Path(path) => {
-                    let lookup = self
-                        .lookup_no_follow_with_metadata_with_accounting(
-                            path,
-                            &mut accounting,
-                            cancellation,
-                        )
-                        .await?
-                        .ok_or(FsError::NotFound)?;
-                    (lookup.record.file_id, lookup.metadata)
-                }
-            };
-            let metadata = change_attribute(
-                &self.volume,
-                metadata,
+        let result = self
+            .change_named_attribute_with_accounting(
+                file,
                 name,
                 value,
                 &mut accounting,
                 cancellation,
             )
-            .await?;
-            self.set_attributes_with_accounting(id, metadata, None, &mut accounting, cancellation)
-                .await
-        }
-        .await;
+            .await;
         budget.finish(result, &accounting)
+    }
+
+    pub(crate) async fn change_named_attribute_with_accounting<F: ContentFile>(
+        &mut self,
+        file: F,
+        name: &AttributeName,
+        value: Option<(&[u8], NamedAttributeWriteMode)>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            self.validate_native_work(original)?;
+        }
+        let (id, metadata) = match file.address() {
+            ContentAddress::File(id) => (
+                id,
+                self.read_metadata_with_accounting(id, accounting, cancellation)
+                    .await?,
+            ),
+            ContentAddress::Path(path) => {
+                let lookup = self
+                    .lookup_no_follow_with_metadata_with_accounting(path, accounting, cancellation)
+                    .await?
+                    .ok_or(FsError::NotFound)?;
+                (lookup.record.file_id, lookup.metadata)
+            }
+        };
+        let metadata = change_attribute(
+            &self.volume,
+            metadata,
+            name,
+            value,
+            accounting,
+            cancellation,
+        )
+        .await?;
+        self.set_attributes_with_accounting(id, metadata, None, accounting, cancellation)
+            .await
     }
 }
 
@@ -450,7 +520,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
                 cancellation,
             )
             .await?;
-            read_attribute(&self.volume, metadata, name, &mut accounting, cancellation).await
+            read_attribute(
+                &self.volume,
+                metadata,
+                name,
+                None,
+                &mut accounting,
+                cancellation,
+            )
+            .await
         }
         .await;
         budget.finish(result, &accounting)

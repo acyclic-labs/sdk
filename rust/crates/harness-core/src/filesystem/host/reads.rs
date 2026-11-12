@@ -856,10 +856,10 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     path: &str,
     io: &'a PreparationIo,
 ) -> Result<Option<(FileRef, DecodeReservation<'a>)>> {
-    let metadata_path = content_metadata_path_io(volume, path, true, Some(io))?;
-    let metadata_path_hold = io.guard_owned(metadata_path.capacity() as u64)?;
-    let metadata_path = (metadata_path, metadata_path_hold);
-    let metadata = read_generation_if_present(generation, &metadata_path.0, None, io).await?;
+    let metadata_key = content_metadata_key_io(volume, path, Some(io))?;
+    let metadata_key_hold = io.guard_owned(metadata_key.retained_bytes() as u64)?;
+    let metadata_key = (metadata_key, metadata_key_hold);
+    let metadata = read_file_annotation(generation, path, &metadata_key.0, None, Some(io)).await?;
     let staged = match metadata {
         Some(metadata) => {
             let metadata_hold = io.guard_bytes(&metadata)?;
@@ -876,7 +876,7 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 &generation.workspace(),
                 generation,
                 &staged.0,
-                &metadata_path.0,
+                &metadata_key.0,
                 &metadata.0,
                 io,
             )

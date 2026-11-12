@@ -18,7 +18,7 @@ use crate::{
     resources::{GenerationRef, ProviderRef, WorkspaceRef},
 };
 use acyclic_fs::WorkCounters;
-use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
+use acyclic_fs::kernel::{AttributeClass, AttributeName, FileKind, LogicalName, NameEncoding};
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Digest, DirectoryPage, Fs, Generation, GenerationId,
     IdempotencyKey as FilesystemKey, JoinPlan, TransactionCommit, Workspace, WorkspaceError,
@@ -405,7 +405,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 staged = prepared.1;
                 prepared.0
             };
-            let metadata_path = content_metadata_path_io(volume, provisional.path(), true, io)?;
+            let metadata_key = content_metadata_key_io(volume, provisional.path(), io)?;
             let receipt_bytes = match io {
                 Some(io) => io.encode(
                     &(1_u8, (&provisional, expected_generation)),
@@ -428,10 +428,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let generation = (self).generation_ref_id(prior.id(), io)?;
                 bounded_io::retain(&prior, io).await?;
                 let version = bounded_io::hex_key(generation.as_resource().key(), io)?;
-                let indexed =
-                    read_generation(&prior, &metadata_path, Some(receipt_bytes.len() as u64), io)
-                        .await?;
-                if indexed.as_ref() != receipt_bytes.as_ref() {
+                let indexed = read_file_annotation(
+                    &prior,
+                    provisional.path(),
+                    &metadata_key,
+                    Some(receipt_bytes.len() as u64),
+                    io,
+                )
+                .await?;
+                if indexed.as_deref() != Some(receipt_bytes.as_ref()) {
                     return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Conflict,
@@ -454,7 +459,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &opened,
                     expected,
                     &authorized_generation.0,
-                    [&metadata_path, &absolute],
+                    (&absolute, &metadata_key),
                     io,
                 )?
                 .await?;
@@ -464,7 +469,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 policy_fence
             };
-            let mut mutations = crate::model::vec_with_capacity(4, io)?;
+            let mut mutations = crate::model::vec_with_capacity(2, io)?;
             if let Some((parent, _)) = absolute.rsplit_once('/')
                 && !parent.is_empty()
             {
@@ -482,25 +487,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     None
                 }
             };
-            mutations.push(WorkspaceMutation::CreateDirectory {
-                path: stock_string_copy(
-                    metadata_path
-                        .rsplit_once('/')
-                        .ok_or_else(|| {
-                            stock_boundary(
-                                io,
-                                crate::wire::ErrorCode::Invalid,
-                                "metadata parent is absent",
-                            )
-                        })?
-                        .0,
-                    io,
-                )?,
-            });
-            mutations.push(WorkspaceMutation::PutFile {
-                path: metadata_path,
-                bytes: receipt_bytes.mutation_bytes(io)?,
-            });
             let generation = self
                 .apply_authorized_generation(
                     &opened,
@@ -510,6 +496,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
                     active_io,
                     receipt_bytes,
+                    metadata_key,
                     staged,
                 )?
                 .await?;

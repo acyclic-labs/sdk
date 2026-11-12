@@ -24,31 +24,27 @@ pub fn filesystem_key(key: &IdempotencyKey) -> FilesystemKey {
     FilesystemKey::from_bytes(bytes)
 }
 
-pub(in crate::filesystem) fn content_metadata_path_io(
+pub(in crate::filesystem) fn content_metadata_key_io(
     volume: &VolumeRef,
     path: &str,
-    absolute: bool,
     io: Option<&PreparationIo>,
-) -> Result<String> {
+) -> Result<AttributeName> {
     let namespace = crate::executor::with_history_io(io, |work| volume.storage_name(work))?;
     let _hold = io
         .map(|io| io.guard_owned(namespace.capacity() as u64))
         .transpose()?;
-    content_metadata_path_in_namespace_io(&namespace, path, absolute, io)
+    content_metadata_key_in_namespace_io(&namespace, path, io)
 }
 
-// Publication indexes are volume-local, even when a fork or join inherits
-// their containing tree. A path-only key aliases the source's FileRef in the
-// destination. Bind custody at addressing time, before either record is read.
-pub(super) fn content_metadata_path_in_namespace_io(
+// A fork or join can inherit file annotations. Bind their keys to the destination
+// volume and path so it cannot adopt another publication's FileRef.
+pub(super) fn content_metadata_key_in_namespace_io(
     namespace: &str,
     path: &str,
-    absolute: bool,
     io: Option<&PreparationIo>,
-) -> Result<String> {
-    const PREFIX: &str = ".system/harness-file-metadata/v2/";
-    const SUFFIX: &str = ".json";
-    let capacity = usize::from(absolute) + PREFIX.len() + 64 + SUFFIX.len();
+) -> Result<AttributeName> {
+    const PREFIX: &[u8] = b"acyclic.harness.file-metadata.v1.";
+    let capacity = PREFIX.len() + 64;
     let hash_work = acyclic_fs::WorkCounters {
         bytes_hashed: path.len() as u64 + namespace.len() as u64 + 1,
         ..Default::default()
@@ -70,23 +66,20 @@ pub(super) fn content_metadata_path_in_namespace_io(
         })?;
         io.allocation_attempt(capacity as u64)?;
     }
-    let mut encoded = String::with_capacity(capacity);
-    if absolute {
-        encoded.push('/');
-    }
-    encoded.push_str(PREFIX);
-    encoded.push_str(&hash.to_hex());
-    encoded.push_str(SUFFIX);
+    let mut name = Vec::with_capacity(capacity);
+    name.extend_from_slice(PREFIX);
+    name.extend_from_slice(hash.to_hex().as_bytes());
     if let Some(io) = io {
-        if encoded.capacity() > capacity {
-            io.retain_owned((encoded.capacity() - capacity) as u64)?;
+        if name.capacity() > capacity {
+            io.retain_owned((name.capacity() - capacity) as u64)?;
         }
         io.charge(acyclic_fs::WorkCounters {
             bytes_copied: capacity as u64,
             ..Default::default()
         })?;
     }
-    Ok(encoded)
+    AttributeName::new(AttributeClass::Annotation, name)
+        .map_err(|error| Error::Storage(error.to_string()))
 }
 
 pub(crate) fn map_error(error: WorkspaceError) -> Error {

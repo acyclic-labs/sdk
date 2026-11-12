@@ -389,12 +389,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 &mut Some(&mut io.history_io()),
                             )?;
                             let metadata =
-                                content_metadata_path_io(volume, change.path(), true, Some(io))?;
+                                content_metadata_key_io(volume, change.path(), Some(io))?;
                             self.require_unchanged_content(
                                 &opened,
                                 source_generation,
                                 &selected_ref,
-                                [&metadata, &absolute],
+                                (&absolute, &metadata),
                                 Some(io),
                             )?
                             .await?;
@@ -509,9 +509,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             io.sdk(transaction.remove(&absolute, io, io.cancellation()).await)?;
                         }
                     }
-                    let metadata_path =
-                        content_metadata_path_io(volume, change.path(), true, Some(io))?;
                     if let Some(file) = record.file() {
+                        let metadata_key =
+                            content_metadata_key_io(volume, change.path(), Some(io))?;
                         let bytes = io.encode(
                             &(1_u8, (file, Option::<&GenerationRef>::None)),
                             io.remaining()?.bytes_encoded,
@@ -519,28 +519,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         )?;
                         io.sdk(
                             transaction
-                                .create_dir_all(
-                                    metadata_path
-                                        .rsplit_once('/')
-                                        .ok_or_else(|| io.invalid("metadata parent is absent"))?
-                                        .0,
+                                .change_named_attribute(
+                                    &absolute,
+                                    &metadata_key,
+                                    Some((
+                                        bytes.as_ref(),
+                                        acyclic_fs::NamedAttributeWriteMode::Upsert,
+                                    )),
                                     io,
                                     io.cancellation(),
                                 )
                                 .await,
                         )?;
-                        io.sdk(
-                            transaction
-                                .write(&metadata_path, bytes, io, io.cancellation())
-                                .await,
-                        )?;
-                    } else {
-                        io.sdk_if_present(
-                            transaction
-                                .remove(&metadata_path, io, io.cancellation())
-                                .await,
-                        )?;
                     }
+                    // Removing a file removes its annotation in the same mutation.
                 }
                 let root_fence = root_view
                     .as_ref()

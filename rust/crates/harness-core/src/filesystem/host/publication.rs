@@ -245,14 +245,15 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             "original upload receipt is not canonical",
         ));
     }
-    let metadata_path =
-        content_metadata_path_io(recorded.0.volume(), recorded.0.path(), true, Some(io))?;
-    let hold = io.guard_owned(metadata_path.capacity() as u64)?;
-    let metadata_path = (metadata_path, hold);
-    let metadata = read_generation(original, &metadata_path.0, None, Some(io)).await?;
-    let hold = io.guard_bytes(&metadata)?;
-    let metadata = (metadata, hold);
-    if metadata.0.as_ref() != receipt {
+    let metadata_key = content_metadata_key_io(recorded.0.volume(), recorded.0.path(), Some(io))?;
+    let _hold = io.guard_owned(metadata_key.retained_bytes() as u64)?;
+    let metadata =
+        read_file_annotation(original, recorded.0.path(), &metadata_key, None, Some(io)).await?;
+    let _metadata_hold = metadata
+        .as_ref()
+        .map(|bytes| io.guard_bytes(bytes))
+        .transpose()?;
+    if metadata.as_deref() != Some(receipt) {
         return Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,
