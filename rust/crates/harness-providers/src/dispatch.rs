@@ -43,7 +43,7 @@ pub(crate) fn generate_encoded<'a>(
         let input_bytes = body.len();
         let mut auth = auth;
         let mut attempt = GenerationAttempt::new(provider.config.retry, dispatch);
-        let mut response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None).await;
+        let mut response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None, &mut attempt.held).await;
         loop {
             let response_body = {
                 let exchange = attempt.exchange(provider, &body, dispatch, &mut auth, response,
@@ -73,10 +73,13 @@ pub(crate) fn generate_encoded<'a>(
                     if let ModelEvent::Completed { metadata } = &mut event {
                         projection::cache::attach(metadata, cache)?;
                         provider.observe(request, input_bytes, metadata)?;
+                        // The provider has finished serving this request.
+                        attempt.held = None;
                     }
                     yield event;
                 }
             }
+            attempt.held = None;
             let Some(error) = failure else {break;};
             if error.code() == acyclic_harness_core::wire::ErrorCode::Unavailable { yield ModelEvent::Restarted; }
             {
@@ -85,7 +88,7 @@ pub(crate) fn generate_encoded<'a>(
                 let mut recovery = core::pin::pin!(recovery);
                 while let Some(event) = recovery.next().await { yield event?; }
             }
-            response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None).await;
+            response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None, &mut attempt.held).await;
         }
     }
 }
@@ -117,6 +120,7 @@ pub(crate) async fn send(
     key: Option<&str>,
     account: Option<&str>,
     work: acyclic_fs::NativeWork<'_>,
+    held: &mut Option<crate::admission::Permit>,
 ) -> Result<HttpResponse> {
     #[cfg(not(target_arch = "wasm32"))]
     let mut allocation = work
@@ -162,7 +166,7 @@ pub(crate) async fn send(
                 .sum::<usize>();
         crate::native::retain(allocation, retained as u64)?;
     }
-    crate::http::send(provider.transport.as_ref(), request, work)?.await
+    crate::admission::send(provider, request, work, held).await
 }
 
 pub(crate) async fn encode(
@@ -266,6 +270,8 @@ pub(crate) fn headers(
 /// One generation's recovery owner, retained across every transport attempt.
 pub(crate) struct GenerationAttempt {
     attempt: crate::retry::Attempt,
+    /// The endpoint admission of the accepted response being read.
+    pub(crate) held: Option<crate::admission::Permit>,
 }
 
 /// One shared exchange's original observations, followed by its accepted body.
@@ -278,6 +284,7 @@ impl GenerationAttempt {
     pub(crate) fn new(spec: crate::RetrySpec, dispatch: ModelDispatch) -> Self {
         Self {
             attempt: crate::retry::Attempt::generation(spec, dispatch),
+            held: None,
         }
     }
 
@@ -340,6 +347,7 @@ impl GenerationAttempt {
                 auth.0.as_deref(),
                 auth.1.as_deref(),
                 work,
+                &mut self.held,
             )
             .await;
         }

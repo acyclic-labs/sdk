@@ -3,6 +3,7 @@
 acyclic_test_support::counting_allocator!();
 
 mod accounting;
+mod admission;
 mod alloy;
 mod alloy_spec;
 mod authorization;

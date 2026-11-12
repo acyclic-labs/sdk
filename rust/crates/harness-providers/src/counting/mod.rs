@@ -278,6 +278,8 @@ async fn exchange_count(
             work.claim(bytes as u64, 1, acyclic_fs::WorkCounters::UNCHARGED)
         })
         .transpose()?;
+    // Held while a count body is read, or as the opener of a provider delay.
+    let mut held = None;
     loop {
         let attempt = HttpRequest {
             method: http::Method::POST,
@@ -285,7 +287,7 @@ async fn exchange_count(
             headers: exchange.headers.clone(),
             body: exchange.body.clone(),
         };
-        let sent = crate::http::send(provider.transport.as_ref(), attempt, work)?.await;
+        let sent = crate::admission::send(provider, attempt, work, &mut held).await;
         if let Ok(response) = &sent {
             recovery.observe(response.status);
         }
@@ -304,6 +306,7 @@ async fn exchange_count(
             }
             Err(failure) => (failure, None),
         };
+        crate::admission::Permit::settle(&mut held);
         let Some(wait) = recovery.next(&failure, retry_after) else {
             return Err(failure);
         };

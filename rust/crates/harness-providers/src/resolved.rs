@@ -49,6 +49,8 @@ pub struct ResolvedModel {
     pub(crate) credential_scope: Option<[u8; 32]>,
     /// The platform transport with the endpoint's optional caller-selected deadline.
     pub(crate) transport: Arc<dyn HttpTransport>,
+    /// The registry's endpoint admissions, shared by every selection it resolves.
+    pub(crate) admission: Arc<crate::admission::Endpoints>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_login: Option<Arc<crate::CodexLogin>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -82,6 +84,7 @@ impl ResolvedModel {
             key: self.key.clone(),
             credential_scope: self.credential_scope,
             transport: self.transport.clone(),
+            admission: self.admission.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login: self.codex_login.clone(),
             #[cfg(not(target_arch = "wasm32"))]

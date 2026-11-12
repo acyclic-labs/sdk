@@ -14,6 +14,7 @@ pub struct Registry {
     default_model: Option<String>,
     inputs: Arc<CredentialInputs>,
     transport: Arc<dyn HttpTransport>,
+    admission: Arc<crate::admission::Endpoints>,
     resolver: Option<Arc<dyn crate::CredentialResolver>>,
     files: crate::files::Files,
     #[cfg(not(target_arch = "wasm32"))]
@@ -37,6 +38,7 @@ impl Registry {
             default_model: None,
             inputs: Arc::new(CredentialInputs::new(credentials)),
             transport,
+            admission: Arc::default(),
             resolver: None,
             files: crate::files::Files::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -250,6 +252,7 @@ impl Registry {
             key,
             credential_scope,
             transport,
+            admission: self.admission.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
             #[cfg(not(target_arch = "wasm32"))]

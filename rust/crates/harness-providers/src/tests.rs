@@ -395,6 +395,7 @@ pub(super) fn provider_with(
         },
         key: Some("scripted-key".into()),
         transport: crate::deadline::Bounded::new(transport, crate::TimeoutSpec::DEFAULT),
+        admission: Arc::default(),
         #[cfg(not(target_arch = "wasm32"))]
         codex_login: None,
         #[cfg(not(target_arch = "wasm32"))]

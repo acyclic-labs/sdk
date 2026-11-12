@@ -129,7 +129,7 @@ impl HttpTransport for Fixture {
     }
 }
 
-pub(super) fn work(cancel: &CancellationToken) -> Result<NativeMaterializationWork> {
+pub(crate) fn work(cancel: &CancellationToken) -> Result<NativeMaterializationWork> {
     NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
         cancel,

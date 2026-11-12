@@ -210,6 +210,7 @@ pub(crate) fn generate<'a>(
             } else {
                 work.remaining()?;
             }
+            let mut held = None;
             let response = dispatch::send(
                 provider,
                 body.clone(),
@@ -217,6 +218,7 @@ pub(crate) fn generate<'a>(
                 auth.0.as_deref(),
                 auth.1.as_deref(),
                 Some(work),
+                &mut held,
             )
             .await;
             NativeModelStream::new(work, || {
@@ -224,6 +226,7 @@ pub(crate) fn generate<'a>(
                     let provider = &current;
                     let _name_custody = name_custody;
                     let mut attempt = dispatch::GenerationAttempt::new(provider.config.retry, dispatch_id);
+                    attempt.held = held;
                     let mut response = response;
                     loop {
                     let response_body = {
@@ -256,9 +259,17 @@ pub(crate) fn generate<'a>(
                     {
                         let mut events = core::pin::pin!(events);
                         while let Some(event) = events.next().await {
-                            match event { Ok(event) => yield event, Err(error) => {failure = Some(error); break;} }
+                            match event {
+                                Ok(event) => {
+                                    // The provider has finished serving this request.
+                                    if matches!(event.0, ModelEvent::Completed { .. }) { attempt.held = None; }
+                                    yield event
+                                }
+                                Err(error) => {failure = Some(error); break;}
+                            }
                         }
                     }
+                    attempt.held = None;
                     let Some(error) = failure else {break;};
                     if error.code() == acyclic_harness_core::wire::ErrorCode::Unavailable {
                         let event = ModelEvent::Restarted;
@@ -274,7 +285,7 @@ pub(crate) fn generate<'a>(
                             yield (event, custody);
                         }
                     }
-                    response = dispatch::send(provider, body.clone(), dispatch_id, auth.0.as_deref(), auth.1.as_deref(), Some(work)).await;
+                    response = dispatch::send(provider, body.clone(), dispatch_id, auth.0.as_deref(), auth.1.as_deref(), Some(work), &mut attempt.held).await;
                     }
                 }
             }).map(|stream| stream.with_delivery(acyclic_harness_core::model::ModelDelivery::Live))
