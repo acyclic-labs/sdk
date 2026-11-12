@@ -254,7 +254,10 @@ where
 
 // Match the service's persistent state-root selection before consulting OS
 // defaults. Known Folder lookup ignores an explicitly supplied LOCALAPPDATA.
-// A persistent root must be absolute before any directory is created.
+// A persistent root must be absolute before any directory is created. The
+// root is configuration: without an explicit one, a test build mounts below
+// its own executable's temporary root and never in the user's profile, so no
+// test can leave a mount in state that builds or the user's session share.
 fn persistent_base() -> Option<PathBuf> {
     #[cfg(windows)]
     if let Some(directory) =
@@ -263,12 +266,63 @@ fn persistent_base() -> Option<PathBuf> {
         return Some(directory.into());
     }
     #[cfg(not(windows))]
+    if let Some(directory) =
+        std::env::var_os("XDG_STATE_HOME").filter(|directory| Path::new(directory).is_absolute())
     {
-        if let Some(directory) = std::env::var_os("XDG_STATE_HOME")
-            .filter(|directory| Path::new(directory).is_absolute())
-        {
-            return Some(directory.into());
+        return Some(directory.into());
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    return process_base();
+    #[cfg(not(any(test, feature = "test-support")))]
+    profile_base()
+}
+
+/// One private state root per test executable. Every process the test binary
+/// spawns from itself derives the same root, so a parent and its children see
+/// one registry and one set of fences, exactly as cooperating product
+/// processes share a configured root. It is never the user's profile.
+#[cfg(any(test, feature = "test-support"))]
+fn process_base() -> Option<PathBuf> {
+    static BASE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        let executable = std::env::current_exe().ok()?;
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"acyclic-fs/test-state-root/v1\0");
+        identity.update(executable.as_os_str().as_encoded_bytes());
+        // Linux shares one temporary directory between users; macOS and
+        // Windows temporary directories are already per user.
+        #[cfg(target_os = "linux")]
+        let owner = nix::unistd::geteuid().as_raw();
+        #[cfg(target_os = "linux")]
+        identity.update(&owner.to_le_bytes());
+        let base = std::env::temp_dir().join(format!(
+            "acyclic-native-mount-{}",
+            &identity.finalize().to_hex()[..32]
+        ));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        match builder.create(&base) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return None,
         }
+        // A shared temporary directory must not hand this user's root to a
+        // name another user planted first.
+        let metadata = std::fs::symlink_metadata(&base).ok()?;
+        #[cfg(target_os = "linux")]
+        if std::os::unix::fs::MetadataExt::uid(&metadata) != owner {
+            return None;
+        }
+        (metadata.is_dir() && !metadata.file_type().is_symlink()).then_some(base)
+    })
+    .clone()
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+fn profile_base() -> Option<PathBuf> {
+    #[cfg(not(windows))]
+    {
         if let Some(directory) =
             std::env::var_os("HOME").filter(|directory| Path::new(directory).is_absolute())
         {
