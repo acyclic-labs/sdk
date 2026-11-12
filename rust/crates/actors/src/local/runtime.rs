@@ -541,11 +541,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let provider = self.store.provider();
         let (dispatch_store, dispatch_actor) = self.dispatcher_store()?;
         let dispatcher = self.dispatcher(&dispatch_store, &dispatch_actor).await?;
-        // A cursor alone would forget all previously discovered subscriptions
-        // and alarms. Rebuild residents from current state names, without
-        // replaying their creation history. New creations race safely with the
-        // enumeration: the follow starts at the checkpoint read BEFORE it.
-        self.restore().await?;
+        // Placement admits resident work explicitly. Never rebuild ownership
+        // by enumerating every dormant actor under the state root.
         let from = dispatcher
             .state()
             .and_then(|state| state.cursor("activation"))
