@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { resolveTagTarget } from "./publish-release-assets.mjs";
@@ -15,15 +16,30 @@ test("an unobservable publication preserves its exact caller arguments through t
   const arguments_ = [marker, "space name", "single'quote", 'double"quote', "$() remains data", "` remains data", "line\nbreak"];
   const module = new URL("./registry-publication.mjs", import.meta.url).href;
   writeFileSync(fixture, `
-import { RegistryPublicationUnobservable } from ${JSON.stringify(module)};
-import { existsSync, writeFileSync } from "node:fs";
+import { RegistryPublicationUnobservable, observePublication } from ${JSON.stringify(module)};
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { createHash } from "node:crypto";
 const args = process.argv.slice(2);
-if (existsSync(args[0])) {
-  process.stdout.write(JSON.stringify({ state: "accepted", args }));
-} else {
-  writeFileSync(args[0], "accepted");
-  const pending = new RegistryPublicationUnobservable("fixture", "archive", "1", { visible: false });
-  process.stdout.write(JSON.stringify({ code: pending.code, recovery: pending.recovery, args }));
+const identity = { registry: "fixture", sourceSha: "a".repeat(40), name: "archive", version: "1", expectedDigest: "sha256:" + createHash("sha256").update("accepted").digest("hex") };
+let result;
+try {
+  await observePublication(identity, async observation => {
+    observation.visible = existsSync(args[0]);
+    if (args.at(-1) === "read-failure") {
+      observation.phase = "read";
+      readFileSync(args[0] + ".missing");
+    }
+    if (observation.visible) {
+      result = { state: "accepted", args };
+    } else {
+      writeFileSync(args[0], "accepted");
+      throw new RegistryPublicationUnobservable("fixture", "archive", "1", { visible: false });
+    }
+  }, dirname(args[0]));
+  process.stdout.write(JSON.stringify(result));
+} catch (error) {
+  process.stdout.write(JSON.stringify({ code: error.code, recovery: error.recovery, args }));
 }
 `);
   const invoke = (program, args) => {
@@ -42,9 +58,22 @@ if (existsSync(args[0])) {
     const first = JSON.parse(pending.stdout);
     assert.equal(first.code, "REGISTRY_PUBLICATION_UNOBSERVABLE");
     assert.deepEqual(first.args, arguments_);
+    const records = readdirSync(directory).filter(name => name.endsWith(".json"));
+    assert.equal(records.length, 1);
+    const record = join(directory, records[0]);
+    const observed = JSON.parse(readFileSync(record, "utf8"));
+    assert.deepEqual(observed, { $version: 1, registry: "fixture", sourceSha: "a".repeat(40),
+      name: "archive", version: "1", expectedDigest: "sha256:" + createHash("sha256").update("accepted").digest("hex"), observation: { visible: false, error: { name: "RegistryPublicationUnobservable", code: "REGISTRY_PUBLICATION_UNOBSERVABLE" } } });
     const resumed = shell(first.recovery);
     assert.equal(resumed.status, 0, `step=publication-resume ${resumed.stderr}; recovery command: ${first.recovery}`);
     assert.deepEqual(JSON.parse(resumed.stdout), { state: "accepted", args: arguments_ });
+    assert.equal(JSON.parse(readFileSync(record, "utf8")).observation.visible, true);
+
+    const failedRead = invoke(process.execPath, [fixture, ...arguments_, "read-failure"]);
+    assert.equal(failedRead.status, 0, failedRead.stderr);
+    assert.equal(JSON.parse(failedRead.stdout).code, "ENOENT");
+    assert.deepEqual(JSON.parse(readFileSync(record, "utf8")).observation,
+      { visible: true, phase: "read", error: { name: "Error", code: "ENOENT" } });
 
     // Restoring a naive quote leaves the original apostrophe unpaired. The
     // real shell must refuse it rather than executing a different argument list.

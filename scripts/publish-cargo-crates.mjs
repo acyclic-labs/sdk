@@ -5,7 +5,7 @@ import { readFileSync, unlinkSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { RegistryPublicationUnobservable, publicationCommand } from "./registry-publication.mjs";
+import { RegistryPublicationUnobservable, publicationCommand, observePublication } from "./registry-publication.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const order = JSON.parse(readFileSync(join(root, "release", "cargo-crates.json"), "utf8"));
@@ -141,30 +141,38 @@ async function publish(sourceSha, releaseVersion) {
   for (const name of order) {
     const item = packages.get(name);
     const checksum = archiveChecksum(name, releaseVersion, item);
-    const observed = await registryVersion(name, releaseVersion);
-    if (observed) {
-      if (observed.yanked) fail(`${name}@${releaseVersion} is yanked`);
-      const match = registryArchiveMatches(name, releaseVersion, observed, checksum, sourceSha, item);
-      if (!match) fail(`${name}@${releaseVersion} exists with different contents`);
-      console.log(`Already published ${match} crate: ${name}@${releaseVersion}`);
-      continue;
-    }
-    const result = run("cargo", ["publish", "--locked", "--no-verify", "--manifest-path", item.manifest_path], { stdio: "inherit" });
-    // The publisher has ended. Inspect propagation once, preserving exact bytes
-    // even when that publisher lost its success reply or another caller won.
-    const published = await registryVersion(name, releaseVersion);
-    if (!published) {
-      if (result.status !== 0) {
-        fail(`step=cargo-publication ${name}@${releaseVersion} failed and its acceptance is unobservable; recovery command: ${publicationCommand()}`);
-      }
-      throw new RegistryPublicationUnobservable("cargo", name, releaseVersion,
-        { visible: false, publicationStatus: result.status });
-    }
-    if (published.yanked) fail(`step=cargo-publication-identity ${name}@${releaseVersion} is yanked; recovery command: ${publicationCommand()}`);
-    if (!registryArchiveMatches(name, releaseVersion, published, checksum, sourceSha, item)) {
-      fail(`step=cargo-publication-identity ${name}@${releaseVersion} exists with different contents; recovery command: ${publicationCommand()}`);
-    }
-    console.log(`Published and verified: ${name}@${releaseVersion}`);
+    await observePublication(
+      { registry: "cargo", sourceSha, name, version: releaseVersion, expectedDigest: `sha256:${checksum}` },
+      async observation => {
+        observation.phase = "archive";
+        const observed = observation.registry = await registryVersion(name, releaseVersion);
+        if (observed) {
+          if (observed.yanked) fail(`${name}@${releaseVersion} is yanked`);
+          const match = registryArchiveMatches(name, releaseVersion, observed, checksum, sourceSha, item);
+          if (!match) fail(`${name}@${releaseVersion} exists with different contents`);
+          console.log(`Already published ${match} crate: ${name}@${releaseVersion}`);
+          return;
+        }
+        observation.phase = "publication";
+        const result = run("cargo", ["publish", "--locked", "--no-verify", "--manifest-path", item.manifest_path], { stdio: "inherit" });
+        observation.publicationStatus = result.status;
+        // Inspect propagation once after the original publisher has ended.
+        observation.phase = "archive";
+        const published = observation.registry = await registryVersion(name, releaseVersion);
+        if (!published) {
+          if (result.status !== 0) {
+            fail(`step=cargo-publication ${name}@${releaseVersion} failed and its acceptance is unobservable; recovery command: ${publicationCommand()}`);
+          }
+          throw new RegistryPublicationUnobservable("cargo", name, releaseVersion,
+            { visible: false, publicationStatus: result.status });
+        }
+        if (published.yanked) fail(`step=cargo-publication-identity ${name}@${releaseVersion} is yanked; recovery command: ${publicationCommand()}`);
+        if (!registryArchiveMatches(name, releaseVersion, published, checksum, sourceSha, item)) {
+          fail(`step=cargo-publication-identity ${name}@${releaseVersion} exists with different contents; recovery command: ${publicationCommand()}`);
+        }
+        console.log(`Published and verified: ${name}@${releaseVersion}`);
+      },
+    );
   }
 }
 
