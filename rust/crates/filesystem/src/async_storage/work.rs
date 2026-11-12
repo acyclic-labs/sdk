@@ -386,7 +386,7 @@ impl<E> From<acyclic_stream::StreamError> for AuthorityError<E> {
 /// Seals authority publication after planning and during recovery.
 pub trait AuthorityGuard: ProviderTask {
     /// The owner's rejection type.
-    type Error: Send;
+    type Error: ProviderTask;
     /// Checks the current owner against the same operation work.
     fn seal(
         &mut self,

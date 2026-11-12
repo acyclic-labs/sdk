@@ -195,7 +195,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         guard: Option<&mut G>,
     ) -> Result<(Volume<A, O>, ObjectId), E>
     where
-        E: From<FsError> + Send,
+        E: From<FsError> + acyclic_stream::ProviderTask,
         G: crate::AuthorityGuard,
         G::Error: Into<E>,
     {
@@ -245,7 +245,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         guard: Option<&mut G>,
     ) -> Result<Volume<A, O>, E>
     where
-        E: From<FsError> + Send,
+        E: From<FsError> + acyclic_stream::ProviderTask,
         G: crate::AuthorityGuard,
         G::Error: Into<E>,
     {

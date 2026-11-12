@@ -14,7 +14,7 @@ pub(super) async fn publish_generation_async_inner<P, E, F, Fut, G, Dispatch>(
 ) -> Result<RetainedPublication<ProofGuard>, E>
 where
     P: PublicationOwner,
-    E: From<crate::FsError> + Send,
+    E: From<crate::FsError> + acyclic_stream::ProviderTask,
     F: FnMut(Option<WorkBudget>) -> Fut + ProviderTask,
     Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + ProviderTask,
     G: FnMut(GuardedAppend, Option<WorkBudget>) -> Dispatch + acyclic_stream::ProviderTask,

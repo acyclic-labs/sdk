@@ -14,7 +14,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         mut before_publication: F,
     ) -> crate::MeasuredResult<OperationReceipt<LivePublicationObservation>, E>
     where
-        E: From<FsError> + Send,
+        E: From<FsError> + acyclic_stream::ProviderTask,
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + ProviderTask,
     {
@@ -62,7 +62,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         mut before_publication: F,
     ) -> crate::MeasuredResult<OperationReceipt<LivePublicationObservation>, E>
     where
-        E: From<FsError> + Send,
+        E: From<FsError> + acyclic_stream::ProviderTask,
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + ProviderTask,
     {
@@ -94,7 +94,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
     ) -> crate::MeasuredResult<OperationReceipt<LivePublicationObservation>, E>
     where
-        E: From<FsError> + Send,
+        E: From<FsError> + acyclic_stream::ProviderTask,
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + ProviderTask,
     {
@@ -146,7 +146,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         before_publication: &mut F,
     ) -> crate::MeasuredResult<OperationReceipt<LivePublicationObservation>, E>
     where
-        E: From<FsError> + Send,
+        E: From<FsError> + acyclic_stream::ProviderTask,
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + ProviderTask,
     {

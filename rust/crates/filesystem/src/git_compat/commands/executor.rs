@@ -7,7 +7,7 @@ use super::*;
 /// grows with what a backend does.
 pub trait GitFilesystemExecutor: acyclic_stream::ProviderPlatform {
     /// Executor failure.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 
     /// Confirms that the caller still owns any writer lease governing this command.
     fn validate(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<(), Self::Error>> {

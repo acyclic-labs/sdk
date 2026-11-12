@@ -53,7 +53,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         mut before_publication: F,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, E>
     where
-        E: From<WorkspaceError> + From<FsError> + Send,
+        E: From<WorkspaceError> + From<FsError> + acyclic_stream::ProviderTask,
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + ProviderTask,
     {
@@ -170,7 +170,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         before_publication: &mut F,
     ) -> Result<TransactionCommit<A, O>, E>
     where
-        E: From<FsError> + Send + 'static,
+        E: From<FsError> + acyclic_stream::ProviderTask + 'static,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {

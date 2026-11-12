@@ -63,11 +63,11 @@ export function wasmAssetClosure(recovery) {
   };
 }
 
-/** The build verifier uses the same compiled-module import contract as the
- * hosted engine. Its loader can open only this artifact's declared modules. */
-export async function loadHostedArtifact(entry, assets) {
+/** Load the original module snapshots already verified with the artifact.
+ * The loader cannot open undeclared files or observe later file changes. */
+export async function loadHostedArtifact(entry, assets, files) {
   const {plugin} = await import('bun');
-  const modules = new Map(assets.map(asset => [join(dirname(entry), asset.path), asset]));
+  const modules = new Map(assets.map(asset => [join(dirname(entry), asset.path), files.get(asset.path)]));
   const directory = dirname(entry)+sep;
   const namespace = 'hosted-wasm-'+crypto.createHash('sha256').update(entry).digest('hex');
   plugin({name:'hosted-artifact-modules', setup(build) {
@@ -78,12 +78,7 @@ export async function loadHostedArtifact(entry, assets) {
       return {path:selected, namespace};
     });
     build.onLoad({filter:/.*/, namespace}, ({path}) => {
-      const asset = modules.get(path);
-      if (!asset) throw Error('HostedWasmAssetUndeclared');
-      const bytes = fs.readFileSync(path);
-      if (bytes.length !== asset.size || crypto.createHash('sha256').update(bytes).digest('hex') !== asset.sha256)
-        throw Error('HostedWasmAssetChanged');
-      return {loader:'object', exports:{default:new WebAssembly.Module(bytes)}};
+      return {loader:'object', exports:{default:new WebAssembly.Module(modules.get(path))}};
     });
   }});
   return import(pathToFileURL(entry).href);

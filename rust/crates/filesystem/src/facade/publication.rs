@@ -94,7 +94,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
     ) -> crate::MeasuredResult<OperationReceipt<LivePublicationObservation>, E>
     where
-        E: From<FsError> + Send,
+        E: From<FsError> + acyclic_stream::ProviderTask,
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + ProviderTask,
     {
@@ -212,7 +212,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         original_fingerprint_permit: Option<PublicationPermit>,
     ) -> Result<LivePublicationObservation, E>
     where
-        E: From<FsError> + Send + 'static,
+        E: From<FsError> + acyclic_stream::ProviderTask + 'static,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -254,7 +254,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
     ) -> Result<LivePublicationObservation, E>
     where
-        E: From<FsError> + Send + 'static,
+        E: From<FsError> + acyclic_stream::ProviderTask + 'static,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -311,7 +311,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
     ) -> Result<LivePublicationObservation, E>
     where
-        E: From<FsError> + Send + 'static,
+        E: From<FsError> + acyclic_stream::ProviderTask + 'static,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -423,7 +423,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         original_fingerprint_permit: Option<PublicationPermit>,
     ) -> Result<Option<LivePublicationObservation>, E>
     where
-        E: From<FsError> + Send + 'static,
+        E: From<FsError> + acyclic_stream::ProviderTask + 'static,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -561,7 +561,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         original_fingerprint_permit: Option<PublicationPermit>,
     ) -> crate::MeasuredResult<OperationReceipt<Option<LivePublicationObservation>>, E>
     where
-        E: From<FsError> + Send,
+        E: From<FsError> + acyclic_stream::ProviderTask,
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + ProviderTask,
     {

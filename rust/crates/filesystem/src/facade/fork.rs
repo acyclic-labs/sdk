@@ -203,7 +203,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     where
         G: crate::AuthorityGuard,
         G::Error: Into<E>,
-        E: From<FsError> + From<WorkspaceError> + Send,
+        E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
     {
         let cancellation = accounting.cancellation();
         let destination_id = self.workspace_id_for_name(&destination, accounting)?;
@@ -282,7 +282,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     where
         G: crate::AuthorityGuard,
         G::Error: Into<E>,
-        E: From<FsError> + From<WorkspaceError> + Send,
+        E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
     {
         let permit = publication.permit;
         let prepared = self

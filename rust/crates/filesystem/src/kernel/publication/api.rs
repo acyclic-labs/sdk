@@ -54,7 +54,7 @@ pub(crate) async fn publish_generation_async_guarded<P, E, F, Fut>(
 ) -> Result<RetainedPublication<ProofGuard>, OperationFailure<E>>
 where
     P: PublicationOwner,
-    E: From<crate::FsError> + Send,
+    E: From<crate::FsError> + acyclic_stream::ProviderTask,
     F: FnMut(WorkBudget) -> Fut + ProviderTask,
     Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + ProviderTask,
 {
@@ -147,7 +147,7 @@ pub(super) fn native_publication_owner<E, F, Fut>(
 + Send
 + 'static
 where
-    E: From<crate::FsError> + Send + 'static,
+    E: From<crate::FsError> + acyclic_stream::ProviderTask + 'static,
     F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Result<(), E>> + Send + 'static,
 {
@@ -197,7 +197,7 @@ pub(crate) async fn publish_generation_async_guarded_with_native_work<'a, P, E, 
 ) -> Result<RetainedPublication<crate::NativeAllocation>, E>
 where
     P: PublicationOwner,
-    E: From<crate::FsError> + Send + 'static,
+    E: From<crate::FsError> + acyclic_stream::ProviderTask + 'static,
     F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Result<(), E>> + Send + 'static,
 {

@@ -56,7 +56,7 @@ try {
   write(staged, [HARNESS_MODULE.file, ...declared]);
   verifyArtifact(manifest, deployment.environment, deployment.entry, entry, declared,
     declared.map(path => readFileSync(join(staged, path))));
-  const { actor } = await loadHostedArtifact(join(staged, HARNESS_MODULE.file), [...assets.values()]);
+  const { actor } = await loadHostedArtifact(join(staged, HARNESS_MODULE.file), [...assets.values()], files);
   // The modules instantiate from declared assets; the unbound authority is then refused typed.
   const env = Object.fromEntries(Object.values(HARNESS_BINDINGS).filter(name => name !== HARNESS_BINDINGS.authority)
     .map(name => [name, {}]));
