@@ -328,7 +328,8 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
         .await?;
     let mounts = &publisher.tools.workspace.mounts;
     crate::local::workspace::volumes::native_scope(mounts, async |claims| {
-        let path = mounts
+        let path = claims
+            .mounts()
             .named(Some("home"))?
             .1
             .native_root
@@ -336,6 +337,8 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
             .expect("bound home")
             .join("note");
         assert_eq!(std::fs::read(&path).map_err(storage)?, b"original");
+        // A logical write never waits on a running command, and never
+        // changes the command's own view under it.
         publisher
             .stage_at(
                 OperationId::new(),
@@ -345,11 +348,21 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
                 None,
             )?
             .await?;
-        assert_eq!(
-            std::fs::read(path).map_err(storage)?,
-            b"live replacement",
-            "logical replacement did not refresh the active projection"
-        );
+        assert_eq!(std::fs::read(path).map_err(storage)?, b"original");
+        Ok(((), claims))
+    })
+    .await?;
+    // The command changed nothing, so its hand-back keeps the logical write.
+    crate::local::workspace::volumes::native_scope(mounts, async |claims| {
+        let path = claims
+            .mounts()
+            .named(Some("home"))?
+            .1
+            .native_root
+            .override_path()
+            .expect("bound home")
+            .join("note");
+        assert_eq!(std::fs::read(path).map_err(storage)?, b"live replacement");
         Ok(((), claims))
     })
     .await?;
@@ -633,7 +646,8 @@ async fn check_auxiliary_publication(mounting: crate::local::WorkspaceMounting) 
         crate::local::workspace::volumes::native_scope(mounts, async |claims| {
             assert_eq!(
                 std::fs::read(
-                    mounts
+                    claims
+                        .mounts()
                         .named(Some("home"))?
                         .1
                         .native_root

@@ -59,10 +59,10 @@ pub(super) struct MountedVolume {
     pub(super) options: Option<acyclic_fs::MountOptions>,
     pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
-    /// Native execution scopes currently using `native`.
+    /// Host sessions currently using `native`.
     pub(super) users: StateArc<projection::Users>,
-    /// Serializes preflight synchronization of the selected projection.
-    pub(super) execution: StateArc<AsyncMutex<()>>,
+    /// Signs each native command's own view of this volume.
+    pub(super) authority: Option<crate::filesystem::NativeMountAuthority>,
     // Retires the exact index entry after this physical source's fields.
     _binding: Option<acyclic_fs::kernel::allocation::ErasedRetainedArc>,
 }
