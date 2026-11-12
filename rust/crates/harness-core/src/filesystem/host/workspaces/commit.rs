@@ -212,14 +212,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })
     }
 
-    pub(in crate::filesystem::host) fn commit_publication<'a>(
-        transaction: acyclic_fs::Transaction<A, O>,
-        io: &'a PreparationIo,
-        publication: FilePublication<'a>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
-        Self::commit_contextual_publication(transaction, io, publication, None)
-    }
-
     pub(in crate::filesystem::host) fn commit_contextual_publication<'a>(
         mut transaction: acyclic_fs::Transaction<A, O>,
         io: &'a PreparationIo,
