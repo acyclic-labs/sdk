@@ -81,7 +81,9 @@ async function own(config) {
 async function ownRun(config, { directory, socket }) {
   const artifacts = mkdtempSync(join(directory, "run-"));
   const terminal = new Terminal({ cols: config.cols, rows: config.rows, allowProposedApi: true });
-  const processes = new Processes({ transcripts: join(artifacts, "process") });
+  const transcripts = join(artifacts, "process");
+  mkdirSync(transcripts, { mode: 0o700 });
+  const processes = new Processes({ transcripts });
   const pending = new Set(), clients = new Set();
   const started = performance.now();
   let running, painted = false, ending = false, failure, cast, framesLog, recordingStarted;
