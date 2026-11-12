@@ -16,7 +16,7 @@ arena board --badge badge.svg
 
 1. N forks of the working tree: `acyclic fork -n N` overlay mounts if acyclic is set up, otherwise git worktrees.
 2. One headless `opencode run` per fork, on the model you chose, or on the tier Jev routed the task to.
-3. Your test command runs in each fork; its tail is captured.
+3. Your test command runs in each fork; its complete output is captured.
 4. Every fork's diff and test output go into one state. Jev answers in one request: which fork wins, is each safe to land, how complete is each.
 5. The winner is landed if its tests pass and Jev's confidence clears the threshold. Tests are the ground truth: a passing probe overrides the referee's safety doubt, a failing one overrides its confidence, and the referee decides alone only when no test command was given. The rest evaporate.
 6. Every fork, worker cost, verdict, and promotion is a line in a hash-chained JSONL log.
@@ -36,7 +36,9 @@ arena board --badge badge.svg
 
 ## What leaves your machine
 
-Every race posts the rendered state to OpenRouter: the task text, each fork's changed paths, unified diffs of the changed files (capped at `maxDiffChars`, default 1500 per file), and the last 12 lines of test output. Credential-shaped strings (API keys, AWS and GitHub tokens, `token=`/`password=` pairs, private key blocks) are scrubbed first; pass `redact: false` to turn that off. The scrubber is pattern-based, so keep secrets out of files a worker might touch and out of test output rather than relying on it. `--save-states` writes the same rendered state to disk.
+Every race posts the rendered state to OpenRouter: the task text, every fork's changed paths, complete unified diffs, and complete test output. Explicit `maxFiles` and `maxDiffChars` options select excerpts with omission markers. Credential-shaped strings (API keys, AWS and GitHub tokens, `token=`/`password=` pairs, private key blocks) are scrubbed first; pass `redact: false` to turn that off. The scrubber is pattern-based, so keep secrets out of files a worker might touch and out of test output rather than relying on it. `--save-states` writes the same rendered state to disk.
+
+Workers and test commands have no default deadline. Use `--timeout <seconds>` for workers or `--test-timeout <seconds>` for test commands; library callers can set `workerTimeoutMs` and `testTimeoutMs` on `RaceOptions`. `WorkerOptions.timeoutMs` remains an explicit deadline for a directly started worker.
 
 ## Honest notes
 
