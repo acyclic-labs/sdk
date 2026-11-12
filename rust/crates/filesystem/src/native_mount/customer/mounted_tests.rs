@@ -244,11 +244,16 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     }
     let publication_work = new_work(WorkBudget::UNBOUNDED)?;
     let denied = mount
-        .sync_with_permit(PublicationPermit::Unrestricted, &publication_work, |_| {
-            ready(Err::<(), _>(MountLifecycleError::Source(
-                MountSourceError::Stale,
-            )))
-        })
+        .sync_with_permit(
+            PublicationPermit::Unrestricted,
+            &publication_work,
+            None,
+            |_| {
+                ready(Err::<(), _>(MountLifecycleError::Source(
+                    MountSourceError::Stale,
+                )))
+            },
+        )
         .await
         .err()
         .ok_or("owner guard was bypassed")?;
@@ -261,6 +266,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         .sync_with_permit(
             PublicationPermit::Unrestricted,
             &publication_work,
+            None,
             move |work: &NativeMaterializationWork| {
                 assert!(work.shares_allocation_context(&callback_work));
                 ready(Ok::<(), MountLifecycleError>(()))

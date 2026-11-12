@@ -1335,7 +1335,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             .ok_or_else(|| Error::NotFound("visible cut".into()))?
             .map_err(agent)?
             .generation,
-        snapshot.generation
+        snapshot.cut.generation
     );
     assert!(snapshot.files["absent-row"].is_none());
     assert_eq!(
@@ -1345,7 +1345,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             .text,
         "changed after selection"
     );
-    let waiting = client.agent_files(paths.clone(), Some(snapshot.generation.clone()));
+    let waiting = client.agent_files(paths.clone(), Some(snapshot.cut.clone()));
     futures::pin_mut!(waiting);
     assert!(
         futures::poll!(waiting.as_mut()).is_pending(),
@@ -1364,12 +1364,12 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             .ok_or_else(|| Error::NotFound("published visible cut".into()))?
             .map_err(agent)?
             .generation,
-        updated.generation
+        updated.cut.generation
     );
     visible.retain(std::iter::empty(), 0);
     assert!(visible.snapshot(&root).is_none());
     assert!(futures::poll!(futures::future::poll_fn(|cx| visible.poll_changed(cx))).is_pending());
-    assert_ne!(updated.generation, snapshot.generation);
+    assert_ne!(updated.cut.generation, snapshot.cut.generation);
     assert_eq!(
         updated.files["directory-a"]
             .as_ref()

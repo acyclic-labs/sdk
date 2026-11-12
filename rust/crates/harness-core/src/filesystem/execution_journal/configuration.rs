@@ -14,6 +14,36 @@ where
         *self.verified.get_mut() = SummaryCache::default();
     }
 
+    pub(crate) fn with_run_admission(
+        mut self,
+        source: Option<crate::supervision::RunAdmissionSource>,
+    ) -> Self {
+        self.run_admission = source;
+        self.invalidate_execution_caches();
+        self
+    }
+
+    /// Publish lifecycle observations at the original journal commit. `start`
+    /// selects only the first segment of the run, excluding resumed segments
+    /// and self-continuations. Replays use the journal's original identity.
+    pub fn with_agent_events(
+        mut self,
+        agent: crate::agent::AgentPath,
+        run: OperationId,
+        input: u64,
+        start: bool,
+    ) -> Self {
+        self.agent_events = Some((agent, run, input, start));
+        self.invalidate_execution_caches();
+        self
+    }
+
+    pub(crate) fn with_actor_admission(mut self, path: Option<acyclic_stream::StreamPath>) -> Self {
+        self.actor_admission = path;
+        self.invalidate_execution_caches();
+        self
+    }
+
     /// Binds passive replay to an original turn without granting a task lease.
     #[doc(hidden)]
     pub fn with_turn(mut self, operation: OperationId, turn: OperationId) -> Self {
@@ -146,6 +176,9 @@ where
             boundary: None,
             agent_approvals: None,
             execution: None,
+            agent_events: None,
+            actor_admission: None,
+            run_admission: None,
             verified: tokio::sync::Mutex::new(SummaryCache::default()),
             history_read_limits: None,
             #[cfg(not(target_arch = "wasm32"))]

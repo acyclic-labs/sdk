@@ -82,7 +82,7 @@ fn check(mut parsed: args::Args) {
             || (!parsed.host_workspace
                 && matches!(
                     parsed.command,
-                    None | Some(Command::Run | Command::Exec { .. } | Command::Doctor)
+                    None | Some(Command::Run { .. } | Command::Exec { .. } | Command::Doctor)
                 )
                 && parsed.output_format == OutputFormat::Jsonl),
         "output options require JSONL execution or configuration diagnosis"

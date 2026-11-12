@@ -189,6 +189,17 @@ pub(crate) fn clone_file(file: &FileRef, io: Option<&PreparationIo>) -> Result<F
     charge_items(io, 1)?;
     with_history_io(io, |work| file.copy(work))
 }
+pub(crate) fn clone_resource(
+    resource: &crate::resources::ResourceRef,
+    io: Option<&PreparationIo>,
+) -> Result<crate::resources::ResourceRef> {
+    with_history_io(io, |work| {
+        let mut quota = CodecQuota::new(work, 0)?;
+        let value = crate::core::copy_resource(resource, &mut quota)?;
+        quota.transfer();
+        Ok(value)
+    })
+}
 pub(crate) fn clone_value(value: &Value, io: Option<&PreparationIo>) -> Result<Value> {
     with_history_io(io, |work| {
         let mut quota = CodecQuota::new(work, 0)?;

@@ -471,11 +471,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .as_ref()
                         .or_else(|| change.path_source().map(|source| &source.generation));
                     if let Some(source_generation) = source_generation {
+                        let absolute = crate::executor::preparation_format(
+                            format_args!("/{}", change.path()),
+                            &mut Some(&mut io.history_io()),
+                        )?;
+                        if let Some(source) = change.source() {
+                            let pinned = if source_generation == &selected_ref {
+                                selected.clone()
+                            } else {
+                                self.generation(&opened, source_generation, Some(io))
+                                    .await?
+                            };
+                            Self::authenticate_selected_file(
+                                &opened, &pinned, source, &absolute, io,
+                            )
+                            .await?;
+                        }
                         if source_generation != &selected_ref {
-                            let absolute = crate::executor::preparation_format(
-                                format_args!("/{}", change.path()),
-                                &mut Some(&mut io.history_io()),
-                            )?;
                             let metadata =
                                 content_metadata_key_io(volume, change.path(), Some(io))?;
                             self.require_unchanged_content(
@@ -680,7 +692,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let version = bounded_io::hex_key(generation_ref.as_resource().key(), Some(io))?;
         let mut members = crate::model::vec_with_capacity(capacity, Some(io))?;
         for member in originals {
-            let member = match member? {
+            let member = member?;
+            let member = match member {
                 ContentChangeResult::Created(file) => {
                     ContentChangeResult::Created(self.finish_change_file(file, &version, io)?)
                 }

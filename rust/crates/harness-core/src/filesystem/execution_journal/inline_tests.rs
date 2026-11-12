@@ -1,6 +1,7 @@
 use super::*;
 use crate::executor::ModelPurpose;
 use crate::model::{Model, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest};
+use acyclic_stream::StreamProviderExt as _;
 
 type Journal = FilesystemExecutionJournal<
     acyclic_stream::MemoryStream,
@@ -89,6 +90,170 @@ fn events() -> Vec<ModelEvent> {
             metadata: serde_json::json!({"usage": {"input_tokens": 1}}),
         },
     ]
+}
+
+#[tokio::test]
+async fn resumed_exhausted_reservation_refuses_new_dispatch_but_keeps_original_replay() -> Result<()>
+{
+    use crate::supervision::{Action, Kind, Policy, Reservation, RunAdmission, RunAdmissionSource};
+    let (journal, _issuer) = test_support::journal().await?;
+    let operation = OperationId::new();
+    let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([70; 16]));
+    let policy = Policy {
+        no_progress_turns: Some(10),
+        reservation: Reservation {
+            tokens: Some(2),
+            usd_micros: None,
+        },
+        ..Default::default()
+    };
+    let goal_bytes = b"Finish the task";
+    let policy_bytes = crate::contract::canonical_json_bytes(&policy)?;
+    let declaration = RunAdmission::new(operation, goal_bytes, &policy_bytes);
+    let goal = journal
+        .stage(operation, "goal", goal_bytes, "text/plain", None)?
+        .await?;
+    let policy_file =
+        crate::executor::stage_json(&journal, operation, "policy", &policy, None).await?;
+    let admission =
+        crate::executor::stage_json(&journal, operation, "admission", &declaration, None).await?;
+    let journal = journal
+        .with_run_admission(Some(RunAdmissionSource {
+            admission,
+            goal,
+            policy: policy_file,
+            value: declaration.verify(operation, goal_bytes, &policy_bytes)?,
+        }))
+        .with_agent_events(agent.clone(), operation, 0, true);
+    initialize(&journal, operation).await?;
+    let completed = ModelEvent::Completed {
+        metadata: serde_json::json!({"usage":{"input_tokens":1,"output_tokens":1}}),
+    };
+    crate::executor::append_model_event(
+        &journal,
+        operation,
+        "terminal",
+        (0, ModelPurpose::Response),
+        &completed,
+        None,
+        None,
+    )
+    .await?;
+    let queries =
+        crate::supervision::streams::Queries::new(journal.stream.as_ref(), &agent, operation);
+    let (spent, fence) = queries.spent_in_turn(0).await?;
+    assert!(spent, "original usage did not publish its turn fact");
+    assert!(!queries.spent_in_turn(1).await?.0);
+    let marker = journal
+        .stream
+        .latest_fenced(fence.path().clone(), None, Default::default())
+        .await?
+        .0
+        .ok_or_else(|| Error::Invalid("turn usage marker absent".into()))?;
+    let mut original = journal
+        .stream
+        .read(acyclic_stream::ReadRequest {
+            path: crate::distributed::execution_path(operation, &mut None)?,
+            key: None,
+            from: 2,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?;
+    let original = futures::StreamExt::next(&mut original)
+        .await
+        .transpose()?
+        .ok_or_else(|| Error::Invalid("original model terminal absent".into()))?;
+    assert_eq!(marker.commit_id, original.commit_id);
+    assert_eq!(
+        queries
+            .admission(&policy)
+            .await?
+            .control
+            .map(|control| control.signal),
+        Some(Some(Kind::Spend))
+    );
+    let prepared = request()?;
+    let request_file = crate::executor::stage_json(
+        &journal,
+        operation,
+        "next-request",
+        prepared.request(),
+        None,
+    )
+    .await?;
+    let before = journal.records(operation, 0, 16, None).await?;
+    for attempt in 0..2 {
+        let owner = crate::supervision::Position {
+            stream: acyclic_stream::StreamPath::new(format!("sources/resume-{attempt}"))?,
+            sequence: 0,
+        };
+        if let Some(resume) = queries.resume(&owner).await? {
+            let outcome = journal
+                .stream
+                .commit(acyclic_stream::CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+                    effects: vec![
+                        acyclic_stream::CommitEffect::hard(
+                            vec![acyclic_stream::CommitCondition::Absent {
+                                path: owner.stream.clone(),
+                            }],
+                            vec![acyclic_stream::CommitMutation::Append {
+                                path: owner.stream,
+                                records: vec![b"owner resume".as_slice().into()],
+                            }],
+                        ),
+                        resume,
+                    ],
+                })
+                .await?;
+            assert!(matches!(
+                outcome,
+                acyclic_stream::CommitOutcome::Committed(_)
+            ));
+        }
+        // Accepted original intents/usage remain recoverable after resume.
+        initialize(&journal, operation).await?;
+        crate::executor::append_model_event(
+            &journal,
+            operation,
+            "terminal",
+            (0, ModelPurpose::Response),
+            &completed,
+            None,
+            None,
+        )
+        .await?;
+        let denied = journal
+            .append(
+                operation,
+                &format!("next-dispatch-{attempt}"),
+                &ExecutionEvent::ModelStarted {
+                    step: 1,
+                    purpose: ModelPurpose::Response,
+                    request_digest: prepared.request_digest(),
+                    request: request_file.clone(),
+                    context: prepared.context_window(),
+                },
+                None,
+            )?
+            .await;
+        assert!(matches!(denied, Err(Error::ExecutionControlled(control))
+            if control.action == Action::Pause && control.signal == Some(Kind::Spend)));
+        assert_eq!(journal.records(operation, 0, 16, None).await?, before);
+        assert_eq!(
+            queries
+                .checkpoint()
+                .await?
+                .expect("retained usage")
+                .state
+                .tokens
+                .measured,
+            2
+        );
+    }
+    Ok(())
 }
 
 #[cfg(feature = "research")]
@@ -425,6 +590,8 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
 -> Result<()> {
     let (journal, _issuer) = test_support::journal().await?;
     let operation = OperationId::new();
+    let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([69; 16]));
+    let journal = journal.with_agent_events(agent.clone(), operation, 0, false);
     initialize(&journal, operation).await?;
     let metadata = serde_json::json!({"usage":{"input_tokens":20,"output_tokens":7}});
     let completed = ModelEvent::Completed { metadata };
@@ -609,6 +776,48 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     ));
     let records = journal.records(operation, 0, 64, None).await?;
     assert_eq!(records.len(), 3);
+    let queries = crate::supervision::streams::Queries::new(&*journal.stream, &agent, operation);
+    let cut = queries
+        .checkpoint()
+        .await?
+        .ok_or_else(|| Error::Invalid("usage query cut absent".into()))?;
+    assert_eq!(cut.state.through, 1, "exact terminal replay charged twice");
+    assert_eq!(cut.state.tokens.measured, 27);
+    assert!(cut.state.tokens.complete);
+    assert_eq!(cut.action, crate::supervision::Action::Alert);
+    assert!(
+        queries
+            .read_signal(crate::supervision::Kind::Spend)
+            .await?
+            .is_none()
+    );
+    assert_eq!(cut.source.sequence, 2);
+    let query_record = journal
+        .stream
+        .latest(
+            acyclic_stream::StreamPath::new(format!(
+                "{agent}/supervision/runs/{operation}/checkpoint"
+            ))?,
+            acyclic_stream::OwnedBytes::from_static(b"state"),
+            Default::default(),
+        )
+        .await?
+        .ok_or_else(|| Error::Invalid("indexed query record absent".into()))?;
+    let mut source = journal
+        .stream
+        .read(acyclic_stream::ReadRequest {
+            key: None,
+            path: cut.source.stream,
+            from: cut.source.sequence,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?;
+    let source = futures::StreamExt::next(&mut source)
+        .await
+        .transpose()?
+        .ok_or_else(|| Error::Invalid("query source absent".into()))?;
+    assert_eq!(query_record.commit_id, source.commit_id);
     let exported = crate::executor::event_page(&journal, operation, 0).await?;
     assert_eq!(exported.operation, Some(operation));
     assert_eq!(exported.items, records);
@@ -671,6 +880,33 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
             "resume must project the same committed observation without its prefix"
         );
     }
+    let output = ExecutionEvent::ModelOutput {
+        step: 0,
+        digest: Some([81; 32]),
+    };
+    for _ in 0..2 {
+        journal.append(operation, "output", &output, None)?.await?;
+    }
+    assert!(
+        journal
+            .append(operation, "duplicate-output", &output, None)?
+            .await
+            .is_err(),
+        "a completed response acquired a second semantic-output receipt"
+    );
+    let cut = queries.checkpoint().await?.unwrap();
+    assert_eq!(cut.state.through, 2, "output replay counted twice");
+    assert_eq!(
+        cut.state.tokens.measured, 27,
+        "output duplicated the original usage"
+    );
+    assert_eq!(cut.source.sequence, 3);
+    assert!(
+        queries
+            .read_signal(crate::supervision::Kind::LoopOutput)
+            .await?
+            .is_none()
+    );
     Ok(())
 }
 

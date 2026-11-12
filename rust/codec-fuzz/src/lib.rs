@@ -637,6 +637,7 @@ pub fn actor_seeds()
     );
     seeds.push(("delivery-cuts-v1", bytes, "guest::wire::encode_delivery"));
     let mut transition = guest::Transition {
+        pause: false,
         response: None,
         checkpoint,
         alarm: guest::AlarmChange::Keep,
@@ -1173,9 +1174,9 @@ async fn actor_alarm_seeds()
             None,
         ),
     ] {
-        let delivered = match &trigger {
-            Trigger::Record { sequence, .. } => Some(&inputs[usize::try_from(*sequence)?]),
-            Trigger::Alarm { .. } => None,
+        let delivered = match trigger.record_position() {
+            Some((_, sequence)) => Some(&inputs[usize::try_from(sequence)?]),
+            None => None,
         };
         store
             .publish(
@@ -1184,6 +1185,7 @@ async fn actor_alarm_seeds()
                 &trigger,
                 delivered,
                 Transition {
+                    pause: false,
                     response: None,
                     checkpoint: checkpoint.clone(),
                     alarm,

@@ -41,10 +41,17 @@ impl SettingsConfig {
 
     /// Reads the user-configured model from this snapshot's explicit Codex root.
     pub fn configured_model(&self) -> Result<Option<String>> {
+        self.configured_model_preferences()
+            .map(|preferences| preferences.model)
+    }
+
+    /// Reads model and context-admission choices together from the configured
+    /// user root. Explicit host choices retain precedence over these defaults.
+    pub fn configured_model_preferences(&self) -> Result<ModelPreferences> {
         let Some(bytes) = self.model_settings()? else {
-            return Ok(None);
+            return Ok(ModelPreferences::default());
         };
-        super::model_selection::parse(&bytes)
+        super::model_selection::parse_preferences(&bytes)
             .map_err(|error| Error::Invalid(format!("settings model: {error}")))
     }
 

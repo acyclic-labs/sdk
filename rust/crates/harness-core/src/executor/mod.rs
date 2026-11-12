@@ -29,7 +29,7 @@ mod native_stock;
 use native_stock::*;
 pub(crate) use native_stock::{
     stage_json, stock_boundary, stock_into_iter, stock_push_model_event, stock_string_copy,
-    stock_string_push, stock_vec_push, stock_vec_reserve,
+    stock_string_push, stock_vec_prepare_push, stock_vec_push, stock_vec_reserve,
 };
 
 pub(crate) mod execution_claim;
@@ -40,7 +40,7 @@ pub use journal::SequencedExecutionJournal;
 use journal::validate_journal;
 pub use journal::{
     ExecutionJournal, ExecutionJournalCacheId, ExecutionRecordQuery, IndexedExecutionFuture,
-    IndexedExecutionRecords,
+    IndexedExecutionRecords, ProgressPublication,
 };
 mod replay;
 pub(crate) use replay::replay_execution;
@@ -54,6 +54,7 @@ mod dispatch;
 mod live_reply;
 mod tool_changes;
 pub use live_reply::LiveReply;
+pub(crate) use tool_changes::decode_tool_table;
 mod event_page;
 pub use event_page::{
     EXECUTION_EVENT_PAGE_RECORDS, ExecutionEventPage, ExecutionPayloadField, event_page,
@@ -318,6 +319,14 @@ pub enum ExecutionEvent {
         /// Digest of the input, stock executor version, model, stages, and tools.
         request_digest: [u8; 32],
     },
+    /// A trusted producer's accepted progress receipt, recorded before its
+    /// terminal result. Derived output and model claims never produce this.
+    Progress {
+        /// Exact immutable publication: a generation, commit/plan artifact or
+        /// a stream event reference pinned to its original version.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        publication: crate::resources::ResourceRef,
+    },
     /// Appends an immutable conversation envelope at this original journal position.
     ConversationItem {
         /// Executor step admitting the item; this does not close an exchange.
@@ -411,6 +420,14 @@ pub enum ExecutionEvent {
         /// interaction. It is not a failed context preparation on recovery.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         worker_paused: bool,
+    },
+    /// Semantic output of one completed response, before dispatching its tools.
+    /// Transport call identities, usage and provider metadata are excluded.
+    ModelOutput {
+        /// Original zero-based response step.
+        step: u32,
+        /// Canonical digest of text and ordered tool names/arguments; null for empty output.
+        digest: Option<[u8; 32]>,
     },
     /// Tool dispatch is about to begin.
     ToolStarted {
@@ -589,6 +606,8 @@ impl TurnOutput {
 
 /// Execution progress with its settled value or pending approval operation.
 pub enum ExecutionProgress<T> {
+    /// Original supervision or file control parked or stopped this execution.
+    Controlled(crate::supervision::Control),
     /// Preparation failed before any provider attempt could start.
     PreDispatchFailed(PreDispatchFailure),
     /// The operation settled with its complete result.
@@ -600,8 +619,17 @@ pub enum ExecutionProgress<T> {
 }
 
 impl<T> ExecutionProgress<T> {
+    /// Preserve an owner decision across replaceable executor/helper layers.
+    pub(crate) fn controlled(result: Result<Self>) -> Result<Self> {
+        match result {
+            Err(Error::ExecutionControlled(control)) => Ok(Self::Controlled(control)),
+            result => result,
+        }
+    }
+
     fn map<U>(self, ready: impl FnOnce(T) -> U) -> ExecutionProgress<U> {
         match self {
+            Self::Controlled(control) => ExecutionProgress::Controlled(control),
             Self::Ready(value) => ExecutionProgress::Ready(ready(value)),
             Self::PreDispatchFailed(failure) => ExecutionProgress::PreDispatchFailed(failure),
             Self::Pending(operation) => ExecutionProgress::Pending(operation),
@@ -613,6 +641,7 @@ impl<T> ExecutionProgress<T> {
 impl ExecutionProgress<TurnOutput> {
     pub(crate) fn into_output(self) -> Result<TurnOutput> {
         match self {
+            Self::Controlled(control) => Err(Error::ExecutionControlled(control)),
             Self::PreDispatchFailed(failure) => Err(failure.into_error()),
             Self::Ready(output) => Ok(output),
             Self::Pending(operation) => Err(Error::Indeterminate(operation)),
@@ -638,9 +667,11 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<ExecutionProgress<TurnOutput>>> {
         Box::pin(async move {
-            self.execute(input, journal)
-                .await
-                .map(ExecutionProgress::Ready)
+            ExecutionProgress::controlled(
+                self.execute(input, journal)
+                    .await
+                    .map(ExecutionProgress::Ready),
+            )
         })
     }
 

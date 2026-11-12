@@ -348,7 +348,7 @@ async fn run_inner(
         || !args.local_service
             && matches!(
                 args.command,
-                None | Some(Command::Run | Command::Exec { .. })
+                None | Some(Command::Run { .. } | Command::Exec { .. })
             )
         || args.agent.is_some()
         || args.new_session
@@ -359,6 +359,7 @@ async fn run_inner(
             Some(
                 Command::Sessions(_)
                     | Command::Inspect(_)
+                    | Command::Supervise { .. }
                     | Command::NewSession { .. }
                     | Command::Name { .. }
                     | Command::Rename { .. }
@@ -384,8 +385,16 @@ async fn run_inner(
             )
             .await;
         }
-        if matches!(args.command, Some(Command::Inspect(_))) {
-            return Err("inspect requires an existing session service; select --workspace PATH or --endpoint ADDRESS for its owner".into());
+        if matches!(
+            args.command,
+            Some(Command::Inspect(_) | Command::Supervise { .. })
+        ) {
+            let command = if matches!(args.command, Some(Command::Inspect(_))) {
+                "inspect"
+            } else {
+                "supervise"
+            };
+            return Err(format!("{command} requires an existing session service; select --workspace PATH or --endpoint ADDRESS for its owner").into());
         }
         Some(directory)
     } else {
@@ -907,6 +916,23 @@ async fn connected(
     } else {
         connection
     };
+    if matches!(args.command, Some(Command::Supervise { .. })) {
+        let mut feed = if args.agent.is_some() {
+            connection.supervision().await?
+        } else {
+            connection.supervision_sessions().await?
+        };
+        let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
+        loop {
+            let event = feed.next().await?;
+            // Output custody uses the agent identity when this event belongs
+            // to owner controls outside any run. The public event keeps run=null.
+            let task = event
+                .run
+                .unwrap_or_else(|| OperationId::from_bytes(event.agent.id_bytes()));
+            headless::write_event(&mut output, task, &event).await?;
+        }
+    }
     if !peer_choice_applied {
         connection
             .require_execution(args.model.as_deref(), args.no_compaction)
@@ -919,6 +945,61 @@ async fn connected(
                 args.topology.as_deref().unwrap_or("swarm"),
             )?)
             .await?;
+    }
+    if let Some(Command::Run {
+        goal: Some(goal),
+        policy: Some(policy),
+    }) = &args.command
+    {
+        let goal = String::from_utf8(acyclic_harness::local::read_regular_file(goal)?)?;
+        let policy: acyclic_harness::supervision::Policy =
+            serde_json::from_slice(&acyclic_harness::local::read_regular_file(policy)?)?;
+        let operation = args
+            .operation
+            .as_ref()
+            .map(|value| OperationId::parse(value))
+            .transpose()?
+            .unwrap_or_else(OperationId::new);
+        let conversation = Conversation::open(connection);
+        let result = conversation
+            .run_until_goal(operation, &goal, &policy)
+            .await?;
+        let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
+        headless::write_event(
+            &mut output,
+            operation,
+            &serde_json::json!({"version":1,"operation":operation,"result":&result}),
+        )
+        .await?;
+        use acyclic_harness::{
+            goal::GoalStatus,
+            local::agent_conversation::RunOutcome,
+            supervision::{Action, Kind},
+        };
+        let code = match &result {
+            RunOutcome::Goal { goal } if goal.status == GoalStatus::Done => return Ok(()),
+            RunOutcome::Goal { .. } => 28,
+            RunOutcome::Terminal {
+                signal: Some(signal),
+                ..
+            } => match signal {
+                Kind::RepeatFailure => 20,
+                Kind::ValidationLoop => 21,
+                Kind::NoProgress => 22,
+                Kind::Stuck => 23,
+                Kind::LoopOutput => 24,
+                Kind::Spend => 25,
+            },
+            RunOutcome::Terminal {
+                action: Action::Pause,
+                ..
+            } => 26,
+            RunOutcome::Terminal { .. } => 27,
+        };
+        return Err(Box::new(Exit::new(
+            std::num::NonZeroU8::new(code).ok_or("zero terminal status")?,
+            serde_json::to_string(&result)?,
+        )));
     }
     if let Some(Command::History(page)) = &args.command {
         let page = acyclic_harness::client::AgentPageRequest::new(

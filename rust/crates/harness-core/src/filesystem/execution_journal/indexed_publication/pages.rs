@@ -20,6 +20,12 @@ pub(super) struct Cut<'a> {
     pub(super) base: u64,
     pub(super) digest: [u8; 32],
     pub(super) contributions: &'a [Contribution<'a>],
+    /// Host-derived append projections sharing the original source cut.
+    /// A hard effect, with unique paths in ascending order; it cannot replace
+    /// journal or caller-owned members. Indexed record headers are preserved.
+    pub(super) derived: Option<&'a acyclic_stream::CommitEffect>,
+    /// Indexed original model-call proposal, without copying the observation.
+    pub(super) source_key: Option<&'a OwnedBytes>,
 }
 
 /// One already-encoded record and its original optimistic publication fence.
@@ -106,6 +112,15 @@ impl Contribution<'_> {
 }
 
 impl Cut<'_> {
+    fn observation_record(&self, observation: &OwnedBytes) -> Result<acyclic_stream::AppendRecord> {
+        match self.source_key {
+            Some(key) => {
+                acyclic_stream::AppendRecord::latest(observation.clone(), key.clone(), false)
+                    .map_err(Into::into)
+            }
+            None => Ok(observation.clone().into()),
+        }
+    }
     pub(super) fn request<'a, 'b>(
         &self,
         page_condition: CommitCondition,
@@ -215,7 +230,7 @@ impl Cut<'_> {
                 request,
                 custody,
                 self.execution,
-                std::slice::from_ref(observation),
+                std::slice::from_ref(&self.observation_record(observation)?),
             )?;
             add_records(
                 request,
@@ -246,6 +261,34 @@ impl Cut<'_> {
                     path,
                     std::slice::from_ref(contribution.record()),
                 )?;
+            }
+            if let Some(effect) = self.derived {
+                if effect.soft {
+                    return Err(invalid(None));
+                }
+                for condition in &effect.conditions {
+                    crate::distributed::add_condition(request, custody, condition.clone())?;
+                }
+                let mut previous = None;
+                for mutation in &effect.mutations {
+                    let CommitMutation::Append { path, records } = mutation else {
+                        return Err(invalid(None));
+                    };
+                    if records.is_empty()
+                        || previous.is_some_and(|prior| prior >= path)
+                        || path == self.execution
+                        || path == self.head
+                        || path == self.pages
+                        || self
+                            .contributions
+                            .iter()
+                            .any(|other| other.target().is_ok_and(|(other, _)| other == path))
+                    {
+                        return Err(invalid(None));
+                    }
+                    previous = Some(path);
+                    add_records(request, custody, path, records)?;
+                }
             }
         }
         Ok(())
@@ -462,7 +505,11 @@ impl Cut<'_> {
         checkpoint: &OwnedBytes,
         composed: bool,
     ) -> Result<acyclic_stream::CommitId> {
-        if !composed && receipt.appends.len() != 3 + self.contributions.len() {
+        if !composed
+            && receipt.appends.len()
+                != 3 + self.contributions.len()
+                    + self.derived.map_or(0, |effect| effect.mutations.len())
+        {
             return Err(Error::Indeterminate(self.operation));
         }
         if !composed && !receipt.forks.is_empty() {
@@ -474,6 +521,11 @@ impl Cut<'_> {
         let mut previous = None;
         let mut seen = 0_u8;
         let mut contributions = self.contributions.iter().peekable();
+        let mut derived = self
+            .derived
+            .into_iter()
+            .flat_map(|effect| &effect.mutations)
+            .peekable();
         for append in &receipt.appends {
             if previous.is_some_and(|path| path >= &append.path) {
                 return Err(Error::Indeterminate(self.operation));
@@ -486,7 +538,7 @@ impl Cut<'_> {
                         append,
                         self.execution,
                         self.execution_tail,
-                        std::slice::from_ref(observation),
+                        std::slice::from_ref(&self.observation_record(observation)?),
                     ),
                 )
             } else if append.path == *self.head {
@@ -501,6 +553,32 @@ impl Cut<'_> {
                 )
             } else if append.path == *self.pages {
                 (4, confirms(append, self.pages, pages_tail, records))
+            } else if matches!(derived.peek().copied(), Some(CommitMutation::Append { path, .. }) if path == &append.path)
+            {
+                let Some(CommitMutation::Append { path, records }) = derived.next() else {
+                    return Err(Error::Indeterminate(self.operation));
+                };
+                let start = self
+                    .derived
+                    .into_iter()
+                    .flat_map(|effect| &effect.conditions)
+                    .find_map(|condition| match condition {
+                        CommitCondition::Tail {
+                            path: target,
+                            expected,
+                        }
+                        | CommitCondition::Head {
+                            path: target,
+                            expected,
+                            ..
+                        } if target == path => Some(*expected),
+                        CommitCondition::Absent { path: target } if target == path => Some(0),
+                        _ => None,
+                    });
+                (
+                    0,
+                    confirms(append, path, start.unwrap_or(append.start), records),
+                )
             } else {
                 let contribution = contributions.peek();
                 let target = contribution.map(|item| item.target()).transpose()?;
@@ -526,7 +604,7 @@ impl Cut<'_> {
             }
             seen |= bit;
         }
-        if seen != 7 || contributions.next().is_some() {
+        if seen != 7 || contributions.next().is_some() || derived.next().is_some() {
             return Err(Error::Indeterminate(self.operation));
         }
         Ok(receipt.commit_id)

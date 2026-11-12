@@ -19,8 +19,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
-            // Retain the exact deferred invocation and its typed wake event.
-            version: "7".into(),
+            // Retain original deadlines with deferred wait releases.
+            version: "8".into(),
         });
     &IDENTITY
 }
@@ -648,6 +648,7 @@ mod tests {
                         path: path.clone(),
                         volumes: adopted.volumes.clone(),
                         policy: adopted.policy.clone(),
+                        run_admission: Some(crate::OperationId::from_bytes([u8::MAX; 16])),
                         brief: Some([u8::MAX; 32]),
                         conversation_base: u64::MAX,
                         committed_actions: true,

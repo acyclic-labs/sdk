@@ -154,6 +154,13 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         self
     }
 
+    /// Compose root companion creation with the same package used by deliveries.
+    #[must_use]
+    pub fn with_companions(mut self, companions: Arc<dyn super::Companions>) -> Self {
+        self.agents = self.agents.with_companions(companions);
+        self
+    }
+
     /// Host for agents whose turns run in `handler`, such as the agent guest
     /// artifact's [`AgentHandler`] reached through [`acyclic_actors::guest::wire`].
     /// This host keeps scheduling and publication; `composer` opens each
@@ -210,6 +217,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         host.lifecycle.clone_from(&self.lifecycle);
         host.templates.clone_from(&self.templates);
         host.model.clone_from(&self.model);
+        host.agents.companions.clone_from(&self.agents.companions);
         Ok(host)
     }
 

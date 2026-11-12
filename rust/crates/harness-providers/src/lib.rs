@@ -102,7 +102,7 @@ fn invalid(reason: impl Into<String>) -> Error {
 /// The one status classification for dispatch, counting, refresh and stream error events.
 /// 408, 429 and 5xx are a typed refusal before generation that redelivery may clear.
 fn http_error(status: u16) -> Error {
-    unavailable(status, &[]).unwrap_or_else(|| {
+    unavailable(status).unwrap_or_else(|| {
         let message = format!("model HTTP status {status}");
         match status {
             401 | 403 => Error::Unauthorized(message),
@@ -111,34 +111,26 @@ fn http_error(status: u16) -> Error {
     })
 }
 
-/// Most bytes of a refusal body kept as its excerpt.
+/// Admission for a locally rendered status diagnostic. Remote text is never retained.
 const EXCERPT_BYTES: usize = 256;
 
-fn unavailable(status: u16, body: &[u8]) -> Option<Error> {
+fn unavailable(status: u16) -> Option<Error> {
     matches!(status, 408 | 429 | 500..=599).then(|| Error::ModelUnavailable {
         failure: acyclic_harness_core::ModelTransportFailure::Status(status),
-        excerpt: excerpt(body),
+        excerpt: String::new(),
     })
 }
 
-/// Transport failures are semantic provider failures on both paths. The native path uses an
-/// empty excerpt, retaining the typed cause without allocating before ledger admission.
+/// Keep the transport class without formatting an untrusted cause. Transport errors
+/// may include request URLs, headers or response text containing credentials.
 fn transport_failure(
-    native: bool,
+    _native: bool,
     failure: acyclic_harness_core::ModelTransportFailure,
-    cause: impl std::fmt::Display,
+    _cause: impl std::fmt::Display,
 ) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if native {
-        return Error::ModelUnavailable {
-            failure,
-            excerpt: String::new(),
-        };
-    }
-    let _ = native;
     Error::ModelUnavailable {
         failure,
-        excerpt: diagnostic::excerpt(cause),
+        excerpt: String::new(),
     }
 }
 
@@ -149,19 +141,23 @@ async fn recovery_failure(
     maximum: impl Into<Option<usize>>,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Error {
-    if let Some(error) = unavailable(response.status, &[]) {
+    if let Some(error) = unavailable(response.status) {
         return error;
     }
     http_failure(response, maximum, work).await
 }
 
 /// Context refusals use the same admitted JSON budget as token-count responses.
-/// Non-context and retryable diagnostics retain only their bounded excerpt.
+/// All other refusals retain only their status. In particular, echoed credentials
+/// in a proxy's error body must never enter a journal, volume or log.
 async fn http_failure(
     response: HttpResponse,
     maximum: impl Into<Option<usize>>,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Error {
+    if let Some(error) = unavailable(response.status) {
+        return error;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     let mut custody = match work
         .map(|work| {
@@ -189,60 +185,19 @@ async fn read_http_failure(
     maximum: impl Into<Option<usize>>,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Error {
-    use futures::StreamExt as _;
-    let HttpResponse {
-        status, mut body, ..
-    } = response;
-    // Only context classification and retryable diagnostics consume a body.
-    if !matches!(status, 400 | 408 | 413 | 429 | 500..=599) {
-        return http_error(status);
-    }
+    let HttpResponse { status, body, .. } = response;
+    // Only context classification consumes a body; it emits a typed result.
     if matches!(status, 400 | 413) {
         return match http::bounded::read(body, maximum, work).await {
             Ok(body) => match stream::context_overflow_bytes(&body.bytes, work) {
                 Ok(true) => Error::ModelContextOverflow,
-                Ok(false) => Error::Invalid(diagnostic::excerpt(format_args!(
-                    "model HTTP status {status}: {}",
-                    excerpt_text(&body.bytes)
-                ))),
+                Ok(false) => http_error(status),
                 Err(error) => error,
             },
             Err(error) => error,
         };
     }
-    let mut prefix = [0; EXCERPT_BYTES];
-    let mut length = 0;
-    while length < prefix.len() {
-        let chunk = match body.next().await {
-            Some(Ok(chunk)) => chunk,
-            Some(Err(error)) => return error,
-            None => break,
-        };
-        let end = length + chunk.len().min(prefix.len() - length);
-        prefix[length..end].copy_from_slice(&chunk[..end - length]);
-        length = end;
-    }
-    unavailable(status, &prefix[..length]).unwrap_or_else(|| http_error(status))
-}
-
-/// Lossy UTF-8 with control characters as spaces, bounded on a character boundary; a character
-/// the bound cut is dropped rather than replaced.
-fn excerpt(body: &[u8]) -> String {
-    diagnostic::excerpt(excerpt_text(body))
-}
-
-fn excerpt_text(body: &[u8]) -> std::borrow::Cow<'_, str> {
-    let bounded = body.get(..EXCERPT_BYTES).unwrap_or(body);
-    match std::str::from_utf8(bounded) {
-        Ok(text) => std::borrow::Cow::Borrowed(text),
-        Err(cut) if cut.error_len().is_none() => std::borrow::Cow::Borrowed(
-            bounded
-                .get(..cut.valid_up_to())
-                .and_then(|valid| std::str::from_utf8(valid).ok())
-                .unwrap_or_default(),
-        ),
-        Err(_) => String::from_utf8_lossy(bounded),
-    }
+    http_error(status)
 }
 
 fn json(bytes: &[u8]) -> Result<Value> {

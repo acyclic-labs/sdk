@@ -61,6 +61,9 @@ mod tests {
 }
 
 fn credentials(args: &Args) -> Result<Credentials, Failure> {
+    if args.environment_credentials {
+        return Ok(Credentials::environment());
+    }
     if args.default_config {
         let configured = args
             .credentials
@@ -159,7 +162,7 @@ pub(super) async fn first_run(
         || args.output_format != OutputFormat::Text
         || !matches!(
             args.command,
-            None | Some(Command::Run | Command::Exec { .. })
+            None | Some(Command::Run { .. } | Command::Exec { .. })
         )
     {
         return Ok(None);
