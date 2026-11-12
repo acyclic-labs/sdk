@@ -330,7 +330,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let offset = body.len() - 10;
-    let (bytes, selected_id, length) = host
+    let (bytes, selected, length) = host
         .read_private_range(
             volume,
             &read,
@@ -351,7 +351,6 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
         (&body[offset..], body.len() as u64)
     );
     assert!(work.receipt().source_bytes_read < 64 * 1024);
-    let selected = selected_id;
     assert_eq!(selected.as_resource().provider(), volume.provider());
     host.apply(
         &workspace,
@@ -382,7 +381,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
             },
         )
         .await?;
-    assert_eq!(generation, selected_id);
+    assert_eq!(generation, selected);
     assert_eq!(pinned_length, body.len() as u64);
     assert_eq!(pinned.as_ref(), &body[offset..]);
     assert!(pinned_work.receipt().source_bytes_read < 64 * 1024);
