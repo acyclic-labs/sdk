@@ -9,6 +9,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         volume: &'a VolumeRef,
         verifier: &'a AuthorityVerifier,
         host_scope: &'a Scope,
+        required: bool,
         authorize: F,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>
@@ -81,6 +82,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None => access::whole_volume_payload(acyclic_fs::access::ActionSet::Owner)?,
             };
             let view = access::access_view(&workspace, scope, None, payload, None, io).await?;
+            if !required
+                && !view
+                    .0
+                    .decide(acyclic_fs::access::Action::Admin, "", access::access_now()?)
+                    .allowed
+            {
+                return Ok(());
+            }
             access::require(&view.0, acyclic_fs::access::Action::Admin, "", io)?;
             let fence = view
                 .0
