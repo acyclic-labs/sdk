@@ -369,6 +369,7 @@ pub fn validate(route: &str, value: &Value) -> Result {
                 }
             }
             validate_revision(field(item, "snapshot")?)?;
+            validate_revision(field(item, "applied")?)?;
             let projection = string(field(item, "projection")?)?;
             if !matches!(projection, "history" | "watermarks" | "tail") {
                 return Err("invalid head projection");
@@ -376,6 +377,7 @@ pub fn validate(route: &str, value: &Value) -> Result {
             for head in array(field(item, "heads")?)? {
                 if !head.is_null() {
                     let item = object(head)?;
+                    u64_string(field(item, "changedAt")?)?;
                     if let Some(through) =
                         item.get("retainedThrough").filter(|value| !value.is_null())
                     {
@@ -407,6 +409,7 @@ pub fn validate(route: &str, value: &Value) -> Result {
         }
         Some("head") => {
             let item = object(value)?;
+            u64_string(field(item, "changedAt")?)?;
             let tail = u64_string(field(item, "tail")?)?;
             if let Some(through) = item.get("retainedThrough").filter(|value| !value.is_null()) {
                 if u64_string(through)? > tail {

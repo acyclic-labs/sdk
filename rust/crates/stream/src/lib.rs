@@ -8,6 +8,7 @@ pub mod authorization;
 pub use authorization::{AUTHORIZATION, StreamMethod};
 pub mod body;
 pub mod completion;
+pub mod demand;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
@@ -59,7 +60,6 @@ mod browser;
 mod journal_provider;
 #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
 pub use journal_provider::{JournalStream, JournalStreamLimits};
-#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), loom))]
 mod change;
 #[cfg(any(
     not(target_arch = "wasm32"),

@@ -212,11 +212,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::NotFound)?;
-        state.require_ready_fork()?;
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source != self.source.reference()
-        {
+        if state.source != self.binding_source(&state, ctx).await? {
             return Err(LazyWorkspaceError::StaleSource);
         }
         if let Some(pending) = &state.pending_remove {

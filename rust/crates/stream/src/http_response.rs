@@ -35,7 +35,7 @@ pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
                 .into_iter()
                 .map(|selected| json!({ "path": selected.path, "record": selected.record.as_ref().map(record_json) }))
                 .collect();
-            json!({ "retained": retained, "snapshot": revision_json(view.snapshot.as_ref()), "heads": heads, "children": view.children.map(children_page_value).transpose()?, "projection": match wire::HeadProjection::try_from(view.projection).map_err(|_| "invalid_response")? { wire::HeadProjection::History => "history", wire::HeadProjection::Watermarks => "watermarks", wire::HeadProjection::Tail => "tail" } })
+            json!({ "retained": retained, "applied": revision_json(view.applied.as_ref()), "snapshot": revision_json(view.snapshot.as_ref()), "heads": heads, "children": view.children.map(children_page_value).transpose()?, "projection": match wire::HeadProjection::try_from(view.projection).map_err(|_| "invalid_response")? { wire::HeadProjection::History => "history", wire::HeadProjection::Watermarks => "watermarks", wire::HeadProjection::Tail => "tail" } })
         }
         "head" => {
             let head = crate::wire_codec::head_to_wire(
@@ -288,6 +288,7 @@ fn observation_value(value: wire::InspectIdempotencyResponse) -> Result<Option<V
 
 fn head_json(head: &wire::PathHead) -> Value {
     json!({
+        "changedAt": head.changed_at.to_string(),
         "retainedThrough": head.retained_through.map(|through| through.to_string()),
         "tail": head.tail.to_string(),
         "last": head.last.as_ref().map(record_json),

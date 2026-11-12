@@ -85,8 +85,18 @@ impl State {
     fn find_commit<E>(
         &self,
         id: &CommitId,
-        mut probe: impl FnMut(u64) -> Result<(), E>,
+        probe: impl FnMut(u64) -> Result<(), E>,
     ) -> Result<Option<&CommittedEnvelope>, E> {
+        Ok(self
+            .find_commit_fact(id, probe)?
+            .and_then(RetainedFact::envelope))
+    }
+
+    fn find_commit_fact<E>(
+        &self,
+        id: &CommitId,
+        mut probe: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Option<&RetainedFact>, E> {
         let mut observe = |items| {
             probe(items)?;
             #[cfg(test)]
@@ -97,10 +107,11 @@ impl State {
         match selected.link {
             Some(RetainedIndexLink::Leaf(index)) => {
                 observe(32)?;
-                Ok(self
-                    .replay_entry(index)
+                let fact = &*self.replay_entry(index).fact;
+                Ok(fact
                     .envelope()
-                    .filter(|envelope| envelope.commit_id == *id))
+                    .filter(|envelope| envelope.commit_id == *id)
+                    .map(|_| fact))
             }
             None => Ok(None),
             _ => unreachable!("selection returns a retained commit leaf"),

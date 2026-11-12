@@ -320,7 +320,7 @@ where
             .lazy
             .publication_cut(None, &mut accounting)
             .await
-            .is_ok_and(|state| state.source == self.lazy.source_reference())
+            .is_ok()
         {
             let result = self.authored.advance_to_head_async().await;
             return result;

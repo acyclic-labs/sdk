@@ -83,7 +83,7 @@ async fn exactification_denials_do_not_publish_or_create_children() {
     ] {
         assert!(
             root.exactify_snapshot(
-                cut,
+                cut.clone(),
                 name,
                 IdempotencyKey::new(),
                 &mut KernelAccounting::standalone(budget, &cancel)
@@ -181,14 +181,14 @@ async fn attach_open_and_fork_demand_no_source_work() {
     let sealed_cut = LazySnapshotRef::new(
         cut.workspace_id,
         sealed_generation,
-        cut.source,
+        cut.source.clone(),
         cut.overlay,
         cut.shadows,
     );
     assert_ne!(sealed_cut.id, cut.id);
     assert_eq!(
-        LazySnapshotRef::hash_bytes(sealed_generation),
-        LazySnapshotRef::hash_bytes(cut.authored_generation) + 80
+        LazySnapshotRef::hash_bytes(sealed_generation, &cut.source),
+        LazySnapshotRef::hash_bytes(cut.authored_generation, &cut.source) + 80
     );
     let (child, original) = reopened
         .fork(

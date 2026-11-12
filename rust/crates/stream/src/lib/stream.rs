@@ -168,6 +168,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
     ) -> Result<ChildrenPage, StreamError> {
         self.provider
             .children_page(ChildrenPageRequest {
+                offset: 0,
                 tail_stream: None,
                 parent: Some(self.path.clone()),
                 after,

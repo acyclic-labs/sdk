@@ -202,7 +202,9 @@ where
                     &mut acknowledged,
                 )
                 .await?;
-            acknowledged.ok_or_else(|| (E::from(MountSourceError::Indeterminate), None))
+            acknowledged
+                .clone()
+                .ok_or_else(|| (E::from(MountSourceError::Indeterminate), None))
         }
         .await;
         result.map_err(

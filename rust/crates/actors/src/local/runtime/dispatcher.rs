@@ -106,6 +106,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 .store
                 .provider()
                 .children_page(ChildrenPageRequest {
+                    offset: 0,
                     parent: Some(self.store.root().clone()),
                     after: after.clone(),
                     hierarchy_version: version,

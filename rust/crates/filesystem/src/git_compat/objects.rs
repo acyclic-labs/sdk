@@ -55,19 +55,19 @@ pub struct GitCaptureProof {
 impl GitCaptureProof {
     pub(super) fn structurally_valid(
         &self,
-        tree: GitTreeRef,
-        workspace_tree: GitTreeRef,
-        previous_tree: Option<GitTreeRef>,
+        tree: &GitTreeRef,
+        workspace_tree: &GitTreeRef,
+        previous_tree: Option<&GitTreeRef>,
     ) -> bool {
         let GitTreeRef::Exact(tree) = tree else {
             return false;
         };
-        let GitTreeRef::Exact(parent) = self.fork_parent else {
+        let GitTreeRef::Exact(parent) = &self.fork_parent else {
             return false;
         };
         tree.workspace_id != workspace_tree.workspace_id()
             && tree.generation != self.initial_generation
-            && (self.fork_parent == workspace_tree || previous_tree == Some(self.fork_parent))
+            && (&self.fork_parent == workspace_tree || previous_tree == Some(&self.fork_parent))
             && parent.workspace_id != tree.workspace_id
     }
 }
@@ -137,11 +137,11 @@ impl GitCommit {
     pub(super) fn hash_id(&self) -> GitCommitId {
         let mut hasher = blake3::Hasher::new();
         hasher.update(COMMIT_DOMAIN);
-        hash_tree_ref(&mut hasher, self.tree);
-        hash_tree_ref(&mut hasher, self.workspace_tree);
+        hash_tree_ref(&mut hasher, &self.tree);
+        hash_tree_ref(&mut hasher, &self.workspace_tree);
         if let Some(proof) = &self.capture_proof {
             hasher.update(&[1]);
-            hash_tree_ref(&mut hasher, proof.fork_parent);
+            hash_tree_ref(&mut hasher, &proof.fork_parent);
             hasher.update(&proof.initial_generation.to_bytes());
             hasher.update(&proof.operation_id.into_bytes());
         }
@@ -168,7 +168,7 @@ impl GitCommit {
     }
 }
 
-pub(super) fn hash_tree_ref(hasher: &mut blake3::Hasher, tree: GitTreeRef) {
+pub(super) fn hash_tree_ref(hasher: &mut blake3::Hasher, tree: &GitTreeRef) {
     match tree {
         GitTreeRef::Exact(reference) => {
             hasher.update(&[0]);
@@ -197,7 +197,7 @@ pub struct GitGenerationRef {
 }
 
 /// One Git-visible tree, either fully authored or lazily source-backed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum GitTreeRef {
     /// Exact authenticated authored generation.
@@ -218,7 +218,7 @@ impl GitTreeRef {
 
     /// Workspace owning the authored component.
     #[must_use]
-    pub const fn workspace_id(self) -> WorkspaceId {
+    pub const fn workspace_id(&self) -> WorkspaceId {
         match self {
             Self::Exact(reference) => reference.workspace_id,
             Self::Lazy(reference) => reference.workspace_id,
@@ -227,7 +227,7 @@ impl GitTreeRef {
 
     /// Authenticated authored generation component.
     #[must_use]
-    pub const fn authored_generation(self) -> GenerationId {
+    pub const fn authored_generation(&self) -> GenerationId {
         match self {
             Self::Exact(reference) => reference.generation,
             Self::Lazy(reference) => reference.authored_generation,

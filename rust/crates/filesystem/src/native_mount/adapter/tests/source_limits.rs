@@ -912,7 +912,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
                     crate::kernel::KernelAccounting::native(&job, &local_stop),
                     Some(source.cancellation()),
                     &mut before_publication,
-                    Some(context),
+                    Some(context.clone()),
                     &mut acknowledged,
                 )
             },
@@ -957,7 +957,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
                         crate::kernel::KernelAccounting::native(&retry, &retry_stop),
                         Some(source.cancellation()),
                         &mut |_| std::future::ready(Ok::<(), MountSourceError>(())),
-                        Some(context),
+                        Some(context.clone()),
                         &mut acknowledged,
                     )
                     .await

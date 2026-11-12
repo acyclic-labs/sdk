@@ -12,6 +12,30 @@ pub struct OwnedSourceChunk {
 }
 
 impl OwnedSourceChunk {
+    /// Generate bytes directly into backing admitted on the original context.
+    /// Formatting, growth and the shared owner use the existing image writer;
+    /// no intermediate payload or replacement budget is created.
+    pub fn produce<E: From<FsError>>(
+        accounting: &mut KernelAccounting<'_>,
+        write: impl FnOnce(&mut dyn std::io::Write) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        let owned = crate::kernel::allocation::writer::ImageWriter::produce(
+            accounting,
+            0,
+            |writer| write(writer),
+            std::convert::identity,
+        )?;
+        let logical_owned_bytes = owned.value.capacity() as u64;
+        let bytes = crate::kernel::Retained::from_owned(owned, accounting)
+            .and_then(|bytes| bytes.into_owned_bytes((), accounting))
+            .map_err(E::from)?;
+        Ok(Self {
+            bytes,
+            logical_owned_bytes,
+            intrinsic: true,
+        })
+    }
+
     /// Transfers a read's original backing into independently shared custody.
     /// Native bytes already own their claim. Ordinary bytes retain the producer's
     /// exact capacity and one shared owner header on the original ledger.
@@ -19,8 +43,7 @@ impl OwnedSourceChunk {
         self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     ) -> Result<acyclic_stream::OwnedBytes, FsError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if accounting.native_work().is_some() {
+        if self.intrinsic {
             return Ok(self.bytes);
         }
         let owned = crate::kernel::Owned::new(

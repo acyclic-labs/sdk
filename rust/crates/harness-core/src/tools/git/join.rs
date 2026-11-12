@@ -10,7 +10,7 @@ where
     pub(super) async fn join(
         &self,
         operation: OperationId,
-        target_tree: GitTreeRef,
+        target_tree: &GitTreeRef,
         source: acyclic_fs::WorkspaceId,
         source_generation: Option<acyclic_fs::GenerationId>,
         rebase: bool,
@@ -217,7 +217,7 @@ where
     async fn joined_tracked_paths(
         &self,
         operation: OperationId,
-        target_tree: GitTreeRef,
+        target_tree: &GitTreeRef,
         generation: &ManagedGeneration<P, O>,
         tracked: &BTreeSet<String>,
     ) -> crate::Result<BTreeSet<String>> {

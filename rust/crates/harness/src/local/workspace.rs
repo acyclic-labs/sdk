@@ -524,7 +524,7 @@ async fn lazy_view(
         root,
         store,
         config,
-        original.as_ref().map(|state| state.source),
+        original.as_ref().map(|state| state.source.clone()),
         &work,
         &cancellation,
     )

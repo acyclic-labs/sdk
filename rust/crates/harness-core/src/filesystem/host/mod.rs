@@ -1,6 +1,8 @@
 use super::*;
 
 use crate::conversation::{PublicationDomain, PublicationWitness};
+#[cfg(not(target_arch = "wasm32"))]
+mod private_view;
 
 /// Adapter over any embedded, local, or distributed Filesystem provider pair.
 pub struct FilesystemHost<A: 'static, O: 'static> {
@@ -9,6 +11,8 @@ pub struct FilesystemHost<A: 'static, O: 'static> {
     pub(in crate::filesystem) changes: Option<Arc<dyn acyclic_stream::StreamProvider>>,
     publication_domain: Arc<PublicationDomain>,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    private_view: Option<Arc<dyn private_view::PrivateView>>,
     #[cfg(test)]
     publication_pause: Option<Arc<PublicationPause>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -54,6 +58,8 @@ impl<A, O> FilesystemHost<A, O> {
                 changes: None,
                 publication_domain,
                 workspace_binding: None,
+                #[cfg(not(target_arch = "wasm32"))]
+                private_view: None,
                 #[cfg(test)]
                 publication_pause: None,
                 #[cfg(not(target_arch = "wasm32"))]
@@ -133,6 +139,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?,
                 workspace,
             )),
+            private_view: None,
             #[cfg(test)]
             publication_pause: self.publication_pause.clone(),
             #[cfg(not(target_arch = "wasm32"))]

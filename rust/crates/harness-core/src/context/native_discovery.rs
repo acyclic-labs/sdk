@@ -36,7 +36,7 @@ impl DiscoverySource for LazyDiscovery<'_> {
     ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<LazySnapshotRef, LazyDirectoryCursor>>>>
     {
         Box::pin(async move {
-            let cut = revision.copied().unwrap_or(self.cut);
+            let cut = revision.unwrap_or(&self.cut);
             let mut accounting = KernelAccounting::NativeOriginal {
                 work: self.work,
                 cancellation: self.work.cancellation(),
@@ -69,7 +69,7 @@ impl DiscoverySource for LazyDiscovery<'_> {
                 });
             }
             Ok(Some(DiscoveryPage {
-                revision: cut,
+                revision: cut.clone(),
                 scanned,
                 entries,
                 next: page.next,
