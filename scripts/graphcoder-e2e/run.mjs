@@ -114,10 +114,8 @@ async function prepare(test, gitOrigin) {
   fixture.output = artifact;
   fixture.env = environment(fixture.settings, hostEnvironment);
   fixture.provider = "e2e";
-  fixture.credentials = join(fixture.settings, "native-credentials.json");
   fixture.credential_service = `e2e-first-run-${randomUUID()}`;
-  await mkdir(fixture.settings, { recursive: true });
-  await json(fixture.credentials, { api_keys: {}, keychain_service: fixture.credential_service });
+  fixture.env.ACYCLIC_KEYCHAIN_SERVICE = fixture.credential_service;
   if (nativeCases.has(test.id)) {
     fixture.url = `http://127.0.0.1:${port}/native-${test.id}/v1`;
     fixture.nativeCapability = nativeCapability;
@@ -147,10 +145,8 @@ async function prepare(test, gitOrigin) {
   });
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
   const selection = ["--workspace", fixture.workspace, "--catalog", fixture.catalog,
-    ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`])];
-  const extra = [...expand(test.extra_args ?? [], fixture),
-    ...(test.inputs.some(input => input.args?.includes("--credentials"))
-      ? [] : ["--credentials", fixture.credentials])];
+    ...(test.first_run ? [] : ["--model", "morph/morph-kimik31"])];
+  const extra = expand(test.extra_args ?? [], fixture);
   fixture.clientArgs = [...selection, ...extra];
   fixture.args = [...selection, "--settings-root", fixture.settings,
     ...mountingArguments(test), ...extra];
@@ -316,7 +312,7 @@ async function execute(test, prepared) {
       try {
         assert.ok(process.env.E2E_CREDENTIALS_FIXTURE && isAbsolute(process.env.E2E_CREDENTIALS_FIXTURE),
           "E2E_CREDENTIALS_FIXTURE must name the absolute native provider credential fixture");
-        const removed = await processes.run(process.env.E2E_CREDENTIALS_FIXTURE, [fixture.credentials], { env: fixture.env });
+        const removed = await processes.run(process.env.E2E_CREDENTIALS_FIXTURE, [fixture.credential_service], { env: fixture.env });
         assert.equal(removed.code, 0, removed.stderr);
       } catch (error) {
         result = { ...result, status: "fail", credential_cleanup: failureReport(error) };

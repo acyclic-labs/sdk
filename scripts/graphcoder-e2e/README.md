@@ -5,13 +5,16 @@ Build `graphcoder` and `harness-mock-model` on the target OS ahead of timing.
 `acyclic-harness-providers` example `credential-fixture`. It uses a unique
 service in the real OS keychain and requires both launches to send the role model
 `morph-kimik31`, even though the catalog default is `tiny`. It proves
-headless refusal with a remedy, early startup keys and cancellation, cancellation at hidden-key entry,
+headless refusal, early startup keys and cancellation, cancellation at hidden-key entry,
 empty/multiline key correction, and the first answer's delta
 before turn settlement. Cancelled input never reaches storage or the model. It then
 removes that isolated service entry through the shared credentials API. On Linux run in
 an isolated unlocked Secret Service session (for example a private D-Bus
 session with gnome-keyring); unavailable keychains fail this acceptance case.
 The fixture key is never allowed in terminal captures or model context.
+Each child process selects its unique native service with `ACYCLIC_KEYCHAIN_SERVICE`;
+attaching clients carry no credential option. Explicit credential documents may
+select `keychain_service` instead.
 `doctor-all-missing` independently breaks credentials, network, shell, terminal
 and state and requires every remedy from one invocation. `doctor-ok` checks
 the supplied-key headless path and requires no model generation. Doctor checks

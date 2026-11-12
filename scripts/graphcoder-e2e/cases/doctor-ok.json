@@ -1,7 +1,7 @@
 {
   "id": "doctor-ok",
   "workspace": { "kind": "plain", "files": {} },
-  "settings": { "credentials.json": "{\"api_keys\":{\"morph\":\"E2E_DOCTOR_NONSECRET\"},\"keychain_service\":\"{{credential_service}}\"}" },
+  "settings": { "credentials.json": "{\"api_keys\":{\"morph\":\"E2E_DOCTOR_NONSECRET\"}}" },
   "authentication": "api_key",
   "model": { "steps": [] },
   "inputs": [{

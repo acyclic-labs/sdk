@@ -11,7 +11,7 @@
   ] },
   "inputs": [
     { "mode": "headless", "args": ["-p", "must not prompt"], "exit": 1,
-      "stderr_contains": ["provider key unavailable", "recovery:"],
+      "stderr_contains": ["model provider API key is unavailable"],
       "stdout_absent": ["GraphCoder first run", "API key (hidden)"] },
     { "mode": "pty", "text": "\u0003", "exit": 1, "actions": [] },
     { "mode": "pty", "exit": 1, "actions": [

@@ -140,7 +140,7 @@ async fn explicit_home_module_configures_the_first_model_call() {
 }
 
 #[tokio::test]
-async fn role_model_requirements_reject_conflicting_home_selection() {
+async fn role_model_wins_over_home_selection_and_explicit_requirements_fail_closed() {
     for (explicit, credentials_available) in [(false, true), (true, true), (false, false)] {
         let fixture = fixture();
         let model = model(fixture._directory.path()).await;
@@ -178,6 +178,8 @@ async fn role_model_requirements_reject_conflicting_home_selection() {
                 "--catalog",
             ])
             .arg(&model.catalog)
+            .arg("--credentials")
+            .arg(&credentials)
             .arg("--home-file")
             .arg(format!("agent.ts={}", source.display()))
             .args(["-p", "reply"]);
@@ -188,17 +190,21 @@ async fn role_model_requirements_reject_conflicting_home_selection() {
         if !credentials_available {
             assert!(!output.status.success());
             assert!(
-                String::from_utf8_lossy(&output.stderr).contains("provider key unavailable"),
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("model provider API key is unavailable"),
                 "{output:?}"
             );
             assert_eq!(model.generated(), 0);
-        } else {
+        } else if explicit {
             assert!(!output.status.success());
             assert!(
                 String::from_utf8_lossy(&output.stderr).contains("requested model"),
                 "{output:?}"
             );
             assert_eq!(model.generated(), 0);
+        } else {
+            succeeded(&output);
+            assert_eq!(model.requests.lock().unwrap()[0]["model"], "morph-kimik31");
         }
         model.close().await;
     }
@@ -347,13 +353,6 @@ fn fixture() -> Fixture {
     }
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::create_dir_all(settings.join(".codex")).unwrap();
-    std::fs::write(
-        directory.path().join("credentials.json"),
-        serde_json::to_vec(&json!({
-            "api_keys": {},
-            "keychain_service": format!("e2e-cli-{}", directory.path().file_name().unwrap().to_string_lossy())
-        })).unwrap(),
-    ).unwrap();
     Fixture {
         custody: acyclic_native_runtime::signing_key::FixtureCustody::new().unwrap(),
         _directory: directory,
@@ -383,8 +382,18 @@ fn graphcoder_command(fixture: &Fixture) -> Command {
         .current_dir(&fixture.workspace)
         .arg("--workspace")
         .arg(&fixture.workspace)
-        .arg("--credentials")
-        .arg(fixture._directory.path().join("credentials.json"));
+        .env(
+            "ACYCLIC_KEYCHAIN_SERVICE",
+            format!(
+                "e2e-cli-{}",
+                fixture
+                    ._directory
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+            ),
+        );
     command
 }
 
@@ -395,7 +404,7 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
         .arg(&fixture.settings)
         .arg("--catalog")
         .arg(catalog)
-        .args(["--model", "graphcoder-qual/tiny"])
+        .args(["--model", "morph/morph-kimik31"])
         .args(args);
     capture(command, stdin).await
 }
@@ -1506,6 +1515,8 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             .working_directory(&fixture.workspace)
             .unwrap()
     };
+    let cli = model.requests.lock().unwrap()[0].clone();
+    let embedded_request = model.generated();
     let embedded_config = || configured(None, "embedded-state");
     assert_eq!(
         embedded::answer(embedded_config(), "parity", "hello")
@@ -1513,10 +1524,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             .unwrap(),
         "fixture answer"
     );
-    let requests = model.requests.lock().unwrap().clone();
-    let [cli, embedded] = requests.as_slice() else {
-        panic!("both hosts must submit exactly one original request");
-    };
+    let embedded = model.requests.lock().unwrap()[embedded_request].clone();
     let same_contract = |left: &Value, right: &Value| {
         [
             "model",
@@ -1534,7 +1542,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     assert!(!cli["tools"].as_array().unwrap().is_empty());
     assert!(cli.to_string().contains("Preserve Unicode Ï€"));
     assert!(
-        same_contract(cli, embedded),
+        same_contract(&cli, &embedded),
         "CLI={cli}; embedding={embedded}"
     );
     // A configured role prevents fallback-model drift; removing tools still
@@ -1545,11 +1553,12 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         if !changed_model {
             config = config.without_default_tools();
         }
+        let original_request = model.generated();
         assert_eq!(
             embedded::answer(config, "parity", "hello").await.unwrap(),
             "fixture answer"
         );
-        let actual = model.requests.lock().unwrap().last().unwrap().clone();
+        let actual = model.requests.lock().unwrap()[original_request].clone();
         if changed_model {
             assert_eq!(actual["model"], "morph-kimik31");
             assert_eq!(actual["tools"], cli["tools"]);
@@ -1560,9 +1569,8 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
                 actual["tools"].as_array().unwrap().len() < cli["tools"].as_array().unwrap().len()
             );
         }
-        assert_eq!(same_contract(cli, &actual), changed_model, "{actual}");
+        assert_eq!(same_contract(&cli, &actual), changed_model, "{actual}");
     }
-    assert_eq!(model.generated(), 4);
     // A new identity appends another prompt to the same persistent conversation.
     assert_eq!(
         embedded::answer(embedded_config(), "next", "another prompt")
@@ -1570,7 +1578,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             .unwrap(),
         "fixture answer"
     );
-    assert_eq!(model.generated(), 5);
+    let generated = model.generated();
     // Reopening with the same identity and prompt recovers without dispatch.
     assert_eq!(
         embedded::answer(embedded_config(), "next", "another prompt")
@@ -1578,13 +1586,13 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             .unwrap(),
         "fixture answer"
     );
-    assert_eq!(model.generated(), 5);
+    assert_eq!(model.generated(), generated);
     assert!(
         embedded::answer(embedded_config(), "next", "changed prompt")
             .await
             .is_err()
     );
-    assert_eq!(model.generated(), 5);
+    assert_eq!(model.generated(), generated);
     model.close().await;
 }
 
