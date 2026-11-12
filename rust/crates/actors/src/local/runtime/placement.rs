@@ -28,10 +28,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         if index == 0 {
             return Err(Error::Invalid("invalid actor placement"));
         }
-        self.track(actor.clone())?;
-        let slot = self
-            .slot(&actor)
-            .ok_or(Error::Invalid("placed actor is not registered"))?;
+        let placement = self.placement(&actor)?;
+        let slot = &placement.0;
         // Serialize local commands with execution before changing durable
         // ownership. Cancellation after commit leaves the old local epoch
         // fenced; replay of this exact command admits the recorded cut.
@@ -40,6 +38,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         slot.refresh.store(false, Ordering::Release);
         slot.waker.wake_by_ref();
         Ok(())
+    }
+
+    fn placement(&self, actor: &ActorReference) -> Result<EventDelivery, Error> {
+        self.track(actor.clone())?;
+        self.pin(actor)?
+            .ok_or(Error::Invalid("actor placement retired during admission"))
     }
 
     /// Resolve this node's admitted epoch for a resident slot: the existing
@@ -161,7 +165,7 @@ pub(super) async fn command<P: StreamProvider + ?Sized>(
                     ],
                 }],
             );
-            let claimed = store
+            store
                 .claim_control(
                     &previous,
                     epoch,
@@ -169,12 +173,62 @@ pub(super) async fn command<P: StreamProvider + ?Sized>(
                     vec![effect],
                     key(&previous, &format!("placement/{index}/{}", owner.node))?,
                 )
-                .await?;
-            store.recover_custody(&claimed).await?;
-            claimed
+                .await?
         }
     };
+    // A committed command is not admission: recovery may have failed or been
+    // cancelled after its durable cut. Exact replay must finish it too.
+    store.recover_custody(&snapshot).await?;
     inner.epoch = snapshot.state().ok_or(Error::Conflict)?.epoch();
     inner.observed = Some(Arc::new(snapshot));
     Ok(())
+}
+
+#[cfg(all(test, loom))]
+mod model {
+    use super::*;
+
+    #[test]
+    fn placement_pins_before_retirement() {
+        loom::model(|| {
+            let result = race();
+            assert!(result.is_ok(), "{result:?}");
+        });
+    }
+
+    fn race() -> Result<(), Box<dyn std::error::Error>> {
+        let actor = ActorReference::new(b"account", b"agents", b"placement")?;
+        let runtime = Arc::new(Runtime::new(
+            Store::new(
+                Arc::new(acyclic_stream::MemoryStream::default()),
+                StreamPath::new("actors")?,
+            ),
+            Arc::new(crate::conformance::Package::new()?),
+            Arc::new(SystemClock),
+        ));
+        runtime.track(actor.clone())?;
+        let placing = Arc::clone(&runtime);
+        let address = actor.clone();
+        let placement = loom::thread::spawn(move || {
+            if let Ok(placement) = placing.placement(&address) {
+                // Admission holds this guard across all asynchronous work.
+                // Release cannot retire either this slot or its replacement.
+                assert!(!placing.release(&address));
+                assert!(matches!(placement.0.inner.try_lock(), Ok(inner) if !inner.released));
+                let resident = placing
+                    .slot(&address)
+                    .ok_or(Error::Invalid("pinned actor was retired"))?;
+                assert!(Arc::ptr_eq(&placement.0, &resident));
+            }
+            Ok::<_, Error>(())
+        });
+        let retiring = loom::thread::spawn(move || {
+            runtime.release(&actor);
+        });
+        placement
+            .join()
+            .map_err(|_| "placement thread panicked")??;
+        retiring.join().map_err(|_| "retirement thread panicked")?;
+        Ok(())
+    }
 }
