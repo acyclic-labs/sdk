@@ -16,6 +16,13 @@
     "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/*"},
     "conditions": {}
   }, {
+    "id": "published-mention",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/mentions/**"},
+    "conditions": {}
+  }, {
     "id": "published-skill",
     "effect": "allow",
     "principal": {"attributes": {}},

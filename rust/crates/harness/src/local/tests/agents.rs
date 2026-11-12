@@ -2451,6 +2451,11 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     );
     let inbox = observed.conversation.send("mention", prompt).await?;
     let entry = observed.settled(inbox).await?;
+    assert_eq!(
+        entry.outcome,
+        crate::agent::TurnOutcome::Completed,
+        "the real mention must reach and settle its model request"
+    );
     let client = observed.conversation;
     // Later publications on the private volume leave a replay unchanged.
     assert_eq!(
