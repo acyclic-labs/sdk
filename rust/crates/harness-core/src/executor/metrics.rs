@@ -824,7 +824,9 @@ pub fn status(
             row.kind = "succeeded".into();
             row.artifact = result.as_deref().map(artifact).transpose()?;
         }
-        agent::AgentOutcome::Failed { .. } => row.kind = "failed".into(),
+        agent::AgentOutcome::Failed { .. } | agent::AgentOutcome::FailedDiagnostic { .. } => {
+            row.kind = "failed".into()
+        }
         agent::AgentOutcome::Archived => row.kind = "archived".into(),
     }
     batch(Table::Outcomes, &[row]).map(Some)

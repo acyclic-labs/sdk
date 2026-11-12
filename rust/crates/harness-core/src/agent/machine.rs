@@ -25,17 +25,11 @@ pub const MAX_QUEUED: usize = 32;
 /// Most encoded bytes of the inputs held in the checkpoint behind the first:
 /// the window always holds its front input, and holds more only within this.
 pub const MAX_QUEUED_BYTES: usize = 8 * 1024;
-/// Largest encoded outcome a turn may settle with: above every success, whose
-/// one file reference is bounded, so only an overlong failure message is
-/// replaced. It travels in the parent's `ChildDone` next to the child's path.
-pub const MAX_OUTCOME_BYTES: usize = 16 * 1024;
 /// The failure a turn settles with when its driver returns an effect beyond
 /// its record's limits; none of the turn's effects are applied.
 pub const INADMISSIBLE_EFFECT: &str = "agent turn returns an effect beyond its record limits";
 /// The failure an agent settles with when its own state cannot be checkpointed.
 pub const OVERSIZED_STATE: &str = "agent state exceeds MAX_CHECKPOINT_BYTES";
-/// The failure a turn settles with when its outcome exceeds [`MAX_OUTCOME_BYTES`].
-pub const OVERSIZED_OUTCOME: &str = "agent outcome exceeds MAX_OUTCOME_BYTES";
 
 /// Why a step did not create a requested child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,7 +195,7 @@ impl AgentState {
             matches!(
                 self.phase,
                 Phase::Done {
-                    outcome: AgentOutcome::Failed { .. }
+                    outcome: AgentOutcome::Failed { .. } | AgentOutcome::FailedDiagnostic { .. }
                 }
             ),
             self.conversation_tail,
@@ -427,6 +421,13 @@ impl AgentState {
 /// An effect of one step, lowered into the step's single commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Out {
+    /// Stage complete original terminal text before its reference can commit.
+    Diagnostic {
+        /// Immutable identity on the failed agent's original stream subtree.
+        diagnostic: super::Diagnostic,
+        /// Full original UTF-8 text, moved into the staging boundary.
+        text: String,
+    },
     /// Retain the paused turn's successful, unpublished spawn admissions.
     PendingSpawns(u64),
     /// Inbox inputs before this exclusive cursor already reached the model.
@@ -935,7 +936,7 @@ async fn draft_step<T: TurnDriver + ?Sized>(
         run(
             driver,
             &mut state,
-            (cursor, now_unix_ms, child_settlement.is_some()),
+            (cursor, now_unix_ms, child_settlement.as_ref()),
             alarm_wake,
             &mut outs,
             &mut child_wakes,
@@ -1089,7 +1090,8 @@ fn finalize_step(
             }
             Out::Announced(documents) => state.announcements.extend(documents.iter().copied()),
             Out::Notices(selection) => selection.consume(&mut state)?,
-            Out::Send { .. }
+            Out::Diagnostic { .. }
+            | Out::Send { .. }
             | Out::PeerGuard { .. }
             | Out::PendingSpawns(_)
             | Out::Steered(_)
@@ -1298,6 +1300,7 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
 /// Whether a driver's effect fits the record that carries it.
 fn admissible(out: &Out) -> bool {
     match out {
+        Out::Diagnostic { .. } => false,
         Out::Steered(_) | Out::PendingSpawns(_) | Out::PeerGuard { .. } => true,
         Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
@@ -1306,7 +1309,8 @@ fn admissible(out: &Out) -> bool {
                 InboxRecord::ForkAdopted(_)
                     | InboxRecord::Archive(_)
                     | InboxRecord::WorkspaceChanged(_)
-            ) && super::AgentRecord::encode(record).is_ok()
+            ) && super::AgentRecord::check(record).is_ok()
+                && super::records::fits_frame(record)
         }
         Out::Archive { .. }
         | Out::Checkpoint
@@ -1314,6 +1318,66 @@ fn admissible(out: &Out) -> bool {
         | Out::Notices(_)
         | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes.iter()).is_ok(),
+    }
+}
+
+/// Retain and admit variable generated records before accepting driver effects.
+fn admit_wait(
+    wait: Wait,
+    state: &AgentState,
+    cursor: u64,
+    conversation: u64,
+    child_wakes: &Option<ChildWakes>,
+    child_settlement: Option<&ChildSettlement>,
+) -> Option<(Wait, Option<Out>, Option<Out>)> {
+    let (phase, staged) = match wait {
+        Wait::Host(host) if super::records::check_text(&host).is_ok() => {
+            (Phase::WaitingHost { host }, None)
+        }
+        Wait::User(path) if super::records::check_ui_path(&path).is_ok() => {
+            (Phase::WaitingUser { path }, None)
+        }
+        Wait::Approval { id, binding }
+            if binding
+                .as_ref()
+                .is_none_or(|binding| binding.validate().is_ok()) =>
+        {
+            (Phase::WaitingApproval { id, binding }, None)
+        }
+        Wait::Done(AgentOutcome::FailedDiagnostic { .. })
+        | Wait::Host(_)
+        | Wait::User(_)
+        | Wait::Approval { .. } => return None,
+        Wait::Done(outcome) => {
+            let (outcome, staged) = retain_outcome(&state.path, outcome);
+            (Phase::Done { outcome }, staged)
+        }
+        wait => return Some((wait, None, None)),
+    };
+    let status = StatusRecord {
+        phase,
+        cursor,
+        conversation,
+        child_wakes: child_wakes.clone(),
+        child_settlement: child_settlement.cloned(),
+    };
+    if super::AgentRecord::check(&status).is_err() || !super::records::fits_frame(&status) {
+        return None;
+    }
+    match status.phase {
+        Phase::WaitingHost { host } => Some((Wait::Host(host), None, None)),
+        Phase::WaitingUser { path } => Some((Wait::User(path), None, None)),
+        Phase::WaitingApproval { id, binding } => {
+            Some((Wait::Approval { id, binding }, None, None))
+        }
+        Phase::Done { outcome } => {
+            let completion = report(state, &outcome);
+            if completion.as_ref().is_some_and(|out| !admissible(out)) {
+                return None;
+            }
+            Some((Wait::Done(outcome), staged, completion))
+        }
+        _ => unreachable!(),
     }
 }
 
@@ -1329,7 +1393,7 @@ fn approval_position(state: &AgentState) -> Option<usize> {
 async fn run<T: TurnDriver + ?Sized>(
     driver: &T,
     state: &mut AgentState,
-    (cursor, now_unix_ms, returning_completion): (u64, u64, bool),
+    (cursor, now_unix_ms, child_settlement): (u64, u64, Option<&ChildSettlement>),
     alarm_wake: bool,
     outs: &mut Vec<Out>,
     child_wakes: &mut Option<ChildWakes>,
@@ -1357,7 +1421,7 @@ async fn run<T: TurnDriver + ?Sized>(
     if picked == Pick::Resume {
         let until = state
             .status_tail
-            .checked_add(u64::from(returning_completion))
+            .checked_add(u64::from(child_settlement.is_some()))
             .ok_or(Error::Record("status tail overflows"))?;
         *child_wakes = state.child_settlements.take().map(|from| ChildWakes {
             from,
@@ -1388,20 +1452,58 @@ async fn run<T: TurnDriver + ?Sized>(
     // The driver's effects are the step's one unchecked input: a turn
     // returning one no record can carry fails, applying none of them, so
     // the step's commit is always buildable.
-    if !turn.outs.iter().all(admissible)
-        || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
-        || matches!(&turn.wait, Wait::User(path) if super::records::check_ui_path(path).is_err())
-        || matches!(&turn.wait, Wait::Approval { binding: Some(binding), .. } if binding.validate().is_err())
-    {
-        turn = TurnStep {
-            checkpoint: None,
-            outs: Vec::new(),
-            wait: Wait::Done(AgentOutcome::Failed {
-                message: INADMISSIBLE_EFFECT.into(),
-            }),
-            drops: None,
-        };
+    let mut conversation = state.conversation_tail;
+    for out in outs.iter() {
+        if matches!(out, Out::Conversation(_)) {
+            conversation = conversation
+                .checked_add(1)
+                .ok_or(Error::Record("agent conversation tail overflow"))?;
+        }
     }
+    let base_conversation = conversation;
+    let valid = turn.outs.iter().all(|out| {
+        if !admissible(out) {
+            return false;
+        }
+        if matches!(out, Out::Conversation(_)) {
+            let Some(next) = conversation.checked_add(1) else {
+                return false;
+            };
+            conversation = next;
+        }
+        true
+    });
+    let admitted = if valid {
+        admit_wait(
+            turn.wait,
+            state,
+            cursor,
+            conversation,
+            child_wakes,
+            child_settlement,
+        )
+    } else {
+        None
+    };
+    let (wait, staged, completion) = match admitted {
+        Some(admitted) => admitted,
+        None => {
+            turn.checkpoint = None;
+            turn.outs.clear();
+            turn.drops = None;
+            admit_wait(
+                Wait::Done(AgentOutcome::Failed {
+                    message: INADMISSIBLE_EFFECT.into(),
+                }),
+                state,
+                cursor,
+                base_conversation,
+                child_wakes,
+                child_settlement,
+            )
+            .ok_or(Error::Record("generated failure exceeds its record"))?
+        }
+    };
     if let Some(end) = turn.drops {
         state.drop_before(end);
     }
@@ -1416,10 +1518,7 @@ async fn run<T: TurnDriver + ?Sized>(
         .unwrap_or(0);
     let spawned = outs.len();
     outs.extend(turn.outs);
-    let wait = match turn.wait {
-        Wait::Done(outcome) => Wait::Done(bounded(outcome)),
-        wait => wait,
-    };
+    outs.extend(staged);
     let mut awaiting = (super::Children::new(), 0);
     let (wait, approval, outcome) = match wait {
         Wait::Continue => (kernel::Wait::Continue, None, None),
@@ -1500,7 +1599,7 @@ async fn run<T: TurnDriver + ?Sized>(
         (Mode::Done, _, Some(outcome)) => {
             state.drop_queue();
             if send {
-                report(state, outcome.clone(), outs);
+                outs.extend(completion);
             }
             Phase::Done { outcome }
         }
@@ -1509,20 +1608,18 @@ async fn run<T: TurnDriver + ?Sized>(
     Ok(())
 }
 
-/// `outcome`, or a failure naming it oversized: the parent's `ChildDone`
-/// and every status carrying it must stay within their records.
-fn bounded(outcome: AgentOutcome) -> AgentOutcome {
-    let fits = match &outcome {
-        AgentOutcome::Failed { message } => message.len() <= super::MAX_MESSAGE_BYTES,
-        _ => true,
-    } && serde_json::to_vec(&outcome)
-        .is_ok_and(|bytes| bytes.len() <= MAX_OUTCOME_BYTES);
-    if fits {
-        outcome
-    } else {
-        AgentOutcome::Failed {
-            message: OVERSIZED_OUTCOME.into(),
+/// Keep complete terminal text; the inline threshold chooses its representation.
+fn retain_outcome(path: &AgentPath, outcome: AgentOutcome) -> (AgentOutcome, Option<Out>) {
+    match outcome {
+        AgentOutcome::Failed { message } if message.len() > super::diagnostic::INLINE_BYTES => {
+            let diagnostic = super::Diagnostic::new(path, &message);
+            let staged = Out::Diagnostic {
+                diagnostic: diagnostic.clone(),
+                text: message,
+            };
+            (AgentOutcome::FailedDiagnostic { diagnostic }, Some(staged))
         }
+        outcome => (outcome, None),
     }
 }
 
@@ -1542,16 +1639,20 @@ fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
         return;
     }
     state.archive_refused |= !state.archive_pending.is_empty();
-    let outcome = bounded(AgentOutcome::Failed {
-        message: failure.into(),
-    });
+    let (outcome, staged) = retain_outcome(
+        &state.path,
+        AgentOutcome::Failed {
+            message: failure.into(),
+        },
+    );
+    outs.extend(staged);
     let before = control(state);
     let (next, send) = kernel::report(before);
     #[cfg(feature = "test-support")]
     control_trace::record(state, Decision::Report(before, (next, send)));
     state.reported = next.reported;
     if send {
-        report(state, outcome.clone(), outs);
+        outs.extend(report(state, &outcome));
     }
     state.phase = Phase::Done { outcome };
 }
@@ -1580,22 +1681,20 @@ async fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Erro
         state.phase = Phase::Done {
             outcome: AgentOutcome::Archived,
         };
-        report(state, AgentOutcome::Archived, outs);
+        outs.extend(report(state, &AgentOutcome::Archived));
     }
     Ok(())
 }
 
-/// Sends `ChildDone` to the parent; called only when the kernel reports.
-fn report(state: &AgentState, outcome: AgentOutcome, outs: &mut Vec<Out>) {
-    if let Some(parent) = &state.parent {
-        outs.push(Out::Send {
-            to: parent.clone(),
-            record: InboxRecord::ChildDone(ChildDone {
-                child: state.path.clone(),
-                outcome,
-            }),
-        });
-    }
+/// Retains the one parent notification; the kernel decides whether it publishes.
+fn report(state: &AgentState, outcome: &AgentOutcome) -> Option<Out> {
+    state.parent.as_ref().map(|parent| Out::Send {
+        to: parent.clone(),
+        record: InboxRecord::ChildDone(ChildDone {
+            child: state.path.clone(),
+            outcome: outcome.clone(),
+        }),
+    })
 }
 
 /// The child that the `Spawn` request at `parent`'s inbox `sequence` names,

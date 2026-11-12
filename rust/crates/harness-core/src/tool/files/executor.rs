@@ -447,6 +447,17 @@ impl ToolExecutor for FileTool {
             .or_else(|| invocation.arguments.get("path").and_then(Value::as_str))
             .ok_or_else(unauthorized)?;
         let context = context.ok_or_else(unauthorized)?;
+        if matches!(self, Self::Read)
+            && let Some((agent, _)) = crate::agent::Diagnostic::query_target(path)?
+        {
+            let observer = context.agent_children().ok_or_else(unauthorized)?;
+            if agent != *observer.agent() && !agent.is_child_of(observer.agent()) {
+                return Err(unauthorized());
+            }
+            // This immutable query has no workspace volume. The async producer
+            // binds its digest and length to the original published settlement.
+            return Ok(());
+        }
         if file.is_none() && matches!(self, Self::Read | Self::Edit) {
             if matches!(self, Self::Read) && path.starts_with(crate::layers::EFFECTIVE_PATH) {
                 // This read-only view has no concrete volume until the async

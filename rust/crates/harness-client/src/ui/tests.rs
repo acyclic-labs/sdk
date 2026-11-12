@@ -104,6 +104,134 @@ async fn idle(memory: &MemoryStream, path: &AgentPath) -> TestResult {
 }
 
 #[tokio::test]
+async fn terminal_diagnostic_is_discoverable_and_lazily_readable_without_losing_utf8() -> TestResult
+{
+    use acyclic_harness_core::agent::{AgentOutcome, Diagnostic};
+    let memory = Arc::new(MemoryStream::default());
+    let selected = agent(301);
+    let original = format!(
+        "{}é{}complete suffix",
+        "x".repeat(65535),
+        "\u{0001}\"🙂".repeat(18000)
+    );
+    let diagnostic = Diagnostic {
+        agent: selected.clone(),
+        digest: *blake3::hash(original.as_bytes()).as_bytes(),
+        bytes: original.len() as u64,
+    };
+    let output = serde_json::to_string(&TurnOutput::new(
+        "saved reply".into(),
+        serde_json::Value::Null,
+        1,
+    ))?;
+    let reference = file(
+        &selected,
+        "turns/0.json",
+        output.as_bytes(),
+        "application/json",
+    )?;
+    let entry = ConversationEntry {
+        observed_through: 0,
+        inbox: 0,
+        input: TurnInput::Brief {
+            brief: Box::new(reference.clone()),
+        },
+        output: reference,
+        outcome: TurnOutcome::Completed,
+        goal: None,
+        announcements: Vec::new(),
+        tool_results: None,
+        steering: None,
+        notices: None,
+    };
+    append(&memory, selected.conversation()?, entry.encode()?).await?;
+    for chunk in original.as_bytes().chunks(acyclic_stream::MAX_RECORD_BYTES) {
+        append(&memory, diagnostic.path()?, chunk.to_vec()).await?;
+    }
+    append(
+        &memory,
+        selected.status()?,
+        status(Phase::Done {
+            outcome: AgentOutcome::FailedDiagnostic {
+                diagnostic: diagnostic.clone(),
+            },
+        })
+        .encode()?,
+    )
+    .await?;
+    let view = View::new(2)?;
+    let mut reader = Reader::new(ReaderPolicy::default())?;
+    let mut driver = Driver::new(memory);
+    driver.attach(&mut reader, 0);
+    let digest = blake3::Hash::from_bytes(diagnostic.digest)
+        .to_hex()
+        .to_string();
+    // Opening the directory asks only for published status, never raw payload.
+    let dir = UiPath::new(&format!("diagnostics/{digest}"))?;
+    assert_eq!(view.wants(&selected, &dir, None, 0)?.len(), 1);
+    let index = UiPath::new("index.md")?;
+    wait(
+        &mut reader,
+        &mut driver,
+        view.wants(&selected, &index, None, 0)?,
+        |reader| {
+            reader
+                .cache()
+                .record(&selected.conversation().expect("conversation"), 0)
+                .is_some()
+        },
+    )
+    .await;
+    let lookup = |_: &FileRef| Some(output.clone());
+    let mut complete = String::new();
+    while complete.len() < original.len() {
+        let from = complete.len() as u64;
+        let path = UiPath::new(&format!("diagnostics/{digest}/{from}.md"))?;
+        let wants = view.wants(&selected, &path, None, 0)?;
+        assert!(matches!(&wants[1], Want::Range { from: start, to, .. } if to-start == 2));
+        wait(&mut reader, &mut driver, wants, |reader| {
+            let cut = ReaderCut {
+                reader,
+                agent: &selected,
+                file: &lookup,
+            };
+            cut.status().is_ok() && cut.diagnostic(&diagnostic, from).is_ok()
+        })
+        .await;
+        let cut = ReaderCut {
+            reader: &reader,
+            agent: &selected,
+            file: &lookup,
+        };
+        let page = cut.diagnostic(&diagnostic, from)?;
+        assert!(!page.text.is_empty());
+        assert!(page.text.len() <= acyclic_stream::MAX_RECORD_BYTES);
+        complete.push_str(&page.text);
+        assert_eq!(page.end, complete.len() as u64);
+        let markdown = view.project(&cut, &path)?;
+        if page.end < page.total {
+            assert!(markdown.contains(&format!("[Next diagnostic page]({}.md)", page.end)));
+        }
+        assert!(
+            view.project(&cut, &UiPath::new("status.md")?)?
+                .contains(&format!("(diagnostics/{digest}/0.md)"))
+        );
+        assert!(
+            view.project(&cut, &index)?
+                .contains(&format!("(diagnostics/{digest}/0.md)"))
+        );
+        assert!(
+            view.project(&cut, &UiPath::new("turns/0.md")?)?
+                .contains(&format!("(../diagnostics/{digest}/0.md)"))
+        );
+        let forged = UiPath::new(&format!("diagnostics/{}/0.md", "0".repeat(64)))?;
+        assert!(view.project(&cut, &forged).is_err());
+    }
+    assert_eq!(complete, original);
+    Ok(())
+}
+
+#[tokio::test]
 async fn ui_default_projection() -> TestResult {
     let memory = Arc::new(MemoryStream::default());
     let selected = agent(1);

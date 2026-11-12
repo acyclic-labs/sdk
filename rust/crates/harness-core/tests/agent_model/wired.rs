@@ -26,10 +26,13 @@ use std::sync::Arc;
 #[path = "wired/workspace_announcements.rs"]
 mod workspace_announcements;
 
+#[path = "wired/diagnostic.rs"]
+mod diagnostic;
 #[path = "wired/input_wait.rs"]
 mod input_wait;
 #[path = "wired/preparation.rs"]
 mod preparation;
+pub(super) use diagnostic::check_diagnostic_read;
 #[path = "wired/settlement.rs"]
 mod settlement;
 #[path = "wired/spawn_names.rs"]

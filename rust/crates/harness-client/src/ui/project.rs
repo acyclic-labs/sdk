@@ -19,6 +19,12 @@ pub trait Cut {
     fn turn(&self, sequence: u64) -> Result<String>;
     /// Exactly one cached `children_page`, never a flattened subtree.
     fn children(&self, page: u32) -> Option<&Listing>;
+    /// One original diagnostic interval, supplied only from the selected cut.
+    fn diagnostic(
+        &self,
+        source: &acyclic_harness_core::agent::Diagnostic,
+        from: u64,
+    ) -> Result<acyclic_harness_core::agent::DiagnosticRead>;
 }
 
 /// Reader-backed cut plus a lookup of immutable conversation file bytes. The
@@ -85,6 +91,27 @@ impl Cut for ReaderCut<'_> {
         let output = (self.file)(&entry.output).ok_or(Error::Pending)?;
         let output: TurnOutput = serde_json::from_str(&output)?;
         Ok(output.text)
+    }
+    fn diagnostic(
+        &self,
+        source: &acyclic_harness_core::agent::Diagnostic,
+        from: u64,
+    ) -> Result<acyclic_harness_core::agent::DiagnosticRead> {
+        if source.agent != *self.agent {
+            return Err(Error::Invalid("diagnostic belongs to another cut"));
+        }
+        let stream = source.path()?;
+        let mut range = source.range(from, acyclic_stream::MAX_RECORD_BYTES as u64);
+        let mut bytes = Vec::with_capacity(range.capacity());
+        for sequence in range.first()..range.first() + u64::from(range.records()) {
+            let original = self
+                .reader
+                .cache()
+                .record(&stream, sequence)
+                .ok_or(Error::Pending)?;
+            bytes.extend_from_slice(range.take_chunk(sequence, original)?);
+        }
+        Ok(range.finish(bytes)?)
     }
     fn children(&self, page: u32) -> Option<&Listing> {
         self.agent
@@ -172,6 +199,18 @@ impl View {
             stream: agent.status()?,
             count: 1,
         }];
+        if path.as_str().starts_with("diagnostics/") && path.as_str().ends_with(".md") {
+            let (digest, from) = diagnostic_path(path.as_str())?;
+            let first = from / acyclic_stream::MAX_RECORD_BYTES as u64;
+            wants.push(Want::Range {
+                stream: acyclic_harness_core::agent::Diagnostic::stream_path(agent, &digest)?,
+                from: first,
+                to: first
+                    .checked_add(2)
+                    .ok_or(Error::Invalid("diagnostic cursor overflow"))?,
+            });
+            return Ok(wants);
+        }
         match path.as_str() {
             "index.md" => wants.push(Want::Last {
                 stream: agent.conversation()?,
@@ -220,6 +259,30 @@ impl View {
         if max == 0 {
             return Err(Error::Invalid("zero page size"));
         }
+        if dir.as_str() == "diagnostics" || dir.as_str().starts_with("diagnostics/") {
+            let source = diagnostic_source(cut)?;
+            let digest = blake3::Hash::from_bytes(source.digest).to_hex().to_string();
+            let expected = format!("diagnostics/{digest}");
+            let node = if dir.as_str() == "diagnostics" {
+                Node {
+                    name: digest,
+                    directory: true,
+                    agent: None,
+                }
+            } else if dir.as_str() == expected {
+                Node {
+                    name: "0.md".into(),
+                    directory: false,
+                    agent: None,
+                }
+            } else {
+                return Err(Error::Invalid("unknown diagnostic directory"));
+            };
+            return Ok(Page {
+                nodes: if cursor == 0 { vec![node] } else { Vec::new() },
+                next: None,
+            });
+        }
         match dir.as_str() {
             "" => {
                 let names = [
@@ -227,6 +290,7 @@ impl View {
                     ("status.md", false),
                     ("children", true),
                     ("turns", true),
+                    ("diagnostics", true),
                     ("title", false),
                     ("model", false),
                     ("cost", false),
@@ -310,6 +374,24 @@ impl View {
     }
     /// Pure markdown generation; authored-over-default resolution wraps this.
     pub fn project(&self, cut: &impl Cut, path: &UiPath) -> Result<String> {
+        if path.as_str().starts_with("diagnostics/") {
+            let (digest, from) = diagnostic_path(path.as_str())?;
+            let source = diagnostic_source(cut)?;
+            if source.digest != digest {
+                return Err(Error::Invalid("diagnostic differs from the selected cut"));
+            }
+            let page = cut.diagnostic(&source, from)?;
+            let mut text = String::from("# Diagnostic\n\n");
+            for line in page.text.split('\n') {
+                text.push_str("    ");
+                text.push_str(line);
+                text.push('\n');
+            }
+            if page.end < page.total {
+                text.push_str(&format!("\n[Next diagnostic page]({}.md)\n", page.end));
+            }
+            return Ok(text);
+        }
         match path.as_str() {
             "role" => cut.role(),
             "title" => Ok(cut.agent().id().to_string()),
@@ -323,12 +405,14 @@ impl View {
                     outcome: acyclic_harness_core::agent::AgentOutcome::Succeeded { .. },
                 } => "✓",
                 Phase::Done {
-                    outcome: acyclic_harness_core::agent::AgentOutcome::Failed { .. },
+                    outcome:
+                        acyclic_harness_core::agent::AgentOutcome::Failed { .. }
+                        | acyclic_harness_core::agent::AgentOutcome::FailedDiagnostic { .. },
                 } => "✗",
                 Phase::Done { .. } => "■",
             }
             .into()),
-            "status.md" => status(cut),
+            "status.md" => status(cut, ""),
             "index.md" => {
                 let tail = cut.tail().ok_or(Error::Pending)?;
                 let page = tail.saturating_sub(1) / u64::from(self.page_size);
@@ -352,7 +436,10 @@ impl View {
             .checked_mul(u64::from(self.page_size))
             .ok_or(Error::Invalid("page overflow"))?;
         let end = start.saturating_add(u64::from(self.page_size)).min(tail);
-        let mut text = format!("# Conversation\n\n{}\n", status(cut)?);
+        let mut text = format!(
+            "# Conversation\n\n{}\n",
+            status(cut, if index { "" } else { "../" })?
+        );
         for n in start..end {
             text.push_str(&format!("## Turn {}\n\n{}\n\n", n + 1, cut.turn(n)?));
         }
@@ -402,19 +489,56 @@ fn page_number<T: std::str::FromStr>(path: &str, prefix: &str) -> Result<T> {
         .and_then(|s| s.parse().ok())
         .ok_or(Error::Invalid("page path"))
 }
-fn status(cut: &impl Cut) -> Result<String> {
+fn status(cut: &impl Cut, root: &str) -> Result<String> {
     let status = cut.status()?;
     Ok(match status.phase {
         Phase::WaitingApproval { id, .. } => format!(
             "Waiting for approval\n\n```input choose id=approval approval={}\n- allow once\n- allow rule\n- deny\n```\n",
             id.as_str()
         ),
-        Phase::WaitingUser { path } => format!("Waiting for your reply: [{path}]({path})\n"),
+        Phase::WaitingUser { path } => format!("Waiting for your reply: [{path}]({root}{path})\n"),
         Phase::Idle => "Idle\n".into(),
         Phase::Running => "Running\n".into(),
         Phase::WaitingHost { .. } => "Waiting for host\n".into(),
         Phase::Waiting { input: true, .. } => "Waiting for input or alarm\n".into(),
         Phase::Waiting { .. } => "Waiting\n".into(),
+        Phase::Done {
+            outcome: acyclic_harness_core::agent::AgentOutcome::FailedDiagnostic { diagnostic },
+        } => format!(
+            "Failed\n\n[Read complete diagnostic]({root}diagnostics/{}/0.md)\n",
+            blake3::Hash::from_bytes(diagnostic.digest).to_hex()
+        ),
         Phase::Done { .. } => "Done\n".into(),
     })
+}
+
+fn diagnostic_source(cut: &impl Cut) -> Result<acyclic_harness_core::agent::Diagnostic> {
+    match cut.status()?.phase {
+        Phase::Done {
+            outcome: acyclic_harness_core::agent::AgentOutcome::FailedDiagnostic { diagnostic },
+        } if diagnostic.agent == *cut.agent() => Ok(diagnostic),
+        _ => Err(Error::Invalid("selected agent has no published diagnostic")),
+    }
+}
+fn diagnostic_path(path: &str) -> Result<([u8; 32], u64)> {
+    let rest = path
+        .strip_prefix("diagnostics/")
+        .ok_or(Error::Invalid("diagnostic path"))?;
+    let (digest, page) = rest
+        .split_once('/')
+        .ok_or(Error::Invalid("diagnostic page"))?;
+    let hash = blake3::Hash::from_hex(digest).map_err(|_| Error::Invalid("diagnostic digest"))?;
+    if hash.to_hex().as_str() != digest {
+        return Err(Error::Invalid("noncanonical diagnostic digest"));
+    }
+    let page = page
+        .strip_suffix(".md")
+        .ok_or(Error::Invalid("diagnostic page"))?;
+    let from: u64 = page
+        .parse()
+        .map_err(|_| Error::Invalid("diagnostic cursor"))?;
+    if from.to_string() != page {
+        return Err(Error::Invalid("noncanonical diagnostic cursor"));
+    }
+    Ok((*hash.as_bytes(), from))
 }

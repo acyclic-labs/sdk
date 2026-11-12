@@ -23,6 +23,11 @@ impl FileTool {
         if input.0.range.is_some_and(|range| range.end < range.start) {
             return Err(invalid("read range is reversed; use start <= end"));
         }
+        if let Some(target) =
+            crate::agent::Diagnostic::query_target(&input.0.path).map_err(Error::from)?
+        {
+            return super::diagnostic_query::read(context, input.0, target, work, io).await;
+        }
         if input.0.wait {
             context.wait_tool_path(&input.0.path, io).await?;
         }
@@ -99,15 +104,10 @@ impl FileTool {
             .map(|range| range.end.checked_sub(range.start))
             .unwrap_or(Some(u64::MAX))
             .ok_or_else(|| invalid("read range is reversed; use start <= end"))?;
-        let window = context
-            .effective_scope()
-            .limits()
-            .render_bytes
-            .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
-                maximum.min(crate::tool::output::VIEW_BYTES)
-            })
-            .saturating_add(3)
-            .min(context.effective_scope().limits().file_bytes);
+        let window =
+            crate::tool::output::view_bytes(context.effective_scope().limits().render_bytes)
+                .saturating_add(3)
+                .min(context.effective_scope().limits().file_bytes);
         let window = super::window::Window::first(
             context,
             input,
@@ -235,9 +235,7 @@ fn text_result(
                 history,
             )
         })? + schema::json_envelope_bytes()? as u64
-            <= maximum.map_or(crate::tool::output::VIEW_BYTES, |maximum| {
-                maximum.min(crate::tool::output::VIEW_BYTES)
-            });
+            <= crate::tool::output::view_bytes(maximum);
     let shown = if complete {
         source
     } else {
@@ -287,10 +285,7 @@ pub(super) fn encoded_text_budget(
     let overhead = crate::executor::with_history_io(io, |history| {
         crate::executor::json::json_byte_length(&empty, None, history)
     })? + schema::json_envelope_bytes()? as u64;
-    maximum
-        .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
-            maximum.min(crate::tool::output::VIEW_BYTES)
-        })
+    crate::tool::output::view_bytes(maximum)
         .checked_sub(overhead)
         .filter(|budget| *budget >= 6)
         .ok_or_else(|| executor::rejection(work, "render credit cannot hold a source page"))

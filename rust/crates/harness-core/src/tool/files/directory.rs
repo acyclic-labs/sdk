@@ -56,6 +56,8 @@ pub struct DirectoryReadResult {
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum ReadResult {
+    /// A bounded immutable host file query.
+    Diagnostic(DiagnosticReadResult),
     /// File bytes and their original source.
     File(ReadFileResult),
     /// Namespace entries at one immutable generation.

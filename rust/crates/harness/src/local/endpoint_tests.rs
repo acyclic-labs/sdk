@@ -8,7 +8,7 @@ use acyclic_stream::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The published credential is exercised over the ordinary server transport,
+/// A tree-only credential is exercised over the ordinary server transport,
 /// including direct primitive reads rather than only actor command replies.
 #[tokio::test]
 async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots() -> Result<()> {
@@ -25,7 +25,39 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
     ]);
     // The script publishes two text turns; it has no summary-model requests.
     let config = volume_config(directory.path(), project, provider)?
-        .compaction(crate::context::CompactionPolicy::Disabled);
+        .compaction(crate::context::CompactionPolicy::Disabled)
+        .served(Arc::new(crate::server::KeyFileVerifier));
+    let local = Arc::new(LocalHarness::open(config).await?);
+    local.agents().await?;
+    let owner = local.connect_sessions().await?;
+    let foreign = super::super::sessions::create(&owner, "unrelated-root", None).await?;
+    let mut foreign_events = Observer::open(&foreign, 0, 0)?;
+    loop {
+        if matches!(foreign_events.next().await?, Event::Status(status) if matches!(status.phase, crate::agent::Phase::Idle))
+        {
+            break;
+        }
+    }
+    let foreign = foreign.root().clone();
+    let hosted = local
+        .agents
+        .get()
+        .ok_or_else(|| Error::Invalid("missing owner".into()))?;
+    let server = Arc::clone(hosted.server());
+    let credential = server
+        .bound()
+        .client_credential(server.root(), server.resource(), local.clock.clone())
+        .await
+        .map_err(exchange)?;
+    let credential = acyclic_auth::credential::capability_text(&credential.credential);
+    let changes = server.bound().changes().map_err(exchange)?;
+    let composition = crate::server::Hosted::new(
+        server,
+        local.clock.clone(),
+        local.clone(),
+        Some(Arc::new(changes)),
+    )
+    .with_completion(hosted.runtime.completion());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(exchange)?;
@@ -33,12 +65,8 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let mut serving = tokio::spawn(crate::server::serve(
         listener,
-        crate::server::ServerConfig::new(config),
+        crate::server::ServerConfig::new(composition),
         move |endpoint| {
-            let credential = endpoint
-                .observation
-                .as_ref()
-                .map(|observation| observation.credential.clone());
             let _ = ready.send((endpoint.endpoint.clone(), credential));
         },
         async move {
@@ -47,8 +75,6 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
     ));
     let checked = async {
         let (endpoint, credential) = endpoint.await.map_err(exchange)?;
-        let credential = credential
-            .ok_or_else(|| Error::Unauthorized("server published no credential".into()))?;
         let remote = acyclic_stream::grpc::Client::connect_loopback(&endpoint, &credential)
             .await
             .map_err(exchange)?;
@@ -221,14 +247,15 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             parent = child;
             eprintln!("remote tree: verified {intent}");
         }
-        let foreign = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16]));
-        assert!(matches!(
+        assert_eq!(
             session
                 .follow(FollowRequest::new(foreign.status().map_err(exchange)?, 0))
-                .await,
-            Err(StreamError::AccessDenied)
-        ));
-        assert!(matches!(
+                .await
+                .err()
+                .map(|error| error.category()),
+            Some(StreamError::AccessDenied)
+        );
+        assert_eq!(
             session
                 .children_page(
                     ChildrenPageRequest {
@@ -240,9 +267,11 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                     },
                     CREDENTIAL
                 )
-                .await,
-            Err(StreamError::AccessDenied)
-        ));
+                .await
+                .err()
+                .map(|error| error.category()),
+            Some(StreamError::AccessDenied)
+        );
         assert!(connection.select(foreign).await.is_err());
         Ok(())
     };

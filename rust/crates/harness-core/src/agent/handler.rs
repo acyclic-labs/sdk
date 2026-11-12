@@ -25,7 +25,7 @@ use acyclic_stream::{CommitEffect, ReadRequest, StreamProvider};
 use futures::TryStreamExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 /// The agent's one subscription: its inbox.
@@ -42,6 +42,62 @@ pub struct AgentHandler<P: crate::store::JournalProvider + ?Sized, D> {
     manifest: Manifest,
     volumes: Option<std::sync::Arc<dyn super::SpawnVolumes>>,
     closes: bool,
+    diagnostics: Mutex<BTreeMap<AgentPath, RetainedDiagnostic>>,
+}
+
+/// A failed publication keeps the computed transition, including every byte
+/// not yet staged. A later attempt at the same delivery cannot call the driver
+/// again or replace its error. Successful and unrelated deliveries retain none.
+struct RetainedDiagnostic {
+    trigger: String,
+    checkpoint: Option<Checkpoint>,
+    prepared: super::machine::PreparedStep,
+}
+
+/// Return original diagnostic ownership on errors and future cancellation.
+struct DiagnosticAttempt<'a> {
+    owner: &'a Mutex<BTreeMap<AgentPath, RetainedDiagnostic>>,
+    identity: Option<(AgentPath, String, Option<Checkpoint>)>,
+    prepared: Option<super::machine::PreparedStep>,
+}
+
+impl std::ops::Deref for DiagnosticAttempt<'_> {
+    type Target = super::machine::PreparedStep;
+    fn deref(&self) -> &Self::Target {
+        self.prepared.as_ref().expect("original diagnostic attempt")
+    }
+}
+impl std::ops::DerefMut for DiagnosticAttempt<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.prepared.as_mut().expect("original diagnostic attempt")
+    }
+}
+impl DiagnosticAttempt<'_> {
+    fn into_checkpoint(mut self) -> Checkpoint {
+        self.prepared
+            .take()
+            .expect("original diagnostic attempt")
+            .into_checkpoint()
+    }
+}
+impl Drop for DiagnosticAttempt<'_> {
+    fn drop(&mut self) {
+        if let (Some(prepared), Some((path, trigger, checkpoint))) =
+            (self.prepared.take(), self.identity.take())
+        {
+            self.owner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    path,
+                    RetainedDiagnostic {
+                        trigger,
+                        checkpoint,
+                        prepared,
+                    },
+                );
+        }
+    }
 }
 
 /// The agents' actor state under one store root: creation and observation,
@@ -74,6 +130,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             },
             volumes: None,
             closes: false,
+            diagnostics: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -427,7 +484,17 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 .spawned_children
                 .bind(Arc::clone(self.agents.store.provider()));
         }
-        let mut prepared = if let Some(failure) = failure {
+        let retained = self
+            .diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&path)
+            .filter(|retained| {
+                retained.trigger == trigger && retained.checkpoint.as_ref() == checkpoint
+            });
+        let prepared = if let Some(retained) = retained {
+            retained.prepared
+        } else if let Some(failure) = failure {
             super::machine::failed_step(&path, state, wake, cursor, failure).await?
         } else {
             super::machine::prepare_step(
@@ -440,6 +507,23 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             )
             .await?
         };
+        let diagnostic = prepared
+            .step()
+            .outs
+            .iter()
+            .any(|out| matches!(out, Out::Diagnostic { .. }));
+        let mut prepared = DiagnosticAttempt {
+            owner: &self.diagnostics,
+            identity: diagnostic.then(|| (path.clone(), trigger.clone(), checkpoint.cloned())),
+            prepared: Some(prepared),
+        };
+        for out in &prepared.step().outs {
+            if let Out::Diagnostic { diagnostic, text } = out {
+                diagnostic
+                    .stage(self.agents.store.provider().as_ref(), text)
+                    .await?;
+            }
+        }
         prepared
             .persist_indexes(Arc::clone(self.agents.store.provider()), checkpoint)
             .await?;

@@ -23,6 +23,7 @@ struct RefusesAppend {
     path: StreamPath,
     refusals: AtomicUsize,
     single_refusal: bool,
+    diagnostic_chunk: Option<u64>,
 }
 
 #[async_trait::async_trait]
@@ -47,7 +48,12 @@ impl StreamProvider for RefusesAppend {
         request: WriteRequest,
     ) -> BoxProviderFuture<'_, std::result::Result<WriteOutcome, StreamError>> {
         let refused = match &request {
-            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
+            WriteRequest::Append(request) => self
+                .diagnostic_chunk
+                .is_some_and(|chunk| request.path == self.path && request.if_tail == Some(chunk)),
+            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request)
+                if self.diagnostic_chunk.is_none() =>
+            {
                 request.mutations().any(|mutation| {
                     matches!(mutation,
                     CommitMutation::Append { path, .. } if path == &self.path)
@@ -57,6 +63,9 @@ impl StreamProvider for RefusesAppend {
         };
         if refused {
             let previous = self.refusals.fetch_add(1, Ordering::SeqCst);
+            if self.diagnostic_chunk.is_some() && previous != 0 {
+                return self.inner.write(request);
+            }
             assert!(
                 !self.single_refusal || previous == 0,
                 "a terminal archive refusal retried instead of settling"
@@ -87,6 +96,118 @@ impl StreamProvider for RefusesAppend {
 }
 
 impl acyclic_stream::NativeStreamProvider for RefusesAppend {}
+
+#[tokio::test]
+async fn interrupted_diagnostic_staging_preserves_the_original_driver_result() -> Result {
+    struct FailsDifferently {
+        calls: Arc<AtomicUsize>,
+        original: String,
+    }
+    impl TurnDriver for FailsDifferently {
+        fn step<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: u64,
+            _: Option<Queued>,
+            _: CancellationToken,
+        ) -> TurnFuture<'a> {
+            Box::pin(async move {
+                let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+                Err(Error::Turn(Box::new(acyclic_harness_core::Error::Invalid(
+                    if first {
+                        self.original.clone()
+                    } else {
+                        "replacement outcome".into()
+                    },
+                ))))
+            })
+        }
+    }
+    let root = AgentPath::root(&id(19));
+    let original = format!("{}original suffix", "é\u{0001}".repeat(65536));
+    let expected = Error::Turn(Box::new(acyclic_harness_core::Error::Invalid(
+        original.clone(),
+    )))
+    .to_string();
+    let diagnostic = Diagnostic {
+        agent: root.clone(),
+        digest: *blake3::hash(expected.as_bytes()).as_bytes(),
+        bytes: expected.len() as u64,
+    };
+    let provider = Arc::new(RefusesAppend {
+        inner: MemoryStream::default(),
+        path: diagnostic.path()?,
+        refusals: AtomicUsize::new(0),
+        single_refusal: false,
+        // One full original record commits before the second append fails.
+        diagnostic_chunk: Some(1),
+    });
+    let calls = Arc::new(AtomicUsize::new(0));
+    let host = AgentHost::new(
+        provider.clone(),
+        FailsDifferently {
+            calls: calls.clone(),
+            original,
+        },
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let mut adoption = adopted(id(19));
+    adoption.brief = Some(driver::file("fail")?);
+    assert_eq!(
+        host.create(&intent("diagnostic-recovery"), adoption)
+            .await?,
+        root
+    );
+    // Ordinary input waits for its next event after this storage failure. It
+    // must retain the original error rather than re-enter the driver then.
+    let failures = host.runtime().drain().await;
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        values(provider.as_ref(), diagnostic.path()?).await?.len(),
+        1
+    );
+    host.send(
+        &root,
+        &user(),
+        &InboxRecord::Message(Message {
+            from: user(),
+            id: intent("next-input"),
+            body: Box::new(driver::file("next")?),
+            re: None,
+            attachments: None,
+        }),
+    )
+    .await?;
+    host.drain(&root).await?;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.refusals.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        host.state(&root).await?.phase,
+        Phase::Done {
+            outcome: AgentOutcome::FailedDiagnostic {
+                diagnostic: diagnostic.clone()
+            },
+        }
+    );
+    let mut complete = String::new();
+    while complete.len() < expected.len() {
+        let page = diagnostic
+            .read_text_with(complete.len() as u64, 65536, |request| {
+                provider.read(request)
+            })
+            .await?;
+        complete.push_str(&page.text);
+    }
+    assert_eq!(complete, expected);
+    let snapshot = host.state(&root).await?;
+    host.drain(&root).await?;
+    assert_eq!(host.state(&root).await?, snapshot);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
 
 struct Parent;
 
@@ -171,6 +292,7 @@ async fn a_definitively_refused_child_publication_settles_its_parent_once() -> R
             path: child.conversation()?,
             refusals: AtomicUsize::new(0),
             single_refusal: false,
+            diagnostic_chunk: None,
         });
         let handler: Arc<dyn Handler> = Arc::new(AgentHandler::new(
             actor_store(&provider)?,
@@ -285,6 +407,7 @@ async fn a_refused_archive_keeps_unfinished_children_without_rearming_its_alarm(
             refusals: AtomicUsize::new(0),
             // Fail directly on the old recovery loop, without a timeout.
             single_refusal: true,
+            diagnostic_chunk: None,
         });
         let host = AgentHost::new(
             provider.clone(),

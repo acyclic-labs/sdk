@@ -686,8 +686,11 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
         }
         TurnInput::Brief { brief: file } => ModelContent::Part(body(file)),
         TurnInput::ChildDone { done } => {
-            let metadata = serde_json::to_value(done)
+            let mut metadata = serde_json::to_value(done)
                 .map_err(|_| Error::Record("child completion does not encode"))?;
+            if let AgentOutcome::FailedDiagnostic { diagnostic } = &done.outcome {
+                metadata["diagnostic_file"] = serde_json::Value::String(diagnostic.query_path());
+            }
             let event = notice(done.child.as_str().to_owned(), "child.finished", metadata);
             match &done.outcome {
                 AgentOutcome::Succeeded { result: Some(file) } => {

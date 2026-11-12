@@ -17,11 +17,11 @@ pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 /// Largest external intent identity or spawn-name base. Generated spawn intents
 /// append a separator and a canonical nonzero `u64` generation.
 pub const MAX_INTENT_BYTES: usize = 128;
-/// Largest failure message carried in a record.
+/// Inline failure packing threshold; longer terminal text uses a Diagnostic.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
-/// Version-one workspace-aware agent records. Other formats are refused whole;
+/// Version-two workspace-aware records include complete diagnostic references. Other formats are refused whole;
 /// sessions must start fresh, with no migration or compatibility reader.
-pub const RECORD_VERSION: u32 = 1;
+pub const RECORD_VERSION: u32 = 2;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -70,7 +70,10 @@ pub(super) fn encode_payload<T: Serialize + ?Sized>(value: &T) -> crate::Result<
     Ok(bytes)
 }
 
-fn write_payload<T: Serialize + ?Sized>(bytes: &mut Vec<u8>, value: &T) -> crate::Result<()> {
+fn write_payload<W: std::io::Write, T: Serialize + ?Sized>(
+    bytes: &mut W,
+    value: &T,
+) -> crate::Result<()> {
     let mut value =
         serde_json::to_value(value).map_err(|error| crate::Error::Invalid(error.to_string()))?;
     // Notice bodies may contain JSON objects. Canonical bytes cannot depend on
@@ -79,6 +82,28 @@ fn write_payload<T: Serialize + ?Sized>(bytes: &mut Vec<u8>, value: &T) -> crate
     value
         .serialize(&mut rmp_serde::Serializer::new(bytes).with_struct_map())
         .map_err(|error| crate::Error::Invalid(error.to_string()))
+}
+
+/// Admit through the SAME canonical encoder, retaining no second encoded buffer.
+pub(super) fn fits_frame<T: Serialize + ?Sized>(record: &T) -> bool {
+    struct FrameBudget(usize);
+    impl std::io::Write for FrameBudget {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_sub(bytes.len())
+                .ok_or(std::io::ErrorKind::WriteZero)?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    write_payload(
+        &mut FrameBudget(MAX_RECORD_BYTES - std::mem::size_of::<u32>()),
+        record,
+    )
+    .is_ok()
 }
 
 /// Decode exactly one value, including all of its fields. The library's
@@ -325,6 +350,11 @@ pub enum AgentOutcome {
     Failed {
         /// Failure description.
         message: String,
+    },
+    /// Failed with complete text retained on the original agent stream subtree.
+    FailedDiagnostic {
+        /// Immutable identity and length of the complete staged text.
+        diagnostic: super::Diagnostic,
     },
     /// Stopped by archive before completing.
     Archived,
@@ -796,6 +826,12 @@ fn check_outcome(outcome: &AgentOutcome) -> Result<(), Error> {
         AgentOutcome::Failed { message } if message.len() > MAX_MESSAGE_BYTES => {
             Err(Error::Record("failure message exceeds MAX_MESSAGE_BYTES"))
         }
+        AgentOutcome::FailedDiagnostic { diagnostic } => {
+            if diagnostic.bytes == 0 {
+                return Err(Error::Record("diagnostic is empty"));
+            }
+            diagnostic.path().map(|_| ())
+        }
         _ => Ok(()),
     }
 }
@@ -833,7 +869,14 @@ impl AgentRecord for InboxRecord {
                 Ok(())
             }
             Self::WorkspaceChanged(change) => change.check(),
-            Self::ChildDone(done) => check_outcome(&done.outcome),
+            Self::ChildDone(done) => {
+                check_outcome(&done.outcome)?;
+                if matches!(&done.outcome, AgentOutcome::FailedDiagnostic { diagnostic } if diagnostic.agent != done.child)
+                {
+                    return Err(Error::Record("diagnostic belongs to another child"));
+                }
+                Ok(())
+            }
             Self::Notice { notice, .. } => {
                 match notice {
                     NoticePayload::Quiet(notice) => {

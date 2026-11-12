@@ -25,8 +25,10 @@ impl FileProjection {
                 let authored = generator.subschema_for::<schema::JsonProjection<FileView<'_>>>();
                 let directory =
                     generator.subschema_for::<schema::JsonProjection<DirectoryReadResult>>();
+                let diagnostic =
+                    generator.subschema_for::<schema::JsonProjection<DiagnosticReadResult>>();
                 Ok(
-                    json!({"oneOf":[content,authored,directory],"$defs":generator.take_definitions(true)}),
+                    json!({"oneOf":[content,authored,directory,diagnostic],"$defs":generator.take_definitions(true)}),
                 )
             }
             Self::Read(ProjectionMode::Full) => {
@@ -36,7 +38,11 @@ impl FileProjection {
                 let file = generator.subschema_for::<ReadProjection<'_>>();
                 let directory =
                     generator.subschema_for::<schema::JsonProjection<DirectoryReadResult>>();
-                Ok(json!({"oneOf":[file,directory],"$defs":generator.take_definitions(true)}))
+                let diagnostic =
+                    generator.subschema_for::<schema::JsonProjection<DiagnosticReadResult>>();
+                Ok(
+                    json!({"oneOf":[file,directory,diagnostic],"$defs":generator.take_definitions(true)}),
+                )
             }
             Self::Publication(mode) => Self::model_schema(mode),
             Self::Search(mode) => mode.schema::<SearchResult>(),
@@ -178,11 +184,7 @@ pub(super) fn notebook_text_budget(
     let overhead = crate::executor::with_history_io(io, |history| {
         crate::executor::json::json_byte_length(&empty, None, history)
     })?;
-    Ok(maximum
-        .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
-            maximum.min(crate::tool::output::VIEW_BYTES)
-        })
-        .saturating_sub(overhead))
+    Ok(crate::tool::output::view_bytes(maximum).saturating_sub(overhead))
 }
 
 pub(super) fn notebook_output_bytes(
@@ -245,6 +247,11 @@ impl ToolProjection for FileProjection {
         match *self {
             Self::Read(mode) => {
                 let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                if let Some(target) =
+                    crate::agent::Diagnostic::query_target(&input.0.path).map_err(Error::from)?
+                {
+                    return super::diagnostic_query::project(&input.0, target, result, work);
+                }
                 if let Some(ReadSelection::Directory { after, limit }) = &input.0.selection {
                     return super::directory::project(
                         &input.0,

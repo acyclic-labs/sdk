@@ -44,11 +44,7 @@ pub(super) fn result(
     if name == super::shell::PLATFORM.name {
         // The complete presentation, including its retained-log notice, fits
         // the shared window so it never needs a second output spill.
-        let maximum = maximum
-            .into()
-            .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
-                maximum.min(crate::tool::output::VIEW_BYTES)
-            });
+        let maximum = crate::tool::output::view_bytes(maximum.into());
         if let Value::Object(fields) = result.value {
             if let Some(text) = fields.get("text").and_then(Value::as_str)
                 && text_projection_len(text) as u64 <= maximum

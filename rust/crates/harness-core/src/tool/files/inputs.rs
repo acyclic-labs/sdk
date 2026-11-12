@@ -7,7 +7,9 @@ use super::*;
 )]
 #[serde(deny_unknown_fields)]
 pub struct ReadFileInput {
-    /// Public path relative to the agent's project volume.
+    /// Public path relative to the agent's project volume, or an immutable
+    /// `diagnostic_file` query from a child.finished notice. Diagnostic queries
+    /// return text byte pages; pass page.next as range.start to continue.
     pub path: String,
     /// Wait on the provider's change event until the current path exists.
     /// No default deadline; cancellation releases the interest. Cannot be

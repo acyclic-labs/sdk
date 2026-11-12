@@ -471,12 +471,32 @@ impl View {
                 if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
                     self.observe_settled_before(status.cursor);
                 }
-                if let Phase::Done {
-                    outcome: AgentOutcome::Failed { message },
-                } = &status.phase
-                {
+                let failure = match &status.phase {
+                    Phase::Done {
+                        outcome: AgentOutcome::Failed { message },
+                    } => Some(message.clone()),
+                    Phase::Done {
+                        outcome: AgentOutcome::FailedDiagnostic { diagnostic },
+                    } => {
+                        let page = conversation
+                            .diagnostic_page(diagnostic, 0, acyclic_stream::MAX_RECORD_BYTES as u64)
+                            .await?;
+                        let mut text = page.text;
+                        if page.end < page.total {
+                            text.push_str(&format!(
+                                "\n\nComplete diagnostic: {} (next byte {}, total {}).",
+                                diagnostic.query_path(),
+                                page.end,
+                                page.total
+                            ));
+                        }
+                        Some(text)
+                    }
+                    _ => None,
+                };
+                if let Some(message) = failure {
                     self.settle_pending();
-                    self.failed(conversation, message);
+                    self.failed(conversation, &message);
                 } else if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
                     if std::mem::take(&mut self.cancelling) {
                         // The cancel's stop shows once the entries this status

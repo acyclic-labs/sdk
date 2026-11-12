@@ -51,7 +51,9 @@ pub fn patch_file(maximum_work: u64, maximum_hunks: u32) -> Result<Tool> {
     .assemble(super::schema::ProjectionMode::Full)
 }
 
+mod diagnostic_query;
 mod directory;
+pub use diagnostic_query::DiagnosticReadResult;
 mod inputs;
 mod record;
 pub use record::{RecordResult, WriteResult};

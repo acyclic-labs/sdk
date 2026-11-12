@@ -157,6 +157,30 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
         child: &'a AgentPath,
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Settlement>>;
 
+    /// One published diagnostic file page, under this turn's original child
+    /// relationship and work owner. The returned hold outlives its text.
+    fn diagnostic<'a>(
+        &'a self,
+        _agent: &'a AgentPath,
+        _digest: [u8; 32],
+        _from: u64,
+        _maximum_bytes: u64,
+        _io: Option<&'a crate::conversation::ContentIo>,
+    ) -> acyclic_stream::BoxProviderFuture<
+        'a,
+        crate::Result<(
+            super::Diagnostic,
+            super::DiagnosticRead,
+            Option<crate::conversation::ContentHold<'a>>,
+        )>,
+    > {
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "diagnostic file queries are not bound".into(),
+            ))
+        })
+    }
+
     /// The text at `child`'s selected answer position, read under the turn's
     /// authority. The caller retains the position from the same settlement.
     fn answer<'a>(

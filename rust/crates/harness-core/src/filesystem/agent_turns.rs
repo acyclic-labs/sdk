@@ -2351,6 +2351,92 @@ where
         })
     }
 
+    fn diagnostic<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        digest: [u8; 32],
+        from: u64,
+        maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> BoxFuture<
+        'a,
+        Result<(
+            crate::agent::Diagnostic,
+            crate::agent::DiagnosticRead,
+            Option<crate::conversation::ContentHold<'a>>,
+        )>,
+    > {
+        Box::pin(async move {
+            if agent != &self.agent && !agent.is_child_of(&self.agent) {
+                return Err(Error::Unauthorized(
+                    "diagnostic query is outside the original agent relationship".into(),
+                ));
+            }
+            // This observation proves that the complete immutable prefix was
+            // published; staged/unpublished bytes are never a readable result.
+            let selected = self.settled(agent).await?;
+            let crate::agent::Phase::Done {
+                outcome: crate::agent::AgentOutcome::FailedDiagnostic { diagnostic },
+            } = selected.phase
+            else {
+                return Err(Error::NotFound("published diagnostic".into()));
+            };
+            if diagnostic.agent != *agent || diagnostic.digest != digest {
+                return Err(Error::NotFound(
+                    "diagnostic identity differs from the published result".into(),
+                ));
+            }
+            let mut range = diagnostic.range(from, maximum_bytes);
+            let capacity = range.capacity();
+            let mut hold = io
+                .map(|io| io.reserve_decode(capacity as u64))
+                .transpose()?;
+            if let Some(io) = io {
+                io.allocation_attempt(capacity as u64)?;
+            }
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(capacity)
+                .map_err(|_| Error::Storage("diagnostic page allocation failed".into()))?;
+            if let (Some(io), Some(hold)) = (io, hold.as_mut()) {
+                if bytes.capacity() > capacity {
+                    hold.absorb(io.reserve_decode((bytes.capacity() - capacity) as u64)?)?;
+                }
+            }
+            if range.records() != 0 {
+                let request = range.request().map_err(Error::from)?;
+                let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
+                let mut work = observer
+                    .as_mut()
+                    .map(|work| work as &mut dyn crate::store::HistoryIo);
+                let mut records = crate::store::operations::read_records(
+                    &self.stream,
+                    &request.path,
+                    request.from,
+                    request.limit,
+                    &mut work,
+                )
+                .await??;
+                while !range.complete() {
+                    let record = records
+                        .next(&mut work)
+                        .await?
+                        .ok_or_else(|| Error::Storage("diagnostic prefix is incomplete".into()))?;
+                    let slice = range.take_record(&record).map_err(Error::from)?;
+                    if let Some(io) = io {
+                        io.charged(acyclic_fs::WorkCounters {
+                            bytes_copied: slice.len() as u64,
+                            ..Default::default()
+                        })?;
+                    }
+                    bytes.extend_from_slice(slice);
+                }
+            }
+            let page = range.finish(bytes).map_err(Error::from)?;
+            Ok((diagnostic, page, hold))
+        })
+    }
+
     fn answer<'a>(
         &'a self,
         child: &'a AgentPath,

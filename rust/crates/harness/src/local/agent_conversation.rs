@@ -276,6 +276,28 @@ impl Conversation {
         self.connection.root()
     }
 
+    /// Read one visible diagnostic page through this connection's existing
+    /// authenticated session. The original identity and UTF-8 byte cursor are
+    /// preserved; no complete history or diagnostic is loaded.
+    pub async fn diagnostic_page(
+        &self,
+        diagnostic: &crate::agent::Diagnostic,
+        from: u64,
+        maximum_bytes: u64,
+    ) -> Result<crate::agent::DiagnosticRead> {
+        if diagnostic.agent != *self.agent() {
+            return Err(Error::Unauthorized(
+                "diagnostic belongs to another selected agent".into(),
+            ));
+        }
+        diagnostic
+            .read_text_with(from, maximum_bytes, |request| {
+                self.connection.session.read(request)
+            })
+            .await
+            .map_err(Error::from)
+    }
+
     /// The same authenticated tree connection, selected at an existing node.
     pub async fn select(&self, agent: AgentPath) -> Result<Arc<Self>> {
         Ok(Self::open(self.connection.select(agent).await?))

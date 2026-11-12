@@ -1,5 +1,5 @@
-//! Live observation of an agent, or its hosted tree, and its tool output,
-//! `tools/` on its private volume.
+//! Live observation of an agent or its hosted tree, with immutable diagnostic
+//! pages and tool output, `tools/` on its private volume.
 use super::*;
 use crate::core::AuthorityRoot;
 use acyclic_auth::{
@@ -9,8 +9,8 @@ use acyclic_auth::{
 use acyclic_stream::UnixMillisClock;
 use acyclic_stream::session::{Authority, AuthorityState, TrustSnapshot};
 
-/// A read-only observation of one agent, or its hosted tree's streams,
-/// and its tool output, under one credential.
+/// A read-only observation of one agent or its hosted tree's streams,
+/// immutable diagnostic pages and tool output, under one credential.
 pub struct AgentObservation {
     /// The `fs:/` resource of [`TOOL_OUTPUT`]; a turn's output is under
     /// `{resource}/{turn}`.
@@ -166,6 +166,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             })?;
             let status = stream(agent.status())?;
             let children = stream(agent.children())?;
+            let diagnostics = stream(crate::agent::Diagnostic::directory(agent))?;
             let tree = agent.depth() == 0;
             let membership = stream(if tree {
                 agent.membership_tree()
@@ -192,6 +193,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     (resource.as_str(), true, read),
                 ],
             };
+            grants.push((diagnostics.as_str(), true, &["streams/read"]));
             let directory_streams = [
                 acyclic_stream::wire_codec::session::stream_resource(crate::agent::AGENTS),
                 acyclic_stream::wire_codec::session::stream_resource(crate::agent::STATUSES),

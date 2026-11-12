@@ -39,6 +39,13 @@ record!(
     })?
 );
 record!(
+    DiagnosticReadResult,
+    self,
+    self.path.capacity(),
+    self.text.capacity(),
+    crate::core::ownership::OwnedBytes::owned_heap_bytes(&self.diagnostic.agent)?
+);
+record!(
     WriteFileInput,
     self,
     self.path.capacity(),

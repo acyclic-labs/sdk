@@ -5,6 +5,11 @@ use super::*;
 /// an immutable volume file and are read through the ordinary file reader.
 pub const VIEW_BYTES: u64 = 30_000;
 
+/// One rendered page, constrained only when the caller configures a byte bound.
+pub(crate) fn view_bytes(maximum: Option<u64>) -> u64 {
+    maximum.map_or(VIEW_BYTES, |maximum| maximum.min(VIEW_BYTES))
+}
+
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SpillRef<'a> {

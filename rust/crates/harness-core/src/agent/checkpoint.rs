@@ -19,8 +19,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
-            // Version-one snapshot-backed actor state; embedded tables are refused.
-            version: "1".into(),
+            // Snapshot-backed actor state with immutable terminal diagnostic references.
+            version: "2".into(),
         });
     &IDENTITY
 }
@@ -231,8 +231,8 @@ mod tests {
     use crate::agent::{
         AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
         ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
-        MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, Message, NoticePayload, Phase, Sender, SpawnRequest,
-        StatusRecord, TurnInput, WorkspaceEntry,
+        MAX_RECORD_BYTES, Message, NoticePayload, Phase, Sender, SpawnRequest, StatusRecord,
+        TurnInput, WorkspaceEntry,
     };
     use crate::conversation::{
         FileDescriptor, FileRef, MAX_EXACT_JS_INTEGER, VolumeClass, VolumeOwner, VolumeRef,
@@ -258,21 +258,11 @@ mod tests {
         "\0".repeat(bytes)
     }
 
-    /// The widest failure a turn settles with: the longest control-character
-    /// message within both its own limit and [`MAX_OUTCOME_BYTES`].
+    /// The widest inline failure. Larger terminal text has a diagnostic reference.
     fn widest_failure() -> AgentOutcome {
-        let failure = |n| AgentOutcome::Failed {
-            message: widest_text(n),
-        };
-        let overhead = serde_json::to_vec(&failure(0)).expect("outcome").len();
-        let n = ((MAX_OUTCOME_BYTES - overhead) / 6).min(MAX_MESSAGE_BYTES);
-        assert!(serde_json::to_vec(&failure(n)).expect("outcome").len() <= MAX_OUTCOME_BYTES);
-        if n < MAX_MESSAGE_BYTES {
-            assert!(
-                serde_json::to_vec(&failure(n + 1)).expect("outcome").len() > MAX_OUTCOME_BYTES
-            );
+        AgentOutcome::Failed {
+            message: widest_text(MAX_MESSAGE_BYTES),
         }
-        failure(n)
     }
 
     fn agent(depth: usize) -> AgentPath {
@@ -317,6 +307,13 @@ mod tests {
                 result: Some(Box::new(file())),
             },
             widest_failure(),
+            AgentOutcome::FailedDiagnostic {
+                diagnostic: super::super::Diagnostic {
+                    agent: agent(FIXTURE_DEPTH),
+                    digest: [u8::MAX; 32],
+                    bytes: u64::MAX,
+                },
+            },
             AgentOutcome::Archived,
         ]
     }
@@ -557,8 +554,6 @@ mod tests {
         }
         // Statuses and conversation entries.
         for outcome in outcomes() {
-            let encoded = serde_json::to_vec(&outcome).expect("outcome");
-            assert!(encoded.len() <= MAX_OUTCOME_BYTES, "{}", encoded.len());
             StatusRecord {
                 child_settlement: None,
                 child_wakes: None,
