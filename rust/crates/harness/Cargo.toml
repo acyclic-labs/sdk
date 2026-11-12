@@ -142,7 +142,7 @@ acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features 
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
 tokio-util = { workspace = true, features = ["rt"] }
 rcgen = "0.14.10"
-tonic.workspace = true
+tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
 tonic-prost.workspace = true
 serde-saphyr = { version = "=2.0.0", default-features = false, features = ["serialize"] }
 shuttle = "=0.9.8"
