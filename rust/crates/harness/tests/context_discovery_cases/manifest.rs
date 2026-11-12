@@ -126,6 +126,19 @@ async fn assert_request(
     assert!(text.contains("SELECTED BODY"));
     assert!(!text.contains("UNSELECTED BODY"));
     assert!(!text.contains("replacement"));
+    let catalog =
+        &request.messages[manifest.conventions.len() + manifest.discovery.instructions.len()];
+    let ModelContent::Text(catalog) = &catalog.content else {
+        return Err(Error::Invalid("skill catalog is not text".into()));
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(catalog)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        serde_json::json!([
+            {"name":"inspect","description":"Inspect files"},
+            {"name":"hidden","description":"Hidden skill"}
+        ])
+    );
     for ((message, pinned), (path, expected)) in request
         .messages
         .iter()

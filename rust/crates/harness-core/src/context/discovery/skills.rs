@@ -18,6 +18,25 @@ pub struct SkillMetadata {
     pub source: PinnedContextPath,
 }
 
+/// The model's discovery surface; provenance and callable fields stay pinned
+/// in the manifest, where invocation and replay consume them.
+#[derive(Serialize)]
+pub(crate) struct SkillSummary<'a> {
+    name: &'a str,
+    description: &'a str,
+}
+
+pub(super) struct SkillListing<'a>(pub &'a [SkillMetadata]);
+
+impl Serialize for SkillListing<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(SkillMetadata::summary))
+    }
+}
+
 /// A callable declaration borrowed from the same pinned skill metadata.
 /// Registry admission validates the schema and interprets the runtime; this
 /// projection neither loads a body nor grants execution authority.
@@ -29,6 +48,13 @@ pub struct SkillCallFields<'a> {
 }
 
 impl SkillMetadata {
+    pub(crate) fn summary(&self) -> SkillSummary<'_> {
+        SkillSummary {
+            name: &self.name,
+            description: &self.description,
+        }
+    }
+
     /// Projects paired callable fields without copying or reading the skill body.
     /// Skills with neither field remain ordinary instruction skills.
     pub fn call_fields(
@@ -321,7 +347,7 @@ pub(super) fn skill_text_native(
         acyclic_fs::WorkCounters::UNCHARGED,
     )?;
     let bytes = match crate::executor::json::json_bytes_bounded(
-        &skills,
+        &SkillListing(skills),
         bounds,
         Some(crate::wire::ErrorCode::Invalid),
         &mut |charge| observer.codec_charge(charge),
