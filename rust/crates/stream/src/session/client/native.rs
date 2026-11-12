@@ -99,7 +99,7 @@ impl futures::Stream for Input {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, loom))]
 pub(super) fn endpoint(
     channel: TransportChannel,
     authorization: Option<MetadataValue<Ascii>>,
