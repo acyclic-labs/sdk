@@ -414,3 +414,32 @@ async fn computed_ui_defaults_overlay_and_fork_use_the_real_filesystem() -> Test
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn computed_ui_count_stops_rendering_on_accounting_failure() -> TestResult {
+    let snapshot = prepared().await?;
+    let cancel = CancellationToken::new();
+    let native = NativeMaterializationWork::new(
+        WorkBudget {
+            items_examined: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancel,
+    )
+    .map_err(|(error, _)| error)?;
+    let mut ctx = accounting(&native);
+    let mut count = Count {
+        length: 0,
+        ctx: &mut ctx,
+        failure: None,
+    };
+    assert!(matches!(
+        View::new(2)?.write(&snapshot, &"index.md", &mut count),
+        Err(Error::Output(_))
+    ));
+    assert!(matches!(
+        count.failure,
+        Some(DemandError::Work(WorkError::BudgetExceeded { .. }))
+    ));
+    Ok(())
+}

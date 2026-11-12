@@ -297,7 +297,7 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
             memory::validate_limit(request.limit).map_err(|error| error.code())?;
             let mut value = serde_json::Map::from_iter([("limit".into(), json!(request.limit))]);
             if request.offset != 0 {
-                value.insert("offset".into(), json!(request.offset));
+                value.insert("offset".into(), json!(request.offset.to_string()));
             }
             if let Some(tail_stream) = request.tail_stream {
                 value.insert("tailStream".into(), json!(tail_stream.to_string()));
