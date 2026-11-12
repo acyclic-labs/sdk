@@ -432,10 +432,13 @@ async fn a_refused_archive_keeps_unfinished_children_without_rearming_its_alarm(
             open.open_children.page(None, children.len() + 1).await?,
             children.iter().map(AgentPath::id).collect::<Vec<_>>()
         );
+        // Admit the root archive directly: the host convenience API closes
+        // children eagerly, before the actor publication this control refuses.
         assert!(matches!(
-            host.archive(&root, &user(), &intent("archive")).await?,
-            Delivered::Committed { .. }
+            submit(&*provider, archive(&root, &user(), &intent("archive"))?).await?,
+            Submitted::Committed(_)
         ));
+        host.host(&root)?;
         let serving = Box::pin(host.runtime().run(|actor, error| {
             panic!("unsettled delivery for {actor:?}: {error}");
         }));

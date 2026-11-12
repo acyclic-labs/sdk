@@ -268,6 +268,10 @@ impl TurnHost for Announcing {
     ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
         Box::pin(async move {
             let mut open = self.0.open(agent, turn, inbox, cursor, input, stop).await?;
+            if let Some(announcements) = turn_announcements(agent)? {
+                open.announcements = announcements;
+                return Ok(open);
+            }
             let announced = self
                 .1
                 .lock()
@@ -286,6 +290,40 @@ impl TurnHost for Announcing {
             Ok(open)
         })
     }
+}
+
+// The actor commits the selected announcements before executing the turn.
+// Deliver that checkpoint's alarm, but leave goal continuations observable.
+async fn step<T: TurnDriver + ?Sized>(
+    driver: &T,
+    path: &AgentPath,
+    state: Option<AgentState>,
+    clock: (u64, u64),
+    wake: Wake,
+    stop: acyclic_actors::guest::CancellationToken,
+) -> Result<Step> {
+    let selected = match &state {
+        Some(state) => turn_announcements(state)?.is_some(),
+        None => false,
+    };
+    let first =
+        acyclic_harness_core::agent::step(driver, path, state, clock, wake, stop.clone()).await?;
+    if !selected
+        && first.outs.is_empty()
+        && first.alarm == Alarm::At(CONTINUE_NOW)
+        && turn_announcements(&first.state)?.is_some()
+    {
+        return Ok(acyclic_harness_core::agent::step(
+            driver,
+            path,
+            Some(first.state),
+            clock,
+            Wake::Alarm,
+            stop,
+        )
+        .await?);
+    }
+    Ok(first)
 }
 
 #[tokio::test]
@@ -576,17 +614,31 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
                 body: body.clone(),
                 attachments: None,
             });
-        let state = AgentState::adopted(path, &adopted(id(1))).expect("adopts");
+        let mut state = AgentState::adopted(path, &adopted(id(1))).expect("adopts");
         let input = Queued {
             steering: false,
             inbox: 0,
             input: request("input")?.1,
         };
-        let step = driver
+        let opened = driver
             .step(
                 &state,
                 1,
                 Some(input),
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+        assert!(opened.outs.is_empty());
+        assert!(matches!(opened.wait, Wait::Continue));
+        state.turn = Some(Progress {
+            inbox: 0,
+            checkpoint: opened.checkpoint.ok_or("missing opening checkpoint")?,
+        });
+        let step = driver
+            .step(
+                &state,
+                1,
+                None,
                 acyclic_actors::guest::CancellationToken::new(),
             )
             .await?;
