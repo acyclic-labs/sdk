@@ -1117,20 +1117,25 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         call(&client, "agents", &children).await?,
         Err(AgentControlFailure::Refused { code, .. }) if code == "invalid_agent_record"
     ));
-    // Outside the admitted tree is a typed refusal.
+    // A foreign tree needs its own credential. Refuse before dispatch or any
+    // source lookup, rather than disclosing whether the foreign agent exists.
     let stranger = AgentPath::root(&AgentId::from_bytes([9; 16]));
+    let before = stream.requests();
+    let refused = call(
+        &client,
+        "agents",
+        &AgentCommand::Cancel {
+            agent: stranger,
+            id: IntentId::try_from("c1")?,
+        },
+    )
+    .await
+    .expect_err("a foreign tree needs its own original credential");
     assert!(matches!(
-        call(
-            &client,
-            "agents",
-            &AgentCommand::Cancel {
-                agent: stranger,
-                id: IntentId::try_from("c1")?,
-            }
-        )
-        .await?,
-        Err(AgentControlFailure::Refused { code, .. }) if code == "no_such_agent"
+        refused.downcast_ref::<StreamError>(),
+        Some(StreamError::AccessDenied)
     ));
+    assert_eq!(stream.requests().since(before), Default::default());
     // Another namespace never reaches dispatch, and owner denial is final.
     assert!(
         call(&client, "elsewhere", &AgentCommand::Root {})

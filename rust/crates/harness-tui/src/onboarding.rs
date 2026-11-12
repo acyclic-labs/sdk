@@ -24,6 +24,16 @@ pub fn interactive() -> bool {
         && !crate::term::Environment::capture().is_dumb()
 }
 
+/// Resolve a one-based number against the currently visible choices.
+pub fn numbered_choice(value: &str, choices: usize) -> Option<usize> {
+    value
+        .trim()
+        .parse::<usize>()
+        .ok()?
+        .checked_sub(1)
+        .filter(|index| *index < choices)
+}
+
 /// Setup borrows the conversation's native terminal and whole-stream decoder.
 /// Early keys and late probe replies have the same owner as later input.
 /// Setup input stays host-only, including any remaining queued bytes at finish.
@@ -142,9 +152,7 @@ impl<'a> Input<'a> {
         }
         loop {
             let input = self.read(label, false)?;
-            if let Ok(number) = input.trim().parse::<usize>()
-                && let Some(index) = number.checked_sub(1).filter(|index| *index < choices.len())
-            {
+            if let Some(index) = numbered_choice(&input, choices.len()) {
                 return Ok(index);
             }
             write!(self.terminal, "Choose a listed number.\r\n")?;

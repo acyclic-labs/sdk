@@ -5,6 +5,7 @@ use acyclic_harness::{
     local::agent_conversation::Conversation,
     tui::{
         key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers},
+        onboarding::numbered_choice,
         ratatui::{
             style::{Modifier, Style},
             text::Line,
@@ -176,9 +177,9 @@ pub(super) async fn choose(
                 let batch = batch.ok_or("terminal input ended")??;
                 let mut chosen = None;
                 for event in batch {
-                    if let InputEvent::Key(key) = event {
-                        if key.kind == KeyEventKind::Release { continue; }
-                        match key.code {
+                    let mut edited = false;
+                    match event {
+                        InputEvent::Key(key) if key.kind != KeyEventKind::Release => match key.code {
                             KeyCode::Esc => return Err("session selection cancelled".into()),
                             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Err("session selection cancelled".into()),
                             KeyCode::Up | KeyCode::Down => {
@@ -190,15 +191,21 @@ pub(super) async fn choose(
                             }
                             KeyCode::Char(ch) if ch.is_ascii_digit() => {
                                 digits.push(ch);
-                                if let Some(next) = digits.parse::<usize>().ok().and_then(|value| value.checked_sub(1)).filter(|value| *value < choices.len()) {
-                                    changed |= selected != next;
-                                    selected = next;
-                                }
+                                edited = true;
                             }
-                            KeyCode::Backspace => { digits.pop(); }
-                            KeyCode::Enter if digits.is_empty() || digits.parse::<usize>().ok() == selected.checked_add(1) => { chosen = Some(selected); break; }
+                            KeyCode::Backspace => { edited = digits.pop().is_some(); }
+                            KeyCode::Enter if digits.is_empty() || numbered_choice(&digits, choices.len()) == Some(selected) => { chosen = Some(selected); break; }
                             _ => {}
+                        },
+                        InputEvent::Paste(text) | InputEvent::CommittedText(text) => {
+                            digits.push_str(&printable(&text));
+                            edited = true;
                         }
+                        _ => {}
+                    }
+                    if edited && let Some(next) = numbered_choice(&digits, choices.len()) {
+                        changed |= selected != next;
+                        selected = next;
                     }
                 }
                 if let Some(chosen) = chosen { break chosen; }

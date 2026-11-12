@@ -124,6 +124,7 @@
         "session-explicit-root-latest",
         "session-list-filter",
         "session-resume-picker",
+        "session-picker-number-editing",
         "session-concurrent-same-repo"
       ]
     },
