@@ -64,12 +64,23 @@ impl<'io> StockExecution<'io> {
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
         step: u32,
-        invocation: ToolInvocation,
+        (invocation, pinned): (ToolInvocation, Option<Arc<crate::tool::Tool>>),
         invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
         self.verify_task_context_binding(operation_id)?;
+        let pinned_call = pinned.is_some();
+        if pinned
+            .as_ref()
+            .is_some_and(|tool| tool.definition.name != invocation.name)
+        {
+            return Err(stock_boundary(
+                self.io,
+                Invalid,
+                "canonical tool call identity changed",
+            ));
+        }
         let metadata = metadata_for_call(
             prior_messages,
             invocation_index,
@@ -122,7 +133,9 @@ impl<'io> StockExecution<'io> {
                 return self.push_tool_result(&invocation, content, None, prior_messages);
             }
         }
-        let fixed = if matches!(recorded, RecordedCall::Unstarted) {
+        let fixed = if pinned.is_some() {
+            pinned
+        } else if matches!(recorded, RecordedCall::Unstarted) {
             None
         } else {
             self.stock.tools.fixed_for_grants(
@@ -260,7 +273,8 @@ impl<'io> StockExecution<'io> {
                 return self.push_tool_result(&invocation, content, None, prior_messages);
             }
         };
-        if matches!(recorded, RecordedCall::Unstarted)
+        if !pinned_call
+            && matches!(recorded, RecordedCall::Unstarted)
             && self
                 .stock
                 .tools
