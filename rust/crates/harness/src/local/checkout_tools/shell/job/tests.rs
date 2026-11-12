@@ -80,7 +80,7 @@ async fn listener_executor(
     .map_err(storage)?;
     Ok(workspace
         .executor(
-            (&harness.project, &harness.files, Some(1) << 20),
+            (&harness.project, &harness.files, Some(1 << 20)),
             harness.clock.clone(),
             &harness.signed,
             &harness.verifier,
