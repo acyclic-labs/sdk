@@ -495,8 +495,8 @@ struct Decisions(
 );
 
 impl acyclic_stream::CommitAdmission for Decisions {
-    fn not_before(&self, request: &CommitRequest) -> Option<u64> {
-        let deadline = crate::local::alarm_admission().not_before(request)?;
+    fn not_before(&self, value: &[u8]) -> Option<u64> {
+        let deadline = crate::local::alarm_admission().not_before(value)?;
         let _ = self
             .0
             .unbounded_send((deadline, self.1.0.load(Ordering::SeqCst)));
