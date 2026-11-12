@@ -66,27 +66,84 @@ impl FileTool {
         if let Some(original) = &source.source {
             context.check_layer_version(original)?;
         }
-        if let Some(ReadSelection::Lines { offset, limit }) = input.0.selection {
-            return super::lines::read(context, &input.0, source, offset, limit, work, io).await;
+        let self_projection = context.is_self_projection(&input.0.path, io)?;
+        if self_projection && !input.0.include_body {
+            // A zero-byte read selects and authorizes the immutable source;
+            // it requests no projection body bytes.
+            let window = super::window::Window::first(
+                context,
+                &input.0,
+                source,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 0,
+                },
+                work,
+                io,
+            )
+            .await?;
+            let encoded = super::value(
+                &ReadFileResult {
+                    self_projection: true,
+                    file: window.source,
+                    text: String::new(),
+                    page: None,
+                    media: None,
+                    outputs: Vec::new(),
+                },
+                None,
+                work,
+            )?;
+            return Ok((ToolResult { value: encoded.0 }, encoded.1));
         }
-        if let Some(ReadSelection::Cells { offset, limit }) = input.0.selection {
-            return super::notebook_read::read(context, &input.0, source, offset, limit, work, io)
+        let custody;
+        let (result, retained) = self.read_body(context, &input.0, source, work, io).await?;
+        custody = retained;
+        if !self_projection {
+            return Ok((result, custody));
+        }
+        #[derive(Serialize)]
+        struct Marked<'a> {
+            #[serde(flatten)]
+            result: &'a Value,
+            #[serde(rename = "self-projection")]
+            self_projection: bool,
+        }
+        let encoded = super::value(
+            &Marked {
+                result: &result.value,
+                self_projection: true,
+            },
+            None,
+            work,
+        )?;
+        Ok((ToolResult { value: encoded.0 }, encoded.1))
+    }
+
+    async fn read_body(
+        &self,
+        context: &ToolContext,
+        input: &ReadFileInput,
+        source: super::source::ReadSource,
+        work: acyclic_fs::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
+        if let Some(ReadSelection::Lines { offset, limit }) = input.selection {
+            return super::lines::read(context, input, source, offset, limit, work, io).await;
+        }
+        if let Some(ReadSelection::Cells { offset, limit }) = input.selection {
+            return super::notebook_read::read(context, input, source, offset, limit, work, io)
                 .await;
         }
-        if input.0.selection.is_none()
-            && input.0.range.is_none()
-            && input.0.path.ends_with(".ipynb")
-        {
-            return super::notebook_read::read(context, &input.0, source, 0, None, work, io).await;
+        if input.selection.is_none() && input.range.is_none() && input.path.ends_with(".ipynb") {
+            return super::notebook_read::read(context, input, source, 0, None, work, io).await;
         }
-        if input.0.selection.is_none() || input.0.selection == Some(ReadSelection::Text) {
-            return self
-                .read_path_range(context, &input.0, source, work, io)
-                .await;
+        if input.selection.is_none() || input.selection == Some(ReadSelection::Text) {
+            return self.read_path_range(context, input, source, work, io).await;
         }
         let source =
-            super::executor::Source::selected(context, &input.0.path, source, work, io).await?;
-        self.media_result(source.file, input.0.selection.clone(), work)
+            super::executor::Source::selected(context, &input.path, source, work, io).await?;
+        self.media_result(source.file, input.selection.clone(), work)
     }
 
     async fn read_path_range(
@@ -187,6 +244,7 @@ impl FileTool {
         }
         let encoded = super::value(
             &ReadFileResult {
+                self_projection: false,
                 file: FileReadSource::Content(file),
                 text: String::new(),
                 page: None,
@@ -226,6 +284,7 @@ fn text_result(
         && crate::executor::with_history_io(io, |history| {
             crate::executor::json::json_byte_length(
                 &FileView {
+                    self_projection: false,
                     path,
                     version: &version,
                     text: Some(source),
@@ -270,6 +329,7 @@ pub(super) fn encoded_text_budget(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
     let empty = FileView {
+        self_projection: false,
         path,
         version,
         text: Some(""),
