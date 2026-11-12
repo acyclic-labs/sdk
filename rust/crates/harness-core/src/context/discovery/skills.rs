@@ -38,38 +38,53 @@ pub struct SkillSummary {
 
 #[derive(Serialize)]
 pub(crate) struct SkillSummaryView<'a> {
-    id: SkillId<'a>,
+    id: SkillId,
     name: &'a str,
     description: &'a str,
     source: &'a PinnedContextPath,
 }
 
-struct SkillId<'a>(&'a SkillMetadata);
+struct SkillId([u8; 32]);
 
-impl Serialize for SkillId<'_> {
+impl Serialize for SkillId {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"skill:");
-        serde_json::to_writer(&mut hash, &(&self.0.name, &self.0.identity))
-            .map_err(serde::ser::Error::custom)?;
-        serializer.collect_str(&hash.finalize().to_hex())
+        serializer.collect_str(&blake3::Hash::from_bytes(self.0).to_hex())
     }
 }
 
-pub(super) struct SkillListing<'a>(pub &'a [SkillMetadata]);
+pub(super) struct SkillListing<'a> {
+    entries: Vec<SkillSummaryView<'a>>,
+    _custody: acyclic_fs::NativeCustody,
+}
+
+impl<'a> SkillListing<'a> {
+    pub(super) fn new(
+        skills: &'a [SkillMetadata],
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut entries = crate::core::reserve_copy_vector(skills.len(), &mut quota)?;
+        for skill in skills {
+            entries.push(skill.summary(quota.work())?);
+        }
+        Ok(Self {
+            entries,
+            _custody: quota.into_custody()?,
+        })
+    }
+}
 
 impl Serialize for SkillListing<'_> {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.collect_seq(self.0.iter().map(SkillMetadata::summary))
+        serializer.collect_seq(&self.entries)
     }
 }
-
 /// A callable declaration borrowed from the same pinned skill metadata.
 /// Registry admission validates the schema and interprets the runtime; this
 /// projection neither loads a body nor grants execution authority.
@@ -81,13 +96,29 @@ pub struct SkillCallFields<'a> {
 }
 
 impl SkillMetadata {
-    pub(crate) fn summary(&self) -> SkillSummaryView<'_> {
-        SkillSummaryView {
-            id: SkillId(self),
+    pub(crate) fn summary(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<SkillSummaryView<'_>> {
+        let identity = (&self.name, &self.identity);
+        let bytes = crate::executor::json::json_byte_length(&identity, None, work)?;
+        if let Some(observer) = work.as_deref_mut() {
+            observer.hashed_bytes(
+                bytes
+                    .checked_add(6)
+                    .ok_or_else(|| Error::Invalid("skill identity length overflows".into()))?,
+            )?;
+        }
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"skill:");
+        serde_json::to_writer(&mut hash, &identity)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        Ok(SkillSummaryView {
+            id: SkillId(*hash.finalize().as_bytes()),
             name: &self.name,
             description: &self.description,
             source: &self.source,
-        }
+        })
     }
 
     /// Projects paired callable fields without copying or reading the skill body.
@@ -362,7 +393,7 @@ pub async fn discover_skills_at(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn skill_text_native(
-    skills: &[SkillMetadata],
+    listing: &SkillListing<'_>,
     size: u64,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(String, acyclic_fs::NativeAllocation)> {
@@ -380,7 +411,7 @@ pub(super) fn skill_text_native(
         acyclic_fs::WorkCounters::UNCHARGED,
     )?;
     let bytes = match crate::executor::json::json_bytes_bounded(
-        &SkillListing(skills),
+        listing,
         bounds,
         Some(crate::wire::ErrorCode::Invalid),
         &mut |charge| observer.codec_charge(charge),
