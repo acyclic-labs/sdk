@@ -22,8 +22,8 @@ pub struct LoadedProgram {
 }
 
 /// A selected hook and its canonical executable binding. Source selection
-/// grants no authority; dispatch uses the binding's ordinary shell admission,
-/// approvals, execution owner and receipts. No command bytes escape their
+/// grants no authority; the host submits this binding through ordinary shell
+/// admission, approvals, execution ownership and receipts. No command bytes escape their
 /// original allocation owner.
 pub struct BoundHook {
     selector: HookSelector,

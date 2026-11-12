@@ -82,6 +82,17 @@ results. Ambient time and randomness are absent.
 
 ### Hook effect ownership and recovery
 
+`plugins::load_program(tree, "hooks/<name>")` selects a versioned hook manifest
+and its entries from the caller's immutable tree. `LoadedProgram::bind_hook`
+returns one owning `BoundHook`: its borrowed `on()` selector and `binding()`
+tool belong to that same selection. The host submits this ordinary tool through
+canonical shell admission, including source-independent execution permissions,
+approval and reconciliation. Loading or binding grants no source-read authority.
+The selector retains its original native allocation credit separately from the
+executable, including if binding fails. Raw scripts and declarations cannot be
+moved out of a loaded program independently of their owner; `definition()`
+borrows the declaration. This binding API does not register a subscription.
+
 `hooks::effects::run_once` requires the task's original execution journal.
 Before observing a durable start or outcome, it acquires child-effect ownership
 through that journal's existing filesystem operation registry. Another live
