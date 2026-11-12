@@ -92,11 +92,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 return Ok(None);
             };
             let generation = publication.generation();
-            let bytes = publication
-                .evidence()
-                .ok_or_else(|| io.invalid("conditional publication has no original evidence"))?;
+            let stored;
+            let bytes = if let Some(bytes) = publication.evidence() {
+                bytes
+            } else {
+                let bytes = original_changes_receipt(
+                    &publication,
+                    volume,
+                    key,
+                    Some(maximum_receipt_bytes),
+                    io,
+                )
+                .await?;
+                let hold = io.guard_bytes(&bytes)?;
+                stored = (bytes, hold);
+                stored.0.as_ref()
+            };
             let receipt: ChangeReceipt = io.decode_json(bytes)?;
-            if receipt.0 != 1 {
+            if receipt.0
+                != if publication.evidence().is_some() {
+                    1
+                } else {
+                    2
+                }
+            {
                 return Err(io.invalid("unsupported conditional publication receipt"));
             }
             let payload = change_payload(grant.policy_scope(), volume, io)?;
@@ -298,9 +317,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     ContentChange::Delete { path } => ChangeRecord::Delete { path: *path },
                 });
             }
-            // Versioned as a fresh public contract; the key uses the original
-            // workspace operation index and the receipt commits with all files.
-            let receipt = io.encode(&(1_u8, &records), io.remaining()?.bytes_encoded, true)?;
             let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
             let root = self.open(&reference, Some(io)).await?;
             let binding = self
@@ -357,7 +373,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 access::require(&view.0, action, change.path(), io)?;
             }
             let generation = if let Some(prior) = prior {
-                if prior.evidence() != Some(receipt.as_ref()) {
+                let stored;
+                let (original, version) = if let Some(bytes) = prior.evidence() {
+                    (bytes, 1_u8)
+                } else {
+                    let bytes = original_changes_receipt(&prior, volume, key, None, io).await?;
+                    let hold = io.guard_bytes(&bytes)?;
+                    stored = (bytes, hold);
+                    (stored.0.as_ref(), 2_u8)
+                };
+                let expected =
+                    io.encode(&(version, &records), io.remaining()?.bytes_encoded, true)?;
+                if original != expected.as_ref() {
                     return Err(stock_boundary(
                         Some(io),
                         crate::wire::ErrorCode::Conflict,
@@ -545,6 +572,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let root_fence = root_view
                     .as_ref()
                     .and_then(|view| view.0.publication_fence());
+                let receipt = io.encode(&(1_u8, &records), io.remaining()?.bytes_encoded, true)?;
                 let publication = Self::commit_contextual_publication(
                     transaction,
                     io,
@@ -608,6 +636,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )?;
         self.seal_publication(file, Some(io))
     }
+}
+
+async fn original_changes_receipt<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    publication: &acyclic_fs::OperationPublication<A, O>,
+    volume: &VolumeRef,
+    key: &IdempotencyKey,
+    maximum: Option<u64>,
+    io: &PreparationIo,
+) -> Result<acyclic_stream::OwnedBytes> {
+    let path = super::keys::content_receipt_path_io(volume, key.as_str(), false, true, Some(io))?;
+    let _hold = io.guard_owned(path.capacity() as u64)?;
+    read_generation(publication.generation(), &path, maximum, Some(io)).await
 }
 
 // The authenticated logical-volume admission precedes this conversion. A plain

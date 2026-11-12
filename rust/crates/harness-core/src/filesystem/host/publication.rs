@@ -361,12 +361,31 @@ fn decode_publication_receipt<'a>(
     Ok((record, hold))
 }
 
-/// Decodes the versioned metadata index used by publications with evidence.
+/// Decodes the original index record without changing its publication identity.
 pub(in crate::filesystem) fn decode_content_metadata<'a>(
     bytes: &[u8],
     io: &'a PreparationIo,
 ) -> Result<(FileRef, DecodeReservation<'a>)> {
-    let ((file, expected), mut hold) = decode_publication_receipt(bytes, io)?;
+    let bytes = bytes.trim_ascii_start();
+    if bytes.first() == Some(&b'{') {
+        return io.decode(
+            PhantomData::<FileRef>,
+            bytes,
+            crate::wire::ErrorCode::Storage,
+        );
+    }
+    let ((file, expected), mut hold) = if bytes
+        .strip_prefix(b"[")
+        .is_some_and(|rest| rest.trim_ascii_start().first() == Some(&b'{'))
+    {
+        io.decode(
+            PhantomData::<(FileRef, Option<GenerationRef>)>,
+            bytes,
+            crate::wire::ErrorCode::Storage,
+        )?
+    } else {
+        decode_publication_receipt(bytes, io)?
+    };
     drop(expected);
     hold.substitute(file.logical_owned_bytes()?)?;
     Ok((file, hold))

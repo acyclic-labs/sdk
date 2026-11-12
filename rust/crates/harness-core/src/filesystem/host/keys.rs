@@ -50,7 +50,7 @@ pub(super) fn content_metadata_path_in_namespace_io(
         path,
         Some(namespace),
         absolute,
-        ".system/harness-file-metadata/v2/",
+        ".system/harness-file-metadata/v1/",
         io,
     )
 }
