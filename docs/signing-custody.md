@@ -47,6 +47,14 @@ does not grant another version or file. Input publication grants no directory
 listing or writes. Other journal control data requires host custody even when
 the caller holds a broad journal capability.
 
+Host journal admission checks the current kernel policy for its journal and
+selected retained journal sources, including after reopening. A differing policy
+requires the owner's authenticated write and administrator authority and uses
+the ordinary fenced workspace publication. The original input references and
+bytes stay fixed. A matching policy publishes no generation and does not require
+a source writer. The journal format is unchanged; no older-format reader or
+conversion is involved.
+
 CustodyFailure preserves the operation and CustodyCause, including native
 numeric statuses. Apple interaction-not-allowed is
 InteractionRequired(-25308); it cannot distinguish a locked keychain from an
