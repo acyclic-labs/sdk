@@ -64,13 +64,13 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
     let expected = journal
         .stage(operation, key, bytes, "application/octet-stream", None)?
         .await?;
-    let recovered = journal.staged_ref_with_io(operation, key, None).await?;
+    let recovered = journal.staged_ref(operation, key, None)?.await?;
     assert_eq!(recovered, expected);
     assert_eq!(journal.load(&recovered, None)?.await?.as_ref(), bytes);
     let other = OperationId::from_bytes(identity.map(|byte| byte ^ 1));
     for (operation, key) in [(other, key.to_owned()), (operation, format!("{key}-other"))] {
         assert!(matches!(
-            journal.staged_ref_with_io(operation, &key, None).await,
+            journal.staged_ref(operation, &key, None)?.await,
             Err(Error::NotFound(_))
         ));
     }
@@ -81,7 +81,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
         &mut None,
     )?;
     assert!(matches!(
-        journal.staged_ref_with_io(operation, key, None).await,
+        journal.staged_ref(operation, key, None)?.await,
         Err(Error::Unauthorized(_))
     ));
     // The original authenticated reader still sees the retained payload, so

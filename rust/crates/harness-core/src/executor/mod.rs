@@ -50,6 +50,7 @@ mod binding;
 mod compaction;
 mod composition;
 mod content;
+mod context_files;
 mod dispatch;
 mod live_reply;
 mod tool_changes;
