@@ -70,6 +70,24 @@ impl<'io> StockExecution<'io> {
         prior_messages: &mut Vec<ModelMessage>,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
+        let retained = if self
+            .stock
+            .tools
+            .fixed_for_grants(&invocation.name, self.stock.tool_scope.grants(), self.io)?
+            .is_none()
+        {
+            Some(
+                self.retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let definitions = retained
+            .as_ref()
+            .and_then(|retained| retained.request.as_ref())
+            .map_or(&[][..], |request| request.request().tools.as_slice());
+        let selection = ToolSelection::new(definitions, self.io);
         self.settle_selected_tool_call(
             journal,
             operation_id,
@@ -78,7 +96,7 @@ impl<'io> StockExecution<'io> {
             invocation_index,
             prior_messages,
             _hook_context,
-            None,
+            &selection,
         )
         .await
     }
@@ -92,7 +110,7 @@ impl<'io> StockExecution<'io> {
         invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
         _hook_context: &mut Vec<ModelMessage>,
-        selection: Option<&ToolSelection<'_>>,
+        selection: &ToolSelection<'_>,
     ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
         self.verify_task_context_binding(operation_id)?;
         let metadata = metadata_for_call(
@@ -155,26 +173,7 @@ impl<'io> StockExecution<'io> {
         let selected = if let Some(tool) = fixed {
             Some(tool)
         } else if !matches!(recorded, RecordedCall::Unstarted) {
-            let retained = if selection.is_none() {
-                Some(
-                    self.retained_dispatch_step(
-                        journal,
-                        operation_id,
-                        step,
-                        ModelPurpose::Response,
-                    )
-                    .await?,
-                )
-            } else {
-                None
-            };
-            let local = retained
-                .as_ref()
-                .and_then(|retained| retained.request.as_ref())
-                .map(|request| ToolSelection::new(&request.request().tools, self.io));
             let definition = selection
-                .or(local.as_ref())
-                .ok_or(Error::Indeterminate(operation_id))?
                 .get(&invocation.name)?
                 .ok_or(Error::Indeterminate(operation_id))?;
             match self.stock.tools.recover(definition, self.io)? {
@@ -291,29 +290,7 @@ impl<'io> StockExecution<'io> {
                 .fixed_for_grants(&invocation.name, self.stock.tool_scope.grants(), self.io)?
                 .is_none()
         {
-            let retained = if selection.is_none() {
-                Some(
-                    self.retained_dispatch_step(
-                        journal,
-                        operation_id,
-                        step,
-                        ModelPurpose::Response,
-                    )
-                    .await?,
-                )
-            } else {
-                None
-            };
-            let local = retained
-                .as_ref()
-                .and_then(|retained| retained.request.as_ref())
-                .map(|request| ToolSelection::new(&request.request().tools, self.io));
-            if selection
-                .or(local.as_ref())
-                .ok_or(Error::Indeterminate(operation_id))?
-                .get(&invocation.name)?
-                != Some(&tool.definition)
-            {
+            if selection.get(&invocation.name)? != Some(&tool.definition) {
                 let content = self
                     .settle_tool_refusal(
                         journal,

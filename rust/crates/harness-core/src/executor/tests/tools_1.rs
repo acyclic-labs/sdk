@@ -624,7 +624,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
                 0,
                 &mut replay_context,
                 &mut Vec::new(),
-                None,
+                &ToolSelection::new(&[], None),
             )
             .await,
         Err(Error::Conflict(_))

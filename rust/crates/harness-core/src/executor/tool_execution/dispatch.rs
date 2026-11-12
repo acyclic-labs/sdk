@@ -10,7 +10,7 @@ impl<'io> StockExecution<'io> {
         context: &mut Option<crate::runtime::ToolContext>,
         started: bool,
         _hook_context: &mut Vec<ModelMessage>,
-        selection: Option<&ToolSelection<'_>>,
+        selection: &ToolSelection<'_>,
     ) -> Result<ToolInvocationOutcome<'io>> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;

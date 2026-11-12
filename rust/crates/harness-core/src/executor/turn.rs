@@ -211,7 +211,7 @@ impl StockExecution<'_> {
                         invocation_index,
                         &mut prior_messages,
                         &mut hook_context,
-                        Some(&selected),
+                        &selected,
                     )
                     .await?
                 {

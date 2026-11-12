@@ -259,7 +259,18 @@ impl StockExecution<'_> {
         parent: &'a ToolInvocation,
         hook_context: &'a mut Vec<ModelMessage>,
     ) -> BoxFuture<'a, Result<ExecutionProgress<ToolResult>>> {
-        self.code_selected(journal, identity, parent, hook_context, None)
+        Box::pin(async move {
+            let retained = self
+                .retained_dispatch_step(journal, identity.0, identity.1, ModelPurpose::Response)
+                .await?;
+            let definitions = retained
+                .request
+                .as_ref()
+                .map_or(&[][..], |request| request.request().tools.as_slice());
+            let selection = ToolSelection::new(definitions, self.io);
+            self.code_selected(journal, identity, parent, hook_context, &selection)
+                .await
+        })
     }
 
     pub(super) fn code_selected<'a, 'selection>(
@@ -268,7 +279,7 @@ impl StockExecution<'_> {
         identity: (OperationId, u32),
         parent: &'a ToolInvocation,
         hook_context: &'a mut Vec<ModelMessage>,
-        selection: Option<&'a ToolSelection<'selection>>,
+        selection: &'a ToolSelection<'selection>,
     ) -> BoxFuture<'a, Result<ExecutionProgress<ToolResult>>> {
         Box::pin(async move {
             let code = parent
@@ -512,7 +523,7 @@ impl StockExecution<'_> {
         ordinal: u64,
         call: &Call,
         hook_context: &mut Vec<ModelMessage>,
-        selection: Option<&ToolSelection<'_>>,
+        selection: &ToolSelection<'_>,
     ) -> Result<ExecutionProgress<CallResult<'a>>> {
         // A separate hash domain keeps inner identities disjoint from provider
         // call IDs. Replaying the script reuses the exact ordinal and receipt.

@@ -204,7 +204,7 @@ impl StockExecution<'_> {
         invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
         hook_context: &mut Vec<ModelMessage>,
-        selection: Option<&ToolSelection<'_>>,
+        selection: &ToolSelection<'_>,
     ) -> Result<ExecutionProgress<()>> {
         let span = obs_span!("acyclic.harness.executor.tool_call", step = step);
         let call = self.settle_selected_tool_call(
