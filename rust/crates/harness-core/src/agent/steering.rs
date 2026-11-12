@@ -109,9 +109,7 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
             read += 1;
             let input = match input {
                 InboxRecord::Cancel(cancel) => {
-                    if super::cancellation::cancelled(provider, agent, cancel.input).await?
-                        != Some(cancel.conversation)
-                    {
+                    if !super::cancellation::accepted(provider, agent, &cancel).await? {
                         continue;
                     }
                     InboxRecord::Notice {

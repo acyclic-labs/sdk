@@ -641,6 +641,9 @@ pub enum Wake {
     },
     /// The actor alarm fired.
     Alarm,
+    /// A delivered control failed its committed admission condition. Consume
+    /// its inbox cursor without changing pending work or advancing the driver.
+    Rejected,
 }
 
 /// Desired alarm after a step.
@@ -868,7 +871,8 @@ async fn draft_step<T: TurnDriver + ?Sized>(
             ..
         }
     );
-    let quiet_notice = workspace_change
+    let quiet_notice = matches!(wake, Wake::Rejected)
+        || workspace_change
         || matches!(
             &wake,
             Wake::Inbox {
@@ -914,7 +918,7 @@ async fn draft_step<T: TurnDriver + ?Sized>(
             AgentState::adopted(path.clone(), &adopted)?
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
-        (Some(state), Wake::Alarm) => state,
+        (Some(state), Wake::Alarm | Wake::Rejected) => state,
         // A requested spawn is this step's own spawn effect; it is never a
         // turn input, so it neither wakes nor reorders the turn.
         (
