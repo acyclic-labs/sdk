@@ -41,25 +41,14 @@ pub enum NativeRoot {
     Composed,
     /// A logical volume available through filesystem tools, with no OS path.
     Logical,
-    /// An independently projected native volume, at its stable binding.
+    /// An independently projected native volume.
     Path(PathBuf),
-    /// One command's own view of a native volume. Links in the composed root
-    /// name the volume's stable `binding`; they resolve to this `view`.
-    View { view: PathBuf, binding: PathBuf },
 }
 
 impl NativeRoot {
     pub fn override_path(&self) -> Option<&PathBuf> {
         match self {
-            Self::Path(path) | Self::View { view: path, .. } => Some(path),
-            Self::Composed | Self::Logical => None,
-        }
-    }
-
-    /// The stable binding that links in the composed root name.
-    fn binding(&self) -> Option<&Path> {
-        match self {
-            Self::Path(binding) | Self::View { binding, .. } => Some(binding),
+            Self::Path(path) => Some(path),
             Self::Composed | Self::Logical => None,
         }
     }
@@ -129,7 +118,7 @@ impl<T> MountTable<T> {
     /// Named mounts require an explicit native projection.
     pub fn native_root_for<'a>(&'a self, mount: &'a Mount<T>) -> Option<&'a Path> {
         match &mount.native_root {
-            NativeRoot::Path(path) | NativeRoot::View { view: path, .. } => Some(path),
+            NativeRoot::Path(path) => Some(path),
             NativeRoot::Logical => None,
             NativeRoot::Composed => self.mounted.first().and_then(|(_, primary)| {
                 std::ptr::eq(primary, mount).then_some(self.root.as_path())
@@ -294,37 +283,6 @@ impl<T> MountTable<T> {
         let relative = normalize_path(path)?;
         self.select(&relative, None)
             .map(|(mount, path)| (mount, path.to_owned()))
-    }
-
-    /// Resolves a native path like [`Self::resolve`], also following a link
-    /// in the composed root that names a native volume's binding. The path
-    /// then resolves inside that volume, so a command reaches its own view
-    /// through the same root-relative path as through its volume address.
-    pub fn resolve_native(&self, path: &Path) -> Result<(&Mount<T>, String)> {
-        let (mount, relative) = self.resolve(path)?;
-        if !matches!(mount.native_root, NativeRoot::Composed) || relative.is_empty() {
-            return Ok((mount, relative));
-        }
-        let mut prefix = self.root.clone();
-        let mut components = relative.split('/');
-        while let Some(component) = components.next() {
-            prefix.push(component);
-            let Ok(target) = std::fs::read_link(&prefix) else {
-                continue;
-            };
-            let target = prefix
-                .parent()
-                .map_or_else(|| target.clone(), |parent| parent.join(&target));
-            if let Some((_, bound)) = self
-                .mounted
-                .iter()
-                .find(|(_, bound)| bound.native_root.binding() == Some(target.as_path()))
-            {
-                return Ok((bound, components.collect::<Vec<_>>().join("/")));
-            }
-            return Ok((mount, relative));
-        }
-        Ok((mount, relative))
     }
 
     fn select<'a>(
