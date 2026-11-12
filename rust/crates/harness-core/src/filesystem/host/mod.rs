@@ -198,12 +198,10 @@ mod volume_access;
 pub use import::VolumeImportPlan;
 mod volumes;
 mod workspaces;
-pub(in crate::filesystem) use keys::{content_metadata_path_io, content_receipt_path_io};
+pub(in crate::filesystem) use keys::content_metadata_path_io;
 pub(crate) use keys::{content_path, map_error};
 pub use keys::{filesystem_key, workspace_ref};
-pub(in crate::filesystem) use publication::{
-    content_metadata_matches, decode_content_metadata, recover_internal_upload_receipt,
-};
+pub(in crate::filesystem) use publication::decode_content_metadata;
 pub(in crate::filesystem) use reads::{read_generation, read_generation_if_present};
 
 use crate::executor::stock_boundary;
