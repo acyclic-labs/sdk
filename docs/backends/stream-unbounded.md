@@ -1242,3 +1242,35 @@ and return the same registry. Extend the real-file case using public Commit and
 CommitAccepted ingestion, plus a mutation comparing the projection as identity.
 The registry still does not consume stages, publish namespace or prove final
 apply idempotency; those remain work for the shared authority core.
+
+### Simplicity first: user rule effective 2026-11-12
+
+For performance work, first remove unnecessary work and complexity; preserve
+every needed feature and guarantee. Only then optimize. Any code added for
+speed must explain why the simpler version cannot reach the work floor.
+This overrides the earlier performance-first ordering where they differ.
+
+Current audit cut: stage identity equality now compares commit, owner and retry
+key directly. Removed serialization into two temporary identity buffers per
+comparison and the private serialization-as-equality layer. Seal computes its
+lookup id once and reuses that local value for the index update; no persistent
+cache, new representation or alternate execution path is introduced. The
+canonical identity bytes and digest, stored format, collision check, immutable
+seal and output-projection behavior remain unchanged. Existing real-file
+binding/projection controls and both mutations validate these guarantees.
+
+Eventual PR removals (include in its Area cleanup/removals section):
+* removed the separate single-key COW implementation; single/batch updates share
+  one rewrite driver and one existing page packer;
+* removed duplicated family tag interpretation and the staged-only byte-cursor
+  location; staged tokens and summary readers share the content cursor;
+* removed the redundant direct body-retention edge from a sealed binding, whose
+  validated directory already retains that exact body;
+* removed serialization-as-equality buffers and repeated stage-id computation.
+
+Keep bounded pages, graph ownership, immutable pinned roots, original IO custody,
+the final atomic publication boundary and all six public guarantees. These buy
+required guarantees. Do not add a speed cache, special small-write engine or
+per-backend planner. This branch has no open PR (gh head query returned []);
+the removal list is retained here for its eventual PR. Full goal remains
+incomplete: these simplifications do not supply final apply or backend cutover.

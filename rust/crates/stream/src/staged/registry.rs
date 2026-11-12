@@ -23,18 +23,18 @@ pub struct Binding {
 }
 
 impl Binding {
-    fn identity(&self) -> Vec<u8> {
+    /// Content-bound stage id, independent of its open/sealed state.
+    pub fn id(&self) -> [u8; 32] {
         let mut bytes = Vec::with_capacity(IDENTITY.len() + 72 + self.key.as_bytes().len());
         bytes.extend_from_slice(IDENTITY);
         bytes.extend_from_slice(self.commit.as_bytes());
         bytes.extend_from_slice(&self.owner);
         bytes.extend_from_slice(&(self.key.as_bytes().len() as u64).to_le_bytes());
         bytes.extend_from_slice(self.key.as_bytes());
-        bytes
+        crate::content_digest(&bytes)
     }
-    /// Content-bound stage id, independent of its open/sealed state.
-    pub fn id(&self) -> [u8; 32] {
-        crate::content_digest(&self.identity())
+    fn same_identity(&self, other: &Self) -> bool {
+        self.commit == other.commit && self.owner == other.owner && self.key == other.key
     }
     /// The commit this stage may submit; it has no assigned Stream position.
     pub const fn commit_id(&self) -> CommitId {
@@ -182,7 +182,7 @@ impl Registry {
         };
         let id = binding.id();
         if let Some(previous) = self.get(storage, id).await? {
-            if previous.identity() != binding.identity() {
+            if !previous.same_identity(&binding) {
                 return Err(StreamError::InvalidResponse);
             }
             return Ok((self.clone(), previous));
@@ -202,11 +202,12 @@ impl Registry {
         staged: &StagedWrite,
         directory: Root,
     ) -> Result<Self, StreamError> {
+        let id = binding.id();
         let mut current = self
-            .get(storage, binding.id())
+            .get(storage, id)
             .await?
             .ok_or(StreamError::InvalidArgument)?;
-        if current.identity() != binding.identity() {
+        if !current.same_identity(binding) {
             return Err(StreamError::InvalidArgument);
         }
         if current.commit != staged.commit_id || current.key != staged.key {
@@ -229,7 +230,7 @@ impl Registry {
         Ok(Self {
             index: self
                 .index
-                .set(storage, key(binding.id()), Field::Content(root))
+                .set(storage, key(id), Field::Content(root))
                 .await?,
         })
     }
