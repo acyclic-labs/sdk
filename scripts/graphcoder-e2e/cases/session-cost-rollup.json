@@ -148,7 +148,13 @@
         "price_revision": "chosen-1",
         "token_nano_units": 12
       }
-    }
+    },
+    "stable_system_between": [
+      [
+        0,
+        3
+      ]
+    ]
   },
   "physical": true,
   "selected_model": "e2e/tiny"
