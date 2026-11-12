@@ -106,7 +106,7 @@ impl<H: CaptureHandler> Capture<H> {
                 Err(error) => break Err(error),
                 Ok(None) => {
                     let (checked, returned) =
-                        crate::run_blocking_io(move || self.check(), None)?.await?;
+                        crate::blocking::run_process_io(move || self.check())?.await?;
                     self = returned;
                     if let Err(error) = checked {
                         break Err(error);
@@ -247,10 +247,9 @@ impl ProcessTree {
         let streaming = sender.is_some();
         // The initial output credit is the new, empty channel. Setup and the
         // first pipe turn share one worker submission with the owner callbacks.
-        let started = crate::run_blocking_io(
-            move || Capture::start(self, schedule, max_bytes, input, handler, streaming),
-            None,
-        )?
+        let started = crate::blocking::run_process_io(move || {
+            Capture::start(self, schedule, max_bytes, input, handler, streaming)
+        })?
         .await?;
         let (turn, mut capture, bytes) = match started {
             Ok(started) => started,
@@ -274,7 +273,7 @@ impl ProcessTree {
                 initial
             } else {
                 let (turn, returned, bytes) =
-                    crate::run_blocking_io(move || capture.turn(streaming), None)?.await?;
+                    crate::blocking::run_process_io(move || capture.turn(streaming))?.await?;
                 capture = returned;
                 (turn, bytes)
             };
@@ -320,7 +319,7 @@ impl ProcessTree {
                 }
             }
         };
-        crate::run_blocking_io(move || capture.finish(result), None)?.await
+        crate::blocking::run_process_io(move || capture.finish(result))?.await
     }
 }
 
