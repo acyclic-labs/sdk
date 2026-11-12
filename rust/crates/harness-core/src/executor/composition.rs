@@ -62,7 +62,6 @@ impl StockExecutor {
             task_context: None,
             compaction: None,
             reconciliation_only: false,
-            live_reply: None,
         }
     }
 
@@ -71,13 +70,6 @@ impl StockExecutor {
     #[must_use]
     pub fn with_intervention(mut self, item: crate::agent::ContinuationOverride) -> Self {
         self.intervention = Some(Arc::new(item));
-        self
-    }
-
-    /// Stages each model dispatch's text while it streams; see [`LiveReply`].
-    #[must_use]
-    pub fn with_live_reply(mut self, reply: LiveReply) -> Self {
-        self.live_reply = Some(reply);
         self
     }
 

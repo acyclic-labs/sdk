@@ -86,6 +86,12 @@ pub(super) fn completion_cut(
 
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// Host-owned live output beside this turn's retained tool results.
+    /// Journals without file observation leave live publication disabled.
+    fn live_reply(&self, _operation: OperationId) -> Result<Option<LiveReply>> {
+        Ok(None)
+    }
+
     /// The agent's durable inbox at the next model boundary. This binding is
     /// independent of cancellation and never observes tools while they run.
     fn model_boundary(&self) -> Option<&dyn crate::agent::ModelBoundary> {

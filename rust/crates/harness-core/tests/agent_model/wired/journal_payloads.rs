@@ -2,6 +2,78 @@ use super::*;
 use acyclic_harness_core::conversation::ContentGrant;
 
 #[tokio::test]
+async fn interrupted_streams_keep_live_reply_on_the_journal() -> Result {
+    use acyclic_harness_core::{model::ModelEvent, test_support::ScriptedEvent};
+    let path = AgentPath::root(&id(214));
+    let stream = Arc::new(MemoryStream::default());
+    let (files, private) = private_in(&stream, &path).await?;
+    let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Content {
+            delta: "saved prefix".into(),
+        }),
+        ScriptedEvent::Interrupted {
+            error: "provider stopped".into(),
+        },
+    ])]));
+    let host = FilesystemTurnHost::new(
+        stream,
+        within(),
+        files.clone(),
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
+        TurnAdmission::LocalRoot,
+        executors(model.clone())?,
+        LIMITS,
+        Default::default(),
+    );
+    let mut adoption = adopted(path.id());
+    adoption.volumes = vec![private.clone()];
+    let state = AgentState::adopted(path, &adoption)?;
+    let operation = OperationId::from_bytes([215; 16]);
+    let input = ModelContent::Text("continue".into());
+    let open = host
+        .open(
+            &state,
+            operation,
+            0,
+            0,
+            &input,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+    let result = open
+        .executor
+        .execute_progress(
+            acyclic_harness_core::executor::TurnInput {
+                operation_id: operation,
+                input: open.input.clone().unwrap_or(input),
+                selected_context: open.selected.clone(),
+                max_steps: None,
+            },
+            open.journal.as_ref(),
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(open.outputs.partial(operation).await?, "saved prefix");
+    let workspace = acyclic_harness_core::filesystem::workspace_ref(
+        private.volume()?.provider().clone(),
+        &private.volume()?.storage_name(&mut None)?,
+    )?;
+    assert!(
+        matches!(files.stat(&workspace, None, "tools").await, Err(error)
+        if error.code() == acyclic_harness_core::wire::ErrorCode::NotFound)
+    );
+    assert_eq!(model.requests().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn journal_payloads_and_effects_replay_outside_model_writable_storage() -> Result {
     let path = AgentPath::root(&id(211));
     let stream = Arc::new(MemoryStream::default());
