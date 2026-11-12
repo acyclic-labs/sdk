@@ -47,8 +47,9 @@ qualify graphcoder-cli 'a_prompt_runs_one_agent_turn_and_its_operation_replays_e
 if [ ${#artifact_args[@]} -ne 0 ]; then exit 0; fi
 cargo test --locked -p harness-mock-model --bin harness-mock-model recorder::tests::
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile
-node --test scripts/graphcoder-e2e/*.test.mjs
 cargo build --locked -p acyclic-plugin -p harness-mock-model --features "$binary_features" --message-format=json-render-diagnostics > .sessions-shipping.jsonl
+export E2E_HOOK_BINARY=$(node --input-type=module -e 'import {readFileSync} from "node:fs"; const rows=readFileSync(".sessions-shipping.jsonl","utf8").trim().split("\n").map(JSON.parse).filter(row=>row.reason==="compiler-artifact"&&row.target.name==="harness-hook-fixture"&&row.executable&&!row.profile.test); if(rows.length!==1)throw Error("expected one hook fixture artifact"); console.log(rows[0].executable);')
+node --test scripts/graphcoder-e2e/*.test.mjs
 python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl > .sessions-binaries.env
 source .sessions-binaries.env
 node scripts/qualify-web-lifecycle.mjs "$SESSIONS_ACYCLIC_BINARY"

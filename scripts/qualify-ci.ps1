@@ -207,6 +207,7 @@ cargo install --path rust/crates/harness-mock-model --locked --debug `
 cargo install --path rust/crates/native-runtime --bin acyclic-process-host --locked --debug `
     --root $GraphcoderInstall --target-dir $CargoTargetDir
 $env:E2E_PROCESS_HOST = Join-Path $GraphcoderInstall 'bin/acyclic-process-host.exe'
+$env:E2E_HOOK_BINARY = Join-Path $GraphcoderInstall 'bin/harness-hook-fixture.exe'
 $env:E2E_CONPTY_HOST = Join-Path $GraphcoderInstall 'bin/graphcoder-conpty.exe'
 $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 $ConptySource = [IO.Path]::GetFullPath('scripts/graphcoder-conpty.cs')

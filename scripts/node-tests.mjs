@@ -118,19 +118,25 @@ async function nativeInputs(tests, processes, env, publish) {
   "step=admit native process owner; recovery command: $env:E2E_PROCESS_HOST='ABSOLUTE_INSTALLED_ACYCLIC_PROCESS_HOST'; node scripts/node-tests.mjs --all");
  const report = tests.some(test => test.file.endsWith('/termination.test.mjs')) && !env.E2E_REPORT_TEST_BINARY;
  const host = tests.some(test => test.file.endsWith('/sdk/test/process.test.mjs')) && !env.E2E_PROCESS_HOST;
- for (const kind of [...(host ? ['host'] : []), ...(report ? ['report'] : [])]) {
-  const args = kind === 'host'
-   ? ['build', '--bin', 'acyclic-process-host'] : ['test', '--no-run', '--lib'];
-  args.push('--locked', '-p', 'acyclic-native-runtime', '--message-format=json');
+ const hook = tests.some(test => test.file.endsWith('/graphcoder-e2e/hook.test.mjs')) && !env.E2E_HOOK_BINARY;
+ const inputs = [
+  ...(host ? [{kind: 'host', package: 'acyclic-native-runtime', target: 'acyclic-process-host', variable: 'E2E_PROCESS_HOST'}] : []),
+  ...(report ? [{kind: 'report', package: 'acyclic-native-runtime', target: 'acyclic_native_runtime', variable: 'E2E_REPORT_TEST_BINARY', test: true}] : []),
+  ...(hook ? [{kind: 'hook', package: 'harness-mock-model', target: 'harness-hook-fixture', variable: 'E2E_HOOK_BINARY'}] : []),
+ ];
+ for (const input of inputs) {
+  const {kind} = input;
+  const args = input.test ? ['test', '--no-run', '--lib'] : ['build', '--bin', input.target];
+  args.push('--locked', '-p', input.package, '--message-format=json');
   const outcome = await processes.runOwned('cargo', args, {cwd: ROOT, env});
   publish(outcome);
   if (outcome.code !== 0) throw new Error(`step=prepare ${kind}; recovery command: cargo ${args.join(' ')}`);
   const artifacts = outcome.stdout.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line))
    .filter(row => row.reason === 'compiler-artifact' && row.executable
-    && (kind === 'host' ? row.target.name === 'acyclic-process-host' : row.target.name === 'acyclic_native_runtime' && row.profile.test));
+    && row.target.name === input.target && row.profile.test === !!input.test);
   if (artifacts.length !== 1) throw new Error(`step=locate ${kind} artifact; recovery command: cargo ${args.join(' ')}`);
-  if (kind === 'host') env.E2E_PROCESS_HOST = env.ACYCLIC_PROCESS_HOST = artifacts[0].executable;
-  else env.E2E_REPORT_TEST_BINARY = artifacts[0].executable;
+  env[input.variable] = artifacts[0].executable;
+  if (kind === 'host') env.ACYCLIC_PROCESS_HOST = artifacts[0].executable;
  }
 }
 

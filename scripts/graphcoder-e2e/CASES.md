@@ -4,6 +4,13 @@ A workspace file may use `{ "source": "capture.mjs" }` to seed an asset from
 this support directory. Programs executed by confined tools belong in the
 workspace fixture; the controller's checkout grants no implicit read authority.
 
+Executable assets use `{ "binary_env": "E2E_HOOK_BINARY" }`. Build the
+`harness-hook-fixture` binary from `harness-mock-model` and set that variable to
+its Cargo-reported executable before running hook cases. The loader copies its
+bytes into the workspace with executable permissions; hook commands use that
+workspace-relative copy. The shared Node test runner prepares this artifact for
+the hook protocol test automatically.
+
 Interactive sessions edit isolated volume forks. Cases that assert edited files
 in the original checkout issue `/merge` and wait for its receipt before exiting.
 Rendering and resumed-diff assertions precede that merge; the file assertions

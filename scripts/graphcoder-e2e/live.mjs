@@ -10,6 +10,7 @@ import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { failedCase, failureReport, publishReport, summarizeCases } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
+import { seed } from "./fixtures.mjs";
 import { executionSucceeded, requireReportCapability, fileBytes, fileRead, jsonlReply, toolOutcome } from "./assertions.mjs";
 
 const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
@@ -158,9 +159,9 @@ export async function runCase(binary, login, root, name, signal, { model = "open
     env = environment(settings);
     // Reuse only the admitted login path after stripping provider keys.
     if (login) env.CODEX_HOME = login;
-    const recorder = fileURLToPath(new URL("./hook.mjs", import.meta.url));
+    await seed(workspace, { ".fixtures/hook.exe": { binary_env: "E2E_HOOK_BINARY" } });
     await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: {
-      PostToolUse: [{ hooks: [{ type: "command", command: process.execPath, args: [recorder, hookFile] }] }],
+      PostToolUse: [{ hooks: [{ type: "command", command: "./.fixtures/hook.exe", args: [hookFile] }] }],
     } }));
   };
   try {
