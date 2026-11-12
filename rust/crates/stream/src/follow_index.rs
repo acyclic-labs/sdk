@@ -408,7 +408,7 @@ mod batch_scaling {
         StreamProviderExt as _,
     };
     use acyclic_test_support::scale::{Bound, assert_scales};
-    use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
+    use futures::{StreamExt as _, TryStreamExt as _};
 
     #[derive(Default)]
     struct WakeCount(std::sync::atomic::AtomicUsize);
@@ -417,6 +417,17 @@ mod batch_scaling {
         fn wake(self: std::sync::Arc<Self>) {
             self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+    fn park(follow: &mut crate::FollowStream) -> std::sync::Arc<WakeCount> {
+        let wakes = std::sync::Arc::new(WakeCount::default());
+        let waker = std::task::Waker::from(wakes.clone());
+        let mut context = std::task::Context::from_waker(&waker);
+        {
+            let mut waiting = std::pin::pin!(tokio::task::unconstrained(follow.next()));
+            assert!(std::future::Future::poll(waiting.as_mut(), &mut context).is_pending());
+        }
+        assert_eq!(wakes.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+        wakes
     }
     #[tokio::test]
     async fn unfiltered_follow_publication_visits_subscribers_once_per_batch()
@@ -437,14 +448,7 @@ mod batch_scaling {
                 let mut follows = Vec::new();
                 for _ in 0..subscriber_count {
                     let mut follow = stream.follow(FollowRequest::new(path.clone(), 1)).await?;
-                    let wakes = std::sync::Arc::new(WakeCount::default());
-                    let waker = std::task::Waker::from(wakes.clone());
-                    let mut context = std::task::Context::from_waker(&waker);
-                    assert!(
-                        futures::Stream::poll_next(std::pin::Pin::new(&mut follow), &mut context)
-                            .is_pending()
-                    );
-                    assert_eq!(wakes.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+                    let wakes = park(&mut follow);
                     follows.push((follow, wakes));
                 }
                 PUBLICATION_CANDIDATES.with(|count| count.set(0));
@@ -463,8 +467,7 @@ mod batch_scaling {
                     let records: Vec<_> = crate::records_only(follow)
                         .take(usize::try_from(record_count)?)
                         .try_collect()
-                        .now_or_never()
-                        .ok_or("appended batch did not wake its parked follow")??;
+                        .await?;
                     assert_eq!(records.len(), usize::try_from(record_count)?);
                     for (index, record) in records.iter().enumerate() {
                         assert_eq!(record.sequence, u64::try_from(index)? + 1);
@@ -529,8 +532,8 @@ mod batch_scaling {
                     let mut request = FollowRequest::new(path.clone(), 1);
                     request.filter = filter.clone();
                     let mut follow = stream.follow(request).await?;
-                    assert!(futures::poll!(follow.next()).is_pending());
-                    follows.push(follow);
+                    let wakes = park(&mut follow);
+                    follows.push((follow, wakes));
                 }
                 let mut records = Vec::new();
                 for owner in ["denied", "allowed"] {
@@ -559,12 +562,10 @@ mod batch_scaling {
                     .await?;
                 let evaluations = FILTER_EVALUATIONS.with(std::cell::Cell::get);
                 assert_eq!(evaluations, 2 * subscriber_count);
-                for follow in follows {
-                    let delivered: Vec<_> = crate::records_only(follow)
-                        .take(1)
-                        .try_collect()
-                        .now_or_never()
-                        .ok_or("matching record did not wake its parked follow")??;
+                for (follow, wakes) in follows {
+                    assert!(wakes.0.load(std::sync::atomic::Ordering::Relaxed) > 0);
+                    let delivered: Vec<_> =
+                        crate::records_only(follow).take(1).try_collect().await?;
                     assert_eq!(delivered.len(), 1);
                     assert_eq!(delivered[0].sequence, 2);
                     assert_eq!(delivered[0].value.as_ref(), b"allowed");
