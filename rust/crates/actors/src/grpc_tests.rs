@@ -214,7 +214,8 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
         assert!(std::error::Error::source(&error).is_some());
         let _guard =
             tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
-        let mut client = connect(&endpoint, "private-token", Some(pem.as_bytes())).await?;
+        let bundle = pem.repeat(65_536 / pem.len() + 1);
+        let mut client = connect(&endpoint, "private-token", Some(bundle.as_bytes())).await?;
         client
             .inspect_actor(wire::InspectActorRequest::default())
             .await?;

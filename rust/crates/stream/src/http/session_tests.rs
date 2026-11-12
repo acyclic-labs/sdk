@@ -274,7 +274,7 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
             &endpoint,
             "fixture-token",
             MAX_COMMAND_BYTES,
-            Some(pem.as_bytes()),
+            Some(pem.repeat(65_536 / pem.len() + 1).as_bytes()),
         )?;
         client
             .session_client()?

@@ -290,12 +290,10 @@ async fn invalid_configuration_is_rejected_before_network_io() -> TestResult {
             Err(ConnectError::InvalidCredential)
         ));
     }
-    for pem in [Vec::new(), vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]] {
-        assert!(matches!(
-            Client::connect_eager_with_ca_certificate(&endpoint, "fixture", pem).await,
-            Err(ConnectError::InvalidCaCertificate)
-        ));
-    }
+    assert!(matches!(
+        Client::connect_eager_with_ca_certificate(&endpoint, "fixture", []).await,
+        Err(ConnectError::InvalidCaCertificate)
+    ));
     assert!(matches!(
         Client::connect_eager("http://127.0.0.1:1", "fixture").await,
         Err(ConnectError::InsecureEndpoint)
@@ -609,13 +607,15 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
         } else {
             assert!(platform.is_err(), "private endpoint unexpectedly trusted");
         }
-        let pinned =
-            Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", pem.as_bytes())
-                .await?;
-        assert_eq!(
-            pinned.inspect_idempotency(IdempotencyKey::unique()).await,
-            Ok(None)
-        );
+        let bundle = pem.repeat(65_536 / pem.len() + 1);
+        for roots in [pem.as_bytes(), bundle.as_bytes()] {
+            let pinned =
+                Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", roots).await?;
+            assert_eq!(
+                pinned.inspect_idempotency(IdempotencyKey::unique()).await,
+                Ok(None)
+            );
+        }
         let denied =
             Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", &unrelated).await;
         assert!(
