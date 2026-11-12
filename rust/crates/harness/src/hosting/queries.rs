@@ -29,7 +29,7 @@ where
         let call = self.admit(invocation)?;
         let (agent, page) = match (projection, call.command()) {
             (QueryProjection::Diff(_), AgentCommand::Diff { agent, page })
-            | (QueryProjection::Input, AgentCommand::History { agent, page }) => (agent, page),
+            | (QueryProjection::Input(_), AgentCommand::History { agent, page }) => (agent, page),
             _ => return Err(StreamError::InvalidArgument),
         };
         if page.cursor().is_some() {
@@ -37,7 +37,12 @@ where
         }
         self.within_tree(agent)
             .map_err(|_| StreamError::AccessDenied)?;
-        if projection == QueryProjection::Input && page.bytes() < 8 {
+        let minimum = match projection {
+            QueryProjection::Input(crate::agent::InputSelection::Latest) => 8,
+            QueryProjection::Input(crate::agent::InputSelection::Pending) => 28,
+            QueryProjection::Diff(_) => 0,
+        };
+        if page.bytes() < minimum {
             return Err(StreamError::Capacity);
         }
         Ok(Box::new(PreparedQuery {
@@ -88,8 +93,11 @@ where
             let opened: crate::Result<acyclic_stream::BoxProviderStream<'static, crate::Result<Bytes>>> = match self.projection {
                 QueryProjection::Diff(projection) => self.server.platform.diff_source(&authorization, agent).await
                     .map(|source| source.frames(page.clone(), projection)),
-                QueryProjection::Input => self.server.platform.input_preview_source(
-                    &authorization, agent, u64::from(page.bytes() - 8),
+                QueryProjection::Input(selection) => self.server.platform.input_preview_source(
+                    &authorization, agent, u64::from(page.bytes() - match selection {
+                        crate::agent::InputSelection::Latest => 8,
+                        crate::agent::InputSelection::Pending => 24,
+                    }), selection,
                 ).await.map(|source| input_frames(source, page.clone())),
             };
             // Neither a read's data nor its source error bypasses revocation
@@ -135,6 +143,14 @@ fn input_frames(
                     body.extend_from_slice(&preview.bytes.to_le_bytes());
                     body.extend_from_slice(preview.text.as_bytes());
                     yield diff::frame(6, body, &page)?;
+                }
+                crate::agent::InputPreviewStep::Pending { inbox, offset, preview } => {
+                    let mut body = Vec::with_capacity(24 + preview.text.len());
+                    body.extend_from_slice(&inbox.to_le_bytes());
+                    body.extend_from_slice(&offset.to_le_bytes());
+                    body.extend_from_slice(&preview.bytes.to_le_bytes());
+                    body.extend_from_slice(preview.text.as_bytes());
+                    yield diff::frame(8, body, &page)?;
                 }
             }
         }

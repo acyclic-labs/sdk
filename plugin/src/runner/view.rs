@@ -949,6 +949,9 @@ async fn run_current(
         ..View::default()
     };
     view.restore_phase(&conversation, phase).await?;
+    if view.busy() {
+        view.pending = conversation.pending_inputs().await?;
+    }
     let mut older_future = std::pin::pin!(None);
     let mut output_rows = Vec::new();
     let mut input = PromptInput::default();
@@ -1427,6 +1430,9 @@ async fn run_current(
                                 let title = selected.agent_file_previews(vec!["ui/title".into()], None, acyclic_harness::client::MAX_READ_BYTES).await?;
                                 let mut view = View { title: session::title(&title), top: events.seen(), floor: 0, pending_dirty: true, tail_dirty: true, ..View::default() };
                                 view.restore_phase(&selected, phase).await?;
+                                if view.busy() {
+                                    view.pending = selected.pending_inputs().await?;
+                                }
                                 Ok::<_, Failure>((selected, events, session, title, view))
                             }.await;
                             let (selected, selected_events, session, title, selected_view) = match opening {

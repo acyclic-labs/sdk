@@ -23,7 +23,7 @@ mod query;
 pub use query::QueryProjection;
 mod input_query;
 pub use diff_query::{DiffProjection, DiffQuery, DiffQueryEvent, DiffSnapshot, DiffSummary};
-pub use input_query::{InputPreview, InputPreviewStep, InputQuery};
+pub use input_query::{InputPreview, InputPreviewStep, InputQuery, InputSelection};
 
 mod command;
 pub use command::{

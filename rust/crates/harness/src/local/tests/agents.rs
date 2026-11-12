@@ -4253,22 +4253,47 @@ async fn historical_input_preview_case(later_hook: bool) -> Result<()> {
     };
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
-    let provider = super::scripted([
+    let boundary = |id: &str| {
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                "boundary".into(),
+                id.into(),
                 "example.echo".into(),
                 serde_json::json!({"text":"boundary"}),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: serde_json::json!({}),
             }),
-        ]),
-        ScriptedTurn::Text("at the selected cut".into()),
-        ScriptedTurn::Text("reserved turn".into()),
-    ]);
+        ])
+    };
+    let (entered, entering) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let gate = std::sync::Mutex::new(Some((entered, released)));
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            boundary("boundary"),
+            ScriptedTurn::Text("at the selected cut".into()),
+            boundary("reserved-boundary"),
+            ScriptedTurn::Text("reserved turn".into()),
+        ])
+        .with_context_capacity(super::capacity())
+        .with_dispatch_observer(move |_| {
+            let gate = if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 3 {
+                gate.lock().unwrap().take()
+            } else {
+                None
+            };
+            Box::pin(async move {
+                if let Some((entered, released)) = gate {
+                    let _ = entered.send(());
+                    released.await.map_err(agent)?;
+                }
+                Ok(())
+            })
+        }),
+    );
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project, provider)?
                 .without_default_tools()
                 .tool(super::tool("example.echo"))
@@ -4345,6 +4370,29 @@ async fn historical_input_preview_case(later_hook: bool) -> Result<()> {
             .is_some_and(|cut| cut.through > sequences[2]),
         "the selected prefix must include the reserved gap for this control to prove admission"
     );
+    entering.await.map_err(agent)?;
+    let pending = observed.conversation.pending_inputs().await?;
+    if later_hook {
+        let (state, cursor) = agents.state_snapshot(root).await.map_err(agent)?;
+        assert!(state.settled_before(cursor) <= sequences[1]);
+        assert!(
+            state.input_pending(cursor, sequences[2]),
+            "this control must retain the ambiguous earlier steering interval"
+        );
+        assert!(matches!(
+            observed.conversation.reply("steer", sequences[2]).await?,
+            Reply::Answered { .. }
+        ));
+        assert!(
+            pending.is_empty(),
+            "answered steering returned as pending: {pending:?}"
+        );
+    } else {
+        assert_eq!(pending, vec![(sequences[2], "UNADMITTED_FOLLOW_UP".into())]);
+    }
+    release
+        .send(())
+        .map_err(|_| Error::Invalid("reserved dispatch gate closed".into()))?;
     if later_hook {
         observed.conversation.wait_current_input().await?;
         let mut entries = agents
@@ -4384,6 +4432,9 @@ async fn historical_input_preview_case(later_hook: bool) -> Result<()> {
     let preview = loop {
         match query.next().await.map_err(agent)? {
             Some(InputPreviewStep::Progress) => {}
+            Some(InputPreviewStep::Pending { .. }) => {
+                return Err(Error::Invalid("preview returned pending ranges".into()));
+            }
             Some(InputPreviewStep::Selected(preview)) => break preview,
             None => {
                 return Err(Error::Invalid(
@@ -4516,6 +4567,9 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     let preview = loop {
         match input.next().await.map_err(agent)? {
             Some(crate::client::InputPreviewStep::Progress) => {}
+            Some(crate::client::InputPreviewStep::Pending { .. }) => {
+                return Err(Error::Invalid("preview returned pending ranges".into()));
+            }
             Some(crate::client::InputPreviewStep::Selected(preview)) => break preview,
             None => return Err(Error::Invalid("historical input query ended early".into())),
         }

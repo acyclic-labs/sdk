@@ -405,7 +405,7 @@ async fn input_previews_pin_pending_messages_without_reading_the_whole_body() ->
             }),
         )
         .await?;
-    let original = bound.input_preview_steps(root.clone(), 3);
+    let original = bound.input_preview_steps(root.clone(), 3, crate::agent::InputSelection::Latest);
     futures::pin_mut!(original);
     assert_eq!(
         original.next().await.transpose()?,
@@ -438,7 +438,7 @@ async fn input_previews_pin_pending_messages_without_reading_the_whole_body() ->
         })))
     );
     assert!(original.next().await.is_none());
-    let fresh = bound.input_preview_steps(root, 5);
+    let fresh = bound.input_preview_steps(root, 5, crate::agent::InputSelection::Latest);
     futures::pin_mut!(fresh);
     assert_eq!(
         fresh.next().await.transpose()?,

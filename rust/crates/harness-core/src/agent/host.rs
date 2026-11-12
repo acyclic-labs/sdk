@@ -267,7 +267,17 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// Observes the committed agent state, or its adoption before its first turn.
     /// This is an observation; effect admission still requires its own commit fence.
     pub async fn state(&self, agent: &AgentPath) -> Result<super::AgentState, Error> {
-        Ok(self.agents.state(&self.actor(agent)?, agent).await?.0)
+        Ok(self.state_snapshot(agent).await?.0)
+    }
+
+    /// The original checkpoint and its consumed inbox cursor from one read.
+    /// The state's settlement frontier includes paused, queued and overflowed
+    /// input; a status phase alone cannot reconstruct pending questions.
+    pub async fn state_snapshot(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<(super::AgentState, u64), Error> {
+        self.agents.state(&self.actor(agent)?, agent).await
     }
 
     /// The original checkpoint and its settlement against the accepted inbox

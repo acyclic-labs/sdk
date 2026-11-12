@@ -1,7 +1,8 @@
 //! A lazy reverse walk of accepted input, including inherited conversation cuts.
 use super::*;
 use crate::agent::{
-    AgentRecord as _, ConversationEntry, InboxRecord, InputPreview, InputPreviewStep, StatusRecord,
+    AgentRecord as _, ConversationEntry, InboxRecord, InputPreview, InputPreviewStep,
+    InputSelection, StatusRecord,
 };
 use acyclic_stream::{StreamPath, StreamProviderExt as _};
 
@@ -20,11 +21,12 @@ where
         &self,
         agent: AgentPath,
         maximum: u64,
+        selection: InputSelection,
     ) -> acyclic_stream::BoxProviderStream<'static, Result<InputPreviewStep, Error>> {
         let bound = self.clone();
         Box::pin(async_stream::try_stream! {
             bound.admit_path(&agent)?;
-            let state = bound.agents.state(&agent).await?;
+            let (state, consumed) = bound.agents.state_snapshot(&agent).await?;
             let provider = bound.agents.provider();
             let inbox = agent.inbox()?;
             let tail = provider.tail(inbox.clone()).await.map_err(Error::Stream)?;
@@ -35,6 +37,16 @@ where
             let mut selected = inbox;
             let mut end = tail;
             let mut lower = floor;
+            if selection == InputSelection::Pending {
+                if maximum < 4 {
+                    Err(Error::Record("pending input credit cannot hold a UTF-8 scalar"))?;
+                }
+                if state.closed {
+                    yield InputPreviewStep::Selected(None);
+                    return;
+                }
+                lower = lower.max(state.settled_before(consumed));
+            }
             // No accepted message exists in the owned inbox after this walk,
             // so own settled turns cannot add a message. Start at adoption's
             // inherited cut instead of visiting own control-only history.
@@ -44,8 +56,27 @@ where
             loop {
                 while deferred.is_none() && end > lower {
                     end -= 1;
+                    if selection == InputSelection::Pending && !state.input_pending(consumed, end) {
+                        yield InputPreviewStep::Progress;
+                        continue;
+                    }
                     let record = input_record(provider, &selected, end).await?;
                     let input = InboxRecord::decode(&record.value)?;
+                    // A reserved turn can start below an already answered
+                    // steering message. The global high-water mark alone is
+                    // not its disposition: use the one committed-reply proof
+                    // for this ambiguous interval, never a second history walk.
+                    if selection == InputSelection::Pending
+                        && let InboxRecord::Message(message) = &input
+                        && end < state.steered_through
+                        && state.turn.as_ref().is_none_or(|turn| turn.inbox != end)
+                    {
+                        let disposition = crate::agent::reply(&**provider, &state, consumed, &message.id, end).await?;
+                        if !matches!(disposition, crate::agent::Reply::Pending) {
+                            yield InputPreviewStep::Progress;
+                            continue;
+                        }
+                    }
                     let message = match &admitted {
                         Some(entry) => entry.admitted_message(end, &input),
                         None => match &input {
@@ -55,9 +86,23 @@ where
                     };
                     match message {
                         Some(message) => {
-                            let preview = bound.input_prefix(&state, &message.body, maximum).await?;
-                            yield InputPreviewStep::Selected(Some(preview));
-                            return;
+                            let reader = bound.input_reader(&state, &message.body).await?;
+                            let mut offset = 0;
+                            loop {
+                                let preview = input_prefix(&*reader, &message.body, offset, maximum).await?;
+                                if selection == InputSelection::Latest {
+                                    yield InputPreviewStep::Selected(Some(preview));
+                                    return;
+                                }
+                                let next = offset + preview.text.len() as u64;
+                                let complete = next == preview.bytes;
+                                if !complete && next == offset {
+                                    Err(Error::Record("pending input range made no progress"))?;
+                                }
+                                yield InputPreviewStep::Pending { inbox: end, offset, preview };
+                                if complete { break; }
+                                offset = next;
+                            }
                         }
                         _ => {
                             // An ordinary message may have passed an earlier
@@ -71,6 +116,10 @@ where
                             yield InputPreviewStep::Progress;
                         }
                     }
+                }
+                if selection == InputSelection::Pending {
+                    yield InputPreviewStep::Selected(None);
+                    return;
                 }
                 // A fork's private inbox starts fresh. Its context retains the
                 // original appending stream on every inherited record, so no
@@ -108,7 +157,8 @@ where
                 if let Some((inbox, input)) = &deferred
                     && let Some(message) = entry.admitted_message(*inbox, input)
                 {
-                    let preview = bound.input_prefix(&state, &message.body, maximum).await?;
+                    let reader = bound.input_reader(&state, &message.body).await?;
+                    let preview = input_prefix(&*reader, &message.body, 0, maximum).await?;
                     yield InputPreviewStep::Selected(Some(preview));
                     return;
                 }
@@ -122,12 +172,12 @@ where
         })
     }
 
-    async fn input_prefix(
+    async fn input_reader(
         &self,
         state: &crate::agent::AgentState,
         file: &FileRef,
-        maximum: u64,
-    ) -> Result<InputPreview, Error> {
+    ) -> Result<Arc<super::super::FilesystemContentVerifier<StreamAuthorityStore<P>, O>>, Error>
+    {
         if file.descriptor().media_type() != "text/plain" {
             return Err(Error::Record("structured input has no plain-text preview"));
         }
@@ -142,41 +192,52 @@ where
         )
         .await
         .map_err(turn)?;
-        let reader = super::super::FilesystemContentVerifier::new(
+        super::super::FilesystemContentVerifier::new(
             Arc::clone(&self.volumes),
             &authority.verifier,
             &authority.scope,
             self.maximum_bytes,
             None,
         )
-        .map_err(turn)?;
-        let length = file.descriptor().byte_length();
-        let prefix = crate::conversation::ContentResidencyVerifier::read_range(
-            &*reader,
-            file,
-            acyclic_fs::ByteRange {
-                offset: 0,
-                length: length.min(maximum),
-            },
-            None,
-            None,
-        )
-        .map_err(turn)?
-        .await
-        .map_err(turn)?;
-        let text = match std::str::from_utf8(&prefix) {
-            Ok(text) => text,
-            Err(error) if error.error_len().is_none() && (prefix.len() as u64) < length => {
-                std::str::from_utf8(&prefix[..error.valid_up_to()])
-                    .map_err(|_| Error::Record("input prefix is not UTF-8"))?
-            }
-            Err(_) => return Err(Error::Record("input is not UTF-8")),
-        };
-        Ok(InputPreview {
-            text: text.to_owned(),
-            bytes: length,
-        })
+        .map_err(turn)
     }
+}
+
+async fn input_prefix(
+    reader: &dyn crate::conversation::ContentResidencyVerifier,
+    file: &FileRef,
+    offset: u64,
+    maximum: u64,
+) -> Result<InputPreview, Error> {
+    let length = file.descriptor().byte_length();
+    let remaining = length
+        .checked_sub(offset)
+        .ok_or(Error::Record("input offset is past its end"))?;
+    let prefix = crate::conversation::ContentResidencyVerifier::read_range(
+        reader,
+        file,
+        acyclic_fs::ByteRange {
+            offset,
+            length: remaining.min(maximum),
+        },
+        None,
+        None,
+    )
+    .map_err(turn)?
+    .await
+    .map_err(turn)?;
+    let text = match std::str::from_utf8(&prefix) {
+        Ok(text) => text,
+        Err(error) if error.error_len().is_none() && (prefix.len() as u64) < remaining => {
+            std::str::from_utf8(&prefix[..error.valid_up_to()])
+                .map_err(|_| Error::Record("input prefix is not UTF-8"))?
+        }
+        Err(_) => return Err(Error::Record("input is not UTF-8")),
+    };
+    Ok(InputPreview {
+        text: text.to_owned(),
+        bytes: length,
+    })
 }
 
 async fn input_floor<P: crate::store::JournalProvider + ?Sized>(

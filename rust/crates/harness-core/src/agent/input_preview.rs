@@ -10,11 +10,30 @@ pub struct InputPreview {
     pub bytes: u64,
 }
 
+/// Which accepted input the original query selects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputSelection {
+    /// A bounded prefix of the latest accepted message, including inherited input.
+    Latest,
+    /// Every own unsettled message, newest first, in credited UTF-8 ranges.
+    Pending,
+}
+
 /// One credited source step, including work that disclosed no message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputPreviewStep {
     /// One source record was consumed without selecting a message.
     Progress,
-    /// The selected prefix, or proof that the selected cut has no message.
+    /// One contiguous range of an original unsettled message. The complete
+    /// original length is in `preview.bytes`; no file identity consumes credit.
+    Pending {
+        /// Original inbox sequence, retained through settlement.
+        inbox: u64,
+        /// Byte offset in the original message.
+        offset: u64,
+        /// Credited UTF-8 range and complete original length.
+        preview: InputPreview,
+    },
+    /// The latest prefix, or completion (also after all pending ranges).
     Selected(Option<InputPreview>),
 }

@@ -427,6 +427,26 @@ impl AgentControls {
         agent: acyclic_harness_core::agent::AgentPath,
         page: crate::AgentPageRequest,
     ) -> Result<crate::InputQuery, AgentExchangeError> {
+        self.selected_input_query(agent, page, crate::InputSelection::Latest)
+            .await
+    }
+
+    /// Recover all own unsettled input through the same credited source walk.
+    pub async fn pending_input_query(
+        &self,
+        agent: acyclic_harness_core::agent::AgentPath,
+        page: crate::AgentPageRequest,
+    ) -> Result<crate::InputQuery, AgentExchangeError> {
+        self.selected_input_query(agent, page, crate::InputSelection::Pending)
+            .await
+    }
+
+    async fn selected_input_query(
+        &self,
+        agent: acyclic_harness_core::agent::AgentPath,
+        page: crate::AgentPageRequest,
+        selection: crate::InputSelection,
+    ) -> Result<crate::InputQuery, AgentExchangeError> {
         if page.cursor().is_some() {
             return Err(CommandError::Invalid.into());
         }
@@ -446,12 +466,12 @@ impl AgentControls {
         let socket = self
             .client
             .actor_socket(
-                crate::QueryProjection::Input.open(invocation)?,
+                crate::QueryProjection::Input(selection).open(invocation)?,
                 self.credential,
             )
             .await
             .map_err(AgentExchangeError::Session)?;
-        Ok(crate::InputQuery::new(socket, command, &page))
+        Ok(crate::InputQuery::new(socket, command, &page, selection))
     }
 
     /// Execute once. The caller retains the prepared value on every outcome.

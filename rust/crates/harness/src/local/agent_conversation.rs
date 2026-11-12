@@ -17,6 +17,8 @@ mod directory;
 mod events;
 mod history;
 mod inspect;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pending_tests;
 mod recording;
 mod transcripts;
 mod tree;
@@ -158,6 +160,74 @@ impl WorkspaceDiff {
 }
 
 impl Conversation {
+    /// Recover every accepted question still pending in this conversation.
+    /// One host-selected input walk streams credited original text ranges;
+    /// neither client persistence nor a file grant is required to reconnect.
+    pub async fn pending_inputs(&self) -> Result<Vec<(u64, String)>> {
+        let mut query = self
+            .connection
+            .controls
+            .pending_input_query(
+                self.agent().clone(),
+                AgentPageRequest::new(1, crate::client::MAX_READ_BYTES as u32, None)
+                    .map_err(failed)?,
+            )
+            .await
+            .map_err(failed)?;
+        let mut inputs: Vec<(u64, String)> = Vec::new();
+        let mut total = 0;
+        while let Some(step) = query.next().await.map_err(failed)? {
+            match step {
+                crate::client::InputPreviewStep::Progress => {}
+                crate::client::InputPreviewStep::Pending {
+                    inbox,
+                    offset,
+                    preview,
+                } => {
+                    if offset == 0 {
+                        if inputs
+                            .last()
+                            .is_some_and(|(_, text)| text.len() as u64 != total)
+                        {
+                            return Err(Error::Invalid(
+                                "pending input ended before its complete body".into(),
+                            ));
+                        }
+                        inputs.push((inbox, String::new()));
+                        total = preview.bytes;
+                    }
+                    let (selected, text) = inputs.last_mut().ok_or_else(|| {
+                        Error::Invalid("pending range has no original input".into())
+                    })?;
+                    if *selected != inbox || text.len() as u64 != offset || total != preview.bytes {
+                        return Err(Error::Invalid(
+                            "pending input ranges are not contiguous".into(),
+                        ));
+                    }
+                    text.push_str(&preview.text);
+                }
+                crate::client::InputPreviewStep::Selected(None) => {
+                    if inputs
+                        .last()
+                        .is_some_and(|(_, text)| text.len() as u64 != total)
+                    {
+                        return Err(Error::Invalid(
+                            "pending input ended before its complete body".into(),
+                        ));
+                    }
+                    inputs.reverse();
+                    return Ok(inputs);
+                }
+                crate::client::InputPreviewStep::Selected(Some(_)) => {
+                    return Err(Error::Invalid("pending query selected a preview".into()));
+                }
+            }
+        }
+        Err(Error::Invalid(
+            "input query ended without a selection".into(),
+        ))
+    }
+
     /// Open the selected context's bounded last-input query.
     pub async fn input_query(
         &self,

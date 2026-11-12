@@ -158,6 +158,7 @@ impl crate::hosting::Platform for LocalUser {
         _: &'a acyclic_stream::session::CallAuthorization,
         agent: &'a AgentPath,
         maximum: u64,
+        selection: crate::agent::InputSelection,
     ) -> BoxProviderFuture<'a, Result<crate::hosting::InputPreviewSource>> {
         Box::pin(async move {
             use futures::StreamExt as _;
@@ -171,7 +172,7 @@ impl crate::hosting::Platform for LocalUser {
                 .bound();
             let source: crate::hosting::InputPreviewSource = Box::pin(
                 bound
-                    .input_preview_steps(agent.clone(), maximum)
+                    .input_preview_steps(agent.clone(), maximum, selection)
                     .map(|step| step.map_err(storage)),
             );
             Ok(source)
