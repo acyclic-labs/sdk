@@ -489,11 +489,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map_err(|_| io.invalid("workspace reference key must be UTF-8"))?;
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(("open workspace", 1u64));
-        io.sdk(
-            self.filesystem
-                .open_workspace(name, io, io.cancellation())
-                .await,
-        )
+        self.open_workspace_frame(name, io)?.await
+    }
+
+    // The concrete authority-open state stays in one birth-funded frame.
+    // Callers retain only its erased handle, independent of their composition
+    // depth. Already-bound workspaces return above without allocating a frame.
+    #[inline(never)]
+    fn open_workspace_frame<'a>(
+        &'a self,
+        name: &'a str,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Workspace<A, O>>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            io.sdk(
+                self.filesystem
+                    .open_workspace(name, io, io.cancellation())
+                    .await,
+            )
+        })
     }
 
     pub(in crate::filesystem) async fn generation<'a>(
