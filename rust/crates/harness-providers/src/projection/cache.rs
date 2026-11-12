@@ -58,7 +58,7 @@ fn prefix_key(provider: &ResolvedModel, fields: &Fields) -> String {
     if provider.config.adapter == Family::Chat {
         return key(
             "conversation-v1:",
-            *blake3::hash(provider.conversation.as_bytes()).as_bytes(),
+            *blake3::hash(&provider.conversation.into_bytes()).as_bytes(),
         );
     }
     if let Some(binding) = provider.profile_binding() {
