@@ -89,6 +89,9 @@ pub struct LocalWorkspace {
     // Callbacks never reacquire view state. All executor bindings share this
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
+    /// A handback may be queued that no command has published yet. Starts
+    /// raised, so the first command also settles debt a restart left queued.
+    pub(super) publication_debt: std::sync::atomic::AtomicBool,
     pub(super) mounts: Arc<Mounts>,
     /// Original auxiliary binding, retained while this view or its selections
     /// can still execute against its shared physical projections.
@@ -473,6 +476,7 @@ pub(super) async fn open(
         mount_authority,
         identity,
         state,
+        publication_debt: std::sync::atomic::AtomicBool::new(true),
         context_line,
         mounts,
         binding: None,
