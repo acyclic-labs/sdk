@@ -222,7 +222,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let before = readonly_standalone_live(accounting);
         // The future is destroyed before its exact physical frame claim.
         let mut frame_allocation = None;
-        let (mut future, frame_bytes) = crate::heap_future::in_heap_admitted(
+        let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
             (&mut *self, record, after, &mut *accounting, cancellation),
             |(_, _, _, accounting, _), bytes| {
                 frame_allocation = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
@@ -311,6 +311,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 Ok((page.0, page.1))
             },
         )?;
+        let mut future = future.erase_task();
         let result = future.as_mut().await;
         drop(future);
         if let Some(mut allocation) = frame_allocation {
