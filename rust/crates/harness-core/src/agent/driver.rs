@@ -227,7 +227,10 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
 
 /// Host binding of agent turns to an executor and journal.
 pub trait TurnHost: acyclic_stream::ProviderPlatform {
-    /// Publishes workspace effects before any terminal turn record.
+    /// Integrates workspace effects at the end of an executor invocation.
+    /// Successful answers and recorded effects commit before this hook runs,
+    /// so integration failure cannot erase a completed answer. Replays of
+    /// the same turn must be idempotent.
     fn settle<'a>(
         &'a self,
         _agent: &'a AgentState,

@@ -365,7 +365,7 @@ async fn a_roster_enters_the_conversation_only_when_its_digest_changes() -> Resu
                 .copied(),
             digest
         );
-        state = settled.state;
+        state = integrate(&driver, settled.state, sequence + 1, &[]).await?;
     }
     Ok(())
 }
@@ -553,7 +553,8 @@ async fn definitive_failures_settle_the_turn_and_uncertain_ones_retry() -> Resul
         )
         .await?;
         assert_eq!(script.operations.lock().expect("lock").len(), 2);
-        assert_eq!(next.state.phase, Phase::Idle);
+        let integrated = integrate(&driver, next.state.clone(), 3, &[]).await?;
+        assert_eq!(integrated.phase, Phase::Idle);
         let completed = entries(&next.outs)?;
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].inbox, 2);
@@ -608,7 +609,9 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
         );
         // A failed turn settles its entry with the recorded actions too.
         assert_eq!(step.outs.len(), 2);
-        assert!(matches!(step.wait, Wait::Input));
+        if failed {
+            assert!(matches!(step.wait, Wait::Input));
+        }
         let Some(Out::Conversation(entry)) = step.outs.get(1) else {
             return Err("settled turn has no entry".into());
         };
@@ -825,6 +828,38 @@ fn ready() -> ExecutionProgress<TurnOutput> {
     ExecutionProgress::Ready(TurnOutput::new("worked".into(), Default::default(), 1))
 }
 
+async fn integrate<D: TurnDriver>(
+    driver: &D,
+    state: AgentState,
+    cursor: u64,
+    providers: &[&acyclic_stream::MemoryStream],
+) -> Result<AgentState> {
+    use acyclic_stream::StreamProviderExt as _;
+    let path = state.path.clone();
+    let integrated = step(
+        driver,
+        &path,
+        Some(state),
+        (cursor, 0),
+        Wake::Alarm,
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(integrated.state.phase, Phase::Idle);
+    let request = lower(
+        &integrated,
+        cursor,
+        delivery_key(&integrated.state, &format!("integration-{cursor}"))?,
+    )?;
+    for provider in providers {
+        assert!(matches!(
+            provider.commit(request.clone()).await?,
+            acyclic_stream::CommitOutcome::Committed(_)
+        ));
+    }
+    Ok(integrated.state)
+}
+
 #[tokio::test]
 async fn completed_answer_commits_before_workspace_settlement_failure() -> Result {
     let path = AgentPath::root(&id(1));
@@ -939,7 +974,6 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
-        assert_eq!(settled.state.phase, Phase::Idle);
         if let Some(message) = continuation(&settled, &path) {
             assert_eq!(message.from, Sender::Agent { path: path.clone() });
             assert_eq!(*message.body, file("GOAL.md")?);
@@ -1041,7 +1075,13 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
                 Reply::Continuing { run }
             );
         }
-        state = settled.state;
+        state = integrate(
+            &driver,
+            settled.state,
+            sequence + 1,
+            &[&provider, &missing_completion, &wrong_completion],
+        )
+        .await?;
     }
     // Two continuations of one loop, then the allowance blocks the goal.
     assert_eq!(sent.len(), 2);
@@ -1101,7 +1141,7 @@ ship it
             matches!(reply(&provider, &settled.state, sequence + 1, &intent("m1"), 1).await?,
             Reply::Answered { sequence: 2, entry, origin: Some(origin), .. } if entry.inbox == 3 && origin.inbox == 1)
         );
-        state = settled.state;
+        state = integrate(&driver, settled.state, sequence + 1, &[&provider]).await?;
     }
     assert_eq!(goal.rewrites.lock().expect("lock").len(), 1);
     Ok(())
@@ -1156,7 +1196,7 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
             assert_eq!(message.from, Sender::Agent { path: path.clone() });
             assert_eq!(*message.body, file("GOAL.md")?);
             assert_ne!(message.id, previous_id);
-            state = settled.state;
+            state = integrate(&driver, settled.state, sequence + 1, &[]).await?;
         }
         assert_eq!(message.id.as_str(), format!("{GOAL_INTENT}{run}:{last}"));
         assert!(goal.rewrites.lock().expect("lock").is_empty());

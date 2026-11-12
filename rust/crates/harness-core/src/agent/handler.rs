@@ -31,8 +31,8 @@ use std::{
 /// The agent's one subscription: its inbox.
 pub const INBOX: &str = "inbox";
 
-fn guest(error: impl std::fmt::Display) -> GuestError {
-    GuestError::Handler(error.to_string())
+fn guest(error: impl std::error::Error) -> GuestError {
+    GuestError::Handler(crate::Error::format_chain(&error))
 }
 
 /// One handler package for every agent, over one turn driver.
@@ -605,8 +605,13 @@ where
                 .await
                 .map_err(|error| match error {
                     Error::IncompatibleCheckpointCodec => GuestError::IncompatibleCodec,
-                    error if error.uncertain() => GuestError::Unavailable(error.to_string()),
-                    Error::Stream(error) => guest(format!("reading agent inbox replay: {error}")),
+                    error if error.uncertain() => {
+                        GuestError::Unavailable(crate::Error::format_chain(&error))
+                    }
+                    Error::Stream(error) => GuestError::Handler(format!(
+                        "reading agent inbox replay: {}",
+                        crate::Error::format_chain(&error)
+                    )),
                     error => guest(error),
                 })
         })

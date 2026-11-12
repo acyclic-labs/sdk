@@ -90,6 +90,18 @@ mod tests {
         fn context(&self) -> acyclic_stream::ProviderContext<'_> {
             self.inner.context()
         }
+        fn credential_provider(&self) -> Option<&acyclic_auth::credential::CredentialProvider> {
+            self.inner.credential_provider()
+        }
+        async fn durability_barrier(&self) -> Result<(), StreamError> {
+            self.inner.durability_barrier().await
+        }
+        async fn read_commit(
+            &self,
+            commit: acyclic_stream::CommitId,
+        ) -> Result<acyclic_stream::CommittedEnvelope, StreamError> {
+            self.inner.read_commit(commit).await
+        }
         async fn heads(
             &self,
             request: acyclic_stream::HeadsRequest,

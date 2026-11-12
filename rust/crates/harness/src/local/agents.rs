@@ -471,7 +471,10 @@ impl LocalHarness {
         }
         let child = root.spawned_project_view(&child_project).await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let mut accounting = acyclic_fs::KernelAccounting::standalone(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
         let state = child.state(&mut accounting).await.map_err(storage)?;
         let origin = state
             .fork_origin

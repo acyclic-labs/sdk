@@ -123,7 +123,7 @@ async fn unavailable_delivery_resumes_its_original_alarm_without_run_failure() -
         transient: true,
     });
     let runtime = Runtime::new(
-        store.clone(),
+        Store::new(Arc::clone(&provider), root()?),
         handler.clone() as Arc<dyn Handler>,
         Arc::new(clock),
     );

@@ -34,29 +34,34 @@ impl<
                     .load_lazy_overlay(id, ctx)
                     .await?
                     .ok_or(LazyWorkspaceError::NotFound)?;
-                let changed = if let LazyOverlay::Node {
-                    path,
-                    change,
-                    left,
-                    right,
-                    ..
-                } = &node.0
-                {
-                    for child in [*left, *right] {
-                        pending.ensure_for_push(usize::MAX, ctx)?;
-                        pending.value.push(child);
-                    }
-                    matches!(change, LazyOverlayChange::Tombstone { .. })
-                        && self
-                            .overlay_fact(baseline.overlay, path, ctx)
-                            .await?
-                            .as_ref()
-                            != Some(change)
-                } else {
-                    false
-                };
+                let changed = async {
+                    Ok::<_, LazyWorkspaceError>(
+                        if let LazyOverlay::Node {
+                            path,
+                            change,
+                            left,
+                            right,
+                            ..
+                        } = &node.0
+                        {
+                            for child in [*left, *right] {
+                                pending.ensure_for_push(usize::MAX, ctx)?;
+                                pending.value.push(child);
+                            }
+                            matches!(change, LazyOverlayChange::Tombstone { .. })
+                                && self
+                                    .overlay_fact(baseline.overlay, path, ctx)
+                                    .await?
+                                    .as_ref()
+                                    != Some(change)
+                        } else {
+                            false
+                        },
+                    )
+                }
+                .await;
                 retire_node(node, ctx)?;
-                if changed {
+                if changed? {
                     return Ok(true);
                 }
             }
