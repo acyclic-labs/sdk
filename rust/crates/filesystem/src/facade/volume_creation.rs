@@ -511,7 +511,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     .await?;
                 let start = usize::try_from(offset).map_err(|_| WorkError::Overflow)?;
                 let end = usize::try_from(offset + length).map_err(|_| WorkError::Overflow)?;
-                if expected.get(start..end) != Some(read.bytes.as_ref()) {
+                let equal = expected.get(start..end) == Some(read.bytes.as_ref());
+                read.retire(accounting)?;
+                if !equal {
                     return Ok(false);
                 }
                 offset += length;

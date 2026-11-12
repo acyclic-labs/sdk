@@ -317,3 +317,79 @@ async fn paged_file_creation_retry_has_linear_work() -> Result<(), Box<dyn Error
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn multi_chunk_creation_retry_retires_consumed_comparison_buffers()
+-> Result<(), Box<dyn Error>> {
+    use acyclic_test_support::scale::{Bound, assert_scales};
+
+    let cancellation = CancellationToken::new();
+    let mut measured = Vec::new();
+    for chunks in [16_u64, 128] {
+        let fs = Fs::memory();
+        let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
+        config.limits.maximum_object_bytes = 128 * 1024;
+        let initialization = crate::VolumeInitialization {
+            config,
+            access_policy: Some(crate::access::INITIAL_POLICY),
+        };
+        let length = chunks * crate::kernel::CONTENT_READ_CHUNK_BYTES;
+        let files = [(
+            "/content",
+            OwnedBytes::from(vec![b'x'; usize::try_from(length)?]),
+        )];
+        let operation = IdempotencyKey::new().operation_id();
+        let created = fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                "bounded-comparison",
+                initialization,
+                crate::CreationOperation::populated(operation, &files),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                None,
+            )
+            .await?;
+        let allowance = WorkBudget {
+            peak_allocation_bytes: 16 * config.limits.maximum_object_bytes,
+            ..read_only()?
+        };
+        let retried = fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                "bounded-comparison",
+                initialization,
+                crate::CreationOperation::populated(operation, &files),
+                allowance,
+                &cancellation,
+                None,
+            )
+            .await?;
+        assert_eq!(retried.value.id(), created.value.id());
+        assert!(retried.work.peak_allocation_bytes <= allowance.peak_allocation_bytes);
+        assert_eq!(retried.work.backend_write_operations, 0);
+        assert_eq!(retried.work.authority_records_appended, 0);
+        assert!(retried.work.output_bytes >= length);
+        measured.push((length, retried.work.output_bytes));
+        let mut other = vec![b'x'; usize::try_from(length)?];
+        *other.last_mut().ok_or("empty comparison fixture")? = b'y';
+        let changed = [("/content", OwnedBytes::from(other))];
+        let failure = fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                "bounded-comparison",
+                initialization,
+                crate::CreationOperation::populated(operation, &changed),
+                allowance,
+                &cancellation,
+                None,
+            )
+            .await
+            .err()
+            .ok_or("changed final chunk recovered the original creation")?;
+        assert!(matches!(
+            failure.error,
+            WorkspaceError::Filesystem(FsError::CreationRejected)
+        ));
+        assert_eq!(failure.work.backend_write_operations, 0);
+    }
+    assert_scales(Bound::Linear, measured[0], measured[1]);
+    Ok(())
+}
