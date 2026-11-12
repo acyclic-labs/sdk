@@ -82,6 +82,20 @@ pub fn run_blocking_io<T: Send + 'static>(
     Ok(task)
 }
 
+/// Runs one process-control step (launch, capture turn, owner callback) on its
+/// own work class: it never queues behind host I/O waiting on a file lock.
+pub(crate) fn run_process_io<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> io::Result<NativeCompletion<T>> {
+    task_completion(
+        move || Ok(operation()),
+        None,
+        None,
+        None,
+        &crate::workers::PROCESS_WORKERS,
+    )
+}
+
 pub(crate) fn task_completion<T: Send + 'static>(
     operation: impl FnOnce() -> io::Result<T> + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,

@@ -89,6 +89,13 @@ pub(crate) static PERSISTENCE_WORKERS: LazyLock<io::Result<NativeWorkers>> =
 pub(crate) static OUTPUT_WORKERS: LazyLock<io::Result<NativeWorkers>> =
     LazyLock::new(|| start_workers("acyclic-output", std::convert::identity));
 
+// Host I/O includes file-lock transactions that wait on other owners. Process
+// launch, capture turns and their owner callbacks never wait on such a lock,
+// so an unrelated command never queues behind them. Created on first use,
+// never per process or agent.
+pub(crate) static PROCESS_WORKERS: LazyLock<io::Result<NativeWorkers>> =
+    LazyLock::new(|| start_workers("acyclic-process-io", |parallelism| parallelism.clamp(2, 4)));
+
 pub(crate) static IO_SERVICES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Initializes the existing native and host I/O services before measured requests are admitted.

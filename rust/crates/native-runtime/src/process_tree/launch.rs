@@ -180,17 +180,14 @@ impl CaptureRequest {
         handler: H,
         owner: O,
     ) -> Result<O::Output, LaunchFailure<H>> {
-        let submitted = crate::run_blocking_io(
-            move || {
-                // A panicking owner callback loses the handler, never the tree:
-                // unwinding drops it, which terminates it on this worker.
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                    self.start(handler, owner)
-                }))
-                .unwrap_or_else(|_| Err(LaunchFailure::lost()))
-            },
-            None,
-        );
+        let submitted = crate::blocking::run_process_io(move || {
+            // A panicking owner callback loses the handler, never the tree:
+            // unwinding drops it, which terminates it on this worker.
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                self.start(handler, owner)
+            }))
+            .unwrap_or_else(|_| Err(LaunchFailure::lost()))
+        });
         match submitted {
             Ok(started) => started.await.unwrap_or_else(|_| Err(LaunchFailure::lost())),
             Err(_) => Err(LaunchFailure::lost()),
