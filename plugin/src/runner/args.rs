@@ -67,7 +67,7 @@ pub struct Args {
     pub template: Template,
     /// Own workspace files for native coding hosts, without a provider or agent loop.
     /// Emits a `workspace-owner-ready` JSONL event on stdout after request events are installed.
-    #[arg(global = true, long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "transcripts", "resume", "agent", "continue_session", "new_session"])]
+    #[arg(global = true, long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "home_file", "default_config", "usage_jsonl", "transcripts", "resume", "agent", "continue_session", "new_session"])]
     pub host_workspace: bool,
     /// Explicit durable storage for the local owner or a selected agent.
     #[arg(global = true, long, conflicts_with = "endpoint")]
@@ -95,6 +95,10 @@ pub struct Args {
     /// Root directory for user settings discovery.
     #[arg(global = true, long)]
     pub settings_root: Option<PathBuf>,
+    /// Initialize a non-secret private home file before settings and role selection.
+    /// Repeat for multiple files. Reopening keeps admitted edits and deletions.
+    #[arg(global = true, long, conflicts_with = "endpoint", value_name = "VOLUME_PATH=HOST_FILE", value_parser = home_file)]
+    pub home_file: Vec<(String, PathBuf)>,
     /// Use shipped defaults and explicit inputs only; ignore user settings,
     /// native credential discovery and environment model/catalog selection. Signing
     /// custody uses private files in this run's state directory.
@@ -603,6 +607,14 @@ pub struct Serve {
     /// names; the listening address need not be reachable.
     #[arg(long, requires = "tls_certificate")]
     pub url: Option<String>,
+}
+
+fn home_file(value: &str) -> Result<(String, PathBuf), String> {
+    let (path, source) = value
+        .split_once('=')
+        .filter(|(path, source)| !path.is_empty() && !source.is_empty())
+        .ok_or("expected VOLUME_PATH=HOST_FILE")?;
+    Ok((path.to_owned(), PathBuf::from(source)))
 }
 
 #[cfg(test)]

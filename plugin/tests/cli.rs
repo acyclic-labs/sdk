@@ -88,6 +88,57 @@ async fn model(directory: &Path) -> Model {
     model_response(directory, axum::http::StatusCode::OK, ANSWER).await
 }
 
+#[tokio::test]
+async fn explicit_home_module_configures_the_first_model_call() {
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
+    let source = fixture._directory.path().join("initial-settings.ts");
+    std::fs::write(
+        &source,
+        "export default (base) => ({ ...base, sampling: { temperature: 0.25 } });",
+    )
+    .unwrap();
+    let input = format!("agent.ts={}", source.display());
+    let mut endpoint = graphcoder_command(&fixture);
+    endpoint.args([
+        "--endpoint",
+        "http://127.0.0.1:1",
+        "--home-file",
+        &input,
+        "-p",
+        "reply",
+    ]);
+    let refused = capture(endpoint, "").await;
+    assert!(!refused.status.success());
+    let refusal = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        refusal.contains("--home-file") && refusal.contains("cannot be used with"),
+        "{refusal}"
+    );
+    assert_eq!(model.generated(), 0);
+    let output = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec![
+            "--default-config",
+            "--workspace-mounting",
+            "physical",
+            "--home-file",
+            &input,
+            "-p",
+            "reply",
+        ],
+        "",
+    )
+    .await;
+    succeeded(&output);
+    let requests = model.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["model"], "tiny");
+    assert_eq!(requests[0]["temperature"], json!(0.25));
+    model.close().await;
+}
+
 async fn model_response(
     directory: &Path,
     status: axum::http::StatusCode,

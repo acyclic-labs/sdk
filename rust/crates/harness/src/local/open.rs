@@ -527,6 +527,25 @@ impl Opening {
             ..crate::runtime::Bindings::local()
         }
         .build()?;
+        if !self.config.home_files.is_empty() {
+            files
+                .seed_once(
+                    &crate::filesystem::workspace_ref(
+                        scratch.provider().clone(),
+                        &scratch.storage_name(&mut None)?,
+                    )?,
+                    &crate::IdempotencyKey::new("home-v1")?,
+                    || {
+                        Ok(self
+                            .config
+                            .home_files
+                            .iter()
+                            .map(|(path, bytes)| (format!("/{path}"), bytes.clone()))
+                            .collect())
+                    },
+                )
+                .await?;
+        }
         let volumes = agent_settings::Volumes {
             files: &files,
             verifier: &verifier,
@@ -701,6 +720,9 @@ fn scopes(
 
 fn validate_configuration(config: &LocalHarnessConfig) -> Result<()> {
     config.limits.validate(&mut None)?;
+    for path in config.home_files.keys() {
+        crate::conversation::validate_content_path(path, &mut None)?;
+    }
     if !config.active_directory.is_empty() {
         crate::conversation::validate_content_path(&config.active_directory, &mut None)?;
     }
