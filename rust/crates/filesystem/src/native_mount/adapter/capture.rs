@@ -52,10 +52,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         // All capture callers share this admitted frame; candidate reconciliation
         // and installation must not become part of each caller's poll frame.
         native_future(work, || async move {
-            let inputs = self.capture_inputs(source_root, paths, identity, work)?;
+            let mut inputs = self.capture_inputs(source_root, paths, identity, work)?;
+            inputs.1.materialized_view = baseline;
             let paths = &inputs.0;
             let options = &inputs.1;
-            let baseline = baseline.as_ref();
             let cancellation = work.cancellation();
             cancellation
                 .check()
@@ -78,7 +78,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                             options,
                             64,
                             cancellation,
-                            baseline,
                             work,
                         )
                         .await
@@ -90,7 +89,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                             options,
                             &crate::CapturePolicy::default(),
                             cancellation,
-                            baseline,
                             work,
                         )
                         .await

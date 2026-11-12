@@ -195,6 +195,7 @@ impl NativeCheckout {
             &mut checkout,
             &paths,
             &CaptureOptions {
+                materialized_view: None,
                 source_namespace: None,
                 source_root,
                 expected_root_identity,
@@ -226,6 +227,7 @@ impl NativeCheckout {
         let receipt = Box::pin(capture_baseline(
             &mut checkout,
             &CaptureOptions {
+                materialized_view: None,
                 source_namespace: None,
                 source_root,
                 expected_root_identity,
@@ -297,6 +299,7 @@ impl NativeWatcher {
         let baseline = Box::pin(capture_baseline(
             &mut checkout,
             &CaptureOptions {
+                materialized_view: None,
                 source_namespace: None,
                 source_root: self.source_root.clone(),
                 expected_root_identity,
@@ -447,6 +450,7 @@ impl NativeWatcher {
                 &mut checkout,
                 pending.batch,
                 &CaptureOptions {
+                    materialized_view: None,
                     source_namespace: None,
                     source_root: self.source_root.clone(),
                     expected_root_identity,

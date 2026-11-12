@@ -7,13 +7,16 @@ async fn capture(
     work: &NativeMaterializationWork,
     baseline: Option<&NativeViewBaseline>,
 ) -> Result<CaptureReceipt, crate::OperationFailure<CaptureError>> {
+    let options = CaptureOptions {
+        materialized_view: baseline.copied(),
+        ..options.clone()
+    };
     Ok(capture_subtrees_with_native_work(
         checkout,
         std::slice::from_ref(path),
-        options,
+        &options,
         &CapturePolicy::default(),
         work.cancellation(),
-        baseline,
         work,
     )
     .await?
@@ -54,6 +57,7 @@ async fn check(
     let path =
         NamespacePath::from_portable(&crate::path::PortablePath::parse("/file", limits)?, limits)?;
     let options = CaptureOptions {
+        materialized_view: None,
         source_namespace: None,
         source_root: source.to_owned(),
         expected_root_identity: capture_root_identity(source)?,

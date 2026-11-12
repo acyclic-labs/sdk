@@ -571,6 +571,7 @@ async fn staged_recovery_stays_out_of_capture_and_lazy_discovery_after_reopen() 
         .await?
         .value;
     let capture = acyclic_fs::CaptureOptions {
+        materialized_view: None,
         source_root: fixture.root.clone(),
         expected_root_identity: fixture.identity,
         source_namespace: None,

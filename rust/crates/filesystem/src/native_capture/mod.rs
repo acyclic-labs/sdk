@@ -115,9 +115,14 @@ pub use entry::{
     HeldRoot, SearchRoot, capture_baseline, capture_held_paths, capture_paths,
     capture_root_identity, capture_subtree, file_identity, hold_root, hold_search_root,
 };
-pub(crate) use model::NativeViewBaseline;
-pub use model::{CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, WatchCaptureReceipt};
+pub use model::{
+    CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, NativeViewBaseline,
+    WatchCaptureReceipt,
+};
 pub(crate) use names::namespace_to_host_path_with_work;
 pub use names::{host_path_to_namespace, namespace_to_host_path};
 #[cfg(windows)]
 pub(crate) use names::{namespace_component_wide, namespace_host_units_with_work};
+
+#[cfg(test)]
+mod materialized_view_tests;

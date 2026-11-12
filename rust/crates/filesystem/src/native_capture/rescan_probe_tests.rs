@@ -49,6 +49,7 @@ fn fixture_in(runtime: &tokio::runtime::Runtime, parent: Option<&Path>) -> Fixtu
         })
         .to_vec();
     let options = CaptureOptions {
+        materialized_view: None,
         source_namespace: None,
         source_root: source.path().to_owned(),
         expected_root_identity: capture_root_identity(source.path()).unwrap(),
@@ -64,7 +65,6 @@ fn fixture_in(runtime: &tokio::runtime::Runtime, parent: Option<&Path>) -> Fixtu
                 &options,
                 &CapturePolicy::default(),
                 setup.cancellation(),
-                None,
                 &setup,
             ))
             .unwrap();
@@ -201,6 +201,7 @@ fn run(
     let root = fixture.checkout.root().clone();
     let path = NamespacePath::new(Vec::new(), fixture.checkout.volume_config().limits).unwrap();
     let baseline = NativeViewBaseline::new(fixture.options.expected_root_identity, true);
+    fixture.options.materialized_view = Some(baseline);
     if cancelled {
         cancellation.cancel();
     }
@@ -227,7 +228,6 @@ fn run(
             &fixture.options,
             &policy,
             &cancellation,
-            Some(&baseline),
             &work,
         ));
         measure(|| result = Some(runtime.block_on(future.as_mut())))

@@ -182,6 +182,7 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
     let options = CaptureOptions {
+        materialized_view: None,
         source_namespace: None,
         source_root: directory.path().to_path_buf(),
         expected_root_identity: capture_root_identity(directory.path())?,
@@ -218,7 +219,6 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
                     &options,
                     1,
                     &cancellation,
-                    None,
                     &work,
                 )
             },

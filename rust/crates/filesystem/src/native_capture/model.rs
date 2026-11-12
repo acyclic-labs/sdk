@@ -1,8 +1,8 @@
 use super::*;
 
 /// A native view may have host-generated timestamps that are not SDK metadata.
-#[derive(Clone, Copy)]
-pub(crate) struct NativeViewBaseline {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeViewBaseline {
     pub(super) root_identity: NativeRootIdentity,
     pub(super) read_only: bool,
     #[cfg(test)]
@@ -12,7 +12,7 @@ pub(crate) struct NativeViewBaseline {
 impl NativeViewBaseline {
     /// Records the identity and access mode of the materialized view.
     #[cfg(any(not(target_arch = "wasm32"), test))]
-    pub(crate) const fn new(root_identity: NativeRootIdentity, read_only: bool) -> Self {
+    pub const fn new(root_identity: NativeRootIdentity, read_only: bool) -> Self {
         Self {
             root_identity,
             read_only,
@@ -68,6 +68,9 @@ impl NativeViewBaseline {
 /// Exact native capture options.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaptureOptions {
+    /// Original metadata of an SDK-materialized view on this exact host root.
+    /// None captures host metadata without materialization normalization.
+    pub materialized_view: Option<NativeViewBaseline>,
     /// Materialized checkout root owned by the caller.
     pub source_root: PathBuf,
     /// Stable identity that the capability actually used for capture must own.

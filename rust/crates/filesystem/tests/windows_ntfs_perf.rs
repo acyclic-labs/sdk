@@ -348,6 +348,7 @@ async fn captured_ntfs_link_retains_restorable_metadata() -> Result<(), Box<dyn 
         &mut checkout,
         std::slice::from_ref(&path),
         &CaptureOptions {
+            materialized_view: None,
             source_namespace: None,
             source_root: host.path().to_path_buf(),
             expected_root_identity: capture_root_identity(host.path())?,

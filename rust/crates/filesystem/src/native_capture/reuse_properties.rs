@@ -12,14 +12,17 @@ async fn recapture(
         reuse_override,
         ..NativeViewBaseline::new(options.expected_root_identity, true)
     };
+    let options = CaptureOptions {
+        materialized_view: Some(baseline),
+        ..options.clone()
+    };
     let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits).unwrap();
     capture_subtrees_with_native_work(
         checkout,
         &[root],
-        options,
+        &options,
         &CapturePolicy::default(),
         work.cancellation(),
-        Some(&baseline),
         work,
     )
     .await
@@ -122,6 +125,7 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
                     )
                     .unwrap();
                     let options = CaptureOptions {
+                        materialized_view: None,
                         source_namespace: None,
                         source_root: source.path().to_owned(),
                         expected_root_identity: capture_root_identity(source.path()).unwrap(),
@@ -137,7 +141,6 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
                         &options,
                         &CapturePolicy::default(),
                         &cancellation,
-                        None,
                         &work,
                     )
                     .await

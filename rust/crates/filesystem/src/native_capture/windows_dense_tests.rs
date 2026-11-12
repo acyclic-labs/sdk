@@ -71,7 +71,6 @@ async fn capture(
         options,
         &CapturePolicy::default(),
         &cancellation,
-        None,
         &work,
     )
     .await;
@@ -169,6 +168,7 @@ fn dense_capture_equals_queried_capture_with_bounded_admission()
                     };
                     fixture(&source.path().join("file"), kind, length, byte);
                     let options = CaptureOptions {
+                        materialized_view: None,
                         source_namespace: None,
                         source_root: source.path().to_owned(),
                         expected_root_identity: capture_root_identity(source.path()).unwrap(),
@@ -311,6 +311,7 @@ fn dense_capture_equals_queried_capture_with_bounded_admission()
                     let file = source.path().join("file");
                     fixture(&file, 0, length, byte);
                     let options = CaptureOptions {
+                        materialized_view: None,
                         source_namespace: None,
                         source_root: source.path().to_owned(),
                         expected_root_identity: capture_root_identity(source.path()).unwrap(),

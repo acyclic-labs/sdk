@@ -444,6 +444,8 @@ pub(in crate::local) fn configuration(
     workspace: &LocalWorkspace,
 ) -> Result<(CaptureOptions, CapturePolicy)> {
     let options = CaptureOptions {
+        materialized_view: (!workspace.import_source)
+            .then(|| acyclic_fs::NativeViewBaseline::new(workspace.identity, false)),
         source_namespace: Some(workspace.view().source_reference().identity),
         source_root: workspace.path.clone(),
         expected_root_identity: workspace.identity,

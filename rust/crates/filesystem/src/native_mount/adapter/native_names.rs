@@ -147,6 +147,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         }
         let source_root = inputs.clone_path(source_root)?;
         let options = CaptureOptions {
+            materialized_view: None,
             source_namespace: None,
             source_root,
             expected_root_identity,

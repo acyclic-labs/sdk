@@ -45,7 +45,6 @@ async fn cancelled_capture_leaves_retirement_with_the_accepted_native_producer()
         &options,
         &policy,
         &cancellation,
-        None,
         &work,
     )));
     let submitted = loop {
@@ -197,6 +196,7 @@ async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
     let mut options = options(source.path(), 16)?;
     options.maximum_extent_spans = Some(1);
     let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
+    options.materialized_view = Some(baseline);
     let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits)?;
     let result = capture_subtrees_with_native_work(
         &mut checkout,
@@ -204,7 +204,6 @@ async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
         &options,
         &CapturePolicy::default(),
         &cancellation,
-        Some(&baseline),
         &work,
     )
     .await?;
@@ -244,7 +243,6 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
         &options,
         &CapturePolicy::default(),
         &cancellation,
-        None,
         &work,
     )
     .await?;
@@ -278,7 +276,6 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
         &options,
         &CapturePolicy::default(),
         &cancellation,
-        None,
         &work,
     )
     .await?;
@@ -303,7 +300,6 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
         &options,
         &CapturePolicy::default(),
         &cancellation,
-        None,
         &work,
     )
     .await?;
@@ -333,7 +329,6 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
         &options,
         &CapturePolicy::default(),
         &cancellation,
-        None,
         &work,
     )
     .await?;
@@ -401,14 +396,13 @@ mod unchanged_properties {
                         .unwrap();
                     let root =
                         NamespacePath::new(Vec::new(), checkout.volume_config().limits).unwrap();
-                    let options = options(source.path(), 16).unwrap();
+                    let mut options = options(source.path(), 16).unwrap();
                     capture_subtrees_with_native_work(
                         &mut checkout,
                         &[root.clone()],
                         &options,
                         &CapturePolicy::default(),
                         &cancellation,
-                        None,
                         &work,
                     )
                     .await
@@ -437,6 +431,7 @@ mod unchanged_properties {
                         )
                         .unwrap();
                     let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
+                    options.materialized_view = Some(baseline);
                     let before_capture = work.receipt();
                     let receipt = capture_subtrees_with_native_work(
                         &mut checkout,
@@ -444,7 +439,6 @@ mod unchanged_properties {
                         &options,
                         &CapturePolicy::default(),
                         &cancellation,
-                        Some(&baseline),
                         &work,
                     )
                     .await
@@ -487,6 +481,7 @@ fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
 
 fn options(root: &Path, maximum_paths: u32) -> Result<CaptureOptions, CaptureError> {
     Ok(CaptureOptions {
+        materialized_view: None,
         source_namespace: None,
         source_root: root.to_path_buf(),
         expected_root_identity: capture_root_identity(root)?,
