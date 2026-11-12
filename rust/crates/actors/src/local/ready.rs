@@ -13,6 +13,9 @@ struct Entry<K> {
     phase: Phase,
     alarm: super::Alarm,
     due: Option<(u64, Id, u64)>,
+    /// The committed alarm's own deadline while it is unconsumed here,
+    /// whatever its wake time: a deferred wake never moves it.
+    pending: Option<u64>,
 }
 enum Phase {
     Queued {
@@ -32,6 +35,7 @@ struct Index<K> {
     ready_count: usize,
     waiter: Option<Waker>,
     due: BTreeSet<(u64, Id, u64)>,
+    pending: BTreeSet<(u64, Id)>,
     /// Alarms of retired registrations that were still due here, as
     /// `(wake_at, deadline, key)`, kept for the dispatcher once it takes them.
     /// None until a dispatcher exists, so nothing accumulates without one.
@@ -47,6 +51,7 @@ impl<K> Default for Index<K> {
             ready_count: 0,
             waiter: None,
             due: BTreeSet::new(),
+            pending: BTreeSet::new(),
             parked: None,
         }
     }
@@ -178,6 +183,7 @@ impl<K: Clone> ReadySet<K> {
                 phase: Phase::Idle,
                 alarm: super::Alarm::default(),
                 due: None,
+                pending: None,
             },
         );
         Ok(Registration {
@@ -275,6 +281,17 @@ impl<K: Clone> ReadySet<K> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         index.due.first().map(|&(deadline, _, _)| deadline)
+    }
+
+    /// Earliest original deadline of any unconsumed resident alarm, however
+    /// late its wake was deferred. The deadline watermark is bounded by it.
+    pub fn pending_deadline(&self) -> Option<u64> {
+        let index = self
+            .core
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        index.pending.first().map(|&(deadline, _)| deadline)
     }
 
     /// Number of retained alarm nodes; replacement and cancellation leave none behind.
@@ -439,10 +456,12 @@ impl<K> Registration<K> {
             return Err(super::Error::Conflict);
         }
         let due = deadline.map(|deadline| (deadline, self.id, alarm.generation));
-        if &entry.alarm == alarm && entry.due == due {
+        let pending = alarm.pending();
+        if &entry.alarm == alarm && entry.due == due && entry.pending == pending {
             return Ok(());
         }
         let previous = entry.due.take();
+        let previous_pending = std::mem::replace(&mut entry.pending, pending);
         entry.alarm = alarm.clone();
         entry.due = due;
         if let Some(previous) = previous {
@@ -450,6 +469,12 @@ impl<K> Registration<K> {
         }
         if let Some(due) = due {
             index.due.insert(due);
+        }
+        if let Some(previous) = previous_pending {
+            index.pending.remove(&(previous, self.id));
+        }
+        if let Some(pending) = pending {
+            index.pending.insert((pending, self.id));
         }
         // An earlier deadline must wake the single dispatcher so it can rearm.
         let waiter = index.waiter.take();
@@ -470,12 +495,15 @@ impl<K> Registration<K> {
             .index
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let due = index
-            .entries
-            .get_mut(&self.id)
-            .and_then(|entry| entry.due.take());
+        let Some(entry) = index.entries.get_mut(&self.id) else {
+            return;
+        };
+        let (due, pending) = (entry.due.take(), entry.pending.take());
         if let Some(due) = due {
             index.due.remove(&due);
+        }
+        if let Some(pending) = pending {
+            index.pending.remove(&(pending, self.id));
         }
     }
 }
@@ -491,6 +519,9 @@ impl<K> Drop for Registration<K> {
         if let Some(entry) = retired {
             if let Phase::Queued { previous, next } = entry.phase {
                 index.unlink(previous, next);
+            }
+            if let Some(pending) = entry.pending {
+                index.pending.remove(&(pending, self.id));
             }
             if let Some(due) = entry.due {
                 index.due.remove(&due);

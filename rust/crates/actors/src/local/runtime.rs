@@ -896,7 +896,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // cursor never waits for it. The window watermark passes only
             // windows whose wakes were delivered, never the current window
             // (an alarm armed now with a future deadline lands at or after
-            // it), and never a resident deadline that has not fired yet; it
+            // it), and never the original window of a resident alarm still
+            // unconsumed, however late an authority deferred its wake; it
             // moves back only for a resident alarm armed already past due.
             // A hibernated resident's alarm holds it at its window, as its
             // resident deadline did, until the dispatcher wakes it.
@@ -905,7 +906,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }
             let bound = scheduling::window(
                 self.ready
-                    .next_deadline()
+                    .pending_deadline()
                     .unwrap_or(u64::MAX)
                     .min(self.clock.now_unix_ms()),
             );
