@@ -70,6 +70,8 @@ pub(super) async fn query(
         presentation.hint("PgDn/PgUp: scroll · Esc: close");
     }
 
+    let mut context = Context::default();
+    context.diff = Some(presentation);
     Ok(QueryPage::new(
         Vec::new(),
         more.then(|| match agent {
@@ -78,10 +80,7 @@ pub(super) async fn query(
         }),
         continued,
     )
-    .with_context(Context {
-        diff: Some(presentation),
-        ..Context::default()
-    }))
+    .with_context(context))
 }
 
 fn header(fragment: &DiffFilePage) -> Option<String> {
