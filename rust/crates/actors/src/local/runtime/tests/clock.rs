@@ -559,3 +559,74 @@ async fn the_authority_refuses_early_alarm_consumption_and_the_host_rearms() -> 
     );
     Ok(())
 }
+
+/// A deferred wake never moves the deadline watermark past the alarm's own
+/// window. Window two holds a deadline at 150000; a replacement host at
+/// 240000 opens it, the authority at 120000 refuses, and the wake is deferred
+/// to 270000. The checkpoint stays at window two, so a host started after a
+/// crash still finds and fires the alarm.
+#[tokio::test]
+async fn a_deferred_alarm_survives_a_crash_after_the_checkpoint() -> TestResult {
+    let authority = Arc::new(Authority(AtomicU64::new(100_000)));
+    let provider = Arc::new(MemoryStream::new_with_clock(
+        Default::default(),
+        Arc::clone(&authority) as _,
+    ));
+    let (decided, mut decisions) = futures::channel::mpsc::unbounded();
+    provider.install_commit_admission(Arc::new(Decisions(decided, Arc::clone(&authority))))?;
+    let store = Store::new(Arc::clone(&provider), root()?)
+        .with_scheduling_shards(std::num::NonZeroU16::MIN);
+    let actor = spawn_with(&store, "deferred", &[b"set 50000"]).await?;
+    let host = |now| {
+        let (clock, control) = ControlledClock::new(now);
+        let runtime = Runtime::new(
+            store.clone(),
+            Arc::new(Package::new()?),
+            Arc::new(clock) as Arc<dyn Clock>,
+        );
+        Ok::<_, Box<dyn std::error::Error>>((runtime, control))
+    };
+    let (earlier, _control) = host(100_000)?;
+    earlier.track(actor.clone())?;
+    earlier.drain_actor(&actor).await?;
+    let armed = store.load(&actor).await?;
+    assert_eq!(
+        armed.state().and_then(|state| state.alarm().pending()),
+        Some(150_000)
+    );
+    authority.0.store(120_000, Ordering::SeqCst);
+    let tail = provider.tail(store.scheduling_path(0)?).await?;
+    let (replacement, _control) = host(240_000)?;
+    let (checkpoint, dispatcher) = replacement.dispatcher_store(0)?;
+    {
+        let mut serving = Box::pin(replacement.run(|_, error| panic!("delivery failed: {error}")));
+        // Only a quiescent host past window two's consumption checkpoints a
+        // deadline cursor of two or more, so this is the refusal's checkpoint.
+        let checkpointed = observe_while_running(
+            serving.as_mut(),
+            state_after(&checkpoint, &dispatcher, |state| {
+                state.cursor("activation") == Some(tail) && state.cursor("deadline") >= Some(2)
+            }),
+        )
+        .await?;
+        assert_eq!(decisions.try_recv()?, (150_000, 120_000));
+        assert_eq!(checkpointed.cursor("deadline"), Some(2));
+    }
+    // The crash: the deferred wake dies with the host.
+    assert!(records(&*provider, "out/deferred").await?.is_empty());
+    authority.0.store(150_000, Ordering::SeqCst);
+    let (restarted, _control) = host(240_000)?;
+    let mut serving = Box::pin(restarted.run(|_, error| panic!("delivery failed: {error}")));
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &actor, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
+    assert_eq!(
+        records(&*provider, "out/deferred").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    Ok(())
+}
