@@ -51,6 +51,33 @@ pub(super) fn learn(
     }
 }
 
+/// The last page of `shard`'s `window` was read, and `next` is the shard's
+/// next filed window past it. `consumed` passes the window only when no
+/// earlier window of the shard is still in `reading`: an unread window's
+/// actors hold no alarm token yet, so this alone keeps the checkpoint behind
+/// it. That earlier window's own completion then finds what follows.
+pub(super) fn read(
+    reading: &mut std::collections::BTreeSet<(u16, u64)>,
+    consumed: &mut std::collections::BTreeMap<u16, u64>,
+    windows: &mut std::collections::BTreeSet<(u64, u16)>,
+    (shard, window): (u16, u64),
+    next: Option<u64>,
+) -> Result<(), Error> {
+    let from = window
+        .checked_add(1)
+        .ok_or(Error::Invalid("alarm window overflow"))?;
+    reading.remove(&(shard, window));
+    if reading.range((shard, 0)..(shard, window)).next().is_none()
+        && consumed
+            .get(&shard)
+            .is_some_and(|&consumed| consumed < from)
+    {
+        consumed.insert(shard, from);
+        windows.extend(next.map(|next| (next, shard)));
+    }
+    Ok(())
+}
+
 /// The root child holding every shard's activation log and deadline windows.
 const SCHEDULE: &str = "_schedule";
 
