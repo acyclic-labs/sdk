@@ -110,7 +110,7 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
     let mut cursor = None;
     let mut observed = Vec::new();
     for attempt in 0..=rows.len() + 1 {
-        let (selected, page) = fixture
+        let page = fixture
             .host
             .list_private_directory(
                 &fixture.volume,
@@ -118,7 +118,7 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
                 "secrets",
                 acyclic_harness::filesystem::DirectoryOptions {
                     generation: generation.as_ref(),
-                    after: cursor.as_ref(),
+                    after: cursor.as_deref(),
                     maximum_entries: page_size,
                     ceiling: None,
                 },
@@ -126,24 +126,18 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
             .await?
             .expect("fixture directory exists");
         if let Some(generation) = &generation {
-            assert_eq!(&selected, generation);
+            assert_eq!(&page.generation, generation);
         }
-        generation = Some(selected);
-        assert!(!page.has_more || !page.entries.is_empty());
+        generation = Some(page.generation);
         assert!(page.entries.len() <= page_size as usize);
-        assert!(page.next_residency.is_none());
         for entry in page.entries {
-            let name = entry
-                .name
-                .unicode_text(WorkBudget::UNBOUNDED, &CancellationToken::new())?
-                .value;
-            assert!(cursor.as_ref().is_none_or(|cursor| &entry.name > cursor));
-            observed.push(name);
-            cursor = Some(entry.name);
+            observed.push(entry.name);
         }
-        if !page.has_more {
+        if page.next.is_none() {
             break;
         }
+        assert_ne!(page.next, cursor);
+        cursor = page.next;
         assert!(
             attempt < rows.len() + 1,
             "visible pagination did not terminate"
@@ -177,7 +171,7 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
                 "secrets",
                 acyclic_harness::filesystem::DirectoryOptions {
                     generation: generation.as_ref(),
-                    after: cursor.as_ref(),
+                    after: cursor.as_deref(),
                     maximum_entries: page_size,
                     ceiling: None
                 }

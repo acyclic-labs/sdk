@@ -1441,9 +1441,11 @@ mod tests {
                 _ => malformed[1].path = "../outside.txt".into(),
             }
             let bytes = Envelope {
-                value: Some(envelope::Value::Reply(serde_json::to_vec(
-                    &AgentReply::Diff { items: malformed },
-                )?)),
+                value: Some(envelope::Value::Reply(serde_json::to_vec(&AgentReply::<
+                    PrivateDirectoryPage,
+                >::Diff {
+                    items: malformed,
+                })?)),
                 reason: None,
             }
             .encode_to_vec();

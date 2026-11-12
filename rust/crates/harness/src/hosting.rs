@@ -884,7 +884,8 @@ where
                 let mut credit = None;
                 let mut admit = |generation: &crate::resources::GenerationRef,
                                  entry: Option<&crate::conversation::PrivateDirectoryEntry>,
-                                 next: Option<&[u8]>| {
+                                 next: Option<&[u8]>|
+                 -> crate::Result<bool> {
                     use crate::conversation::PrivateDirectoryPageView;
                     if credit.is_none() {
                         let end = AgentReply::Directory {
@@ -913,6 +914,7 @@ where
                         Some(entry) => credit.accept(entry, next),
                         None => credit.accept_boundary(next),
                     }
+                    .map_err(crate::Error::from)
                 };
                 let page = self
                     .bound

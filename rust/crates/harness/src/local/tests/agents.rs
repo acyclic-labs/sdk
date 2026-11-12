@@ -1571,7 +1571,7 @@ async fn names(
         "",
         &mut None,
     )?;
-    let (_, page) = harness
+    let page = harness
         .files
         .list_private_directory(
             volume,

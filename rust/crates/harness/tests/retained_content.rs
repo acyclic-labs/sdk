@@ -140,7 +140,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         "messages",
         &mut None,
     )?;
-    let (listed_generation, page) = host
+    let page = host
         .list_private_directory(
             &volume,
             &attached_directory,
@@ -155,12 +155,13 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         .await?
         .expect("fixture directory exists");
     assert_eq!(page.entries.len(), 1);
+    let listed_generation = &page.generation;
     assert_eq!(
         host.read_private_path(
             &volume,
             &attached_directory,
             "messages/current.txt",
-            Some(&listed_generation),
+            Some(listed_generation),
             64,
             acyclic_harness::conversation::ContentAccess::default(),
         )
@@ -323,13 +324,13 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             .await
             .is_err()
     );
-    let (relisted_generation, relisted) = reopened
+    let relisted = reopened
         .list_private_directory(
             &volume,
             &attached_directory,
             "messages",
             acyclic_harness::filesystem::DirectoryOptions {
-                generation: Some(&listed_generation),
+                generation: Some(listed_generation),
                 after: None,
                 maximum_entries: 10,
                 ceiling: None,
@@ -337,7 +338,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         )
         .await?
         .expect("fixture directory exists");
-    assert_eq!(relisted_generation, listed_generation);
+    assert_eq!(&relisted.generation, listed_generation);
     assert_eq!(relisted.entries, page.entries);
     assert_eq!(
         reopened
@@ -345,7 +346,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 &volume,
                 &attached_directory,
                 "messages/current.txt",
-                Some(&listed_generation),
+                Some(listed_generation),
                 64,
                 acyclic_harness::conversation::ContentAccess::default(),
             )
