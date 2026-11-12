@@ -374,6 +374,7 @@ async fn selected_private_pages_fit_credit_and_preserve_pinned_bytes() -> Result
                         artifact_content
                             .volume
                             .directory_read_capability("", &mut None)?,
+                        artifacts.write_capability.clone(),
                         "tool:call:read".into(),
                     ]),
                     limits,
