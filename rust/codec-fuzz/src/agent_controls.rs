@@ -13,54 +13,8 @@ use prost::Message as _;
 /// A NUL after a JSON command selects its following raw or JSON reply. This is
 /// corpus framing only: all protocol parsing stays in the shipping entry points.
 pub fn check(bytes: &[u8]) {
-    // Conditional arbitrary-input checks cannot detect an admission path that
-    // refuses everything. Retain the original public writer's positive witness.
-    assert!(
-        matches!(
-            PreparedCommand::decode(include_bytes!("../corpus/agent_controls/command-root")),
-            Ok(AgentCommand::Root {})
-        ),
-        "captured writer command refused"
-    );
-    for captured in [
-        include_bytes!("../corpus/agent_controls/actor-response-root-0").as_slice(),
-        include_bytes!("../corpus/agent_controls/actor-response-refused").as_slice(),
-        include_bytes!("../corpus/agent_controls/assembled-cancel").as_slice(),
-    ] {
-        let separator = captured.iter().position(|byte| *byte == 0).unwrap();
-        let call =
-            AgentCall::decode(&captured[..separator]).expect("captured writer invocation refused");
-        let body = &captured[separator + 1..];
-        if matches!(call.command(), AgentCommand::Staged { .. }) {
-            assert!(assembled(&call, body), "captured writer assembly refused");
-        } else {
-            assert!(
-                actor_response(&call, body),
-                "captured writer response refused"
-            );
-        }
-    }
-    let captured = include_bytes!("../corpus/agent_controls/unknown");
-    let separator = captured.iter().position(|byte| *byte == 0).unwrap();
-    let command = PreparedCommand::decode(&captured[..separator]).unwrap();
-    assert!(
-        unknown(&captured[separator + 1..], &command),
-        "captured writer recovery request refused"
-    );
-    let captured = include_bytes!("../corpus/agent_controls/reply-bind-observation");
-    let separator = captured.iter().position(|byte| *byte == 0).unwrap();
-    let command = PreparedCommand::decode(&captured[..separator]).unwrap();
-    let reply = decode_agent_reply(&captured[separator + 1..], &command)
-        .expect("captured observation framing refused")
-        .expect("captured observation enrollment refused");
-    assert!(matches!(
-        reply,
-        AgentReply::Bound {
-            observation: Some(_),
-            ..
-        }
-    ));
-    success(&reply, &command);
+    static WRITERS: std::sync::Once = std::sync::Once::new();
+    WRITERS.call_once(writer_controls);
     if let Ok(command) = PreparedCommand::from_bytes(bytes.to_vec()) {
         assert_eq!(command.command(), bytes);
         let decoded = command.decoded().unwrap();
@@ -114,6 +68,79 @@ pub fn check(bytes: &[u8]) {
             json(&decoded)
         );
     }
+}
+
+fn writer_controls() {
+    // Conditional arbitrary-input checks cannot detect an admission path that
+    // refuses everything. Retain the original public writer's positive witness.
+    assert!(
+        matches!(
+            PreparedCommand::decode(include_bytes!("../corpus/agent_controls/command-root")),
+            Ok(AgentCommand::Root {})
+        ),
+        "captured writer command refused"
+    );
+    for captured in [
+        include_bytes!("../corpus/agent_controls/actor-response-root-0").as_slice(),
+        include_bytes!("../corpus/agent_controls/actor-response-refused").as_slice(),
+        include_bytes!("../corpus/agent_controls/assembled-cancel").as_slice(),
+    ] {
+        let separator = captured.iter().position(|byte| *byte == 0).unwrap();
+        let call =
+            AgentCall::decode(&captured[..separator]).expect("captured writer invocation refused");
+        let body = &captured[separator + 1..];
+        if matches!(call.command(), AgentCommand::Staged { .. }) {
+            assert!(assembled(&call, body), "captured writer assembly refused");
+        } else {
+            assert!(
+                actor_response(&call, body),
+                "captured writer response refused"
+            );
+        }
+    }
+    let command = AgentCommand::Root {};
+    let original = recovery_request().expect("original recovery request");
+    let result = Err(AgentError::Unknown(Box::new(original.clone())));
+    let wire = encode_agent_reply(&result, &command).expect("writer recovery request");
+    let Err(AgentControlFailure::Unknown(decoded)) =
+        decode_agent_reply(&wire, &command).expect("writer recovery framing")
+    else {
+        panic!("writer recovery request refused");
+    };
+    assert_eq!(*decoded, original, "writer recovery request changed");
+    assert!(unknown(&wire, &command), "writer recovery wire changed");
+    let captured = include_bytes!("../corpus/agent_controls/reply-bind-observation");
+    let separator = captured.iter().position(|byte| *byte == 0).unwrap();
+    let command = PreparedCommand::decode(&captured[..separator]).unwrap();
+    let reply = decode_agent_reply(&captured[separator + 1..], &command)
+        .expect("captured observation framing refused")
+        .expect("captured observation enrollment refused");
+    assert!(matches!(
+        reply,
+        AgentReply::Bound {
+            observation: Some(_),
+            ..
+        }
+    ));
+    success(&reply, &command);
+}
+
+fn recovery_request() -> Result<CommitRequest, acyclic_stream::StreamError> {
+    let path = StreamPath::new("agent/inbox")?;
+    Ok(CommitRequest {
+        deadline_unix_millis: None,
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected: 7,
+            }],
+            vec![CommitMutation::Append {
+                path,
+                records: vec![AppendRecord::from("original payload")],
+            }],
+        )],
+        idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"original-key"))?,
+    })
 }
 
 fn json(value: &impl serde::Serialize) -> serde_json::Value {
@@ -498,21 +525,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
         seeds.push(("assembled-cancel".into(), input));
     }
     let root = PreparedCommand::new(&AgentCommand::Root {})?;
-    let path = StreamPath::new("agent/inbox")?;
-    let original = CommitRequest {
-        deadline_unix_millis: None,
-        effects: vec![acyclic_stream::CommitEffect::hard(
-            vec![CommitCondition::Tail {
-                path: path.clone(),
-                expected: 7,
-            }],
-            vec![CommitMutation::Append {
-                path,
-                records: vec![AppendRecord::from("original payload")],
-            }],
-        )],
-        idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"original-key"))?,
-    };
+    let original = recovery_request()?;
     for (name, error) in [
         ("unknown", AgentError::Unknown(Box::new(original))),
         ("refused", AgentError::Conflict("original refusal")),
