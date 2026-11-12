@@ -25,7 +25,7 @@ proptest! {
         let wire = serde_json::to_value(&event).unwrap();
         let encoded = wire["block"]["continuity"].as_str().unwrap();
         prop_assert_eq!(encoded.len(), (bytes.len() * 4).div_ceil(3));
-        prop_assert_eq!(serde_json::from_value::<ModelEvent>(wire.clone()).unwrap(), event);
+        prop_assert_eq!(&serde_json::from_value::<ModelEvent>(wire.clone()).unwrap(), &event);
         let ModelEvent::ReasoningBlock { block } = event else { unreachable!() };
         let native = crate::model::NativePart { origin: block.origin, continuity: bytes.clone() };
         let native_wire = serde_json::to_value(&native).unwrap();
