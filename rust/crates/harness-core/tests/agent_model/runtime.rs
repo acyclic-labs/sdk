@@ -899,6 +899,7 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
         .ok_or("missing state publication")?
         .commit_id;
     let delivery = Delivery {
+        request: acyclic_actors::guest::RequestId::new(1),
         actor,
         epoch: state.epoch(),
         trigger: Trigger::Record {

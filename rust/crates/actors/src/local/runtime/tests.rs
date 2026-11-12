@@ -800,6 +800,71 @@ impl Handler for CapturesCuts {
     }
 }
 
+struct BindsRequests {
+    package: Package,
+    requests: OnceLock<crate::guest::Requests>,
+    admitted: std::sync::Mutex<Vec<(crate::guest::RequestId, Option<(ActorReference, u64)>, u64)>>,
+}
+
+impl Handler for BindsRequests {
+    fn manifest(&self) -> &Manifest {
+        self.package.manifest()
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        let bound = self
+            .requests
+            .get()
+            .and_then(|requests| requests.admit(delivery.request).ok());
+        self.admitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((delivery.request, bound, delivery.epoch));
+        self.package.on_record(delivery, checkpoint, cancellation)
+    }
+}
+
+/// A host capability call's only authority is its attempt's live binding,
+/// never an actor the caller names, and the binding ends with the attempt.
+#[tokio::test]
+async fn capability_requests_are_bound_for_exactly_their_attempt() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "bound-requests", &[b"emit", b"emit"]).await?;
+    let handler = Arc::new(BindsRequests {
+        package: Package::new()?,
+        requests: OnceLock::new(),
+        admitted: std::sync::Mutex::new(Vec::new()),
+    });
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        handler.clone(),
+        Arc::new(Manual(AtomicU64::new(1))),
+    );
+    handler
+        .requests
+        .set(runtime.requests().clone())
+        .map_err(|_| "requests were already bound")?;
+    runtime.host(address.clone())?;
+    assert!(runtime.drain().await.is_empty());
+    let admitted = handler
+        .admitted
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(admitted.len(), 2);
+    assert_ne!(admitted[0].0, admitted[1].0);
+    for (request, bound, epoch) in admitted.iter() {
+        assert_eq!(bound.as_ref(), Some(&(address.clone(), *epoch)));
+        assert!(runtime.requests().admit(*request).is_err());
+    }
+    Ok(())
+}
+
 /// Alarm resume must carry Actors' saved input cut even without a record.
 /// Resetting to zero would replay the two consumed commands after reopen.
 #[tokio::test]

@@ -166,6 +166,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     limits: RuntimeLimits,
     admission: Option<tokio::sync::Semaphore>,
     completions: OnceLock<tokio::sync::mpsc::Sender<Completion>>,
+    requests: crate::guest::Requests,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
@@ -185,7 +186,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             limits: RuntimeLimits::default(),
             admission: None,
             completions: OnceLock::new(),
+            requests: crate::guest::Requests::default(),
         }
+    }
+
+    /// The live `request -> (actor, epoch)` bindings of this runtime's handler
+    /// attempts: the sole authority of a host capability call.
+    pub const fn requests(&self) -> &crate::guest::Requests {
+        &self.requests
     }
 
     /// Configure admission before sharing or running this host. Event-owned
@@ -1002,11 +1010,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     return Ok(true);
                 }
             }
+            // The capability binding lives exactly as long as this attempt.
+            let request = self.requests.open(actor, epoch);
             // A handler past its manifest timeout (wall time, not the actor
             // clock) is abandoned with its input unconsumed; the actor lock is
             // released for the next attempt.
             let handled = self.handler.on_record(
                 Delivery {
+                    request: request.id(),
                     actor: actor.clone(),
                     epoch,
                     trigger: trigger.clone(),
@@ -1089,6 +1100,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             if let Err(error) = &result {
                 if inner.pending.is_none() && terminal(error) && !cancellation.is_cancelled() {
                     let delivery = Delivery {
+                        request: request.id(),
                         actor: actor.clone(),
                         epoch,
                         trigger: trigger.clone(),

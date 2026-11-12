@@ -99,6 +99,7 @@ fn strict(manifest: &Manifest) -> Result {
         return Err("manifest codec accepted an unknown field".into());
     }
     let delivery = Delivery {
+        request: acyclic_actors::guest::RequestId::new(1),
         actor: acyclic_actors::addressing::ActorReference::new(b"conformance", b"agents", b"host")?,
         epoch: 1,
         now_unix_ms: 9,

@@ -615,6 +615,7 @@ pub fn actor_seeds()
     assert_eq!(state.encode(), bytes);
     seeds.push(("state-v2", bytes, "local::Store::create state encoder"));
     let delivery = guest::Delivery {
+        request: guest::RequestId::new(1),
         actor,
         epoch: 1,
         trigger: guest::Trigger::Alarm {
