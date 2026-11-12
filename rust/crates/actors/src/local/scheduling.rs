@@ -51,6 +51,31 @@ pub(super) fn learn(
     }
 }
 
+/// The root child holding every shard's activation log and deadline windows.
+const SCHEDULE: &str = "_schedule";
+
+/// Whether `name`, relative to a state root, is a shard's activation log.
+pub(super) fn wake_log(name: &str) -> bool {
+    name.strip_prefix(SCHEDULE)
+        .and_then(|name| name.strip_prefix('/'))
+        .is_some_and(|shard| shard.len() == 4 && shard.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+/// The scheduling partition of `actor` among `count`.
+pub(super) fn shard(count: std::num::NonZeroU16, actor: &ActorReference) -> u16 {
+    let mut hash = Sha256::new();
+    hash.update(b"acyclic.actors.scheduling.v1\0");
+    hash.update(actor.encode());
+    let hash = hash.finalize();
+    u16::from_be_bytes([hash[0], hash[1]]) % count.get()
+}
+
+/// A malformed runtime record is a typed refusal of that record alone,
+/// observed by its error kind; the dispatcher continues past it.
+fn refused<T>(decoded: Result<T, Error>) -> Option<T> {
+    acyclic_observability::operation!("acyclic.actors.runtime_record", Error::kind, || decoded).ok()
+}
+
 impl<P: StreamProvider + ?Sized> Store<P> {
     /// Use `count` scheduling partitions. The count is a deployment chunking
     /// parameter: every producer and host sharing this state root must use
@@ -70,18 +95,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// this store's partitions. Moving a partition between nodes never moves
     /// or renames its durable streams.
     pub fn scheduling_shard(&self, actor: &ActorReference) -> u16 {
-        let mut hash = Sha256::new();
-        hash.update(b"acyclic.actors.scheduling.v1\0");
-        hash.update(actor.encode());
-        let hash = hash.finalize();
-        u16::from_be_bytes([hash[0], hash[1]]) % self.scheduling_shards.get()
+        shard(self.scheduling_shards, actor)
     }
 
     /// The wake log of one stable scheduling partition. Producers append here
     /// in the same publication as input; only its assigned host follows it.
     pub fn scheduling_path(&self, shard: u16) -> Result<StreamPath, Error> {
         Ok(StreamPath::new(format!(
-            "{}/_schedule/{shard:04x}",
+            "{}/{SCHEDULE}/{shard:04x}",
             self.root()
         ))?)
     }
@@ -110,26 +131,30 @@ impl<P: StreamProvider + ?Sized> Store<P> {
 
     /// The earliest deadline window of `shard` at or after `from`: one
     /// children page of limit one, independent of how many actors exist.
+    /// A child that is not a window is refused and paged past, never fatal.
     pub(super) async fn next_window(&self, shard: u16, from: u64) -> Result<Option<u64>, Error> {
         let parent = self.scheduling_path(shard)?;
-        let request = ChildrenPageRequest {
-            tail_stream: None,
-            parent: Some(parent.clone()),
-            after: match from.checked_sub(1) {
-                Some(before) => Some(self.window_path(shard, before)?),
-                None => None,
-            },
-            hierarchy_version: None,
-            limit: 1,
+        let mut after = match from.checked_sub(1) {
+            Some(before) => Some(self.window_path(shard, before)?),
+            None => None,
         };
-        let page = match self.provider().children_page(request).await {
-            Ok(page) => page,
-            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        page.children
-            .first()
-            .map(|child| {
+        loop {
+            let request = ChildrenPageRequest {
+                tail_stream: None,
+                parent: Some(parent.clone()),
+                after,
+                hierarchy_version: None,
+                limit: 1,
+            };
+            let page = match self.provider().children_page(request).await {
+                Ok(page) => page,
+                Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
+            let Some(child) = page.children.into_iter().next() else {
+                return Ok(None);
+            };
+            let window = refused(
                 child
                     .path
                     .as_str()
@@ -137,9 +162,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     .and_then(|name| name.strip_prefix('/'))
                     .filter(|name| name.len() == 20)
                     .and_then(|name| name.parse::<u64>().ok())
-                    .ok_or(Error::Invalid("invalid deadline window"))
-            })
-            .transpose()
+                    .ok_or(Error::Invalid("invalid deadline window")),
+            );
+            if window.is_some() {
+                return Ok(window);
+            }
+            after = Some(child.path);
+        }
     }
 
     /// One bounded page of the actors armed in a deadline window, from entry
@@ -164,13 +193,16 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             .await?;
         let next = (page.len() == WINDOW_PAGE as usize)
             .then(|| from.saturating_add(u64::from(WINDOW_PAGE)));
+        // A malformed record refuses only itself; the window's actors wake.
         let actors = page
             .into_iter()
-            .map(|record| {
-                ActorReference::decode(record.value.as_ref())
-                    .map_err(|_| Error::Invalid("invalid deadline window record"))
+            .filter_map(|record| {
+                refused(
+                    ActorReference::decode(record.value.as_ref())
+                        .map_err(|_| Error::Invalid("invalid deadline window record")),
+                )
             })
-            .collect::<Result<_, _>>()?;
+            .collect();
         Ok((actors, next))
     }
 }
