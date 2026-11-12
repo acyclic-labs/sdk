@@ -75,7 +75,7 @@ impl StockExecution<'_> {
         if let (Some(file), _) = context.observe_staged_file_once(operation, self.io).await? {
             let bytes = context.task().read_file(&file, self.io).await?;
             let selection: Selection = match self.io {
-                Some(io) => retain_preparation(io.decode(
+                Some(io) => crate::filesystem::retain_decoded(io.decode(
                     std::marker::PhantomData,
                     &bytes,
                     crate::wire::ErrorCode::Invalid,
