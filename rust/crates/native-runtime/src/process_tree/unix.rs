@@ -14,6 +14,8 @@ pub(super) struct Child {
     pub(super) stderr: Option<OwnedSource<ChildStderr>>,
     pid: libc::pid_t,
     status: Option<ExitStatus>,
+    #[cfg(target_os = "linux")]
+    pub(super) syscall_report: Option<std::fs::File>,
 }
 
 impl Child {
@@ -29,6 +31,8 @@ impl Child {
             stderr: stderr.map(OwnedSource::new),
             pid,
             status: None,
+            #[cfg(target_os = "linux")]
+            syscall_report: None,
         }
     }
 

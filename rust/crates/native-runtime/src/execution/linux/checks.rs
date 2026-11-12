@@ -59,7 +59,7 @@ fn computation_devices_bind_objects_and_refuse_name_substitution() {
     let ordinary = root.path().join("ordinary");
     std::fs::write(&ordinary, "outside authority").unwrap();
     for (path, expected, wrong_device) in [
-        ("/dev/null", entry::NULL_DEVICE, "/dev/urandom"),
+        ("/dev/null", device::NULL_DEVICE, "/dev/urandom"),
         ("/dev/urandom", URANDOM_DEVICE, "/dev/null"),
     ] {
         std::os::unix::fs::symlink(path, &alias).unwrap();
@@ -71,7 +71,7 @@ fn computation_devices_bind_objects_and_refuse_name_substitution() {
             // including a directory that would grant a whole hierarchy.
             let unvalidated = BoundPath::open_path(&alias).unwrap();
             let metadata = unvalidated.metadata().unwrap();
-            assert!(!entry::character_device(
+            assert!(!device::character_device(
                 metadata.mode(),
                 metadata.rdev(),
                 expected
@@ -85,7 +85,7 @@ fn computation_devices_bind_objects_and_refuse_name_substitution() {
             );
             // Replacing the name after admission cannot replace its object.
             let metadata = held.metadata().unwrap();
-            assert!(entry::character_device(
+            assert!(device::character_device(
                 metadata.mode(),
                 metadata.rdev(),
                 expected
@@ -279,17 +279,17 @@ proptest! {
         // Inherited pipes need the same descriptor-local nonblocking control
         // as ordinary fcntl. Requests with device, terminal or signal effects,
         // and arbitrary future requests, must still fail in the actual filter.
-        let requests = [libc::FIONBIO, libc::FIONREAD, libc::TIOCSTI, libc::FIOASYNC]
+        let requests = [libc::FIONBIO, libc::FIONREAD, libc::TCGETS, libc::TIOCGWINSZ, libc::TIOCGPGRP, libc::TIOCSTI, libc::FIOASYNC]
             .map(|request| {
                 let [a, b, c, d, ..] = request.to_le_bytes();
                 u64::from(u32::from_le_bytes([a, b, c, d]))
             });
-        let [nonblocking, _, _, asynchronous] = requests;
+        let [nonblocking, available, terminal, window, foreground_group, _, asynchronous] = requests;
         for request in std::iter::once(arguments[1]).chain(requests) {
             let mut control = arguments;
             control[1] = request;
             prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_ioctl).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, control)?,
-                if request & u64::from(u32::MAX) == nonblocking { ALLOW } else { DENY });
+                if [nonblocking, available, terminal, window, foreground_group].contains(&(request & u64::from(u32::MAX))) { ALLOW } else { DENY });
         }
         // Restore a permissive default in the actual generated program.
         // The same host IPC operation is then admitted without any path or FD.
@@ -356,7 +356,7 @@ proptest! {
         };
         let code = filter(&network).unwrap();
         if architecture != ARCH {
-            prop_assert_eq!(evaluate(code, architecture, syscall, arguments)?, 0x8000_0000);
+            prop_assert_eq!(evaluate(code, architecture, syscall, arguments)?, DENY);
         }
         prop_assert_eq!(evaluate(code, ARCH, syscall | 0x4000_0000, arguments)?, DENY);
         for syscall in [libc::SYS_ptrace, libc::SYS_setns, libc::SYS_mount, libc::SYS_socketpair] {

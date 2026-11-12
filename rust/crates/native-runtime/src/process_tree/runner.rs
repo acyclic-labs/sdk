@@ -53,6 +53,7 @@ const HAS_CWD: u8 = 1;
 const HAS_UID: u8 = 2;
 const HAS_GID: u8 = 4;
 const HAS_BOUNDARY: u8 = 8;
+const UNRECORDED: u8 = 32;
 const ON_RELEASE: u8 = 16;
 
 /// Resource limits a request carries: every Linux limit, 0..`RLIM_NLIMITS`.
@@ -171,6 +172,7 @@ fn encode(
     command: &ProcessCommand,
     environment: &BTreeMap<&OsStr, &OsStr>,
     on_release: bool,
+    unrecorded: bool,
 ) -> io::Result<Option<RawFd>> {
     let identity = &command.unix;
     let flags = [
@@ -179,6 +181,7 @@ fn encode(
         (identity.gid.is_some(), HAS_GID),
         (command.boundary.is_some(), HAS_BOUNDARY),
         (on_release, ON_RELEASE),
+        (unrecorded, UNRECORDED),
     ]
     .iter()
     .filter(|(set, _)| *set)
@@ -224,12 +227,25 @@ pub(super) fn start(
     command: &ProcessCommand,
     directory: &File,
 ) -> io::Result<(Child, io::Result<()>)> {
-    start_with_release(command, directory, None)
+    start_inner(command, Some(directory), None)
 }
 
 pub(super) fn start_with_release(
     command: &ProcessCommand,
     directory: &File,
+    activity: Option<&File>,
+) -> io::Result<(Child, io::Result<()>)> {
+    start_inner(command, Some(directory), activity)
+}
+
+/// Uses the same supervised launch without a persistent custody record.
+pub(super) fn start_unrecorded(command: &ProcessCommand) -> io::Result<(Child, io::Result<()>)> {
+    start_inner(command, None, None)
+}
+
+fn start_inner(
+    command: &ProcessCommand,
+    directory: Option<&File>,
     activity: Option<&File>,
 ) -> io::Result<(Child, io::Result<()>)> {
     let identity = &command.unix;
@@ -252,9 +268,11 @@ pub(super) fn start_with_release(
     // excluded too.
     let open_streams = [0, 1, 2].map(|fd: RawFd| {
         // SAFETY: F_GETFD only reads this process's descriptor flags.
-        fd != directory.as_raw_fd() && unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0
+        Some(fd) != directory.map(|file| file.as_raw_fd())
+            && unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0
     });
     let (reply, reply_end) = pipe()?;
+    let report = command.boundary.as_ref().map(|_| pipe()).transpose()?;
     // Granted launches reuse this original descriptor role for the held cwd.
     // Trusted launches retain the owner's cwd, followed by their path change.
     // A path descriptor is enough for fchdir and needs no read access.
@@ -266,9 +284,10 @@ pub(super) fn start_with_release(
         .or(here.as_ref())
         .ok_or(io::ErrorKind::InvalidInput)?;
     let mut descriptors = [
-        directory.as_raw_fd(),
+        directory.unwrap_or(directory_handle).as_raw_fd(),
         reply_end.as_raw_fd(),
         directory_handle.as_raw_fd(),
+        -1,
         -1,
         -1,
         -1,
@@ -290,10 +309,21 @@ pub(super) fn start_with_release(
         &mut message,
     )?;
     let mut count = 3 + streams;
-    if let Some(boundary) = encode(&mut message, command, &environment, activity.is_some())? {
+    if let Some(boundary) = encode(
+        &mut message,
+        command,
+        &environment,
+        activity.is_some(),
+        directory.is_none(),
+    )? {
         *descriptors
             .get_mut(count)
             .ok_or(io::ErrorKind::InvalidInput)? = boundary;
+        count += 1;
+        let (_, report_end) = report.as_ref().ok_or(io::ErrorKind::InvalidInput)?;
+        *descriptors
+            .get_mut(count)
+            .ok_or(io::ErrorKind::InvalidInput)? = report_end.as_raw_fd();
         count += 1;
     }
     if let Some(activity) = activity {
@@ -324,7 +354,7 @@ pub(super) fn start_with_release(
         super::fuzz_runner_request(&capture);
         // Mutate descriptor custody on the actual captured request, without
         // launching malformed input or creating a parallel request encoder.
-        for count in 0..=8 {
+        for count in 0..=9 {
             capture[0] = count;
             super::fuzz_runner_request(&capture);
         }
@@ -346,6 +376,10 @@ pub(super) fn start_with_release(
     // Only the runner and its clone hold the child's ends now.
     drop(theirs);
     drop(reply_end);
+    let report = report.map(|(read, write)| {
+        drop(write);
+        File::from(read)
+    });
     drop(here);
     let mut replied = Vec::new();
     if activity.is_some() {
@@ -376,12 +410,13 @@ pub(super) fn start_with_release(
         }));
     };
     let [stdin, stdout, stderr] = ours;
-    let child = Child::new(
+    let mut child = Child::new(
         pid,
         stdin.map(Into::into),
         stdout.map(Into::into),
         stderr.map(Into::into),
     );
+    child.syscall_report = report;
     Ok((child, failure.map_or(Ok(()), Err)))
 }
 

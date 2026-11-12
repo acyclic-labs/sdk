@@ -184,6 +184,17 @@ pub fn workspace_grant<T>(
         if let Some(scratch) = &mounts.scratch_root {
             write.push(scratch.clone());
         }
+        // A closed environment must not rediscover the owner's home through
+        // host NSS IPC. Ordinary tools use the same workspace as their home.
+        #[cfg(unix)]
+        if let std::collections::btree_map::Entry::Vacant(home) = environment.entry("HOME".into()) {
+            home.insert(
+                primary
+                    .to_str()
+                    .ok_or_else(|| Error::Invalid("sandbox home directory is not UTF-8".into()))?
+                    .into(),
+            );
+        }
         // Harness-bound processes put temporary files in host scratch.
         let temporary = if let Some(scratch) = &mounts.scratch_root {
             scratch

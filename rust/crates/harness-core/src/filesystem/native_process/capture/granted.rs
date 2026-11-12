@@ -107,3 +107,123 @@ fn capture_keeps_the_host_grant_and_returns_its_original_custody()
     }
     Ok(())
 }
+
+#[test]
+fn syscall_denials_are_typed_even_when_shell_masks_exit()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("ACYCLIC_GC95_PROBE").is_some() {
+        // This is a real denied syscall in a shell descendant, not an injected
+        // status or mock. A shell can otherwise mask this child with exit 0.
+        let _ = std::os::unix::net::UnixStream::connect("gc95-no-host-service");
+        panic!("denied Unix socket creation returned to guest code");
+    }
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let root = tempfile::tempdir()?;
+    let executable = std::env::current_exe()?;
+    let shell = acyclic_native_runtime::platform_shell()?;
+    let mut environment =
+        crate::native_environment::tool_environment(acyclic_native_runtime::platform_shell)?;
+    environment.insert("ACYCLIC_GC95_PROBE".into(), "1".into());
+    let grant = ExecutionGrant::workspace_default(
+        root.path(),
+        ExecutionAccess::ReadOnly,
+        [],
+        [executable.clone()],
+    )?;
+    let custody = Arc::new(acyclic_native_runtime::ProcessCustody::open(
+        &root.path().join("custody"),
+    )?);
+    for process_custody in [None, Some(custody)] {
+        for retention in [OutputRetention::Collect, OutputRetention::Observe] {
+            for (source, granted) in [
+                ("kill -31 $$", false),
+                ("kill -31 $$", true),
+                (
+                    "\"$1\" syscall_denials_are_typed_even_when_shell_masks_exit --nocapture & exit 0",
+                    true,
+                ),
+                (
+                    "\"$1\" syscall_denials_are_typed_even_when_shell_masks_exit --nocapture; exit 0",
+                    true,
+                ),
+                (
+                    "\"$1\" syscall_denials_are_typed_even_when_shell_masks_exit --nocapture | cat; exit 0",
+                    true,
+                ),
+                (
+                    "\"$1\" syscall_denials_are_typed_even_when_shell_masks_exit --nocapture & wait; exit 0",
+                    true,
+                ),
+            ] {
+                let invocation = Invocation {
+                    executable: shell.into(),
+                    argv: acyclic_host_platform::shell::PLATFORM
+                        .arguments
+                        .iter()
+                        .map(|arg| (*arg).to_owned())
+                        .chain([
+                            source.into(),
+                            "gc95".into(),
+                            executable.to_string_lossy().into_owned(),
+                        ])
+                        .collect(),
+                    cwd: root.path().into(),
+                    environment: environment.clone(),
+                    inherit_environment: false,
+                    execution_grant: granted.then(|| grant.clone()),
+                    schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
+                    maximum_output_bytes: Some(65536),
+                    standard_input: None,
+                    process_custody: process_custody.clone(),
+                };
+                let (result, ()) = runtime.block_on(capture_with_custody(
+                    invocation,
+                    |_: &mut (), _| Ok(()),
+                    || Ok(()),
+                    (),
+                    None,
+                    match retention {
+                        OutputRetention::Collect => OutputRetention::Collect,
+                        OutputRetention::Observe => OutputRetention::Observe,
+                    },
+                ))?;
+                if let Err(error) = &result {
+                    assert!(
+                        error.is_tool_failure(),
+                        "not a typed tool failure: {error:?}"
+                    );
+                    assert!(
+                        !error.leaves_outcome_uncertain(),
+                        "cleanup did not settle failure: {error:?}"
+                    );
+                }
+                if source == "kill -31 $$" {
+                    let output = result?.ok_or("capture interrupted")?;
+                    assert!(!output.success);
+                    assert!(
+                        output.stop.is_none(),
+                        "guest signal misclassified as syscall denial: {output:?}"
+                    );
+                } else if source.ends_with("& exit 0") {
+                    assert!(
+                        matches!(
+                            result,
+                            Err(Error::Unauthorized(_))
+                                | Err(Error::Process(crate::ProcessError::Io { .. }))
+                        ),
+                        "background root exit reported success: {result:?}"
+                    );
+                } else {
+                    assert!(
+                        matches!(result, Err(Error::Unauthorized(ref reason)) if reason.contains("host IPC")),
+                        "source={source}: {result:?}"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}

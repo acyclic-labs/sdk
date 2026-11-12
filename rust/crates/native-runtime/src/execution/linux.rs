@@ -7,9 +7,7 @@
     reason = "checked Landlock and seccomp FFI in the native execution adapter"
 )]
 
-use super::{
-    BoundPath, ExecutionAccess, ExecutionGrant, ExecutionNetwork, Grant, refused, unavailable,
-};
+use super::{BoundPath, ExecutionAccess, ExecutionNetwork, Grant, refused, unavailable};
 use crate::{
     NativeOperationKind::{Read, Write},
     NativeReadMeter,
@@ -20,16 +18,14 @@ use std::{
     io,
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::{ffi::OsStrExt, fs::MetadataExt, process::CommandExt},
+        unix::{ffi::OsStrExt, fs::MetadataExt},
     },
     path::Path,
-    process::Command,
     sync::Arc,
 };
 
-mod entry;
-mod sys;
-pub(super) use entry::Instruction;
+mod device;
+include!("instruction.rs");
 
 const READ: u64 = (1 << 0) | (1 << 2) | (1 << 3);
 const URANDOM_DEVICE: u64 = 0x109;
@@ -170,7 +166,7 @@ fn computation_device(
 ) -> io::Result<File> {
     let root = native_control_attempt(meter, Read, || BoundPath::open_path(path))?;
     let metadata = native_control_attempt(meter, Read, || root.metadata())?;
-    if !entry::character_device(metadata.mode(), metadata.rdev(), device) {
+    if !device::character_device(metadata.mode(), metadata.rdev(), device) {
         return Err(refused("execution computation device was replaced"));
     }
     Ok(root)
@@ -271,7 +267,7 @@ impl Policy {
             (
                 Path::new("/dev/null"),
                 (1 << 1) | (1 << 2),
-                entry::NULL_DEVICE,
+                device::NULL_DEVICE,
             ),
             (Path::new("/dev/urandom"), 1 << 2, URANDOM_DEVICE),
         ] {
@@ -429,20 +425,6 @@ impl Prepared {
         body.extend_from_slice(bytes);
         Ok(self.policy.ruleset.as_raw_fd())
     }
-
-    pub(super) fn install(self, command: &mut Command, grant: ExecutionGrant) {
-        // SAFETY: only syscalls and owned preallocated storage in the child.
-        // This hook is appended after the original custody/warden hook.
-        unsafe {
-            command.pre_exec(move || self.enter(&grant));
-        }
-    }
-
-    fn enter(&self, grant: &ExecutionGrant) -> io::Result<()> {
-        sys::working_directory(self.cwd.as_raw_fd()).map_err(io::Error::from_raw_os_error)?;
-        entry::enter(self.policy.ruleset.as_raw_fd(), grant.policy.filter)
-            .map_err(io::Error::from_raw_os_error)
-    }
 }
 
 // Preparation failures may allocate a descriptive refusal. Post-fork failures
@@ -463,7 +445,7 @@ const GREATER_EQUAL: u16 = 0x35;
 const JUMP: u16 = 0x05;
 const AND: u16 = 0x54;
 const RETURN: u16 = 0x06;
-const DENY: u32 = 0x0005_0000 | libc::EPERM as u32;
+const DENY: u32 = 0x7fc0_0000; // SECCOMP_RET_USER_NOTIF: observed by the warden.
 const ALLOW: u32 = 0x7fff_0000;
 
 const fn instruction(code: u16, jt: u8, jf: u8, k: u32) -> Instruction {
@@ -562,7 +544,7 @@ const fn compile_filter<const N: usize>(network: FilterNetwork) -> Filter<N> {
     code.extend(&[
         instruction(LOAD, 0, 0, 4),
         instruction(EQUAL, 1, 0, arch),
-        instruction(RETURN, 0, 0, 0x8000_0000), // kill on another syscall ABI
+        instruction(RETURN, 0, 0, DENY), // another syscall ABI is a reported violation
         instruction(LOAD, 0, 0, 0),
     ]);
     // Reject the x32 ABI before comparing native syscall numbers.
@@ -642,20 +624,33 @@ const fn control_filter<const N: usize>(code: &mut Filter<N>) {
         remaining = rest;
     }
     code.push(instruction(RETURN, 0, 0, DENY));
-    // Like F_SETFL, FIONBIO changes only an already held descriptor's blocking
-    // mode. Async runtimes use it to open inherited capture pipes. Other ioctl
-    // requests can control devices, terminals or signal owners and stay closed.
-    const NONBLOCK_REQUEST: u32 = {
-        let [a, b, c, d, ..] = libc::FIONBIO.to_le_bytes();
-        u32::from_le_bytes([a, b, c, d])
-    };
-    code.extend(&[
-        instruction(EQUAL, 0, 4, number(libc::SYS_ioctl)),
-        instruction(LOAD, 0, 0, 24),
-        instruction(EQUAL, 0, 1, NONBLOCK_REQUEST),
-        instruction(RETURN, 0, 0, ALLOW),
-        instruction(RETURN, 0, 0, DENY),
-    ]);
+    // Descriptor-local blocking control and read-only queries acquire no new
+    // authority. Terminal probes on capture pipes return the kernel's ENOTTY;
+    // terminal mutation and signal-owner controls remain closed.
+    let requests = [
+        libc::FIONBIO,
+        libc::FIONREAD,
+        libc::TCGETS,
+        libc::TIOCGWINSZ,
+        libc::TIOCGPGRP,
+    ];
+    code.push(instruction(
+        EQUAL,
+        0,
+        jump(2 * requests.len() + 2),
+        number(libc::SYS_ioctl),
+    ));
+    code.push(instruction(LOAD, 0, 0, 24));
+    let mut remaining = requests.as_slice();
+    while let Some((request, rest)) = remaining.split_first() {
+        let [a, b, c, d, ..] = request.to_le_bytes();
+        code.extend(&[
+            instruction(EQUAL, 0, 1, u32::from_le_bytes([a, b, c, d])),
+            instruction(RETURN, 0, 0, ALLOW),
+        ]);
+        remaining = rest;
+    }
+    code.push(instruction(RETURN, 0, 0, DENY));
     // Process-selected operations stay local to the caller. Group/session
     // identity reads are needed by ordinary shells; neither those queries
     // nor resource limits acquire authority over another named process.

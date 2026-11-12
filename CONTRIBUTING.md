@@ -53,6 +53,22 @@ Linux native-runtime policy tests execute `ls -la` and `rg --files` in the
 confined shell. Install ripgrep even when using a different linker; the shared
 Linux CI toolchain action provisions it too.
 
+On Linux, a sandbox syscall denial terminates the command tree and becomes a
+typed tool failure after cleanup. Descriptor-local FIONREAD and FIONBIO are
+allowed, as are read-only terminal attribute/window queries. A shell cannot hide a denied child behind a successful pipeline.
+If the root exits while descendants remain unfinished, cleanup terminates them
+and reports a failed command tree rather than successful partial output. Join
+background work before exiting the shell. Guest-generated SIGSYS remains an
+ordinary failed process status, including without an execution grant.
+The closed Unix tool environment supplies the already-selected `SHELL` path.
+This avoids Bash looking up a login shell through host name-service IPC during
+startup. The default workspace policy sets `HOME` to the workspace, so tools
+such as ripgrep do not rediscover a host home through NSS. Unix sockets remain
+denied and are covered by the typed-failure test.
+Commands such as `ls -la` may still request host IPC to resolve ownership names;
+that is a typed IPC denial. `ls -lan` and `rg --files` exercise directory metadata
+without that external lookup. The policy tests retain both command forms.
+
 To use the system C linker instead, override the workspace linker for the command:
 
 ```sh

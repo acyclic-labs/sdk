@@ -394,6 +394,10 @@ impl ProcessTree {
         custody: &mut Option<Self>,
     ) -> io::Result<()> {
         Self::spawn_metered(command, meter, custody, |command, slot| {
+            #[cfg(target_os = "linux")]
+            if command.boundary.is_some() {
+                return platform::adopt(meter, slot, || runner::start_unrecorded(command));
+            }
             #[cfg(unix)]
             {
                 let boundary = command.boundary.take();

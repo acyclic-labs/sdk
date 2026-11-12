@@ -71,7 +71,7 @@ pub fn fuzz_runner_request(input: &[u8]) {
     let decoded = request::spec(&received, &mut body);
     if let Ok(spec) = decoded {
         let flags = bytes[3];
-        assert_eq!(flags & !31, 0);
+        assert_eq!(flags & !63, 0);
         assert_ne!(flags & 9, 9, "a boundary cannot select a second cwd");
         assert_ne!(
             flags & 24,
@@ -81,11 +81,14 @@ pub fn fuzz_runner_request(input: &[u8]) {
         let sent = bytes[..3].iter().filter(|&&slot| slot == 1).count();
         assert_eq!(
             received.count,
-            3 + sent + usize::from(flags & 8 != 0) + usize::from(flags & 16 != 0),
+            3 + sent + 2 * usize::from(flags & 8 != 0) + usize::from(flags & 16 != 0),
             "descriptor roles consumed every original descriptor"
         );
         assert!(received.count <= request::DESCRIPTORS);
-        assert_eq!((spec.directory, spec.reply, spec.here), (10, 11, 12));
+        assert_eq!(
+            (spec.directory, spec.reply, spec.here),
+            (if flags & 32 != 0 { -1 } else { 10 }, 11, 12)
+        );
         let u32_at = |offset| u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap());
         let u64_at = |offset| u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap());
         assert_eq!(spec.uid, (flags & 2 != 0).then(|| u32_at(4)));
@@ -110,7 +113,8 @@ pub fn fuzz_runner_request(input: &[u8]) {
         }
         if let Some(policy) = spec.boundary.as_ref() {
             assert_eq!(policy.ruleset, descriptor);
-            descriptor += 1;
+            assert_eq!(spec.syscall_report, descriptor + 1);
+            descriptor += 2;
         }
         assert_eq!(spec.activity, (flags & 16 != 0).then_some(descriptor));
         let start = body.base.addr();

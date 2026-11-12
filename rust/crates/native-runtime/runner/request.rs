@@ -6,7 +6,7 @@ use sys::{Errno, Fd, Pid};
 
 /// Descriptors one request carries: custody directory, reply, the owner's
 /// working directory, up to three streams and one boundary or activity handle.
-pub(super) const DESCRIPTORS: usize = 7;
+pub(super) const DESCRIPTORS: usize = 8;
 /// Stream slots in a request.
 const NULL: u8 = 0;
 const SENT: u8 = 1;
@@ -16,6 +16,7 @@ const HAS_CWD: u8 = 1;
 const HAS_UID: u8 = 2;
 const HAS_GID: u8 = 4;
 const HAS_BOUNDARY: u8 = 8;
+const UNRECORDED: u8 = 32;
 const ON_RELEASE: u8 = 16;
 /// Resource limits a request carries, as soft and hard pairs.
 const LIMITS: usize = 16;
@@ -119,6 +120,7 @@ pub(super) struct Spec {
     pub(super) argv: *const *const c_char,
     pub(super) envp: *const *const c_char,
     pub(super) boundary: Option<Boundary>,
+    pub(super) syscall_report: Fd,
     pub(super) activity: Option<Fd>,
 }
 
@@ -167,9 +169,10 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     };
     // A confined request's original `here` descriptor is its bound cwd.
     // Reject a second path-based selection before any warden is created.
-    if flags & !(HAS_CWD | HAS_UID | HAS_GID | HAS_BOUNDARY | ON_RELEASE) != 0
+    if flags & !(HAS_CWD | HAS_UID | HAS_GID | HAS_BOUNDARY | ON_RELEASE | UNRECORDED) != 0
         || flags & (HAS_BOUNDARY | HAS_CWD) == (HAS_BOUNDARY | HAS_CWD)
         || flags & (HAS_BOUNDARY | ON_RELEASE) == (HAS_BOUNDARY | ON_RELEASE)
+        || (flags & UNRECORDED != 0 && flags & HAS_BOUNDARY == 0)
     {
         return Err(invalid);
     }
@@ -208,11 +211,12 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
         (None, FIXED)
     };
     let activity = if flags & ON_RELEASE != 0 {
-        Some(descriptor(next + usize::from(policy.is_some()))?)
+        Some(descriptor(next + 2 * usize::from(policy.is_some()))?)
     } else {
         None
     };
-    if received.count != next + usize::from(policy.is_some()) + usize::from(activity.is_some()) {
+    if received.count != next + 2 * usize::from(policy.is_some()) + usize::from(activity.is_some())
+    {
         return Err(invalid);
     }
     // Every argument and environment entry needs at least its NUL byte.
@@ -285,7 +289,16 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     }
     Ok(Spec {
         reply: descriptor(1)?,
-        directory: descriptor(0)?,
+        syscall_report: if policy.is_some() {
+            descriptor(next + 1)?
+        } else {
+            -1
+        },
+        directory: if flags & UNRECORDED != 0 {
+            -1
+        } else {
+            descriptor(0)?
+        },
         here: descriptor(2)?,
         owner,
         slots: streams,

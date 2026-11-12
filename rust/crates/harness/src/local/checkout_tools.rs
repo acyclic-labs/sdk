@@ -96,7 +96,8 @@ impl CheckoutTools {
         Box::pin(async move {
             let expiry_unix_ms = verifier.expiry(signed)?.saturating_mul(1000);
             let environment =
-                crate::native_environment::tool_environment().map_err(Error::process_io)?;
+                crate::native_environment::tool_environment(acyclic_native_runtime::platform_shell)
+                    .map_err(Error::process_io)?;
             if workspace
                 .filesystem
                 .workspace_id(&project.storage_name(&mut None)?)

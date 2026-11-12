@@ -12,6 +12,11 @@ use super::record::{self, BOOT_BYTES, START_BYTES};
 use super::sys::{self, Errno, Fd, Pid};
 use core::ffi::CStr;
 
+#[cfg(target_os = "linux")]
+pub(super) type Admission = Option<Fd>;
+#[cfg(target_vendor = "apple")]
+pub(super) type Admission = ();
+
 /// Runs in the owner's direct child. On macOS it already leads its own
 /// process group; on Linux it creates that group here and later returns to
 /// `home`, the runner's group. Returns only in the program's process, which
@@ -20,7 +25,9 @@ pub(super) fn enter(
     directory: Fd,
     owner: Pid,
     #[cfg(target_os = "linux")] home: Pid,
-) -> Result<(), Errno> {
+    #[cfg(target_os = "linux")] filtered: bool,
+    #[cfg(target_os = "linux")] report: Fd,
+) -> Result<Admission, Errno> {
     // An inherited host handler must not run in the warden.
     sys::set_signal(sys::SIGCHLD, false);
     // The tree's group, which this warden's PID names.
@@ -30,14 +37,20 @@ pub(super) fn enter(
     let mut storage = [0; 24];
     let name = record::name(warden, &mut storage).ok_or(Errno(sys::EINVAL))?;
     // The record exists before any of the program's code runs.
-    let record = sys::openat(
-        directory,
-        name,
-        sys::O_CREAT | sys::O_EXCL | sys::O_RDWR | sys::O_CLOEXEC,
-        0o600,
-    )?;
+    let record = if directory < 0 {
+        -1
+    } else {
+        sys::openat(
+            directory,
+            name,
+            sys::O_CREAT | sys::O_EXCL | sys::O_RDWR | sys::O_CLOEXEC,
+            0o600,
+        )?
+    };
     let unlink = || {
-        let _ = sys::unlinkat(directory, name);
+        if directory >= 0 {
+            let _ = sys::unlinkat(directory, name);
+        }
     };
     let watch = match arm(record, owner, warden) {
         Ok(watch) => watch,
@@ -45,6 +58,18 @@ pub(super) fn enter(
             unlink();
             return Err(error);
         }
+    };
+    #[cfg(target_os = "linux")]
+    let notification = if filtered {
+        Some(match sys::notification_pair() {
+            Ok(pair) => pair,
+            Err(error) => {
+                unlink();
+                return Err(error);
+            }
+        })
+    } else {
+        None
     };
     // The program waits on this pipe until the warden has left the group.
     let [admission, admit] = match sys::pipe() {
@@ -60,7 +85,18 @@ pub(super) fn enter(
             sys::close(record);
             sys::close(watch);
             sys::close(admit);
-            return admitted_by_warden(admission);
+            #[cfg(target_os = "linux")]
+            sys::close(report);
+            admitted_by_warden(admission)?;
+            #[cfg(target_os = "linux")]
+            {
+                return Ok(notification.map(|[receive, send]| {
+                    sys::close(receive);
+                    send
+                }));
+            }
+            #[cfg(target_vendor = "apple")]
+            return Ok(());
         }
         Ok(program) => program,
         Err(error) => {
@@ -80,7 +116,36 @@ pub(super) fn enter(
         let _ = write_full(admit, &[1]);
     }
     sys::close(admit);
-    supervise(directory, record, watch, owner, warden, program, name)
+    #[cfg(target_os = "linux")]
+    let listener = notification.map_or(-1, |[receive, send]| {
+        sys::close(send);
+        let listener = match sys::notification_transfer(receive, None) {
+            Ok(listener) => listener,
+            Err(_) => {
+                // Losing the monitor must never admit unobserved guest code.
+                sys::set_signal(sys::SIGPIPE, true);
+                let _ = write_full(report, &[2]);
+                let status = drain(watch, warden, program, Some(31), report);
+                unlink();
+                exit_as(status)
+            }
+        };
+        sys::close(receive);
+        listener
+    });
+    supervise(
+        directory,
+        record,
+        watch,
+        owner,
+        warden,
+        program,
+        name,
+        #[cfg(target_os = "linux")]
+        listener,
+        #[cfg(target_os = "linux")]
+        report,
+    )
 }
 
 fn write_full(file: Fd, mut bytes: &[u8]) -> Result<(), Errno> {
@@ -163,14 +228,16 @@ fn anchor_until_warden_exits(warden: Pid) -> ! {
 /// exit watch.
 fn arm(record: Fd, owner: Pid, warden: Pid) -> Result<Fd, Errno> {
     // Held until the warden exits: the program closes its copy before exec.
-    sys::try_lock(record)?;
-    let mut boot = [0; BOOT_BYTES];
-    record::boot_identity(&mut boot)?;
-    let mut start = [0; START_BYTES];
-    let length = record::start_identity(warden, &mut start)?;
-    // The boot, zero-padded to its fixed width, then the warden's start.
-    write_full(record, &boot)?;
-    write_full(record, start.get(..length).unwrap_or_default())?;
+    if record >= 0 {
+        sys::try_lock(record)?;
+        let mut boot = [0; BOOT_BYTES];
+        record::boot_identity(&mut boot)?;
+        let mut start = [0; START_BYTES];
+        let length = record::start_identity(warden, &mut start)?;
+        // The boot, zero-padded to its fixed width, then the warden's start.
+        write_full(record, &boot)?;
+        write_full(record, start.get(..length).unwrap_or_default())?;
+    }
     #[cfg(target_os = "linux")]
     sys::subreaper()?;
     let watch = owner_watch(owner)?;
@@ -279,6 +346,8 @@ fn supervise(
     warden: Pid,
     program: Pid,
     name: &CStr,
+    #[cfg(target_os = "linux")] listener: Fd,
+    #[cfg(target_os = "linux")] report: Fd,
 ) -> ! {
     // Graceful requests to the group reach the program; the warden reports
     // the program's own outcome.
@@ -293,32 +362,66 @@ fn supervise(
     }
     // Inherited descriptors, including the reply pipe and the program's
     // standard streams, close here.
+    #[cfg(target_os = "linux")]
+    close_except([directory, record, watch, listener, report], warden);
+    #[cfg(target_vendor = "apple")]
     close_except([directory, record, watch], warden);
-    let status = await_exit(watch, owner, program);
-    let status = drain(watch, warden, program, status);
-    let _ = sys::unlinkat(directory, name);
+    let status = await_exit(
+        watch,
+        owner,
+        program,
+        #[cfg(target_os = "linux")]
+        listener,
+        #[cfg(target_os = "linux")]
+        report,
+    );
+    let status = drain(
+        watch,
+        warden,
+        program,
+        status,
+        #[cfg(target_os = "linux")]
+        report,
+    );
+    if directory >= 0 {
+        let _ = sys::unlinkat(directory, name);
+    }
     exit_as(status)
 }
 
 /// Waits for the program to exit, returning its status, or for the owner to
 /// exit, returning `None`.
 #[cfg(target_os = "linux")]
-fn await_exit(watch: Fd, _owner: Pid, program: Pid) -> Option<i32> {
+fn await_exit(watch: Fd, _owner: Pid, program: Pid, listener: Fd, report: Fd) -> Option<i32> {
     // An unreaped child's PID cannot be reused.
     let child = sys::pidfd(program).ok()?;
-    let mut ready = [sys::PollFd::readable(watch), sys::PollFd::readable(child)];
+    let mut ready = [
+        sys::PollFd::readable(watch),
+        sys::PollFd::readable(child),
+        sys::PollFd::readable(listener),
+    ];
     loop {
         match sys::poll(&mut ready) {
             Ok(_) => {}
             Err(Errno(sys::EINTR)) => continue,
             Err(_) => return None,
         }
-        let [owner, child] = &ready;
+        let [owner, child, denial] = &ready;
+        if denial.notified() {
+            // The filtered task is blocked in the kernel. Terminate the whole
+            // tree, preserving SIGSYS even if a shell would mask its child.
+            let kind = if sys::host_ipc_denial(listener) { 4 } else { 1 };
+            let _ = write_full(report, &[kind]);
+            return Some(31);
+        }
         if child.ready() {
             return reap(program);
         }
         if owner.ready() {
             return None;
+        }
+        if denial.ready() {
+            ready[2] = sys::PollFd::readable(-1);
         }
     }
 }
@@ -354,12 +457,44 @@ fn reap(program: Pid) -> Option<i32> {
 /// orphaned descendant becomes this warden's child, so an empty wait means
 /// the whole tree is gone.
 #[cfg(target_os = "linux")]
-fn drain(_watch: Fd, warden: Pid, program: Pid, mut status: Option<i32>) -> Option<i32> {
+fn drain(
+    _watch: Fd,
+    warden: Pid,
+    program: Pid,
+    mut status: Option<i32>,
+    report: Fd,
+) -> Option<i32> {
     let mut path = [0_u8; 64];
     let Some(children) = children_path(warden, &mut path) else {
         return status;
     };
+    let completed = status.is_some();
+    let mut reported = false;
     loop {
+        // Reap completed children before doing any termination work. An empty
+        // wait proves there is no tree left: no group kill or proc scan is needed.
+        match sys::wait(-1, 1) {
+            Ok((reaped, raw)) if reaped > 0 => {
+                if reaped == program {
+                    status = status.or(Some(raw));
+                } else if raw != 0 && completed && !reported && report >= 0 {
+                    let _ = write_full(report, &[3]);
+                    reported = true;
+                }
+                continue;
+            }
+            Ok(_) => {}
+            Err(Errno(sys::EINTR)) => continue,
+            Err(_) => return status,
+        }
+        // Killing a still-running descendant can withdraw an unreceived seccomp
+        // notification. Never report successful completion of that truncated
+        // tree, whether or not the monitor won that race. This is a lifecycle
+        // failure, not fabricated evidence of a policy denial.
+        if completed && !reported && report >= 0 {
+            let _ = write_full(report, &[3]);
+            reported = true;
+        }
         // The warden left this group, and its live PID keeps the group's ID
         // from naming any other group: this reaches only the tree.
         let _ = sys::kill(-warden, sys::SIGKILL);
@@ -481,7 +616,7 @@ fn reap_ready(program: Pid, status: &mut Option<i32>) {
 
 /// Closes every descriptor but `keep`.
 #[cfg(target_os = "linux")]
-pub(super) fn close_except(mut keep: [Fd; 3], _warden: Pid) {
+pub(super) fn close_except<const N: usize>(mut keep: [Fd; N], _warden: Pid) {
     keep.sort_unstable();
     let mut first: u32 = 0;
     for fd in keep {

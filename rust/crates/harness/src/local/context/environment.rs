@@ -16,7 +16,8 @@ pub(super) fn gather(
         crate::native_environment::checkout(cwd, now_unix_millis, model, platform).into();
     if let (Some(cwd), crate::native_environment::PlatformPolicy::Native) = (cwd, platform) {
         let environment =
-            crate::native_environment::tool_environment().map_err(crate::Error::process_io)?;
+            crate::native_environment::tool_environment(acyclic_native_runtime::platform_shell)
+                .map_err(crate::Error::process_io)?;
         let search = acyclic_native_runtime::ExecutableSearch::from_environment(cwd, |name| {
             environment.get(name).map(std::ffi::OsString::from)
         });

@@ -519,7 +519,9 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     let configured = |inherit_environment| {
         let mut invocation = invocation(&mounts.root);
         invocation.inherit_environment = inherit_environment;
-        invocation.environment = crate::native_environment::tool_environment().unwrap();
+        invocation.environment =
+            crate::native_environment::tool_environment(|| Ok(invocation.executable.as_path()))
+                .unwrap();
         invocation.environment.insert("HOME".into(), home.into());
         invocation
             .environment

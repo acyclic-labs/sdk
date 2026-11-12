@@ -612,12 +612,59 @@ impl<'a> Pump<'a> {
         // Both stopped capture and callback failure return outstanding pipe
         // custody to the original supervisor, never an unmetered drop.
         self.restore(tree);
+        #[cfg(target_os = "linux")]
+        let report = tree
+            .child
+            .as_mut()
+            .and_then(|child| child.syscall_report.take());
         // Cleanup errors take precedence: a capture timeout alone does not
         // describe an unresolved termination. Keep Child ownership on error.
         let result = tree
             .capture_terminate(meter, &mut self.status)
-            .and(result)
             .and_then(|()| {
+                #[cfg(target_os = "linux")]
+                {
+                    if let Some(mut report) = report {
+                        let mut byte = [0];
+                        let read = process_control_attempt(
+                            meter,
+                            crate::NativeOperationKind::Read,
+                            || loop {
+                                match report.read(&mut byte) {
+                                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                                        continue;
+                                    }
+                                    result => break result,
+                                }
+                            },
+                        )?;
+                        match read {
+                            0 => {}
+                            1 if byte == [1] || byte == [4] => {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::PermissionDenied,
+                                    if byte == [4] {
+                                        crate::execution::ExecutionViolation::HostIpc
+                                    } else {
+                                        crate::execution::ExecutionViolation::Syscall
+                                    },
+                                ));
+                            }
+                            1 if byte == [3] && result.is_ok() => {
+                                return Err(io::Error::other(
+                                    crate::execution::ExecutionIncomplete,
+                                ));
+                            }
+                            1 if byte == [3] => {}
+                            _ => {
+                                return Err(io::Error::other(
+                                    "sandbox syscall monitor failed; command tree terminated",
+                                ));
+                            }
+                        }
+                    }
+                }
+                result?;
                 self.status
                     .ok_or_else(|| io::Error::other("capture completed without an exit status"))
             });

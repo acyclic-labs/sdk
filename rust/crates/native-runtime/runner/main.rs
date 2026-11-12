@@ -18,6 +18,8 @@
 #![no_std]
 #![no_main]
 
+#[path = "../src/execution/linux/device.rs"]
+mod device;
 #[path = "../src/execution/linux/entry.rs"]
 mod entry;
 #[path = "../src/process_tree/record.rs"]
@@ -329,8 +331,14 @@ fn warden(spec: &Spec) -> ! {
     report(spec.reply, STARTED, sys::getpid());
     // Still the runner's group, which the warden returns to.
     let home = sys::getpgrp();
-    let Errno(error) = match warden::enter(spec.directory, spec.owner, home) {
-        Ok(()) => exec(spec),
+    let Errno(error) = match warden::enter(
+        spec.directory,
+        spec.owner,
+        home,
+        spec.boundary.is_some(),
+        spec.syscall_report,
+    ) {
+        Ok(notification) => exec(spec, notification),
         Err(error) => error,
     };
     report(spec.reply, FAILED, error);
@@ -358,7 +366,7 @@ fn released(spec: &Spec, activity: Fd) -> ! {
         sys::close(spec.directory);
         sys::close(activity);
         if execute {
-            return Err(exec(spec));
+            return Err(exec(spec, None));
         }
         Ok(())
     })();
@@ -379,8 +387,8 @@ fn released_byte(fd: Fd) -> Result<bool, Errno> {
 
 /// In the program: sets up what the request asks for and execs. Returns the
 /// error that stopped it.
-fn exec(spec: &Spec) -> Errno {
-    match prepare_program(spec) {
+fn exec(spec: &Spec, notification: Option<Fd>) -> Errno {
+    match prepare_program(spec, notification) {
         Err(error) => error,
         // SAFETY: NUL-terminated program, argument and environment vectors.
         Ok(()) if !spec.search => unsafe { sys::execve(spec.program, spec.argv, spec.envp) },
@@ -388,7 +396,7 @@ fn exec(spec: &Spec) -> Errno {
     }
 }
 
-fn prepare_program(spec: &Spec) -> Result<(), Errno> {
+fn prepare_program(spec: &Spec, notification: Option<Fd>) -> Result<(), Errno> {
     // What a fork of the owner would have inherited at this request, set
     // while the program still has the runner's privileges.
     sys::set_mask(spec.mask);
@@ -431,7 +439,11 @@ fn prepare_program(spec: &Spec) -> Result<(), Errno> {
         // FIXED+4 is eight-byte aligned in this mapping and remapping ended
         // before spec formed this pointer. The original request stays live.
         let filter = unsafe { core::slice::from_raw_parts(boundary.filter, boundary.count) };
-        entry::enter(boundary.ruleset, filter).map_err(Errno)?;
+        let listener = entry::enter(boundary.ruleset, filter).map_err(Errno)?;
+        let transport = notification.ok_or(Errno(sys::EINVAL))?;
+        sys::notification_transfer(transport, Some(listener))?;
+        sys::close(listener);
+        sys::close(transport);
     }
     Ok(())
 }

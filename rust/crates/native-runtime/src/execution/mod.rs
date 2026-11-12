@@ -95,6 +95,42 @@ impl std::fmt::Display for ExecutionRefusal {
 
 impl std::error::Error for ExecutionRefusal {}
 
+/// A running command crossed its syscall boundary; its entire tree was reaped.
+#[derive(Debug)]
+pub enum ExecutionViolation {
+    /// A forbidden syscall or syscall argument crossed the boundary.
+    Syscall,
+    /// A Unix socket would acquire host IPC outside the execution domain.
+    HostIpc,
+}
+
+impl std::fmt::Display for ExecutionViolation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Syscall => "sandbox syscall filter denied execution; command tree terminated",
+            Self::HostIpc => {
+                "sandbox syscall filter denied host IPC (Unix socket); command tree terminated"
+            }
+        })
+    }
+}
+
+impl std::error::Error for ExecutionViolation {}
+
+/// Root exit left unfinished or failed descendants in the command tree.
+#[derive(Debug)]
+pub struct ExecutionIncomplete;
+
+impl std::fmt::Display for ExecutionIncomplete {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "sandbox command left unfinished or failed descendants; command tree cleaned up",
+        )
+    }
+}
+
+impl std::error::Error for ExecutionIncomplete {}
+
 #[derive(Debug)]
 struct Grant {
     workspace: BoundPath,
@@ -884,14 +920,16 @@ impl PreparedExecution {
         _arg0: Option<&std::ffi::OsStr>,
     ) -> io::Result<()> {
         #[cfg(target_os = "linux")]
-        self.platform.install(_command, self.grant);
+        return Err(unavailable(
+            "granted Linux launches require the native runner",
+        ));
         #[cfg(target_os = "macos")]
         self.platform.install(_command, _arg0)?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ));
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(target_os = "macos")]
         Ok(())
     }
 

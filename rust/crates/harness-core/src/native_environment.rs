@@ -74,11 +74,14 @@ pub fn variable(name: &str) -> Option<OsString> {
 /// Snapshots the native owner's closed allowlist for locating ordinary tools.
 ///
 /// An admitted shell may locate the owner's installed tools without receiving
-/// its home, configuration, loader hooks or credentials. Call once when binding
+/// its host home, configuration, loader hooks or credentials. Call once when binding
 /// the executor, then pass this explicit map through preparation and `env_clear`.
+/// Resolve the selected shell only on Unix, where Bash needs the SHELL setting.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn tool_environment() -> std::io::Result<std::collections::BTreeMap<String, String>> {
-    [
+pub fn tool_environment<'a>(
+    _shell: impl FnOnce() -> std::io::Result<&'a Path>,
+) -> std::io::Result<std::collections::BTreeMap<String, String>> {
+    let environment: std::collections::BTreeMap<String, String> = [
         "PATH",
         #[cfg(windows)]
         "PATHEXT",
@@ -95,7 +98,22 @@ pub fn tool_environment() -> std::io::Result<std::collections::BTreeMap<String, 
             )
         })
     })
-    .collect()
+    .collect::<std::io::Result<_>>()?;
+    #[cfg(unix)]
+    let environment = {
+        let mut environment = environment;
+        // This fact is already selected by the host. Without it Bash asks NSS
+        // for a login shell, which can contact host IPC outside the grant.
+        let shell = _shell()?.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "approved shell path is not UTF-8",
+            )
+        })?;
+        environment.insert("SHELL".into(), shell.into());
+        environment
+    };
+    Ok(environment)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

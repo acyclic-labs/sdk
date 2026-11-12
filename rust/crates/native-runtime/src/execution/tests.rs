@@ -61,6 +61,8 @@ fn sandbox_policy() {
                 .env("ACYCLIC_POLICY_OUTSIDE", &outside)
                 .env("ACYCLIC_POLICY_VOLUME", &volume)
                 .env("ACYCLIC_POLICY_SHELL", crate::platform_shell().unwrap())
+                .env("SHELL", crate::platform_shell().unwrap())
+                .env("HOME", &workspace)
                 .env(
                     "ACYCLIC_POLICY_DESTINATION",
                     listener.local_addr().unwrap().to_string(),
@@ -99,25 +101,46 @@ fn sandbox_policy() {
             } else {
                 ProcessTree::spawn(&mut command).unwrap()
             };
-            let output = tree
-                .wait_with_output(
-                    crate::CaptureSchedule::Unbounded,
-                    1 << 20,
-                    None,
-                    || Ok(()),
-                    |_| Ok(Default::default()),
-                    None,
-                    None,
-                    None,
-                )
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "confined={confined}, access={access:?}, volume_write={volume_write}, custody={custodied}: status={} stdout={} stderr={}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+            let captured = tree.wait_with_output(
+                crate::CaptureSchedule::Unbounded,
+                1 << 20,
+                None,
+                || Ok(()),
+                |_| Ok(Default::default()),
+                None,
+                None,
+                None,
             );
+            #[cfg(target_os = "linux")]
+            if confined {
+                let failure = captured.unwrap_err();
+                assert!(
+                    failure
+                        .error
+                        .get_ref()
+                        .is_some_and(|cause| cause.is::<ExecutionViolation>()),
+                    "{failure:?}"
+                );
+                assert!(failure.cleanup_completed);
+                assert!(
+                    String::from_utf8_lossy(&failure.stderr).contains("POLICY_BEFORE_NETWORK"),
+                    "{failure:?}"
+                );
+            } else {
+                let output = captured.unwrap();
+                assert!(output.status.success(), "{output:?}");
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let output = captured.unwrap();
+                assert!(
+                    output.status.success(),
+                    "confined={confined}, access={access:?}, volume_write={volume_write}, custody={custodied}: status={} stdout={} stderr={}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
             if confined {
                 assert_eq!(
                     listener.accept().unwrap_err().kind(),
@@ -187,19 +210,9 @@ fn sandbox_policy_probe() {
     assert_eq!(output.stdout, b"runtime");
     #[cfg(target_os = "linux")]
     {
-        // GC-24, 20261111T073658725Z/api-sdk: replay the recorded argv.
-        // Parent enumeration and Git discovery can be denied independently;
-        // the next command isolates the workspace's required read contract.
-        let recorded = "pwd; ls -la; ls -la ..; git -C . log --oneline -1 2>/dev/null; git -C .. log --oneline -1 2>/dev/null";
-        let replay = shell(recorded);
-        eprintln!(
-            "GC24_REPLAY command={recorded:?} status={} stdout={} stderr={}",
-            replay.status,
-            String::from_utf8_lossy(&replay.stdout),
-            String::from_utf8_lossy(&replay.stderr)
-        );
         std::fs::metadata("..").unwrap();
-        let listing = shell("ls -la && rg --files");
+        // Numeric ownership keeps this read/stat proof independent of host NSS IPC.
+        let listing = shell("ls -lan && rg --files");
         assert!(
             listing.status.success(),
             "workspace browsing failed: {listing:?}"
@@ -222,6 +235,8 @@ fn sandbox_policy_probe() {
         ),
         volume_write,
     );
+    #[cfg(target_os = "linux")]
+    eprintln!("POLICY_BEFORE_NETWORK");
     allowed(
         std::net::TcpStream::connect(std::env::var("ACYCLIC_POLICY_DESTINATION").unwrap())
             .map(|_| ()),
@@ -1337,6 +1352,8 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
     .flat_map(|(network, allowed)| {
         [None, Some(&custody)].map(move |custody| (network.clone(), allowed, custody))
     }) {
+        let syscall_denial = matches!(&network, ExecutionNetwork::Off)
+            || matches!(&network, ExecutionNetwork::TcpPorts(ports) if ports.is_empty());
         let grant = ExecutionGrant::new(
             root.path(),
             ExecutionAccess::ReadOnly,
@@ -1371,23 +1388,30 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
             Err(error) => panic!("confined launch failed: {error}"),
         };
         admitted += 1;
-        let output = tree
-            .wait_with_output(
-                std::time::Duration::from_secs(5),
-                65536,
-                None,
-                || Ok(()),
-                |_| Ok(Default::default()),
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
+        let captured = tree.wait_with_output(
+            crate::CaptureSchedule::Unbounded,
+            65536,
+            None,
+            || Ok(()),
+            |_| Ok(Default::default()),
+            None,
+            None,
+            None,
         );
+        if syscall_denial {
+            let failure = captured.unwrap_err();
+            assert!(failure.cleanup_completed);
+            assert!(
+                failure
+                    .error
+                    .get_ref()
+                    .is_some_and(|cause| cause.is::<ExecutionViolation>()),
+                "{failure:?}"
+            );
+        } else {
+            let output = captured.unwrap();
+            assert!(output.status.success(), "{output:?}");
+        }
         if allowed {
             listener.accept().unwrap();
         } else {
@@ -1809,4 +1833,181 @@ fn prefix_refusal_credits(
         );
         assert_eq!(denied.memory.load(Ordering::Acquire), 0);
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn numbered_cat_preserves_file_and_pipeline_content() -> io::Result<()> {
+    crate::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("sample"), "GC95_CONTENT\n")?;
+    let grant = ExecutionGrant::workspace_default(root.path(), ExecutionAccess::ReadOnly, [], [])?;
+    let shell = crate::platform_shell()?;
+    for source in [
+        "cat -n sample",
+        "cat -A sample",
+        "cat sample | cat -n",
+        "for f in sample; do echo \"=== $f\"; cat -n \"$f\" | head -200; done",
+    ] {
+        let mut command = Command::new(shell);
+        command
+            .args(acyclic_host_platform::shell::PLATFORM.arguments)
+            .arg(source)
+            .current_dir(root.path())
+            .env_clear()
+            .env("SHELL", shell)
+            .env("HOME", root.path())
+            .env("PATH", "/usr/bin:/bin")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut tree = ProcessTree::spawn_granted(command, &grant, None)?;
+        let output = tree
+            .wait_with_output(
+                crate::CaptureSchedule::Unbounded,
+                65536,
+                None,
+                || Ok(()),
+                |_| Ok(Default::default()),
+                None,
+                None,
+                None,
+            )
+            .map_err(io::Error::other)?;
+        assert!(
+            output.status.success(),
+            "command={source} output={output:?}"
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "command={source} output={output:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("GC95_CONTENT"),
+            "command={source} output={output:?}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn host_name_service_probes_are_typed_without_blocking_directory_metadata() -> io::Result<()> {
+    crate::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("readable"), "workspace data")?;
+    let rg = crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
+        .resolve_native("rg")?;
+    let grant = ExecutionGrant::workspace_default(
+        root.path(),
+        ExecutionAccess::ReadOnly,
+        [],
+        [rg.clone()],
+    )?;
+    let shell = crate::platform_shell()?;
+    let custody = crate::ProcessCustody::open(&root.path().join("custody"))?;
+    let path = std::env::join_paths([
+        rg.parent().ok_or(io::ErrorKind::NotFound)?,
+        Path::new("/usr/bin"),
+        Path::new("/bin"),
+    ])
+    .map_err(io::Error::other)?;
+    for custody in [None, Some(&custody)] {
+        for source in [
+            "ls -la && rg --files",
+            // GC-24, 20261111T073658725Z/api-sdk: preserve the recorded argv.
+            "pwd; ls -la; ls -la ..; git -C . log --oneline -1 2>/dev/null; git -C .. log --oneline -1 2>/dev/null",
+        ] {
+            let mut command = Command::new(shell);
+            command
+                .args(acyclic_host_platform::shell::PLATFORM.arguments)
+                .arg(source)
+                .env_clear()
+                .env("SHELL", shell)
+                .env("HOME", root.path())
+                .env("PATH", &path)
+                .current_dir(root.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut tree = ProcessTree::spawn_granted(command, &grant, custody)?;
+            let output = tree.wait_with_output(
+                crate::CaptureSchedule::Unbounded,
+                65536,
+                None,
+                || Ok(()),
+                |_| Ok(Default::default()),
+                None,
+                None,
+                None,
+            );
+            match output {
+                Ok(output) => {
+                    // A libc without host-IPC lookups can complete the same
+                    // command. Missing fixture Git history is an ordinary exit.
+                    if source.starts_with("ls") {
+                        assert!(output.status.success(), "{output:?}");
+                        assert!(output.stderr.is_empty(), "{output:?}");
+                        assert!(String::from_utf8_lossy(&output.stdout).contains("readable"));
+                    }
+                    eprintln!("GC24_REPLAY source={source:?} output={output:?}");
+                }
+                Err(failure) => {
+                    assert!(failure.cleanup_completed, "{failure:?}");
+                    assert!(
+                        matches!(
+                            failure
+                                .error
+                                .get_ref()
+                                .and_then(|cause| cause.downcast_ref::<ExecutionViolation>()),
+                            Some(ExecutionViolation::HostIpc)
+                        ),
+                        "directory metadata must not be confused with host name-service IPC: {failure:?}"
+                    );
+                    eprintln!("GC24_REPLAY source={source:?} typed={failure}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn node_capture_preserves_workspace_writes_and_output() -> io::Result<()> {
+    crate::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    let node =
+        crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
+            .resolve_native("node")?;
+    let grant = ExecutionGrant::workspace_default(
+        root.path(),
+        ExecutionAccess::WorkspaceWrite,
+        [],
+        [node.clone()],
+    )?;
+    let mut command = Command::new(node);
+    command.args(["-e", r#"const fs=require("node:fs"); fs.writeFileSync("written","GC95_NODE_CONTENT\n"); process.stdout.write(fs.readFileSync("written"));"#]).current_dir(root.path()).env_clear()
+        .env("HOME", root.path()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut tree = ProcessTree::spawn_granted(command, &grant, None)?;
+    let output = tree
+        .wait_with_output(
+            crate::CaptureSchedule::Unbounded,
+            65536,
+            None,
+            || Ok(()),
+            |_| Ok(Default::default()),
+            None,
+            None,
+            None,
+        )
+        .map_err(io::Error::other)?;
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        std::fs::read(root.path().join("written"))?,
+        b"GC95_NODE_CONTENT\n"
+    );
+    assert_eq!(output.stdout, b"GC95_NODE_CONTENT\n");
+    Ok(())
 }
