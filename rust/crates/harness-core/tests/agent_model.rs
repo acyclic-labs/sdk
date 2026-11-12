@@ -70,7 +70,9 @@ fn adopted(agent: AgentId) -> ForkAdopted {
 }
 
 fn cancel(id: &str) -> InboxRecord {
-    InboxRecord::Cancel(Control {
+    InboxRecord::Cancel(acyclic_harness_core::agent::Cancellation {
+        conversation: 0,
+        input: 1,
         by: user(),
         id: intent(id),
     })
@@ -246,6 +248,7 @@ async fn seeded() -> Result<Seeded> {
                     path: status,
                     records: vec![
                         StatusRecord {
+                            cancelled_input: None,
                             child_settlement: None,
                             child_wakes: None,
                             phase: Phase::Running,
@@ -312,6 +315,7 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
             },
         ],
         status: Some(StatusRecord {
+            cancelled_input: None,
             child_settlement: None,
             child_wakes: None,
             phase: Phase::Idle,
@@ -357,6 +361,7 @@ async fn spawn_forks_the_pre_step_subtree_in_one_commit() -> Result {
     assert_eq!(values(&provider, parent.conversation()?).await?.len(), 3);
     // The child's first status rides with its membership: Idle at its ForkAdopted.
     let first = StatusRecord {
+        cancelled_input: None,
         child_settlement: None,
         child_wakes: None,
         phase: Phase::Idle,

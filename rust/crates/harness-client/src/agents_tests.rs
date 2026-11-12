@@ -403,6 +403,7 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
     let history = (0..64)
         .map(|cursor| {
             StatusRecord {
+                cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
                 phase: Phase::Running,
@@ -440,6 +441,7 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
     )
     .await?;
     let attention = StatusRecord {
+        cancelled_input: None,
         child_settlement: None,
         child_wakes: None,
         phase: Phase::WaitingHost {

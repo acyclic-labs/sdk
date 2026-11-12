@@ -165,8 +165,19 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         }
     }
     let mut sequence = prior_conversation;
+    let mut cancellations = Vec::new();
     for out in &step.outs {
         match out {
+            Out::InputCancelled {
+                input,
+                conversation,
+            } => {
+                cancellations.push(super::cancellation::cancel_effect(
+                    path,
+                    *input,
+                    *conversation,
+                )?);
+            }
             Out::Diagnostic { diagnostic, .. } => {
                 builder.condition(CommitCondition::Tail {
                     path: diagnostic.path()?,
@@ -195,6 +206,13 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             | Out::PendingSpawns(_)
             | Out::PeerGuard { .. } => {}
             Out::Send { to, record } => {
+                if let InboxRecord::Cancel(cancel) = record {
+                    cancellations.push(super::cancellation::cancel_effect(
+                        to,
+                        cancel.input,
+                        cancel.conversation,
+                    )?);
+                }
                 if matches!(
                     record,
                     InboxRecord::ForkAdopted(_)
@@ -297,6 +315,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 soft: true,
             }
         }))
+        .chain(cancellations)
         .collect();
     Ok(CommitRequest {
         deadline_unix_millis: None,

@@ -98,7 +98,9 @@ async fn interrupted(backend: &dyn Backend, fault: Option<Fault>) -> Result {
         host.send(
             &agent,
             &fixtures::sender(),
-            &InboxRecord::Cancel(Control {
+            &InboxRecord::Cancel(crate::agent::Cancellation {
+                conversation: 0,
+                input: 1,
                 by: fixtures::sender(),
                 id: vectors::intent("stop")?,
             }),

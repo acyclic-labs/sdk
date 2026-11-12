@@ -133,6 +133,7 @@ mod tests {
             let root = AgentPath::root(&AgentId::from_bytes([1; 16]));
             let memory = MemoryStream::default();
             let status = StatusRecord {
+                cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
                 phase: Phase::Idle,

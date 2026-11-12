@@ -10,6 +10,8 @@ use std::{collections::HashSet, sync::Arc};
 /// inbox cut, including a delivery whose next checkpoint is not committed yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settlement {
+    /// Exact current input, including accepted work before its first checkpoint.
+    pub input: Option<u64>,
     /// Whether the checkpoint covers the observed inbox cut.
     pub settled: bool,
     /// The observed phase, including when the child has not settled.
@@ -52,6 +54,11 @@ pub(super) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static
         || matches!(state.phase, Phase::Idle | Phase::WaitingUser { .. })
             && state.settled_before(cursor) >= inbox;
     let mut phase = super::machine::published(&state);
+    let mut input = state
+        .turn
+        .as_ref()
+        .map(|turn| turn.inbox)
+        .or_else(|| state.queued.front().map(|queued| queued.inbox));
     if !settled
         && !state.closed
         && cursor < inbox
@@ -86,6 +93,7 @@ pub(super) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static
                     record => super::input::input(sequence, record).is_some(),
                 };
                 if wakes {
+                    input = Some(sequence);
                     phase = Phase::Running;
                     break 'accepted;
                 }
@@ -94,6 +102,7 @@ pub(super) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static
         }
     }
     let settlement = Settlement {
+        input,
         settled,
         phase,
         answer: (settled && state.conversation_tail > state.conversation_base)

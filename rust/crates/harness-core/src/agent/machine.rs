@@ -432,6 +432,13 @@ pub enum Out {
     PendingSpawns(u64),
     /// Inbox inputs before this exclusive cursor already reached the model.
     Steered(u64),
+    /// Retain the cancellation of one input at this conversation frontier.
+    InputCancelled {
+        /// Original accepted inbox sequence.
+        input: u64,
+        /// Entries below this frontier had already settled before cancellation.
+        conversation: u64,
+    },
     /// Append to this agent's conversation.
     Conversation(Vec<u8>),
     /// Document identities announced by the preceding conversation entry.
@@ -865,6 +872,13 @@ async fn draft_step<T: TurnDriver + ?Sized>(
         || matches!(
             &wake,
             Wake::Inbox {
+                record: InboxRecord::Cancel(_),
+                ..
+            }
+        )
+        || matches!(
+            &wake,
+            Wake::Inbox {
                 record: InboxRecord::Notice { notice, .. },
                 ..
             } if !notice.wakes()
@@ -919,6 +933,48 @@ async fn draft_step<T: TurnDriver + ?Sized>(
             });
             apply_spawns(&mut state, &mut outs, 0).await?;
             state
+        }
+        (
+            Some(mut state),
+            Wake::Inbox {
+                sequence,
+                record: InboxRecord::Cancel(cancel),
+            },
+        ) => {
+            if cancel.input >= sequence {
+                return Err(Error::Record("cancellation must name an earlier input"));
+            }
+            if !state.input_pending(sequence, cancel.input) {
+                state
+            } else {
+                state.queued.retain(|input| input.inbox != cancel.input);
+                if state.overflow.is_some_and(|from| cancel.input >= from) {
+                    state.taken.insert(cancel.input);
+                }
+                outs.push(Out::InputCancelled {
+                    input: cancel.input,
+                    conversation: state.conversation_tail,
+                });
+                if state
+                    .turn
+                    .as_ref()
+                    .is_some_and(|turn| turn.inbox == cancel.input)
+                {
+                    let before = control(&state);
+                    let next = kernel::admit(before, Admit::Cancel);
+                    #[cfg(feature = "test-support")]
+                    control_trace::record(&state, Decision::Admit(before, Admit::Cancel, next));
+                    state.turn = None;
+                    if next.control.mode == Mode::Idle {
+                        state.phase = Phase::Idle;
+                    }
+                    state.child_settlements = None;
+                    state.reserved_spawns = 0;
+                    state.awaiting.clear();
+                    state.need = 0;
+                }
+                state
+            }
         }
         (Some(state), Wake::Inbox { sequence, record }) => {
             let (state, fact) = admit(state, sequence, record, settled_at_micros).await?;
@@ -1091,6 +1147,7 @@ fn finalize_step(
             Out::Announced(documents) => state.announcements.extend(documents.iter().copied()),
             Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Diagnostic { .. }
+            | Out::InputCancelled { .. }
             | Out::Send { .. }
             | Out::PeerGuard { .. }
             | Out::PendingSpawns(_)
@@ -1122,12 +1179,18 @@ fn finalize_step(
     // Settled entries and dropped inputs wake observers even when the actor's
     // phase stays unchanged. An opening snapshot may have reported Running
     // from accepted input while the committed checkpoint still said Idle.
+    let cancelled_input = outs.iter().find_map(|out| match out {
+        Out::InputCancelled { input, .. } => Some(*input),
+        _ => None,
+    });
     let status = (phase != previous.0
+        || cancelled_input.is_some()
         || state.dropped_before != previous.1
         || child_wakes.is_some()
         || child_settlement.is_some()
         || appended != 0)
         .then_some(StatusRecord {
+            cancelled_input,
             child_settlement,
             child_wakes,
             phase,
@@ -1190,7 +1253,7 @@ async fn admit(
     }
     let kind = match &record {
         InboxRecord::ForkAdopted(_) => return Err(Error::Record("agent adopted twice")),
-        InboxRecord::Cancel(_) => Admit::Cancel,
+        InboxRecord::Cancel(_) => Admit::Input,
         InboxRecord::Archive(_) => Admit::Archive,
         _ => Admit::Input,
     };
@@ -1301,6 +1364,7 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
 fn admissible(out: &Out) -> bool {
     match out {
         Out::Diagnostic { .. } => false,
+        Out::InputCancelled { .. } => true,
         Out::Steered(_) | Out::PendingSpawns(_) | Out::PeerGuard { .. } => true,
         Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
@@ -1355,6 +1419,7 @@ fn admit_wait(
         wait => return Some((wait, None, None)),
     };
     let status = StatusRecord {
+        cancelled_input: None,
         phase,
         cursor,
         conversation,
