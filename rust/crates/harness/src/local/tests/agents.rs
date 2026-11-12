@@ -1924,7 +1924,7 @@ async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
         super::checked_commands::call(0, crate::tools::shell::PLATFORM.name, "echo staged"),
         crate::test_support::ScriptedTurn::Text("done".into()),
     ]);
-    let mut config = super::checkout_config(directory.path(), (super::model()?, provider))?;
+    let mut config = super::checkout_config(directory.path(), (super::model()?, provider.clone()))?;
     config.served = Some(admission.clone());
     let harness = Arc::new(super::open_scripted(config).await?);
     let (agents, root) = harness.agents().await?;
@@ -1939,6 +1939,30 @@ async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
     let entry = entry.inspect_err(|_| {
         let _ = waits.report(&mut std::io::stderr());
     })?;
+    assert!(
+        entry.outcome.is_completed(),
+        "shell turn did not complete: {:?}; model requests: {}",
+        entry.outcome,
+        provider.request_count()
+    );
+    let request = provider
+        .request(1)
+        .ok_or_else(|| Error::NotFound("shell result request".into()))?;
+    let result = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id, content, ..
+            } if call_id == "checkout-0" => Some(content),
+            _ => None,
+        })
+        .ok_or_else(|| Error::NotFound("shell result".into()))?;
+    assert!(
+        !matches!(result, crate::model::ToolResultContent::Error { .. }),
+        "shell failed: {result:?}"
+    );
     let state = agents.state(&root).await.map_err(agent)?;
     // Each turn's calls share one directory, named by the turn.
     let turn = crate::agent::turn_id(&state, &entry.input).map_err(agent)?;
@@ -1957,14 +1981,85 @@ async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
     let journal =
         crate::conversation::journal_volume(private.provider().clone(), &state.path.id())?;
     assert_eq!(entry.output.volume(), &journal);
-    let call = crate::tool::ToolInvocation::model_call_operation(turn, 0, "checkout-0", None)?;
+    // Observe the published call directory at the settled cut rather than
+    // reconstructing the executor's internal model-step identity.
+    let issuer = harness
+        .root_authority
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("issuer".into()))?;
+    let scope = issuer.bootstrap_scope(
+        "output-inspection",
+        &crate::Capabilities::new([
+            journal.capability(crate::conversation::VolumeOperation::Read, &mut None)?
+        ]),
+        Some(crate::AgentId::from_bytes(state.path.id_bytes())),
+        &mut None,
+    )?;
+    let directory = format!("tools/{turn}");
+    let grant = crate::conversation::ContentGrant::verify_directory_read(
+        &harness.verifier,
+        &scope,
+        &journal,
+        &directory,
+        &mut None,
+    )?;
+    let generation = harness.files.file_generation(&entry.output, None)?;
+    let (_, page) = harness
+        .files
+        .list_private_directory(
+            &journal,
+            &grant,
+            &directory,
+            crate::filesystem::DirectoryOptions {
+                generation: Some(&generation),
+                after: None,
+                maximum_entries: 2,
+                ceiling: None,
+            },
+        )
+        .await?
+        .ok_or_else(|| {
+            Error::NotFound(format!(
+                "shell output directory {directory}; result: {result:?}"
+            ))
+        })?;
+    assert!(!page.has_more, "unexpected additional model calls");
+    let mut calls = Vec::new();
+    for entry in &page.entries {
+        let name = std::str::from_utf8(entry.name.as_bytes()).map_err(agent)?;
+        let (_, children) = harness
+            .files
+            .list_private_directory(
+                &journal,
+                &grant,
+                &format!("{directory}/{name}"),
+                crate::filesystem::DirectoryOptions {
+                    generation: Some(&generation),
+                    after: None,
+                    maximum_entries: 8,
+                    ceiling: None,
+                },
+            )
+            .await?
+            .ok_or_else(|| Error::NotFound("published output directory".into()))?;
+        assert!(!children.has_more, "unexpected additional call files");
+        if children
+            .entries
+            .iter()
+            .any(|entry| entry.name.as_bytes() == b"request.json")
+        {
+            calls.push(name);
+        }
+    }
+    assert_eq!(calls.len(), 1, "one real shell call: {result:?}");
+    let call = calls[0];
     let bound = harness.agents.get().unwrap().server().bound();
     for name in ["request.json", "result.json", "stdout/0000000000000000"] {
         let path = format!("tools/{turn}/{call}/{name}");
         let (bytes, _) = bound
             .read_tool_output(&state.path, &path, Some(&entry.output), 0, 1 << 20)
             .await
-            .map_err(agent)?;
+            .map_err(|error| agent(format!("read {path}: {error}; shell result: {result:?}")))?;
         assert!(!bytes.is_empty(), "empty {name}");
         if name.starts_with("stdout/") {
             assert!(String::from_utf8_lossy(&bytes).contains("staged"));
@@ -4709,7 +4804,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         phase.in_turn(),
         "unread adoption must not hide accepted work from cancellation"
     );
-    queued.cancel().await?;
+    assert_eq!(queued.cancel().await?, Some(inbox));
     crate::local::sessions::pause_subtree(&connection, repeated.clone(), false).await?;
     queued.wait_current_input().await?;
     assert_eq!(queued.settled().await?, 1);

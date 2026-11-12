@@ -864,7 +864,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
     let mut sent = Vec::new();
     for sequence in 1..=3 {
         let record = next.take().expect("a continuation woke the agent");
-        let settled = step(
+        let mut settled = step(
             &driver,
             &path,
             Some(state.clone()),
@@ -936,7 +936,14 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
                 .and_then(|rest| rest.strip_suffix(":1"))
                 .expect("first continuation of the original goal"),
         )?;
-        let answer = reply(&provider, &settled.state, sequence + 1, &intent("m1"), 1).await?;
+        let answer = reply(
+            &provider,
+            &mut settled.state,
+            sequence + 1,
+            &intent("m1"),
+            1,
+        )
+        .await?;
         if sequence < 3 {
             assert_eq!(
                 answer,
@@ -946,7 +953,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             let mut cancelled = settled.state.clone();
             cancelled.dropped_before = sequence + 1;
             assert_eq!(
-                reply(&provider, &cancelled, sequence + 1, &intent("m1"), 1).await?,
+                reply(&provider, &mut cancelled, sequence + 1, &intent("m1"), 1).await?,
                 Reply::Dropped
             );
         } else {
@@ -962,16 +969,16 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             assert_eq!((result, origin.inbox, entry.inbox), (2, 1, 3));
             assert_eq!(entry.goal, origin.goal);
             assert_eq!(
-                reply(&missing_completion, &settled.state, 4, &intent("m1"), 1).await?,
+                reply(&missing_completion, &mut settled.state, 4, &intent("m1"), 1).await?,
                 Reply::Continuing { run }
             );
             assert!(matches!(
-                reply(&wrong_completion, &settled.state, 4, &intent("m1"), 1).await,
+                reply(&wrong_completion, &mut settled.state, 4, &intent("m1"), 1).await,
                 Err(Error::Record("goal completion names another run"))
             ));
             // A stale checkpoint cannot expose the future terminal record.
             assert_eq!(
-                reply(&provider, &state, 3, &intent("m1"), 1).await?,
+                reply(&provider, &mut state, 3, &intent("m1"), 1).await?,
                 Reply::Continuing { run }
             );
         }
@@ -1005,7 +1012,7 @@ ship it
             return Err("original input is not a message".into());
         };
         message.id = intent(&format!("m{sequence}"));
-        let settled = step(
+        let mut settled = step(
             &driver,
             &path,
             Some(state),
@@ -1028,11 +1035,11 @@ ship it
             CommitOutcome::Committed(_)
         ));
         assert!(
-            matches!(reply(&provider, &settled.state, sequence + 1, &intent(&format!("m{sequence}")), sequence).await?,
+            matches!(reply(&provider, &mut settled.state, sequence + 1, &intent(&format!("m{sequence}")), sequence).await?,
             Reply::Answered { origin: None, entry, .. } if entry.inbox == sequence)
         );
         assert!(
-            matches!(reply(&provider, &settled.state, sequence + 1, &intent("m1"), 1).await?,
+            matches!(reply(&provider, &mut settled.state, sequence + 1, &intent("m1"), 1).await?,
             Reply::Answered { sequence: 2, entry, origin: Some(origin), .. } if entry.inbox == 3 && origin.inbox == 1)
         );
         state = settled.state;

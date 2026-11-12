@@ -115,8 +115,8 @@ async fn committed_reply_search_respects_identity_and_fork_base() -> Result {
     let mut state = AgentState::adopted(root.clone(), &super::adopted(id(1))).expect("adopts");
     state.conversation_tail = 4;
     let provider = &provider;
-    let ask = move |state: AgentState, name: &'static str, inbox: u64| async move {
-        reply(provider, &state, 7, &intent(name), inbox).await
+    let ask = move |mut state: AgentState, name: &'static str, inbox: u64| async move {
+        reply(provider, &mut state, 7, &intent(name), inbox).await
     };
     for (name, inbox, sequence) in [("m1", 1, 0), ("m3", 3, 1), ("ctx5", 5, 3)] {
         let Reply::Answered {
@@ -214,39 +214,39 @@ async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Re
     });
     // Staging an entry is not settling it: only the committed tail admits it.
     assert_eq!(
-        reply(&provider, &state, 4, &intent("steered"), 2).await?,
+        reply(&provider, &mut state, 4, &intent("steered"), 2).await?,
         Reply::Pending
     );
     state.conversation_tail = 1;
     state.queued.clear();
     state.steered_through = selected.through;
     assert!(matches!(
-        reply(&provider, &state, 4, &intent("steered"), 2).await?,
+        reply(&provider, &mut state, 4, &intent("steered"), 2).await?,
         Reply::Answered { sequence: 0, entry, origin: None, steering: Some(source) }
             if entry == settled && source.inbox == 2 && source.id == intent("steered")
     ));
     assert!(matches!(
-        reply(&provider, &state, 4, &intent("wrong"), 2).await,
+        reply(&provider, &mut state, 4, &intent("wrong"), 2).await,
         Err(Error::Conflict(_))
     ));
     assert_eq!(
-        reply(&provider, &state, 4, &intent("after"), 3).await?,
+        reply(&provider, &mut state, 4, &intent("after"), 3).await?,
         Reply::Dropped,
         "the exclusive admitted cursor cannot answer a later input"
     );
     state.conversation_tail = 2;
     assert!(matches!(
-        reply(&provider, &state, 4, &intent("steered"), 2).await?,
+        reply(&provider, &mut state, 4, &intent("steered"), 2).await?,
         Reply::Answered { sequence: 0, .. }
     ));
     assert!(matches!(
-        reply(&provider, &state, 4, &intent("after"), 3).await?,
+        reply(&provider, &mut state, 4, &intent("after"), 3).await?,
         Reply::Answered { sequence: 1, .. }
     ));
     // Fork history cannot answer a request accepted by the child itself.
     state.conversation_base = 1;
     assert_eq!(
-        reply(&provider, &state, 4, &intent("steered"), 2).await?,
+        reply(&provider, &mut state, 4, &intent("steered"), 2).await?,
         Reply::Dropped
     );
     Ok(())

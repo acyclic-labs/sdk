@@ -207,7 +207,7 @@ async fn a_cancelled_turn_settles_durably_without_a_model_request() -> Result<()
             return Err(Error::Conflict(format!("held turn settled before model dispatch: {:?}", entry.outcome)));
         }
     }
-    client.conversation.cancel().await?;
+    assert_eq!(client.conversation.cancel().await?, Some(inbox));
     let entry = client.settled(inbox).await?;
     assert_eq!(entry.outcome, crate::agent::TurnOutcome::Cancelled);
     assert_eq!(checkpoint(&entry), None);

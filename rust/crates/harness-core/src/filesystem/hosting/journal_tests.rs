@@ -186,6 +186,12 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
             .with_execution_journal(Arc::new(bound.turns().query_journal(&state).await?), turn)?,
     );
     let context = ToolContext::new(task.clone(), turn, "shell")?;
+    assert!(
+        !task
+            .scope()
+            .grants()
+            .contains(crate::contract::capability::HARNESS_HOST)
+    );
     let file = context
         .stage_output_file_once("stdout/0", b"retained", "text/plain", "stdout")
         .await?;

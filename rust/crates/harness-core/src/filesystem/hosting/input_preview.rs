@@ -26,7 +26,7 @@ where
         let bound = self.clone();
         Box::pin(async_stream::try_stream! {
             bound.admit_path(&agent)?;
-            let (state, consumed) = bound.agents.state_snapshot(&agent).await?;
+            let (mut state, consumed) = bound.agents.state_snapshot(&agent).await?;
             let provider = bound.agents.provider();
             let inbox = agent.inbox()?;
             let tail = provider.tail(inbox.clone()).await.map_err(Error::Stream)?;
@@ -71,7 +71,7 @@ where
                         && end < state.steered_through
                         && state.turn.as_ref().is_none_or(|turn| turn.inbox != end)
                     {
-                        let disposition = crate::agent::reply(&**provider, &state, consumed, &message.id, end).await?;
+                        let disposition = crate::agent::reply(&**provider, &mut state, consumed, &message.id, end).await?;
                         if !matches!(disposition, crate::agent::Reply::Pending) {
                             yield InputPreviewStep::Progress;
                             continue;

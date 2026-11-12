@@ -1174,7 +1174,7 @@ pub(super) async fn jsonl(
                         .await?;
                 }
                 Request::Cancel { cancel: true } => {
-                    conversation.cancel().await?;
+                    let _ = conversation.cancel().await?;
                 }
                 Request::Cancel { cancel: false } => {
                     return Err("JSONL cancellation requires cancel=true".into());

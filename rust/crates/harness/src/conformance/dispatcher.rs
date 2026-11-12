@@ -22,7 +22,7 @@ async fn output(
         .map_ok(acyclic_stream::records_only)
         .await?;
     loop {
-        let values = vectors::values(&**provider, agent.conversation()?).await?;
+        let values = vectors::outputs(&**provider, agent).await?;
         if let Some(value) = values.get(index) {
             if value != expected {
                 return Err("wrong discovery output".into());
@@ -178,7 +178,7 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
         {
             return Err("uncommitted cursor did not retry its exact request/key".into());
         }
-        if vectors::values(&*reopened, agent.conversation()?).await? != [b"once".to_vec()] {
+        if vectors::outputs(&*reopened, &agent).await? != [b"once".to_vec()] {
             return Err("cursor crash duplicated delivery".into());
         }
     }

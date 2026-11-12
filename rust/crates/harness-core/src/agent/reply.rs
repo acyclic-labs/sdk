@@ -67,7 +67,8 @@ pub enum Reply {
 
 /// The reply to message `id`, committed at inbox sequence `inbox`, in the
 /// agent's committed checkpoint `state` whose step consumed its inbox before
-/// `cursor`. Only `state.conversation_tail` bounds the search, so an output
+/// `cursor`. The pending window may refill within that original cursor. Only
+/// `state.conversation_tail` bounds the search, so an output
 /// staged by an uncommitted step is never a reply.
 ///
 /// # Errors
@@ -76,7 +77,7 @@ pub enum Reply {
 /// stream failures and malformed entries as themselves.
 pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
-    state: &AgentState,
+    state: &mut AgentState,
     cursor: u64,
     id: &IntentId,
     inbox: u64,
@@ -157,8 +158,12 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
         }
     }
     if cancelled.is_some() {
-        // An accepted cancel does not certify physical retirement. The
-        // original active input remains pending until its entry commits.
+        // Execution and interruption use this same original overflow window.
+        // Refresh it before deciding whether cancellation names running work;
+        // another known input can keep running while a queued target is dropped.
+        if state.turn.is_none() && state.queued.is_empty() {
+            super::input::refill(provider, state, cursor).await?;
+        }
         let active = state
             .turn
             .as_ref()
@@ -186,7 +191,7 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
 }
 
 /// One immutable source record, without waiting for a future inbox position.
-pub(super) async fn inbox_record<P: crate::store::JournalProvider + ?Sized>(
+pub(super) async fn inbox_record<P: acyclic_stream::StreamProvider + ?Sized>(
     provider: &P,
     path: StreamPath,
     sequence: u64,
@@ -264,7 +269,7 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
             Reply::Continuing { run }
         }
     };
-    let mut records = match provider
+    let record = match provider
         .read(ReadRequest {
             key: None,
             path: super::goal::result(&state.path, run)?,
@@ -274,13 +279,17 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
         })
         .await
     {
-        Ok(records) => records,
-        Err(error) if error.category() == acyclic_stream::StreamError::NotFound => {
-            return Ok(pending());
-        }
+        Ok(mut records) => records.try_next().await.map_err(Error::Stream)?,
+        Err(error) if error.category() == acyclic_stream::StreamError::NotFound => None,
         Err(error) => return Err(Error::Stream(error)),
     };
-    let Some(record) = records.try_next().await.map_err(Error::Stream)? else {
+    let Some(record) = record else {
+        if super::cancellation::cancelled_goal(provider, &state.path, run)
+            .await?
+            .is_some_and(|conversation| conversation <= state.conversation_tail)
+        {
+            return Ok(Reply::Dropped);
+        }
         return Ok(pending());
     };
     let completed = super::goal::Completed::decode(&record.value)?;

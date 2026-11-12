@@ -14,7 +14,7 @@ struct Waiting(Mutex<Option<oneshot::Sender<()>>>);
 impl TurnDriver for Waiting {
     fn step<'a>(
         &'a self,
-        _agent: &'a AgentState,
+        agent: &'a AgentState,
         _cursor: u64,
         input: Option<Queued>,
         cancellation: CancellationToken,
@@ -30,18 +30,19 @@ impl TurnDriver for Waiting {
                     "delivery inherited another turn's cancellation",
                 ));
             }
-            let output = match started {
+            let queued = input.ok_or(Error::Record("missing interrupt fixture input"))?;
+            let outcome = match started {
                 Some(started) => {
                     started
                         .send(())
                         .map_err(|_| Error::Record("interrupt observer dropped"))?;
                     cancellation.cancelled().await;
-                    b"cancelled".to_vec()
+                    TurnOutcome::Cancelled
                 }
-                None => match input.map(|queued| queued.input) {
-                    Some(
-                        TurnInput::Message { id, .. } | TurnInput::ApprovalRequested { id, .. },
-                    ) => id.as_str().as_bytes().to_vec(),
+                None => match &queued.input {
+                    TurnInput::Message { .. } | TurnInput::ApprovalRequested { .. } => {
+                        TurnOutcome::Completed
+                    }
                     _ => return Err(Error::Record("unexpected interrupt fixture input")),
                 },
             };
@@ -49,7 +50,7 @@ impl TurnDriver for Waiting {
                 checkpoint: None,
 
                 drops: None,
-                outs: vec![Out::Conversation(output)],
+                outs: vec![Out::Conversation(fixtures::entry(agent, queued, outcome)?)],
                 wait: Wait::Input,
             })
         })
@@ -112,7 +113,7 @@ async fn interrupted(backend: &dyn Backend, fault: Option<Fault>) -> Result {
     host.send(&agent, &fixtures::sender(), &send("after")?)
         .await?;
     vectors::drain(&host).await?;
-    let outputs = vectors::values(&*provider, agent.conversation()?).await?;
+    let outputs = vectors::outputs(&*provider, &agent).await?;
     if outputs != [b"cancelled".to_vec(), b"queued".to_vec(), b"after".to_vec()] {
         return Err(format!("interrupt lost or repeated committed inputs: {outputs:?}").into());
     }

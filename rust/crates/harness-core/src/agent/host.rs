@@ -438,8 +438,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         id: &IntentId,
         inbox: u64,
     ) -> Result<super::Reply, Error> {
-        let (state, cursor) = self.agents.state(&self.actor(agent)?, agent).await?;
-        super::reply(&*self.provider, &state, cursor, id, inbox).await
+        let (mut state, cursor) = self.agents.state(&self.actor(agent)?, agent).await?;
+        super::reply(&*self.provider, &mut state, cursor, id, inbox).await
     }
 
     /// What `parent`'s step did with the spawn named `intent` that its inbox

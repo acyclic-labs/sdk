@@ -55,7 +55,7 @@ async fn counter_only_keeps_effects_and_dispatch_counts_without_request_retentio
         ));
         vectors::drain(&host).await?;
         assert_eq!(
-            vectors::values(&*provider, root.conversation()?).await?,
+            vectors::outputs(&*provider, &root).await?,
             [b"one".to_vec()]
         );
         assert_eq!(host.runtime().counts(), (1, 0));

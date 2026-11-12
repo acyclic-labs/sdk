@@ -465,6 +465,9 @@ impl View {
                 } else {
                     self.outcome = Outcome::Settled;
                 }
+                if self.cancelling == Some(entry.inbox) {
+                    self.cancelling = None;
+                }
                 self.ring = true;
                 self.stop(seen);
             }
@@ -474,6 +477,10 @@ impl View {
                     self.stopped = Some((input, status.conversation));
                     if self.cancelling == Some(input) {
                         self.cancelling = None;
+                        if matches!(self.phase, Some(Phase::WaitingApproval { .. })) {
+                            self.notice =
+                                Some(format!("task {} failed: cancelled", conversation.task()));
+                        }
                     }
                 }
                 // A settled agent consumed every request before its cursor:
@@ -509,17 +516,10 @@ impl View {
                     self.settle_pending();
                     self.failed(conversation, &message);
                 } else if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
-                    if let Some(input) = self.cancelling.take() {
-                        // The cancel's stop shows once the entries this status
-                        // announced did: they hold the stopped turn's text.
-                        self.stopped = Some((input, status.conversation));
-                        // A cancelled approval fails its task; the next
-                        // prompt clears the report.
-                        if matches!(self.phase, Some(Phase::WaitingApproval { .. })) {
-                            self.notice =
-                                Some(format!("task {} failed: cancelled", conversation.task()));
-                        }
-                    } else if self.stopped.is_none() {
+                    // Idle acknowledges settlement, not that our cancellation
+                    // won. Only its matching status or cancelled entry marks it.
+                    self.cancelling = None;
+                    if self.stopped.is_none() {
                         // A prompt the cursor passed shows with its turn's entry.
                         self.pending.retain(|(inbox, _)| *inbox >= status.cursor);
                     }
@@ -1887,7 +1887,8 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn stop_cancels_the_active_input_and_preserves_a_newer_prompt() -> Result<(), Failure> {
+    async fn stop_targets_the_active_input_while_a_later_prompt_is_pending() -> Result<(), Failure>
+    {
         use acyclic_harness::{
             LocalHarness,
             context::{CompactionPolicy, ModelContextCapacity},
@@ -1900,19 +1901,22 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let workspace = directory.path().join("workspace");
         std::fs::create_dir(&workspace)?;
-        let (dispatched, mut requests) = tokio::sync::mpsc::channel(1);
+        let (entered, entering) = tokio::sync::oneshot::channel();
+        let gate = std::sync::Mutex::new(Some(entered));
         let provider = Arc::new(
             ScriptedModelProvider::new([
                 ScriptedTurn::Events(vec![ScriptedEvent::Pending {}]),
-                ScriptedTurn::Text("queued reply".into()),
-                ScriptedTurn::Text("none".into()),
+                ScriptedTurn::Text("later answer".into()),
+                ScriptedTurn::Text("completed before cancellation".into()),
             ])
             .with_context_capacity(ModelContextCapacity {
                 context_tokens: 32_768,
                 output_tokens: Some(4096),
             })
             .with_dispatch_observer(move |_| {
-                let _ = dispatched.try_send(());
+                if let Some(entered) = gate.lock().unwrap().take() {
+                    let _ = entered.send(());
+                }
                 Box::pin(async { Ok(()) })
             }),
         );
@@ -1925,6 +1929,8 @@ mod tests {
                         provider.clone(),
                     ),
                 )?
+                .without_default_tools()
+                .feedback_plugin(false)
                 .without_user_settings()
                 .state_directory(directory.path().join("state"))
                 .workspace_mounting(WorkspaceMounting::Physical)
@@ -1933,40 +1939,92 @@ mod tests {
             .await?,
         );
         let conversation = Conversation::open(harness.connect().await?);
-        let first = conversation.send("active", "active prompt").await?;
-        requests
-            .recv()
-            .await
-            .ok_or("model dispatch producer closed")?;
-        let second = conversation.send("queued", "queued prompt").await?;
+        let mut events = conversation.observe(None).await?;
+        let active = conversation.send("active", "keep running").await?;
+        tokio::select! {
+            entered = entering => entered?,
+            settled = conversation.wait_current_input() => {
+                return Err(format!("active input settled before dispatch: {settled:?}").into());
+            }
+        }
+        let later = conversation.send("later", "later prompt").await?;
         let mut view = View {
             pending: vec![
-                (first, "active prompt".into()),
-                (second, "queued prompt".into()),
+                (active, "keep running".into()),
+                (later, "later prompt".into()),
             ],
             ..View::default()
         };
-        // Approval Escape and explicit Stop share this cancellation entrance.
         view.cancel(&conversation).await?;
-        assert_eq!(view.cancelling, Some(first));
-        let settled = conversation.wait_current_input().await?;
-        let entries = conversation.entries(0, settled.conversation).await?;
+        assert_eq!(view.cancelling, Some(active));
+        let settlement = conversation.settle("later", later, &mut events).await?;
+        assert!(
+            matches!(
+                &settlement,
+                acyclic_harness::local::agent_conversation::Settlement::Reply(
+                    acyclic_harness::agent::Reply::Answered { entry, .. }
+                ) if entry.inbox == later && entry.outcome == TurnOutcome::Completed
+            ),
+            "later input did not complete independently: {settlement:?}"
+        );
+        if let acyclic_harness::local::agent_conversation::Settlement::Reply(
+            acyclic_harness::agent::Reply::Answered {
+                sequence, entry, ..
+            },
+        ) = &settlement
+        {
+            assert_eq!(
+                conversation.output_text_at(*sequence, entry).await?,
+                "later answer"
+            );
+        }
+        let entries = conversation
+            .entries(0, conversation.settled().await?)
+            .await?;
         assert!(
             entries
                 .iter()
-                .any(|entry| { entry.inbox == first && entry.outcome == TurnOutcome::Cancelled })
+                .any(|entry| entry.inbox == active && entry.outcome == TurnOutcome::Cancelled)
         );
-        let (sequence, queued) = entries
-            .iter()
-            .enumerate()
-            .find(|(_, entry)| entry.inbox == second)
-            .ok_or("queued input did not settle")?;
-        assert_eq!(queued.outcome, TurnOutcome::Completed);
-        assert_eq!(
-            conversation
-                .output_text_at(u64::try_from(sequence)?, queued)
-                .await?,
-            "queued reply"
+        assert_eq!(provider.request_count(), 2);
+        assert_eq!(conversation.cancel().await?, None);
+
+        let mut completed_events = conversation.observe(None).await?;
+        let completed = conversation
+            .send("completion-wins", "finish successfully")
+            .await?;
+        conversation.wait_current_input().await?;
+        // The view retained the selection before completion, but completion's
+        // terminal fact committed before its control reached the actor.
+        let mut completed_view = View {
+            pending: vec![(completed, "finish successfully".into())],
+            cancelling: Some(completed),
+            phase: Some(Phase::Running),
+            ..View::default()
+        };
+        conversation.cancel_input(completed).await?;
+        conversation.wait_current_input().await?;
+        let mut answered = false;
+        let mut idle = false;
+        while !answered || !idle {
+            let event = completed_events.next().await?;
+            answered |= matches!(&event, Event::Turn(entry)
+                if entry.inbox == completed && entry.outcome == TurnOutcome::Completed);
+            idle |= matches!(&event, Event::Status(status)
+                if status.conversation >= 3 && matches!(status.phase, Phase::Idle));
+            completed_view
+                .apply(&conversation, event, completed_events.seen())
+                .await?;
+        }
+        assert!(matches!(completed_view.outcome, Outcome::Settled));
+        assert!(completed_view.cancelling.is_none());
+        assert!(completed_view.stopped.is_none());
+        assert!(
+            completed_view
+                .transcript
+                .rows(200)
+                .iter()
+                .all(|row| !row.to_string().contains(CANCELLED))
         );
         assert_eq!(provider.request_count(), 3);
         Ok(())

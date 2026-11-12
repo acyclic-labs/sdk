@@ -1808,7 +1808,7 @@ mod tests {
         let AgentCommand::Reply { id, inbox, .. } = &command else {
             unreachable!()
         };
-        let answered = reply(&provider, &state, 3, id, *inbox).await?;
+        let answered = reply(&provider, &mut state, 3, id, *inbox).await?;
         let bytes = encode_agent_reply(&Ok(AgentReply::Reply { reply: answered }), &command)?;
         assert!(
             matches!(decode_agent_reply(&bytes, &command)?, Ok(AgentReply::Reply {

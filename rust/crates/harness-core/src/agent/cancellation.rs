@@ -3,14 +3,16 @@ use super::{AgentRecord as _, Error};
 use acyclic_stream::{ReadRequest, StreamPath};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
-/// A cancellation and the original checkpoint frontiers that publish it.
+/// Terminal input facts share one stream's atomic order. The first indexed
+/// fact for an input wins, including cancellation racing with settlement.
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct CancelledInput {
-    pub conversation: u64,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum InputFact {
+    Cancelled { conversation: u64 },
+    Completed,
 }
 
-impl super::AgentRecord for CancelledInput {}
+impl super::AgentRecord for InputFact {}
 
 /// Validate the immutable accepted input before publishing a cancellation fact.
 pub(super) async fn validate<P: crate::store::JournalProvider + ?Sized>(
@@ -41,8 +43,142 @@ pub(super) async fn validate<P: crate::store::JournalProvider + ?Sized>(
     Ok(())
 }
 
-pub(super) fn cancelled_path(agent: &super::AgentPath, input: u64) -> Result<StreamPath, Error> {
-    StreamPath::new(format!("{agent}/context/cancelled/{input}")).map_err(Error::Stream)
+fn input_events(agent: &super::AgentPath) -> Result<StreamPath, Error> {
+    StreamPath::new(format!("{agent}/context/input-events")).map_err(Error::Stream)
+}
+
+pub(super) fn cancellation(
+    agent: &super::AgentPath,
+    input: u64,
+    conversation: u64,
+) -> Result<(StreamPath, acyclic_stream::AppendRecord), Error> {
+    Ok((
+        input_events(agent)?,
+        acyclic_stream::AppendRecord {
+            value: InputFact::Cancelled { conversation }.encode()?.into(),
+            headers: acyclic_stream::RecordHeaders::new(
+                vec![input.to_be_bytes().to_vec().into()],
+                Vec::new(),
+            )
+            .map_err(Error::Stream)?,
+        },
+    ))
+}
+
+/// Fence cancellation against exactly the inputs this same commit settles.
+/// Steering inputs come from the immutable admitted interval; reserved follow-ups
+/// keep their independent turns. Each source window is read once, without a scan
+/// of conversation history or a separate publication commit. Indexed keys share
+/// one append mutation; record chunking follows the existing byte frame bound.
+pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
+    provider: &P,
+    agent: &super::AgentPath,
+    outs: &[super::Out],
+    request: &mut acyclic_stream::CommitRequest,
+) -> Result<(), Error> {
+    let mut completed = std::collections::BTreeSet::new();
+    let mut records = Vec::new();
+    for out in outs {
+        if let super::Out::InputCancelled {
+            input,
+            conversation,
+        } = out
+        {
+            let source = super::reply::inbox_record(provider, agent.inbox()?, *input)
+                .await?
+                .ok_or(Error::Record("cancelled input is unavailable"))?;
+            if let Some(input) = super::input::input(*input, source)
+                && let Some(run) = super::goal::continuing(agent, &input.input)
+            {
+                // A continuation can retire without a conversation entry.
+                // Index its run in the same terminal-fact append and commit
+                // as its physical input's cancellation, never a global floor.
+                records.push(acyclic_stream::AppendRecord {
+                    value: InputFact::Cancelled {
+                        conversation: *conversation,
+                    }
+                    .encode()?
+                    .into(),
+                    headers: acyclic_stream::RecordHeaders::new(
+                        vec![run.into_bytes().to_vec().into()],
+                        Vec::new(),
+                    )
+                    .map_err(Error::Stream)?,
+                });
+            }
+        }
+        let super::Out::Conversation(record) = out else {
+            continue;
+        };
+        let entry = super::ConversationEntry::decode(record)?;
+        completed.insert(entry.inbox);
+        let Some(cut) = entry.steering else { continue };
+        let mut from = entry.inbox.saturating_add(1);
+        while from < cut.through {
+            let limit = (cut.through - from).min(super::MAX_QUEUED as u64) as u32;
+            let end = from + u64::from(limit);
+            let mut records = provider
+                .read(ReadRequest {
+                    key: None,
+                    path: agent.inbox()?,
+                    from,
+                    limit,
+                    at_least: Default::default(),
+                })
+                .await
+                .map_err(Error::Stream)?;
+            while from < end {
+                let record = records
+                    .try_next()
+                    .await
+                    .map_err(Error::Stream)?
+                    .filter(|record| record.sequence == from)
+                    .ok_or(Error::Record("settled steering input is unavailable"))?;
+                if matches!(
+                    super::InboxRecord::decode(&record.value)?,
+                    super::InboxRecord::Message(_)
+                ) {
+                    completed.insert(from);
+                }
+                from += 1;
+            }
+        }
+    }
+    if !completed.is_empty() {
+        let value = InputFact::Completed.encode()?;
+        let per_record =
+            (acyclic_stream::MAX_RECORD_BYTES - value.len()) / std::mem::size_of::<u64>();
+        let keys = completed
+            .into_iter()
+            .map(|input| input.to_be_bytes().to_vec().into())
+            .collect::<Vec<_>>();
+        let completions = keys
+            .chunks(per_record)
+            .map(|keys| {
+                Ok(acyclic_stream::AppendRecord {
+                    value: value.clone().into(),
+                    headers: acyclic_stream::RecordHeaders::new(keys.to_vec(), Vec::new())
+                        .map_err(Error::Stream)?,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        records.extend(completions);
+    }
+    if !records.is_empty() {
+        let effect = request
+            .effects
+            .iter_mut()
+            .find(|effect| !effect.soft)
+            .ok_or(Error::Record("input settlement has no owning commit"))?;
+        let path = input_events(agent)?;
+        if let Some(acyclic_stream::CommitMutation::Append { records: original, .. }) = effect.mutations.iter_mut()
+            .find(|mutation| matches!(mutation, acyclic_stream::CommitMutation::Append {path: candidate, ..} if candidate == &path)) {
+            original.extend(records);
+        } else {
+            effect.mutations.push(acyclic_stream::CommitMutation::Append { path, records });
+        }
+    }
+    Ok(())
 }
 
 pub(super) async fn cancelled<P: acyclic_stream::StreamProvider + ?Sized>(
@@ -50,10 +186,27 @@ pub(super) async fn cancelled<P: acyclic_stream::StreamProvider + ?Sized>(
     agent: &super::AgentPath,
     input: u64,
 ) -> Result<Option<u64>, Error> {
+    cancelled_key(provider, agent, input.to_be_bytes().to_vec()).await
+}
+
+/// Run keys are 16 bytes; source-input keys are 8 bytes, so their domains do not overlap.
+pub(super) async fn cancelled_goal<P: acyclic_stream::StreamProvider + ?Sized>(
+    provider: &P,
+    agent: &super::AgentPath,
+    run: crate::OperationId,
+) -> Result<Option<u64>, Error> {
+    cancelled_key(provider, agent, run.into_bytes().to_vec()).await
+}
+
+async fn cancelled_key<P: acyclic_stream::StreamProvider + ?Sized>(
+    provider: &P,
+    agent: &super::AgentPath,
+    key: Vec<u8>,
+) -> Result<Option<u64>, Error> {
     let records = provider
         .read(ReadRequest {
-            key: None,
-            path: cancelled_path(agent, input)?,
+            key: Some(acyclic_stream::ReadKeySeek::exact(key, u64::MAX)),
+            path: input_events(agent)?,
             from: 0,
             limit: 1,
             at_least: Default::default(),
@@ -67,8 +220,10 @@ pub(super) async fn cancelled<P: acyclic_stream::StreamProvider + ?Sized>(
     let Some(record) = records.try_next().await.map_err(Error::Stream)? else {
         return Ok(None);
     };
-    let fact = CancelledInput::decode(&record.value)?;
-    Ok(Some(fact.conversation))
+    Ok(match InputFact::decode(&record.value)? {
+        InputFact::Cancelled { conversation } => Some(conversation),
+        InputFact::Completed => None,
+    })
 }
 
 pub(super) async fn accepted<P: acyclic_stream::StreamProvider + ?Sized>(
@@ -84,21 +239,14 @@ pub(super) fn cancel_effect(
     input: u64,
     conversation: u64,
 ) -> Result<acyclic_stream::CommitEffect, Error> {
-    let path = cancelled_path(agent, input)?;
-    Ok(acyclic_stream::CommitEffect {
-        conditions: vec![
-            acyclic_stream::CommitCondition::Absent { path: path.clone() },
-            acyclic_stream::CommitCondition::Tail {
-                path: agent.conversation()?,
-                expected: conversation,
-            },
-        ],
-        mutations: vec![acyclic_stream::CommitMutation::Append {
+    let (path, record) = cancellation(agent, input, conversation)?;
+    Ok(acyclic_stream::CommitEffect::hard(
+        Vec::new(),
+        vec![acyclic_stream::CommitMutation::Append {
             path,
-            records: vec![CancelledInput { conversation }.encode()?.into()],
+            records: vec![record],
         }],
-        soft: true,
-    })
+    ))
 }
 
 /// Selected-input admission shares the original driver and its custody. One

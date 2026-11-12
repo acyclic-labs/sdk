@@ -21,8 +21,7 @@ use acyclic_actors::{
     },
     local::{Creation, PreparedPublish, Store, Subscription},
 };
-use acyclic_stream::{CommitEffect, ReadRequest, StreamProvider};
-use futures::TryStreamExt;
+use acyclic_stream::CommitEffect;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
@@ -325,7 +324,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             // A new child's inherited inbox starts with its ancestors' records.
             // Its own adoption is at the cursor installed by the spawn commit.
             let from = cursor;
-            let records = self.read_back(agent, from, 1, u64::MAX).await?;
+            let records =
+                super::input::read_back(self.store.provider().as_ref(), agent, from, 1, u64::MAX)
+                    .await?;
             let [(sequence, InboxRecord::ForkAdopted(adopted))] = records.as_slice() else {
                 return Err(Error::Record("agent has no adoption record"));
             };
@@ -355,46 +356,6 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             .spawned_children
             .bind(Arc::clone(self.store.provider()));
         Ok((observed, cursor))
-    }
-
-    /// The same bounded original inbox window for execution and interruption.
-    async fn refill(&self, state: &mut AgentState, end: u64) -> Result<(), Error> {
-        if let Some((from, limit)) = state.overflowed(end) {
-            let records = self.read_back(&state.path, from, limit, end).await?;
-            state.refill(records, end);
-        }
-        Ok(())
-    }
-
-    /// Inbox records `[from, end)`, at most `limit`, in sequence order.
-    async fn read_back(
-        &self,
-        agent: &AgentPath,
-        from: u64,
-        limit: u32,
-        end: u64,
-    ) -> Result<Vec<(u64, InboxRecord)>, Error> {
-        let request = ReadRequest {
-            key: None,
-            path: agent.inbox()?,
-            from,
-            limit,
-            at_least: Default::default(),
-        };
-        let mut records = self
-            .store
-            .provider()
-            .read(request)
-            .await
-            .map_err(Error::Stream)?;
-        let mut read = Vec::new();
-        while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
-            if record.sequence >= end {
-                break;
-            }
-            read.push((record.sequence, InboxRecord::decode(&record.value)?));
-        }
-        Ok(read)
     }
 }
 
@@ -475,7 +436,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 Wake::Inbox { sequence, .. } => *sequence,
                 Wake::Alarm | Wake::Rejected => cursor,
             };
-            self.agents.refill(state, end).await?;
+            super::input::refill(self.agents.store.provider().as_ref(), state, end).await?;
         }
         if let Wake::Inbox {
             record: InboxRecord::Cancel(cancel),
@@ -569,7 +530,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             participant => Some(super::lifecycle::close_participant(&path, participant)?),
         };
         let step = prepared.step();
-        let request = lower(step, cursor, delivery_key(&step.state, &trigger)?)?;
+        let mut request = lower(step, cursor, delivery_key(&step.state, &trigger)?)?;
+        super::cancellation::complete(
+            self.agents.store.provider().as_ref(),
+            &path,
+            &step.outs,
+            &mut request,
+        )
+        .await?;
         let mut effects = request.effects;
         let spawned: BTreeSet<_> = step
             .outs
@@ -651,10 +619,13 @@ where
                             .get(INBOX)
                             .ok_or_else(|| guest("agent inbox subscription missing"))?
                             .cursor;
-                        self.agents
-                            .refill(&mut head.state, end)
-                            .await
-                            .map_err(guest)?;
+                        super::input::refill(
+                            self.agents.store.provider().as_ref(),
+                            &mut head.state,
+                            end,
+                        )
+                        .await
+                        .map_err(guest)?;
                     }
                     let state = head.as_ref().map(|head| &head.state);
                     let active = state

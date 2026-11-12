@@ -2,7 +2,7 @@
 //!
 //! An endpoint fixture can install [`Driver`], create [`adopted`], and send a
 //! message with the same intent as [`request`]. Both routes exercise the same
-//! turn and produce the same conversation bytes. Protocol fixtures must capture
+//! turn and produce the same canonical intent and outcome. Protocol fixtures must capture
 //! their actual host binding, invocation and reply; these helpers invent none.
 
 use crate::conformance::Result;
@@ -88,8 +88,29 @@ pub fn request(id: &str) -> Result<InboxRecord> {
     }))
 }
 
-/// Deterministic turn shared by host and endpoint fixtures. `once` publishes
-/// exactly its intent bytes; `spawn` also forks `child` at the saved cut;
+pub(super) fn entry(
+    agent: &AgentState,
+    queued: Queued,
+    outcome: TurnOutcome,
+) -> std::result::Result<Vec<u8>, Error> {
+    ConversationEntry {
+        inbox: queued.inbox,
+        input: queued.input,
+        output: super::vectors::prompt().map_err(|error| Error::Turn(Box::new(error)))?,
+        outcome,
+        goal: None,
+        observed_through: 0,
+        announcements: Vec::new(),
+        tool_results: None,
+        steering: None,
+        notices: None,
+    }
+    .with_observed_prefix(agent.steered_through)
+    .encode()
+}
+
+/// Deterministic turn shared by host and endpoint fixtures. Every intent publishes
+/// its canonical conversation entry; `spawn` also forks `child` at the saved cut;
 /// `respawn` requests that same child with a conflicting prompt. A host fixture
 /// can use delegated requests and a public client can use ordinary messages.
 pub struct Driver;
@@ -97,17 +118,24 @@ pub struct Driver;
 impl TurnDriver for Driver {
     fn step<'a>(
         &'a self,
-        _agent: &'a AgentState,
+        agent: &'a AgentState,
         _cursor: u64,
         input: Option<Queued>,
         _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
-            let id = match input.map(|queued| queued.input) {
-                Some(TurnInput::ApprovalRequested { id, .. } | TurnInput::Message { id, .. }) => id,
+            let queued = input.ok_or(Error::Record("missing conformance input"))?;
+            let id = match &queued.input {
+                TurnInput::ApprovalRequested { id, .. } | TurnInput::Message { id, .. } => {
+                    id.clone()
+                }
                 _ => return Err(Error::Record("unexpected conformance input")),
             };
-            let mut outs = vec![Out::Conversation(id.as_str().as_bytes().to_vec())];
+            let mut outs = vec![Out::Conversation(entry(
+                agent,
+                queued,
+                TurnOutcome::Completed,
+            )?)];
             if matches!(id.as_str(), "spawn" | "respawn") {
                 outs.push(Out::Spawn {
                     profile: None,

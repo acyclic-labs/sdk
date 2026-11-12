@@ -168,6 +168,66 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
 }
 
 #[tokio::test]
+async fn steering_withdraws_queued_messages_without_changing_frozen_admission() -> Result {
+    let stream = MemoryStream::default();
+    let path = create(&stream, id(7)).await?;
+    let message = |name: &str| -> Result<InboxRecord> {
+        Ok(InboxRecord::Message(Message {
+            from: user(),
+            id: intent(name),
+            body: Box::new(super::driver::file("message.md")?),
+            re: None,
+            attachments: None,
+        }))
+    };
+    for name in ["running", "withdrawn", "retained"] {
+        submit(&stream, send(&path, &user(), &message(name)?)?).await?;
+    }
+    let cancellation = |name: &str, input| {
+        InboxRecord::Cancel(Cancellation {
+            by: user(),
+            id: intent(name),
+            input,
+            conversation: 0,
+        })
+    };
+    submit(
+        &stream,
+        send(&path, &user(), &cancellation("withdraw-queued", 2))?,
+    )
+    .await?;
+    // B and its accepted cancellation are both committed before A's boundary.
+    // B must never reach the model; the unrelated message still joins A.
+    let selected = select_boundary(&stream, &path, 1, 2, BoundaryEnd::Open).await?;
+    assert_eq!((selected.from, selected.through), (2, 5));
+    assert!(
+        matches!(selected.inputs.as_slice(), [(3, InboxRecord::Message(message))]
+        if message.id == intent("retained"))
+    );
+    assert_eq!(
+        select_boundary(&stream, &path, 1, 2, BoundaryEnd::Exact(5)).await?,
+        selected
+    );
+    // Once the candidate's original range is frozen, a later cancellation
+    // cannot rewrite it. The next boundary reports its ordered withdrawal.
+    submit(
+        &stream,
+        send(&path, &user(), &cancellation("withdraw-admitted", 3))?,
+    )
+    .await?;
+    assert_eq!(
+        select_boundary(&stream, &path, 1, 2, BoundaryEnd::Exact(5)).await?,
+        selected
+    );
+    let later = select_boundary(&stream, &path, 1, 5, BoundaryEnd::Open).await?;
+    assert_eq!(later.through, 6);
+    assert!(matches!(later.inputs.as_slice(), [(5, InboxRecord::Notice {
+        notice: NoticePayload::Quiet(notice), ..
+    })] if notice.kind == "harness.input_cancelled" && notice.body["input"] == 3));
+    Ok(())
+}
+
+#[tokio::test]
 async fn steering_keeps_reserved_turns_and_freezes_cancellation_notices() -> Result {
     let stream = MemoryStream::default();
     let path = create(&stream, id(1)).await?;
@@ -264,38 +324,9 @@ async fn steering_keeps_reserved_turns_and_freezes_cancellation_notices() -> Res
         .await
         .is_err()
     );
-    // A completed answer wins the cancellation's conversation-tail condition.
-    // The control is still ordered in the inbox, but never becomes a withdrawal.
-    let commit = CommitRequest {
-        deadline_unix_millis: None,
-        effects: vec![CommitEffect::hard(
-            Vec::new(),
-            vec![CommitMutation::Append {
-                path: path.conversation()?,
-                records: vec![b"settled answer".to_vec().into()],
-            }],
-        )],
-        idempotency_key: intent_key("settled-answer", &[])?,
-    };
-    stream.commit(commit).await?;
-    let late = InboxRecord::Cancel(Cancellation {
-        by: user(),
-        id: intent("late-cancel"),
-        input: 3,
-        conversation: 0,
-    });
-    submit(&stream, send(&path, &user(), &late)?).await?;
-    let late_selection = select_boundary(&stream, &path, 3, 7, BoundaryEnd::Open).await?;
-    assert_eq!(late_selection.through, 8);
-    assert!(late_selection.inputs.is_empty());
-    assert_eq!(
-        select_boundary(&stream, &path, 3, 7, BoundaryEnd::Exact(8)).await?,
-        late_selection
-    );
-    assert_eq!(
-        select_boundary(&stream, &path, 3, 1, BoundaryEnd::Exact(first.through)).await?,
-        first
-    );
+    // Completion/cancellation races, including reserved follow-ups, are proved
+    // by handler::tests::unrelated_turn_completion_preserves_a_queued_cancellation
+    // using a real atomic settlement rather than an invented conversation row.
     // Independent turns retain their entries, but cannot block a later reply.
     let approval = InboxRecord::ApprovalRequested(ApprovalRequested {
         child: path.child(&id(3))?,

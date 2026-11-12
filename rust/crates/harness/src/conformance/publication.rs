@@ -128,9 +128,7 @@ async fn conflict(backend: &dyn Backend) -> Result {
         || counts.settled.load(Ordering::SeqCst) != settled + 1
         || counts.conflicts.load(Ordering::SeqCst) != 1
         || host.state(&root).await? != state
-        || !vectors::values(&*provider, root.conversation()?)
-            .await?
-            .is_empty()
+        || !vectors::outputs(&*provider, &root).await?.is_empty()
     {
         return Err("conflicting publication did not settle without consuming input".into());
     }
@@ -194,7 +192,7 @@ async fn publication(backend: &dyn Backend, fault: Fault) -> Result {
     if counts.settled.load(Ordering::SeqCst) != settled + 1 + usize::from(terminal) {
         return Err("terminal publication did not settle exactly once".into());
     }
-    if vectors::values(&*provider, root.conversation()?).await? != [b"once".to_vec()] {
+    if vectors::outputs(&*provider, &root).await? != [b"once".to_vec()] {
         return Err("publication duplicated or lost its turn effect".into());
     }
     Ok(())

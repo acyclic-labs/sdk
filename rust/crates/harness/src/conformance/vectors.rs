@@ -76,6 +76,30 @@ pub(crate) async fn values(
     }
 }
 
+/// Compare fixture intents and terminal outcomes only after canonical decoding.
+pub(crate) async fn outputs(
+    provider: &dyn StreamProvider,
+    agent: &AgentPath,
+) -> Result<Vec<Vec<u8>>> {
+    values(provider, agent.conversation()?)
+        .await?
+        .into_iter()
+        .map(|bytes| {
+            let entry = ConversationEntry::decode(&bytes)?;
+            match entry.outcome {
+                TurnOutcome::Cancelled => Ok(b"cancelled".to_vec()),
+                TurnOutcome::Completed => match entry.input {
+                    TurnInput::Message { id, .. } | TurnInput::ApprovalRequested { id, .. } => {
+                        Ok(id.as_str().as_bytes().to_vec())
+                    }
+                    _ => Err("unexpected conformance conversation input".into()),
+                },
+                _ => Err("unexpected conformance conversation outcome".into()),
+            }
+        })
+        .collect()
+}
+
 pub(crate) async fn controls(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
     let provider = Arc::new(Observed::new(storage.open().await?));
@@ -92,7 +116,7 @@ pub(crate) async fn controls(backend: &dyn Backend) -> Result {
         return Err("send replay changed receipt".into());
     }
     host.drain(&root).await?;
-    if values(&*provider, root.conversation()?).await? != [b"once".to_vec()] {
+    if outputs(&*provider, &root).await? != [b"once".to_vec()] {
         return Err("turn did not commit exactly once".into());
     }
     let first_statuses = values(&*provider, root.status()?).await?;
@@ -102,10 +126,11 @@ pub(crate) async fn controls(backend: &dyn Backend) -> Result {
     };
     host.drain(&root).await?;
     let statuses = values(&*provider, root.status()?).await?;
-    if statuses != first_statuses || !host.input_progress(&root, inbox).await?.settled {
-        return Err(
-            "unchanged phase appended status or failed to settle the original input".into(),
-        );
+    if statuses.len() != first_statuses.len() + 1
+        || StatusRecord::decode(statuses.last().ok_or("missing settled status")?)?.conversation != 2
+        || !host.input_progress(&root, inbox).await?.settled
+    {
+        return Err("settled entry failed to publish its original progress status".into());
     }
     let mut changed = adopted();
     changed.brief = Some(prompt()?);
@@ -165,7 +190,7 @@ pub(crate) async fn spawn_cut(backend: &dyn Backend) -> Result {
     if state.parent.as_ref() != Some(&root) || state.conversation_tail != 1 {
         return Err("child adoption differs from the saved cut".into());
     }
-    if values(&*provider, child.conversation()?).await? != [b"before".to_vec()] {
+    if outputs(&*provider, &child).await? != [b"before".to_vec()] {
         return Err("spawn inherited a later conversation cut".into());
     }
     let parent_inbox = values(&*provider, root.inbox()?).await?;
@@ -224,7 +249,7 @@ pub(crate) async fn restart(backend: &dyn Backend) -> Result {
             if actual != expected {
                 return Err(format!("reopen diverged at {at}/{fault:?}").into());
             }
-            if values(&*reopened, actual.path.conversation()?).await? != [b"once".to_vec()] {
+            if outputs(&*reopened, &actual.path).await? != [b"once".to_vec()] {
                 return Err(format!("reopen duplicated an effect at {at}/{fault:?}").into());
             }
         }

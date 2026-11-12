@@ -127,6 +127,48 @@ pub struct Progress {
     pub checkpoint: Vec<u8>,
 }
 
+/// Refill the original bounded window without reading past its committed cut.
+pub(super) async fn refill<P: acyclic_stream::StreamProvider + ?Sized>(
+    provider: &P,
+    state: &mut super::AgentState,
+    end: u64,
+) -> Result<(), super::Error> {
+    if let Some((from, limit)) = state.overflowed(end) {
+        let records = read_back(provider, &state.path, from, limit, end).await?;
+        state.refill(records, end);
+    }
+    Ok(())
+}
+
+pub(super) async fn read_back<P: acyclic_stream::StreamProvider + ?Sized>(
+    provider: &P,
+    agent: &AgentPath,
+    from: u64,
+    limit: u32,
+    end: u64,
+) -> Result<Vec<(u64, InboxRecord)>, super::Error> {
+    use super::AgentRecord as _;
+    use futures::TryStreamExt as _;
+    let mut records = provider
+        .read(acyclic_stream::ReadRequest {
+            key: None,
+            path: agent.inbox()?,
+            from,
+            limit,
+            at_least: Default::default(),
+        })
+        .await
+        .map_err(super::Error::Stream)?;
+    let mut read = Vec::new();
+    while let Some(record) = records.try_next().await.map_err(super::Error::Stream)? {
+        if record.sequence >= end {
+            break;
+        }
+        read.push((record.sequence, InboxRecord::decode(&record.value)?));
+    }
+    Ok(read)
+}
+
 /// The turn input an inbox record at `sequence` carries.
 pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
     let steering = matches!(

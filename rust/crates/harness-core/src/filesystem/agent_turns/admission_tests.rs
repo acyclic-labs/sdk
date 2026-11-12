@@ -154,6 +154,7 @@ async fn announcement_publication_preserves_workload_and_delegated_authority() -
 async fn external_interactions_require_host_custody_even_under_broad_guest_grants() -> Result<()> {
     use crate::contract::capability::HARNESS_HOST;
     use crate::conversation::{ContentResidencyVerifier, VolumeOperation};
+    let file_bytes = crate::conversation::Limits::default().file_bytes;
     for structured in [false, true] {
         let path = AgentPath::root(&crate::agent::AgentId::from_bytes([187; 16]));
         let owner = crate::AgentId::from_bytes(path.id_bytes());
@@ -249,10 +250,10 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             private_grant,
         );
         files
-            .create("custody.json", b"original interaction", 4096)
+            .create("custody.json", b"original interaction", file_bytes)
             .await?;
         assert_eq!(
-            files.read("custody.json", 4096).await?.as_deref(),
+            files.read("custody.json", file_bytes).await?.as_deref(),
             Some(b"original interaction".as_slice())
         );
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -274,7 +275,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
         let missing = private_head
             .read(
                 "/.system/interactions/custody.json",
-                4096,
+                file_bytes,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
@@ -295,7 +296,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 b"host data",
                 "application/json",
                 "control.json",
-                4096,
+                file_bytes,
                 &crate::IdempotencyKey::new("host-control")?,
                 None,
                 Default::default(),
@@ -306,11 +307,11 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             host.clone(),
             &guest.verifier,
             &guest.scope,
-            4096,
+            file_bytes,
             None,
         )?;
         for ceiling in [None, Some(parent.capabilities())] {
-            let denied = async { reader.read(&control, 4096, ceiling, None)?.await }
+            let denied = async { reader.read(&control, file_bytes, ceiling, None)?.await }
                 .await
                 .expect_err("guest read host data through the persisted policy");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
@@ -322,28 +323,64 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             VolumeOperation::Write,
             &mut None,
         )?;
-        let denied = host
+        for path in ["forged.json", "inputs/forged.json"] {
+            let denied = host
+                .put_content(
+                    &journal,
+                    &guest_write,
+                    path,
+                    b"guest data",
+                    "application/json",
+                    "forged.json",
+                    file_bytes,
+                    &crate::IdempotencyKey::new(format!("guest-forgery:{path}"))?,
+                    None,
+                    Default::default(),
+                )
+                .await
+                .expect_err("guest wrote the host journal");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        }
+        let input = host
             .put_content(
                 &journal,
-                &guest_write,
-                "forged.json",
-                b"guest data",
-                "application/json",
-                "forged.json",
-                4096,
-                &crate::IdempotencyKey::new("guest-forgery")?,
+                &control_grant,
+                "inputs/message.txt",
+                b"selected input",
+                "text/plain",
+                "message.txt",
+                file_bytes,
+                &crate::IdempotencyKey::new("selected-input")?,
                 None,
                 Default::default(),
             )
-            .await
-            .expect_err("guest wrote the host journal");
-        assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+            .await?;
+        let input_scope = root.bootstrap_scope(
+            "selected-input",
+            &Capabilities::new([input.read_capability(&mut None)?]),
+            Some(owner),
+            &mut None,
+        )?;
+        let input_reader = FilesystemContentVerifier::new(
+            host.clone(),
+            &guest.verifier,
+            &input_scope,
+            file_bytes,
+            None,
+        )?;
+        assert_eq!(
+            input_reader
+                .read(&input, file_bytes, None, None)?
+                .await?
+                .as_ref(),
+            b"selected input"
+        );
         let announcements = AgentInternalFiles::new(
             host.clone(),
             journal.clone(),
             control_grant.clone(),
             journal.clone(),
-            control_grant.clone(),
+            control_grant,
         );
         let published = announcements
             .stage_announcement(
@@ -353,7 +390,10 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             )
             .await?;
         assert_eq!(
-            reader.read(&published, 4096, None, None)?.await?.as_ref(),
+            reader
+                .read(&published, file_bytes, None, None)?
+                .await?
+                .as_ref(),
             b"published announcement"
         );
         announcements
@@ -363,9 +403,18 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 b"later announcement",
             )
             .await?;
-
         assert_eq!(
-            reader.read(&published, 4096, None, None)?.await?.as_ref(),
+            input_reader
+                .read(&input, file_bytes, None, None)?
+                .await?
+                .as_ref(),
+            b"selected input"
+        );
+        assert_eq!(
+            reader
+                .read(&published, file_bytes, None, None)?
+                .await?
+                .as_ref(),
             b"published announcement"
         );
         let missing_role = root.bootstrap_scope("guest", &guest.grants, Some(owner), &mut None)?;
@@ -382,66 +431,8 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .is_err()
         );
         assert_eq!(
-            files.read("custody.json", 4096).await?.as_deref(),
+            files.read("custody.json", file_bytes).await?.as_deref(),
             Some(b"original interaction".as_slice())
-        );
-        let denied = host
-            .put_content(
-                &journal,
-                &guest_write,
-                "inputs/forged.json",
-                b"guest data",
-                "application/json",
-                "forged.json",
-                4096,
-                &crate::IdempotencyKey::new("guest-input-forgery")?,
-                None,
-                Default::default(),
-            )
-            .await
-            .expect_err("guest wrote a published input");
-        assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
-        let input = host
-            .put_content(
-                &journal,
-                &control_grant,
-                "inputs/message.txt",
-                b"selected input",
-                "text/plain",
-                "message.txt",
-                4096,
-                &crate::IdempotencyKey::new("selected-input")?,
-                None,
-                Default::default(),
-            )
-            .await?;
-        let input_scope = root.bootstrap_scope(
-            "selected-input",
-            &Capabilities::new([input.read_capability(&mut None)?]),
-            Some(owner),
-            &mut None,
-        )?;
-        let input_reader = FilesystemContentVerifier::new(
-            host.clone(),
-            &guest.verifier,
-            &input_scope,
-            4096,
-            None,
-        )?;
-        assert_eq!(
-            input_reader.read(&input, 4096, None, None)?.await?.as_ref(),
-            b"selected input"
-        );
-        announcements
-            .stage_announcement(
-                crate::agent::AnnouncementKind::Targets,
-                [191; 32],
-                b"after selected input",
-            )
-            .await?;
-        assert_eq!(
-            input_reader.read(&input, 4096, None, None)?.await?.as_ref(),
-            b"selected input"
         );
     }
     Ok(())

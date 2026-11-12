@@ -42,7 +42,8 @@ pub enum BoundaryEnd {
 
 /// Read one window at an actual model boundary. A later arrival belongs to a
 /// later boundary. Cancellation of `active` and archive are barriers; a
-/// cancellation of another input remains an ordered notice. The actor's
+/// cancellation withdraws an unadmitted message in this same cut; cancellation
+/// of an already admitted input remains an ordered notice. The actor's
 /// asynchronous interrupt cannot let later input join a cancelled turn.
 /// `from` is the last admitted model frontier; a frozen range is replayed
 /// independently of which unrelated queued inputs the actor has consumed.
@@ -111,6 +112,16 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
                     } else if cancel.input == active {
                         barrier = true;
                         break;
+                    } else if let Some(index) =
+                        selection.inputs.iter().position(|(sequence, input)| {
+                            *sequence == cancel.input && matches!(input, InboxRecord::Message(_))
+                        })
+                    {
+                        // Only this immutable cut can withdraw a candidate.
+                        // A later cancellation must not change frozen replay
+                        // or remove an instruction already sent to the model.
+                        selection.inputs.remove(index);
+                        None
                     } else {
                         Some(InboxRecord::Notice {
                             id: cancel.id,

@@ -169,7 +169,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             return Err("reply was not committed".into());
         };
         host.drain(&path).await?;
-        let second = host.state(&path).await?;
+        let mut second = host.state(&path).await?;
         assert_eq!(
             second.phase,
             Phase::Waiting {
@@ -184,7 +184,14 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         );
         assert_eq!(second.steered_through, inbox + 1);
         assert!(matches!(
-            reply(&*stream, &second, inbox + 1, &intent("first-reply"), inbox).await?,
+            reply(
+                &*stream,
+                &mut second,
+                inbox + 1,
+                &intent("first-reply"),
+                inbox
+            )
+            .await?,
             Reply::Pending
         ));
         assert!(
@@ -212,9 +219,16 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             control.advance_to(120)?;
         }
         host.drain(&path).await?;
-        let settled = host.state(&path).await?;
+        let mut settled = host.state(&path).await?;
         assert!(matches!(
-            reply(&*stream, &settled, inbox + 1, &intent("first-reply"), inbox).await?,
+            reply(
+                &*stream,
+                &mut settled,
+                inbox + 1,
+                &intent("first-reply"),
+                inbox
+            )
+            .await?,
             Reply::Answered { sequence: 1, .. }
         ));
         assert_eq!(settled.phase, Phase::Idle);
