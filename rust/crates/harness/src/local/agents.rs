@@ -328,7 +328,7 @@ impl TurnContext for LocalContext {
                     verifier: bindings.context.verifier.clone(),
                     scope: bindings.context.scope.copy(&mut None)?,
                     shell: Arc::new(shell.clone()),
-                    catalog: ToolRegistry::default(),
+                    catalog: crate::tool::ToolRegistry::default(),
                 })),
                 None => executor,
             };
