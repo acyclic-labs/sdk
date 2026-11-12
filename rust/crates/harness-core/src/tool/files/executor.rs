@@ -480,10 +480,7 @@ impl ToolExecutor for FileTool {
             let io = owned_io.as_ref();
             #[cfg(target_arch = "wasm32")]
             let io = None;
-            // Effective reads were authorized against their selected layer in preflight.
-            if !path.starts_with(crate::layers::EFFECTIVE_PATH) {
-                context.authorize_tool_path_read(path, io)?;
-            }
+            context.authorize_tool_path_read(path, io)?;
             if self.is_read() {
                 return Ok(());
             }

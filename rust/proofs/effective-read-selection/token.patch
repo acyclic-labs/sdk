@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/tool/files/source.rs
++++ b/rust/crates/harness-core/src/tool/files/source.rs
+@@ -18,7 +18,7 @@
+             // that selection checks the version's original layer.
+             Some(version) => {
+                 let (source, custody) = match path.strip_prefix(crate::layers::EFFECTIVE_PATH) {
+-                    Some(relative) => super::version::decode_version(relative, version, work)?,
++                    Some(_) => return Ok(Self { source: None, custody: None }),
+                     None => {
+                         super::version::decode_tool_version(Some(context), path, version, work)?
+                     }
