@@ -62,7 +62,9 @@ async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() ->
         "opening observes absence once, then retains the committed receipt"
     );
     let before = provider.requests();
-    let first = runtime.advance_dispatcher(&store, opened, 0, 3, 0).await?;
+    let first = runtime
+        .advance_dispatcher(&store, opened, 0, 3, 0, Vec::new())
+        .await?;
     assert_eq!(
         provider.requests().since(before).control(),
         0,
@@ -75,10 +77,14 @@ async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() ->
     let stale = store.load(&actor).await?;
     assert_eq!(first.tail, stale.tail);
     assert_eq!(first.anchor, stale.anchor);
-    let replaced = runtime.advance_dispatcher(&store, first, 0, 5, 0).await?;
+    let replaced = runtime
+        .advance_dispatcher(&store, first, 0, 5, 0, Vec::new())
+        .await?;
     let before = provider.requests();
     assert!(matches!(
-        runtime.advance_dispatcher(&store, stale, 0, 7, 0).await,
+        runtime
+            .advance_dispatcher(&store, stale, 0, 7, 0, Vec::new())
+            .await,
         Err(Error::Conflict)
     ));
     let lost = provider.requests().since(before);
@@ -100,7 +106,7 @@ async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() ->
     // Only a new invocation may propose a cursor against this observed cut.
     let before = provider.requests();
     let reconciled = runtime
-        .advance_dispatcher(&store, observed, 0, 7, 0)
+        .advance_dispatcher(&store, observed, 0, 7, 0, Vec::new())
         .await?;
     assert_eq!(
         provider.requests().since(before).control(),

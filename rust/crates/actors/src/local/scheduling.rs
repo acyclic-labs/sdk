@@ -103,6 +103,31 @@ pub(super) fn read(
     Ok(())
 }
 
+/// The activation checkpoint of a shard that has observed entries before
+/// `seen`, and whether it carries every failed actor forward. `holds` has one
+/// item per failed actor: its latest activation entry at or past the durable
+/// checkpoint, or None. Without a carry, the checkpoint stops at the earliest
+/// such entry, so a restart replays every failed actor. Once another actor's
+/// entry follows them all, or a failed actor has none, it passes `seen` and
+/// commits a fresh entry per failed actor with it. A carried entry alone never
+/// carries again, so a poisoned actor holds back only its own entry.
+pub(super) fn checkpoint(seen: u64, holds: &[Option<u64>]) -> (u64, bool) {
+    let mut earliest = seen;
+    let mut latest = None;
+    for &hold in holds {
+        let Some(hold) = hold else {
+            return (seen, true);
+        };
+        earliest = earliest.min(hold);
+        latest = latest.max(Some(hold));
+    }
+    match latest {
+        Some(latest) if seen > latest.saturating_add(1) => (seen, true),
+        Some(_) => (earliest, false),
+        None => (seen, false),
+    }
+}
+
 /// The root child holding every shard's activation log and deadline windows.
 const SCHEDULE: &str = "_schedule";
 

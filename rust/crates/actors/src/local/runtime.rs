@@ -41,7 +41,7 @@ use std::{
     hash::BuildHasher,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
 };
@@ -51,6 +51,9 @@ struct Slot {
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
     refresh: AtomicBool,
+    /// Just past its latest activation entry this dispatcher observed or
+    /// carried; zero for none. A failed delivery's checkpoint bound.
+    entry: AtomicU64,
     event_deliveries: AtomicUsize,
     /// Control requests serialize separately from the delivery they stop.
     control: tokio::sync::Mutex<()>,
@@ -301,6 +304,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
                 refresh: AtomicBool::new(false),
+                entry: AtomicU64::new(0),
                 event_deliveries: AtomicUsize::new(0),
                 control: tokio::sync::Mutex::new(()),
                 delivery_control: SyncMutex::new(DeliveryControl::default()),
@@ -791,6 +795,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     // Activation is a wake hint, not a placement command. The
                     // local placement owner hosts its shard's actors on demand;
                     // under external placement only admitted residents wake.
+                    let cursor = record
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(Error::Invalid("activation cursor overflow"))?;
                     if let Ok(actor) = ActorReference::decode(record.value.as_ref())
                         && self.store.scheduling_shard(&actor) == shard
                         && self.includes(&actor)
@@ -798,12 +806,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         if self.places {
                             self.track(actor.clone())?;
                         }
+                        if let Some(slot) = self.slot(&actor) {
+                            slot.entry.fetch_max(cursor, Ordering::AcqRel);
+                        }
                         self.wake(&actor);
                     }
-                    let cursor = record
-                        .sequence
-                        .checked_add(1)
-                        .ok_or(Error::Invalid("activation cursor overflow"))?;
                     seen.insert(shard, cursor);
                 }
                 Event::Dispatched(shard, result) => {
@@ -946,7 +953,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // A checkpoint may pass an activation entry only after its wake
             // finished: every seen entry was delivered to quiescence, so a
             // restart replays exactly the entries that may still own work.
-            // A failed delivery keeps its entries for the next incarnation.
+            // A failed actor keeps its own latest entry, or the checkpoint
+            // commits a fresh one for it (`scheduling::checkpoint`); either
+            // way only that actor's wake is retained, never its whole shard.
             // A pending alarm lives in its deadline window, so the activation
             // cursor never waits for it. The window watermark passes only
             // windows whose wakes were delivered, never the current window
@@ -959,23 +968,46 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // ready index, for every consumer (this loop, `drain`, direct
             // deliveries), so no local view can let a checkpoint pass one.
             held = self.ready.busy();
-            if held || self.ready.failed() {
+            if held {
                 continue;
             }
             let now = self.clock.now_unix_ms();
             for (&shard, previous) in &mut dispatchers {
-                let cursor = seen[&shard];
+                let Some(checkpoint) = previous.as_ref() else {
+                    continue;
+                };
+                let from = dispatcher::activation_cursor(checkpoint);
+                let failed = self.ready.failed(shard);
+                let holds: Vec<_> = failed
+                    .iter()
+                    .map(|actor| {
+                        self.slot(actor)
+                            .map(|slot| slot.entry.load(Ordering::Acquire))
+                            .filter(|&entry| entry > from)
+                            .map(|entry| entry - 1)
+                    })
+                    .collect();
+                let (cursor, carry) = scheduling::checkpoint(seen[&shard], &holds);
                 let deadline = consumed[&shard].min(self.ready.watermark(shard, now));
                 if let Some(previous) = previous.take_if(|previous| {
-                    dispatcher::activation_cursor(previous) < cursor
-                        || dispatcher::deadline_cursor(previous) != deadline
+                    from < cursor || dispatcher::deadline_cursor(previous) != deadline
                 }) {
+                    let carried = if carry { failed } else { Vec::new() };
+                    for actor in &carried {
+                        // Its fresh entry lands at or past the cursor.
+                        if let Some(slot) = self.slot(actor) {
+                            slot.entry
+                                .fetch_max(cursor.saturating_add(1), Ordering::AcqRel);
+                        }
+                    }
                     let store = &stores[&shard];
                     dispatching.push(Box::pin(async move {
                         (
                             shard,
-                            self.advance_dispatcher(store, previous, shard, cursor, deadline)
-                                .await,
+                            self.advance_dispatcher(
+                                store, previous, shard, cursor, deadline, carried,
+                            )
+                            .await,
                         )
                     }));
                 }
@@ -1044,8 +1076,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 self.handler.manifest().validate_interrupts()?;
                 // Every delivery counts in flight in the shared ready index,
                 // whichever consumer started it, until it settles; a failed
-                // one stops this incarnation's checkpoints.
-                let flight = self.ready.flight();
+                // one keeps its actor's wake past every later checkpoint.
+                let flight = self.ready.flight(actor);
                 // Duplicate events for one actor wait outside global admission. Only
                 // an actor that can make progress may occupy an active delivery slot.
                 let inner = slot.inner.lock().await;
@@ -1068,9 +1100,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                     Err(error) => Err(error),
                 };
-                if result.is_err() {
-                    flight.fail();
+                let failed = result
+                    .as_ref()
+                    .is_err_and(|error| !matches!(error, Error::Conflict));
+                if failed {
+                    // The carried wake, not a resident token, now retains its
+                    // alarm: a later delivery observes it again.
+                    slot.refresh.store(true, Ordering::Release);
+                    slot.registration.suspend_alarm();
                 }
+                flight.finish(failed);
                 result
             }
         )

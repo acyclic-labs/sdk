@@ -46,7 +46,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
     let (checkpoint, address) = host.dispatcher_store(shard)?;
     let initial = checkpoint.load(&address).await?;
     let tail = provider.tail(original_path.clone()).await?;
-    host.advance_dispatcher(&checkpoint, initial, shard, tail, 0)
+    host.advance_dispatcher(&checkpoint, initial, shard, tail, 0, Vec::new())
         .await?;
     let replacement = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
