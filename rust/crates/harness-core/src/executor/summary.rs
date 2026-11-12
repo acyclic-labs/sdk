@@ -218,8 +218,8 @@ impl StockExecution<'_> {
         Ok(text)
     }
 
-    /// Publish both authored summaries and kernel markers with the same exact
-    /// output provenance. Their original keys remain distinct for replay.
+    /// Publish a selected summary with the exact source and output provenance
+    /// replay requires. Manager responses retain their own original keys.
     pub(super) async fn publish_summary(
         &self,
         journal: &dyn ExecutionJournal,

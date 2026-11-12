@@ -270,15 +270,24 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    for output_capacity in [Some(4096), None] {
+    for output_capacity in [Some(4096), Some(8192)] {
         let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
             crate::AgentId::new(),
             65_536,
         ))?;
         let journal = storage.journal();
         let journal = journal.as_ref();
-        let (provider, _accounting_calls) =
-            counted_model(65_536, None, [ScriptedTurn::Text("answer".into())], []);
+        let (provider, _accounting_calls) = counted_model(
+            65_536,
+            None,
+            [
+                ScriptedTurn::Text(
+                    r#"{"version":1,"drop_through":3,"summary":"MANAGED_SUMMARY"}"#.into(),
+                ),
+                ScriptedTurn::Text("answer".into()),
+            ],
+            [],
+        );
         let provider = Arc::new(
             Arc::into_inner(provider)
                 .expect("unique fixture model")
@@ -295,11 +304,11 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
                 },
                 ModelMessage {
                     role: ModelRole::User,
-                    content: ModelContent::Text("o".repeat(30_000)),
+                    content: ModelContent::Text("o".repeat(25_000)),
                 },
                 ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Text("a".repeat(30_000)),
+                    content: ModelContent::Text("a".repeat(25_000)),
                 },
             ],
             ..crate::context::Context::default()
@@ -318,16 +327,12 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
         let input = TurnInput {
             max_steps: None,
             operation_id: OperationId::new(),
-            input: ModelContent::Text("c".repeat(6_000)),
+            input: ModelContent::Text("c".repeat(20_000)),
             selected_context: None,
         };
-        let (output, _trace) =
-            acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(
-                || (),
-                |()| runtime.block_on(executor.execute(input.clone(), journal)),
-            );
-        let output = output?;
+        let output = runtime.block_on(executor.execute(input.clone(), journal))?;
         assert_eq!(output.text, "answer");
+        assert_eq!(output.steps, 1, "context management is not a worker step");
         assert_eq!(
             runtime.block_on(executor.execute(input.clone(), journal))?,
             output
@@ -349,41 +354,104 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
         };
         assert_eq!(capacity_tokens, 65_536);
         assert!(
-            input_tokens < 7_000,
+            input_tokens < 21_000,
             "occupancy kept the pre-rewrite input count"
         );
         let requests = provider.requests();
-        assert_eq!(requests.len(), 1);
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].summary);
+        assert!(!requests[1].summary);
+        let response = &requests[1];
         assert_eq!(
             provider.context_capacity(&requests[0].model)?.output_tokens,
             output_capacity
         );
-        assert_eq!(requests[0].messages.len(), 3);
-        let ModelContent::Part(ModelContentPart::File { file, .. }) =
-            &requests[0].messages[0].content
+        assert_eq!(response.messages.len(), 3);
+        let ModelContent::Part(ModelContentPart::File { file, .. }) = &response.messages[0].content
         else {
-            panic!("the backstop marker opens the request");
+            panic!("the selected summary opens the request");
         };
-        assert!(
-            runtime.block_on(journal.load(file, None)?)?.as_ref()
-                == super::super::compaction::BACKSTOP_MARKER.as_bytes()
+        assert_eq!(
+            runtime.block_on(journal.load(file, None)?)?.as_ref(),
+            b"MANAGED_SUMMARY"
         );
         assert_eq!(
-            requests[0].messages[1].content,
+            response.messages[1].content,
             ModelContent::Text("keep".into())
         );
         assert_eq!(
-            requests[0].messages.last().map(|message| &message.content),
-            Some(&ModelContent::Text("c".repeat(6_000)))
+            response.messages.last().map(|message| &message.content),
+            Some(&ModelContent::Text("c".repeat(20_000)))
         );
-        #[cfg(not(target_arch = "wasm32"))]
-        assert_eq!(
-            _trace
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_manager_rewrites_preserve_history_and_never_dispatch_the_worker() -> Result<()> {
+    for reply in [
+        "not a rewrite",
+        r#"{"version":2,"drop_through":2,"summary":"wrong version"}"#,
+        r#"{"version":1,"drop_through":0,"summary":"empty range"}"#,
+        r#"{"version":1,"drop_through":3,"summary":"unseen source"}"#,
+        r#"{"version":1,"drop_through":1,"summary":"insufficient rewrite"}"#,
+    ] {
+        let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+        let journal = storage.journal();
+        let (provider, _) = counted_model(32_768, None, [ScriptedTurn::Text(reply.into())], []);
+        let source = crate::context::Context {
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("o".repeat(10_000)),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Text("a".repeat(10_000)),
+                },
+            ],
+            ..Default::default()
+        };
+        let executor = StockExecutor::new(
+            Model::new("fixture".into(), "managed-context".into(), "1".into())?,
+            provider.clone(),
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "history",
+                "1",
+                Arc::new(source),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>]),
+            ToolRegistry::default(),
+        );
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("current".repeat(3_000)),
+            selected_context: None,
+            max_steps: None,
+        };
+        for _ in 0..2 {
+            assert!(
+                matches!(
+                    executor
+                        .execute_progress(input.clone(), journal.as_ref())
+                        .await?,
+                    ExecutionProgress::PreDispatchFailed(_)
+                ),
+                "manager response {reply} must not authorize an unchecked worker request"
+            );
+        }
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1, "replay must not call the manager again");
+        assert!(
+            requests[0].summary,
+            "a rejected rewrite must never dispatch the worker"
+        );
+        let records = journal.replay(input.operation_id, 0, 128, None)?.await?;
+        assert!(
+            records
                 .iter()
-                .filter(|(kind, _)| *kind == "prepare request")
-                .count(),
-            5,
-            "post-stage budgeting repeated admission of the validated request"
+                .all(|record| !matches!(record.event, ExecutionEvent::ContextCompacted { .. })),
+            "a rejected rewrite must not replace its source history"
         );
     }
     Ok(())

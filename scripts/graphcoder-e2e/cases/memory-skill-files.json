@@ -22,7 +22,7 @@
             "name": "write",
             "arguments": {
               "content": "ORIGINAL_PRIVATE_EVIDENCE",
-              "path": "volume:///private/memory/decision.md"
+              "path": "volume:///home/memory/decision.md"
             },
             "id": "memory-1"
           }
@@ -38,7 +38,7 @@
             "name": "write",
             "arguments": {
               "content": "---\nname: retained-check\ndescription: Inspect retained evidence before revising it.\n---\nREAD_RETAINED_EVIDENCE_BEFORE_EDITING\n",
-              "path": "volume:///private/skills/retained-check/SKILL.md"
+              "path": "volume:///home/skills/retained-check/SKILL.md"
             },
             "id": "memory-2"
           }
@@ -68,7 +68,7 @@
           {
             "name": "read",
             "arguments": {
-              "path": "volume:///private/skills/retained-check/SKILL.md"
+              "path": "volume:///home/skills/retained-check/SKILL.md"
             },
             "id": "memory-5"
           }
@@ -99,7 +99,7 @@
           {
             "name": "read",
             "arguments": {
-              "path": "volume:///private/skills/retained-check/SKILL.md"
+              "path": "volume:///home/skills/retained-check/SKILL.md"
             },
             "id": "memory-7"
           }
@@ -113,7 +113,7 @@
           {
             "name": "read",
             "arguments": {
-              "path": "volume:///private/memory/decision.md"
+              "path": "volume:///home/memory/decision.md"
             },
             "id": "memory-8"
           }
@@ -129,7 +129,7 @@
             "name": "write",
             "arguments": {
               "content": "CHILD_PRIVATE_REVISION",
-              "path": "volume:///private/memory/decision.md"
+              "path": "volume:///home/memory/decision.md"
             },
             "id": "memory-9"
           }
@@ -144,7 +144,7 @@
           {
             "name": "read",
             "arguments": {
-              "path": "volume:///private/memory/decision.md"
+              "path": "volume:///home/memory/decision.md"
             },
             "id": "memory-10"
           }
@@ -183,7 +183,7 @@
           {
             "name": "read",
             "arguments": {
-              "path": "volume:///private/memory/decision.md"
+              "path": "volume:///home/memory/decision.md"
             },
             "id": "memory-13"
           }

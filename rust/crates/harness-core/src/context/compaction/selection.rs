@@ -213,31 +213,12 @@ pub(crate) fn compact_context(
     let made = (|| {
         let (mut selected, groups) =
             mandatory_flags(context, summary.source_messages as usize, &mut quota)?;
-        let mut count = selected.iter().filter(|value| **value).count();
+        let count = selected.iter().filter(|value| **value).count();
         if count >= maximum {
             return Err(compaction_error(
                 quota.work(),
                 "mandatory context exceeds compaction message budget",
             ));
-        }
-        for group in groups.iter().rev() {
-            compaction_step(&mut quota)?;
-            let root = group.root;
-            let mut size = groups[root].size;
-            for source in groups[root].sources() {
-                compaction_step(&mut quota)?;
-                if !selected[source] {
-                    size += groups[source].size;
-                }
-            }
-            if !selected[root] && size < maximum - count {
-                selected[root] = true;
-                for source in groups[root].sources() {
-                    compaction_step(&mut quota)?;
-                    selected[source] = true;
-                }
-                count += size;
-            }
         }
         for (position, group) in groups.iter().enumerate() {
             compaction_step(&mut quota)?;
