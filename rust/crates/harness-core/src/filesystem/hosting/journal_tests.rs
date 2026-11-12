@@ -26,6 +26,10 @@ impl TurnExecutors for NoTurns {
 }
 
 async fn binding() -> TestResult<(Binding, AgentPath)> {
+    binding_with(Arc::new(NoTurns)).await
+}
+
+async fn binding_with(executors: Arc<dyn TurnExecutors>) -> TestResult<(Binding, AgentPath)> {
     let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
     let bound = Bound::local_root(
@@ -49,7 +53,7 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },
         Turns {
-            executors: Arc::new(NoTurns),
+            executors,
             limits: TurnLimits {
                 maximum_bytes: 65_536,
                 history_turns: 8,
@@ -88,6 +92,115 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
     };
     bound.agents().drain(&root).await?;
     Ok((bound, root))
+}
+
+#[tokio::test]
+async fn committed_input_uses_its_owner_without_exposing_an_unselected_input() -> TestResult {
+    use crate::{agent::Message, model::ModelContent};
+    use std::sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct Inspect {
+        hidden: OnceLock<FileRef>,
+        verified: AtomicBool,
+    }
+    impl TurnExecutors for Inspect {
+        fn executor<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: OperationId,
+            input: &'a ModelContent,
+            authority: &'a TurnAuthority,
+        ) -> BoxFuture<'a, crate::Result<Arc<dyn crate::executor::Executor>>> {
+            Box::pin(async move {
+                let selected = input.file_refs().next().ok_or_else(|| {
+                    crate::Error::Invalid("committed input reference is missing".into())
+                })?;
+                let reader = &authority.content.reader;
+                let bytes = reader.read(selected, 4096, None, None)?.await?;
+                if bytes.as_ref() != b"selected message" {
+                    return Err(crate::Error::Invalid(
+                        "committed input content differs".into(),
+                    ));
+                }
+                let hidden = self.hidden.get().ok_or_else(|| {
+                    crate::Error::Invalid("unselected input was not staged".into())
+                })?;
+                let denied = async { reader.read(hidden, 4096, None, None)?.await }.await;
+                if !matches!(denied, Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized)
+                {
+                    return Err(crate::Error::Invalid(
+                        "unselected journal input was exposed".into(),
+                    ));
+                }
+                if authority
+                    .grants
+                    .contains(crate::contract::capability::HARNESS_HOST)
+                {
+                    return Err(crate::Error::Invalid(
+                        "host role entered guest authority".into(),
+                    ));
+                }
+                self.verified.store(true, Ordering::Release);
+                Err(crate::Error::Unsupported(
+                    "input admission probe completed".into(),
+                ))
+            })
+        }
+    }
+    let inspect = Arc::new(Inspect {
+        hidden: OnceLock::new(),
+        verified: AtomicBool::new(false),
+    });
+    let (bound, root) = binding_with(inspect.clone()).await?;
+    let sender = Sender::Host {
+        host: "input-owner".into(),
+    };
+    let id = IntentId::try_from("selected-message")?;
+    let selected = bound
+        .stage_text(
+            &root,
+            "message",
+            &sender,
+            &id,
+            ("input", "selected message"),
+        )
+        .await?;
+    let hidden = bound
+        .stage_text(
+            &root,
+            "message",
+            &sender,
+            &IntentId::try_from("unselected-message")?,
+            ("input", "hidden message"),
+        )
+        .await?;
+    inspect
+        .hidden
+        .set(hidden)
+        .map_err(|_| "input source was already set")?;
+    bound
+        .agents()
+        .send(
+            &root,
+            &sender,
+            &InboxRecord::Message(Message {
+                from: sender.clone(),
+                id,
+                re: None,
+                body: Box::new(selected),
+                attachments: None,
+            }),
+        )
+        .await?;
+    // The committed inbox delivery completes before inspecting the read probe.
+    bound.agents().drain(&root).await?;
+    assert!(
+        inspect.verified.load(Ordering::Acquire),
+        "committed input did not reach its original reader"
+    );
+    Ok(())
 }
 
 #[tokio::test]
