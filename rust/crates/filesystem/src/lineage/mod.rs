@@ -7,7 +7,6 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, GenerationId,
     IdempotencyKey, Workspace, WorkspaceError, WorkspaceId,
 };
-use acyclic_stream::ProviderPlatform;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use thiserror::Error;
@@ -72,7 +71,7 @@ fn lineage_shape_is_valid(
 /// Durable optimistic-concurrency adapter for workspace lineage.
 pub trait WorkspaceLineageStore: acyclic_stream::ProviderPlatform {
     /// Adapter error.
-    type Error: std::error::Error + ProviderPlatform + 'static;
+    type Error: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 
     /// Loads the record for one workspace, if registered.
     fn load(
