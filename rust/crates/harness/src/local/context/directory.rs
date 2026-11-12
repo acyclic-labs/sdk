@@ -24,6 +24,12 @@ fn entries(page: Vec<crate::context::DiscoveryEntry>) -> Vec<PrivateDirectoryEnt
         .collect()
 }
 
+fn skill_names(
+    snapshot: &crate::context::SkillSnapshot,
+) -> std::slice::Iter<'_, crate::context::SkillMetadata> {
+    snapshot.iter()
+}
+
 impl LocalHarness {
     async fn skill_directory_source(
         self: &Arc<Self>,
@@ -53,7 +59,7 @@ impl LocalHarness {
             )?
             .await?;
         Ok(Box::pin(async_stream::try_stream! {
-            let mut names = snapshots.iter().flat_map(|snapshot| snapshot.iter()).peekable();
+            let mut names = snapshots.iter().flat_map(skill_names).peekable();
             while names.peek().is_some() {
                 let mut entries = Vec::new();
                 for skill in names.by_ref().take(rows as usize) {
