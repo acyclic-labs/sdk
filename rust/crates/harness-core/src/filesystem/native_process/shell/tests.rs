@@ -976,6 +976,30 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
     assert_eq!(output.exit_code, Some(0));
     assert_eq!(output.stdout, format!("{literal}\n\n").as_bytes());
     assert!(!root.join("injected").exists());
+    // Standard input is data even when it contains shell syntax or NUL bytes.
+    let stdin = "$(touch injected); $HOME ' \" \0\n";
+    let output = run(
+        ShellInput {
+            command: crate::tools::ShellCommand::Input {
+                argv: vec!["/usr/bin/cat".into()],
+                stdin: stdin.into(),
+            },
+            cwd: None,
+            timeout_ms: None,
+            background: false,
+            target: None,
+        },
+        &mounts,
+        invocation(&mounts.root),
+        1,
+        None,
+        || Ok(()),
+    )
+    .await?
+    .ok_or_else(|| Error::Storage("stdin capture was indeterminate".into()))?;
+    assert_eq!(output.exit_code, Some(0));
+    assert_eq!(output.stdout, stdin.as_bytes());
+    assert!(!root.join("injected").exists());
     Ok(())
 }
 

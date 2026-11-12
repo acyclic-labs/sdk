@@ -262,6 +262,8 @@ fn openai_calls_map_to_canonical_inputs() -> Result<()> {
 #[test]
 fn malformed_templates_fail_when_the_profile_binds() {
     for template in [
+        json!({"$json": 1}),
+        json!({"$json": "@arguments", "extra": true}),
         json!({"$one_based": 1}),
         json!({"$through": ["start"]}),
         json!({"$if": "flag"}),
