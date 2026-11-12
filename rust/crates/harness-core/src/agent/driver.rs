@@ -641,19 +641,27 @@ pub fn model_input_at(inbox: u64, input: &TurnInput) -> Result<ModelContent, Err
     if !matches!(input, TurnInput::Message { .. }) {
         return Ok(content);
     }
-    let mut parts = vec![ModelContentPart::Notices {
-        notices: vec![crate::conversation::wire::Notice {
-            source: "harness".into(),
-            kind: "harness.input".into(),
-            body: serde_json::json!({"input": inbox}),
-            wake: false,
-            coalesce_key: None,
-        }],
-    }];
-    match content {
-        ModelContent::Text(text) => parts.push(ModelContentPart::Text { text, native: None }),
-        ModelContent::Part(part) => parts.push(part),
-        ModelContent::Parts(content) => parts.extend(content),
+    let identity = crate::conversation::wire::Notice {
+        source: "harness".into(),
+        kind: "harness.input".into(),
+        body: serde_json::json!({"input": inbox}),
+        wake: false,
+        coalesce_key: None,
+    };
+    let mut parts = match content {
+        ModelContent::Text(text) => vec![ModelContentPart::Text { text, native: None }],
+        ModelContent::Part(part) => vec![part],
+        ModelContent::Parts(parts) => parts,
+    };
+    if let Some(ModelContentPart::Notices { notices }) = parts.first_mut() {
+        notices.insert(0, identity);
+    } else {
+        parts.insert(
+            0,
+            ModelContentPart::Notices {
+                notices: vec![identity],
+            },
+        );
     }
     Ok(ModelContent::Parts(parts))
 }
@@ -776,12 +784,12 @@ fn opened<T>(
     }
 }
 
-fn cancelled_open(cursor: u64) -> TurnStep {
+fn cancelled_open() -> TurnStep {
     TurnStep {
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Input,
-        drops: Some(cursor),
+        drops: None,
     }
 }
 
@@ -1031,7 +1039,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     &cancellation,
                 )?
                 else {
-                    return Ok(cancelled_open(cursor));
+                    return Ok(cancelled_open());
                 };
                 return settle_selection(agent, &open, turn, inbox, input, refusal).await;
             }
@@ -1066,7 +1074,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 &stop,
             )?
             else {
-                return Ok(cancelled_open(cursor));
+                return Ok(cancelled_open());
             };
             if turn_announcements(agent)?.is_none() {
                 // Freeze even an empty delta before a model or tool can change
