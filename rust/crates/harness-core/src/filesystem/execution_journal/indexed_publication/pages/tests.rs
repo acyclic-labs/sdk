@@ -404,23 +404,11 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
     // Full membership has already been checked by its original owner. A semantic
     // mismatch cannot retire the prepared result or require a second validation.
     assert!(
-        cut.confirm_composed(
-            &validated,
-            1,
-            &records,
-            std::slice::from_ref(&observation),
-            &checkpoint
-        )
-        .is_err()
+        cut.confirm_composed(&validated, 1, &records, &observation, &checkpoint)
+            .is_err()
     );
     assert_eq!(
-        cut.confirm_composed(
-            &validated,
-            0,
-            &records,
-            std::slice::from_ref(&observation),
-            &checkpoint
-        )?,
+        cut.confirm_composed(&validated, 0, &records, &observation, &checkpoint)?,
         Some(committed)
     );
     let acyclic_fs::FilesystemCommitOutcome::Committed(result) = store
@@ -439,13 +427,7 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
         .prepare_settlement(replay_commit, replay)
         .map_err(|_| invalid(None))?;
     assert_eq!(
-        cut.confirm_composed(
-            &validated,
-            0,
-            &records,
-            std::slice::from_ref(&observation),
-            &checkpoint
-        )?,
+        cut.confirm_composed(&validated, 0, &records, &observation, &checkpoint)?,
         Some(committed)
     );
     drop(validated);
@@ -460,13 +442,7 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
         .prepare_settlement(racing, loser)
         .map_err(|_| invalid(None))?;
     assert_eq!(
-        cut.confirm_composed(
-            &loser,
-            0,
-            &records,
-            std::slice::from_ref(&observation),
-            &checkpoint
-        )?,
+        cut.confirm_composed(&loser, 0, &records, &observation, &checkpoint)?,
         None
     );
     assert!(matches!(
