@@ -32,20 +32,34 @@ impl LoadedProgram {
                 "programs require the canonical shell capability".into(),
             ));
         }
-        let HookRun::Shell { command, .. } = self.run else {
+        let HookRun::Shell {
+            command,
+            shell: selected,
+        } = self.run
+        else {
             return Err(Error::Invalid("program has no pinned shell source".into()));
         };
-        let argv = if cfg!(windows) {
-            vec![
-                "pwsh",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &command,
-            ]
-        } else {
-            vec!["sh", "-c", &command]
+        let (executable, arguments) = match selected {
+            Some(selected) => {
+                let arguments = acyclic_host_platform::shell::arguments(&selected)
+                    .ok_or_else(|| Error::Unsupported("program shell is unavailable".into()))?;
+                (selected, arguments)
+            }
+            None => {
+                let executable =
+                    acyclic_native_runtime::platform_shell().map_err(Error::process_io)?;
+                let executable = executable.to_str().ok_or_else(|| {
+                    Error::Unsupported("program shell path is not Unicode".into())
+                })?;
+                (
+                    executable.to_owned(),
+                    crate::tools::shell::PLATFORM.arguments,
+                )
+            }
         };
+        let mut argv = vec![executable];
+        argv.extend(arguments.iter().map(|argument| (*argument).to_owned()));
+        argv.push(command);
         crate::tools::native::alias(
             self.definition,
             shell,
