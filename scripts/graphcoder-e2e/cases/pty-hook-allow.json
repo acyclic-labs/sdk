@@ -50,7 +50,15 @@
               "○"
             ]
           },
-          "send": "\u0004"
+          "prompt": "/merge "
+        },
+        {
+          "when": {
+            "contains": [
+              "Merged into checkout:"
+            ]
+          },
+          "detach": true
         }
       ]
     }

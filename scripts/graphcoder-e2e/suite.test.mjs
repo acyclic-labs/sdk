@@ -4,10 +4,39 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { Processes, Spool } from "./process.mjs";
+import { Processes, Spool, withCancellation } from "./process.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { failureReport, finishCase, retainCapture } from "./report.mjs";
-import { conversation } from "./conversation.mjs";
+import { conversation, waitFor } from "./conversation.mjs";
+
+test("cancelled waits observe an eagerly rejected original callback", async () => {
+  const cancellation = new AbortController(), cause = new Error("original cancellation");
+  cancellation.abort(cause);
+  await assert.rejects(waitFor(Promise.reject(new SyntaxError("original callback failed")), cancellation.signal),
+    error => error === cause);
+  const producer = Promise.withResolvers();
+  const waiting = waitFor(producer.promise, cancellation.signal);
+  producer.reject(new SyntaxError("original callback failed after cancellation"));
+  await assert.rejects(waiting, error => error === cause);
+});
+
+test("recorded scenario failure retires and joins its original executable", async () => {
+  const processes = new Processes(), cancellation = new AbortController();
+  const failure = new Error("original tool refused execution");
+  try {
+    const running = processes.start(process.execPath, ["-e",
+      "console.log(JSON.stringify({ready:true}));process.stdin.resume()"]);
+    const events = new Spool(running.child.stdout, running.closed);
+    const completed = withCancellation(running, cancellation.signal);
+    completed.catch(() => {});
+    await events.next(event => event.ready === true);
+    cancellation.abort(failure);
+    await assert.rejects(completed, error => error === failure);
+    assert.equal(processes.children.size, 0);
+    const result = await running.closed;
+    assert.ok(result.signal || result.code !== 0);
+  } finally { await processes.close(); }
+});
 
 test("conversation cannot consume a future turn's reply before submitting its prompt", async () => {
   const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures["jsonl-reopen"];

@@ -47,6 +47,10 @@
             "contains": [
               "E2E approval policy"
             ]
+          },
+          "before_request": {
+            "path": "responses",
+            "step": 1
           }
         },
         {
@@ -76,7 +80,7 @@
           }
         },
         {
-          "send": "\u0004\u0004",
+          "detach": true,
           "when": {
             "contains": [
               "interaction cancelled",

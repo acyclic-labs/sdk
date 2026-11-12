@@ -54,6 +54,7 @@
     },
     {
       "mode": "pty",
+      "resume": true,
       "actions": [
         {
           "when": {
@@ -73,7 +74,7 @@
             ],
             "task_failure": "model provider unavailable"
           },
-          "send": "\u0004\u0004"
+          "detach": true
         }
       ]
     }

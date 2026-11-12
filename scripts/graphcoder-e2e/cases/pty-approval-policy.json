@@ -48,16 +48,28 @@
               "E2E approval policy"
             ]
           },
-          "send": "y\r"
+          "send": "y\r",
+          "before_request": {
+            "path": "responses",
+            "step": 1
+          }
         },
         {
           "when": {
             "contains": [
               "APPROVAL_E2E_DONE",
-              "\u25cb"
+              "○"
             ]
           },
-          "send": "\u0004\u0004"
+          "prompt": "/merge "
+        },
+        {
+          "when": {
+            "contains": [
+              "Merged into checkout:"
+            ]
+          },
+          "detach": true
         }
       ]
     }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 
 // The returned native cause and physical exit are independent observations.
 // A successful exit cannot erase a selected startup or execution failure.
@@ -65,16 +65,58 @@ export function fileRead(result, path, expected) {
 // has its record in the file read after it.
 export async function recordedRequests(spool, path) {
   const acknowledged = await spool.history(event => event.event === "request");
-  const text = readFileSync(path, "utf8");
-  const lines = text.split("\n");
-  assert.ok(lines.length > acknowledged.length, "acknowledged request lacks a complete JSONL record");
-  return acknowledged.map((event, index) => {
-    const record = JSON.parse(lines[index]);
-    assert.equal(record.sequence, event.sequence, "request notification sequence");
-    assert.equal(record.case, event.case, "request notification namespace");
-    assert.equal(record.step, event.step, "request notification step");
-    return record;
-  });
+  const reader = await CommittedRequests.open(path);
+  try {
+    const records = [];
+    for (const event of acknowledged) records.push(await reader.next(event));
+    return records;
+  } finally { await reader.close(); }
+}
+
+// Notifications follow a flushed record, so each consumes one original line.
+// Read forward in pages: no file rescans, readiness probes or retained history.
+export class CommittedRequests {
+  #file;
+  #position = 0;
+  #tail = Buffer.alloc(0);
+  #parts = [];
+  #pending = Promise.resolve();
+  #closed = false;
+  static async open(path) { return new CommittedRequests(await open(path, "r")); }
+  constructor(file) { this.#file = file; }
+  next(event) {
+    if (this.#closed) return Promise.reject(new Error("request record reader is closed"));
+    const pending = this.#pending.then(() => this.#read(event));
+    this.#pending = pending;
+    return pending;
+  }
+  async #read(event) {
+    for (;;) {
+      const newline = this.#tail.indexOf(10);
+      if (newline >= 0) {
+        this.#parts.push(this.#tail.subarray(0, newline));
+        const bytes = this.#parts.length === 1 ? this.#parts[0] : Buffer.concat(this.#parts);
+        this.#parts = [];
+        this.#tail = this.#tail.subarray(newline + 1);
+        const record = JSON.parse(bytes.toString("utf8"));
+        assert.equal(record.sequence, event.sequence, "request notification sequence");
+        assert.equal(record.case, event.case, "request notification namespace");
+        assert.equal(record.step, event.step, "request notification step");
+        return record;
+      }
+      if (this.#tail.length) this.#parts.push(this.#tail);
+      const page = Buffer.alloc(64 * 1024);
+      const { bytesRead } = await this.#file.read(page, 0, page.length, this.#position);
+      assert.ok(bytesRead > 0, "acknowledged request lacks a complete JSONL record");
+      this.#position += bytesRead;
+      this.#tail = page.subarray(0, bytesRead);
+    }
+  }
+  async close() {
+    this.#closed = true;
+    await this.#pending.catch(() => {});
+    await this.#file.close();
+  }
 }
 
 export function subset(actual, expected) {
@@ -86,7 +128,7 @@ export function subset(actual, expected) {
 // Both provider records and PostToolUse carry the original ToolResult value.
 // A completed call may still be a refusal; only explicit case expectations
 // admit one, regardless of the enclosing process's successful exit.
-const TOOL_FAILURE = /^tool (execution failed|output violated its pinned schema|result projection was rejected|result artifact could not be published|is not available|arguments violated the input schema|was interrupted before its outcome was recorded)(?:$|[:;( ])/;
+const TOOL_FAILURE = /^tool (execution failed|output violated its pinned schema|result projection was rejected|result artifact could not be published|is not available|was removed|arguments violated the input schema|was interrupted before its outcome was recorded)(?:$|[:;( ])/;
 
 function toolFailure(error, expectedErrors, recovery, caseId) {
   if (error === undefined || error === null) return;
@@ -104,15 +146,24 @@ export function toolOutcome(value, expectedErrors, recovery, caseId) {
       toolFailure(child.failed ?? child.phase?.done?.outcome?.failed, expectedErrors, recovery, caseId);
     if (value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0))
       toolFailure(`tool reported success=${value.success}, exit_code=${value.exit_code}`, expectedErrors, recovery, caseId);
-  } else if (typeof value === "string" && TOOL_FAILURE.test(value))
-    toolFailure(value, expectedErrors, recovery, caseId);
+  } else if (typeof value === "string") {
+    const exit = /^Exit code: ([^\r\n]+)/.exec(value);
+    if (TOOL_FAILURE.test(value) || (exit && exit[1] !== "0"))
+      toolFailure(value, expectedErrors, recovery, caseId);
+  }
 }
+
+export const isGeneration = record => ["responses", "messages", "chat/completions"].includes(record.path)
+  || /^models\/[^/]+:streamGenerateContent(?:\?alt=sse)?$/.test(record.path);
 
 export function toolResults(records) {
   const results = [];
   for (const { body } of records) {
     for (const item of body.input ?? body.messages ?? body.contents ?? []) {
-      for (const part of item.parts ?? []) if (part.functionResponse) results.push(JSON.stringify(part.functionResponse.response));
+      for (const part of item.parts ?? []) if (part.functionResponse) {
+        const response = part.functionResponse.response;
+        results.push(typeof response?.output === "string" ? response.output : JSON.stringify(response));
+      }
       if (item.type === "function_call_output") results.push(item.output);
       else if (item.role === "tool") results.push(item.content);
       else if (Array.isArray(item.content)) for (const part of item.content) if (part.type === "tool_result") results.push(typeof part.content === "string" ? part.content : JSON.stringify(part.content));
@@ -145,8 +196,7 @@ export function modelInputs(expected, generations) {
 }
 
 export function requests(test, records) {
-  const generations = records.filter(record => ["responses", "messages", "chat/completions"].includes(record.path)
-    || /^models\/[^/]+:streamGenerateContent(?:\?alt=sse)?$/.test(record.path));
+  const generations = records.filter(isGeneration);
   assert.equal(generations.length, test.assert.requests, "generation count");
   for (const expected of test.assert.model_tools ?? []) {
     const request = generations.find(request => request.step === expected.step);

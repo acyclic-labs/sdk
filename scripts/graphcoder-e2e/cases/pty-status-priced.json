@@ -5,7 +5,7 @@
   "model": {"steps": [{"when": {}, "text": ["PRICED_STATUS_DONE"]}]},
   "inputs": [{"mode": "pty", "actions": [
     {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "priced status"},
-    {"when": {"contains": ["PRICED_STATUS_DONE", "○", "estimated token charge: USD 0.000000002"]}, "send": "\u0004"}
+    {"when": {"contains": ["PRICED_STATUS_DONE", "○", "estimated token charge: USD 0.000000002"]}, "detach": true}
   ]}],
   "assert": {"requests": 1}
 }

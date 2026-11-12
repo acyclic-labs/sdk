@@ -15,7 +15,23 @@
   "inputs": [{"mode": "pty", "actions": [
     {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "repeat the exact approved action"},
     {"when": {"contains": ["repeat.txt", "REPEAT_RULE_BODY", "r exact rule"]}, "send": "r\r"},
-    {"when": {"contains": ["RULE_REUSED_DONE", "○"]}, "send": "\u0004"}
+    {
+      "when": {
+        "contains": [
+          "RULE_REUSED_DONE",
+          "○"
+        ]
+      },
+      "prompt": "/merge "
+    },
+    {
+      "when": {
+        "contains": [
+          "Merged into checkout:"
+        ]
+      },
+      "detach": true
+    }
   ]}],
   "assert": {"requests": 2, "files": {"repeat.txt": "REPEAT_RULE_BODY\n"}}
 }

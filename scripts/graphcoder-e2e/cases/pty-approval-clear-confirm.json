@@ -46,7 +46,11 @@
               "E2E approval policy"
             ]
           },
-          "prompt": "/clearall "
+          "prompt": "/clearall ",
+          "before_request": {
+            "path": "responses",
+            "step": 1
+          }
         },
         {
           "when": {
@@ -65,7 +69,11 @@
               "Enter yes or no."
             ]
           },
-          "send": "n\r"
+          "send": "n\r",
+          "before_request": {
+            "path": "responses",
+            "step": 1
+          }
         },
         {
           "when": {
@@ -78,7 +86,7 @@
               "approval policy"
             ]
           },
-          "send": "\u0004\u0004"
+          "detach": true
         }
       ]
     }

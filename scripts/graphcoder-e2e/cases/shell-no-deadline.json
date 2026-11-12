@@ -50,7 +50,7 @@
             "id": "unbounded",
             "name": "code",
             "arguments": {
-              "code": "const result=await tools.shell({\"command\":\"node -e \\\"console.log('OMITTED_LIFETIME')\\\"\"}); if(result.success!==true || result.exit_code!==0 || !result.text.includes('OMITTED_LIFETIME')) throw Error('lifetime command failed: '+JSON.stringify(result)); ({verified:'UNBOUNDED_EXECUTION_VERIFIED'})"
+              "code": "const result=await tools.shell({\"command\":\"node -e \\\"console.log('OMITTED_LIFETIME')\\\"\"}); if(result.success!==true || result.exit_code!==0 || !result.text.includes('OMITTED_LIFETIME')) throw Error('lifetime command failed: '+JSON.stringify(result)); export default {verified:'UNBOUNDED_EXECUTION_VERIFIED'}"
             }
           }
         ]
@@ -65,7 +65,7 @@
             "id": "explicit",
             "name": "code",
             "arguments": {
-              "code": "const result=await tools.shell({\"command\":\"node -e \\\"console.log('EXPLICIT_LONG_LIFETIME')\\\"\",\"timeout_ms\":300001}); if(result.success!==true || result.exit_code!==0 || !result.text.includes('EXPLICIT_LONG_LIFETIME')) throw Error('lifetime command failed: '+JSON.stringify(result)); ({verified:'EXPLICIT_EXECUTION_VERIFIED'})"
+              "code": "const result=await tools.shell({\"command\":\"node -e \\\"console.log('EXPLICIT_LONG_LIFETIME')\\\"\",\"timeout_ms\":300001}); if(result.success!==true || result.exit_code!==0 || !result.text.includes('EXPLICIT_LONG_LIFETIME')) throw Error('lifetime command failed: '+JSON.stringify(result)); export default {verified:'EXPLICIT_EXECUTION_VERIFIED'}"
             }
           }
         ]

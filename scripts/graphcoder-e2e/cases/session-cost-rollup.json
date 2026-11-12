@@ -9,10 +9,10 @@
     {"when":{"user":"PRICED_ROOT","tool_result":"PRICED_CHILD_DONE"},"text":["PRICED_ROOT_DONE"]}
   ]},
   "inputs":[
-    {"mode":"headless","args":["--usage-jsonl","{{workspace}}/usage.jsonl","-p","PRICED_ROOT"],"answer":"PRICED_ROOT_DONE"},
+    {"mode":"headless","args":["--new-session","--usage-jsonl","{{workspace}}/usage.jsonl","-p","PRICED_ROOT"],"answer":"PRICED_ROOT_DONE"},
     {"mode":"pty","resume":true,"actions":[
       {"when":{"contains":["PRICED_ROOT_DONE","This agent","USD 0.000000006"],"cursor":true},"prompt":"/cost"},
-      {"when":{"contains":["Subtree cost","4 calls","4 completed","USD 0.000000008"]},"send":"\u0004"}
+      {"when":{"contains":["Subtree cost","4 calls","4 completed","USD 0.000000008"]},"detach":true}
     ]}
   ],
   "assert":{"requests":4,"usage_rollup":{"path":"usage.jsonl","agents":2,
