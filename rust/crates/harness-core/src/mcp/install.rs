@@ -1,8 +1,8 @@
 //! Native configuration to ordinary, additive registered tools.
 
 use super::{
-    McpCatalog, McpConfig, McpDiscoveryPolicy, McpSchemaExposure, McpServer, McpToolDefinition,
-    McpToolTransport,
+    McpCatalog, McpConfig, McpDiscoveryLimits, McpDiscoveryPolicy, McpSchemaExposure, McpServer,
+    McpToolDefinition, McpToolTransport,
 };
 use crate::{
     Capabilities, Error, Result,
@@ -31,6 +31,8 @@ pub struct McpClientLimits {
     pub frame_bytes: Option<u32>,
     /// Optional bytes for an installed tool exchange; `None` is unbounded.
     pub tool_bytes: Option<u32>,
+    /// Reservations for each complete advertised catalog, including live refreshes.
+    pub discovery: McpDiscoveryLimits,
 }
 
 /// A server that could not be installed; no connection configuration is retained.
@@ -98,6 +100,7 @@ impl McpConfig {
                 "MCP credit and message bounds must be positive".into(),
             ));
         }
+        limits.discovery.validate()?;
         let mut diagnostics = Vec::new();
         let mut capabilities = Capabilities::default();
         // Buffering requires positive credit even for an empty input. With no
@@ -221,13 +224,6 @@ fn register(
         projection_schema: crate::tool::json_projection_schema(json!({})),
         tools: std::mem::take(&mut connected.tools),
     };
-    catalog.tools.retain(|tool| {
-        server
-            .enabled_tools
-            .as_ref()
-            .is_none_or(|names| names.contains(&tool.name))
-            && !server.disabled_tools.contains(&tool.name)
-    });
     catalog.tools.sort_unstable_by(|a, b| a.name.cmp(&b.name));
     let revision = blake3::Hash::from_bytes(crate::executor::json::canonical_json_digest(
         &(
@@ -254,7 +250,7 @@ fn register(
         None,
         &connected.transport,
         &projection,
-        None,
+        (None, None),
         &check,
     )?;
     let mut capabilities = Capabilities::new(
@@ -281,6 +277,7 @@ fn recovery_binding(
                 binding,
                 server.tool_timeout_ms,
                 limits.tool_bytes,
+                limits.discovery,
                 &server.enabled_tools,
                 &server.disabled_tools,
             ),

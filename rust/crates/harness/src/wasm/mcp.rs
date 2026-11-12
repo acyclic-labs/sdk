@@ -1,5 +1,6 @@
 //! Generated portable MCP contract facade; all semantics remain in Rust.
 
+use super::json::optional_from_js;
 use super::{from_js, js_error};
 use crate::mcp::McpCatalog;
 use serde::Serialize as _;
@@ -39,15 +40,18 @@ pub fn mcp_callback_operation(
         .map_err(js_error)
 }
 
-/// Validates the complete bounded replacement before the host selects it.
+/// Validates the complete replacement under independent optional reservations.
 #[wasm_bindgen(js_name=validateMcpCatalog)]
 pub fn validate_mcp_catalog(
     #[wasm_bindgen(unchecked_param_type = "McpCatalog")] catalog: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_tools: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_bytes: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_tools: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_bytes: JsValue,
 ) -> Result<(), JsValue> {
     from_js::<McpCatalog>(catalog)?
-        .validate(from_js(maximum_tools)?, from_js(maximum_bytes)?)
+        .validate(
+            optional_from_js::<u32>(maximum_tools)?,
+            optional_from_js::<u32>(maximum_bytes)?,
+        )
         .map_err(js_error)
 }
 
@@ -58,13 +62,16 @@ mod browser;
 #[wasm_bindgen(js_name = mcpModelDefinitions, unchecked_return_type = "ToolDefinition[]")]
 pub fn mcp_model_definitions(
     #[wasm_bindgen(unchecked_param_type = "McpCatalog")] catalog: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_tools: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_bytes: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_tools: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_bytes: JsValue,
 ) -> Result<JsValue, JsValue> {
     let catalog: McpCatalog = from_js(catalog)?;
     definitions_to_js(
         catalog
-            .model_definitions(from_js(maximum_tools)?, from_js(maximum_bytes)?)
+            .model_definitions(
+                optional_from_js::<u32>(maximum_tools)?,
+                optional_from_js::<u32>(maximum_bytes)?,
+            )
             .map_err(js_error)?,
     )
 }
@@ -76,8 +83,8 @@ pub fn search_mcp_catalog(
     query: String,
     after: Option<String>,
     #[wasm_bindgen(unchecked_param_type = "number")] maximum_results: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_tools: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_bytes: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_tools: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_bytes: JsValue,
 ) -> Result<JsValue, JsValue> {
     let catalog: McpCatalog = from_js(catalog)?;
     let definitions = catalog
@@ -85,8 +92,8 @@ pub fn search_mcp_catalog(
             &query,
             after.as_deref(),
             from_js(maximum_results)?,
-            from_js(maximum_tools)?,
-            from_js(maximum_bytes)?,
+            optional_from_js::<u32>(maximum_tools)?,
+            optional_from_js::<u32>(maximum_bytes)?,
         )
         .map_err(js_error)?;
     definitions_to_js(definitions)

@@ -66,6 +66,22 @@ pub(super) fn advertised(names: &[&str]) -> Vec<McpToolDefinition> {
         .collect()
 }
 
+async fn discover_advertised(server: &McpServer, names: &[&str]) -> Result<Vec<McpToolDefinition>> {
+    let tools: Vec<_> = names
+        .iter()
+        .map(|name| json!({"name":name,"inputSchema":{"type":"object"}}))
+        .collect();
+    let page: rmcp::model::ListToolsResult = serde_json::from_value(json!({"tools":tools}))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut page = Some(page);
+    native::discover(
+        McpDiscoveryLimits::default(),
+        native::selection(server),
+        move |_| std::future::ready(Ok(page.take().expect("one advertised page"))),
+    )
+    .await
+}
+
 #[tokio::test]
 async fn installation_is_additive_filtered_and_uses_the_retained_connection() -> Result<()> {
     let remote = Arc::new(Remote::default());
@@ -110,12 +126,12 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
     };
     let connection = remote.clone();
     let installed = config
-        .install_with(tools, McpClientLimits::default(), move |_| {
+        .install_with(tools, McpClientLimits::default(), move |server| {
             let transport = connection.clone();
             Box::pin(async move {
                 Ok(Connected {
                     transport,
-                    tools: advertised(&["read", "write", "other"]),
+                    tools: discover_advertised(server, &["read", "write", "other"]).await?,
                     binding: [1; 32],
                     generation: 0,
                 })
@@ -455,16 +471,21 @@ async fn filtered_tools_stay_unavailable_and_invalid_limits_never_connect() -> R
         })
     };
     let installed = configuration()?
-        .install_with(ToolRegistry::default(), McpClientLimits::default(), |_| {
-            Box::pin(async {
-                Ok(Connected {
-                    transport: Arc::new(Remote::default()),
-                    tools: advertised(&["read"]),
-                    binding: [1; 32],
-                    generation: 0,
+        .install_with(
+            ToolRegistry::default(),
+            McpClientLimits::default(),
+            |server| {
+                Box::pin(async move {
+                    let tools = discover_advertised(server, &["read"]).await?;
+                    Ok(Connected {
+                        transport: Arc::new(Remote::default()),
+                        tools,
+                        binding: [1; 32],
+                        generation: 0,
+                    })
                 })
-            })
-        })
+            },
+        )
         .await?;
     assert!(installed.tools.definitions(None)?.is_empty());
     assert!(
@@ -480,12 +501,15 @@ async fn filtered_tools_stay_unavailable_and_invalid_limits_never_connect() -> R
         ["mcp:call:configured"]
     );
     assert!(installed.diagnostics.is_empty());
-    for field in 0..3 {
+    for field in 0..6 {
         let mut limits = McpClientLimits::default();
         match field {
             0 => limits.servers = Some(0),
             1 => limits.frame_bytes = Some(0),
-            _ => limits.tool_bytes = Some(0),
+            2 => limits.tool_bytes = Some(0),
+            3 => limits.discovery.tools = Some(0),
+            4 => limits.discovery.pages = Some(0),
+            _ => limits.discovery.bytes = Some(0),
         }
         assert!(matches!(
             configuration()?

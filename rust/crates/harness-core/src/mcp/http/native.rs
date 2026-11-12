@@ -175,6 +175,170 @@ mod tests {
         Ok(())
     }
 
+    async fn read_http_request(socket: &mut tokio::net::TcpStream) -> Result<Vec<u8>> {
+        let mut input = Vec::new();
+        let mut buffer = [0_u8; 512];
+        loop {
+            let count = socket
+                .read(&mut buffer)
+                .await
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            if count == 0 {
+                return Err(Error::Invalid("fixture request disconnected".into()));
+            }
+            input.extend_from_slice(&buffer[..count]);
+            if let Some(end) = input.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                let header = std::str::from_utf8(&input[..end])
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+                let length = header
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|n| n.trim().parse::<usize>().ok())
+                    })
+                    .ok_or_else(|| Error::Invalid("fixture length absent".into()))?;
+                if input.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        Ok(input)
+    }
+
+    struct ObservedProvider {
+        inner: NativeMcpHttpProvider,
+        exchanges: std::sync::atomic::AtomicUsize,
+    }
+    impl McpHttpProvider for ObservedProvider {
+        fn exchange<'a>(
+            &'a self,
+            operation: OperationId,
+            request: McpHttpRequest,
+        ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
+            self.exchanges
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.exchange(operation, request)
+        }
+        fn reconcile<'a>(
+            &'a self,
+            operation: OperationId,
+        ) -> BoxProviderFuture<'a, Result<Option<McpHttpResponse>>> {
+            self.inner.reconcile(operation)
+        }
+    }
+
+    #[tokio::test]
+    async fn real_http_catalog_reservations_charge_filtered_tools_and_stop_before_another_exchange()
+    -> Result<()> {
+        use crate::mcp::{McpDiscoveryLimits, tool_pages};
+        use futures::{StreamExt as _, TryStreamExt as _};
+        let first: rmcp::model::ListToolsResult = serde_json::from_value(json!({
+            "tools":[{"name":"blocked","inputSchema":{"type":"object"}}, {"name":"also_blocked","inputSchema":{"type":"object"}}],
+            "nextCursor":"next"
+        })).map_err(|e| Error::Invalid(e.to_string()))?;
+        let first_bytes = u32::try_from(serde_json::to_vec(&first).unwrap().len()).unwrap();
+        for limits in [
+            McpDiscoveryLimits::default(),
+            McpDiscoveryLimits {
+                pages: Some(1),
+                ..Default::default()
+            },
+            McpDiscoveryLimits {
+                tools: Some(1),
+                ..Default::default()
+            },
+            McpDiscoveryLimits {
+                bytes: Some(first_bytes),
+                ..Default::default()
+            },
+        ] {
+            let expected = if limits == McpDiscoveryLimits::default() {
+                2
+            } else {
+                1
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(Error::process_io)?;
+            let address = listener.local_addr().map_err(Error::process_io)?;
+            let first = first.clone();
+            let server = tokio::spawn(async move {
+                for index in 0..expected {
+                    let (mut socket, _) = listener.accept().await.map_err(Error::process_io)?;
+                    let input = read_http_request(&mut socket).await?;
+                    let header = input
+                        .windows(4)
+                        .position(|part| part == b"\r\n\r\n")
+                        .expect("HTTP body");
+                    let request: serde_json::Value = serde_json::from_slice(&input[header + 4..])
+                        .map_err(|e| Error::Invalid(e.to_string()))?;
+                    assert_eq!(request["method"], "tools/list");
+                    if index == 1 {
+                        assert_eq!(request["params"]["cursor"], "next");
+                    }
+                    let result = if index == 0 {
+                        first.clone()
+                    } else {
+                        rmcp::model::ListToolsResult::default()
+                    };
+                    let body = serde_json::to_string(
+                        &json!({"jsonrpc":"2.0", "id":request["id"], "result":result}),
+                    )
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+                    socket
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .map_err(Error::process_io)?;
+                    socket.shutdown().await.map_err(Error::process_io)?;
+                }
+                Ok::<_, Error>(())
+            });
+            let provider = Arc::new(ObservedProvider {
+                inner: NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?,
+                exchanges: std::sync::atomic::AtomicUsize::new(0),
+            });
+            let transport = HttpMcpTransport::new(
+                provider.clone(),
+                format!("http://{address}/mcp"),
+                Some("session".into()),
+                None,
+                None,
+                None,
+            )?;
+            let pages = tool_pages(
+                |cursor| transport.list_tools(OperationId::new(), cursor),
+                limits,
+                |_| false,
+            )?;
+            futures::pin_mut!(pages);
+            if limits.tools == Some(1) {
+                assert!(matches!(pages.try_next().await, Err(Error::Invalid(_))));
+            } else {
+                assert!(pages.try_next().await?.unwrap().is_empty());
+                if expected == 2 {
+                    assert!(pages.try_next().await?.unwrap().is_empty());
+                    assert!(pages.try_next().await?.is_none());
+                } else {
+                    assert!(matches!(pages.try_next().await, Err(Error::Invalid(_))));
+                }
+            }
+            assert!(pages.next().await.is_none());
+            server.await.map_err(|e| Error::Storage(e.to_string()))??;
+            assert_eq!(
+                provider.exchanges.load(std::sync::atomic::Ordering::SeqCst),
+                expected
+            );
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn real_local_http_json_sse_and_lost_response_never_repost() -> Result<()> {
         for mode in [
@@ -197,33 +361,7 @@ mod tests {
                     .accept()
                     .await
                     .map_err(|e| Error::Storage(e.to_string()))?;
-                let mut input = Vec::new();
-                let mut buffer = [0_u8; 512];
-                loop {
-                    let count = socket
-                        .read(&mut buffer)
-                        .await
-                        .map_err(|e| Error::Storage(e.to_string()))?;
-                    if count == 0 {
-                        return Err(Error::Invalid("fixture request disconnected".into()));
-                    }
-                    input.extend_from_slice(&buffer[..count]);
-                    if let Some(end) = input.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                        let header = std::str::from_utf8(&input[..end])
-                            .map_err(|e| Error::Invalid(e.to_string()))?;
-                        let length = header
-                            .lines()
-                            .find_map(|line| {
-                                line.to_ascii_lowercase()
-                                    .strip_prefix("content-length:")
-                                    .and_then(|n| n.trim().parse::<usize>().ok())
-                            })
-                            .ok_or_else(|| Error::Invalid("fixture length absent".into()))?;
-                        if input.len() >= end + 4 + length {
-                            break;
-                        }
-                    }
-                }
+                let input = read_http_request(&mut socket).await?;
                 let request =
                     String::from_utf8(input).map_err(|e| Error::Invalid(e.to_string()))?;
                 assert!(request.contains("mcp-session-id: session"));

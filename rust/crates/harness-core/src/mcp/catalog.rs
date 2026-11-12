@@ -1,4 +1,4 @@
-use super::{McpToolDefinition, McpToolTransport, remote::RemoteTool};
+use super::{McpDiscoveryLimits, McpToolDefinition, McpToolTransport, remote::RemoteTool};
 use crate::{
     Error, InteractionId, OperationId, Result,
     core::{AuthorityVerifier, Scope},
@@ -58,9 +58,11 @@ impl McpCatalog {
     pub fn installation_digest(
         &self,
         previous: Option<&Self>,
-        maximum_tools: u32,
-        maximum_bytes: u32,
+        maximum_tools: impl Into<Option<u32>>,
+        maximum_bytes: impl Into<Option<u32>>,
     ) -> Result<[u8; 32]> {
+        let maximum_tools = maximum_tools.into();
+        let maximum_bytes = maximum_bytes.into();
         self.validate(maximum_tools, maximum_bytes)?;
         if previous.is_some_and(|old| old.server != self.server) {
             return Err(Error::Conflict(
@@ -90,12 +92,14 @@ impl McpCatalog {
         remote: (&Arc<dyn McpToolTransport>, &Arc<dyn ToolProjection>),
         operation: (OperationId, InteractionId),
         authorization: (&Scope, &AuthorityVerifier, &dyn ToolApprovalVerifier),
-        bounds: (u32, u32),
+        bounds: (impl Into<Option<u32>>, impl Into<Option<u32>>),
     ) -> Result<()> {
         let (transport, projection) = remote;
         let (operation, interaction) = operation;
         let (scope, verifier, approval) = authorization;
         let (maximum_tools, maximum_bytes) = bounds;
+        let maximum_tools = maximum_tools.into();
+        let maximum_bytes = maximum_bytes.into();
         self.validate_transport_binding(transport.as_ref())?;
         verifier.verify(scope, &mut None)?;
         if !scope
@@ -123,14 +127,18 @@ impl McpCatalog {
         )
     }
 
-    /// Validates the complete catalog before mutation.
-    pub fn validate(&self, maximum_tools: u32, maximum_bytes: u32) -> Result<()> {
-        self.validate_checked(Some((maximum_tools, maximum_bytes)), &|| Ok(()))
+    /// Validates the complete catalog before mutation. Each absent reservation is unbounded.
+    pub fn validate(
+        &self,
+        maximum_tools: impl Into<Option<u32>>,
+        maximum_bytes: impl Into<Option<u32>>,
+    ) -> Result<()> {
+        self.validate_checked((maximum_tools.into(), maximum_bytes.into()), &|| Ok(()))
     }
 
     fn validate_checked(
         &self,
-        bounds: Option<(u32, u32)>,
+        bounds: (Option<u32>, Option<u32>),
         check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
         check()?;
@@ -141,19 +149,14 @@ impl McpCatalog {
                 "MCP server namespace cannot contain a dot".into(),
             ));
         }
-        if let Some((maximum_tools, maximum_bytes)) = bounds {
-            if maximum_tools == 0
-                || maximum_bytes == 0
-                || self.tools.len() as u64 > u64::from(maximum_tools)
-            {
-                return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
-            }
-            crate::executor::json::json_byte_length(
-                self,
-                Some(u64::from(maximum_bytes)),
-                &mut None,
-            )?;
-        }
+        let mut remaining = McpDiscoveryLimits {
+            tools: bounds.0,
+            bytes: bounds.1,
+            ..Default::default()
+        };
+        remaining.validate()?;
+        remaining.admit_tools(self.tools.len())?;
+        remaining.admit_bytes(self)?;
         crate::executor::compile_json_schema(&self.projection_schema, "MCP projection", &mut None)?;
         check()?;
         let mut names = BTreeSet::new();
@@ -244,8 +247,8 @@ impl McpCatalog {
     /// Returns selected model schemas in name order.
     pub fn model_definitions(
         &self,
-        maximum_tools: u32,
-        maximum_bytes: u32,
+        maximum_tools: impl Into<Option<u32>>,
+        maximum_bytes: impl Into<Option<u32>>,
     ) -> Result<Vec<ToolDefinition>> {
         self.validate(maximum_tools, maximum_bytes)?;
         let mut definitions = self
@@ -265,15 +268,15 @@ impl McpCatalog {
         previous: Option<&Self>,
         transport: &Arc<dyn McpToolTransport>,
         projection: &Arc<dyn ToolProjection>,
-        maximum_tools: u32,
-        maximum_bytes: u32,
+        maximum_tools: impl Into<Option<u32>>,
+        maximum_bytes: impl Into<Option<u32>>,
     ) -> Result<()> {
         self.install_checked(
             registry,
             previous,
             transport,
             projection,
-            Some((maximum_tools, maximum_bytes)),
+            (maximum_tools.into(), maximum_bytes.into()),
             &|| Ok(()),
         )
     }
@@ -284,7 +287,7 @@ impl McpCatalog {
         previous: Option<&Self>,
         transport: &Arc<dyn McpToolTransport>,
         projection: &Arc<dyn ToolProjection>,
-        bounds: Option<(u32, u32)>,
+        bounds: (Option<u32>, Option<u32>),
         check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
         self.validate_checked(bounds, check)?;
@@ -365,8 +368,8 @@ impl McpCatalog {
         query: &str,
         after: Option<&str>,
         maximum_results: u32,
-        maximum_tools: u32,
-        maximum_bytes: u32,
+        maximum_tools: impl Into<Option<u32>>,
+        maximum_bytes: impl Into<Option<u32>>,
     ) -> Result<Vec<ToolDefinition>> {
         self.validate(maximum_tools, maximum_bytes)?;
         if self.discovery == McpDiscoveryPolicy::Disabled {

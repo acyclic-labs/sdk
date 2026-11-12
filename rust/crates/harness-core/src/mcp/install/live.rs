@@ -80,7 +80,13 @@ impl ToolSource for LiveCatalog {
                 {
                     return Ok(());
                 }
-                let tools = match native::discover(|cursor| self.transport.list(cursor)).await {
+                let tools = match native::discover(
+                    self.limits.discovery,
+                    native::selection(&self.server),
+                    |cursor| self.transport.list(cursor),
+                )
+                .await
+                {
                     Ok(tools) => tools,
                     // An optional source's last admitted catalog remains usable.
                     // Leave its generation dirty for the next request's refresh.

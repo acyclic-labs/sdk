@@ -10,7 +10,7 @@ use crate::{
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 struct Remote {
-    change_schema: bool,
+    change_schema: AtomicBool,
     changed: AtomicU64,
     lists: AtomicUsize,
     fail: AtomicBool,
@@ -34,7 +34,7 @@ impl McpToolTransport for Remote {
             if self.fail.load(Ordering::Acquire) {
                 return Err(Error::Storage("transient list failure".into()));
             }
-            serde_json::from_value(if self.change_schema {
+            serde_json::from_value(if self.change_schema.load(Ordering::Acquire) {
                 json!({"tools":[{"name":"old","inputSchema":{"type":"object"},"outputSchema":{"type":"object","required":["new_field"]}}]})
             } else {
                 json!({"tools":[{"name":"new","inputSchema":{"type":"object"}}]})
@@ -100,7 +100,7 @@ impl crate::tool::ToolSource for Nested {
 
 async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
     let remote = Arc::new(Remote {
-        change_schema: false,
+        change_schema: AtomicBool::new(false),
         changed: AtomicU64::new(0),
         lists: AtomicUsize::new(0),
         fail: AtomicBool::new(false),
@@ -423,7 +423,7 @@ async fn changed_mcp_schema_is_refused_before_dispatch_and_replays() -> Result<(
 
 async fn changed_schema_case(granted: bool) -> Result<()> {
     let remote = Arc::new(Remote {
-        change_schema: true,
+        change_schema: AtomicBool::new(true),
         changed: AtomicU64::new(0),
         lists: AtomicUsize::new(0),
         fail: AtomicBool::new(false),
@@ -516,7 +516,7 @@ async fn live_refresh_deadline_retains_optional_catalog_and_releases_the_refresh
 {
     for required in [false, true] {
         let remote = Arc::new(Remote {
-            change_schema: false,
+            change_schema: AtomicBool::new(false),
             changed: AtomicU64::new(0),
             lists: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
@@ -577,7 +577,7 @@ async fn role_ceilings_bound_live_source_declarations_and_direct_or_composed_cal
 
 async fn role_ceiling_case(compose: bool, configured: bool, allowed: bool) -> Result<()> {
     let remote = Arc::new(Remote {
-        change_schema: false,
+        change_schema: AtomicBool::new(false),
         changed: AtomicU64::new(0),
         lists: AtomicUsize::new(0),
         fail: AtomicBool::new(false),
@@ -689,5 +689,75 @@ async fn role_ceiling_case(compose: bool, configured: bool, allowed: bool) -> Re
     );
     assert_eq!(remote.calls.load(Ordering::SeqCst), usize::from(allowed));
     assert_eq!(remote.reconciles.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn live_catalog_reservations_preserve_admitted_tools_and_dirty_generation_until_recovery()
+-> Result<()> {
+    let original: rmcp::model::ListToolsResult =
+        serde_json::from_value(json!({"tools":[{"name":"old","inputSchema":{"type":"object"}}]}))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let bytes = u32::try_from(serde_json::to_vec(&original).unwrap().len()).unwrap();
+    for required in [false, true] {
+        let remote = Arc::new(Remote {
+            change_schema: AtomicBool::new(true),
+            changed: AtomicU64::new(0),
+            lists: AtomicUsize::new(0),
+            fail: AtomicBool::new(false),
+            stall: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+            reconciles: AtomicUsize::new(0),
+        });
+        let (tools, _) = live::LiveCatalog::new(
+            "reserved".into(),
+            server(
+                json!({"command":"fake","required":required}),
+                super::super::config::Dialect::Codex,
+            )?,
+            Connected {
+                transport: remote.clone(),
+                tools: advertised(&["old"]),
+                binding: [1; 32],
+                generation: 0,
+            },
+            McpClientLimits {
+                discovery: McpDiscoveryLimits {
+                    tools: Some(1),
+                    bytes: Some(bytes),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )?;
+        let admitted = tools.definitions(None)?;
+        remote.changed.store(1, Ordering::Release);
+        assert_eq!(tools.refresh().await.is_err(), required);
+        assert_eq!(
+            tools.definitions(None)?,
+            admitted,
+            "a refused advertised catalog never replaces the admitted snapshot"
+        );
+        assert_eq!(remote.lists.load(Ordering::SeqCst), 1);
+        remote.change_schema.store(false, Ordering::Release);
+        tools.refresh().await?;
+        assert!(
+            tools
+                .definitions(None)?
+                .iter()
+                .any(|tool| tool.name == "mcp.reserved.new")
+        );
+        assert_eq!(
+            remote.lists.load(Ordering::SeqCst),
+            2,
+            "the refused generation stays dirty until a valid replacement is admitted"
+        );
+        tools.refresh().await?;
+        assert_eq!(
+            remote.lists.load(Ordering::SeqCst),
+            2,
+            "an admitted unchanged generation does no discovery I/O"
+        );
+    }
     Ok(())
 }

@@ -110,7 +110,10 @@ pub(super) async fn connect(
     };
     // Eager schema exposure deliberately materializes the catalog. The shared
     // page stream itself fetches only when its consumer requests another page.
-    let tools = discover(|cursor| connection.list(cursor)).await?;
+    let tools = discover(limits.discovery, selection(server), |cursor| {
+        connection.list(cursor)
+    })
+    .await?;
     let transport = match connection {
         #[cfg(not(target_arch = "wasm32"))]
         Connection::Stdio(transport) => {
@@ -217,12 +220,16 @@ impl Connection {
 }
 
 /// Materializes the shared page stream for an eagerly exposed catalog.
-pub(super) async fn discover<F, Fut>(list: F) -> Result<Vec<McpToolDefinition>>
+pub(super) async fn discover<F, Fut>(
+    limits: McpDiscoveryLimits,
+    selected: impl FnMut(&str) -> bool,
+    list: F,
+) -> Result<Vec<McpToolDefinition>>
 where
     F: FnMut(Option<String>) -> Fut,
     Fut: std::future::Future<Output = Result<rmcp::model::ListToolsResult>>,
 {
-    super::super::tool_pages(list)
+    super::super::tool_pages(list, limits, selected)?
         .try_fold(Vec::new(), |mut tools, page| async move {
             tools.extend(page);
             Ok(tools)
@@ -424,5 +431,19 @@ fn expand<'a>(
             .into_string()
             .map(std::borrow::Cow::Owned)
             .map_err(|_| Error::Invalid("MCP environment reference is not UTF-8".into())),
+    }
+}
+
+/// Select advertised tools before retaining their schemas.
+pub(super) fn selection(server: &McpServer) -> impl FnMut(&str) -> bool + '_ {
+    move |name| {
+        server
+            .enabled_tools
+            .as_ref()
+            .is_none_or(|names| names.iter().any(|selected| selected == name))
+            && !server
+                .disabled_tools
+                .iter()
+                .any(|disabled| disabled == name)
     }
 }
