@@ -1,6 +1,118 @@
 use super::*;
 use proptest::prelude::*;
 
+#[tokio::test]
+async fn length_stops_continue_the_original_turn_and_replay_without_dispatch() -> Result<()> {
+    for parts in [false, true] {
+        for tool_after_pages in [false, true] {
+            for max_steps in [None, Some(2)] {
+                let fragments = ["Report: ", "first finding; ", "second finding; "];
+                let mut turns = Vec::new();
+                for fragment in fragments {
+                    let mut events = vec![ScriptedEvent::Event(ModelEvent::Content {
+                        delta: fragment.into(),
+                    })];
+                    if parts {
+                        events.push(ScriptedEvent::Event(ModelEvent::TextPart {
+                            text: fragment.into(),
+                            native: None,
+                        }));
+                        events.push(ScriptedEvent::Event(ModelEvent::MessageCompleted {
+                            text: fragment.into(),
+                        }));
+                    }
+                    // Even a syntactically complete call is not an admitted
+                    // batch when its provider stopped at the output boundary.
+                    events.push(ScriptedEvent::Event(echo_call("cut", json!({}))));
+                    events.push(ScriptedEvent::Event(ModelEvent::Completed {
+                        metadata: json!({"finish_reason":"length","usage":{"completion_tokens":8192}}),
+                    }));
+                    turns.push(ScriptedTurn::Events(events));
+                }
+                if tool_after_pages {
+                    turns.push(tool_turn([echo_call("complete", json!({}))]));
+                }
+                turns.push(done_turn());
+                let provider = Arc::new(ScriptedModelProvider::new(turns));
+                let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
+                let executor = uncompacted_executor(
+                    Model::new("fixture".into(), "length".into(), "1".into())?,
+                    provider.clone(),
+                    ContextPipeline::default(),
+                    echo_tools(tool.clone(), json!(true), json!(true), json!(true))?,
+                )
+                .with_tool_authority(
+                    RuntimeScope::new(
+                        Capabilities::new(["model:generate", "tool:call:example.echo"]),
+                        Limits::default(),
+                    )?,
+                    allowed()?,
+                )?;
+                let storage =
+                    crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+                let journal = storage.journal();
+                let input = TurnInput {
+                    operation_id: OperationId::new(),
+                    input: ModelContent::Text("report".into()),
+                    selected_context: None,
+                    max_steps,
+                };
+                let result = executor.execute(input.clone(), journal.as_ref()).await;
+                if max_steps.is_some() {
+                    assert!(
+                        matches!(result, Err(Error::Conflict(message)) if message == "executor step limit reached")
+                    );
+                    assert_eq!(provider.requests().len(), 2);
+                    assert_eq!(tool.0.load(Ordering::SeqCst), 0);
+                    assert!(matches!(executor.execute(input, journal.as_ref()).await,
+                        Err(Error::Conflict(message)) if message == "executor step limit reached"));
+                    assert_eq!(provider.requests().len(), 2);
+                    continue;
+                } else {
+                    let output = result?;
+                    assert_eq!(
+                        output.text,
+                        if tool_after_pages {
+                            "done".into()
+                        } else {
+                            format!("{}done", fragments.concat())
+                        }
+                    );
+                    assert_eq!(output.steps, 4 + u32::from(tool_after_pages));
+                    assert_eq!(
+                        executor.execute(input.clone(), journal.as_ref()).await?,
+                        output
+                    );
+                }
+                assert_eq!(tool.0.load(Ordering::SeqCst), usize::from(tool_after_pages));
+                let requests = provider.requests();
+                assert_eq!(requests.len(), 4 + usize::from(tool_after_pages));
+                for step in 1..=3 {
+                    assert_eq!(
+                        requests[step].messages.len(),
+                        requests[0].messages.len() + step
+                    );
+                    assert_eq!(
+                        requests[step].messages[..requests[0].messages.len()],
+                        requests[0].messages
+                    );
+                    for (message, fragment) in requests[step].messages[requests[0].messages.len()..]
+                        .iter()
+                        .zip(fragments)
+                    {
+                        assert_eq!(message.role, ModelRole::Assistant);
+                        assert_eq!(
+                            message.content,
+                            ModelContent::Part(ModelContentPart::text(fragment.into()))
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[test]
 fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {

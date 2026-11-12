@@ -104,10 +104,10 @@ fn invocation(root: &Path) -> Invocation {
     }
 }
 
-// GC-66's retained call failed during admission, before any command executed.
+// Admission failures must preserve their original error class.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn recon_shell_admission_does_not_require_a_logical_volume_path() -> Result<()> {
+async fn shell_admission_does_not_require_a_logical_volume_path() -> Result<()> {
     let temp = tempfile::tempdir().map_err(Error::process_io)?;
     let root = temp.path().join("view");
     std::fs::create_dir_all(&root).map_err(Error::process_io)?;
@@ -136,7 +136,7 @@ async fn recon_shell_admission_does_not_require_a_logical_volume_path() -> Resul
     let mut mounts = table(root.clone())?;
     let missing = temp.path().join("missing-shared");
     assert!(!missing.try_exists().map_err(Error::process_io)?);
-    const SAVED_COMMAND: &str = "pwd && git rev-parse HEAD && git status --short && ls -la && if [ -f RECON-COVERAGE.json ]; then cat RECON-COVERAGE.json; fi";
+    const SAVED_COMMAND: &str = "pwd && git rev-parse HEAD && git status --short && ls -la && if [ -f inventory.json ]; then cat inventory.json; fi";
     let input = || ShellInput {
         command: crate::tools::ShellCommand::Source(SAVED_COMMAND.into()),
         cwd: Some(".".into()),

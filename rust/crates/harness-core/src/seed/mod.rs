@@ -95,18 +95,14 @@ const FILES: &[(&str, &[u8])] = &[
     ("sys/native/openai/tools.json", OPENAI_TOOLS.as_bytes()),
     seed_file!("sys/types/index.d.ts", "types/index.d.ts"),
     seed_file!("templates/advisor/AGENT.md"),
-    seed_file!("templates/advisor/agent.ts"),
     seed_file!("templates/blackboard/AGENT.md"),
     seed_file!("templates/debate-ring/AGENT.md"),
     seed_file!("templates/group-chat/AGENT.md"),
     seed_file!("templates/hierarchy/AGENT.md"),
     seed_file!("templates/orchestrator/AGENT.md"),
-    seed_file!("templates/orchestrator/agent.ts"),
     seed_file!("templates/pipeline/AGENT.md"),
     seed_file!("templates/reviewer/AGENT.md"),
-    seed_file!("templates/reviewer/agent.ts"),
     seed_file!("templates/worker/AGENT.md"),
-    seed_file!("templates/worker/agent.ts"),
 ];
 
 /// Every seed file by its path in the tree, sorted by path: the embedded

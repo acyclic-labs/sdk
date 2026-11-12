@@ -70,14 +70,7 @@ pub(crate) fn name_component(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Default model selected by the shipped orchestrator role, before host overrides.
-pub fn root_model() -> Result<String> {
-    root()?
-        .model
-        .ok_or_else(|| Error::Invalid("orchestrator role has no model".into()))
-}
-
-/// The default root uses the orchestrator role's model and capabilities.
+/// The default root uses the orchestrator role's capabilities.
 pub fn root() -> Result<CreationConfig> {
     root_with_topology(None)
 }

@@ -27,13 +27,16 @@ proptest! {
 }
 
 #[test]
-fn recon_shell_refusals_name_the_field_and_accept_its_correction() -> Result<()> {
-    // GC-30: exact source, directory and lifetime from the saved call.
-    let mut input: ShellInput = serde_json::from_str(r#"{
-        "command":"pwd && git rev-parse HEAD && git status --short && printf '\\nTOP\\n' && ls -la && printf '\\nPEER\\n' && git -C peer rev-parse HEAD && git -C peer status --short && printf '\\nDIRS\\n' && find . -maxdepth 2 -type d -not -path './.git*' -not -path './managed-agents*' -not -path './peer/.git*' | sort | head -200",
-        "cwd":"/mnt/bb/recon/runs/20261111T073658725Z/quality-cloud/workspace",
+fn shell_refusals_name_the_field_and_accept_its_correction() -> Result<()> {
+    // An absolute working directory is rejected before execution.
+    let mut input: ShellInput = serde_json::from_str(
+        r#"{
+        "command":"pwd && ls -la",
+        "cwd":"/absolute/workspace",
         "timeout_ms":20000
-    }"#).expect("recorded shell call");
+    }"#,
+    )
+    .expect("recorded shell call");
     let error = input.validate().unwrap_err().to_string();
     assert!(
         error.contains("cwd: use a path relative to the task view"),

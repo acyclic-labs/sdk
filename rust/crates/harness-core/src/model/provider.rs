@@ -42,9 +42,10 @@ pub enum ModelEvent {
     },
     /// Complete registered tool invocation.
     ToolCall(ToolCall),
-    /// Completed model step.
+    /// Completed model step, which need not end the actor's turn.
     Completed {
-        /// Usage and finish metadata.
+        /// Usage and finish metadata. Providers normalize output-token
+        /// exhaustion to `finish_reason: "length"`; the turn must continue.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         #[serde(deserialize_with = "crate::deserialize_json_value")]
         #[heap_layout(as = serde_json::Value)]

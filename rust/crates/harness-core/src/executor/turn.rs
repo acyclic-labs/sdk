@@ -1,9 +1,16 @@
 use super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StepCompletion {
+    Complete,
+    Incomplete,
+}
+
 pub(super) struct CollectedStep {
     pub(super) calls: Vec<(ToolInvocation, usize)>,
     pub(super) text: String,
     pub(super) metadata: Value,
+    pub(super) completion: StepCompletion,
     /// Whether the provider emitted the step's text as ordered parts.
     pub(super) parts: bool,
 }
@@ -76,6 +83,7 @@ impl StockExecution<'_> {
         }
         let mut steering = working_tail::retirement::SteeringHistory::default();
         let mut hook_context = Vec::new();
+        let mut unfinished = String::new();
         #[cfg(not(target_arch = "wasm32"))]
         let mut stop_active = false;
         let mut steps = 0_u32;
@@ -110,8 +118,34 @@ impl StockExecution<'_> {
                 calls,
                 text,
                 metadata,
+                completion,
                 parts,
             } = self.collect_step_events(input, step, model_events, &mut prior_messages)?;
+            if completion == StepCompletion::Incomplete {
+                // A provider page boundary is not the end of the actor's turn.
+                // Keep its original assistant parts; no synthetic instruction
+                // or new user turn is needed to request the next page.
+                // Retain the assistant boundary even when its output page
+                // contains only reasoning. Stateless protocols pair that
+                // reasoning with the step's (possibly empty) visible output.
+                if !parts {
+                    self.append_assistant_part(
+                        &mut prior_messages,
+                        ModelContentPart::text(stock_string_copy(&text, self.io)?),
+                        self.io,
+                    )?;
+                }
+                stock_string_push(
+                    &mut unfinished,
+                    &text,
+                    self.stock.limits.file_bytes,
+                    "assistant output exceeds file limit",
+                    self.io,
+                )?;
+                stock_retire_text(text, self.io)?;
+                stock_retire_event(ModelEvent::Completed { metadata }, self.io)?;
+                continue;
+            }
             if calls.is_empty() {
                 // A Stop block continues the same journaled turn.
                 #[cfg(not(target_arch = "wasm32"))]
@@ -124,11 +158,26 @@ impl StockExecution<'_> {
                     let answer = if parts { "" } else { text.as_str() };
                     self.continue_after_stop(&mut prior_messages, answer, reason)?;
                     stock_retire_text(text, self.io)?;
+                    stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
                     stop_active = true;
                     continue;
                 }
                 let transcript =
                     self.settled_transcript(steering.into_retired(), prior_messages, parts, &text)?;
+                let text = if unfinished.is_empty() {
+                    stock_retire_text(unfinished, self.io)?;
+                    text
+                } else {
+                    stock_string_push(
+                        &mut unfinished,
+                        &text,
+                        self.stock.limits.file_bytes,
+                        "assistant output exceeds file limit",
+                        self.io,
+                    )?;
+                    stock_retire_text(text, self.io)?;
+                    unfinished
+                };
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     #[cfg(feature = "research")]
                     journal_cut: phase.1.take(),
@@ -140,6 +189,7 @@ impl StockExecution<'_> {
                 }));
             }
             stock_retire_text(text, self.io)?;
+            stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
             for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
                 match self
                     .resolve_tool_call(
@@ -202,6 +252,13 @@ impl StockExecution<'_> {
         // Inputs and all unpublished outputs die before their shared custody.
         let model_events = model_events;
         let completed_message = self.has_completed_message(&model_events)?;
+        let completion = if model_events.iter().any(|event| {
+            matches!(event, ModelEvent::Completed { metadata } if metadata["finish_reason"] == "length")
+        }) {
+            StepCompletion::Incomplete
+        } else {
+            StepCompletion::Complete
+        };
         let mut parts = false;
         let mut calls = Vec::new();
         let mut text = String::new();
@@ -221,6 +278,9 @@ impl StockExecution<'_> {
                 ModelEvent::MessageCompleted { text: completed } => {
                     stock_retire_text(text, io)?;
                     text = completed;
+                }
+                event @ ModelEvent::ToolCall(_) if completion == StepCompletion::Incomplete => {
+                    stock_retire_event(event, io)?;
                 }
                 ModelEvent::ToolCall(call) => {
                     if self.single_request {
@@ -295,6 +355,7 @@ impl StockExecution<'_> {
             calls,
             text,
             metadata: completed,
+            completion,
             parts,
         };
         scope.finish(

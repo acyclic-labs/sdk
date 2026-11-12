@@ -1,4 +1,4 @@
-//! The recon shape: identical manifests, different physical cwd, growing
+//! Identical manifests, different physical cwd, growing
 //! conversations and two forks from one pinned parent, through every encoder.
 use super::*;
 use acyclic_harness::{

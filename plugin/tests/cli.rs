@@ -1350,25 +1350,26 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     )
     .unwrap();
     let model = model(fixture._directory.path()).await;
-    assert_eq!(
-        succeeded(
-            &graphcoder(
-                &fixture,
-                &model.catalog,
-                vec!["--default-config", "--operation", "parity", "-p", "hello"],
-                "",
-            )
-            .await
-        ),
-        "fixture answer\n"
-    );
-    let configured = |selected: &str, state: &str| {
+    let mut catalog: Value =
+        serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
+    catalog["default_model"] = json!("graphcoder-qual/tiny");
+    std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
+    let mut command = graphcoder_command(&fixture);
+    command.arg("--catalog").arg(&model.catalog).args([
+        "--default-config",
+        "--operation",
+        "parity",
+        "-p",
+        "hello",
+    ]);
+    assert_eq!(succeeded(&capture(command, "").await), "fixture answer\n");
+    let configured = |selected: Option<&str>, state: &str| {
         let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
         registry.load_catalog(&model.catalog).unwrap();
         registry
             .graphcoder(
                 &fixture.workspace,
-                Some(format!("graphcoder-qual/{selected}")),
+                selected.map(|name| format!("graphcoder-qual/{name}")),
             )
             .unwrap()
             .without_user_settings()
@@ -1376,7 +1377,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             .working_directory(&fixture.workspace)
             .unwrap()
     };
-    let embedded_config = || configured("tiny", "embedded-state");
+    let embedded_config = || configured(None, "embedded-state");
     assert_eq!(
         embedded::answer(embedded_config(), "parity", "hello")
             .await
@@ -1410,7 +1411,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     // Its actual different model/capacity or missing tool must fail request parity.
     for changed_model in [true, false] {
         let selected = if changed_model { "drifted" } else { "tiny" };
-        let mut config = configured(selected, selected);
+        let mut config = configured(Some(selected), selected);
         if !changed_model {
             config = config.without_default_tools();
         }

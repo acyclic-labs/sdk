@@ -1,6 +1,5 @@
 ---
 version: 1
-model: recon/morph-kimik31
 context: fresh
 may_spawn: [orchestrator, worker, advisor, reviewer, pipeline, group-chat, debate-ring, blackboard, hierarchy]
 question: true

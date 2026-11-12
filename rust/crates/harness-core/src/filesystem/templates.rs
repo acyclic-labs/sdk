@@ -80,7 +80,7 @@ mod tests {
             .child(&parent, &path, &volumes, "orchestrator", None)
             .await?;
         assert_eq!(orchestrator.context, SpawnContext::Fresh);
-        assert_eq!(orchestrator.model.as_deref(), Some("recon/morph-kimik31"));
+        assert_eq!(orchestrator.model, parent.model);
         assert_eq!(orchestrator.template.as_ref().unwrap().volume(), &seed);
         templates
             .child(&orchestrator, &path, &volumes, "orchestrator", None)
