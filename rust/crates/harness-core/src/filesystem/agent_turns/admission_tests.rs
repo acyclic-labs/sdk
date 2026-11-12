@@ -343,7 +343,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             journal.clone(),
             control_grant.clone(),
             journal.clone(),
-            control_grant,
+            control_grant.clone(),
         );
         let published = announcements
             .stage_announcement(
@@ -363,6 +363,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 b"later announcement",
             )
             .await?;
+
         assert_eq!(
             reader.read(&published, 4096, None, None)?.await?.as_ref(),
             b"published announcement"
@@ -383,6 +384,64 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
         assert_eq!(
             files.read("custody.json", 4096).await?.as_deref(),
             Some(b"original interaction".as_slice())
+        );
+        let denied = host
+            .put_content(
+                &journal,
+                &guest_write,
+                "inputs/forged.json",
+                b"guest data",
+                "application/json",
+                "forged.json",
+                4096,
+                &crate::IdempotencyKey::new("guest-input-forgery")?,
+                None,
+                Default::default(),
+            )
+            .await
+            .expect_err("guest wrote a published input");
+        assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        let input = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/message.txt",
+                b"selected input",
+                "text/plain",
+                "message.txt",
+                4096,
+                &crate::IdempotencyKey::new("selected-input")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        let input_scope = root.bootstrap_scope(
+            "selected-input",
+            &Capabilities::new([input.read_capability(&mut None)?]),
+            Some(owner),
+            &mut None,
+        )?;
+        let input_reader = FilesystemContentVerifier::new(
+            host.clone(),
+            &guest.verifier,
+            &input_scope,
+            4096,
+            None,
+        )?;
+        assert_eq!(
+            input_reader.read(&input, 4096, None, None)?.await?.as_ref(),
+            b"selected input"
+        );
+        announcements
+            .stage_announcement(
+                crate::agent::AnnouncementKind::Targets,
+                [191; 32],
+                b"after selected input",
+            )
+            .await?;
+        assert_eq!(
+            input_reader.read(&input, 4096, None, None)?.await?.as_ref(),
+            b"selected input"
         );
     }
     Ok(())

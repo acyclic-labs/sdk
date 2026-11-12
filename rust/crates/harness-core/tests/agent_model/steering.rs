@@ -69,6 +69,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
             outs,
             // Soft delivery accompanies the sender's own durable publication.
             status: Some(StatusRecord {
+                cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
                 phase: Phase::Idle,
@@ -106,7 +107,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
             }
             _ => return Err("peer delivery changed its turn semantics".into()),
         }
-        let boundary = select_boundary(&stream, &recipient, 1, BoundaryEnd::Open).await?;
+        let boundary = select_boundary(&stream, &recipient, 1, 1, BoundaryEnd::Open).await?;
         assert_eq!(
             boundary.inputs.len(),
             usize::from(delivery == MessageDelivery::Steer)
@@ -167,7 +168,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
 }
 
 #[tokio::test]
-async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
+async fn steering_keeps_reserved_turns_and_freezes_cancellation_notices() -> Result {
     let stream = MemoryStream::default();
     let path = create(&stream, id(1)).await?;
     let state = AgentState::adopted(path.clone(), &adopted(path.id())).expect("adopts");
@@ -181,46 +182,71 @@ async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
     for record in [
         notice(1, false),
         notice(2, true),
-        InboxRecord::FollowUp(message),
+        InboxRecord::FollowUp(message.clone()),
         notice(3, true),
         cancel("stop"),
-        notice(4, true),
+        InboxRecord::Message(Message {
+            id: intent("after-cancel"),
+            ..message
+        }),
     ] {
         submit(&stream, send(&path, &user(), &record)?).await?;
     }
     let first = select_boundary(
         &stream,
         &state.path,
+        3,
         1,
         acyclic_harness_core::agent::BoundaryEnd::Open,
     )
     .await?;
-    assert_eq!((first.from, first.through, first.inputs.len()), (1, 5, 3));
+    assert_eq!((first.from, first.through, first.inputs.len()), (1, 7, 5));
+    assert!(matches!(&first.inputs[3].1, InboxRecord::Notice {
+        notice: NoticePayload::Quiet(notice), ..
+    } if notice.kind == "harness.input_cancelled" && notice.body["input"] == 1));
+    // The same accepted cancellation is a barrier for its own running input,
+    // even before the asynchronous interrupt predicate has completed. The
+    // later message remains available for a separate turn.
+    let stopped = select_boundary(&stream, &path, 1, 1, BoundaryEnd::Open).await?;
+    assert_eq!((stopped.through, stopped.inputs.len()), (5, 3));
+    assert!(stopped.inputs.iter().all(|(sequence, _)| *sequence < 5));
+    assert_eq!(
+        select_boundary(&stream, &path, 1, 1, BoundaryEnd::Exact(5)).await?,
+        stopped
+    );
+    assert!(
+        select_boundary(&stream, &path, 1, 1, BoundaryEnd::Exact(7))
+            .await
+            .is_err()
+    );
     // An explicitly started follow-up can admit steering that arrived after it.
     let next = select_boundary(
         &stream,
         &state.path,
+        3,
         4,
         acyclic_harness_core::agent::BoundaryEnd::Open,
     )
     .await?;
-    assert_eq!((next.through, next.inputs.len()), (5, 1));
+    assert_eq!((next.through, next.inputs.len()), (7, 3));
     assert_eq!(
         select_boundary(
             &stream,
             &state.path,
+            3,
             5,
             acyclic_harness_core::agent::BoundaryEnd::Open
         )
         .await?
         .through,
-        5
+        7
     );
     // The frozen range cannot absorb records that arrived after preparation.
     assert_eq!(
         select_boundary(
             &stream,
             &state.path,
+            3,
             1,
             acyclic_harness_core::agent::BoundaryEnd::Exact(first.through)
         )
@@ -231,11 +257,44 @@ async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
         select_boundary(
             &stream,
             &state.path,
+            3,
             1,
-            acyclic_harness_core::agent::BoundaryEnd::Exact(6)
+            acyclic_harness_core::agent::BoundaryEnd::Exact(8)
         )
         .await
         .is_err()
+    );
+    // A completed answer wins the cancellation's conversation-tail condition.
+    // The control is still ordered in the inbox, but never becomes a withdrawal.
+    let commit = CommitRequest {
+        deadline_unix_millis: None,
+        effects: vec![CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
+                path: path.conversation()?,
+                records: vec![b"settled answer".to_vec().into()],
+            }],
+        )],
+        idempotency_key: intent_key("settled-answer", &[])?,
+    };
+    stream.commit(commit).await?;
+    let late = InboxRecord::Cancel(Cancellation {
+        by: user(),
+        id: intent("late-cancel"),
+        input: 3,
+        conversation: 0,
+    });
+    submit(&stream, send(&path, &user(), &late)?).await?;
+    let late_selection = select_boundary(&stream, &path, 3, 7, BoundaryEnd::Open).await?;
+    assert_eq!(late_selection.through, 8);
+    assert!(late_selection.inputs.is_empty());
+    assert_eq!(
+        select_boundary(&stream, &path, 3, 7, BoundaryEnd::Exact(8)).await?,
+        late_selection
+    );
+    assert_eq!(
+        select_boundary(&stream, &path, 3, 1, BoundaryEnd::Exact(first.through)).await?,
+        first
     );
     // Independent turns retain their entries, but cannot block a later reply.
     let approval = InboxRecord::ApprovalRequested(ApprovalRequested {
@@ -251,6 +310,7 @@ async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
         &stream,
         &other_state.path,
         1,
+        1,
         acyclic_harness_core::agent::BoundaryEnd::Open,
     )
     .await?;
@@ -259,6 +319,7 @@ async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
         select_boundary(
             &stream,
             &other_state.path,
+            1,
             1,
             acyclic_harness_core::agent::BoundaryEnd::Exact(4)
         )

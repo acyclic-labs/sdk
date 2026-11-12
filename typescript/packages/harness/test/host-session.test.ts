@@ -26,7 +26,7 @@ async function fixture() {
   const providers = WasmAgentProviders.memory(model.options);
   const guest = AgentGuest.open(providers, model.options, model.owner, model.registry);
   const host = WasmAgentServer.open(providers, model.options, model.owner, model.registry, authority,
-    { manifest: guest.manifest(), onRecord: (delivery, signal, interrupt) => guest.onRecord(delivery, signal, interrupt),
+    { manifest: guest.manifest(), acceptsInterrupt: (query: Uint8Array, signal: AbortSignal) => guest.acceptsInterrupt(query, signal), onRecord: (delivery, signal, interrupt) => guest.onRecord(delivery, signal, interrupt),
       policy: () => true, admitted: async () => {} });
   const root = await host.create("session-root");
   return { host, root, credential, free() { host.close(); host.free(); guest.free(); providers.free(); authority.free(); model.free(); credential.fill(0); } };

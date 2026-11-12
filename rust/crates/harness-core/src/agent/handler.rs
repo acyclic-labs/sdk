@@ -31,6 +31,10 @@ use std::{
 /// The agent's one subscription: its inbox.
 pub const INBOX: &str = "inbox";
 
+#[cfg(test)]
+#[path = "handler_tests.rs"]
+mod tests;
+
 fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
 }
@@ -353,6 +357,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         Ok((observed, cursor))
     }
 
+    /// The same bounded original inbox window for execution and interruption.
+    async fn refill(&self, state: &mut AgentState, end: u64) -> Result<(), Error> {
+        if let Some((from, limit)) = state.overflowed(end) {
+            let records = self.read_back(&state.path, from, limit, end).await?;
+            state.refill(records, end);
+        }
+        Ok(())
+    }
+
     /// Inbox records `[from, end)`, at most `limit`, in sequence order.
     async fn read_back(
         &self,
@@ -407,7 +420,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .record
             .as_ref()
             .map(|record| record.committed_at_micros);
-        let (wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
+        let (mut wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
             (
                 Trigger::Record {
                     subscription,
@@ -460,12 +473,18 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             // Overflowed input precedes this delivery; read it back first.
             let end = match &wake {
                 Wake::Inbox { sequence, .. } => *sequence,
-                Wake::Alarm => cursor,
+                Wake::Alarm | Wake::Rejected => cursor,
             };
-            if let Some((from, limit)) = state.overflowed(end) {
-                let records = self.agents.read_back(&path, from, limit, end).await?;
-                state.refill(records, end);
-            }
+            self.agents.refill(state, end).await?;
+        }
+        if let Wake::Inbox {
+            record: InboxRecord::Cancel(cancel),
+            ..
+        } = &wake
+            && !super::cancellation::accepted(self.agents.store.provider().as_ref(), &path, cancel)
+                .await?
+        {
+            wake = Wake::Rejected;
         }
         if let Some(state) = state.as_mut() {
             state
@@ -498,7 +517,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             super::machine::failed_step(&path, state, wake, cursor, failure).await?
         } else {
             super::machine::prepare_step(
-                &self.driver,
+                &super::cancellation::Driver {
+                    provider: self.agents.store.provider().as_ref(),
+                    inner: &self.driver,
+                },
                 &path,
                 state,
                 (cursor, delivery.now_unix_ms, settled_at_micros),
@@ -518,6 +540,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             prepared: Some(prepared),
         };
         for out in &prepared.step().outs {
+            if let Out::Send {
+                to,
+                record: InboxRecord::Cancel(cancel),
+            } = out
+            {
+                super::cancellation::validate(self.agents.store.provider().as_ref(), to, cancel)
+                    .await?;
+            }
             if let Out::Diagnostic { diagnostic, text } = out {
                 diagnostic
                     .stage(self.agents.store.provider().as_ref(), text)
@@ -592,6 +622,72 @@ where
 {
     fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    fn accepts_interrupt<'a>(
+        &'a self,
+        delivery: &'a Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        subscription: &'a str,
+        record: &'a acyclic_stream::Record,
+    ) -> GuestFuture<'a, bool> {
+        Box::pin(async move {
+            if subscription != INBOX {
+                return Ok(false);
+            }
+            match InboxRecord::decode(&record.value).map_err(guest)? {
+                InboxRecord::Archive(_) => Ok(true),
+                InboxRecord::Cancel(cancel) => {
+                    let mut head = checkpoint
+                        .map(super::checkpoint_head)
+                        .transpose()
+                        .map_err(guest)?;
+                    if let Some(head) = head.as_mut()
+                        && head.state.turn.is_none()
+                        && head.state.queued.is_empty()
+                    {
+                        let end = delivery
+                            .subscriptions
+                            .get(INBOX)
+                            .ok_or_else(|| guest("agent inbox subscription missing"))?
+                            .cursor;
+                        self.agents
+                            .refill(&mut head.state, end)
+                            .await
+                            .map_err(guest)?;
+                    }
+                    let state = head.as_ref().map(|head| &head.state);
+                    let active = state
+                        .and_then(|state| state.turn.as_ref().map(|turn| turn.inbox))
+                        .or_else(|| {
+                            state.and_then(|state| state.queued.front().map(|input| input.inbox))
+                        })
+                        .or_else(|| {
+                            delivery.record.as_ref().and_then(|record| {
+                                let input = InboxRecord::decode(&record.value).ok()?;
+                                super::input::input(record.sequence, input).map(|input| input.inbox)
+                            })
+                        });
+                    if active != Some(cancel.input) {
+                        return Ok(false);
+                    }
+                    let inbox = &delivery
+                        .subscriptions
+                        .get(INBOX)
+                        .ok_or_else(|| guest("agent inbox subscription missing"))?
+                        .path;
+                    let path = AgentPath::try_from(inbox.as_str().to_owned()).map_err(guest)?;
+                    super::cancellation::accepted(
+                        self.agents.store.provider().as_ref(),
+                        &path,
+                        &cancel,
+                    )
+                    .await
+                    .map_err(guest)
+                }
+                _ => Ok(false),
+            }
+        })
     }
 
     fn on_record<'a>(

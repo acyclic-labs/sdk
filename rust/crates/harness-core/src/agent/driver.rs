@@ -636,6 +636,37 @@ pub fn turn_notices(agent: &AgentState) -> Result<Option<super::NoticeSelection>
 /// part, followed by a message's attachment manifest by its exact version
 /// (which [`expand_attachments`] replaces with the files it lists). Primitive
 /// events use the common Notice block and retain their original typed files.
+pub fn model_input_at(inbox: u64, input: &TurnInput) -> Result<ModelContent, Error> {
+    let content = model_input(input)?;
+    if !matches!(input, TurnInput::Message { .. }) {
+        return Ok(content);
+    }
+    let identity = crate::conversation::wire::Notice {
+        source: "harness".into(),
+        kind: "harness.input".into(),
+        body: serde_json::json!({"input": inbox}),
+        wake: false,
+        coalesce_key: None,
+    };
+    let mut parts = match content {
+        ModelContent::Text(text) => vec![ModelContentPart::Text { text, native: None }],
+        ModelContent::Part(part) => vec![part],
+        ModelContent::Parts(parts) => parts,
+    };
+    if let Some(ModelContentPart::Notices { notices }) = parts.first_mut() {
+        notices.insert(0, identity);
+    } else {
+        parts.insert(
+            0,
+            ModelContentPart::Notices {
+                notices: vec![identity],
+            },
+        );
+    }
+    Ok(ModelContent::Parts(parts))
+}
+
+/// Project an input's immutable payload.
 pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
     let body = |file: &FileRef| ModelContentPart::File {
         file: file.clone(),
@@ -753,12 +784,15 @@ fn opened<T>(
     }
 }
 
-fn cancelled_open(cursor: u64) -> TurnStep {
+fn cancelled_open(agent: &AgentState, inbox: u64) -> TurnStep {
     TurnStep {
         checkpoint: None,
-        outs: Vec::new(),
+        outs: vec![Out::InputCancelled {
+            input: inbox,
+            conversation: agent.conversation_tail,
+        }],
         wait: Wait::Input,
-        drops: Some(cursor),
+        drops: None,
     }
 }
 
@@ -1008,7 +1042,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     &cancellation,
                 )?
                 else {
-                    return Ok(cancelled_open(cursor));
+                    return Ok(cancelled_open(agent, inbox));
                 };
                 return settle_selection(agent, &open, turn, inbox, input, refusal).await;
             }
@@ -1035,7 +1069,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             let notices = turn_notices(agent)?;
             let turn = turn_id(agent, &input)?;
             let stop = cancellation;
-            let content = model_input(&input)?;
+            let content = model_input_at(inbox, &input)?;
             let Some(open) = opened(
                 self.host
                     .open(agent, turn, inbox, cursor, &content, stop.clone())
@@ -1043,7 +1077,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 &stop,
             )?
             else {
-                return Ok(cancelled_open(cursor));
+                return Ok(cancelled_open(agent, inbox));
             };
             if turn_announcements(agent)?.is_none() {
                 // Freeze even an empty delta before a model or tool can change

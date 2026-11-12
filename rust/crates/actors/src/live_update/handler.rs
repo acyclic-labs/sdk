@@ -90,6 +90,17 @@ impl FencedHandler {
 }
 
 impl Handler for FencedHandler {
+    fn accepts_interrupt<'a>(
+        &'a self,
+        delivery: &'a Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        subscription: &'a str,
+        record: &'a acyclic_stream::Record,
+    ) -> GuestFuture<'a, bool> {
+        self.package
+            .handler
+            .accepts_interrupt(delivery, checkpoint, subscription, record)
+    }
     fn manifest(&self) -> &Manifest {
         self.package.handler.manifest()
     }

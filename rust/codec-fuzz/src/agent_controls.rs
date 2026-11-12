@@ -375,6 +375,8 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
         (
             "cancel",
             AgentCommand::Cancel {
+                conversation: 0,
+                input: 1,
                 agent: agent.clone(),
                 id: IntentId::try_from("cancel")?,
             },
@@ -508,6 +510,8 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
         ));
     }
     let whole = PreparedCommand::new(&AgentCommand::Cancel {
+        conversation: 0,
+        input: 1,
         agent: agent.clone(),
         id: IntentId::try_from("staged-cancel")?,
     })?;

@@ -92,8 +92,8 @@ export default {proof:'WORKSPACE_STATE_OK',status,diff};`;
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const catalog = join(root, "catalog.json");
-writeFileSync(catalog, JSON.stringify({ fixture: { adapter: "responses", authentication: "optional", base_url: `http://127.0.0.1:${server.address().port}`,
-  models: { tiny: { capacity: { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: false } } }, max_event_bytes: 65536,
+writeFileSync(catalog, JSON.stringify({ morph: { adapter: "responses", authentication: "optional", base_url: `http://127.0.0.1:${server.address().port}`,
+  models: { "morph-kimik31": { capacity: { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: false } } }, max_event_bytes: 65536,
   token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 } } }));
 let gitDirectory;
 try {
@@ -114,7 +114,7 @@ try {
     active = { git: repository, requests: 0 };
     const result = await Promise.race([failed, processes.run(binary, ["--default-config", "--workspace", workspace,
       "--workspace-mounting", "physical", "--host-state-directory", join(root, repository ? "clone-state" : "plain-state"),
-      "--settings-root", settings, "--catalog", catalog, "--model", "fixture/tiny", "--no-compaction", "--operation", randomUUID(),
+      "--settings-root", settings, "--catalog", catalog, "--model", "morph/morph-kimik31", "--no-compaction", "--operation", randomUUID(),
       "-p", "Edit tracked.txt, then inspect the workspace with real git through shell."], { env, cwd: workspace })]);
     captures.push({ repository, ...result });
     assert.equal(result.code, 0, result.stderr + result.stdout.slice(-4000));

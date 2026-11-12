@@ -22,7 +22,49 @@ const EFFECTS_KEY: &[u8] = b"acyclic.actors.transition.v1";
 const MANIFEST_DOMAIN: &[u8] = b"\xffAMNF";
 const DELIVERY_DOMAIN: &[u8] = b"\xffADLV";
 const TRANSITION_DOMAIN: &[u8] = b"\xffATRN";
+const INTERRUPT_DOMAIN: &[u8] = b"\xffAINT";
 const VERSION: &[u8] = b"\x01";
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct InterruptQuery {
+    #[prost(bytes = "vec", tag = "1")]
+    delivery: Vec<u8>,
+    #[prost(string, tag = "2")]
+    subscription: String,
+    #[prost(message, optional, tag = "3")]
+    record: Option<wire::Record>,
+}
+
+/// Encode a candidate against the original active delivery and checkpoint.
+pub fn encode_interrupt(
+    delivery: &Delivery,
+    checkpoint: Option<&Checkpoint>,
+    subscription: &str,
+    record: &acyclic_stream::Record,
+) -> Vec<u8> {
+    encode(
+        &InterruptQuery {
+            delivery: encode_delivery(delivery, checkpoint),
+            subscription: subscription.into(),
+            record: Some(wire_codec::record_wire(record.clone(), None)),
+        },
+        INTERRUPT_DOMAIN,
+    )
+}
+
+/// Evaluate the same handler predicate across the canonical guest boundary.
+pub async fn accepts_interrupt(handler: &dyn Handler, bytes: &[u8]) -> Result<bool, GuestError> {
+    let query: InterruptQuery = canonical(bytes, "interrupt", INTERRUPT_DOMAIN)?;
+    let (delivery, checkpoint) = decode_delivery(&query.delivery)?;
+    let record = wire_codec::record(
+        query.record.ok_or_else(|| invalid("interrupt record"))?,
+        None,
+    )
+    .map_err(|_| invalid("interrupt record"))?;
+    handler
+        .accepts_interrupt(&delivery, checkpoint.as_ref(), &query.subscription, &record)
+        .await
+}
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct DeliveryWire {
@@ -501,29 +543,46 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
 /// one encoded delivery to the guest's `onRecord` and returns its encoded
 /// transition. Scheduling, timeouts and publication stay with the host's
 /// runtime and [`crate::local::Store`].
-pub struct Remote<F> {
+pub struct Remote<F, I> {
     manifest: Manifest,
     call: F,
+    interrupt: I,
 }
 
-impl<F> Remote<F>
+impl<F, I> Remote<F, I>
 where
     F: Fn(Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>>
         + acyclic_stream::ProviderPlatform,
+    I: Fn(Vec<u8>) -> GuestFuture<'static, bool> + acyclic_stream::ProviderPlatform,
 {
     /// The guest of `manifest`, as [`decode_manifest`] admitted it.
-    pub const fn new(manifest: Manifest, call: F) -> Self {
-        Self { manifest, call }
+    pub const fn new(manifest: Manifest, call: F, interrupt: I) -> Self {
+        Self {
+            manifest,
+            call,
+            interrupt,
+        }
     }
 }
 
-impl<F> Handler for Remote<F>
+impl<F, I> Handler for Remote<F, I>
 where
     F: Fn(Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>>
         + acyclic_stream::ProviderPlatform,
+    I: Fn(Vec<u8>) -> GuestFuture<'static, bool> + acyclic_stream::ProviderPlatform,
 {
     fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    fn accepts_interrupt<'a>(
+        &'a self,
+        delivery: &'a Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        subscription: &'a str,
+        record: &'a acyclic_stream::Record,
+    ) -> GuestFuture<'a, bool> {
+        (self.interrupt)(encode_interrupt(delivery, checkpoint, subscription, record))
     }
 
     fn on_record<'a>(

@@ -120,8 +120,9 @@ pub fn grants() -> Result<JsValue, JsValue> {
         acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
             .to_scope_label()
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
-    let grants = js_sys::Array::of2(
+    let grants = js_sys::Array::of3(
         &JsValue::from_str(acyclic_harness_core::contract::capability::INTERACTION_ROUTE),
+        &JsValue::from_str(acyclic_harness_core::contract::capability::HARNESS_HOST),
         &JsValue::from_str(&grant),
     );
     for tool in acyclic_harness_core::tools::AGENT_TOOLS {
@@ -236,8 +237,15 @@ pub async fn spawned(factory: js_sys::Function) -> Result<JsValue, JsValue> {
             .iter()
             .find(|binding| binding.name == "private")
             .ok_or("fixture private volume missing")?;
+        let journal = acyclic_harness_core::conversation::journal_volume(
+            private.volume()?.provider().clone(),
+            &child.id(),
+        )?;
         let grants = vec![
             acyclic_harness_core::contract::capability::INTERACTION_ROUTE.to_owned(),
+            acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
+            journal.capability(VolumeOperation::Read, &mut None)?,
+            journal.capability(VolumeOperation::Write, &mut None)?,
             private
                 .volume()?
                 .capability(VolumeOperation::Read, &mut None)?,

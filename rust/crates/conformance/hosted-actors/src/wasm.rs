@@ -181,6 +181,15 @@ impl ActorsPackage {
     pub fn manifest(&self) -> Vec<u8> {
         wire::encode_manifest(self.0.manifest())
     }
+    #[wasm_bindgen(js_name = acceptsInterrupt)]
+    pub async fn accepts_interrupt(&self, query: &[u8], signal: JsValue) -> Result<bool, JsValue> {
+        let (query, handle) = futures::future::abortable(wire::accepts_interrupt(&self.0, query));
+        let _abort = Listening::new(signal, move || handle.abort())?;
+        query
+            .await
+            .map_err(|_| failed("guest interrupt aborted"))?
+            .map_err(failed)
+    }
     #[wasm_bindgen(js_name = onRecord)]
     pub async fn on_record(
         &self,

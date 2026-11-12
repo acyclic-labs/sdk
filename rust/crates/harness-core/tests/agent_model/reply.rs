@@ -189,6 +189,7 @@ async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Re
     let selected = select_boundary(
         &provider,
         &state.path,
+        1,
         2,
         acyclic_harness_core::agent::BoundaryEnd::Exact(3),
     )

@@ -41,12 +41,15 @@ pub enum BoundaryEnd {
 }
 
 /// Read one window at an actual model boundary. A later arrival belongs to a
-/// later boundary. Cancel/archive are barriers and remain explicit interrupts.
+/// later boundary. Cancellation of `active` and archive are barriers; a
+/// cancellation of another input remains an ordered notice. The actor's
+/// asynchronous interrupt cannot let later input join a cancelled turn.
 /// `from` is the last admitted model frontier; a frozen range is replayed
 /// independently of which unrelated queued inputs the actor has consumed.
 pub async fn select_boundary<P: StreamProvider + ?Sized>(
     provider: &P,
     agent: &AgentPath,
+    active: u64,
     from: u64,
     boundary: BoundaryEnd,
 ) -> Result<BoundarySelection, Error> {
@@ -97,10 +100,34 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
                 return Err(Error::Record("steering inbox is not contiguous"));
             }
             let input = InboxRecord::decode(&record.value)?;
-            if matches!(input, InboxRecord::Cancel(_) | InboxRecord::Archive(_)) {
+            if matches!(input, InboxRecord::Archive(_)) {
                 barrier = true;
                 break;
             }
+            let input = match input {
+                InboxRecord::Cancel(cancel) => {
+                    if !super::cancellation::accepted(provider, agent, &cancel).await? {
+                        None
+                    } else if cancel.input == active {
+                        barrier = true;
+                        break;
+                    } else {
+                        Some(InboxRecord::Notice {
+                            id: cancel.id,
+                            notice: super::NoticePayload::Quiet(
+                                crate::conversation::wire::Notice {
+                                    source: "harness".into(),
+                                    kind: "harness.input_cancelled".into(),
+                                    body: serde_json::json!({"input": cancel.input}),
+                                    wake: false,
+                                    coalesce_key: None,
+                                },
+                            ),
+                        })
+                    }
+                }
+                input => Some(input),
+            };
             selection.through = record
                 .sequence
                 .checked_add(1)
@@ -108,7 +135,9 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
             read += 1;
             // Independent records keep their ordered turns. Page past them
             // without retaining them or capping how far a reply can arrive.
-            if matches!(input, InboxRecord::Notice { .. } | InboxRecord::Message(_)) {
+            if let Some(input) = input
+                && matches!(input, InboxRecord::Notice { .. } | InboxRecord::Message(_))
+            {
                 selection.inputs.push((record.sequence, input));
             }
         }

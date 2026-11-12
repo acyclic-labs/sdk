@@ -75,7 +75,7 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
         InboxRecord::Context(_) => "context",
     };
     let intent = intent_of(record);
-    Ok(CommitRequest {
+    let mut request = CommitRequest {
         deadline_unix_millis: None,
         effects: vec![CommitEffect::hard(
             vec![
@@ -88,7 +88,15 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
             }],
         )],
         idempotency_key: intent_key(kind, &[to.as_str(), &sender_text(sender), &intent])?,
-    })
+    };
+    if let InboxRecord::Cancel(cancel) = record {
+        request.effects.push(super::cancellation::cancel_effect(
+            to,
+            cancel.input,
+            cancel.conversation,
+        )?);
+    }
+    Ok(request)
 }
 
 /// Observed inbox tail of `agent`; [`Error::NoSuchAgent`] when it was never created.
@@ -110,9 +118,8 @@ fn intent_of(record: &InboxRecord) -> String {
             message.id.as_str().to_owned()
         }
         InboxRecord::Notice { id, .. } => id.as_str().to_owned(),
-        InboxRecord::Cancel(control) | InboxRecord::Archive(control) => {
-            control.id.as_str().to_owned()
-        }
+        InboxRecord::Cancel(control) => control.id.as_str().to_owned(),
+        InboxRecord::Archive(control) => control.id.as_str().to_owned(),
         InboxRecord::Approval(approval) => approval.id.as_str().to_owned(),
         InboxRecord::ApprovalRequested(request) => {
             format!("{}:{}", request.child, request.id.as_str())
@@ -350,6 +357,7 @@ fn first_status(
         path: agent.status()?,
         records: vec![
             StatusRecord {
+                cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
                 phase: Phase::Idle,

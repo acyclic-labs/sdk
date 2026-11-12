@@ -19,8 +19,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
-            // Host-owned interaction records are outside authored agent volumes.
-            version: "3".into(),
+            // Input-scoped cancellation and selected-input journal policy.
+            version: "5".into(),
         });
     &IDENTITY
 }
@@ -485,8 +485,14 @@ mod tests {
                     action,
                 }));
             }
-            for control in [InboxRecord::Cancel, InboxRecord::Archive] {
-                records.push(control(Control {
+            records.push(InboxRecord::Cancel(crate::agent::Cancellation {
+                conversation: 0,
+                input: 1,
+                by: from.clone(),
+                id: intent(),
+            }));
+            {
+                records.push(InboxRecord::Archive(Control {
                     by: from.clone(),
                     id: intent(),
                 }));
@@ -555,6 +561,7 @@ mod tests {
         // Statuses and conversation entries.
         for outcome in outcomes() {
             StatusRecord {
+                cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
                 phase: Phase::Done { outcome },
@@ -784,7 +791,7 @@ mod tests {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);
             for phase in phases.into_iter().chain(record_outcomes.map(|outcome| Phase::Done { outcome })) {
-                let record = StatusRecord { child_settlement: Some(crate::agent::ChildSettlement { child: id(u64::MAX), settled_at_micros: u64::MAX }), child_wakes: Some(crate::agent::ChildWakes { from: 0, until: u64::MAX, woke_at_micros: u64::MAX }), phase, cursor: u64::MAX, conversation: u64::MAX };
+                let record = StatusRecord { cancelled_input: None, child_settlement: Some(crate::agent::ChildSettlement { child: id(u64::MAX), settled_at_micros: u64::MAX }), child_wakes: Some(crate::agent::ChildWakes { from: 0, until: u64::MAX, woke_at_micros: u64::MAX }), phase, cursor: u64::MAX, conversation: u64::MAX };
                 let worst = assert_record_bound(&record);
                 let mut sample: StatusRecord = varied(&record, name, text);
                 sample.cursor = cursor;
@@ -803,6 +810,7 @@ mod tests {
     fn waiting_host_status_requires_a_bounded_name() {
         for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
             let record = StatusRecord {
+                cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
                 phase: Phase::WaitingHost { host },
@@ -815,6 +823,7 @@ mod tests {
             );
         }
         let record = StatusRecord {
+            cancelled_input: None,
             child_settlement: None,
             child_wakes: None,
             phase: Phase::WaitingHost {

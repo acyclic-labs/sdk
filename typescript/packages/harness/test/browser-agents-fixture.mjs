@@ -60,7 +60,7 @@ export async function agentsFixture(id, reply, initialize = init) {
     providers: kind => kind === "memory" ? WasmAgentProviders.memory(options) : WasmAgentProviders.indexedDb(options),
     guest: providers => AgentGuest.open(providers, options, owner, registry),
     hosting: (providers, guest) => WasmAgents.openHosting(providers, options, owner, registry, guest.manifest(),
-      (delivery, signal, interrupt) => guest.onRecord(delivery, signal, interrupt), report),
+      (delivery, signal, interrupt) => guest.onRecord(delivery, signal, interrupt), (query, signal) => guest.acceptsInterrupt(query, signal), report),
     free: () => { rejectFailure(new Error("fixture owner closed")); authority.close(); registry.free(); owner.free(); authority.free(); } };
 }
 

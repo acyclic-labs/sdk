@@ -204,6 +204,10 @@ enum Outcome {
 }
 
 impl View {
+    async fn cancel(&mut self, conversation: &Conversation) -> Result<(), Failure> {
+        self.cancelling = conversation.cancel().await?;
+        Ok(())
+    }
     /// The process exit, each nonzero status with its reason.
     fn exit(&self) -> Result<(), Failure> {
         match &self.outcome {
@@ -258,8 +262,8 @@ struct View {
     /// Inputs below this observed frontier cannot become pending again when
     /// an uncertain command later replays its original delivery receipt.
     settled_before: u64,
-    /// A cancel's settled status, shown once every entry it announced was:
-    /// its inbox cursor and conversation tail.
+    /// A cancel's exact input and announced conversation tail; the marker waits
+    /// for those entries, so their original partial output remains visible.
     stopped: Option<(u64, u64)>,
     /// A cancelled entry already marked its turn's stop.
     cancel_marked: bool,
@@ -269,7 +273,7 @@ struct View {
     reply: String,
     phase: Option<Phase>,
     /// A cancel was sent and its turn has not stopped yet.
-    cancelling: bool,
+    cancelling: Option<u64>,
     outcome: Outcome,
     /// A turn settled since the last frame: ring the bell.
     ring: bool,
@@ -453,7 +457,8 @@ impl View {
                     self.transcript.push(BlockKind::Answer, CANCELLED);
                     self.outcome = Outcome::Cancelled;
                     // It marks the stop a cancel in flight would otherwise mark.
-                    self.cancel_marked = self.cancelling || self.stopped.is_some();
+                    self.cancel_marked = self.cancelling == Some(entry.inbox)
+                        || self.stopped.is_some_and(|(input, _)| input == entry.inbox);
                 } else if let TurnOutcome::Failed { message } = &entry.outcome {
                     // The turn failed; the conversation stays open.
                     self.failed(conversation, message);
@@ -465,6 +470,12 @@ impl View {
             }
             Event::Delta => return Ok(()),
             Event::Status(status) => {
+                if let Some(input) = status.cancelled_input {
+                    self.stopped = Some((input, status.conversation));
+                    if self.cancelling == Some(input) {
+                        self.cancelling = None;
+                    }
+                }
                 // A settled agent consumed every request before its cursor:
                 // a context request it passed without an entry was dropped
                 // (cancelled) or failed, and is no longer work.
@@ -498,10 +509,10 @@ impl View {
                     self.settle_pending();
                     self.failed(conversation, &message);
                 } else if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
-                    if std::mem::take(&mut self.cancelling) {
+                    if let Some(input) = self.cancelling.take() {
                         // The cancel's stop shows once the entries this status
                         // announced did: they hold the stopped turn's text.
-                        self.stopped = Some((status.cursor, status.conversation));
+                        self.stopped = Some((input, status.conversation));
                         // A cancelled approval fails its task; the next
                         // prompt clears the report.
                         if matches!(self.phase, Some(Phase::WaitingApproval { .. })) {
@@ -629,11 +640,11 @@ impl View {
     }
 
     /// Shows a cancel's stop once every entry its status announced was
-    /// shown (`seen` is past them): the prompts it dropped without a turn,
+    /// shown (`seen` is past them): only the prompt that it cancelled,
     /// and its mark unless a cancelled entry already made it. The text a
     /// stopped turn saved is its entry's, never the streamed preview's.
     fn stop(&mut self, seen: u64) {
-        let Some((cursor, announced)) = self.stopped else {
+        let Some((input, announced)) = self.stopped else {
             return;
         };
         if seen < announced {
@@ -642,7 +653,7 @@ impl View {
         self.stopped = None;
         let mut dropped = Vec::new();
         self.pending.retain(|(inbox, prompt)| {
-            let kept = *inbox >= cursor;
+            let kept = *inbox != input;
             if !kept {
                 dropped.push(prompt.clone());
             }
@@ -652,7 +663,9 @@ impl View {
             self.transcript.push(BlockKind::Prompt, &prompt);
         }
         if !std::mem::take(&mut self.cancel_marked) {
-            self.reply.clear();
+            if !self.phase.as_ref().is_some_and(Phase::in_turn) {
+                self.reply.clear();
+            }
             self.transcript.push(BlockKind::Answer, CANCELLED);
             self.outcome = Outcome::Cancelled;
             self.ring = true;
@@ -1511,7 +1524,7 @@ async fn run_current(
                                     }
                                     Some(Prompt::StopOrDetach) => {
                                         match text.trim().to_ascii_lowercase().as_str() {
-                                            "s" | "stop" => { conversation.cancel().await?; return Ok(Next::Exit); }
+                                            "s" | "stop" => { view.cancel(&conversation).await?; return Ok(Next::Exit); }
                                             "d" | "detach" | "" => return view.exit().map(|()| Next::Exit),
                                             _ => { view.prompt = Some(Prompt::StopOrDetach); }
                                         }
@@ -1756,8 +1769,7 @@ async fn run_current(
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape)
                                 if matches!(queries.source(), Some(query::Source::Approval { .. })) =>
                             {
-                                view.cancelling = true;
-                                conversation.cancel().await?;
+                                view.cancel(&conversation).await?;
                             }
                             InputEffect::Host(Action::Escape) if overlay.is_some() || queries.source().is_some() => {
                                 match ui.select(&conversation, None).await {
@@ -1775,8 +1787,7 @@ async fn run_current(
                                     view.restore_phase(&conversation, conversation.phase().await?).await?;
                                 }
                                 if view.busy() {
-                                    view.cancelling = true;
-                                    conversation.cancel().await?;
+                                    view.cancel(&conversation).await?;
                                 } else if matches!(effect, InputEffect::Interrupt) {
                                     queries.close(query_future.as_mut());
                                     overlay_top = 0;
@@ -1874,6 +1885,92 @@ async fn run_current(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stop_cancels_the_active_input_and_preserves_a_newer_prompt() -> Result<(), Failure> {
+        use acyclic_harness::{
+            LocalHarness,
+            context::{CompactionPolicy, ModelContextCapacity},
+            local::WorkspaceMounting,
+            model::Model,
+            test_support::{
+                ScriptedEvent, ScriptedModelProvider, ScriptedTurn, local_harness_config,
+            },
+        };
+        let directory = tempfile::tempdir()?;
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace)?;
+        let (dispatched, mut requests) = tokio::sync::mpsc::channel(1);
+        let provider = Arc::new(
+            ScriptedModelProvider::new([
+                ScriptedTurn::Events(vec![ScriptedEvent::Pending {}]),
+                ScriptedTurn::Text("queued reply".into()),
+                ScriptedTurn::Text("none".into()),
+            ])
+            .with_context_capacity(ModelContextCapacity {
+                context_tokens: 32_768,
+                output_tokens: Some(4096),
+            })
+            .with_dispatch_observer(move |_| {
+                let _ = dispatched.try_send(());
+                Box::pin(async { Ok(()) })
+            }),
+        );
+        let harness = Arc::new(
+            LocalHarness::open(
+                local_harness_config(
+                    &workspace,
+                    (
+                        Model::new("scripted".into(), "test".into(), "1".into())?,
+                        provider.clone(),
+                    ),
+                )?
+                .without_user_settings()
+                .state_directory(directory.path().join("state"))
+                .workspace_mounting(WorkspaceMounting::Physical)
+                .compaction(CompactionPolicy::Disabled),
+            )
+            .await?,
+        );
+        let conversation = Conversation::open(harness.connect().await?);
+        let first = conversation.send("active", "active prompt").await?;
+        requests
+            .recv()
+            .await
+            .ok_or("model dispatch producer closed")?;
+        let second = conversation.send("queued", "queued prompt").await?;
+        let mut view = View {
+            pending: vec![
+                (first, "active prompt".into()),
+                (second, "queued prompt".into()),
+            ],
+            ..View::default()
+        };
+        // Approval Escape and explicit Stop share this cancellation entrance.
+        view.cancel(&conversation).await?;
+        assert_eq!(view.cancelling, Some(first));
+        let settled = conversation.wait_current_input().await?;
+        let entries = conversation.entries(0, settled.conversation).await?;
+        assert!(
+            entries
+                .iter()
+                .any(|entry| { entry.inbox == first && entry.outcome == TurnOutcome::Cancelled })
+        );
+        let (sequence, queued) = entries
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.inbox == second)
+            .ok_or("queued input did not settle")?;
+        assert_eq!(queued.outcome, TurnOutcome::Completed);
+        assert_eq!(
+            conversation
+                .output_text_at(u64::try_from(sequence)?, queued)
+                .await?,
+            "queued reply"
+        );
+        assert_eq!(provider.request_count(), 3);
+        Ok(())
+    }
 
     #[test]
     fn peer_inputs_remain_attributed_when_appended_or_paged() -> Result<(), Failure> {

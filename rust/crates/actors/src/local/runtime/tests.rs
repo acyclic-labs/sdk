@@ -573,6 +573,7 @@ async fn reservation_package_commits_over_strict_wire_and_cleans_up_on_reopen() 
     let remote = || -> Result<Arc<dyn Handler>, crate::guest::GuestError> {
         let manifest = wire::decode_manifest(&wire::encode_manifest(package.manifest()))?;
         let package = Arc::clone(&package);
+        let interrupt_package = Arc::clone(&package);
         Ok(Arc::new(wire::Remote::new(
             manifest,
             move |bytes, cancellation| {
@@ -584,6 +585,10 @@ async fn reservation_package_commits_over_strict_wire_and_cleans_up_on_reopen() 
                         .await?;
                     wire::encode_transition(&transition)
                 }) as GuestFuture<'static, Vec<u8>>
+            },
+            move |query| -> crate::guest::GuestFuture<'static, bool> {
+                let handler = interrupt_package.clone();
+                Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
             },
         )))
     };
@@ -664,6 +669,7 @@ async fn generic_event_host_runs_the_original_package_over_strict_wire() -> Test
     let remote = || -> Result<Arc<dyn Handler>, crate::guest::GuestError> {
         let manifest = wire::decode_manifest(&wire::encode_manifest(package.manifest()))?;
         let package = Arc::clone(&package);
+        let interrupt_package = Arc::clone(&package);
         Ok(Arc::new(wire::Remote::new(
             manifest,
             move |bytes, cancellation| {
@@ -675,6 +681,10 @@ async fn generic_event_host_runs_the_original_package_over_strict_wire() -> Test
                         .await?;
                     wire::encode_transition(&transition)
                 }) as GuestFuture<'static, Vec<u8>>
+            },
+            move |query| -> crate::guest::GuestFuture<'static, bool> {
+                let handler = interrupt_package.clone();
+                Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
             },
         )))
     };

@@ -37,7 +37,7 @@ test("portable host disposal ends pending storage controls and refuses new work"
       const providers = WasmAgentProviders.injected(stream, objects, false, fixture.options);
       const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry);
       const host = WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry,
-        authority, { manifest: guest.manifest(), onRecord: () => { throw new Error("unexpected guest delivery"); },
+        authority, { manifest: guest.manifest(), acceptsInterrupt: (query: Uint8Array, signal: AbortSignal) => guest.acceptsInterrupt(query, signal), onRecord: () => { throw new Error("unexpected guest delivery"); },
           policy: () => true, admitted: async () => {} });
       try {
         if (name !== "create") await host.adopt(agent);
@@ -122,7 +122,7 @@ test("failed delivery ends current waiters and preserves recovery without revivi
   const providers = WasmAgentProviders.injected(stream, new WasmObjects({ port: { open: () => ({ next: wait, close() {} }) } }), false, fixture.options);
   const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry);
   const host = WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry,
-    authority, { manifest: guest.manifest(), onRecord: () => { throw new Error("unexpected guest delivery"); },
+    authority, { manifest: guest.manifest(), acceptsInterrupt: (query: Uint8Array, signal: AbortSignal) => guest.acceptsInterrupt(query, signal), onRecord: () => { throw new Error("unexpected guest delivery"); },
       policy: () => true, admitted: async () => {} });
   const outcome = (pending: Promise<unknown>) => pending.then(
     () => new Error("pending storage unexpectedly completed"), error => error);
