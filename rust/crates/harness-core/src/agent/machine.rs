@@ -65,6 +65,9 @@ pub enum SpawnOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentState {
+    /// Original deferred invocation and its eventual wake event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_resume: Option<WaitResume>,
     /// Every admitted worker, including settled children; replays count once.
     pub spawned_children: super::Children,
     /// Successful tool spawns retained by a paused turn, not yet published.
@@ -247,6 +250,7 @@ impl AgentState {
             .transpose()
             .map_err(|error| Error::Turn(Box::new(error)))?;
         Ok(Self {
+            wait_resume: None,
             spawned_children: super::Children::new(),
             reserved_spawns: 0,
             topology_refusals: super::Children::new(),
@@ -533,6 +537,8 @@ pub enum Wait {
 /// one actor alarm, set from the delivery clock of the committing step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Until {
+    /// Invocation owning this condition, when it is a deferred tool.
+    pub operation: Option<crate::OperationId>,
     /// Agents whose settlement counts, each at most once.
     pub awaited: BTreeSet<AgentPath>,
     /// Original sends whose replies can satisfy the same condition.
@@ -564,6 +570,7 @@ impl Until {
     #[must_use]
     pub fn quorum(awaited: BTreeSet<AgentPath>, need: u32) -> Self {
         Self {
+            operation: None,
             awaited,
             replies: Vec::new(),
             need,
@@ -576,6 +583,7 @@ impl Until {
     #[must_use]
     pub fn sleep(timeout_ms: u64) -> Self {
         Self {
+            operation: None,
             awaited: BTreeSet::new(),
             replies: Vec::new(),
             need: 1,
@@ -588,6 +596,7 @@ impl Until {
     #[must_use]
     pub fn input(timeout_ms: Option<u64>) -> Self {
         Self {
+            operation: None,
             awaited: BTreeSet::new(),
             replies: Vec::new(),
             need: 1,
@@ -601,6 +610,30 @@ impl Until {
     pub fn within(self, timeout_ms: Option<u64>) -> Self {
         Self { timeout_ms, ..self }
     }
+}
+
+/// Original deferred invocation and its eventual release.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaitResume {
+    /// Unrelated calls cannot consume this invocation's release.
+    pub operation: crate::OperationId,
+    /// Absent until the selected event occurs.
+    pub reason: Option<WaitReason>,
+}
+
+/// The event that releases a wait, independent of later child activity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WaitReason {
+    /// The selected quorum currently holds.
+    NeedMet,
+    /// The original actor deadline fired.
+    Deadline,
+    /// The selected inbox arm received this input.
+    Input { inbox: u64 },
+    /// This child completed the original settlement quorum.
+    Settlement { child: AgentPath },
 }
 
 /// The result of one turn step.
@@ -1291,6 +1324,7 @@ async fn admit(
         state.pending_notices = None;
     }
     if !admitted.control.turn {
+        state.wait_resume = None;
         state.child_settlements = None;
         state.turn = None;
         state.reserved_spawns = 0;
@@ -1377,6 +1411,11 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
 fn settle_condition(state: &mut AgentState) {
     state.need = state.need.saturating_sub(1);
     if state.need == 0 {
+        if let Some(resume) = &mut state.wait_resume {
+            resume.reason = Some(WaitReason::Settlement {
+                child: child.clone(),
+            });
+        }
         let before = control(state);
         let next = kernel::satisfy(before);
         #[cfg(feature = "test-support")]
@@ -1510,6 +1549,31 @@ async fn run<T: TurnDriver + ?Sized>(
         Pick::Front => state.queued.pop_front(),
         Pick::Approval => approval.and_then(|position| state.queued.remove(position)),
     };
+    if picked == Pick::Resume
+        && let Phase::Waiting {
+            deadline_unix_ms,
+            input,
+        } = &state.phase
+        && let Some(resume) = &mut state.wait_resume
+    {
+        resume.reason = Some(
+            if alarm_wake && deadline_unix_ms.is_some_and(|deadline| deadline <= now_unix_ms) {
+                WaitReason::Deadline
+            } else if *input && queued {
+                WaitReason::Input {
+                    inbox: state
+                        .queued
+                        .front()
+                        .ok_or(Error::Record("input wake has no input"))?
+                        .inbox,
+                }
+            } else {
+                return Err(Error::Record(
+                    "wait resumed without its deadline or selected input",
+                ));
+            },
+        );
+    }
     // This is the actual wait return, before the driver performs any work.
     // Completion times came with the original deliveries; this adds no read,
     // commit or telemetry channel. Partial facts have no return clock until here.
@@ -1628,6 +1692,10 @@ async fn run<T: TurnDriver + ?Sized>(
             None,
         ),
         Wait::Until(until) => {
+            state.wait_resume = until.operation.map(|operation| WaitResume {
+                operation,
+                reason: None,
+            });
             // Only an open child can still settle; one already done has and
             // counts now. This step's own spawns are open children too, so
             // apply them first: a wait on a child spawned in the same step
@@ -1648,6 +1716,11 @@ async fn run<T: TurnDriver + ?Sized>(
             let reachable = open.len().saturating_add(until.replies.len());
             let input = until.input;
             let wait = kernel::until(need, reachable, sleep, deadline, input);
+            if matches!(wait, kernel::Wait::Continue)
+                && let Some(resume) = &mut state.wait_resume
+            {
+                resume.reason = Some(WaitReason::NeedMet);
+            }
             #[cfg(feature = "test-support")]
             control_trace::record(
                 state,
@@ -1679,6 +1752,9 @@ async fn run<T: TurnDriver + ?Sized>(
         checkpoint: turn.checkpoint.unwrap_or_default(),
     });
     state.reported = next.reported;
+    if !next.turn {
+        state.wait_resume = None;
+    }
     (state.awaiting, state.need) = if matches!(next.mode, Mode::Await(_)) {
         awaiting
     } else {
@@ -1728,6 +1804,7 @@ fn retain_outcome(path: &AgentPath, outcome: AgentOutcome) -> (AgentOutcome, Opt
 /// so it cannot rearm itself or lose the unfinished archive request.
 /// A settled agent with no pending archive work keeps its bounded outcome.
 fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
+    state.wait_resume = None;
     state.drop_queue();
     state.turn = None;
     state.reserved_spawns = 0;
