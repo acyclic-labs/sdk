@@ -43,6 +43,9 @@ pub enum TurnEffect {
         re: Option<IntentId>,
         /// Body, staged on the sender's private volume.
         body: Box<FileRef>,
+        /// Version-pinned copies selected by the sender, in one manifest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attachments: Option<Box<FileRef>>,
     },
     /// Archive an open child.
     Archive {
@@ -153,6 +156,7 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
                 re,
                 body,
                 delivery,
+                attachments,
             } => {
                 if let Some(admission) = peer {
                     outs.push(Out::PeerGuard {
@@ -170,7 +174,7 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
                             id,
                             re,
                             body,
-                            attachments: None,
+                            attachments,
                         };
                         match delivery {
                             super::MessageDelivery::Steer => InboxRecord::Message(message),

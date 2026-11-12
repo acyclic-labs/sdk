@@ -9,6 +9,9 @@ use acyclic_stream::testing::{Counted, RequestClass};
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "spawn_names/send_files.rs"]
+mod send_files;
+
 fn call(tool: &str, arguments: serde_json::Value) -> ScriptedTurn {
     ScriptedTurn::Events(vec![
         ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
@@ -52,12 +55,124 @@ async fn fixture_with_files(
     Arc<ScriptedModelProvider>,
     Host,
 )> {
+    fixture_with_workspace(turns, setup_failures, false).await
+}
+
+struct ProjectTasks {
+    harness: Arc<acyclic_harness_core::runtime::AgentHarness>,
+    model: Arc<ScriptedModelProvider>,
+    pause: Option<Arc<send_files::PublicationPause>>,
+}
+
+impl acyclic_harness_core::filesystem::TurnContext for ProjectTasks {
+    fn prepare<'a>(
+        &'a self,
+        (executor, limits): (
+            acyclic_harness_core::executor::StockExecutor,
+            acyclic_harness_core::conversation::Limits,
+        ),
+        agent: &'a AgentState,
+        turn: OperationId,
+        _: &'a ModelContent,
+        authority: &'a acyclic_harness_core::filesystem::TurnAuthority,
+    ) -> BoxProviderFuture<
+        'a,
+        acyclic_harness_core::Result<acyclic_harness_core::executor::StockExecutor>,
+    > {
+        Box::pin(async move {
+            let entry = WorkspaceTable::primary_in(&agent.volumes)
+                .ok_or_else(|| acyclic_harness_core::Error::NotFound("project".into()))?;
+            let harness = self.harness.with_workspace(
+                None,
+                acyclic_harness_core::runtime::ContentBindings {
+                    volume: entry.volume()?.clone(),
+                    reader: authority.content.reader.clone(),
+                    writer: None,
+                },
+            )?;
+            let executor = if let Some(pause) = &self.pause {
+                let mut tools = ToolRegistry::default();
+                acyclic_harness_core::tools::bind_agent_tools(
+                    &mut tools,
+                    agent,
+                    (
+                        authority.effects.clone().ok_or_else(|| {
+                            acyclic_harness_core::Error::Invalid("missing effects".into())
+                        })?,
+                        authority.children.clone(),
+                    ),
+                    Arc::new(send_files::PausedPublisher {
+                        inner: authority.content.writer.clone().ok_or_else(|| {
+                            acyclic_harness_core::Error::Invalid("missing writer".into())
+                        })?,
+                        pause: pause.clone(),
+                    }),
+                    limits.file_bytes,
+                    (
+                        &[
+                            "spawn".into(),
+                            "send".into(),
+                            "wait".into(),
+                            "archive".into(),
+                        ],
+                        authority.templates.clone(),
+                    ),
+                )?;
+                acyclic_harness_core::executor::StockExecutor::new(
+                    Model::new("test".into(), "text".into(), "1".into())?,
+                    self.model.clone(),
+                    Default::default(),
+                    tools,
+                )
+                .with_limits(limits)
+                .with_compaction_policy(CompactionPolicy::Disabled)
+            } else {
+                executor
+            };
+            Tasks::bind(&harness, executor, agent, turn, authority).map(|(executor, _)| executor)
+        })
+    }
+}
+
+async fn fixture_with_workspace(
+    turns: Vec<ScriptedTurn>,
+    setup_failures: usize,
+    project: bool,
+) -> Result<(
+    AgentHost<MemoryStream>,
+    Arc<MemoryStream>,
+    AgentPath,
+    Arc<ScriptedModelProvider>,
+    Host,
+)> {
+    fixture_with_pause(turns, setup_failures, project, None).await
+}
+
+async fn fixture_with_pause(
+    turns: Vec<ScriptedTurn>,
+    setup_failures: usize,
+    project: bool,
+    pause: Option<Arc<send_files::PublicationPause>>,
+) -> Result<(
+    AgentHost<MemoryStream>,
+    Arc<MemoryStream>,
+    AgentPath,
+    Arc<ScriptedModelProvider>,
+    Host,
+)> {
     let root = AgentPath::root(&id(81));
     let stream = Arc::new(MemoryStream::default());
     let model = Arc::new(ScriptedModelProvider::new(turns));
     let (files, binding) = private_in(&stream, &root).await?;
     files.seed_layer().await?;
-    let limits = acyclic_harness_core::conversation::Limits::default();
+    let limits = acyclic_harness_core::conversation::Limits {
+        file_bytes: if project {
+            LIMITS.maximum_bytes
+        } else {
+            acyclic_harness_core::conversation::Limits::default().file_bytes
+        },
+        ..Default::default()
+    };
     let harness = acyclic_harness_core::runtime::Bindings {
         scope: acyclic_harness_core::runtime::RuntimeScope::new(
             Capabilities::new([acyclic_harness_core::contract::capability::MODEL_GENERATE]),
@@ -66,6 +181,15 @@ async fn fixture_with_files(
         ..Default::default()
     }
     .build()?;
+    let context: Arc<dyn acyclic_harness_core::filesystem::TurnContext> = if project {
+        Arc::new(ProjectTasks {
+            harness,
+            model: model.clone(),
+            pause,
+        })
+    } else {
+        Arc::new(Tasks(harness))
+    };
     let executors = StockExecutors::new(
         (
             Model::new("test".into(), "text".into(), "1".into())?,
@@ -73,7 +197,7 @@ async fn fixture_with_files(
         ),
         ToolRegistry::default(),
         (limits, CompactionPolicy::Disabled),
-        Arc::new(Tasks(harness)),
+        context,
     )
     .with_models(Arc::new(acyclic_harness_core::model::ModelResolver::new(
         "test/text",
@@ -131,6 +255,21 @@ async fn fixture_with_files(
     let agents = committing(&stream, &files, ExecutorDriver::new(turns))?.with_templates(templates);
     let mut adoption = adopted(root.id());
     adoption.volumes = vec![binding];
+    if project {
+        let volume = VolumeRef::new(
+            adoption.volumes[0].volume()?.provider().clone(),
+            "send-files-project".into(),
+            VolumeClass::Project,
+            VolumeOwner::Project("send-files".into()),
+            &mut None,
+        )?;
+        files.create_volume(&volume).await?;
+        adoption.volumes.push(WorkspaceEntry::initial_volume(
+            WorkspaceRole::User,
+            "project".into(),
+            volume,
+        ));
+    }
     agents.create(&intent("root"), adoption).await?;
     Ok((agents, stream, root, model, files))
 }
@@ -171,6 +310,272 @@ async fn automatic_self_send_is_refused_without_stopping_the_actor() -> Result {
     assert_eq!(state.conversation_tail, 2);
     assert!(!state.closed);
     assert_eq!(model.request_count(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn send_pins_files_written_after_the_child_fork_without_granting_the_sender_volume() -> Result
+{
+    use acyclic_harness_core::conversation::{
+        ContentAccess, ContentGrant, ContentPublisher, ContentResidencyVerifier,
+    };
+    use acyclic_harness_core::filesystem::{
+        FilesystemContentPublisher, FilesystemContentVerifier, agent_authority,
+    };
+
+    const PATH: &str = "research/findings/api-evaluation-request-not-snapshotted.md";
+    const ORIGINAL: &[u8] = b"The finding written after finding-review forked.\n";
+    for (delivery, interrupted_manifest) in [
+        ("steer", None),
+        ("follow_up", None),
+        ("steer", Some(false)),
+        ("steer", Some(true)),
+    ] {
+        let pause = interrupted_manifest
+            .map(|manifest| Arc::new(send_files::PublicationPause::new(manifest)));
+        let (agents, stream, root, model, files) = fixture_with_pause(
+            vec![
+                spawn_call("finding-review", &[]),
+                ScriptedTurn::Text("spawned".into()),
+            ],
+            0,
+            true,
+            pause.clone(),
+        )
+        .await?;
+        deliver(&agents, &root, requested("spawn", &root)).await?;
+        let child = named(&agents, &root, "finding-review").await?;
+        let sender = agents.state(&root).await?;
+        let recipient = agents.state(&child).await?;
+        let project = WorkspaceTable::primary_in(&sender.volumes)
+            .ok_or("sender project")?
+            .volume()?;
+        let fork = WorkspaceTable::primary_in(&recipient.volumes)
+            .ok_or("child project")?
+            .volume()?;
+        assert_ne!(project, fork);
+        let fork_workspace = acyclic_harness_core::filesystem::workspace_ref(
+            fork.provider().clone(),
+            &fork.storage_name(&mut None)?,
+        )?;
+        let issuer = AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        )
+        .into();
+        let authority = agent_authority(
+            &issuer,
+            &TurnAdmission::LocalRoot,
+            &root,
+            &sender.volumes,
+            &[],
+        )
+        .await?;
+        let publisher = FilesystemContentPublisher::new(
+            files.clone(),
+            project,
+            &authority.verifier,
+            &authority.scope,
+            LIMITS.maximum_bytes,
+            None,
+        )?;
+        let mut source = publisher
+            .stage_once(
+                OperationId::new(),
+                PATH,
+                ORIGINAL,
+                "text/markdown",
+                "finding.md",
+                ContentAccess::default(),
+            )?
+            .await?
+            .0;
+        assert!(
+            matches!(files.stat(&fork_workspace, None, &format!("/{PATH}")).await,
+            Err(error) if error.code() == acyclic_harness_core::wire::ErrorCode::NotFound)
+        );
+
+        let before = super::super::values(&*stream, child.inbox()?).await?;
+        publisher
+            .stage_once(
+                OperationId::new(),
+                "large.md",
+                &vec![b'x'; 32 * 1024],
+                "text/markdown",
+                "large.md",
+                ContentAccess::default(),
+            )?
+            .await?;
+        model.extend([
+            call(
+                "send",
+                json!({"agent":"finding-review", "message":"incomplete selection",
+                "files":[PATH, "research/findings/missing.md"]}),
+            ),
+            ScriptedTurn::Text("selection refused".into()),
+            call(
+                "send",
+                json!({"agent":"finding-review", "message":"oversized selection",
+                "files":["large.md", "large.md", "large.md"]}),
+            ),
+            ScriptedTurn::Text("combined selection refused".into()),
+        ]);
+        deliver(&agents, &root, requested("missing-member", &root)).await?;
+        deliver(&agents, &root, requested("combined-budget", &root)).await?;
+        assert_eq!(
+            super::super::values(&*stream, child.inbox()?).await?,
+            before
+        );
+
+        model.extend([
+            call("send", json!({
+                "agent":"finding-review",
+                "message":format!("One additional candidate is now ready: {PATH}. Please PASS/FAIL it too."),
+                "files":[PATH],
+                "delivery":delivery,
+            })),
+            ScriptedTurn::Text("sent".into()),
+        ]);
+        if let Some(pause) = pause {
+            let entered = pause.arm();
+            let mut sending = Box::pin(deliver(&agents, &root, requested("send-late-file", &root)));
+            tokio::select! {
+                reached = entered => reached?,
+                result = &mut sending => { result?; return Err("send completed before interruption".into()); }
+            }
+            drop(sending);
+            assert_eq!(
+                super::super::values(&*stream, child.inbox()?).await?,
+                before
+            );
+            let replacement = publisher
+                .stage_at(
+                    OperationId::new(),
+                    &source,
+                    b"replacement after publication",
+                    None,
+                    None,
+                )?
+                .await?
+                .0;
+            source = replacement;
+        }
+        deliver(&agents, &root, requested("send-late-file", &root)).await?;
+        let inbox = super::super::values(&*stream, child.inbox()?).await?;
+        let record = InboxRecord::decode(inbox.last().ok_or("no child message")?)?;
+        let message = match &record {
+            InboxRecord::Message(message) | InboxRecord::FollowUp(message) => message,
+            _ => return Err("no delivered message".into()),
+        };
+        let manifest = message
+            .attachments
+            .as_deref()
+            .ok_or("send lost selected files")?;
+        let admitted = agent_authority(
+            &issuer,
+            &TurnAdmission::LocalRoot,
+            &child,
+            &recipient.volumes,
+            &[(*message.body).clone(), manifest.clone()],
+        )
+        .await?;
+        let reader = FilesystemContentVerifier::new(
+            files.clone(),
+            &admitted.verifier,
+            &admitted.scope,
+            LIMITS.maximum_bytes,
+            None,
+        )?;
+        let bytes = reader
+            .read(manifest, LIMITS.maximum_bytes, None, None)?
+            .await?;
+        let items = acyclic_harness_core::conversation::decode_attachment_manifest(
+            manifest, &bytes, None, None,
+        )?;
+        let [item] = items.as_slice() else {
+            return Err("attachment selection changed".into());
+        };
+        assert_eq!(
+            reader
+                .read(&item.file, LIMITS.maximum_bytes, None, None)?
+                .await?
+                .as_ref(),
+            ORIGINAL
+        );
+        assert!(
+            ContentGrant::verify(
+                &admitted.verifier,
+                &admitted.scope,
+                manifest.volume(),
+                VolumeOperation::Write,
+                &mut None
+            )
+            .is_err()
+        );
+        assert!(
+            !admitted
+                .grants
+                .contains(&project.capability(VolumeOperation::Read, &mut None)?)
+        );
+
+        // The child reads the pinned copy after its parent's source changes.
+        publisher
+            .stage_at(
+                OperationId::new(),
+                &source,
+                b"later replacement",
+                None,
+                None,
+            )?
+            .await?;
+        model.extend([ScriptedTurn::Text("reviewed the original finding".into())]);
+        agents.drain(&child).await?;
+        let request = model.last_request().ok_or("child did not run")?;
+        // Steering pins newly admitted files into the recipient's private
+        // volume, so its projection preserves the descriptor, not the address.
+        let projected = request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                ModelContentPart::File { file, .. }
+                    if file.descriptor() == item.file.descriptor() =>
+                {
+                    Some(file)
+                }
+                _ => None,
+            })
+            .ok_or("child did not receive the immutable finding")?;
+        assert_eq!(
+            reader
+                .read(projected, LIMITS.maximum_bytes, None, None)?
+                .await?
+                .as_ref(),
+            ORIGINAL
+        );
+        assert_eq!(
+            reader
+                .read(&item.file, LIMITS.maximum_bytes, None, None)?
+                .await?
+                .as_ref(),
+            ORIGINAL
+        );
+        assert!(
+            matches!(files.stat(&fork_workspace, None, &format!("/{PATH}")).await,
+            Err(error) if error.code() == acyclic_harness_core::wire::ErrorCode::NotFound)
+        );
+
+        // Replaying the original accepted input neither rereads the changed
+        // source nor appends a second delivery to the child's inbox.
+        let requests = model.request_count();
+        deliver(&agents, &root, requested("send-late-file", &root)).await?;
+        assert_eq!(model.request_count(), requests);
+        assert_eq!(super::super::values(&*stream, child.inbox()?).await?, inbox);
+    }
     Ok(())
 }
 

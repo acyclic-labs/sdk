@@ -47,7 +47,7 @@ use std::{
 };
 
 /// Revision of the agent tools, selected for the model over other revisions.
-pub const REVISION: &str = "agent-3";
+pub const REVISION: &str = "agent-4";
 /// Names of the agent tools; every agent turn is granted them.
 pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 
@@ -80,8 +80,13 @@ pub struct SendAgentInput {
     /// Recipient: a child's name or agent path, as spawn returned them, the
     /// parent's agent path, or a peer's sibling name or agent path.
     pub agent: String,
-    /// Message text.
+    /// Message text. Relative paths in prose refer to the recipient's fork;
+    /// select sender files with `files` to share their immutable contents.
     pub message: String,
+    /// Sender workspace paths to share read-only, pinned at this send.
+    /// Files written after the recipient forked must be selected here.
+    #[serde(default)]
+    pub files: Vec<String>,
     /// Optional identity of the message being answered.
     pub re: Option<String>,
     /// Steer at the next model boundary (default), or reserve a subsequent turn.
@@ -198,6 +203,118 @@ pub fn resolve_child_branch(
 }
 
 impl AgentTool {
+    async fn send_files(
+        &self,
+        operation: crate::OperationId,
+        paths: &[String],
+        context: Option<&ToolContext>,
+    ) -> Result<Option<Box<crate::conversation::FileRef>>> {
+        use crate::conversation::{Attachment, ContentChange};
+
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        let context = context.ok_or_else(|| {
+            Error::tool_rejected("send files requires the sender's workspace context")
+        })?;
+        let writer = &self.turn.writer;
+        let access = ContentAccess {
+            ceiling: Some(context.effective_scope().grants()),
+            io: None,
+        };
+        let identity = |part: &[u8]| {
+            let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.send-files/v1");
+            hash.update(&operation.into_bytes());
+            hash.update(part);
+            let mut id = [0; 16];
+            id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+            crate::OperationId::from_bytes(id)
+        };
+        let manifest_operation = identity(b"manifest");
+        if let Some(manifest) = writer
+            .observe_staged_once(manifest_operation, None, self.turn.maximum_bytes, access)?
+            .await?
+            .0
+        {
+            return Ok(Some(Box::new(manifest)));
+        }
+        let copies_operation = identity(b"copies");
+        let copies = match writer
+            .observe_changes(
+                writer.volume(),
+                copies_operation,
+                self.turn.maximum_bytes,
+                access,
+            )?
+            .await?
+            .0
+        {
+            Some(copies) => copies,
+            None => {
+                // Resolve with the same path and authority checks as read. Stage
+                // the complete selected set in one publication, never one commit
+                // per file. No file is delivered if a member cannot be read.
+                let mut sources = Vec::new();
+                let mut remaining = self.turn.maximum_bytes;
+                for (index, path) in paths.iter().enumerate() {
+                    let destination = format!("messages/{operation}/files/{index}");
+                    let exhausted =
+                        || Error::tool_rejected("selected files exceed the send byte budget");
+                    remaining = remaining
+                        .checked_sub(
+                            destination.len() as u64
+                                + std::mem::size_of::<(
+                                    String,
+                                    crate::conversation::FileRef,
+                                    acyclic_stream::OwnedBytes,
+                                )>() as u64,
+                        )
+                        .ok_or_else(exhausted)?;
+                    let (file, bytes, _) = context
+                        .read_tool_path_bounded(path, None, remaining, None)
+                        .await?;
+                    let metadata_bytes = file.logical_owned_bytes()?;
+                    remaining = remaining
+                        .checked_sub(bytes.len() as u64)
+                        .and_then(|remaining| remaining.checked_sub(metadata_bytes))
+                        .ok_or_else(exhausted)?;
+                    sources.push((destination, file, bytes));
+                }
+                let changes = sources
+                    .iter()
+                    .map(|(path, file, bytes)| ContentChange::CreateAbsent {
+                        path,
+                        bytes: bytes.as_ref(),
+                        media_type: file.descriptor().media_type(),
+                        display_name: file.display_name(),
+                    })
+                    .collect::<Vec<_>>();
+                writer
+                    .stage_changes(writer.volume(), copies_operation, &changes, access)?
+                    .await?
+                    .0
+            }
+        };
+        let items = copies
+            .files()
+            .cloned()
+            .map(|file| Attachment { file, label: None })
+            .collect::<Vec<_>>();
+        let bytes = crate::conversation::encode_attachment_manifest(&items)?;
+        let manifest = writer
+            .stage_once(
+                manifest_operation,
+                &format!("messages/{operation}/files/manifest.json"),
+                &bytes,
+                crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE,
+                "attachments.json",
+                access,
+            )?
+            .await?
+            .0;
+        Ok(Some(Box::new(manifest)))
+    }
+
     async fn run(
         &self,
         invocation: ToolInvocation,
@@ -334,6 +451,9 @@ impl AgentTool {
                 if input.message.len() as u64 > turn.maximum_bytes {
                     return Ok(rejected("message is too large"));
                 }
+                let attachments = self
+                    .send_files(invocation.operation_id, &input.files, context.as_ref())
+                    .await?;
                 let body = turn
                     .writer
                     .stage_once(
@@ -353,6 +473,7 @@ impl AgentTool {
                     id: IntentId::try_from(format!("send:{operation}")).map_err(Error::from)?,
                     re,
                     body: Box::new(body),
+                    attachments,
                 }
             }
             "archive" => {
@@ -875,7 +996,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "send",
             definition::<SendAgentInput>(
                 "send",
-                "Return an accepted inbox receipt after durably queuing a message for your parent, an open child (by name or path), a peer session (by path), or a sibling your spawn granted (by name or path); steering arrives at the next model boundary after in-flight tools settle, and follow-up starts a later turn",
+                "Return an accepted inbox receipt after durably queuing a message for your parent, an open child (by name or path), a peer session (by path), or a sibling your spawn granted (by name or path). Select sender workspace paths in files to attach immutable read-only copies; relative paths in message text alone refer to the recipient's fork. Steering arrives at the next model boundary after in-flight tools settle, and follow-up starts a later turn",
             )?,
         ),
         (

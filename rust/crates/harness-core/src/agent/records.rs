@@ -328,7 +328,7 @@ pub struct Message {
     pub re: Option<IntentId>,
     /// Message body.
     pub body: Box<FileRef>,
-    /// The files the body's `@` mentions name, pinned when the message was
+    /// The files selected with the message, pinned when the message was
     /// sent: one attachment manifest whose own directory holds them, so the
     /// record stays one reference however many files it names.
     #[serde(default, skip_serializing_if = "Option::is_none")]

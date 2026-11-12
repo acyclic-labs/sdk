@@ -574,6 +574,7 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
                 id: intent("sent"),
                 re: None,
                 body: body.clone(),
+                attachments: None,
             });
         let state = AgentState::adopted(path, &adopted(id(1))).expect("adopts");
         let input = Queued {

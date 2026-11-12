@@ -52,6 +52,7 @@ async fn either_opt_out_fences_prepared_peer_delivery_and_replay() -> Result {
                 id: intent(name),
                 re: None,
                 body: Box::new(super::driver::file("peer.md").expect("valid file")),
+                attachments: None,
             };
             let step = Step {
                 outs: effect_outs(&state, vec![effect(admission, "before-opt-out")]),

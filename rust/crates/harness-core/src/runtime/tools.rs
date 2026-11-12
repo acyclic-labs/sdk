@@ -1340,6 +1340,23 @@ impl ToolContext {
         expected_generation: Option<&crate::resources::GenerationRef>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
+        self.read_tool_path_bounded(
+            path,
+            expected_generation,
+            self.effective_scope().limits().file_bytes,
+            io,
+        )
+        .await
+    }
+
+    /// Reads a complete selection within a caller's remaining retained-byte budget.
+    pub(crate) async fn read_tool_path_bounded(
+        &self,
+        path: &str,
+        expected_generation: Option<&crate::resources::GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
         let expected_generation = self.layer_generation(volume, expected_generation)?;
         let content = self
@@ -1356,6 +1373,7 @@ impl ToolContext {
                     expected_generation,
                 ),
                 self.effective_scope(),
+                maximum_bytes,
                 io,
             )
             .await

@@ -61,6 +61,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
                 id: expected.id.clone(),
                 re: expected.re.clone(),
                 body: expected.body.clone(),
+                attachments: None,
             }],
         );
         let mut step = Step {
