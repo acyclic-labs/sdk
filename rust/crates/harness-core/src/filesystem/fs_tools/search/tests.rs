@@ -69,6 +69,7 @@ async fn fixture() -> Result<Fixture> {
     }
     .build()?
     .agent_context(&Capabilities::default(), content.content_bindings())?
+    .with_execution_journal(content.journal())
     .for_agent(path.clone(), Vec::new());
     let context = ToolContext::new(Arc::new(task), OperationId::new(), "search")?;
     Ok(Fixture {
