@@ -59,16 +59,26 @@ pub(crate) async fn list_attributes_async_with_accounting<S: AsyncObjectStore>(
     root: ObjectId,
     after: Option<&AttributeName>,
     maximum_entries: u32,
+    through_class: Option<super::AttributeClass>,
     limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(AttributeListing, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    persistent_pagination::paginate_with_accounting::<AttributeFormat>(
+    let end = through_class
+        .and_then(|class| match class {
+            super::AttributeClass::PosixXattr => Some(super::AttributeClass::WindowsStream),
+            super::AttributeClass::WindowsStream => Some(super::AttributeClass::MacResourceFork),
+            super::AttributeClass::MacResourceFork => Some(super::AttributeClass::Annotation),
+            super::AttributeClass::Annotation => None,
+        })
+        .map(AttributeName::class_start);
+    persistent_pagination::paginate_range_with_accounting::<AttributeFormat>(
         store,
         (
             root,
             after.map_or(Bound::Unbounded, Bound::Excluded),
+            end.as_ref().map_or(Bound::Unbounded, Bound::Excluded),
             maximum_entries,
             acyclic_collections::page::Direction::Ascending,
         ),

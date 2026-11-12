@@ -410,6 +410,7 @@ where
                     self.file_id,
                     cursor.as_ref(),
                     maximum_entries,
+                    Some(AttributeClass::MacResourceFork),
                     &mut accounting,
                     cancellation,
                 )

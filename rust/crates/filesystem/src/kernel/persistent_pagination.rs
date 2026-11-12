@@ -92,17 +92,29 @@ where
     F: Format,
 {
     let (root, bound, maximum_values, direction) = query;
-    accounting.check()?;
-    let mut machine = Machine::<F>::new_with_accounting(
-        root,
-        bound,
-        maximum_values,
-        direction,
+    paginate_range_with_accounting::<F>(
+        store,
+        (root, bound, Bound::Unbounded, maximum_values, direction),
         limits,
         accounting,
+        cancellation,
         data_custody,
     )
-    .map_err(|failure| query_error(failure.error))?;
+    .await
+}
+
+/// Stops traversal at the opposite range bound, before loading excluded subtrees.
+pub(crate) async fn paginate_range_with_accounting<F: Format>(
+    store: &dyn Source,
+    query: (ObjectId, Bound<&F::Key>, Bound<&F::Key>, u32, Direction),
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<(Receipt<F::Value>, KernelOwnedAllocation), crate::FsError> {
+    accounting.check()?;
+    let mut machine = Machine::<F>::new_with_accounting(query, limits, accounting, data_custody)
+        .map_err(|failure| query_error(failure.error))?;
     let result: Result<(), Failure> = async {
         while machine.values.len() < machine.target && !machine.pending.value.is_empty() {
             cancellation
@@ -154,6 +166,7 @@ where
 
 struct Machine<'a, 'accounting, F: Format> {
     bound: Bound<&'a F::Key>,
+    end: Bound<&'a F::Key>,
     direction: Direction,
     target: usize,
     maximum_traversal_pages: usize,
@@ -175,14 +188,18 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         reason = "The constructor admits and initializes its bounded seek state before exposing it."
     )]
     fn new_with_accounting(
-        root: ObjectId,
-        bound: Bound<&'a F::Key>,
-        maximum_values: u32,
-        direction: Direction,
+        query: (
+            ObjectId,
+            Bound<&'a F::Key>,
+            Bound<&'a F::Key>,
+            u32,
+            Direction,
+        ),
         limits: DecodeLimits,
         accounting: &'a mut KernelAccounting<'accounting>,
         data_custody: Option<&'a super::ProofDataCustody>,
     ) -> Result<Self, Failure> {
+        let (root, bound, end, maximum_values, direction) = query;
         let fail = |error| failed(error, accounting.spent());
         if root.kind != F::kind() {
             return Err(fail(Error::WrongRootKind));
@@ -267,6 +284,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         };
         let mut machine = Self {
             bound,
+            end,
             direction,
             target,
             maximum_traversal_pages,
@@ -457,9 +475,25 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             })
             .map_err(|error| self.failure(error))?
         };
+        let end = self.end;
+        let opposite = match end {
+            Bound::Unbounded => match direction {
+                Direction::Ascending => values.len(),
+                Direction::Descending => 0,
+            },
+            _ => partition_point_with_accounting(values, self.accounting, |value| {
+                match (direction, end) {
+                    (Direction::Ascending, Bound::Included(key))
+                    | (Direction::Descending, Bound::Excluded(key)) => F::key(value) <= key,
+                    (_, Bound::Included(key) | Bound::Excluded(key)) => F::key(value) < key,
+                    (_, Bound::Unbounded) => false,
+                }
+            })
+            .map_err(|error| self.failure(error))?,
+        };
         Ok(match direction {
-            Direction::Ascending => edge..values.len(),
-            Direction::Descending => 0..edge,
+            Direction::Ascending => edge.min(opposite)..opposite,
+            Direction::Descending => opposite..edge.max(opposite),
         })
     }
 
@@ -490,20 +524,41 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                 }
             }
         };
+        let opposite = match self.end {
+            Bound::Unbounded => match direction {
+                Direction::Ascending => children.len(),
+                Direction::Descending => 0,
+            },
+            end => {
+                let partition =
+                    partition_point_with_accounting(children, self.accounting, |child| {
+                        match (direction, end) {
+                            (Direction::Ascending, Bound::Excluded(key)) => child.first < *key,
+                            (_, Bound::Included(key) | Bound::Excluded(key)) => child.first <= *key,
+                            (_, Bound::Unbounded) => false,
+                        }
+                    })
+                    .map_err(|error| self.failure(error))?;
+                match direction {
+                    Direction::Ascending => partition,
+                    Direction::Descending => partition.saturating_sub(1),
+                }
+            }
+        };
         let maximum = self
             .target
             .saturating_sub(self.values.len())
             .saturating_add(1);
         let range = match direction {
-            Direction::Ascending => edge..edge.saturating_add(maximum).min(children.len()),
-            Direction::Descending => edge.saturating_sub(maximum)..edge,
+            Direction::Ascending => edge.min(opposite)..edge.saturating_add(maximum).min(opposite),
+            Direction::Descending => edge.saturating_sub(maximum).max(opposite)..edge.max(opposite),
         };
         let successor = match direction {
-            Direction::Ascending => children.get(range.end),
+            Direction::Ascending => children.get(range.end).filter(|_| range.end < opposite),
             Direction::Descending => range
                 .start
                 .checked_sub(1)
-                .and_then(|index| children.get(index)),
+                .and_then(|index| children.get(index).filter(|_| index >= opposite)),
         };
         if let Some(child) = successor {
             self.successor_page = Some(child.page);
