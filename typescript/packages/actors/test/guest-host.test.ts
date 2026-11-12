@@ -165,3 +165,23 @@ test("onRecord projects a record delivery onto the stream event and commits its 
   await expect(new GuestActivation(actor, null, guestContext("one", "counter")).onRecord(delivery, aborted.signal))
     .rejects.toThrow("host gave up");
 });
+
+test("onRecord cancellation fences an in-flight guest and its retained heap", async () => {
+  const shared = JSON.parse(readFileSync(new URL("../../../../rust/crates/actors/tests/fixtures/guest-record.json", import.meta.url), "utf8"));
+  const { actor } = recordingActor({ name: "counter", version: "1" });
+  let enter!: () => void, finish!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const finished = new Promise<void>(resolve => { finish = resolve; });
+  const activation = new GuestActivation({ ...actor, async event() {
+    enter();
+    await finished;
+    return null;
+  } }, null, guestContext("one", "counter"));
+  const cancellation = new AbortController();
+  const pending = activation.onRecord(Uint8Array.from(shared.delivery), cancellation.signal);
+  await entered;
+  cancellation.abort(new Error("ownership revoked"));
+  await expect(pending).rejects.toMatchObject({ code: "unavailable" });
+  finish();
+  await expect(activation.checkpoint()).rejects.toMatchObject({ code: "unavailable" });
+});
