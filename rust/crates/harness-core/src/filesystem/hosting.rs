@@ -527,6 +527,14 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn observation_parent<'a>(&'a self, fallback: &'a Scope) -> &'a Scope {
+        match &self.admission {
+            TurnAdmission::Admitted { scope, .. } => scope,
+            TurnAdmission::LocalRoot => self.issuer.caller().map_or(fallback, |(_, scope)| scope),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     async fn client_observation(
         &self,
         root: &AgentPath,
@@ -545,7 +553,14 @@ where
             &invocations[..1]
         };
         self.volumes
-            .client_observation(&authority, &state.path, &journal, clock, calls, directory)
+            .client_observation(
+                (&authority, self.observation_parent(&authority.scope)),
+                &state.path,
+                &journal,
+                clock,
+                calls,
+                directory,
+            )
             .await
             .map_err(turn)
     }
@@ -595,7 +610,7 @@ where
             let (resource, credential, _) = self
                 .volumes
                 .observation_credential(
-                    &authority,
+                    (&authority, self.observation_parent(&authority.scope)),
                     &state.path,
                     &journal,
                     &clock,

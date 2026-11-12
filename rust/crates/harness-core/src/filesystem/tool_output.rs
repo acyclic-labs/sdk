@@ -45,16 +45,25 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         clock: Arc<dyn UnixMillisClock>,
         calls: Option<&str>,
     ) -> Result<AgentObservation> {
-        self.client_observation(authority, agent, volume, clock, calls.as_slice(), None)
-            .await
+        self.client_observation(
+            (authority, &authority.scope),
+            agent,
+            volume,
+            clock,
+            calls.as_slice(),
+            None,
+        )
+        .await
     }
 
     /// Host-authorized directory observation. Only a platform owning all roots
     /// of the placement may request this credential; ordinary tree enrollment
     /// always uses the single-agent observation entry.
+    /// The authority proves data access; the parent bounds credential lifetime
+    /// and revocation even when host storage outlives the admitted workload.
     pub(crate) async fn client_observation(
         &self,
-        authority: &AgentAuthority<'_>,
+        (authority, parent): (&AgentAuthority<'_>, &Scope),
         agent: &crate::agent::AgentPath,
         volume: &VolumeRef,
         clock: Arc<dyn UnixMillisClock>,
@@ -67,7 +76,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let audience = issuer.audience_resource()?;
         let (resource, credential, principal) = self
             .observation_credential(
-                authority,
+                (authority, parent),
                 agent,
                 volume,
                 clock.as_ref(),
@@ -89,7 +98,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     #[inline(never)]
     pub(super) fn observation_credential<'a>(
         &'a self,
-        authority: &'a AgentAuthority<'_>,
+        (authority, parent): (&'a AgentAuthority<'_>, &'a Scope),
         agent: &'a crate::agent::AgentPath,
         volume: &'a VolumeRef,
         clock: &'a dyn UnixMillisClock,
@@ -208,7 +217,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 grants.push(("fs:/", true, read));
             }
             let (credential, principal) =
-                issuer.resource_credential(&authority.scope, &grants, audience, seconds(clock))?;
+                issuer.resource_credential(parent, &grants, audience, seconds(clock))?;
             Ok((resource, credential, principal))
         })
     }
