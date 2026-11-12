@@ -262,13 +262,13 @@ impl StockExecution<'_> {
         self.code_selected(journal, identity, parent, hook_context, None)
     }
 
-    pub(super) fn code_selected<'a>(
+    pub(super) fn code_selected<'a, 'selection>(
         &'a self,
         journal: &'a dyn ExecutionJournal,
         identity: (OperationId, u32),
         parent: &'a ToolInvocation,
         hook_context: &'a mut Vec<ModelMessage>,
-        selection: Option<&'a ToolSelection<'a>>,
+        selection: Option<&'a ToolSelection<'selection>>,
     ) -> BoxFuture<'a, Result<ExecutionProgress<ToolResult>>> {
         Box::pin(async move {
             let code = parent

@@ -126,6 +126,7 @@ async fn recovered_call_count_does_not_multiply_response_or_catalog_reads() -> R
                 total(&trace, "response observation read").0,
                 events + calls + 1
             );
+            assert!(total(&trace, "response observation read").1 > 0);
             assert_eq!(
                 total(&trace, "admitted catalog entries"),
                 (1, catalog_size as u64)
@@ -154,6 +155,7 @@ async fn recovered_call_count_does_not_multiply_response_or_catalog_reads() -> R
                 total(&trace, "response observation read").0,
                 events + calls + 1
             );
+            assert!(total(&trace, "response observation read").1 > 0);
             assert_eq!(control.events.len(), events + calls + 1);
         }
     }
