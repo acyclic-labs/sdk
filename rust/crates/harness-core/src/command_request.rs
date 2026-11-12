@@ -221,6 +221,11 @@ pub enum CommandResolution {
         /// View identifier.
         query: CommandQuery,
     },
+    /// Open one authored UI document without a model request.
+    View {
+        /// Canonical path relative to the selected agent's ui/ root.
+        path: String,
+    },
 }
 
 mod model_input;
