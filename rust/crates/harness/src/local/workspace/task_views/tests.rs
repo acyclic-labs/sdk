@@ -411,12 +411,7 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
             .ok_or_else(|| Error::NotFound("original binding".into()))?
     ));
     drop(reused);
-    let root = source
-        .destination
-        .ancestors()
-        .nth(2)
-        .ok_or_else(|| Error::Invalid("home binding has no root".into()))?;
-    let entered = source.enter(root, volumes::HOME_PATH, false).await?;
+    let entered = source.enter(false).await?;
     let native = source.native().await;
     assert!(
         native.is_some(),
