@@ -29,6 +29,10 @@ async fn listener_executor(
 ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
     use acyclic_native_runtime::execution::{ExecutionAccess, ExecutionGrant, ExecutionNetwork};
     let workspace = harness.workspace.as_ref().unwrap();
+    // Select the fixture's held temporary home through MountOptions::view_root,
+    // as native-host admission does; never use the ambient shared-view home.
+    let view_home = Arc::new(workspace.held_task_mount_root()?);
+    let view_home = workspace.task_view_admission.get_or_init(|| view_home);
     let mut read = vec![executable()?.parent().unwrap().to_path_buf()];
     #[cfg(target_os = "linux")]
     read.extend(
@@ -64,6 +68,7 @@ async fn listener_executor(
             })
         })
         .chain(workspace.mounts.scratch_root.iter().cloned())
+        .chain(std::iter::once(view_home.path().to_path_buf()))
         .collect::<Vec<_>>();
     let grant = ExecutionGrant::composed(
         &workspace.path,
