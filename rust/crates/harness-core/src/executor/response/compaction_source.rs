@@ -36,6 +36,11 @@ impl StockExecution<'_> {
                     Err(Error::ModelContextOverflow) => {
                         return Ok(CompactionSource::Base { context: base });
                     }
+                    // Only the projected context has proven pressure when
+                    // its shorter base has no count. Compact that projection.
+                    Err(Error::ModelTokenCountUnavailable) => {
+                        return Ok(CompactionSource::Projected);
+                    }
                     Err(error) => return Err(error),
                 };
             let tokens = with_history_io(self.io, |work| count.validate(&request, work))?;
