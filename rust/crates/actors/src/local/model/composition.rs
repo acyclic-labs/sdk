@@ -696,6 +696,22 @@ async fn a_new_owner_settles_the_participant_a_dead_owner_left_unsettled() -> Re
     store.recover_custody(&plain).await?;
     assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
     assert_eq!(provider.inner.tail(custody).await?, 1);
+    let actors = std::slice::from_ref(&actor);
+    assert!(
+        super::super::tests::orphans(&store, actors)
+            .await?
+            .is_empty()
+    );
+    // Negative control: a window entry whose actor never existed.
+    let ghost = ActorReference::new(b"account", b"agents", b"ghost")?;
+    let mut orphaned = PreparedPublish::foreign(key("ghost")?);
+    orphaned.join(store.deadline(&ghost, 60_000)?)?;
+    PreparedPublish::settle(&provider.inner.commit(orphaned.into_request()?).await?)?;
+    assert_eq!(
+        super::super::tests::orphans(&store, actors).await?.len(),
+        1,
+        "the oracle must report an entry without a live owner"
+    );
     Ok(())
 }
 
