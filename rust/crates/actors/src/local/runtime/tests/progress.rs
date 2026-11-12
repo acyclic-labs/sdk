@@ -147,7 +147,9 @@ impl World {
             registration
                 .update_alarm(&alarm)
                 .map_err(|error| error.to_string())?;
-            // Registration replays the actor once: that is its first event.
+            // The fixture's placement admits one initial event. Dormant
+            // registration alone must never manufacture that work.
+            registration.waker().wake();
             actors.push(Actor {
                 registration,
                 inner: Inner::default(),

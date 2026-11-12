@@ -149,7 +149,8 @@ pub struct Work<K> {
 }
 
 impl<K: Clone> ReadySet<K> {
-    /// Register before reading the durable cursor/tail. Initial replay is always ready.
+    /// Register a dormant actor. Only an explicit input, placement or due-alarm
+    /// wake queues work; registration never scans or replays dormant state.
     pub fn register(&self, key: K) -> Result<Registration<K>, super::Error> {
         let mut index = self
             .core
@@ -170,11 +171,6 @@ impl<K: Clone> ReadySet<K> {
                 due: None,
             },
         );
-        let waiter = index.enqueue(id);
-        drop(index);
-        if let Some(waiter) = waiter {
-            waiter.wake();
-        }
         Ok(Registration {
             core: Arc::clone(&self.core),
             id,

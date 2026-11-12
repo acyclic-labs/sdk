@@ -228,7 +228,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         self.ready.counts()
     }
 
-    /// Register a wake hint. Registration alone grants no execution ownership.
+    /// Register a dormant slot. Registration queues no work and grants no ownership.
     /// Unassigned actors cannot claim themselves when input arrives.
     pub fn track(&self, actor: ActorReference) -> Result<(), Error> {
         if !self.includes(&actor) {
@@ -238,11 +238,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .shard(&actor)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(slot) = actors.get(&actor) {
-            // An activation may follow another producer's state commit. Wake
-            // against that new cut even if the resident had no input or alarm.
-            slot.refresh.store(true, Ordering::Release);
-            slot.waker.wake_by_ref();
+        if actors.contains_key(&actor) {
             return Ok(());
         }
         let registration = self.ready.register(actor.clone())?;
@@ -298,6 +294,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Request a delivery attempt, for example after a transient failure.
     pub fn wake(&self, actor: &ActorReference) {
         if let Some(slot) = self.slot(actor) {
+            slot.refresh.store(true, Ordering::Release);
             slot.waker.wake_by_ref();
         }
     }
@@ -650,7 +647,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         && self.includes(&actor)
                         && self.slot(&actor).is_some()
                     {
-                        self.track(actor)?;
+                        self.wake(&actor);
                     }
                     let cursor = record
                         .sequence
