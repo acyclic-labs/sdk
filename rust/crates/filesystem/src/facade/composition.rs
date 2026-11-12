@@ -44,6 +44,15 @@ pub struct RestoreSpec<'g, A: 'static, O: 'static> {
     pub permit: PublicationPermit,
 }
 
+/// One private workspace transaction published with a caller's other effects.
+pub struct TransactionSpec<'t, A: 'static, O: 'static> {
+    /// The staged candidate and its original operation identity. Preparation
+    /// retains its proof without changing the candidate or any public head.
+    pub transaction: &'t crate::Transaction<A, O>,
+    /// Authorization already admitted by the shared filesystem owner.
+    pub permit: PublicationPermit,
+}
+
 /// One dirty workspace's immutable staged generation in a coupled commit.
 pub struct PublishSpec<'g, A: 'static, O: 'static> {
     /// Original generation read by the caller. The complete commit is refused
@@ -80,6 +89,107 @@ where
     P: crate::distributed::AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Contributes private candidates to the caller's original Streams commit.
+    ///
+    /// Each candidate's exact base must still be its workspace head, including
+    /// at submission. A stale base refuses the entire composition; it is never
+    /// silently rebased across effects prepared against the original cut.
+    /// Preparation errors remove only this call's additions. Unknown outcomes
+    /// retain the same commit, proofs and original native custody for replay.
+    pub async fn prepare_transaction_many<W: FsWork>(
+        &self,
+        transactions: &[TransactionSpec<'_, StreamAuthorityStore<P>, O>],
+        commit: &mut FilesystemCommit,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::OwnedOutput<Vec<crate::Generation<StreamAuthorityStore<P>, O>>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let mut guard = commit.guard();
+        let result = async {
+            let mut generations = Owned::<Vec<_>>::allocate(transactions.len(), &mut accounting)?;
+            for spec in transactions {
+                let transaction = spec.transaction;
+                let volume = &transaction.workspace.volume;
+                if !self.same_deployment(&volume.fs) {
+                    return Err(WorkspaceError::ForeignGeneration);
+                }
+                let (root, head) = volume
+                    .resolve_head_generation(&mut accounting, cancellation)
+                    .await
+                    .map_err(WorkspaceError::engine)?;
+                if GenerationId::from_root(root) != transaction.checkout.generation_id() {
+                    return Err(WorkspaceError::StaleGeneration);
+                }
+                let candidate = transaction
+                    .checkout
+                    .checkpoint_root_with_accounting(&mut accounting, cancellation)
+                    .await?;
+                self.contribute_generation(
+                    PublishGenerationRequest {
+                        authority_id: volume_authority_id(volume.id),
+                        volume_id: volume.id,
+                        epoch: head.epoch,
+                        expected: head,
+                        operation_id: transaction.idempotency_key.operation_id(),
+                        generation_root: candidate,
+                    },
+                    spec.permit,
+                    volume.config,
+                    guard.commit(),
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+
+                generations.push(
+                    crate::Generation {
+                        workspace: transaction.workspace.clone(),
+                        id: GenerationId::from_root(candidate),
+                        publication_closure: None,
+                    },
+                    &mut accounting,
+                )?;
+            }
+            Ok((generations.value, generations.allocation))
+        }
+        .await;
+        if result.is_ok() {
+            guard.disarm();
+        }
+        work.finish_owned::<_, WorkspaceError>(result, &accounting)
+    }
+
+    async fn contribute_generation(
+        &self,
+        request: PublishGenerationRequest,
+        permit: PublicationPermit,
+        config: VolumeConfig,
+        commit: &mut FilesystemCommit,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        let prepared = crate::kernel::prepare_publication(
+            self,
+            request,
+            permit,
+            closure_limits(config),
+            accounting,
+            cancellation,
+        )
+        .await
+        .map_err(WorkspaceError::engine)?;
+        let mut authority = crate::async_storage::AuthorityFrame::borrow(accounting)?;
+        let contributed = self
+            .inner
+            .authority
+            .contribute_publication(commit, prepared, &mut authority)
+            .await;
+        finish_authority_work(authority)?;
+        if !contributed.map_err(|error| WorkspaceError::from(FsError::from(error)))? {
+            return Err(WorkspaceError::StaleGeneration);
+        }
+        Ok(())
+    }
     /// Contributes every dirty workspace head to the caller's one Streams
     /// transaction, together with git/merge-state CAS contributions. Preparation
     /// publishes nothing; all heads, state and caller records have one hard
@@ -121,8 +231,7 @@ where
                 if GenerationId::from_root(root) != publication.expected.id() {
                     return Err(WorkspaceError::StaleGeneration);
                 }
-                let prepared = crate::kernel::prepare_publication(
-                    self,
+                self.contribute_generation(
                     PublishGenerationRequest {
                         authority_id: volume_authority_id(volume.id),
                         volume_id: volume.id,
@@ -132,22 +241,12 @@ where
                         generation_root: publication.generation.object_id(),
                     },
                     publication.permit,
-                    closure_limits(volume.config),
+                    volume.config,
+                    guard.commit(),
                     &mut accounting,
                     cancellation,
                 )
-                .await
-                .map_err(WorkspaceError::engine)?;
-                let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
-                let contributed = self
-                    .inner
-                    .authority
-                    .contribute_publication(guard.commit(), prepared, &mut authority)
-                    .await;
-                finish_authority_work(authority)?;
-                if !contributed.map_err(|error| WorkspaceError::from(FsError::from(error)))? {
-                    return Err(WorkspaceError::StaleGeneration);
-                }
+                .await?;
             }
             let store = crate::StreamGitCompatStore::new(self.inner.authority.clone());
             for change in state_changes {
@@ -218,8 +317,7 @@ where
                     .map_or(restore.source.id().object_id(), |(root, _, _, _)| {
                         root.generation_root
                     });
-                let prepared = crate::kernel::prepare_publication(
-                    self,
+                self.contribute_generation(
                     PublishGenerationRequest {
                         authority_id: volume_authority_id(volume.id),
                         volume_id: volume.id,
@@ -229,22 +327,13 @@ where
                         generation_root,
                     },
                     restore.permit,
-                    closure_limits(volume.config),
+                    volume.config,
+                    guard.commit(),
                     &mut accounting,
                     cancellation,
                 )
-                .await
-                .map_err(WorkspaceError::engine)?;
-                let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
-                let contributed = self
-                    .inner
-                    .authority
-                    .contribute_publication(guard.commit(), prepared, &mut authority)
-                    .await;
-                finish_authority_work(authority)?;
-                if !contributed.map_err(|error| WorkspaceError::from(FsError::from(error)))? {
-                    return Err(WorkspaceError::StaleGeneration);
-                }
+                .await?;
+
                 if let Some((root, _, _, _)) = copied {
                     drop(root);
                 }

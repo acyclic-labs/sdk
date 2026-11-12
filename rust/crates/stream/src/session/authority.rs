@@ -170,7 +170,8 @@ impl Authority {
         bytes: &[u8],
         maximum: usize,
     ) -> Result<(), StreamError> {
-        if usize::try_from(slot).map_err(|_| StreamError::Capacity)? >= maximum {
+        if !bytes.is_empty() && !slots.entries.contains_key(&slot) && slots.entries.len() >= maximum
+        {
             return Err(StreamError::Capacity);
         }
         let credential_bytes = slots.credential_bytes(slot, bytes.len())?;

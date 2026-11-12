@@ -69,6 +69,7 @@ proptest! {
         priority in any::<u64>(),
         file_id in any::<[u8; 16]>(),
         record in proptest::collection::vec(any::<u8>(), 0..128),
+        shadow_kind in 0_u8..3,
         context in 0_u8..3,
         limit in prop_oneof![0_u64..1024, Just(u64::MAX)],
         recheck in any::<bool>(),
@@ -87,9 +88,7 @@ proptest! {
             let expected = *blake3::hash(&serde_json::to_vec(&node).unwrap()).as_bytes();
             prop_assert_eq!(*digest, expected);
         }
-        let node = LazyShadow::Node {
-            file_id: FileId::from_bytes(file_id),
-            priority,
+        let content = LazyStoredRecord {
             record,
             metadata: crate::WorkspaceMetadata {
                 posix_mode: Some(priority as u32),
@@ -105,6 +104,16 @@ proptest! {
                 has_acl: true,
                 has_security_descriptor: false,
             },
+        };
+        let node = LazyShadow::Node {
+            file_id: FileId::from_bytes(file_id),
+            priority,
+            authored: (shadow_kind != 0).then(|| content.clone()),
+            observed: (shadow_kind != 1).then(|| LazySourceRecord {
+                source: SourceReference { identity: file_id, epoch: priority },
+                version: SourceVersion(right),
+                content,
+            }),
             left: LazyShadowId::from_bytes(left),
             right: LazyShadowId::from_bytes(right),
         };

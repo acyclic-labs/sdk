@@ -114,7 +114,7 @@ async fn interactive_orchestrator_asks_directly_and_receives_a_generation_bound_
     let command = crate::client::ui::Reply {
         path: crate::client::ui::UiPath::new("color.md")
             .map_err(|e| Error::Invalid(e.to_string()))?,
-        generation: file.file.version().into(),
+        generation: file.original().expect("authored question").version().into(),
         answers: Default::default(),
         text: "blue".into(),
     }
@@ -131,7 +131,9 @@ async fn interactive_orchestrator_asks_directly_and_receives_a_generation_bound_
     assert_eq!(requests.len(), 3);
     let reply = request_text(&harness, &requests[2]).await?;
     assert!(
-        reply.contains("color.md") && reply.contains(file.file.version()) && reply.contains("blue")
+        reply.contains("color.md")
+            && reply.contains(file.original().expect("authored question").version())
+            && reply.contains("blue")
     );
     Ok(())
 }

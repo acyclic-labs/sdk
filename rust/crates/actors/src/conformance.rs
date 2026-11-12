@@ -193,6 +193,7 @@ impl Handler for Package {
                     .is_some()
             {
                 return Ok(Transition {
+                    pause: false,
                     response: None,
                     checkpoint: checkpoint.clone(),
                     alarm: AlarmChange::Keep,
@@ -205,6 +206,7 @@ impl Handler for Package {
                 book.validate()?;
                 let step = book.step(&delivery)?;
                 return Ok(Transition {
+                    pause: false,
                     response: step.response,
                     participant: None,
                     checkpoint: Checkpoint {
@@ -234,7 +236,10 @@ impl Handler for Package {
                     },
                     Some(format!("a{generation}")),
                 ),
-                (Trigger::Record { sequence, .. }, Some(record)) => {
+                (
+                    Trigger::Record { sequence, .. } | Trigger::KeyedRecord { sequence, .. },
+                    Some(record),
+                ) => {
                     let command = std::str::from_utf8(
                         invocation
                             .as_ref()
@@ -284,7 +289,7 @@ impl Handler for Package {
                         _ => return Err(guest("unknown command")),
                     }
                 }
-                (Trigger::Record { .. }, None) => {
+                (Trigger::Record { .. } | Trigger::KeyedRecord { .. }, None) => {
                     return Err(guest("record trigger without record"));
                 }
             };
@@ -310,6 +315,7 @@ impl Handler for Package {
                 ledger.published += 1;
             }
             Ok(Transition {
+                pause: false,
                 response: invocation.map(|call| call.request().clone()),
                 participant: None,
                 checkpoint: Checkpoint {

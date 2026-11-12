@@ -1,4 +1,66 @@
 use super::*;
+use futures::TryStreamExt as _;
+
+/// Real transport ownership: the scoped view selects its own capability,
+/// an open cursor retains it, and final disposal retires the registration.
+#[tokio::test]
+async fn scoped_credentials_share_the_pool_and_retire_after_the_last_cursor() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "scoped-credential", 1).await?;
+    let fixture = Fixture::open(provider, "node").await?;
+    let root = fixture.client()?.session_client()?;
+    let (selected, slot) = root
+        .with_credential(crate::session::testing::credential())
+        .await?;
+    let selected = selected.select_credential(slot);
+    assert_ne!(slot, root.credential());
+    root.register_credential(0, Bytes::new())?;
+    let heads = selected
+        .read_provider()
+        .heads(crate::HeadsRequest {
+            paths: [StreamPath::new("scoped-credential")?]
+                .into_iter()
+                .collect(),
+            projection: crate::HeadProjection::Tail,
+            limit: 1,
+            retained: Default::default(),
+            durable_through: None,
+            children: None,
+            at_least: Default::default(),
+        })
+        .await?;
+    assert_eq!(
+        heads.heads[0].as_ref().ok_or("missing scoped head")?.tail,
+        1
+    );
+    let request = || crate::FollowRequest::new(StreamPath::new("scoped-credential").unwrap(), 0);
+    let mut records = selected.follow_records(request()).await?;
+    drop(selected);
+    assert!(
+        records.try_next().await?.is_some(),
+        "cursor lost its capability with the view"
+    );
+    drop(records);
+    // This explicit open shares the same pool. Retirement is ordered before
+    // subsequent commands even if the command wake wins the event selection.
+    let read = wire::SessionSubscription {
+        credential: slot,
+        resume: Some(cursor(0)),
+        kind: Some(wire::session_subscription::Kind::Follow(
+            wire::SessionFollow {
+                resource: crate::wire_codec::session::stream_resource("scoped-credential"),
+                delivery: wire::SessionDelivery::All as i32,
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    };
+    assert!(matches!(
+        root.subscribe(read).await,
+        Err(StreamError::AccessDenied) | Err(StreamError::Refused(_))
+    ));
+    Ok(())
+}
 
 #[tokio::test]
 async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_reply() -> TestResult

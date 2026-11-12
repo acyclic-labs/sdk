@@ -46,7 +46,9 @@ impl ExecutionRecordQuery<'_> {
     pub(crate) fn step_bound(limits: Limits) -> Option<usize> {
         limits
             .model_events_per_step
-            .map(|maximum| maximum.get().saturating_mul(2).saturating_add(7))
+            // Two model chains, context/admission records and the response's
+            // one semantic-output receipt.
+            .map(|maximum| maximum.get().saturating_mul(2).saturating_add(8))
     }
 }
 
@@ -84,6 +86,25 @@ pub(super) fn completion_cut(
     })
 }
 
+/// An accepted source for one original progress publication.
+#[derive(Clone, Copy)]
+pub enum ProgressPublication<'a> {
+    /// A trusted producer has already established that this immutable result
+    /// changed authored state, such as a conditional content receipt.
+    Resource(&'a crate::resources::ResourceRef),
+    /// Resolve the original accepted file publication and compare its payload
+    /// with its original base. A rebound version or later head is not progress.
+    File(&'a FileRef),
+    /// Resolve explicitly changed paths at their original generation. The
+    /// host compares content only when a progress query needs the fact.
+    Changes {
+        /// Producer-bound volume of the original conditional publication.
+        volume: &'a crate::conversation::VolumeRef,
+        /// Immutable receipt, including deletions with no resulting file.
+        changes: &'a crate::conversation::ContentChanges,
+    },
+}
+
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Host-owned publication handles for one execution's observable output.
@@ -99,6 +120,70 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Journals without file observation leave live publication disabled.
     fn live_reply(&self, _operation: OperationId) -> Result<Option<LiveReply>> {
         Ok(None)
+    }
+
+    /// Outstanding original supervision decision, selected by a point query.
+    /// This boundary does not own a follower, readiness loop or timer.
+    fn supervision(
+        &self,
+    ) -> acyclic_stream::BoxProviderFuture<'_, Result<Option<crate::supervision::Control>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Original user-owned run inputs, selected from their immutable file
+    /// publication. Executors consult this host binding without inserting
+    /// configuration into the model's prompt or trusting later file edits.
+    fn run_admission(&self) -> Option<&crate::supervision::RunAdmissionSource> {
+        None
+    }
+
+    /// Records a trusted producer's original, accepted progress publication
+    /// before its terminal result. Call only from publication receipts, never
+    /// model claims or derived output. `publication` pins an immutable result;
+    /// `effect` is the producer's stable identity for exact recovery.
+    fn published_progress<'a>(
+        &'a self,
+        _execution: OperationId,
+        _effect: OperationId,
+        _publication: ProgressPublication<'a>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if self
+                .run_admission()
+                .is_some_and(|source| source.value.no_progress_turns.is_some())
+            {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "original progress recording is not bound",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    /// Prepare the selected turn's live queries for its original conversation
+    /// append. The driver joins this contribution to that append and its actor
+    /// checkpoint; this method never independently publishes terminal state.
+    fn settle_progress<'a>(
+        &'a self,
+        _source: &'a crate::supervision::Position,
+    ) -> acyclic_stream::BoxProviderFuture<
+        'a,
+        Result<Option<crate::supervision::streams::Projection>>,
+    > {
+        Box::pin(async move {
+            if self
+                .run_admission()
+                .is_some_and(|source| source.value.no_progress_turns.is_some())
+            {
+                return Err(Error::Unsupported(
+                    "original progress settlement is not bound".into(),
+                ));
+            }
+            Ok(None)
+        })
     }
 
     /// The agent's durable inbox at the next model boundary. This binding is

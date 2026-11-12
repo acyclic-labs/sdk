@@ -1,7 +1,7 @@
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::{EncodeWorkStep, Encoder};
-const SNAPSHOT_VERSION: u16 = 3;
+const SNAPSHOT_VERSION: u16 = 4;
 const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v1\0";
 #[cfg(not(target_arch = "wasm32"))]
 const CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-context-v1\0";
@@ -18,7 +18,7 @@ pub(crate) fn publication_evidence(
         + if matches!(context, NativeSnapshotContext::Authored { .. }) {
             0
         } else {
-            88
+            152
         }
         + if matches!(context, NativeSnapshotContext::Selected { .. }) {
             32
@@ -76,6 +76,8 @@ pub(crate) fn publication_evidence(
             encoder.u64(cut.source.epoch);
             encoder.fixed(&cut.overlay.into_bytes());
             encoder.fixed(&cut.shadows.into_bytes());
+            encoder.fixed(&cut.prior_overlay.into_bytes());
+            encoder.fixed(&cut.prior_shadows.into_bytes());
         }
         if let NativeSnapshotContext::Selected { input, .. } = context {
             encoder.fixed(input.as_bytes());
@@ -144,7 +146,7 @@ pub(super) fn decode_publication_context(
     ctx: &mut KernelAccounting<'_>,
 ) -> Result<NativeSnapshotContext, crate::FsError> {
     let maximum =
-        SNAPSHOT_DOMAIN.len() + 2 + 33 + crate::kernel::CONFIG_ENCODED_BYTES + 88 + 32 + 73;
+        SNAPSHOT_DOMAIN.len() + 2 + 33 + crate::kernel::CONFIG_ENCODED_BYTES + 152 + 32 + 73;
     crate::kernel::decode_owned(ctx, |mut observe| {
         let mut decoder = crate::kernel::Decoder::new::<crate::FsError>(
             bytes,
@@ -175,6 +177,10 @@ pub(super) fn decode_publication_context(
                     },
                     overlay: LazyOverlayId(decoder.fixed::<32, crate::FsError>(&mut observe)?),
                     shadows: LazyShadowId(decoder.fixed::<32, crate::FsError>(&mut observe)?),
+                    prior_overlay: LazyOverlayId(
+                        decoder.fixed::<32, crate::FsError>(&mut observe)?,
+                    ),
+                    prior_shadows: LazyShadowId(decoder.fixed::<32, crate::FsError>(&mut observe)?),
                 };
                 if kind == 2 {
                     NativeSnapshotContext::Selected {
@@ -239,7 +245,7 @@ mod tests {
         let cancellation = crate::CancellationToken::new();
         let mut accounting =
             KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
-        for version in [0_u16, 1, 2, u16::MAX] {
+        for version in [0_u16, 1, 2, 3, u16::MAX] {
             let mut bytes = SNAPSHOT_DOMAIN.to_vec();
             bytes.extend_from_slice(&version.to_le_bytes());
             assert!(matches!(

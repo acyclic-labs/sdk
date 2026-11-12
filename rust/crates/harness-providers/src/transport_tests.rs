@@ -592,3 +592,105 @@ async fn tls_failure_is_typed_for_shared_recovery() -> Result<()> {
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn compatible_endpoint_refusals_cannot_echo_credentials_into_failures() -> Result<()> {
+    const ECHO: &str = r#"{"error":{"message":"rejected scripted-key"}}"#;
+    for adapter in [Adapter::Chat, Adapter::Anthropic] {
+        for native in [false, true] {
+            for status in [400, 401, 403, 408, 413, 429, 503] {
+                let retryable = matches!(status, 408 | 429 | 503);
+                let mut replies = vec![Reply::Full(status, ECHO)];
+                if retryable {
+                    replies.push(Reply::Full(403, ECHO));
+                }
+                let (port, accepted) = serve(replies).await?;
+                let (mut provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+                let config = Arc::make_mut(&mut provider.config);
+                config.adapter = adapter;
+                provider.accounting = crate::resolved::Accounting::new(adapter);
+                let error = if native {
+                    let (prepared, dispatch) = super::request(&provider)?;
+                    let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+                    let baseline = work.live_allocation_bytes();
+                    let error = {
+                        let mut stream = provider
+                            .generate_with_native_work(&prepared, dispatch, &work)?
+                            .await?;
+                        match stream.next().await {
+                            Some(Err(error)) => error,
+                            _ => panic!("refused request produced model output"),
+                        }
+                    };
+                    assert!(!format!("{error:?} {error}").contains("scripted-key"));
+                    drop(error);
+                    assert_eq!(work.live_allocation_bytes(), baseline);
+                    None
+                } else {
+                    Some(generate(&provider).await.expect_err("refused request"))
+                };
+                if let Some(error) = error {
+                    assert!(!format!("{error:?} {error}").contains("scripted-key"));
+                    assert!(
+                        error
+                            .to_string()
+                            .contains(&(if retryable { 403 } else { status }).to_string())
+                    );
+                }
+                assert_eq!(
+                    transport.sent.load(Ordering::SeqCst),
+                    1 + usize::from(retryable)
+                );
+                assert_eq!(accepted.load(Ordering::SeqCst), 1 + usize::from(retryable));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn compatible_endpoints_keep_transport_backpressure_unbounded_by_default() -> Result<()> {
+    for (adapter, body) in fixtures()
+        .into_iter()
+        .filter(|(adapter, _)| matches!(adapter, Adapter::Chat | Adapter::Anthropic))
+    {
+        for native in [false, true] {
+            let replies =
+                std::iter::repeat_with(|| Reply::Headers(429, "Retry-After: 0\r\n", "{}"))
+                    .take(8)
+                    .chain([Reply::Full(200, body)])
+                    .collect();
+            let (port, accepted) = serve(replies).await?;
+            let (mut provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+            let config = Arc::make_mut(&mut provider.config);
+            config.adapter = adapter;
+            config.retry = RetrySpec::DEFAULT;
+            provider.accounting = crate::resolved::Accounting::new(adapter);
+            if native {
+                let (prepared, dispatch) = super::request(&provider)?;
+                let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+                let baseline = work.live_allocation_bytes();
+                let mut stream = provider
+                    .generate_with_native_work(&prepared, dispatch, &work)?
+                    .await?;
+                let mut completed = false;
+                while let Some(event) = stream.next().await {
+                    let (event, custody) = event?;
+                    completed |= matches!(event, ModelEvent::Completed { .. });
+                    drop((event, custody));
+                }
+                assert!(completed);
+                drop(stream);
+                assert_eq!(work.live_allocation_bytes(), baseline);
+            } else {
+                assert!(matches!(
+                    generate(&provider).await?.last(),
+                    Some(ModelEvent::Completed { .. })
+                ));
+            }
+            assert_eq!(transport.sent.load(Ordering::SeqCst), 9);
+            assert_eq!(accepted.load(Ordering::SeqCst), 9);
+        }
+    }
+    Ok(())
+}

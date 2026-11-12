@@ -154,9 +154,12 @@ pub(in crate::local) async fn capture(
     let (physical, _) = selected;
     if let Some(mount) = &physical.mounted {
         mount
-            .sync_with_permit(permit, &mount.native_work()?, |_| async {
-                Ok::<(), Error>(())
-            })
+            .sync_with_permit(
+                permit,
+                &mount.native_work()?,
+                Some(capture_operation(operation.0, operation.1)),
+                |_| async { Ok::<(), Error>(()) },
+            )
             .await
             .map_err(|failure| failure.cause)?;
         return Ok(());

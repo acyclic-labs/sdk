@@ -132,6 +132,9 @@ pub(super) async fn load(
                 .and_then(Option::as_ref)
                 .ok_or("Question file is absent")?;
             let blocks = acyclic_harness::client::ui::blocks::parse(&file.text)?;
+            let original = file
+                .original()
+                .ok_or("Question has no authored reply precondition")?;
             let mut lines = vec![Line::raw(format!(
                 "Orchestrator {} asks · Enter replies directly",
                 conversation.agent().id()
@@ -142,7 +145,7 @@ pub(super) async fn load(
                     .map(|line| Line::raw(display_text(line).into_owned())),
             );
             Ok(QueryPage::new(lines, None, false).with_context(Context {
-                question: Some((path, file.file.version().to_owned(), blocks)),
+                question: Some((path, original.version().to_owned(), blocks)),
                 ..Context::default()
             }))
         }

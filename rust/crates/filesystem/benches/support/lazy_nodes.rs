@@ -137,21 +137,24 @@ fn shadow(size: usize) -> LazyShadow {
     LazyShadow::Node {
         file_id: acyclic_fs::FileId::from_bytes([7; 16]),
         priority: 1,
-        record: vec![7; size],
-        metadata: acyclic_fs::WorkspaceMetadata {
-            posix_mode: None,
-            posix_uid: None,
-            posix_gid: None,
-            posix_flags: None,
-            windows_attributes: None,
-            created_ns: None,
-            modified_ns: None,
-            accessed_ns: None,
-            changed_ns: None,
-            has_named_attributes: false,
-            has_acl: false,
-            has_security_descriptor: false,
-        },
+        authored: Some(acyclic_fs::LazyStoredRecord {
+            record: vec![7; size],
+            metadata: acyclic_fs::WorkspaceMetadata {
+                posix_mode: None,
+                posix_uid: None,
+                posix_gid: None,
+                posix_flags: None,
+                windows_attributes: None,
+                created_ns: None,
+                modified_ns: None,
+                accessed_ns: None,
+                changed_ns: None,
+                has_named_attributes: false,
+                has_acl: false,
+                has_security_descriptor: false,
+            },
+        }),
+        observed: None,
         left: empty,
         right: empty,
     }
@@ -159,7 +162,16 @@ fn shadow(size: usize) -> LazyShadow {
 fn shadow_bytes(node: &LazyShadow) -> u64 {
     match node {
         LazyShadow::Empty => 0,
-        LazyShadow::Node { record, .. } => record.capacity() as u64,
+        LazyShadow::Node {
+            authored, observed, ..
+        } => {
+            authored
+                .as_ref()
+                .map_or(0, |record| record.record.capacity() as u64)
+                + observed
+                    .as_ref()
+                    .map_or(0, |record| record.content.record.capacity() as u64)
+        }
     }
 }
 

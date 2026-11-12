@@ -48,7 +48,7 @@ pub(super) struct RecordIndex<'a> {
 impl ExecutionEvent {
     pub(crate) fn step(&self) -> Option<u32> {
         match self {
-            Self::Started { .. } => None,
+            Self::Started { .. } | Self::Progress { .. } => None,
             Self::ConversationItem { step, .. }
             | Self::ContextPrepared { step, .. }
             | Self::ContextCompacted { step, .. }
@@ -57,6 +57,7 @@ impl ExecutionEvent {
             | Self::ModelInline { step, .. }
             | Self::ModelWait { step, .. }
             | Self::ModelStopped { step, .. }
+            | Self::ModelOutput { step, .. }
             | Self::ToolStarted { step, .. }
             | Self::ToolCompleted { step, .. }
             | Self::ToolFailed { step, .. } => Some(*step),
@@ -70,6 +71,9 @@ impl ExecutionEvent {
         Ok(match self {
             Started { request_digest } => Started {
                 request_digest: *request_digest,
+            },
+            Progress { publication } => Progress {
+                publication: crate::model::clone_resource(publication, io)?,
             },
             ConversationItem {
                 step,
@@ -150,6 +154,10 @@ impl ExecutionEvent {
                 step: *step,
                 purpose: *purpose,
                 worker_paused: *worker_paused,
+            },
+            ModelOutput { step, digest } => ModelOutput {
+                step: *step,
+                digest: *digest,
             },
             ToolStarted {
                 step,
@@ -284,10 +292,17 @@ impl<'a> RecordIndex<'a> {
             let step = record_bucket_key(&record.event, io)?;
             let sequence = record.sequence;
             let mut work = OwnedIndexWork(io);
-            let bucket = self
-                .steps
-                .get_or_try_insert_with(step, &mut work, |_| Ok(Records::default()))?;
-            bucket.get_or_try_insert_with(sequence.to_be_bytes(), &mut work, |_| Ok(record))?;
+            if matches!(record.event, ExecutionEvent::Progress { .. }) {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(io) = io {
+                    io.release(record.payload_bytes(Some(io))?)?;
+                }
+            } else {
+                let bucket = self
+                    .steps
+                    .get_or_try_insert_with(step, &mut work, |_| Ok(Records::default()))?;
+                bucket.get_or_try_insert_with(sequence.to_be_bytes(), &mut work, |_| Ok(record))?;
+            }
             self.keys
                 .get_or_try_insert_with(key, &mut work, |_| Ok(()))?;
             self.tail = sequence;

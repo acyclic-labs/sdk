@@ -1,6 +1,8 @@
 #![no_main]
 use acyclic_harness_client::{AgentCommand, AgentReply, PreparedCommand, decode_agent_reply};
-use acyclic_harness_core::{command_request::layout_view, conversation::validate_content_path};
+use acyclic_harness_core::{
+    client_files::FileSource, command_request::layout_view, conversation::validate_content_path,
+};
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeSet;
 
@@ -77,6 +79,7 @@ fuzz_target!(|data: &[u8]| {
                     .len()
             );
             for change in changes {
+                assert!(change.text.is_some() || change.expected.is_some());
                 assert!(validate_content_path(&change.path, &mut None).is_ok());
                 assert!(
                     change
@@ -98,28 +101,46 @@ fuzz_target!(|data: &[u8]| {
                 paths,
                 after,
                 agent,
-                session,
+                root,
+                ..
             },
         ) => {
-            assert_ne!(Some(&snapshot.generation), after.as_ref());
+            assert_eq!(snapshot.root, root);
+            assert_eq!(snapshot.cut.version, 1);
+            assert!(after.is_none_or(|after| !after.same_inputs(&snapshot.cut)));
             assert_eq!(snapshot.files.len(), paths.len());
             for path in paths {
                 let file = snapshot.files.get(&path).expect("requested path retained");
                 if let Some(file) = file {
-                    assert_eq!(
-                        file.file.path(),
-                        path,
-                        "reply file path did not match request"
-                    );
-                    assert_eq!(
-                        &acyclic_harness_core::client_files::volume(
-                            file.file.volume().provider().clone(),
-                            &agent,
-                            session
-                        )
-                        .unwrap(),
-                        file.file.volume()
-                    );
+                    match &file.source {
+                        FileSource::Authored { file } => {
+                            assert_eq!(file.path(), path, "reply file path differs");
+                            assert_eq!(&snapshot.volume, file.volume());
+                        }
+                        FileSource::Query { view, input, .. } => {
+                            assert!(!view.is_empty());
+                            assert!(
+                                snapshot
+                                    .cut
+                                    .queries
+                                    .get(&input.stream)
+                                    .is_some_and(|through| input.sequence < *through)
+                            );
+                        }
+                    }
+                    if let acyclic_harness_core::client_files::FileRoot::ClientSession { session } =
+                        root
+                    {
+                        assert_eq!(
+                            acyclic_harness_core::client_files::volume(
+                                snapshot.volume.provider().clone(),
+                                &agent,
+                                session
+                            )
+                            .unwrap(),
+                            snapshot.volume
+                        );
+                    }
                     if path == "layout.json" {
                         // Contents are untrusted: the TUI's decoder, not transport,
                         // decides whether a committed file can be rendered.

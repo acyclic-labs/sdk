@@ -345,10 +345,12 @@ impl AgentControls {
             .map_or(self.credential, |(_, slot)| *slot)
     }
 
-    fn observation_client(&self) -> Client {
+    /// Original observation capability selected on the existing session pool.
+    pub fn observation_session(&self) -> Client {
         self.observation
             .as_ref()
             .map_or_else(|| self.client.clone(), |(client, _)| client.clone())
+            .select_credential(self.observation_credential())
     }
 
     /// Start bounded observation on this same authenticated pool.
@@ -373,7 +375,7 @@ impl AgentControls {
         all: bool,
     ) -> Result<crate::AgentClient, crate::AgentClientError> {
         crate::AgentClient::observing(
-            self.observation_client(),
+            self.observation_session(),
             selection,
             self.observation_credential(),
             all,

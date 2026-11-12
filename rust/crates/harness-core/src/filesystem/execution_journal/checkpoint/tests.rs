@@ -15,6 +15,7 @@ fn checkpoint_frame_has_fixed_size_and_one_canonical_root_encoding() -> Result<(
             pending_dispatches: u64::MAX,
             anchor: [4; 32],
             latest_response: Some(u32::MAX),
+            latest_response_output: true,
             model_dispatched: true,
         },
         proof: [5; 64],
@@ -29,7 +30,7 @@ fn checkpoint_frame_has_fixed_size_and_one_canonical_root_encoding() -> Result<(
         let bytes = codec::encode(&checkpoint, None)?;
         assert_eq!(
             bytes.len(),
-            399,
+            400,
             "checkpoint size depends on history or root count"
         );
         let decoded = codec::decode(&bytes, None)?;
@@ -44,7 +45,7 @@ fn checkpoint_frame_has_fixed_size_and_one_canonical_root_encoding() -> Result<(
     }
     checkpoint.state.roots = [None; 5];
     let original = codec::encode(&checkpoint, None)?;
-    for version in [b'0', b'3', b'4', u8::MAX] {
+    for version in [b'0', b'3', b'4', b'5', b'6', b'7', u8::MAX] {
         let mut former = original[..4].to_vec();
         former[3] = version;
         assert_eq!(
@@ -80,10 +81,12 @@ fn checkpoint_frame_has_fixed_size_and_one_canonical_root_encoding() -> Result<(
     assert!(codec::decode(&trailing, None).is_err());
     for ordinal in [None, Some(0), Some(u32::MAX)] {
         checkpoint.state.latest_response = ordinal;
+        checkpoint.state.latest_response_output = ordinal.is_some();
         let bytes = codec::encode(&checkpoint, None)?;
         assert_eq!(codec::decode(&bytes, None)?.state.latest_response, ordinal);
     }
     checkpoint.state.latest_response = None;
+    checkpoint.state.latest_response_output = false;
     let mut absent = codec::encode(&checkpoint, None)?.to_vec();
     absent[330] = 1;
     assert!(
@@ -199,6 +202,7 @@ async fn check_cut(native: Option<bool>) -> Result<()> {
                 &mut summary,
                 retry_key,
                 &event,
+                (None, None),
                 &observation,
                 &[],
                 io.as_ref(),
@@ -252,6 +256,7 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
             &mut summary,
             retry,
             &first,
+            (None, None),
             &bytes(operation, "start", &first)?,
             &[],
             None,

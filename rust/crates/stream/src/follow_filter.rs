@@ -16,6 +16,31 @@ struct Clause {
 }
 
 impl FollowFilter {
+    /// Select one exact key, including empty and maximum-length keys. This
+    /// shares the canonical range representation used by remote sessions.
+    pub fn exact_key(key: bytes::Bytes) -> Result<Self, StreamError> {
+        if key.len() > crate::MAX_RECORD_KEY_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
+        let mut end = key.to_vec();
+        if end.len() < crate::MAX_RECORD_KEY_BYTES {
+            end.push(0);
+        } else if let Some(index) = end.iter().rposition(|byte| *byte != u8::MAX) {
+            end[index] += 1;
+            end.truncate(index + 1);
+        } else {
+            // No longer keys are admitted; the greatest legal key is last.
+            end.clear();
+        }
+        Self::new(wire::SessionFilter {
+            keys: vec![wire::KeyRange {
+                start: key,
+                end: end.into(),
+            }],
+            ..Default::default()
+        })
+    }
+
     fn clauses(&self) -> &[Clause] {
         self.0.as_deref().map_or(&[], Vec::as_slice)
     }
@@ -510,6 +535,46 @@ pub(crate) fn projection_contract(record: &crate::Record) -> Result<(), StreamEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_selection_excludes_prefix_extensions_at_the_key_boundary() -> Result<(), StreamError> {
+        // Exercise the real canonical filter/header matcher over every possible
+        // last byte, including carry, empty keys and the greatest legal key.
+        for size in [
+            0,
+            1,
+            crate::MAX_RECORD_KEY_BYTES - 1,
+            crate::MAX_RECORD_KEY_BYTES,
+        ] {
+            for byte in 0..=u8::MAX {
+                let key = bytes::Bytes::from(vec![byte; size]);
+                let filter = FollowFilter::exact_key(key.clone())?;
+                let mut candidates = vec![key.to_vec(), vec![], vec![0], vec![u8::MAX]];
+                let mut extended = key.to_vec();
+                extended.push(0);
+                if extended.len() <= crate::MAX_RECORD_KEY_BYTES {
+                    candidates.push(extended);
+                }
+                if !key.is_empty() {
+                    candidates.push(key[..key.len() - 1].to_vec());
+                    let mut adjacent = key.to_vec();
+                    adjacent[0] = adjacent[0].wrapping_add(1);
+                    candidates.push(adjacent);
+                }
+                for candidate in candidates {
+                    let headers = RecordHeaders::new(
+                        vec![bytes::Bytes::from(candidate.clone()).into()],
+                        vec![],
+                    )?;
+                    assert_eq!(
+                        filter.matches(&headers),
+                        candidate.as_slice() == key.as_ref()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn projection_candidate_keeps_full_caller_capacity_through_transport() {

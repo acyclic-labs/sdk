@@ -305,7 +305,7 @@ impl Book {
             {
                 None
             }
-            None if matches!(delivery.trigger, crate::guest::Trigger::Record { .. })
+            None if delivery.trigger.record_position().is_some()
                 && delivery.record.as_ref().is_some_and(|record| {
                     record.value.is_empty()
                         && record.headers.keys().is_empty()
