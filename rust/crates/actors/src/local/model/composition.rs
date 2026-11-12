@@ -208,6 +208,98 @@ async fn a_retry_refusal_cannot_settle_an_earlier_lost_ack() -> Result<(), Failu
 /// Opens each test participant request with the test's counters.
 struct Participants(Arc<Counts>);
 
+/// Interrupt successive real custody settlements before permitting completion.
+struct InterruptedRecovery(Arc<AtomicUsize>);
+
+impl Composer for InterruptedRecovery {
+    fn open(
+        &self,
+        _: &ActorReference,
+        _: Option<&Checkpoint>,
+        _: Option<&acyclic_stream::Record>,
+        _: &Checkpoint,
+        _: &crate::guest::Participant,
+    ) -> Result<Box<dyn Composition>, GuestError> {
+        Ok(Box::new(RecoveryAttempt(
+            self.0.fetch_add(1, Ordering::SeqCst),
+        )))
+    }
+}
+
+struct RecoveryAttempt(usize);
+
+impl Composition for RecoveryAttempt {
+    fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest> {
+        Box::pin(async move { Ok(request) })
+    }
+
+    fn settle<'a>(
+        self: Box<Self>,
+        outcome: Result<&'a CommitOutcome, &'a StreamError>,
+    ) -> GuestFuture<'a, ()> {
+        Box::pin(async move {
+            assert!(matches!(outcome, Ok(CommitOutcome::Committed(_))));
+            match self.0 {
+                0 => Err(GuestError::Handler("interrupted custody recovery".into())),
+                1 => futures::future::pending().await,
+                _ => Ok(()),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn placement_replays_finish_failed_and_cancelled_custody_recovery() -> Result<(), Failure> {
+    let provider = Arc::new(Faulty {
+        inner: MemoryStream::default(),
+        plan: vec![Fault::None, Fault::None, Fault::LoseAck],
+        calls: AtomicUsize::new(0),
+    });
+    let counts = Arc::new(Counts::default());
+    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+    let result = store
+        .publish(
+            &store.load(&actor).await?,
+            1,
+            &Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: 0,
+            },
+            None,
+            transition(false)?,
+            key("interrupted-owner")?,
+        )
+        .await;
+    let Err(Error::Unknown { publication, .. }) = result else {
+        return Err("publication must commit without settling custody".into());
+    };
+    drop(publication);
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let runtime = super::super::runtime::Runtime::new(
+        store.with_composer(Arc::new(InterruptedRecovery(attempts.clone()))),
+        Arc::new(crate::conformance::Package::new()?),
+        Arc::new(super::super::runtime::SystemClock),
+    )
+    .with_external_placement();
+    assert!(matches!(
+        runtime.place(actor.clone(), 1).await,
+        Err(Error::Handler(GuestError::Handler(message))) if message == "interrupted custody recovery"
+    ));
+    let committed = runtime.store().load(&actor).await?;
+    assert_eq!(committed.state().map(State::epoch), Some(2));
+    let mut retry = Box::pin(runtime.place(actor.clone(), 1));
+    assert!(futures::poll!(retry.as_mut()).is_pending());
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    drop(retry);
+    runtime.place(actor.clone(), 1).await?;
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    let admitted = runtime.store().load(&actor).await?;
+    assert_eq!(admitted.tail, committed.tail);
+    assert_eq!(admitted.anchor, committed.anchor);
+    Ok(())
+}
+
 impl Composer for Participants {
     fn open(
         &self,
