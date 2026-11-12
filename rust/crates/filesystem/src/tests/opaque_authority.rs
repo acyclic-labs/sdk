@@ -5,11 +5,11 @@ pub(crate) struct OpaqueAuthority {
 }
 
 impl crate::AsyncAuthorityStore for OpaqueAuthority {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        fn retains_operation_payload(&self) -> bool {
-            self.inner.retains_operation_payload()
-        }
+    fn retains_operation_payload(&self) -> bool {
+        self.inner.retains_operation_payload()
+    }
 
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.inner.operation_claims()
     }
     fn actor_scope(&self) -> [u8; 16] {
