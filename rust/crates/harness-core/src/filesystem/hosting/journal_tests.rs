@@ -108,11 +108,12 @@ async fn committed_input_uses_its_owner_without_exposing_an_unselected_input() -
     impl TurnExecutors for Inspect {
         fn executor<'a>(
             &'a self,
-            _: &'a AgentState,
+            _: &'a crate::agent::AgentState,
             _: OperationId,
             input: &'a ModelContent,
             authority: &'a TurnAuthority,
-        ) -> BoxFuture<'a, crate::Result<Arc<dyn crate::executor::Executor>>> {
+        ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Arc<dyn crate::executor::Executor>>>
+        {
             Box::pin(async move {
                 let selected = input.file_refs().next().ok_or_else(|| {
                     crate::Error::Invalid("committed input reference is missing".into())
