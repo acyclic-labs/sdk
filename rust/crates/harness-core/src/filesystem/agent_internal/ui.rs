@@ -50,7 +50,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> AgentInter
                     Publication::Files { files } => files,
                 };
                 for file in publications {
-                    if file.volume() == &self.volume && file.path().starts_with("ui/") {
+                    if file.volume() == &self.public_volume && file.path().starts_with("ui/") {
                         files.insert(file.path().to_owned(), file);
                     }
                 }
@@ -59,10 +59,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> AgentInter
         if files.is_empty() {
             return Ok(None);
         }
-        let head = self.head().await?;
+        let head = self
+            .volume_head(&self.public_volume, &self.public_grant)
+            .await?;
         for (path, file) in files {
-            let grant =
-                ContentGrant::verify_read(self.grant.verifier(), self.grant.policy_scope(), &file)?;
+            let grant = ContentGrant::verify_read(
+                self.public_grant.verifier(),
+                self.public_grant.policy_scope(),
+                &file,
+            )?;
             let original = self
                 .host
                 .read_content(&file, &grant, file.descriptor().byte_length(), None)

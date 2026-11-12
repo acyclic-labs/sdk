@@ -231,6 +231,8 @@ mod tests {
         let files = Arc::new(super::super::agent_internal::AgentInternalFiles::new(
             host.clone(),
             home.clone(),
+            grant.clone(),
+            home.clone(),
             grant,
         ));
         let effects = Arc::new(super::super::agent_effects::FilesystemTurnEffects::new(

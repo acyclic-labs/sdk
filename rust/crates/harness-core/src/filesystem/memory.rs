@@ -266,10 +266,27 @@ impl<
                 maximum_file_bytes,
                 None,
             )?;
-            // Approvals are the agent's own files on its private volume, as for
-            // every hosted agent; only where those files live differs.
+            let control_volume = crate::conversation::journal_volume(
+                host.provider.clone(),
+                &crate::agent::AgentId::from_bytes(agent.into_bytes()),
+            )?;
+            host.create_volume(&control_volume).await?;
+            let control_scope = issuer.bootstrap_scope(
+                "host-journal",
+                &super::agent_turns::journal_grants(&control_volume, &Capabilities::default())?,
+                Some(agent),
+                &mut None,
+            )?;
             let internal_files = Arc::new(AgentInternalFiles::new(
                 Arc::clone(&host),
+                control_volume.clone(),
+                crate::conversation::ContentGrant::verify(
+                    &verifier,
+                    &control_scope,
+                    &control_volume,
+                    VolumeOperation::Write,
+                    &mut None,
+                )?,
                 volume.clone(),
                 crate::conversation::ContentGrant::verify(
                     &verifier,

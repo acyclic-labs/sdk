@@ -257,11 +257,11 @@ impl RootWitness {
 // f_fsid, Windows volume serial); on macOS it is st_dev, so a remount that
 // renumbers the device refuses attachment rather than trusting a copied token.
 
-/// Version four admits only external native preparation. An older owner may
-/// retain interrupted in-tree preparation, so refuse it before attaching the
-/// filesystem or enabling unrestricted capture, without probing user paths.
-const RECORD: &str = "owner.v4";
-const OLDER_RECORDS: [&str; 3] = ["owner.json", "owner.v2", "owner.v3"];
+/// Version five keeps interaction custody outside authored agent volumes.
+/// Earlier owners may retain private interaction files or in-tree native
+/// preparation, so refuse them before filesystem attachment or capture.
+const RECORD: &str = "owner.v5";
+const OLDER_RECORDS: [&str; 4] = ["owner.json", "owner.v2", "owner.v3", "owner.v4"];
 
 impl Owner {
     pub(super) fn open(

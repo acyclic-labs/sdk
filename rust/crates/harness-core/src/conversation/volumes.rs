@@ -188,6 +188,12 @@ impl VolumeRef {
         &self.owner
     }
 
+    pub(crate) fn is_agent_journal(&self) -> bool {
+        self.class == VolumeClass::AgentPrivate
+            && matches!(self.owner, VolumeOwner::Agent(_))
+            && self.id == "journal"
+    }
+
     /// Enforces owner-only agent mutations.
     pub(crate) fn require_writer(
         &self,

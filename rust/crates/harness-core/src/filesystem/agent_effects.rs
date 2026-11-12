@@ -222,7 +222,13 @@ mod tests {
             VolumeOperation::Write,
             &mut None,
         )?;
-        let files = Arc::new(AgentInternalFiles::new(host.clone(), volume.clone(), write));
+        let files = Arc::new(AgentInternalFiles::new(
+            host.clone(),
+            volume.clone(),
+            write.clone(),
+            volume.clone(),
+            write,
+        ));
         let effects = FilesystemTurnEffects::new(
             files.clone(),
             Arc::new(acyclic_stream::MemoryStream::default()),

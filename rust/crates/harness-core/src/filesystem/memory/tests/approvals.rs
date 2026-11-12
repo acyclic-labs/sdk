@@ -141,17 +141,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
 
     let agent = crate::agent::AgentId::from_bytes([13; 16]);
     let storage = MemoryHarnessStorage::new(AgentId::from_bytes(agent.to_bytes()), 65_536).await?;
-    let files = Arc::new(AgentInternalFiles::new(
-        storage.host.clone(),
-        storage.volume.clone(),
-        ContentGrant::verify(
-            &storage.verifier(),
-            &storage.scope,
-            &storage.volume,
-            VolumeOperation::Write,
-            &mut None,
-        )?,
-    ));
+    let files = storage.internal_files.clone();
     let effects = Arc::new(
         crate::filesystem::agent_effects::FilesystemTurnEffects::new(
             files,

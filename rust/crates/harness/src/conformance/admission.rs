@@ -84,6 +84,18 @@ async fn admission(
             .volume()?
             .capability(VolumeOperation::Read, &mut None)?,
     ];
+    let acyclic_harness_core::conversation::VolumeOwner::Agent(owner) = binding.volume()?.owner()
+    else {
+        return Err("private fixture has no agent owner".into());
+    };
+    let journal = acyclic_harness_core::conversation::journal_volume(
+        binding.volume()?.provider().clone(),
+        &AgentId::from_bytes(owner.into_bytes()),
+    )?;
+    grants.push(acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned());
+    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        grants.push(journal.capability(operation, &mut None)?);
+    }
     if !matches!(case, Case::ReadOnly | Case::Widened) {
         grants.push(
             binding
@@ -203,7 +215,16 @@ async fn check_scope(
             let TurnAdmission::Admitted { scope, .. } = admission else {
                 return Err("admitted control lost its scope".into());
             };
-            if authority.scope.capabilities() != scope.capabilities()
+            let guest = Capabilities::new(
+                scope
+                    .capabilities()
+                    .iter()
+                    .filter(|label| {
+                        *label != acyclic_harness_core::contract::capability::HARNESS_HOST
+                    })
+                    .map(str::to_owned),
+            );
+            if authority.scope.capabilities() != &guest
                 || authority.scope.agent()
                     != Some(acyclic_harness_core::AgentId::from_bytes(
                         path.id().to_bytes(),

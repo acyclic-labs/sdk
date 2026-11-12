@@ -120,58 +120,60 @@ fn older_state_directory_is_refused_without_migration() -> Result<()> {
 async fn legacy_native_preparation_refuses_before_checkout_attachment() -> Result<()> {
     use acyclic_native_runtime::signing_key::MemorySigningStore;
 
-    let root = tempfile::tempdir().map_err(storage)?;
-    let path = root.path().join("checkout");
-    fs::create_dir(&path).map_err(storage)?;
-    let checkout = Checkout::capture(&path)?;
-    let preparation = path.join(format!(
-        ".acyclic-r-{}",
-        uuid::Uuid::from_bytes(checkout.root.identity().to_bytes()).simple()
-    ));
-    let operation = preparation.join(crate::identity::fresh_uuid().simple().to_string());
-    for (name, bytes) in [
-        ("target", b"pending".as_slice()),
-        ("backup", b"preimage".as_slice()),
-    ] {
-        let directory = operation.join(name);
-        fs::create_dir_all(&directory).map_err(storage)?;
-        fs::write(directory.join("file"), bytes).map_err(storage)?;
-    }
-    let state = super::directory(&root.path().join("state"))?;
-    let store = Arc::new(MemorySigningStore::new().map_err(storage)?);
-    Owner::open(
-        &state,
-        &LocalProject::Workspace(path.clone()),
-        Some(&checkout),
-        SigningCustody::Store(store.as_ref()),
-        None,
-    )?;
-    let old_record = state.join("owner.v3");
-    fs::rename(state.join(RECORD), &old_record).map_err(storage)?;
-    let original = fs::read(&old_record).map_err(storage)?;
-    let config = LocalHarnessConfig::native_host(&path)
-        .state_directory(&state)
-        .signing_store(store.clone());
-    assert!(matches!(
-        LocalHarness::open(config).await,
-        Err(Error::Conflict(message)) if message == format!(
-            "local state at {} uses an older format; remove that directory to start fresh",
-            state.display()
-        )
-    ));
-    assert!(!state.join(RECORD).exists());
-    assert!(!state.join("filesystem").exists());
-    assert!(!state.join("workspace").exists());
-    assert_eq!(fs::read(old_record).map_err(storage)?, original);
-    assert_eq!(store.len(), 1, "refusal replaced the original signing seed");
-    for (name, bytes) in [
-        ("target", b"pending".as_slice()),
-        ("backup", b"preimage".as_slice()),
-    ] {
-        assert_eq!(
-            fs::read(operation.join(name).join("file")).map_err(storage)?,
-            bytes
-        );
+    for prior in ["owner.v3", "owner.v4"] {
+        let root = tempfile::tempdir().map_err(storage)?;
+        let path = root.path().join("checkout");
+        fs::create_dir(&path).map_err(storage)?;
+        let checkout = Checkout::capture(&path)?;
+        let preparation = path.join(format!(
+            ".acyclic-r-{}",
+            uuid::Uuid::from_bytes(checkout.root.identity().to_bytes()).simple()
+        ));
+        let operation = preparation.join(crate::identity::fresh_uuid().simple().to_string());
+        for (name, bytes) in [
+            ("target", b"pending".as_slice()),
+            ("backup", b"preimage".as_slice()),
+        ] {
+            let directory = operation.join(name);
+            fs::create_dir_all(&directory).map_err(storage)?;
+            fs::write(directory.join("file"), bytes).map_err(storage)?;
+        }
+        let state = super::directory(&root.path().join("state"))?;
+        let store = Arc::new(MemorySigningStore::new().map_err(storage)?);
+        Owner::open(
+            &state,
+            &LocalProject::Workspace(path.clone()),
+            Some(&checkout),
+            SigningCustody::Store(store.as_ref()),
+            None,
+        )?;
+        let old_record = state.join(prior);
+        fs::rename(state.join(RECORD), &old_record).map_err(storage)?;
+        let original = fs::read(&old_record).map_err(storage)?;
+        let config = LocalHarnessConfig::native_host(&path)
+            .state_directory(&state)
+            .signing_store(store.clone());
+        assert!(matches!(
+            LocalHarness::open(config).await,
+            Err(Error::Conflict(message)) if message == format!(
+                "local state at {} uses an older format; remove that directory to start fresh",
+                state.display()
+            )
+        ));
+        assert!(!state.join(RECORD).exists());
+        assert!(!state.join("filesystem").exists());
+        assert!(!state.join("workspace").exists());
+        assert_eq!(fs::read(old_record).map_err(storage)?, original);
+        assert_eq!(store.len(), 1, "refusal replaced the original signing seed");
+        for (name, bytes) in [
+            ("target", b"pending".as_slice()),
+            ("backup", b"preimage".as_slice()),
+        ] {
+            assert_eq!(
+                fs::read(operation.join(name).join("file")).map_err(storage)?,
+                bytes
+            );
+        }
     }
     Ok(())
 }

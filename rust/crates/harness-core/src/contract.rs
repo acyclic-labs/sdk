@@ -21,6 +21,9 @@ pub mod capability {
     /// remove these claims but cannot supply a role absent from its owner scope.
     pub const FILESYSTEM_ROLE_PREFIX: &str = "role:";
 
+    /// Host custody of agent journals. Removed when issuing a tool scope.
+    pub const HARNESS_HOST: &str = "role:harness-host";
+
     pub(crate) const CONVERSATION_BIND: &str = "conversation:bind";
     pub(crate) const CONVERSATION_APPEND: &str = "conversation:append";
     pub(crate) const CONVERSATION_SELECT_CONTEXT: &str = "conversation:select_context";

@@ -221,7 +221,14 @@ async fn check(
         id: "workload".into(),
     };
     let root = AuthorityRoot::new("conformance", [7; 32], audience.clone());
+    let journal = acyclic_harness_core::conversation::journal_volume(
+        fixture.binding.volume()?.provider().clone(),
+        &fixture.path.id(),
+    )?;
     let grants = Capabilities::new([
+        acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
+        journal.capability(VolumeOperation::Read, &mut None)?,
+        journal.capability(VolumeOperation::Write, &mut None)?,
         fixture
             .binding
             .volume()?

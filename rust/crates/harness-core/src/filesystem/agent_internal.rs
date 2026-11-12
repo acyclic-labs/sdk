@@ -1,14 +1,14 @@
-//! Internal files published through one host-owned volume grant. Approvals
-//! use the private interaction area; tool-call effects and announcement
-//! documents use the agent's journal. Each uses the same create-once publisher.
-//! Settled turn outputs share the journal generation of their tool results.
+//! Internal files published through the external journal's host grant.
+//! Model-owned UI retains its original volume and authority; settled outputs
+//! share the journal generation of their tool results. Each uses the same
+//! create-once publisher.
 
 use super::{FilesystemHost, InternalContentClass};
 use crate::{
     IdempotencyKey, OperationId, Result,
     agent::TurnOutputs,
     approvals::{ApprovalCreate, ApprovalFiles},
-    conversation::{ContentGrant, FileRef, VolumeRef},
+    conversation::{ContentGrant, FileRef, VolumeOperation, VolumeRef},
 };
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, CancellationToken, DirectoryPage,
@@ -21,11 +21,13 @@ mod ui;
 /// Directory entries read per listing page.
 const PAGE: u32 = 256;
 
-/// Internal files of one agent, under its host-selected volume write grant.
+/// Internal records and public content under distinct original volume grants.
 pub(in crate::filesystem) struct AgentInternalFiles<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     grant: ContentGrant,
+    public_volume: VolumeRef,
+    public_grant: ContentGrant,
 }
 
 /// UI remains model-writable; settled and streamed outputs share journal cuts.
@@ -233,11 +235,15 @@ where
         host: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef,
         grant: ContentGrant,
+        public_volume: VolumeRef,
+        public_grant: ContentGrant,
     ) -> Self {
         Self {
             host,
             volume,
             grant,
+            public_volume,
+            public_grant,
         }
     }
 
@@ -320,8 +326,8 @@ where
         let path = format!("{}{path}", InternalContentClass::Conversation.prefix());
         self.host
             .put_internal_content(
-                &self.volume,
-                &self.grant,
+                &self.public_volume,
+                &self.public_grant,
                 &path,
                 bytes,
                 media_type,
@@ -334,14 +340,23 @@ where
             .await
     }
 
-    /// The committed head of the private volume, whose bytes are durable.
+    /// The committed head of the host's journal, whose bytes are durable.
     async fn head(&self) -> Result<acyclic_fs::Generation<A, O>> {
+        self.volume_head(&self.volume, &self.grant).await
+    }
+
+    async fn volume_head(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+    ) -> Result<acyclic_fs::Generation<A, O>> {
+        grant.require(volume, VolumeOperation::Write, None)?;
         let cancellation = CancellationToken::new();
         let workspace = self
             .host
             .filesystem
             .open_workspace(
-                self.volume.storage_name(&mut None)?,
+                volume.storage_name(&mut None)?,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
@@ -484,7 +499,9 @@ where
             // The live reply of the turn's newest model dispatch: dispatch
             // directories are time-ordered names, reply chunks zero-padded
             // sequence names, so name order is staging order.
-            let head = self.head().await?;
+            let head = self
+                .volume_head(&self.public_volume, &self.public_grant)
+                .await?;
             let turn = format!("/{}/{turn}", super::TOOL_OUTPUT);
             for dispatch in Self::list_at(&head, &turn).await?.iter().rev() {
                 let reply = format!("{turn}/{dispatch}/reply");

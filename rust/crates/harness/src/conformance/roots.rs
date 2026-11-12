@@ -115,6 +115,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         &agent,
     )?;
     let mut grants = vec![
+        acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
         INTERACTION_ROUTE.to_owned(),
         private
             .volume()?
@@ -143,6 +144,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
     }
     if case == Case::StructuredPrivateOnly {
         grants = vec![
+            acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
             INTERACTION_ROUTE.to_owned(),
             acyclic_fs::access::Capability::whole_volume(
                 Some(private.volume()?.id().to_owned()),

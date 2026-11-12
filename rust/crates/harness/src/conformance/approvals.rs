@@ -194,6 +194,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
         &agent,
     )?;
     let grants = vec![
+        acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
         INTERACTION_ROUTE.to_owned(),
         private
             .volume()?

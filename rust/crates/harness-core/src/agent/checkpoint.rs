@@ -19,8 +19,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
-            // Snapshot-backed actor state with immutable terminal diagnostic references.
-            version: "2".into(),
+            // Host-owned interaction records are outside authored agent volumes.
+            version: "3".into(),
         });
     &IDENTITY
 }
