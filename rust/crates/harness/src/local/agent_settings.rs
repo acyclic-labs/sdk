@@ -593,12 +593,10 @@ mod tests {
             shell: Arc::new(harness.tools.get("shell", None, None)?.unwrap().clone()),
             catalog: crate::tool::ToolRegistry::default(),
         };
-        let control = crate::executor::PreparationIo::from_budget(
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancellation,
-        )?;
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        let control = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
         assert!(source.load("budget", Some(&control)).await?.is_some());
-        let mut allowance = acyclic_fs::WorkBudget::UNBOUNDED;
+        let mut allowance = budget;
         allowance.output_bytes = control
             .receipt()
             .output_bytes
