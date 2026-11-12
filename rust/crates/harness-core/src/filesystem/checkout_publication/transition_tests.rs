@@ -926,11 +926,14 @@ async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult 
                 std::fs::read_to_string(fixture.root.join("note"))?,
                 "edit after approval"
             );
+            state
+                .remove_materialization_async(publication.operation)
+                .await?;
             publication
                 .publish(
                     from,
                     &fixture.to,
-                    &missing,
+                    state,
                     &options,
                     (&fixture.work, None),
                     || std::future::ready(Ok(())),
