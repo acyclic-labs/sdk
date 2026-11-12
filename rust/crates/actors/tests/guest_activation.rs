@@ -600,3 +600,88 @@ fn opaque_account_runtime_and_caller_use_the_shared_actor_vectors()
     }
     Ok(())
 }
+
+/// Both language guests consume this canonical delivery and produce the same transition.
+#[tokio::test]
+async fn strict_wire_record_matches_typescript_guest() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/guest-record.json"))?;
+    let input: Vec<u8> = serde_json::from_value(fixture["delivery"].clone())?;
+    let expected: Vec<u8> = serde_json::from_value(fixture["transition"].clone())?;
+    let (delivery, checkpoint) = wire::decode_delivery(&input)?;
+    assert_eq!(
+        wire::encode_delivery(&delivery, checkpoint.as_ref())?,
+        input
+    );
+    assert!(checkpoint.is_none());
+    assert_eq!(delivery.epoch, 3);
+    assert_eq!(delivery.now_unix_ms, 1700);
+    assert_eq!(delivery.request.get(), 9);
+    let record = delivery.record.as_ref().ok_or("missing record")?;
+    assert_eq!(record.sequence, 5);
+    assert_eq!(record.value.as_ref(), &[0xfb, 0xff, 0]);
+    assert_eq!(record.commit_id.as_bytes(), &[0xab; 32]);
+    assert_eq!(record.committed_at_micros, 99);
+    assert_eq!(record.origin.as_str(), "inputs/inbox");
+    assert_eq!(
+        delivery.trigger,
+        Trigger::Record {
+            subscription: "inbox".into(),
+            sequence: 5
+        }
+    );
+    let event: GuestEvent = serde_json::from_value(fixture["event"].clone())?;
+    let mut actor = definition();
+    actor.event = |state, event, context| {
+        Box::pin(async move {
+            let expected: serde_json::Value =
+                serde_json::from_str(include_str!("fixtures/guest-record.json"))
+                    .map_err(|error| GuestError::Handler(error.to_string()))?;
+            assert_eq!(
+                serde_json::to_value(event).expect("event serializes"),
+                expected["event"]
+            );
+            assert_eq!((context.clock)(), 1700);
+            assert_eq!(
+                (context.retry_key)("send")?,
+                "guest-v1:14:record:inbox:5:send"
+            );
+            state.with(|value| *value += 1)?;
+            Ok(Some(GuestEventResult::Reply {
+                payload: Bytes::from_static(&[1, 0xff]),
+            }))
+        })
+    };
+    let signals = Arc::new(Signals {
+        restores: AtomicUsize::new(0),
+        entered: AtomicUsize::new(0),
+        finish: Semaphore::new(0),
+    });
+    let context = GuestContext::builder(signals, Box::new(|| 1700))
+        .delivery("record:inbox:5".into())
+        .build();
+    let activation = GuestActivation::new(actor, checkpoint, context)?;
+    let context = GuestContext::builder(
+        Arc::new(Signals {
+            restores: AtomicUsize::new(0),
+            entered: AtomicUsize::new(0),
+            finish: Semaphore::new(0),
+        }),
+        Box::new(|| 1700),
+    )
+    .delivery("record:inbox:5".into())
+    .build();
+    let Some(GuestEventResult::Reply { payload }) = activation.event(event, &context).await? else {
+        return Err("missing guest reply".into());
+    };
+    let transition = Transition {
+        response: Some(payload),
+        checkpoint: activation.checkpoint().await?,
+        alarm: AlarmChange::Keep,
+        effects: Vec::new(),
+        participant: None,
+        subscriptions: Vec::new(),
+    };
+    assert_eq!(wire::encode_transition(&transition)?, expected);
+    Ok(())
+}

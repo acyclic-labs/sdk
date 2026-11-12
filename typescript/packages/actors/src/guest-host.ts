@@ -2,6 +2,7 @@
 import { ActorReference } from "@acyclic-labs/auth/addressing";
 import { ActorActivation } from "./activation.js";
 import { GUEST_ABI_VERSION } from "./generated/guest.js";
+import { loadWasmModule } from "./client.js";
 import type { ActorDefinition, ActorRuntime, Checkpoint, CodecIdentity, GuestContext, GuestFetchResponse, GuestEvent, GuestEventResult, GuestState } from "./generated/guest.js";
 
 const encoder = new TextEncoder();
@@ -32,6 +33,18 @@ function admitCheckpoint(value: Checkpoint | null, identity: CodecIdentity): voi
   }
 }
 
+function sameCheckpoint(left: Checkpoint | null, right: Checkpoint | null): boolean {
+  return left === null || right === null ? left === right
+    : left.codec.name === right.codec.name && left.codec.version === right.codec.version &&
+      left.bytes.length === right.bytes.length && left.bytes.every((byte, index) => byte === right.bytes[index]);
+}
+
+/** Rust `guest::retry_key`: length-prefixed, so distinct deliveries never share a key. */
+function retryKey(deliveryId: string, effect: string): string {
+  if (effect.length === 0) throw Object.assign(new Error("missing delivery or effect identity"), { type: "missingIdentity" as const });
+  return `guest-v1:${encoder.encode(deliveryId).length}:${deliveryId}:${effect}`;
+}
+
 function checkpointCopy(value: Checkpoint): Checkpoint {
   if (!(value.bytes instanceof Uint8Array)) throw new TypeError("checkpoint bytes must be Uint8Array");
   return { codec: { ...value.codec }, bytes: new Uint8Array(value.bytes) };
@@ -46,6 +59,8 @@ export class GuestActivation<State, Bindings> {
   readonly #definition: ActorDefinition<State, Bindings>;
   readonly #context: GuestContext<Bindings>;
   readonly #reference: ActorReference | null;
+  /** The committed checkpoint this heap extends; undefined once a delivery's outcome is unknown. */
+  #basis: Checkpoint | null | undefined;
   constructor(definition: ActorDefinition<State, Bindings>, checkpoint: Checkpoint | null, context: GuestContext<Bindings>) {
     if (definition.abiVersion !== GUEST_ABI_VERSION) throw new Error("unsupported guest ABI");
     admitCheckpoint(checkpoint, definition.codec.identity);
@@ -54,6 +69,7 @@ export class GuestActivation<State, Bindings> {
     this.#reference = reference(context.actor);
     this.#admit(context);
     const retained = checkpoint === null ? null : checkpointCopy(checkpoint);
+    this.#basis = checkpoint === null ? null : checkpointCopy(checkpoint);
     this.#activation = new ActorActivation(async () => stateHandle(await definition.restore(retained, context)));
   }
   #admit(context: GuestContext<Bindings>): void {
@@ -82,6 +98,47 @@ export class GuestActivation<State, Bindings> {
       admitCheckpoint(checkpoint, this.#definition.codec.identity);
       return checkpointCopy(checkpoint);
     });
+  }
+  /** Run one Actors-core delivery through the Rust `guest::wire` codec and return its encoded
+   * Transition: the event's reply, the quiesced checkpoint, the alarm kept, no effects.
+   * The delivery must name this actor and carry the checkpoint this heap extends, so a
+   * host retry after an unpublished transition needs a fresh activation. A failure or
+   * an abort of `signal` fences the heap.
+   */
+  async onRecord(bytes: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
+    const wasm = await loadWasmModule();
+    const { actor, trigger, nowUnixMs, checkpoint } = wasm.decodeDelivery(bytes);
+    if (this.#reference === null || !this.#reference.equals(ActorReference.decode(actor)))
+      throw new Error("delivery actor differs from activation");
+    if (this.#basis === undefined || !sameCheckpoint(this.#basis, checkpoint))
+      throw new Error("delivery checkpoint differs from activation");
+    signal?.throwIfAborted();
+    this.#basis = undefined;
+    const abort = () => this.#activation.fence(signal?.reason);
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      const deliveryId = trigger.type === "record" ? `record:${trigger.subscription}:${trigger.sequence}` : `alarm:${trigger.generation}`;
+      const event: GuestEvent = trigger.type === "alarm" ? { type: "alarm" } : {
+        type: "stream", subscription: trigger.subscription, stream: trigger.record.origin,
+        sequence: String(trigger.record.sequence), committedAtMicros: String(trigger.record.committedAtMicros),
+        value: btoa(Array.from(trigger.record.value, byte => String.fromCharCode(byte)).join("")),
+        commitId: Array.from(trigger.record.commitId, byte => byte.toString(16).padStart(2, "0")).join(""),
+      };
+      const result = await this.event(event, {
+        ...this.#context, deliveryId, admittedIdentity: null, clock: () => nowUnixMs,
+        retryKey: effect => retryKey(deliveryId, effect),
+      });
+      if (result !== null && result.type !== "reply") throw new Error("socket result outside a socket delivery");
+      const next = await this.checkpoint();
+      const encoded = wasm.encodeTransition(next.codec.name, next.codec.version, next.bytes, result?.payload ?? null);
+      this.#basis = next;
+      return encoded;
+    } catch (error) {
+      this.#activation.fence(error);
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
   }
   /** Original host authority/cancellation permanently discards this heap. */
   fence(): void { this.#activation.fence(); }
