@@ -48,6 +48,7 @@ pub(super) async fn run(
     maximum: usize,
     allocator: super::allocator::EngineAllocator,
     interrupt_budget: u64,
+    lazy: bool,
 ) -> Result<super::allocator::EngineResult, String> {
     // Parse JavaScript inside the same original-caller-funded engine as execution.
     let bridge = allocator.clone();
@@ -135,7 +136,7 @@ pub(super) async fn run(
                 std::str::from_utf8(&definitions).map_err(|_| rquickjs::Error::Unknown)?,
             )?;
             let setup: Function = ctx.eval(include_str!("bridge.js"))?;
-            let bridge: rquickjs::Object = setup.call((rpc, definitions))?;
+            let bridge: rquickjs::Object = setup.call((rpc, definitions, lazy))?;
             let drain: Function = bridge.get("drain")?;
             let protect: Function = bridge.get("protect")?;
             Module::declare(ctx.clone(), "acyclic", include_str!("acyclic.mjs"))?;
@@ -412,6 +413,7 @@ mod tests {
                 4096,
                 super::super::allocator::EngineAllocator::new(None),
                 super::INTERRUPT_BUDGET,
+                false,
             )),
             async move {
                 let mut count = 0;
@@ -650,6 +652,7 @@ mod tests {
                 4096,
                 super::super::allocator::EngineAllocator::new(None),
                 super::INTERRUPT_BUDGET,
+                false,
             ))
             .await
             .unwrap();
@@ -674,6 +677,7 @@ mod tests {
                 4096,
                 super::super::allocator::EngineAllocator::new(None),
                 super::INTERRUPT_BUDGET,
+                false,
             )
             .now_or_never()
             .expect("no producer remains to wake this program");
@@ -713,6 +717,7 @@ mod tests {
                         4096,
                         super::super::allocator::EngineAllocator::new(None),
                         super::INTERRUPT_BUDGET,
+                        false,
                     )),
                     async move {
                         if let Some(mut receive) = receive {
@@ -744,6 +749,7 @@ mod tests {
             4096,
             super::super::allocator::EngineAllocator::new(None),
             16,
+            false,
         ))
         .await
         .unwrap();

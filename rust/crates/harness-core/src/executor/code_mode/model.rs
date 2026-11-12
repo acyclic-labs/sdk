@@ -250,6 +250,7 @@ async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, t
                 maximum,
                 allocator,
                 16,
+                false,
             )
             .await;
             let failed = failure.lock().unwrap().is_some();
@@ -304,6 +305,7 @@ async fn check_progress(definitions: &OwnedBytes) {
             4096,
             allocator,
             16,
+            false,
         );
         let result = acyclic_native_runtime::blocking_future(async move {
             execution
@@ -414,6 +416,7 @@ async fn check_replies(
             maximum,
             allocator,
             16,
+            false,
         );
         let dispatch = async move {
             // The interpreter owns the sender. Early engine retirement closes
@@ -487,6 +490,7 @@ async fn canonical_reply(
         maximum,
         allocator,
         16,
+        false,
     )
     .await;
     drop(failure.lock().unwrap().take());
@@ -534,6 +538,7 @@ async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &s
                 4096,
                 allocator,
                 16,
+                false,
             ));
             let dispatch = async move {
                 let Some(request) = receive.recv().await else {
@@ -697,6 +702,7 @@ async fn repeated_console_logs_release_temporary_decode_credit() {
         4096,
         allocator,
         16,
+        false,
     ));
     let dispatch = async {
         let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
