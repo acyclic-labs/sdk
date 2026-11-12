@@ -107,9 +107,14 @@ pub fn source_argument<'a, E>(
     }
     const PREFIX: &str = concat!(powershell_utf8!(), "& ([ScriptBlock]::Create('");
     const SUFFIX: &str = "'))";
-    let Some(bytes) = source
-        .len()
-        .checked_add(source.bytes().filter(|byte| *byte == b'\'').count())
+    let extra = source
+        .chars()
+        .filter(|character| powershell_single_quote(*character))
+        .try_fold(0usize, |bytes, character| {
+            bytes.checked_add(character.len_utf8())
+        });
+    let Some(bytes) = extra
+        .and_then(|extra| source.len().checked_add(extra))
         .and_then(|bytes| bytes.checked_add(PREFIX.len()))
         .and_then(|bytes| bytes.checked_add(SUFFIX.len()))
     else {
@@ -118,14 +123,22 @@ pub fn source_argument<'a, E>(
     admit(bytes)?;
     let mut encoded = String::with_capacity(bytes);
     encoded.push_str(PREFIX);
-    for (index, part) in source.split('\'').enumerate() {
-        if index != 0 {
-            encoded.push_str("''");
-        }
+    for part in source.split_inclusive(powershell_single_quote) {
         encoded.push_str(part);
+        if let Some(quote) = part
+            .chars()
+            .next_back()
+            .filter(|character| powershell_single_quote(*character))
+        {
+            encoded.push(quote);
+        }
     }
     encoded.push_str(SUFFIX);
     Ok(Some(std::borrow::Cow::Owned(encoded)))
+}
+
+fn powershell_single_quote(character: char) -> bool {
+    matches!(character, '\'' | '\u{2018}'..='\u{201b}')
 }
 
 #[cfg(test)]
@@ -140,16 +153,16 @@ mod tests {
             io::Write,
             process::{Command, Stdio},
         };
-        let source = "param(); $data = [Console]::In.ReadToEnd() | ConvertFrom-Json; if ($data.text -cne 'quoted '' value 🦀') { exit 9 }; [Console]::Out.Write($data.text)";
+        let source = "param(); $punctuation = \"‘’‚‛\"; $data = [Console]::In.ReadToEnd() | ConvertFrom-Json; if ($data.text -cne 'quoted '' value 🦀') { exit 9 }; [Console]::Out.Write($data.text + $punctuation)";
         for wrapped in [false, true] {
+            let rendered = source_argument("powershell", source, |_| Ok::<_, std::io::Error>(()))?
+                .expect("supported source");
             let rendered = if wrapped {
-                source_argument("powershell", source, |_| Ok::<_, std::io::Error>(()))?
-                    .expect("supported source")
+                rendered.as_ref()
             } else {
-                std::borrow::Cow::Owned(format!(
-                    "& ([ScriptBlock]::Create('{}'))",
-                    source.replace('\'', "''")
-                ))
+                rendered
+                    .strip_prefix(powershell_utf8!())
+                    .expect("encoding prefix")
             };
             // A legacy host is a supported initial state. The control fails
             // even when the test runner itself happens to use UTF-8.
@@ -170,7 +183,7 @@ mod tests {
             let output = child.wait_with_output()?;
             assert_eq!(output.status.success(), wrapped, "{output:?}");
             if wrapped {
-                assert_eq!(output.stdout, "quoted ' value 🦀".as_bytes());
+                assert_eq!(output.stdout, "quoted ' value 🦀‘’‚‛".as_bytes());
             } else {
                 assert_eq!(output.status.code(), Some(9), "{output:?}");
             }
@@ -181,6 +194,7 @@ mod tests {
     proptest! {
         #[test]
         fn source_moves_into_one_exact_command_channel(source in any::<String>()) {
+            let source = format!("{source}‘’‚‛");
             // Arbitrary Unicode, quoting and newlines remain original source,
             // never escaped or split into shell arguments by another adapter.
             for spec in [&BASH, &POWERSHELL] {
@@ -215,7 +229,10 @@ mod tests {
             prop_assert_eq!(admitted, Some(rendered.len()));
             let encoded = rendered.strip_prefix(concat!(powershell_utf8!(), "& ([ScriptBlock]::Create('")).unwrap()
                 .strip_suffix("'))").unwrap();
-            prop_assert_eq!(encoded.replace("''", "'"), source.as_str());
+            let decoded = encoded.replace("''", "'")
+                .replace("‘‘", "‘").replace("’’", "’")
+                .replace("‚‚", "‚").replace("‛‛", "‛");
+            prop_assert_eq!(decoded, source.as_str());
             prop_assert_eq!(source_argument("powershell", &source, |_| Err("refused")), Err("refused"));
             let borrowed = source_argument("bash", &source, |_| Err::<(), _>("unexpected copy"))
                 .unwrap().unwrap();
