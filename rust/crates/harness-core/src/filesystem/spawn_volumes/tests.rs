@@ -135,6 +135,31 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
         )],
     };
     let spawn = FilesystemSpawnVolumes::new(host.clone());
+    let journal_ref = |path: &AgentPath| -> crate::Result<_> {
+        let journal = crate::conversation::journal_volume(host.provider.clone(), &path.id())?;
+        super::super::workspace_ref(host.provider.clone(), &journal.storage_name(&mut None)?)
+    };
+    let child_journal = journal_ref(&child)?;
+    let mut refused = request.clone();
+    refused.idempotency_key = acyclic_stream::IdempotencyKey::new(b"refused-spawn".to_vec())?;
+    refused.effects[0]
+        .conditions
+        .push(acyclic_stream::CommitCondition::Tail {
+            path: state.path.inbox()?,
+            expected: 1,
+        });
+    let refused = spawn.root_volumes(&state, &child, None, refused).await?;
+    let cancellation = CancellationToken::new();
+    assert!(matches!(
+        host.filesystem
+            .submit_commit(refused, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value,
+        acyclic_fs::FilesystemCommitOutcome::Rejected(_)
+    ));
+    assert_eq!(stream.tail(child.inbox()?).await?, 0);
+    assert!(host.resolve(&child_journal, None).await.is_err());
     let commit = spawn.root_volumes(&state, &child, None, request).await?;
     let reference = |entry: &WorkspaceEntry| -> crate::Result<_> {
         super::super::workspace_ref(
@@ -145,7 +170,6 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
     for entry in [&bindings[0], &bindings[2]] {
         assert!(host.resolve(&reference(entry)?, None).await.is_err());
     }
-    let cancellation = CancellationToken::new();
     assert!(matches!(
         host.filesystem
             .submit_commit(commit, WorkBudget::UNBOUNDED, &cancellation)
@@ -168,6 +192,17 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
         Err(crate::Error::NotFound(_))
     ));
     assert_eq!(stream.tail(child.inbox()?).await?, 1);
+    host.resolve(&child_journal, None).await?;
+    host.apply(
+        &child_journal,
+        None,
+        &[super::super::WorkspaceMutation::PutFile {
+            path: "/retained.json".into(),
+            bytes: acyclic_stream::OwnedBytes::from_static(b"child journal"),
+        }],
+        &crate::IdempotencyKey::new("journal-write")?,
+    )
+    .await?;
     let request = CommitRequest {
         idempotency_key: acyclic_stream::IdempotencyKey::new(b"independent-session".to_vec())?,
         deadline_unix_millis: None,
@@ -202,5 +237,20 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
         b"parent contents"
     );
     assert_eq!(stream.tail(session.inbox()?).await?, 1);
+    let session_journal = journal_ref(&session)?;
+    host.resolve(&session_journal, None).await?;
+    assert!(matches!(
+        host.stat(&session_journal, None, "/retained.json").await,
+        Err(crate::Error::NotFound(_))
+    ));
+    for path in [&child, &session] {
+        let journal = crate::conversation::journal_volume(host.provider.clone(), &path.id())?;
+        assert!(
+            bindings
+                .iter()
+                .chain(&session_bindings)
+                .all(|binding| binding.as_volume() != Some(&journal))
+        );
+    }
     Ok(())
 }

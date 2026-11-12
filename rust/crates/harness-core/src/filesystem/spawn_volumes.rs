@@ -262,9 +262,10 @@ fn planned_bindings(
 fn children(
     parent: &AgentState,
     requested: &[Requested],
-) -> Result<(Vec<Vec<WorkspaceEntry>>, Vec<Planned>), Error> {
+) -> Result<(Vec<Vec<WorkspaceEntry>>, Vec<Planned>, Vec<AgentPath>), Error> {
     let mut bindings = Vec::with_capacity(requested.len());
     let mut planned = Vec::new();
+    let mut journals = Vec::with_capacity(requested.len());
     for Requested { intent, history } in requested {
         let child = parent.path.child(&crate::agent::AgentId::derive(
             &parent.path.id(),
@@ -273,8 +274,9 @@ fn children(
         let (volumes, created) = planned_bindings(&child, &parent.volumes, history.as_ref())?;
         bindings.push(volumes);
         planned.extend(created);
+        journals.push(child);
     }
-    Ok((bindings, planned))
+    Ok((bindings, planned, journals))
 }
 
 /// Canonical request bytes: re-encoding must reproduce them exactly.
@@ -320,7 +322,7 @@ where
                 _ => None,
             })
             .collect();
-        let (bindings, planned) = children(parent, &requested)?;
+        let (bindings, _, journals) = children(parent, &requested)?;
         let mut bindings = bindings.into_iter();
         let history = outs.iter().any(|out| matches!(out, Out::Conversation(_)));
         for out in outs {
@@ -330,7 +332,7 @@ where
                     .ok_or(Error::Record("spawn bindings are incomplete"))?;
             }
         }
-        if planned.is_empty() && !history {
+        if journals.is_empty() && !history {
             return Ok(None);
         }
         Ok(Some(Participant {
@@ -407,6 +409,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                 host: Arc::clone(&self.host),
                 cuts: self.cuts.clone(),
                 planned,
+                journals: vec![child.clone()],
                 parent: source.path.clone(),
                 history: None,
                 commit: None,
@@ -451,14 +454,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Com
                     .clone()
                     .restore(parent.volumes.clone())
                     .map_err(guest)?;
-                let (_, planned) = children(&parent, &self.requested.children).map_err(guest)?;
-                if planned.is_empty() && !self.requested.history {
+                let (_, planned, journals) =
+                    children(&parent, &self.requested.children).map_err(guest)?;
+                if journals.is_empty() && !self.requested.history {
                     return Err(guest("spawn volume request creates nothing"));
                 }
                 self.fork = Some(SpawnFork {
                     host: self.host.clone(),
                     cuts: self.cuts.clone(),
                     planned,
+                    journals,
                     parent: parent.path.clone(),
                     history: self.requested.history.then_some((parent, next)),
                     commit: None,
@@ -489,6 +494,7 @@ struct SpawnFork<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
     cuts: Option<Arc<dyn VolumeResources>>,
     planned: Vec<Planned>,
+    journals: Vec<AgentPath>,
     parent: AgentPath,
     history: Option<(AgentState, AgentState)>,
     commit: Option<FilesystemCommit>,
@@ -615,6 +621,12 @@ where
                     creation: acyclic_fs::OperationId::from_bytes(planned.key).into(),
                 }),
             }
+        }
+        for child in &self.journals {
+            let journal =
+                crate::conversation::journal_volume(self.host.provider.clone(), &child.id())
+                    .map_err(guest)?;
+            creations.push(self.host.volume_create_spec(&journal).map_err(guest)?);
         }
         let mut commit = FilesystemCommit::new(request);
         if let Some((parent, next)) = &self.history {

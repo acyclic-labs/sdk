@@ -276,7 +276,7 @@ pub use message::{ConversationMessage, MessageKind};
 pub use outcome::TaskOutcomeRecord;
 pub use volumes::{
     ContentGrant, PRIVATE_VOLUME, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
-    private_volume,
+    journal_volume, private_volume,
 };
 #[doc(hidden)]
 pub use volumes::{

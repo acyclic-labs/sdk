@@ -802,7 +802,7 @@ crate::core::ownership::owned_struct!(VolumeRef {
     owner
 });
 
-/// Name of the volume binding that holds an agent's journal and staged turn output.
+/// Name of the model-visible private volume binding.
 pub const PRIVATE_VOLUME: &str = "private";
 
 /// The private volume of `agent`, which every portable host creates and binds
@@ -813,6 +813,18 @@ pub fn private_volume(provider: ProviderRef, agent: &crate::agent::AgentId) -> R
     VolumeRef::new(
         provider,
         PRIVATE_VOLUME.to_owned(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
+        &mut None,
+    )
+}
+
+/// The agent's harness-owned journal, outside its workspace table. Its identity
+/// depends on the provider and agent, never a workspace's name or path.
+pub fn journal_volume(provider: ProviderRef, agent: &crate::agent::AgentId) -> Result<VolumeRef> {
+    VolumeRef::new(
+        provider,
+        "journal".to_owned(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
         &mut None,

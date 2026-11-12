@@ -291,6 +291,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok((name, acyclic_fs::OperationId::from_bytes(operation)))
     }
 
+    /// Contributes the same initial generation as standalone volume creation.
+    pub(in crate::filesystem) fn volume_create_spec(
+        &self,
+        volume: &VolumeRef,
+    ) -> Result<acyclic_fs::CreateSpec<'static>> {
+        let (name, operation) = self.volume_creation(volume)?;
+        Ok(acyclic_fs::CreateSpec {
+            name: acyclic_fs::WorkspaceName::new(
+                name,
+                &acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .map_err(|failure| map_error(failure.error))?
+            .value,
+            initialization: self.volume_initialization(),
+            creation: acyclic_fs::CreationOperation::populated(operation, &[]),
+        })
+    }
+
     /// Creates the unique physical workspace for a logical volume.
     pub async fn create_volume(&self, volume: &VolumeRef) -> Result<WorkspaceObservation> {
         let (name, operation) = self.volume_creation(volume)?;

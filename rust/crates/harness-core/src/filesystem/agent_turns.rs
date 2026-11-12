@@ -165,6 +165,16 @@ impl<'v> AdmittedAgent<'v> {
                 "private volume belongs to another agent".into(),
             ));
         }
+        let journal =
+            crate::conversation::journal_volume(private.volume()?.provider().clone(), &path.id())?;
+        if volumes
+            .iter()
+            .any(|binding| binding.as_volume() == Some(&journal))
+        {
+            return Err(Error::Unauthorized(
+                "the agent journal is not a workspace".into(),
+            ));
+        }
         let issuer = admission.verify(issuer, path)?;
         let parent = match admission {
             TurnAdmission::LocalRoot => None,
