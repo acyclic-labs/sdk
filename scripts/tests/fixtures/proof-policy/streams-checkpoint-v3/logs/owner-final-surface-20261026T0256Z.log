@@ -131,7 +131,7 @@ diff -u rust/crates/stream/proto/stream/v1/stream.proto.orig rust/crates/stream/
 +    };
 +  }
  }
-    Checking acyclic-stream-napi v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream-napi)
+    Checking acyclic-stream-napi v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream-napi)
 `napi` macro expand failed.
 error: JavaScript String is primitive and cannot be passed by reference
 `napi` macro expand failed.
@@ -188,7 +188,7 @@ note: if you're trying to build a new `NativeStreamClient`, consider using `Nati
 
 For more information about this error, try `rustc --explain E0599`.
 error: could not compile `acyclic-stream-napi` (lib test) due to 5 previous errors
-   Compiling acyclic-stream-napi v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream-napi)
+   Compiling acyclic-stream-napi v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream-napi)
 `napi` macro expand failed.
 error: JavaScript String is primitive and cannot be passed by reference
    --> rust/crates/stream-napi/src/lib.rs:492:43
@@ -250,9 +250,9 @@ typescript/packages/stream/test/session-errors.test.ts:
 error: expect(received).toContain(expected)
 
 Expected to contain: "JS transport must emit canonical Rust code: not_found"
-Received: "52 |     observed.length = 0;\n53 |     const before = fixture.counts.sessions;\n54 |     const follow = provider.follow(\"events\", { from: 0n, signal: AbortSignal.timeout(1000) })[Symbol.asyncIterator]();\n55 |     const error = await follow.next().then(() => undefined, error => error);\n56 |     assert(observed.length > 0, \"error never crossed the JS transport\");\n57 |     assert(observed.every(value => value === code), `JS transport must emit canonical Rust code: ${code}; received ${observed}`);\n         ^\nAssertionError: JS transport must emit canonical Rust code: invalid_response; received unavailable,unavailable,unavailable\n generatedMessage: false,\n     actual: false,\n   expected: true,\n   operator: \"==\",\n       diff: \"simple\",\n       code: \"ERR_ASSERTION\"\n\n      at /mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/session-error-driver.ts:57:5\n\nBun v1.4.2 (Linux x64)\n"
+Received: "52 |     observed.length = 0;\n53 |     const before = fixture.counts.sessions;\n54 |     const follow = provider.follow(\"events\", { from: 0n, signal: AbortSignal.timeout(1000) })[Symbol.asyncIterator]();\n55 |     const error = await follow.next().then(() => undefined, error => error);\n56 |     assert(observed.length > 0, \"error never crossed the JS transport\");\n57 |     assert(observed.every(value => value === code), `JS transport must emit canonical Rust code: ${code}; received ${observed}`);\n         ^\nAssertionError: JS transport must emit canonical Rust code: invalid_response; received unavailable,unavailable,unavailable\n generatedMessage: false,\n     actual: false,\n   expected: true,\n   operator: \"==\",\n       diff: \"simple\",\n       code: \"ERR_ASSERTION\"\n\n      at /work/cx/wt/cx-streams/typescript/packages/stream/test/session-error-driver.ts:57:5\n\nBun v1.4.2 (Linux x64)\n"
 
-      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/session-errors.test.ts:14:28)
+      at <anonymous> (/work/cx/wt/cx-streams/typescript/packages/stream/test/session-errors.test.ts:14:28)
 (fail) negative control rejects public aliases entering Rust Session I/O [267.37ms]
 
 typescript/packages/stream/test/stream.test.ts:

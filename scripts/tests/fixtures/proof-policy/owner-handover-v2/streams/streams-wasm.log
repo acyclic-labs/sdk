@@ -1,5 +1,5 @@
-   Compiling acyclic-auth v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/auth)
-   Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+   Compiling acyclic-auth v0.2.0 (/work/cx/wt/cx-streams/rust/crates/auth)
+   Compiling acyclic-stream v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream)
 warning: function `new_identity_bytes` is never used
    --> rust/crates/stream/src/lib/stream.rs:165:4
     |
@@ -9,7 +9,7 @@ warning: function `new_identity_bytes` is never used
     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `acyclic-stream` (lib) generated 1 warning
-   Compiling acyclic-actors v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/actors)
+   Compiling acyclic-actors v0.2.0 (/work/cx/wt/cx-streams/rust/crates/actors)
 warning: failed to parse serde attribute
   | 
   | try_from = "RawAlarmInfo"
@@ -46,7 +46,7 @@ warning: failed to parse serde attribute
   | 
   = note: ts-rs failed to parse this attribute. It will be ignored.
     Finished `dev` profile [optimized + debuginfo] target(s) in 9.39s
-     Running `[private-path-removed] /mnt/bb/cx/wt/cx-streams/typescript/packages/actors/src/generated/actors-service.ts`
+     Running `[private-path-removed] /work/cx/wt/cx-streams/typescript/packages/actors/src/generated/actors-service.ts`
 warning: function `new_identity_bytes` is never used
    --> rust/crates/stream/src/lib/stream.rs:165:4
     |
@@ -90,13 +90,13 @@ warning: failed to parse serde attribute
   | other 
   | 
   = note: ts-rs failed to parse this attribute. It will be ignored.
-   Compiling acyclic-auth v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/auth)
-    Checking acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
-    Checking acyclic-stream-napi v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream-napi)
+   Compiling acyclic-auth v0.2.0 (/work/cx/wt/cx-streams/rust/crates/auth)
+    Checking acyclic-stream v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream)
+    Checking acyclic-stream-napi v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream-napi)
     Finished `dev` profile [optimized + debuginfo] target(s) in 4.45s
-   Compiling acyclic-actors-napi v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/actors-napi)
-    Checking acyclic-auth v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/auth)
-    Checking acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+   Compiling acyclic-actors-napi v0.2.0 (/work/cx/wt/cx-streams/rust/crates/actors-napi)
+    Checking acyclic-auth v0.2.0 (/work/cx/wt/cx-streams/rust/crates/auth)
+    Checking acyclic-stream v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream)
 warning: function `new_identity_bytes` is never used
    --> rust/crates/stream/src/lib/stream.rs:165:4
     |
@@ -106,7 +106,7 @@ warning: function `new_identity_bytes` is never used
     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `acyclic-stream` (lib) generated 1 warning
-    Checking acyclic-actors v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/actors)
+    Checking acyclic-actors v0.2.0 (/work/cx/wt/cx-streams/rust/crates/actors)
 warning: failed to parse serde attribute
   | 
   | try_from = "RawAlarmInfo"
@@ -226,7 +226,7 @@ Rust contracts: success; metadata 48ms; build 9095ms; total 19284ms
    Compiling zerovec-derive v0.11.6
    Compiling displaydoc v0.2.7
    Compiling thiserror-impl v2.0.21
-   Compiling acyclic-contract-derive v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/contract-derive)
+   Compiling acyclic-contract-derive v0.2.0 (/work/cx/wt/cx-streams/rust/crates/contract-derive)
    Compiling zerofrom-derive v0.1.8
    Compiling yoke-derive v0.8.4
    Compiling tonic-build v0.14.6
@@ -249,12 +249,12 @@ Rust contracts: success; metadata 48ms; build 9095ms; total 19284ms
    Compiling js-sys v0.3.94
    Compiling icu_properties v2.3.0
    Compiling icu_normalizer v2.3.0
-   Compiling acyclic-proto-build v0.2.0 (/mnt/bb/cx/wt/cx-streams/compatibility)
-   Compiling acyclic-auth v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/auth)
+   Compiling acyclic-proto-build v0.2.0 (/work/cx/wt/cx-streams/compatibility)
+   Compiling acyclic-auth v0.2.0 (/work/cx/wt/cx-streams/rust/crates/auth)
    Compiling idna_adapter v1.2.2
    Compiling idna v1.1.0
    Compiling url v2.5.8
-   Compiling acyclic-auth-wasm v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/auth-wasm)
+   Compiling acyclic-auth-wasm v0.2.0 (/work/cx/wt/cx-streams/rust/crates/auth-wasm)
     Finished `dev` profile [optimized + debuginfo] target(s) in 12.73s
    Compiling syn v3.0.6
    Compiling serde_core v1.0.229
@@ -283,14 +283,14 @@ Rust contracts: success; metadata 48ms; build 9095ms; total 19284ms
    Compiling tracing-attributes v0.1.31
    Compiling pin-project-internal v1.1.13
    Compiling futures-channel v0.3.34
-   Compiling acyclic-proto-build v0.2.0 (/mnt/bb/cx/wt/cx-streams/compatibility)
+   Compiling acyclic-proto-build v0.2.0 (/work/cx/wt/cx-streams/compatibility)
    Compiling wasm-bindgen v0.2.117
    Compiling tracing-core v0.1.36
    Compiling ruzstd v0.9.1
    Compiling form_urlencoded v1.2.2
    Compiling num-traits v0.2.19
-   Compiling acyclic-auth v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/auth)
-   Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+   Compiling acyclic-auth v0.2.0 (/work/cx/wt/cx-streams/rust/crates/auth)
+   Compiling acyclic-stream v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream)
    Compiling pin-project v1.1.13
    Compiling tracing v0.1.44
    Compiling ordered-float v2.10.1
@@ -304,14 +304,14 @@ Rust contracts: success; metadata 48ms; build 9095ms; total 19284ms
    Compiling tokio-macros v2.7.2
    Compiling thiserror-impl v2.0.21
    Compiling async-trait v0.1.92
-   Compiling acyclic-contract-derive v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/contract-derive)
+   Compiling acyclic-contract-derive v0.2.0 (/work/cx/wt/cx-streams/rust/crates/contract-derive)
    Compiling tokio v1.53.2
    Compiling zerofrom-derive v0.1.8
    Compiling yoke-derive v0.8.4
    Compiling futures-util v0.3.34
-   Compiling acyclic-grpc-observability v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/grpc-observability)
+   Compiling acyclic-grpc-observability v0.2.0 (/work/cx/wt/cx-streams/rust/crates/grpc-observability)
    Compiling thiserror v2.0.21
-   Compiling acyclic-actors v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/actors)
+   Compiling acyclic-actors v0.2.0 (/work/cx/wt/cx-streams/rust/crates/actors)
    Compiling ts-rs v12.0.1
    Compiling zerofrom v0.1.8
    Compiling yoke v0.8.3
@@ -399,7 +399,7 @@ warning: method `control_bytes` is never used
    |                   ^^^^^^^^^^^^^
 
    Compiling wasm-streams v0.7.0
-   Compiling acyclic-tonic-web-wasm-client v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/vendor/tonic-web-wasm-client-0.9.2)
+   Compiling acyclic-tonic-web-wasm-client v0.2.0 (/work/cx/wt/cx-streams/rust/vendor/tonic-web-wasm-client-0.9.2)
 warning: `acyclic-stream` (lib) generated 6 warnings (run `cargo fix --lib -p acyclic-stream` to apply 1 suggestion)
 warning: failed to parse serde attribute
   | 
@@ -436,7 +436,7 @@ warning: failed to parse serde attribute
   | other 
   | 
   = note: ts-rs failed to parse this attribute. It will be ignored.
-   Compiling acyclic-actors-wasm v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/actors-wasm)
+   Compiling acyclic-actors-wasm v0.2.0 (/work/cx/wt/cx-streams/rust/crates/actors-wasm)
     Finished `dev` profile [optimized + debuginfo] target(s) in 19.19s
    Compiling unicode-ident v1.0.26
    Compiling proc-macro2 v1.0.107
@@ -553,7 +553,7 @@ warning: failed to parse serde attribute
    Compiling serde_derive v1.0.229
    Compiling async-trait v0.1.92
    Compiling impartial-ord v2.0.0
-   Compiling acyclic-contract-derive v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/contract-derive)
+   Compiling acyclic-contract-derive v0.2.0 (/work/cx/wt/cx-streams/rust/crates/contract-derive)
    Compiling tonic-build v0.14.6
    Compiling zerofrom-derive v0.1.8
    Compiling yoke-derive v0.8.4
@@ -589,12 +589,12 @@ warning: failed to parse serde attribute
    Compiling prost-build v0.14.4
    Compiling prost-reflect v0.16.5
    Compiling tonic-prost-build v0.14.6
-   Compiling acyclic-proto-build v0.2.0 (/mnt/bb/cx/wt/cx-streams/compatibility)
+   Compiling acyclic-proto-build v0.2.0 (/work/cx/wt/cx-streams/compatibility)
    Compiling digest v0.11.3
    Compiling tinystr v0.8.4
    Compiling potential_utf v0.1.6
-   Compiling acyclic-auth v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/auth)
-   Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+   Compiling acyclic-auth v0.2.0 (/work/cx/wt/cx-streams/rust/crates/auth)
+   Compiling acyclic-stream v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream)
    Compiling derive_more v2.1.1
    Compiling sha2 v0.11.0
    Compiling uuid v1.27.0
@@ -620,7 +620,7 @@ warning: failed to parse serde attribute
    Compiling wasm-streams v0.7.0
    Compiling indexed_db_futures v0.6.4
    Compiling tsify v0.5.8
-   Compiling acyclic-tonic-web-wasm-client v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/vendor/tonic-web-wasm-client-0.9.2)
+   Compiling acyclic-tonic-web-wasm-client v0.2.0 (/work/cx/wt/cx-streams/rust/vendor/tonic-web-wasm-client-0.9.2)
 warning: variable does not need to be mutable
   --> rust/crates/stream/src/memory/commit.rs:81:13
    |

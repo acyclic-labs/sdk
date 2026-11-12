@@ -1915,7 +1915,7 @@ fn host_name_service_probes_are_typed_without_blocking_directory_metadata() -> i
     for custody in [None, Some(&custody)] {
         for source in [
             "ls -la && rg --files",
-            // GC-24, 20261111T073658725Z/api-sdk: preserve the recorded argv.
+            // Preserve compound workspace-discovery argv.
             "pwd; ls -la; ls -la ..; git -C . log --oneline -1 2>/dev/null; git -C .. log --oneline -1 2>/dev/null",
         ] {
             let mut command = Command::new(shell);

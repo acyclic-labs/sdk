@@ -1,9 +1,9 @@
 [local command Linux] 01:12:47 BUILD_SLOT_TREE=390e8f927252f432c0047d4f5b27cb8619e2e087 0ed4266f08c758dc898df6c8753d793104a076c2 2782e83b706937b2db46c93db641bffd7421263d54e34baac7d36d00422ca084 (client /mnt/q/wt/fs-concurrency)
 [local command Linux] 01:13:10 Linux: git 390e8f927252 + bundle 16966 B, diff 2176593 B (248 new files), 422393 B sent, 13.5s; src wt-sdk/fs-concurrency-3ed9a8c2.0-[execution-id-removed] target sdk/fs-concurrency-3ed9a8c2; job [execution-id-removed]; bash .bb-fs-segments.sh
-BB_DISK_FREE [{"path": "/", "free_percent": 19.938756719769813, "free_bytes": 20514607104}, {"path": "/mnt/bb", "free_percent": 22.40454185049768, "free_bytes": 369330388992}]
+BB_DISK_FREE [{"path": "/", "free_percent": 19.938756719769813, "free_bytes": 20514607104}, {"path": "/work", "free_percent": 22.40454185049768, "free_bytes": 369330388992}]
 GATE_HOME_GUARD {"mechanism": "private-read-only-mount", "real_home": "/home/var", "writable": false, "recursive": true, "private_proc": true}
 [Linux] sccache startup: sccache: Starting the server...
-sccache: Listening on address /mnt/bb/jobs/job-p6k9_2q5/sccache.sock
+sccache: Listening on address /work/jobs/job-p6k9_2q5/sccache.sock
 [Linux] node_modules ensured for tracked lockfiles in 0.0s
 BUILD_SLOT_TREE=390e8f927252f432c0047d4f5b27cb8619e2e087 0ed4266f08c758dc898df6c8753d793104a076c2 2782e83b706937b2db46c93db641bffd7421263d54e34baac7d36d00422ca084
 [Linux] source clock: exact-content private targets

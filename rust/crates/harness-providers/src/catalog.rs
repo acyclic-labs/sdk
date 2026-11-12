@@ -6,6 +6,12 @@ pub(crate) const DEFAULT_MODEL: &str = "openai/gpt-6.1-sol";
 
 const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
     (
+        "morph",
+        Adapter::Chat,
+        Authentication::ApiKey,
+        "https://api.morphllm.com/v1",
+    ),
+    (
         "anthropic",
         Adapter::Anthropic,
         Authentication::ApiKey,

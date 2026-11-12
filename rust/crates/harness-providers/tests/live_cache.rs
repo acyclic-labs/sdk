@@ -1,5 +1,5 @@
 //! Explicit live acceptance, separate from deterministic provider conformance.
-//! Only API keys supplied in the process environment are admitted. Nothing
+//! API keys use the product credential resolver. Nothing
 //! prints credentials, request headers, prompts, response bodies or raw errors.
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -217,37 +217,17 @@ async fn run_call(
 #[tokio::test]
 #[ignore = "real provider acceptance: explicit API keys and user-approved spend required"]
 async fn real_provider_cache_reads_match_recorded_usage() -> ProbeResult {
-    // A loopback SSH relay can keep Infisical keys in its local process when
-    // the native test host has no secret-store login. It changes only auth and
-    // the upstream origin; provider request and response bodies pass unchanged.
-    let relay = std::env::var("ACYCLIC_LIVE_CACHE_RELAY").ok();
-    if let Some(relay) = &relay {
-        let url = url::Url::parse(relay).map_err(|_| "live relay URL is invalid")?;
-        if url.scheme() != "http"
-            || url.host_str() != Some("127.0.0.1")
-            || url.port().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return Err("live relay must use an explicit loopback HTTP port");
-        }
-    }
+    let credentials = std::env::var_os("ACYCLIC_LIVE_CACHE_CREDENTIALS")
+        .map(std::path::PathBuf::from)
+        .as_deref()
+        .map(Credentials::from_file)
+        .transpose()
+        .map_err(|_| "live credential configuration is invalid")?
+        .unwrap_or_default();
     let models = [
-        (
-            "anthropic",
-            "claude-haiku-5-5",
-            "ANTHROPIC_API_KEY",
-            Adapter::Anthropic,
-        ),
-        ("openai", "gpt-6-luna", "OPENAI_API_KEY", Adapter::Responses),
-        (
-            "gemini",
-            "gemini-3.8-flash",
-            "GOOGLE_API_KEY",
-            Adapter::Gemini,
-        ),
+        ("anthropic", "claude-haiku-5-5", Adapter::Anthropic),
+        ("openai", "gpt-6-luna", Adapter::Responses),
+        ("gemini", "gemini-3.8-flash", Adapter::Gemini),
     ];
     let selected = std::env::var("ACYCLIC_LIVE_CACHE_PROVIDER").ok();
     if selected
@@ -261,23 +241,20 @@ async fn real_provider_cache_reads_match_recorded_usage() -> ProbeResult {
             .as_deref()
             .is_none_or(|selected| selected == *provider)
     });
-    // Admit every selected credential before the first paid request. Explicit
-    // credentials disable environment/keychain/subscription source discovery.
+    // Resolve every selected key before the first paid request, using the same
+    // keychain, environment and user configuration precedence as the product.
     let keys = models
         .clone()
-        .map(|(provider, _, variable, _)| {
-            if relay.is_some() {
-                return Ok((provider.to_string(), "live-cache-relay".into()));
-            }
-            std::env::var(variable)
-                .ok()
-                .filter(|value| !value.is_empty())
+        .map(|(provider, ..)| {
+            credentials
+                .api_key(provider)
+                .map_err(|_| "live credential resolution failed")?
                 .map(|key| (provider.to_string(), key))
                 .ok_or("live API keys are missing")
         })
         .collect::<ProbeResult<BTreeMap<_, _>>>()?;
     let run = uuid::Uuid::new_v4();
-    for (provider, model, _, adapter) in models {
+    for (provider, model, adapter) in models {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let transport = Arc::new(ObservedTransport {
             inner: ReqwestTransport::new().map_err(|_| "live HTTP initialization failed")?,
@@ -286,9 +263,6 @@ async fn real_provider_cache_reads_match_recorded_usage() -> ProbeResult {
         });
         let mut registry = Registry::with_transport(Credentials::explicit(keys.clone()), transport);
         let mut spec = registry.catalog()[provider].as_ref().clone();
-        if let Some(relay) = &relay {
-            spec.base_url = format!("{}/{provider}", relay.trim_end_matches('/'));
-        }
         spec.authentication = Authentication::ApiKey;
         registry
             .register(provider.into(), spec)

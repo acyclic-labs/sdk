@@ -1,4 +1,4 @@
-   Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+   Compiling acyclic-stream v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream)
     Finished `test` profile [optimized + debuginfo] target(s) in 11.83s
      Running tests/wave1_loom.rs ([private-path-removed])
 

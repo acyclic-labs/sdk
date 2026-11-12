@@ -25,26 +25,19 @@ that provider's three calls. This lets an interrupted acceptance resume with an
 unfinished provider without repeating a completed paid probe. Other values are
 refused before any request. Without the variable, all three providers run.
 
-Inject Infisical `graphcoder` API keys directly into the process environment as
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_API_KEY`. Explicit API credentials
-disable keychain and subscription-login discovery. Never export keys to files,
-print the environment, enable HTTP tracing, or put credentials in prompts. The
-test reports model names, call counts and cache counters, suppressing raw errors.
+API keys use the product credential resolver: OS keychain, then environment,
+then user configuration. Set `ACYCLIC_LIVE_CACHE_CREDENTIALS` to a credential
+JSON file in your user directory to supply the same `api_keys` provider map
+accepted by the product. Without a file, native keychain and environment
+discovery still apply. No external credential service or relay is used.
 
-When the native test host has no Infisical login, `ACYCLIC_LIVE_CACHE_RELAY` may
-name an explicit `http://127.0.0.1:PORT/PREFIX` reached through an SSH reverse
-forward. The trusted local relay keeps Infisical keys in its own process, injects
-only the upstream authentication headers, and forwards request and response
-bodies unchanged. The test uses placeholder credentials in this mode. The relay
-must allow only these three providers and models and at most three calls each;
-it must not log headers, bodies or raw upstream errors. No key enters the native
-test host or its journal.
+Never print credentials, enable HTTP tracing, or put keys in prompts. The test
+reports model names, call counts and cache counters, suppressing raw errors.
 
-Compile on an approved native build host, then explicitly run with injected keys:
+Compile on a native build host, then explicitly run:
 
 ```sh
 cargo test --locked -p acyclic-harness-providers --test live-cache --no-run
-# Use infisical run to inject keys directly into this process:
 cargo test --locked -p acyclic-harness-providers --test live-cache -- \
   --ignored --exact real_provider_cache_reads_match_recorded_usage --nocapture
 ```

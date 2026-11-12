@@ -56,7 +56,7 @@ AssertionError: Expected values to be strictly deep-equal:
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/build-wasm-groups.test.mjs:75:10
+      at /work/cx/wt/cx-streams/scripts/build-wasm-groups.test.mjs:75:10
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -110,7 +110,7 @@ AssertionError: Expected values to be strictly equal:
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/cargo-lock-policy.test.mjs:11:8
+      at /work/cx/wt/cx-streams/scripts/cargo-lock-policy.test.mjs:11:8
 -------------------------------
 
 
@@ -162,8 +162,8 @@ scripts/check-baselines.test.mjs:
 25 |       if (!generated.equals(baseline)) throw new Error(`${family} generated descriptor differs from its wire baseline`);
                                                       ^
 error: stream generated descriptor differs from its wire baseline
-      at checkDescriptors (/mnt/bb/cx/wt/cx-streams/scripts/check-baselines.mjs:25:50)
-      at <anonymous> (/mnt/bb/cx/wt/cx-streams/scripts/check-baselines.test.mjs:9:3)
+      at checkDescriptors (/work/cx/wt/cx-streams/scripts/check-baselines.mjs:25:50)
+      at <anonymous> (/work/cx/wt/cx-streams/scripts/check-baselines.test.mjs:9:3)
       at run (node:async_hooks:144:29)
       at <anonymous> (node:test:1445:26)
       at executeTestNode (node:test:1448:45)
@@ -192,7 +192,7 @@ AssertionError: Expected values to be strictly equal:
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/check-boundaries.test.mjs:49:14
+      at /work/cx/wt/cx-streams/scripts/check-boundaries.test.mjs:49:14
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -278,7 +278,7 @@ AssertionError: Expected values to be strictly equal:
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/check-machines-package.test.mjs:70:14
+      at /work/cx/wt/cx-streams/scripts/check-machines-package.test.mjs:70:14
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -308,7 +308,7 @@ scripts/check-typescript-tarballs.test.mjs:
 60 |     throw new Error(`missing tarball smoke contract for ${entry.name}`);
                    ^
 error: missing tarball smoke contract for @acyclic-labs/auth
-      at /mnt/bb/cx/wt/cx-streams/scripts/check-typescript-tarballs.mjs:60:15
+      at /work/cx/wt/cx-streams/scripts/check-typescript-tarballs.mjs:60:15
 -------------------------------
 
 
@@ -330,7 +330,7 @@ scripts/gate-test-runner.test.mjs:
                                          ^
 TypeError: undefined is not an object (evaluating 'wrapper.split(`cat > .gate-test-runner.sh <<'GATE_FUZZ_BOOTSTRAP'
 `)[1].split')
-      at <anonymous> (/mnt/bb/cx/wt/cx-streams/scripts/gate-test-runner.test.mjs:56:37)
+      at <anonymous> (/work/cx/wt/cx-streams/scripts/gate-test-runner.test.mjs:56:37)
       at run (node:async_hooks:144:29)
       at <anonymous> (node:test:1445:26)
       at executeTestNode (node:test:1448:45)
@@ -351,7 +351,7 @@ AssertionError: false == true
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/gate-test-runner.test.mjs:74:10
+      at /work/cx/wt/cx-streams/scripts/gate-test-runner.test.mjs:74:10
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -391,13 +391,13 @@ scripts/harness-provider-evidence.test.mjs:
 123 |       if (!modules.has(module)) {
 124 |         modules.set(module, rustTestNames(readFileSync(new URL(`${module}.rs`, root), "utf8"), module));
                                                 ^
-ENOENT: no such file or directory, open '/mnt/bb/cx/wt/cx-streams/rust/crates/harness-core/src/executor.rs'
-    path: "/mnt/bb/cx/wt/cx-streams/rust/crates/harness-core/src/executor.rs",
+ENOENT: no such file or directory, open '/work/cx/wt/cx-streams/rust/crates/harness-core/src/executor.rs'
+    path: "/work/cx/wt/cx-streams/rust/crates/harness-core/src/executor.rs",
  syscall: "open",
    errno: -2,
     code: "ENOENT"
 
-      at <anonymous> (/mnt/bb/cx/wt/cx-streams/scripts/harness-provider-evidence.test.mjs:124:43)
+      at <anonymous> (/work/cx/wt/cx-streams/scripts/harness-provider-evidence.test.mjs:124:43)
       at run (node:async_hooks:144:29)
       at <anonymous> (node:test:1445:26)
       at executeTestNode (node:test:1448:45)
@@ -446,7 +446,7 @@ AssertionError: Missing expected exception.
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/main-gate-checks.test.mjs:97:12
+      at /work/cx/wt/cx-streams/scripts/main-gate-checks.test.mjs:97:12
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -473,7 +473,7 @@ AssertionError: bash: scripts/gate-rust-format.sh: No such file or directory
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/main-gate-loom.test.mjs:43:14
+      at /work/cx/wt/cx-streams/scripts/main-gate-loom.test.mjs:43:14
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -504,12 +504,12 @@ error: Executable not found in $PATH: "fixture-cargo"
      errno: -2,
    syscall: "spawnSync fixture-cargo",
  spawnargs: [ "build", "--locked", "--profile", "dist", "-p", "acyclic-plugin",
-  "--timings", "--config", "target.'cfg(all())'.rustflags = [\"--remap-path-prefix\",\"/mnt/bb/cx/wt/cx-streams=.\",\"--remap-path-prefix\",\"[private-metadata-removed]targets/cx-streams=/cargo/build-dir\",\"--remap-path-prefix\",\"[private-metadata-removed].cargo=/cargo/home\"]"
+  "--timings", "--config", "target.'cfg(all())'.rustflags = [\"--remap-path-prefix\",\"/work/cx/wt/cx-streams=.\",\"--remap-path-prefix\",\"[private-metadata-removed]targets/cx-streams=/cargo/build-dir\",\"--remap-path-prefix\",\"[private-metadata-removed].cargo=/cargo/home\"]"
 ],
       code: "ENOENT"
 
       at spawnSync (node:child_process:252:22)
-      at /mnt/bb/cx/wt/cx-streams/scripts/build-product.mjs:29:16
+      at /work/cx/wt/cx-streams/scripts/build-product.mjs:29:16
 
 Bun v1.4.2 (Linux x64)
 
@@ -523,7 +523,7 @@ Bun v1.4.2 (Linux x64)
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/native-cache-evidence.test.mjs:68:10
+      at /work/cx/wt/cx-streams/scripts/native-cache-evidence.test.mjs:68:10
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -554,7 +554,7 @@ AssertionError: Missing expected exception.
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/[private-metadata-removed]-checks.test.mjs:127:12
+      at /work/cx/wt/cx-streams/scripts/[private-metadata-removed]-checks.test.mjs:127:12
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -569,7 +569,7 @@ scripts/public-rpc-source.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js' from '/mnt/bb/cx/wt/cx-streams/scripts/public-rpc-source.test.mjs'
+error: Cannot find module '../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js' from '/work/cx/wt/cx-streams/scripts/public-rpc-source.test.mjs'
 -------------------------------
 
 
@@ -596,7 +596,7 @@ AssertionError: false == true
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/qualify-ci-preflight-fixtures.test.mjs:24:10
+      at /work/cx/wt/cx-streams/scripts/qualify-ci-preflight-fixtures.test.mjs:24:10
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -1483,8 +1483,8 @@ AssertionError: Run Pi installed diagnostics and native context qualification: c
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at verify (/mnt/bb/cx/wt/cx-streams/scripts/tiny-ci.test.mjs:40:11)
-      at /mnt/bb/cx/wt/cx-streams/scripts/tiny-ci.test.mjs:43:2
+      at verify (/work/cx/wt/cx-streams/scripts/tiny-ci.test.mjs:40:11)
+      at /work/cx/wt/cx-streams/scripts/tiny-ci.test.mjs:43:2
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -1533,7 +1533,7 @@ AssertionError: Expected values to be strictly deep-equal:
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/tiny-ci.test.mjs:170:9
+      at /work/cx/wt/cx-streams/scripts/tiny-ci.test.mjs:170:9
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -1779,7 +1779,7 @@ AssertionError: The input did not match the regular expression /policy\)\s+node 
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/tiny-ci.test.mjs:192:9
+      at /work/cx/wt/cx-streams/scripts/tiny-ci.test.mjs:192:9
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -1797,13 +1797,13 @@ scripts/wasm-size-artifacts.test.mjs:
 8 |     const stem = family === "filesystem" ? "fs" : family;
 9 |     const bytes = readFileSync(new URL(`../typescript/packages/${family}/generated/wasm/acyclic_${stem}_wasm_bg.wasm`, import.meta.url));
                       ^
-ENOENT: no such file or directory, open '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/generated/wasm/acyclic_fs_wasm_bg.wasm'
-    path: "/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/generated/wasm/acyclic_fs_wasm_bg.wasm",
+ENOENT: no such file or directory, open '/work/cx/wt/cx-streams/typescript/packages/filesystem/generated/wasm/acyclic_fs_wasm_bg.wasm'
+    path: "/work/cx/wt/cx-streams/typescript/packages/filesystem/generated/wasm/acyclic_fs_wasm_bg.wasm",
  syscall: "open",
    errno: -2,
     code: "ENOENT"
 
-      at <anonymous> (/mnt/bb/cx/wt/cx-streams/scripts/wasm-size-artifacts.test.mjs:9:19)
+      at <anonymous> (/work/cx/wt/cx-streams/scripts/wasm-size-artifacts.test.mjs:9:19)
       at run (node:async_hooks:144:29)
       at <anonymous> (node:test:1445:26)
       at executeTestNode (node:test:1448:45)
@@ -1846,7 +1846,7 @@ typescript/packages/sdk/test/.type-consumer-1vmPFl/consumer.mts(8,73): error TS2
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/conformance/addressing/type-controls.test.mjs:76:12
+      at /work/cx/wt/cx-streams/conformance/addressing/type-controls.test.mjs:76:12
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -1872,8 +1872,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:82:17
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:82:17
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -1898,8 +1898,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:133:17
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:133:17
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -1923,8 +1923,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:171:17
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:171:17
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -1948,8 +1948,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:190:36
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:190:36
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -1973,8 +1973,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:211:17
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:211:17
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -1998,8 +1998,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:227:17
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:227:17
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2023,8 +2023,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:253:17
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:253:17
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2048,8 +2048,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:266:17
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:266:17
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2073,8 +2073,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:281:17
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:281:17
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2098,8 +2098,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:307:17
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:307:17
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2123,8 +2123,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:333:19
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:333:19
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2148,8 +2148,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:333:19
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:333:19
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2173,8 +2173,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:333:19
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:333:19
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2198,8 +2198,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:349:17
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:349:17
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2224,9 +2224,9 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at packageRelease (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:390:17)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:462:19
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at packageRelease (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:390:17)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:462:19
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2251,9 +2251,9 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at packageRelease (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:390:17)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:462:19
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at packageRelease (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:390:17)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:462:19
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2277,9 +2277,9 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at packageRelease (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:390:17)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:508:21
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at packageRelease (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:390:17)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:508:21
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2303,8 +2303,8 @@ AssertionError: these tests need a relocatable Node (an official build), not [pr
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at fixture (/mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/scripts/install.test.mjs:526:19
+      at fixture (/work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:55:10)
+      at /work/cx/wt/cx-streams/plugin/scripts/install.test.mjs:526:19
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2330,7 +2330,7 @@ AssertionError: set ACYCLIC_TEST_BINARY to the built native acyclic binary
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/plugin/tests/identity-agent.test.mjs:13:8
+      at /work/cx/wt/cx-streams/plugin/tests/identity-agent.test.mjs:13:8
 -------------------------------
 
 
@@ -2352,8 +2352,8 @@ AssertionError: Cargo supplies ACYCLIC_TEST_BINARY
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at run (/mnt/bb/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:19:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:123:25
+      at run (/work/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:19:10)
+      at /work/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:123:25
       at node:test:1445:26
       at executeTestNode (node:test:1448:63)
       at processTicksAndRejections (native:7:39)
@@ -2373,8 +2373,8 @@ AssertionError: Cargo supplies ACYCLIC_TEST_BINARY
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at run (/mnt/bb/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:19:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:173:26
+      at run (/work/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:19:10)
+      at /work/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:173:26
       at node:test:1445:26
       at executeTestNode (node:test:1448:63)
       at processTicksAndRejections (native:7:39)
@@ -2394,8 +2394,8 @@ AssertionError: Cargo supplies ACYCLIC_TEST_BINARY
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at run (/mnt/bb/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:19:10)
-      at /mnt/bb/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:194:26
+      at run (/work/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:19:10)
+      at /work/cx/wt/cx-streams/plugin/tests/identity-contract.test.mjs:194:26
       at node:test:1445:26
       at executeTestNode (node:test:1448:63)
       at processTicksAndRejections (native:7:39)
@@ -2420,7 +2420,7 @@ AssertionError: set ACYCLIC_TEST_BINARY to the built native acyclic binary
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/plugin/tests/identity-mcp.test.mjs:15:8
+      at /work/cx/wt/cx-streams/plugin/tests/identity-mcp.test.mjs:15:8
 -------------------------------
 
 
@@ -2443,7 +2443,7 @@ AssertionError: set ACYCLIC_TEST_BINARY to the built native acyclic binary
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/plugin/tests/identity.test.mjs:14:8
+      at /work/cx/wt/cx-streams/plugin/tests/identity.test.mjs:14:8
 -------------------------------
 
 
@@ -2459,12 +2459,12 @@ scripts/[private-metadata-removed]/generated.test.mjs:
 AssertionError: 1 | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0	lib.rs 
                                              ^
 error: Expected ";" but found "0"
-    at /mnt/bb/cx/tmp/source-clock-YNxYsD/records:1:42
+    at /work/cx/tmp/source-clock-YNxYsD/records:1:42
 
 1 | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0	lib.rs 
                                                      ^
 error: Expected ";" but found " "
-    at /mnt/bb/cx/tmp/source-clock-YNxYsD/records:1:50
+    at /work/cx/tmp/source-clock-YNxYsD/records:1:50
 
 Bun v1.4.2 (Linux x64)
 
@@ -2478,7 +2478,7 @@ Bun v1.4.2 (Linux x64)
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/[private-metadata-removed]/generated.test.mjs:37:11
+      at /work/cx/wt/cx-streams/scripts/[private-metadata-removed]/generated.test.mjs:37:11
 (fail) exact private inputs preserve source times across fresh checkouts [35.94ms]
 (pass) watched source directories retain content-derived times across fresh checkouts [81.17ms]
 (pass) dependency preparation cannot change source under the original uploaded identity [73.31ms]
@@ -2548,7 +2548,7 @@ AssertionError: Expected values to be strictly equal:
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/graphcoder-e2e/headless.test.mjs:21:12
+      at /work/cx/wt/cx-streams/scripts/graphcoder-e2e/headless.test.mjs:21:12
       at node:test:1445:26
       at executeTestNode (node:test:1448:63)
       at processTicksAndRejections (native:7:39)
@@ -2570,7 +2570,7 @@ AssertionError: The input did not match the regular expression /deliberate helpe
   '          ^\n' +
   'error: Cannot use test outside of the test runner. Run "bun test" to run tests.\n' +
   '      at addTest (node:test:1653:9)\n' +
-  '      at /mnt/bb/cx/tmp/helper-cancellation-u7OhVQ/blocked.test.mjs:3:7\n' +
+  '      at /work/cx/tmp/helper-cancellation-u7OhVQ/blocked.test.mjs:3:7\n' +
   '\n' +
   'Bun v1.4.2 (Linux x64)\n' +
   '\n' +
@@ -2586,7 +2586,7 @@ AssertionError: The input did not match the regular expression /deliberate helpe
       at expectedException (node:assert:327:33)
       at expectsError (node:assert:395:20)
       at assert.rejects (node:assert:434:17)
-      at /mnt/bb/cx/wt/cx-streams/scripts/graphcoder-e2e/helpers.test.mjs:38:18
+      at /work/cx/wt/cx-streams/scripts/graphcoder-e2e/helpers.test.mjs:38:18
       at node:test:1445:26
       at executeTestNode (node:test:1448:63)
       at processTicksAndRejections (native:7:39)
@@ -2603,7 +2603,7 @@ AssertionError: 1 | import test from 'node:test'; import {spawn} from 'node:chil
           ^
 error: Cannot use test outside of the test runner. Run "bun test" to run tests.
       at addTest (node:test:1653:9)
-      at /mnt/bb/cx/tmp/helper-cancellation-u7OhVQ/blocked.test.mjs:3:7
+      at /work/cx/tmp/helper-cancellation-u7OhVQ/blocked.test.mjs:3:7
 
 Bun v1.4.2 (Linux x64)
 
@@ -2617,11 +2617,11 @@ Bun v1.4.2 (Linux x64)
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at qualified (/mnt/bb/cx/wt/cx-streams/scripts/graphcoder-e2e/qualification.mjs:5:10)
-      at runHelperSuite (/mnt/bb/cx/wt/cx-streams/scripts/graphcoder-e2e/helpers.mjs:33:5)
+      at qualified (/work/cx/wt/cx-streams/scripts/graphcoder-e2e/qualification.mjs:5:10)
+      at runHelperSuite (/work/cx/wt/cx-streams/scripts/graphcoder-e2e/helpers.mjs:33:5)
       at waitForActual (node:assert:359:24)
       at assert.rejects (node:assert:434:77)
-      at /mnt/bb/cx/wt/cx-streams/scripts/graphcoder-e2e/helpers.test.mjs:38:18
+      at /work/cx/wt/cx-streams/scripts/graphcoder-e2e/helpers.test.mjs:38:18
       at node:test:1445:26
       at executeTestNode (node:test:1448:63)
       at processTicksAndRejections (native:7:39)
@@ -2651,7 +2651,7 @@ scripts/graphcoder-e2e/runner.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@xterm/headless' from '/mnt/bb/cx/wt/cx-streams/scripts/graphcoder-pty/screen.mjs'
+error: Cannot find module '@xterm/headless' from '/work/cx/wt/cx-streams/scripts/graphcoder-pty/screen.mjs'
 -------------------------------
 
 
@@ -2678,7 +2678,7 @@ typescript/test/credential-grpc.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../packages/filesystem/generated/proto/filesystem/v2/filesystem_pb.js' from '/mnt/bb/cx/wt/cx-streams/typescript/test/credential-grpc.test.ts'
+error: Cannot find module '../packages/filesystem/generated/proto/filesystem/v2/filesystem_pb.js' from '/work/cx/wt/cx-streams/typescript/test/credential-grpc.test.ts'
 -------------------------------
 
 
@@ -2686,7 +2686,7 @@ typescript/test/credential-http.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../packages/objects/generated/proto/objects/v1/objects_pb.js' from '/mnt/bb/cx/wt/cx-streams/typescript/test/credential-http.test.mjs'
+error: Cannot find module '../packages/objects/generated/proto/objects/v1/objects_pb.js' from '/work/cx/wt/cx-streams/typescript/test/credential-http.test.mjs'
 -------------------------------
 
 
@@ -2715,12 +2715,12 @@ plugin/tests/hosts/pi-bootstrap.test.ts:
 1080 | var { Error, TypeError } = globalThis;
 1081 |   let err = new Error(message);
                    ^
-error: Command failed: /mnt/bb/cx/opt/node/bin/node /mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js --print --mode text --no-session --provider acyclic-qualification --model probe --no-extensions --no-mcp --no-builtin-tools -e /mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/.pi-bootstrap-PPJE4K/provider.ts Report the enabled tools.
+error: Command failed: /work/cx/opt/node/bin/node /work/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js --print --mode text --no-session --provider acyclic-qualification --model probe --no-extensions --no-mcp --no-builtin-tools -e /work/cx/wt/cx-streams/plugin/tests/hosts/.pi-bootstrap-PPJE4K/provider.ts Report the enabled tools.
 node:internal/modules/cjs/loader:1372
   throw err;
   ^
 
-Error: Cannot find module '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'
+Error: Cannot find module '/work/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'
     at Module._resolveFilename (node:internal/modules/cjs/loader:1369:15)
     at defaultResolveImpl (node:internal/modules/cjs/loader:1025:19)
     at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1030:22)
@@ -2738,9 +2738,9 @@ Node.js v24.4.1
    code: 1,
  killed: false,
  signal: null,
-    cmd: "/mnt/bb/cx/opt/node/bin/node /mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js --print --mode text --no-session --provider acyclic-qualification --model probe --no-extensions --no-mcp --no-builtin-tools -e /mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/.pi-bootstrap-PPJE4K/provider.ts Report the enabled tools.",
+    cmd: "/work/cx/opt/node/bin/node /work/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js --print --mode text --no-session --provider acyclic-qualification --model probe --no-extensions --no-mcp --no-builtin-tools -e /work/cx/wt/cx-streams/plugin/tests/hosts/.pi-bootstrap-PPJE4K/provider.ts Report the enabled tools.",
  stdout: "",
- stderr: "node:internal/modules/cjs/loader:1372\n  throw err;\n  ^\n\nError: Cannot find module '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'\n    at Module._resolveFilename (node:internal/modules/cjs/loader:1369:15)\n    at defaultResolveImpl (node:internal/modules/cjs/loader:1025:19)\n    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1030:22)\n    at Module._load (node:internal/modules/cjs/loader:1179:37)\n    at TracingChannel.traceSync (node:diagnostics_channel:322:14)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:235:24)\n    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:152:5)\n    at node:internal/main/run_main_module:33:47 {\n  code: 'MODULE_NOT_FOUND',\n  requireStack: []\n}\n\nNode.js v24.4.1\n",
+ stderr: "node:internal/modules/cjs/loader:1372\n  throw err;\n  ^\n\nError: Cannot find module '/work/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'\n    at Module._resolveFilename (node:internal/modules/cjs/loader:1369:15)\n    at defaultResolveImpl (node:internal/modules/cjs/loader:1025:19)\n    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1030:22)\n    at Module._load (node:internal/modules/cjs/loader:1179:37)\n    at TracingChannel.traceSync (node:diagnostics_channel:322:14)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:235:24)\n    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:152:5)\n    at node:internal/main/run_main_module:33:47 {\n  code: 'MODULE_NOT_FOUND',\n  requireStack: []\n}\n\nNode.js v24.4.1\n",
 
       at genericNodeError (node:child_process:1081:13)
       at exitHandler (node:child_process:115:28)
@@ -2761,7 +2761,7 @@ AssertionError: The input did not match the regular expression /ACYCLIC_EXPLICIT
   '  throw err;\n' +
   '  ^\n' +
   '\n' +
-  "Error: Cannot find module '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'\n" +
+  "Error: Cannot find module '/work/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'\n" +
   '    at Module._resolveFilename (node:internal/modules/cjs/loader:1369:15)\n' +
   '    at defaultResolveImpl (node:internal/modules/cjs/loader:1025:19)\n' +
   '    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1030:22)\n' +
@@ -2777,17 +2777,17 @@ AssertionError: The input did not match the regular expression /ACYCLIC_EXPLICIT
   'Node.js v24.4.1\n'
 
  generatedMessage: true,
-     actual: "node:internal/modules/cjs/loader:1372\n  throw err;\n  ^\n\nError: Cannot find module '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'\n    at Module._resolveFilename (node:internal/modules/cjs/loader:1369:15)\n    at defaultResolveImpl (node:internal/modules/cjs/loader:1025:19)\n    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1030:22)\n    at Module._load (node:internal/modules/cjs/loader:1179:37)\n    at TracingChannel.traceSync (node:diagnostics_channel:322:14)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:235:24)\n    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:152:5)\n    at node:internal/main/run_main_module:33:47 {\n  code: 'MODULE_NOT_FOUND',\n  requireStack: []\n}\n\nNode.js v24.4.1\n",
+     actual: "node:internal/modules/cjs/loader:1372\n  throw err;\n  ^\n\nError: Cannot find module '/work/cx/wt/cx-streams/plugin/tests/hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'\n    at Module._resolveFilename (node:internal/modules/cjs/loader:1369:15)\n    at defaultResolveImpl (node:internal/modules/cjs/loader:1025:19)\n    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1030:22)\n    at Module._load (node:internal/modules/cjs/loader:1179:37)\n    at TracingChannel.traceSync (node:diagnostics_channel:322:14)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:235:24)\n    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:152:5)\n    at node:internal/main/run_main_module:33:47 {\n  code: 'MODULE_NOT_FOUND',\n  requireStack: []\n}\n\nNode.js v24.4.1\n",
    expected: /ACYCLIC_EXPLICIT_EXTENSION_FAILED/,
    operator: "match",
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/pi-bootstrap.test.ts:64:12
+      at /work/cx/wt/cx-streams/plugin/tests/hosts/pi-bootstrap.test.ts:64:12
       at expectedException (node:assert:309:30)
       at expectsError (node:assert:395:20)
       at assert.rejects (node:assert:434:17)
-      at /mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/pi-bootstrap.test.ts:60:16
+      at /work/cx/wt/cx-streams/plugin/tests/hosts/pi-bootstrap.test.ts:60:16
       at processTicksAndRejections (native:7:39)
 (fail) installed Pi aborts when an explicit extension fails to load [25.96ms]
 
@@ -2795,7 +2795,7 @@ plugin/tests/hosts/pi-builtin-paths.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@earendil-works/pi-coding-agent' from '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/pi-builtin-paths.test.ts'
+error: Cannot find module '@earendil-works/pi-coding-agent' from '/work/cx/wt/cx-streams/plugin/tests/hosts/pi-builtin-paths.test.ts'
 -------------------------------
 
 
@@ -2803,7 +2803,7 @@ plugin/tests/hosts/pi-context-fresh.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@earendil-works/pi-coding-agent' from '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/pi-context-fresh.test.ts'
+error: Cannot find module '@earendil-works/pi-coding-agent' from '/work/cx/wt/cx-streams/plugin/tests/hosts/pi-context-fresh.test.ts'
 -------------------------------
 
 
@@ -2811,7 +2811,7 @@ plugin/tests/hosts/pi-context-mail.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@earendil-works/pi-coding-agent' from '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/pi-context-mail.test.ts'
+error: Cannot find module '@earendil-works/pi-coding-agent' from '/work/cx/wt/cx-streams/plugin/tests/hosts/pi-context-mail.test.ts'
 -------------------------------
 
 
@@ -2819,7 +2819,7 @@ plugin/tests/hosts/pi-context-pages.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@earendil-works/pi-coding-agent' from '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/pi-native-fixture.ts'
+error: Cannot find module '@earendil-works/pi-coding-agent' from '/work/cx/wt/cx-streams/plugin/tests/hosts/pi-native-fixture.ts'
 -------------------------------
 
 
@@ -2827,7 +2827,7 @@ plugin/tests/hosts/pi-context.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@earendil-works/pi-ai' from '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/pi-context.test.ts'
+error: Cannot find module '@earendil-works/pi-ai' from '/work/cx/wt/cx-streams/plugin/tests/hosts/pi-context.test.ts'
 -------------------------------
 
 
@@ -2835,7 +2835,7 @@ plugin/tests/hosts/pi-installation.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@earendil-works/pi-coding-agent' from '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/pi-installation.test.ts'
+error: Cannot find module '@earendil-works/pi-coding-agent' from '/work/cx/wt/cx-streams/plugin/tests/hosts/pi-installation.test.ts'
 -------------------------------
 
 
@@ -2843,7 +2843,7 @@ plugin/tests/hosts/pi-native-recursive.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@earendil-works/pi-coding-agent' from '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/pi-native-recursive.test.ts'
+error: Cannot find module '@earendil-works/pi-coding-agent' from '/work/cx/wt/cx-streams/plugin/tests/hosts/pi-native-recursive.test.ts'
 -------------------------------
 
 
@@ -2858,7 +2858,7 @@ plugin/tests/hosts/pi-session.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@earendil-works/pi-ai' from '/mnt/bb/cx/wt/cx-streams/plugin/tests/hosts/pi-session.test.ts'
+error: Cannot find module '@earendil-works/pi-ai' from '/work/cx/wt/cx-streams/plugin/tests/hosts/pi-session.test.ts'
 -------------------------------
 
 
@@ -2873,18 +2873,18 @@ scripts/[private-metadata-removed]/coordinator/gate-checks.test.mjs:
 AssertionError: GATE_PACKAGES tests -p acyclic-native-runtime
 GATE_PACKAGES clippy -p acyclic-native-runtime
 GATE_RUSTFMT rc=0 seconds=0 scope=
-GATE_CACHE_INVALIDATE target=/mnt/bb/cx/tmp/gate-public-windows-o7EHKE/target/.gate-pr-tests reason=boot-change-or-interrupted-build workspace-only
-GATE_CACHE_INVALIDATE target=/mnt/bb/cx/tmp/gate-public-windows-o7EHKE/target/.gate-pr-clippy reason=boot-change-or-interrupted-build workspace-only
+GATE_CACHE_INVALIDATE target=/work/cx/tmp/gate-public-windows-o7EHKE/target/.gate-pr-tests reason=boot-change-or-interrupted-build workspace-only
+GATE_CACHE_INVALIDATE target=/work/cx/tmp/gate-public-windows-o7EHKE/target/.gate-pr-clippy reason=boot-change-or-interrupted-build workspace-only
 GATE_TEST_PHASE phase=targets rc=0 seconds=1
 GATE_TEST_PHASE phase=docs rc=0 seconds=0
-GATE_HARNESS_LOOM_START target=/mnt/bb/cx/tmp/gate-public-windows-o7EHKE/target/.gate-pr-loom
+GATE_HARNESS_LOOM_START target=/work/cx/tmp/gate-public-windows-o7EHKE/target/.gate-pr-loom
 bash: scripts/check-harness-models.sh: No such file or directory
 GATE_HARNESS_LOOM_WALL seconds=0 rc=127
 GATE_CLIPPY rc=0
 GATE_FEATURES absent
 GATE_WALL seconds=1 test_rc=127
 GATE_WINDOWS_RUNTIME_REQUIRED target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all
-GATE_WINDOWS_RUNTIME_START target_dir=/mnt/bb/cx/tmp/gate-public-windows-o7EHKE/target/.gate-pr-tests/.gate-windows-runtime
+GATE_WINDOWS_RUNTIME_START target_dir=/work/cx/tmp/gate-public-windows-o7EHKE/target/.gate-pr-tests/.gate-windows-runtime
 error: retained strict runtime diagnostic
 GATE_WINDOWS_RUNTIME_CLIPPY rc=0 seconds=0 target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all
 GATE_WINDOWS_FEATURES rc=0
@@ -2900,9 +2900,9 @@ GATE_DONE rc=127
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at strict (/mnt/bb/cx/wt/cx-streams/scripts/[private-metadata-removed]/coordinator/gate-checks.test.mjs:80:10)
-      at /mnt/bb/cx/wt/cx-streams/scripts/[private-metadata-removed]/coordinator/gate-checks.test.mjs:94:5
-      at fixture (/mnt/bb/cx/wt/cx-streams/scripts/[private-metadata-removed]/coordinator/gate-checks.test.mjs:73:5)
+      at strict (/work/cx/wt/cx-streams/scripts/[private-metadata-removed]/coordinator/gate-checks.test.mjs:80:10)
+      at /work/cx/wt/cx-streams/scripts/[private-metadata-removed]/coordinator/gate-checks.test.mjs:94:5
+      at fixture (/work/cx/wt/cx-streams/scripts/[private-metadata-removed]/coordinator/gate-checks.test.mjs:73:5)
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2927,18 +2927,18 @@ GATE_DONE rc=127
 AssertionError: GATE_PACKAGES tests -p acyclic-native-runtime
 GATE_PACKAGES clippy -p acyclic-native-runtime
 GATE_RUSTFMT rc=0 seconds=0 scope=
-GATE_CACHE_INVALIDATE target=/mnt/bb/cx/tmp/gate-public-windows-I07bTO/target/.gate-pr-tests reason=boot-change-or-interrupted-build workspace-only
-GATE_CACHE_INVALIDATE target=/mnt/bb/cx/tmp/gate-public-windows-I07bTO/target/.gate-pr-clippy reason=boot-change-or-interrupted-build workspace-only
+GATE_CACHE_INVALIDATE target=/work/cx/tmp/gate-public-windows-I07bTO/target/.gate-pr-tests reason=boot-change-or-interrupted-build workspace-only
+GATE_CACHE_INVALIDATE target=/work/cx/tmp/gate-public-windows-I07bTO/target/.gate-pr-clippy reason=boot-change-or-interrupted-build workspace-only
 GATE_TEST_PHASE phase=targets rc=0 seconds=1
 GATE_TEST_PHASE phase=docs rc=0 seconds=0
-GATE_HARNESS_LOOM_START target=/mnt/bb/cx/tmp/gate-public-windows-I07bTO/target/.gate-pr-loom
+GATE_HARNESS_LOOM_START target=/work/cx/tmp/gate-public-windows-I07bTO/target/.gate-pr-loom
 bash: scripts/check-harness-models.sh: No such file or directory
 GATE_HARNESS_LOOM_WALL seconds=0 rc=127
 GATE_CLIPPY rc=0
 GATE_FEATURES absent
 GATE_WALL seconds=1 test_rc=127
 GATE_WINDOWS_RUNTIME_REQUIRED target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all
-GATE_WINDOWS_RUNTIME_START target_dir=/mnt/bb/cx/tmp/gate-public-windows-I07bTO/target/.gate-pr-tests/.gate-windows-runtime
+GATE_WINDOWS_RUNTIME_START target_dir=/work/cx/tmp/gate-public-windows-I07bTO/target/.gate-pr-tests/.gate-windows-runtime
 error: retained strict runtime diagnostic
 error: could not retain Windows runtime clippy output (tee rc=23)
 GATE_WINDOWS_RUNTIME_CLIPPY rc=2 seconds=0 target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all
@@ -2955,8 +2955,8 @@ GATE_DONE rc=127
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/scripts/[private-metadata-removed]/coordinator/gate-checks.test.mjs:282:12
-      at fixture (/mnt/bb/cx/wt/cx-streams/scripts/[private-metadata-removed]/coordinator/gate-checks.test.mjs:73:5)
+      at /work/cx/wt/cx-streams/scripts/[private-metadata-removed]/coordinator/gate-checks.test.mjs:282:12
+      at fixture (/work/cx/wt/cx-streams/scripts/[private-metadata-removed]/coordinator/gate-checks.test.mjs:73:5)
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -2979,7 +2979,7 @@ scripts/fixtures/installed-harness/test/browser-runtime.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module 'fake-indexeddb/auto' from '/mnt/bb/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/browser-runtime.test.ts'
+error: Cannot find module 'fake-indexeddb/auto' from '/work/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/browser-runtime.test.ts'
 -------------------------------
 
 
@@ -2987,7 +2987,7 @@ scripts/fixtures/installed-harness/test/canonical-json.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/harness' from '/mnt/bb/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/canonical-json.test.ts'
+error: Cannot find module '@acyclic-labs/harness' from '/work/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/canonical-json.test.ts'
 -------------------------------
 
 
@@ -2995,7 +2995,7 @@ scripts/fixtures/installed-harness/test/client-views.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/harness' from '/mnt/bb/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/client-views.test.ts'
+error: Cannot find module '@acyclic-labs/harness' from '/work/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/client-views.test.ts'
 -------------------------------
 
 
@@ -3003,7 +3003,7 @@ scripts/fixtures/installed-harness/test/context-discovery.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/harness' from '/mnt/bb/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/context-discovery.test.ts'
+error: Cannot find module '@acyclic-labs/harness' from '/work/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/context-discovery.test.ts'
 -------------------------------
 
 
@@ -3011,7 +3011,7 @@ scripts/fixtures/installed-harness/test/mcp.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/harness' from '/mnt/bb/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/mcp.test.ts'
+error: Cannot find module '@acyclic-labs/harness' from '/work/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/mcp.test.ts'
 -------------------------------
 
 
@@ -3019,7 +3019,7 @@ scripts/fixtures/installed-harness/test/native-content.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/harness' from '/mnt/bb/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/native-content.test.ts'
+error: Cannot find module '@acyclic-labs/harness' from '/work/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/native-content.test.ts'
 -------------------------------
 
 
@@ -3027,7 +3027,7 @@ scripts/fixtures/installed-harness/test/native-wasm-equivalence.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/harness/proto' from '/mnt/bb/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/native-wasm-equivalence.test.ts'
+error: Cannot find module '@acyclic-labs/harness/proto' from '/work/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/native-wasm-equivalence.test.ts'
 -------------------------------
 
 
@@ -3035,7 +3035,7 @@ scripts/fixtures/installed-harness/test/package-artifact.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/harness' from '/mnt/bb/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/package-artifact.test.ts'
+error: Cannot find module '@acyclic-labs/harness' from '/work/cx/wt/cx-streams/scripts/fixtures/installed-harness/test/package-artifact.test.ts'
 -------------------------------
 
 
@@ -3123,7 +3123,7 @@ typescript/packages/filesystem/test/addressing.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/fs/addressing' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/test/addressing.test.ts'
+error: Cannot find module '@acyclic-labs/fs/addressing' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/test/addressing.test.ts'
 -------------------------------
 
 
@@ -3131,7 +3131,7 @@ typescript/packages/filesystem/test/binding-results.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/hosted-contract.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/src/binding-results.ts'
+error: Cannot find module '../generated/hosted-contract.js' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/src/binding-results.ts'
 -------------------------------
 
 
@@ -3139,7 +3139,7 @@ typescript/packages/filesystem/test/cloud-contract.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../dist/grpc.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/test/cloud-contract.test.mjs'
+error: Cannot find module '../dist/grpc.js' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/test/cloud-contract.test.mjs'
 -------------------------------
 
 
@@ -3147,7 +3147,7 @@ typescript/packages/filesystem/test/compat-wire.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/git-compat-contract.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/src/compat.ts'
+error: Cannot find module '../generated/git-compat-contract.js' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/src/compat.ts'
 -------------------------------
 
 
@@ -3155,7 +3155,7 @@ typescript/packages/filesystem/test/endpoint.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/defaults.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/src/hosted.ts'
+error: Cannot find module '../generated/defaults.js' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/src/hosted.ts'
 -------------------------------
 
 
@@ -3163,7 +3163,7 @@ typescript/packages/filesystem/test/git-compat.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/git-compat-contract.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/test/git-compat.test.ts'
+error: Cannot find module '../generated/git-compat-contract.js' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/test/git-compat.test.ts'
 -------------------------------
 
 
@@ -3171,7 +3171,7 @@ typescript/packages/filesystem/test/grpc.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../dist/grpc.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/test/grpc.test.mjs'
+error: Cannot find module '../dist/grpc.js' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/test/grpc.test.mjs'
 -------------------------------
 
 
@@ -3179,7 +3179,7 @@ typescript/packages/filesystem/test/hosted-contract.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/proto/filesystem/v2/filesystem_pb.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/test/hosted-contract.test.mjs'
+error: Cannot find module '../generated/proto/filesystem/v2/filesystem_pb.js' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/test/hosted-contract.test.mjs'
 -------------------------------
 
 
@@ -3187,7 +3187,7 @@ typescript/packages/filesystem/test/hosted-s3.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../dist/hosted.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/test/hosted-s3.test.mjs'
+error: Cannot find module '../dist/hosted.js' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/test/hosted-s3.test.mjs'
 -------------------------------
 
 
@@ -3202,7 +3202,7 @@ typescript/packages/filesystem/test/wasm-adapter.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/proto/filesystem/v2/filesystem_pb.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/test/wasm-adapter.test.ts'
+error: Cannot find module '../generated/proto/filesystem/v2/filesystem_pb.js' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/test/wasm-adapter.test.ts'
 -------------------------------
 
 
@@ -3210,7 +3210,7 @@ typescript/packages/filesystem/test/workspace-copies.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/hosted-contract.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/src/workspace-copies.ts'
+error: Cannot find module '../generated/hosted-contract.js' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/src/workspace-copies.ts'
 -------------------------------
 
 
@@ -3218,7 +3218,7 @@ typescript/packages/filesystem/test/workspace-name.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/defaults.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/filesystem/src/contracts.ts'
+error: Cannot find module '../generated/defaults.js' from '/work/cx/wt/cx-streams/typescript/packages/filesystem/src/contracts.ts'
 -------------------------------
 
 
@@ -3238,7 +3238,7 @@ typescript/packages/harness/test/client-memory.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/client-memory.test.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/client-memory.test.ts'
 -------------------------------
 
 
@@ -3246,7 +3246,7 @@ typescript/packages/harness/test/client-message.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/harness' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/examples/client-message.ts'
+error: Cannot find module '@acyclic-labs/harness' from '/work/cx/wt/cx-streams/typescript/packages/harness/examples/client-message.ts'
 -------------------------------
 
 
@@ -3254,7 +3254,7 @@ typescript/packages/harness/test/client-pagination.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/src/index.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/src/index.ts'
 -------------------------------
 
 
@@ -3262,7 +3262,7 @@ typescript/packages/harness/test/client-performance.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/src/hypotheses.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/src/hypotheses.ts'
 -------------------------------
 
 
@@ -3270,7 +3270,7 @@ typescript/packages/harness/test/client-query.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/src/client-query.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/src/client-query.ts'
 -------------------------------
 
 
@@ -3288,7 +3288,7 @@ typescript/packages/harness/test/client-views.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/client-views.test.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/client-views.test.ts'
 -------------------------------
 
 
@@ -3296,7 +3296,7 @@ typescript/packages/harness/test/client-watermarks.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/src/client.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/src/client.ts'
 -------------------------------
 
 
@@ -3323,7 +3323,7 @@ typescript/packages/harness/test/component-label.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/component-label.test.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/component-label.test.ts'
 -------------------------------
 
 
@@ -3331,7 +3331,7 @@ typescript/packages/harness/test/conversation.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module './limits-contract.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/src/conversation.ts'
+error: Cannot find module './limits-contract.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/src/conversation.ts'
 -------------------------------
 
 
@@ -3339,7 +3339,7 @@ typescript/packages/harness/test/enums.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/proto/harness/v2/harness_pb.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/enums.test.ts'
+error: Cannot find module '../generated/proto/harness/v2/harness_pb.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/enums.test.ts'
 -------------------------------
 
 
@@ -3354,7 +3354,7 @@ typescript/packages/harness/test/file-tools-contract.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/src/native-contracts.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/src/native-contracts.ts'
 -------------------------------
 
 
@@ -3362,7 +3362,7 @@ typescript/packages/harness/test/fork.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/fork.test.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/fork.test.ts'
 -------------------------------
 
 
@@ -3377,7 +3377,7 @@ typescript/packages/harness/test/mcp-browser-bridge.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/mcp-browser-bridge.test.mjs'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/mcp-browser-bridge.test.mjs'
 -------------------------------
 
 
@@ -3385,7 +3385,7 @@ typescript/packages/harness/test/mcp-browser-lifecycle.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/mcp-browser-lifecycle.test.mjs'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/mcp-browser-lifecycle.test.mjs'
 -------------------------------
 
 
@@ -3393,7 +3393,7 @@ typescript/packages/harness/test/mcp-http-fixture.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/mcp-http-fixture.test.mjs'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/mcp-http-fixture.test.mjs'
 -------------------------------
 
 
@@ -3401,7 +3401,7 @@ typescript/packages/harness/test/mcp-wasm.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/mcp-wasm.test.mjs'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/mcp-wasm.test.mjs'
 -------------------------------
 
 
@@ -3409,7 +3409,7 @@ typescript/packages/harness/test/memory-conversation.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../src/private-directory-page-contract.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/memory-conversation.test.ts'
+error: Cannot find module '../src/private-directory-page-contract.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/memory-conversation.test.ts'
 -------------------------------
 
 
@@ -3424,7 +3424,7 @@ typescript/packages/harness/test/model-validation.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/model-validation.test.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/model-validation.test.ts'
 -------------------------------
 
 
@@ -3432,7 +3432,7 @@ typescript/packages/harness/test/objects.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/objects/v1' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/objects.test.ts'
+error: Cannot find module '@acyclic-labs/objects/v1' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/objects.test.ts'
 -------------------------------
 
 
@@ -3447,7 +3447,7 @@ typescript/packages/harness/test/projection.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../src/limits-contract.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/projection.test.ts'
+error: Cannot find module '../src/limits-contract.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/projection.test.ts'
 -------------------------------
 
 
@@ -3455,7 +3455,7 @@ typescript/packages/harness/test/provider-history.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../../dist/index.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/support/model-accounting.mjs'
+error: Cannot find module '../../dist/index.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/support/model-accounting.mjs'
 -------------------------------
 
 
@@ -3477,7 +3477,7 @@ typescript/packages/harness/test/providers.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/providers.test.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/providers.test.ts'
 -------------------------------
 
 
@@ -3485,7 +3485,7 @@ typescript/packages/harness/test/runtime-contracts.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../src/child-page-contract.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/runtime-contracts.test.ts'
+error: Cannot find module '../src/child-page-contract.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/runtime-contracts.test.ts'
 -------------------------------
 
 
@@ -3521,7 +3521,7 @@ typescript/packages/harness/test/wasm-reducer.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/harness/test/wasm-reducer.test.ts'
+error: Cannot find module '../generated/wasm/acyclic_harness_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/harness/test/wasm-reducer.test.ts'
 -------------------------------
 
 
@@ -3529,7 +3529,7 @@ typescript/packages/inference/test/client.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/widths.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/inference/test/client.test.ts'
+error: Cannot find module '../generated/widths.js' from '/work/cx/wt/cx-streams/typescript/packages/inference/test/client.test.ts'
 -------------------------------
 
 
@@ -3537,7 +3537,7 @@ typescript/packages/inference/test/idle-kv.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/proto/inference/v1/inference_pb.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/inference/src/contract.ts'
+error: Cannot find module '../generated/proto/inference/v1/inference_pb.js' from '/work/cx/wt/cx-streams/typescript/packages/inference/src/contract.ts'
 -------------------------------
 
 
@@ -3545,7 +3545,7 @@ typescript/packages/machines/test/addressing.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/machines/addressing' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/machines/test/addressing.test.ts'
+error: Cannot find module '@acyclic-labs/machines/addressing' from '/work/cx/wt/cx-streams/typescript/packages/machines/test/addressing.test.ts'
 -------------------------------
 
 
@@ -3553,7 +3553,7 @@ typescript/packages/machines/test/grpc.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../dist/grpc.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/machines/test/grpc.test.mjs'
+error: Cannot find module '../dist/grpc.js' from '/work/cx/wt/cx-streams/typescript/packages/machines/test/grpc.test.mjs'
 -------------------------------
 
 
@@ -3561,7 +3561,7 @@ typescript/packages/machines/test/machines.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_machines_wasm.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/machines/test/machines.test.ts'
+error: Cannot find module '../generated/wasm/acyclic_machines_wasm.js' from '/work/cx/wt/cx-streams/typescript/packages/machines/test/machines.test.ts'
 -------------------------------
 
 
@@ -3569,7 +3569,7 @@ typescript/packages/objects/test/addressing.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/objects/addressing' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/objects/test/addressing.test.ts'
+error: Cannot find module '@acyclic-labs/objects/addressing' from '/work/cx/wt/cx-streams/typescript/packages/objects/test/addressing.test.ts'
 -------------------------------
 
 
@@ -3577,7 +3577,7 @@ typescript/packages/pi/test/adapter.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/harness' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/pi/test/adapter.test.ts'
+error: Cannot find module '@acyclic-labs/harness' from '/work/cx/wt/cx-streams/typescript/packages/pi/test/adapter.test.ts'
 -------------------------------
 
 
@@ -3585,7 +3585,7 @@ typescript/packages/sdk/test/addressing.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/sdk/addressing' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/sdk/test/addressing.test.ts'
+error: Cannot find module '@acyclic-labs/sdk/addressing' from '/work/cx/wt/cx-streams/typescript/packages/sdk/test/addressing.test.ts'
 -------------------------------
 
 
@@ -3598,7 +3598,7 @@ typescript/packages/sdk/test/public-consumer.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/sdk' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/sdk/test/public-consumer.test.ts'
+error: Cannot find module '@acyclic-labs/sdk' from '/work/cx/wt/cx-streams/typescript/packages/sdk/test/public-consumer.test.ts'
 -------------------------------
 
 
@@ -3624,7 +3624,7 @@ typescript/packages/stream/test/native-credential.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/native-credential.test.ts'
+error: Cannot find module '../generated/native/binding.cjs' from '/work/cx/wt/cx-streams/typescript/packages/stream/test/native-credential.test.ts'
 -------------------------------
 
 
@@ -3680,13 +3680,13 @@ typescript/packages/stream/test/head-condition.test.ts:
 (pass) HTTP rejects head conditions until the hosted capability is negotiated [0.33ms]
 
 typescript/packages/stream/test/native-session-pool.test.ts:
-error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+error: Cannot find module '/work/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/work/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
 (fail) native concurrent follows and follows share one Session per node with local cancellation [161.91ms]
-error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+error: Cannot find module '/work/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/work/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
 (fail) cancelling a follows during shared initialization preserves its sibling [0.71ms]
-error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+error: Cannot find module '/work/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/work/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
 (fail) a cancelled waiter cannot cancel a shared Session paused before Welcome [0.65ms]
-error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+error: Cannot find module '/work/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/work/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
 (fail) new follows abandons a cancelled home reconnect before its credential settles [0.78ms]
 
 typescript/packages/stream/test/wire-records.test.ts:
@@ -3757,7 +3757,7 @@ typescript/packages/swarm/test/http.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/swarm' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/swarm/test/http.test.mjs'
+error: Cannot find module '@acyclic-labs/swarm' from '/work/cx/wt/cx-streams/typescript/packages/swarm/test/http.test.mjs'
 -------------------------------
 
 
@@ -3765,7 +3765,7 @@ typescript/packages/workers/test/addressing.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '@acyclic-labs/workers/addressing' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/workers/test/addressing.test.ts'
+error: Cannot find module '@acyclic-labs/workers/addressing' from '/work/cx/wt/cx-streams/typescript/packages/workers/test/addressing.test.ts'
 -------------------------------
 
 
@@ -3786,7 +3786,7 @@ typescript/packages/workers/test/cloud-contract.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../../objects/generated/proto/objects/v1/objects_pb.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/workers/test/cloud-contract.test.mjs'
+error: Cannot find module '../../objects/generated/proto/objects/v1/objects_pb.js' from '/work/cx/wt/cx-streams/typescript/packages/workers/test/cloud-contract.test.mjs'
 -------------------------------
 
 
@@ -3794,7 +3794,7 @@ typescript/packages/workers/test/manifest-wasm.test.mjs:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/wasm/acyclic_manifest.js' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/workers/test/manifest-wasm.test.mjs'
+error: Cannot find module '../generated/wasm/acyclic_manifest.js' from '/work/cx/wt/cx-streams/typescript/packages/workers/test/manifest-wasm.test.mjs'
 -------------------------------
 
 
@@ -3839,7 +3839,7 @@ AssertionError: Expected values to be strictly equal:
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/tools/sdk-generator/backends/cpp/tests/qualify.test.mjs:11:10
+      at /work/cx/wt/cx-streams/tools/sdk-generator/backends/cpp/tests/qualify.test.mjs:11:10
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -3888,7 +3888,7 @@ AssertionError: Expected values to be strictly deep-equal:
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/tools/sdk-generator/backends/cpp/tests/qualify.test.mjs:65:10
+      at /work/cx/wt/cx-streams/tools/sdk-generator/backends/cpp/tests/qualify.test.mjs:65:10
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -3996,7 +3996,7 @@ AssertionError: false == true
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/tools/sdk-generator/backends/elixir/tests/qualify.test.mjs:99:10
+      at /work/cx/wt/cx-streams/tools/sdk-generator/backends/elixir/tests/qualify.test.mjs:99:10
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -4061,7 +4061,7 @@ AssertionError: false == true
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/tools/sdk-generator/backends/erlang/tests/qualify.test.mjs:89:10
+      at /work/cx/wt/cx-streams/tools/sdk-generator/backends/erlang/tests/qualify.test.mjs:89:10
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -4234,7 +4234,7 @@ AssertionError: Expected values to be strictly equal:
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/tools/sdk-generator/backends/swift/tests/qualify.test.mjs:65:10
+      at /work/cx/wt/cx-streams/tools/sdk-generator/backends/swift/tests/qualify.test.mjs:65:10
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -4264,7 +4264,7 @@ AssertionError: Expected values to be strictly equal:
        diff: "simple",
        code: "ERR_ASSERTION"
 
-      at /mnt/bb/cx/wt/cx-streams/tools/sdk-generator/backends/swift/tests/qualify.test.mjs:133:10
+      at /work/cx/wt/cx-streams/tools/sdk-generator/backends/swift/tests/qualify.test.mjs:133:10
       at run (node:async_hooks:144:29)
       at node:test:1445:26
       at executeTestNode (node:test:1448:45)
@@ -4350,6 +4350,6 @@ Ran 919 tests across 229 files. [67.23s]
 43 | if (retiredFile) throw new Error(`retired-runtime source exists: ${retiredFile}`);
                                 ^
 error: retired-runtime source exists: fuzz/guest-negative-control.py
-      at /mnt/bb/cx/wt/cx-streams/scripts/check-metadata.mjs:43:28
+      at /work/cx/wt/cx-streams/scripts/check-metadata.mjs:43:28
 
 Bun v1.4.2 (Linux x64)

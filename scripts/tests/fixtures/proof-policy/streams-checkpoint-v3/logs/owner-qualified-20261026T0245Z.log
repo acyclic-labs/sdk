@@ -1,8 +1,8 @@
 [private-metadata-removed]: streams at 3c6e213240 (snapshot of 4686ca56fb + worktree)
 CARGO_TARGET_PRUNE {"beforeAllocatedBytes":9616568320,"afterAllocatedBytes":9616568320,"beforeApparentBytes":9558769646,"afterApparentBytes":9558769640,"incrementalUnits":1,"ageUnits":0,"capUnits":0,"elapsedSeconds":0.331837234}
-    Checking acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+    Checking acyclic-stream v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream)
     Finished `dev` profile [optimized + debuginfo] target(s) in 11.82s
-   Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+   Compiling acyclic-stream v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream)
     Finished `test` profile [optimized + debuginfo] target(s) in 40.66s
 
      Running unittests src/lib.rs ([private-path-removed])
@@ -551,7 +551,7 @@ running 0 tests
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
      Running unittests examples/wave1-conformance.rs ([private-path-removed])
-   Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+   Compiling acyclic-stream v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream)
     Finished `test` profile [optimized + debuginfo] target(s) in 11.13s
      Running tests/wave1_loom.rs ([private-path-removed])
 

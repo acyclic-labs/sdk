@@ -5,7 +5,7 @@ features, profile, target and instrumentation. Then submit its binary, the entir
 retained corpus and the original libFuzzer options to the shared campaign runner:
 
 ```sh
-node scripts/fuzz-smoke.mjs "$binary" "$corpus" -- -seed=1 -runs=4096
+SDK_FUZZ_CAMPAIGN=/absolute/path/to/fuzz-campaign.mjs node scripts/fuzz-smoke.mjs "$binary" "$corpus" -- -seed=1 -runs=4096
 ```
 
 The caller declares the workload; there is no default run count or time budget.
@@ -35,8 +35,9 @@ Private generated corpus is discarded after success, so it cannot invalidate the
 retained corpus or silently change the next campaign's starting state.
 
 The external coordinator supplies `fuzz-campaign.mjs` beside its existing
-`action-cache.mjs` and `test-cache.mjs`; `SDK_FUZZ_CAMPAIGN` selects another supplied
-module path. Missing infrastructure fails explicitly. Supplied runners publish
+`action-cache.mjs` and `test-cache.mjs`. Set `SDK_FUZZ_CAMPAIGN` to its absolute
+module path before invoking the command. There is no implicit host path.
+Missing infrastructure fails explicitly. Supplied runners publish
 their terminal through the `log` callback;
 the entry point publishes FAIL if import or invocation fails before that receipt,
 or if the runner returns without one. A runner that publishes FAIL and then throws
