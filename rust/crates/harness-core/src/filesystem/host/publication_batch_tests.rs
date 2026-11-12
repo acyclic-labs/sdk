@@ -597,7 +597,7 @@ impl PublicationCase<'_> {
         let publication = io
             .sdk(
                 opened
-                    .operation_publication(filesystem_key(key), &io, &cancellation)
+                    .operation_publication(filesystem_key(key), None, &io, &cancellation)
                     .await,
             )?
             .ok_or_else(|| io.invalid("publication evidence is absent"))?;
@@ -847,7 +847,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         let publication = proof_io
             .sdk(
                 opened
-                    .operation_publication(filesystem_key(&key), &proof_io, &cancellation)
+                    .operation_publication(filesystem_key(&key), None, &proof_io, &cancellation)
                     .await,
             )?
             .ok_or_else(|| proof_io.invalid("conditional publication evidence is absent"))?;
@@ -884,11 +884,20 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             .evidence()
             .ok_or_else(|| proof_io.invalid("receipt absent"))?
             .len() as u64;
-        assert!(
-            host.observe_changes(&volume, &write, &key, receipt_bytes - 1, create_access)?
-                .await
-                .is_err()
-        );
+        let refused = host
+            .observe_changes(&volume, &write, &key, receipt_bytes - 1, create_access)?
+            .await
+            .expect_err("oversized receipt must refuse in the canonical decoder");
+        assert!(matches!(
+            refused,
+            Error::NativeWorkspace { source, .. }
+                if matches!(
+                    *source,
+                    WorkspaceError::Filesystem(acyclic_fs::FsError::Decode(
+                        acyclic_fs::kernel::CanonicalDecodeError::FieldTooLarge { .. }
+                    ))
+                )
+        ));
         let observed = host
             .observe_changes(&volume, &write, &key, receipt_bytes, create_access)?
             .await?

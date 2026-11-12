@@ -80,7 +80,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let Some(publication) = io.sdk(
                 opened
-                    .operation_publication(operation, io, io.cancellation())
+                    .operation_publication(
+                        operation,
+                        Some(maximum_receipt_bytes),
+                        io,
+                        io.cancellation(),
+                    )
                     .await,
             )?
             else {
@@ -90,9 +95,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let bytes = publication
                 .evidence()
                 .ok_or_else(|| io.invalid("conditional publication has no original evidence"))?;
-            if bytes.len() as u64 > maximum_receipt_bytes {
-                return Err(io.invalid("conditional publication receipt exceeds admitted size"));
-            }
             let receipt: ChangeReceipt = io.decode_json(bytes)?;
             if receipt.0 != 1 {
                 return Err(io.invalid("unsupported conditional publication receipt"));
@@ -336,7 +338,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             let prior = io.sdk(
                 opened
-                    .operation_publication(operation, io, io.cancellation())
+                    .operation_publication(operation, None, io, io.cancellation())
                     .await,
             )?;
             let root_cut = if opened.id() != root.id() && prior.is_none() {

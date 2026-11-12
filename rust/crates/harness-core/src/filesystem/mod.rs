@@ -317,7 +317,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             let prior = active_io.sdk(
                 opened
-                    .operation_publication(operation, active_io, active_io.cancellation())
+                    .operation_publication(operation, None, active_io, active_io.cancellation())
                     .await,
             )?;
             let root_cut = if opened.id() != root.id() && prior.is_none() {

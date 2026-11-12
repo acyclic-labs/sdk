@@ -114,6 +114,7 @@ where
             let decoded = decode_publication_evidence_with_accounting(
                 &record.payload,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
+                None,
                 accounting,
             )
             .map_err(E::from)?;

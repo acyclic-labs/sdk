@@ -76,6 +76,7 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
             let decoded = decode_publication_evidence_with_accounting(
                 &record.payload,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
+                None,
                 accounting,
             )?;
             return Ok(combiner::Candidate {

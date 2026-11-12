@@ -38,11 +38,15 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
             let mut header = bytes[..PAYLOAD_DOMAIN.len() + 2].to_vec();
             header[PAYLOAD_DOMAIN.len()..].copy_from_slice(&version.to_le_bytes());
             let mut steps = Vec::new();
-            let result =
-                decode_publication_evidence::<CanonicalDecodeError>(&header, u64::MAX, |step| {
+            let result = decode_publication_evidence::<CanonicalDecodeError>(
+                &header,
+                u64::MAX,
+                None,
+                |step| {
                     steps.push(step);
                     Ok(())
-                });
+                },
+            );
             assert!(
                 matches!(result, Err(CanonicalDecodeError::UnsupportedVersion { found, expected: 4 }) if found == version)
             );
@@ -57,12 +61,57 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
         let mut invalid_flags = bytes.clone();
         invalid_flags[publication_payload_length() - 1] = 4;
         assert!(
-            decode_publication_evidence::<CanonicalDecodeError>(&invalid_flags, u64::MAX, accept)
-                .is_err()
+            decode_publication_evidence::<CanonicalDecodeError>(
+                &invalid_flags,
+                u64::MAX,
+                None,
+                accept
+            )
+            .is_err()
         );
-        let decoded = decode_publication_evidence::<CanonicalDecodeError>(&bytes, length, accept)?;
+        let decoded =
+            decode_publication_evidence::<CanonicalDecodeError>(&bytes, length, None, accept)?;
         assert_eq!(decoded.publication, expected);
         assert_eq!(decoded.original_evidence, evidence);
+        let evidence_length = evidence.map_or(0, |evidence| evidence.len() as u64);
+        assert_eq!(
+            decode_publication_evidence::<CanonicalDecodeError>(
+                &bytes,
+                length,
+                Some(evidence_length),
+                accept,
+            )?,
+            decoded,
+        );
+        if let Some(evidence) = evidence {
+            let maximum = u32::try_from(evidence.len() - 1)?;
+            // Both a complete record and its bare length header must refuse
+            // before reading the evidence or digest, and before any hashing.
+            for input in [bytes.as_slice(), &bytes[..publication_payload_length() + 4]] {
+                let mut hashing = false;
+                let result = decode_publication_evidence::<CanonicalDecodeError>(
+                    input,
+                    length,
+                    Some(u64::from(maximum)),
+                    |step| {
+                        hashing |= matches!(
+                            step,
+                            crate::kernel::codec::ReadAllocationStep::BeforeHash(_)
+                                | crate::kernel::codec::ReadAllocationStep::Hashed(_)
+                        );
+                        Ok(())
+                    },
+                );
+                assert_eq!(
+                    result,
+                    Err(CanonicalDecodeError::FieldTooLarge {
+                        observed: u32::try_from(evidence.len())?,
+                        maximum,
+                    }),
+                );
+                assert!(!hashing, "oversized evidence reached hashing");
+            }
+        }
         assert_eq!(
             decode_published_generation(&bytes, length, accept)?,
             expected
@@ -154,6 +203,7 @@ fn composed_publication_retains_the_original_retry_request() -> TestResult {
         let decoded = decode_publication_evidence::<CanonicalDecodeError>(
             &bytes,
             bytes.len() as u64,
+            None,
             accept,
         )?;
         assert_eq!(decoded.publication.generation_root, effective);
@@ -164,6 +214,7 @@ fn composed_publication_retains_the_original_retry_request() -> TestResult {
                 decode_publication_evidence::<CanonicalDecodeError>(
                     &bytes[..length],
                     u64::MAX,
+                    None,
                     accept
                 )
                 .is_err()
@@ -172,12 +223,17 @@ fn composed_publication_retains_the_original_retry_request() -> TestResult {
         let mut invalid_epoch = bytes.clone();
         invalid_epoch[publication_payload_length()..publication_payload_length() + 8].fill(0);
         assert!(
-            decode_publication_evidence::<CanonicalDecodeError>(&invalid_epoch, u64::MAX, accept)
-                .is_err()
+            decode_publication_evidence::<CanonicalDecodeError>(
+                &invalid_epoch,
+                u64::MAX,
+                None,
+                accept
+            )
+            .is_err()
         );
         bytes.push(0);
         assert!(matches!(
-            decode_publication_evidence::<CanonicalDecodeError>(&bytes, u64::MAX, accept),
+            decode_publication_evidence::<CanonicalDecodeError>(&bytes, u64::MAX, None, accept),
             Err(CanonicalDecodeError::TrailingBytes)
         ));
     }
