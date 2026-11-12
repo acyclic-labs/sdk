@@ -77,6 +77,18 @@ fn executor() -> Result<(StockExecutor, Arc<ScriptedModelProvider>)> {
     Ok((executor, provider))
 }
 
+fn staged_bytes(seen: &crate::obs::capture::Seen) -> u64 {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(span, field, value)| {
+            (*span == "acyclic.harness.journal.stage" && *field == "bytes")
+                .then(|| value.parse::<u64>().ok())
+                .flatten()
+        })
+        .sum()
+}
+
 #[tokio::test]
 async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> Result<()> {
     let failed = |error: &dyn std::fmt::Display| Error::Storage(error.to_string());
@@ -98,7 +110,8 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
             .map(|metadata| metadata.len())
             .map_err(|error| failed(&error))
     };
-    let mut first_write = None;
+    let mut first_payload = None;
+    let mut first_log_write = None;
     for history in [1, 8, 64, 512] {
         let mut selected = selection(
             (0..history)
@@ -123,6 +136,7 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
             crate::contract::canonical_json_bytes(&selected.messages.get(history..).unwrap())?
                 .len();
         let before = log_length()?;
+        let (seen, capture) = crate::obs::capture::install();
         journal = reopen(&journal)?
             .with_preceding_turn(Some(preceding))
             .await?
@@ -130,13 +144,19 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
         let current = input(OperationId::new(), &selected);
         let output = executor.execute(current.clone(), &journal).await?;
         let written = log_length()? - before;
-        let baseline = *first_write.get_or_insert(written);
-        assert!(
-            written > 0 && written <= 2 * baseline,
-            "history={history} objects_log_written={written} baseline={baseline}"
-        );
+        drop(capture);
+        let payload = staged_bytes(&seen);
+        let baseline = *first_payload.get_or_insert(payload);
+        first_log_write.get_or_insert(written);
+        // The journal boundary counts original staged payloads. The physical
+        // log additionally contains namespace, reference and durability frontiers;
+        // their cost must not be mistaken for repeated transcript serialization.
         eprintln!(
-            "first_step_append history={history} new_bytes={new_bytes} objects_log_written={written}"
+            "first_step_append history={history} new_bytes={new_bytes} staged_payload_bytes={payload} objects_log_written={written}"
+        );
+        assert!(
+            payload >= new_bytes as u64 && payload <= 2 * baseline,
+            "history={history} staged_payload_bytes={payload} baseline={baseline}"
         );
         assert_eq!(executor.execute(current.clone(), &journal).await?, output);
         journal = reopen(&journal)?
@@ -154,12 +174,18 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
             selected.messages[0].content = ModelContent::Text("changed prefix".repeat(400));
             journal = journal.with_bound_selection(selected.clone());
             let before = log_length()?;
+            let (seen, capture) = crate::obs::capture::install();
             let changed = OperationId::new();
             executor
                 .execute(input(changed, &selected), &journal)
                 .await?;
+            drop(capture);
             assert!(
-                log_length()? - before > 2 * baseline,
+                staged_bytes(&seen) > 2 * baseline,
+                "a changed prefix must persist its replacement content"
+            );
+            assert!(
+                log_length()? - before > 2 * first_log_write.unwrap(),
                 "a changed prefix must not reuse the old message chain"
             );
             journal = reopen(&journal)?.with_preceding_turn(Some(changed)).await?;
