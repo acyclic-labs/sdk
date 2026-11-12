@@ -164,7 +164,7 @@ impl Error {
         if matches!(self, Self::IncompatibleCheckpointCodec) {
             acyclic_actors::guest::GuestError::IncompatibleCodec
         } else {
-            crate::Error::Agent(Box::new(self)).into_guest()
+            crate::Error::guest(self)
         }
     }
     /// Whether the failed work may yet succeed unchanged: a commit whose

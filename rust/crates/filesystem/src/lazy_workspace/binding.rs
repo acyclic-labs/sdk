@@ -325,11 +325,9 @@ impl<
                     .await?
                     .is_some(),
             };
+            let revision = state.revision;
             let next = LazyWorkspaceState {
-                revision: state
-                    .revision
-                    .checked_add(1)
-                    .ok_or(crate::WorkError::Overflow)?,
+                revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
                 overlay: if committed {
                     pending.prepared_overlay
                 } else {
@@ -341,11 +339,11 @@ impl<
                     pending.prior_shadows
                 },
                 pending_remove: None,
-                ..state.clone()
+                ..state
             };
             if self
                 .store
-                .compare_and_swap_lazy_workspace(self.workspace.id(), state.revision, next, ctx)
+                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
                 .await?
             {
                 return Ok(());

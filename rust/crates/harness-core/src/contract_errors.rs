@@ -889,11 +889,12 @@ impl Error {
     }
 
     /// Preserve undecided host work when crossing the actor guest boundary.
-    pub(crate) fn into_guest(self) -> acyclic_actors::guest::GuestError {
-        if self.uncertain() {
-            acyclic_actors::guest::GuestError::Pending(self.to_string())
+    pub(crate) fn guest(error: impl Into<Self>) -> acyclic_actors::guest::GuestError {
+        let error = error.into();
+        if error.uncertain() {
+            acyclic_actors::guest::GuestError::Pending(error.to_string())
         } else {
-            acyclic_actors::guest::GuestError::Handler(self.to_string())
+            acyclic_actors::guest::GuestError::Handler(error.to_string())
         }
     }
 

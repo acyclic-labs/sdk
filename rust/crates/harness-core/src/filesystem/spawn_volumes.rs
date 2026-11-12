@@ -46,7 +46,7 @@ impl From<ForkCutError> for GuestError {
     fn from(error: ForkCutError) -> Self {
         match error {
             ForkCutError::SourceChanged => Self::PreconditionChanged,
-            ForkCutError::Failed(error) => error.into_guest(),
+            ForkCutError::Failed(error) => crate::Error::guest(error),
         }
     }
 }
@@ -492,10 +492,6 @@ fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
 }
 
-fn backend_guest(error: impl Into<crate::Error>) -> GuestError {
-    error.into().into_guest()
-}
-
 impl<P, O> SpawnFork<P, O>
 where
     P: AuthorityProvider + ?Sized + 'static,
@@ -508,7 +504,7 @@ where
         let name = |volume: &VolumeRef| -> Result<WorkspaceName, GuestError> {
             WorkspaceName::new(text(volume)?, &WorkBudget::UNBOUNDED, &cancellation)
                 .map(|receipt| receipt.value)
-                .map_err(|failure| backend_guest(failure.error))
+                .map_err(|failure| crate::Error::guest(failure.error))
         };
         let mut heads = Vec::new();
         for planned in &self.planned {
@@ -526,7 +522,7 @@ where
                                 at,
                             )
                             .await
-                            .map_err(crate::Error::into_guest)?;
+                            .map_err(crate::Error::guest)?;
                             if saved.conversation != selection.conversation
                                 || saved.checkpoint != selection.checkpoint
                             {
@@ -556,7 +552,7 @@ where
                 let workspace = fs
                     .open_workspace(&source_name, WorkBudget::UNBOUNDED, &cancellation)
                     .await
-                    .map_err(|failure| backend_guest(failure.error))?
+                    .map_err(|failure| crate::Error::guest(failure.error))?
                     .value;
                 let selected = saved.as_ref().map(|saved| saved.retained_generation);
                 let cut = match &self.cuts {
@@ -578,14 +574,14 @@ where
                         workspace
                             .generation(cut, WorkBudget::UNBOUNDED, &cancellation)
                             .await
-                            .map_err(|failure| backend_guest(failure.error))?
+                            .map_err(|failure| crate::Error::guest(failure.error))?
                             .value
                     }
                     None => {
                         workspace
                             .head(WorkBudget::UNBOUNDED, &cancellation)
                             .await
-                            .map_err(|failure| backend_guest(failure.error))?
+                            .map_err(|failure| crate::Error::guest(failure.error))?
                             .value
                     }
                 };
@@ -627,7 +623,7 @@ where
         }
         fs.prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .map_err(|failure| backend_guest(failure.error))?;
+            .map_err(|failure| crate::Error::guest(failure.error))?;
         // Sources read one after another are one consistent cut only if none
         // advanced before the commit applies: each source forked at its head
         // must still be at that head, or the whole spawn is refused. A
@@ -642,7 +638,7 @@ where
                     &cancellation,
                 )
                 .await
-                .map_err(|failure| backend_guest(failure.error))?;
+                .map_err(|failure| crate::Error::guest(failure.error))?;
             }
         }
         fs.prepare_create_many(
@@ -652,9 +648,9 @@ where
             &cancellation,
         )
         .await
-        .map_err(|failure| backend_guest(failure.error))?;
+        .map_err(|failure| crate::Error::guest(failure.error))?;
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|failure| backend_guest(failure.error))?;
+            .map_err(|failure| crate::Error::guest(failure.error))?;
         Ok(commit)
     }
 }
@@ -707,7 +703,7 @@ where
                         &CancellationToken::new(),
                     )
                     .await
-                    .map_err(|failure| backend_guest(failure.error))?;
+                    .map_err(|failure| crate::Error::guest(failure.error))?;
             }
             Ok(())
         })

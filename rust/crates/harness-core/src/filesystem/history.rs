@@ -18,10 +18,6 @@ fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
 }
 
-fn backend_guest(error: impl Into<crate::Error>) -> GuestError {
-    error.into().into_guest()
-}
-
 /// Read exactly one indexed checkpoint through the authoritative stream owner.
 pub async fn read<P: StreamProvider + ?Sized>(
     stream: &P,
@@ -104,7 +100,7 @@ where
                 if mode.files() {
                     let saved = read(fs.stream_provider().as_ref(), &parent.path, *at)
                         .await
-                        .map_err(crate::Error::into_guest)?;
+                        .map_err(crate::Error::guest)?;
                     Some((entry, saved, expected))
                 } else {
                     if !expected.is_empty() {
@@ -136,12 +132,12 @@ where
                 &cancel,
             )
             .await
-            .map_err(|failure| backend_guest(failure.error))?
+            .map_err(|failure| crate::Error::guest(failure.error))?
             .value;
         let head = workspace
             .head(WorkBudget::UNBOUNDED, &cancel)
             .await
-            .map_err(|failure| backend_guest(failure.error))?
+            .map_err(|failure| crate::Error::guest(failure.error))?
             .value;
         volumes.push((binding.clone(), head));
     }
@@ -169,13 +165,13 @@ where
             let workspace = fs
                 .open_workspace(&source.retained_workspace, WorkBudget::UNBOUNDED, &cancel)
                 .await
-                .map_err(|failure| backend_guest(failure.error))?
+                .map_err(|failure| crate::Error::guest(failure.error))?
                 .value;
             sources.push(
                 workspace
                     .generation(source.retained_generation, WorkBudget::UNBOUNDED, &cancel)
                     .await
-                    .map_err(|failure| backend_guest(failure.error))?
+                    .map_err(|failure| crate::Error::guest(failure.error))?
                     .value,
             );
         }
@@ -195,7 +191,7 @@ where
             .await
             .map_err(|failure| match failure.error {
                 acyclic_fs::WorkspaceError::StaleGeneration => GuestError::PreconditionChanged,
-                error => backend_guest(error),
+                error => crate::Error::guest(error),
             })?
             .value;
         for ((_, head), generation) in volumes.iter_mut().zip(restored) {
@@ -207,7 +203,7 @@ where
         for (_, head) in &volumes {
             fs.require_head(head, commit, WorkBudget::UNBOUNDED, &cancel)
                 .await
-                .map_err(|failure| backend_guest(failure.error))?;
+                .map_err(|failure| crate::Error::guest(failure.error))?;
         }
     }
     let mut sequence = parent.conversation_tail;
@@ -218,7 +214,7 @@ where
         Some(
             read(fs.stream_provider().as_ref(), &parent.path, sequence - 1)
                 .await
-                .map_err(crate::Error::into_guest)?,
+                .map_err(crate::Error::guest)?,
         )
     };
     let mut context = match &previous {
@@ -250,7 +246,7 @@ where
                         }
                         read(fs.stream_provider().as_ref(), &parent.path, *at)
                             .await
-                            .map_err(crate::Error::into_guest)?
+                            .map_err(crate::Error::guest)?
                             .context
                     }
                 })
@@ -345,7 +341,7 @@ where
                 &WorkBudget::UNBOUNDED,
                 &cancel,
             )
-            .map_err(|failure| backend_guest(failure.error))?
+            .map_err(|failure| crate::Error::guest(failure.error))?
             .value;
             let retained_workspace = destination.as_str().to_owned();
             if let Some(cuts) = cuts {
@@ -375,7 +371,7 @@ where
                     &cancel,
                 )
                 .await
-                .map_err(|failure| backend_guest(failure.error))?
+                .map_err(|failure| crate::Error::guest(failure.error))?
                 .value;
             let prepared = prepared
                 .first()
