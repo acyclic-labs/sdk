@@ -1,4 +1,5 @@
 use super::*;
+use crate::filesystem::PreparationIo;
 use acyclic_fs::access::{Action as FsAction, Effect, Policy};
 use acyclic_fs::{
     CancellationToken, WorkBudget,
@@ -42,16 +43,6 @@ async fn policy(
     deny: Option<FsAction>,
     path: &str,
 ) -> Result<()> {
-    let cancel = CancellationToken::new();
-    let workspace = fs
-        .open_workspace(
-            storage.volume.storage_name(&mut None)?,
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        )
-        .await
-        .map_err(|failure| super::super::super::map_error(failure.error))?
-        .value;
     let mut policy: Policy = serde_json::from_slice(super::super::super::access::INITIAL_POLICY)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     policy.version = version;
@@ -63,6 +54,24 @@ async fn policy(
         deny.resource.path = path.into();
         policy.layers[0].push(deny);
     }
+    publish_policy(fs, storage, &policy).await
+}
+
+async fn publish_policy(
+    fs: &acyclic_fs::MemoryFs,
+    storage: &MemoryHarnessStorage,
+    policy: &Policy,
+) -> Result<()> {
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .open_workspace(
+            storage.volume.storage_name(&mut None)?,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| super::super::super::map_error(failure.error))?
+        .value;
     let mut checkout = workspace
         .checkout(
             GenerationSelector::Head,
@@ -75,7 +84,7 @@ async fn policy(
         .value;
     checkout
         .write_access_policy(
-            &serde_json::to_vec(&policy).map_err(|error| Error::Invalid(error.to_string()))?,
+            &serde_json::to_vec(policy).map_err(|error| Error::Invalid(error.to_string()))?,
             acyclic_fs::NamedAttributeWriteMode::Replace,
             WorkBudget::UNBOUNDED,
             &cancel,
@@ -100,6 +109,144 @@ async fn policy(
         )
         .await
         .map_err(|failure| super::super::super::map_error(failure.error.into()))?;
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
+async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()> {
+    for structured in [false, true] {
+        let fs = Fs::memory();
+        let agent = AgentId::new();
+        let storage = MemoryHarnessStorage::from_providers(
+            agent,
+            4096,
+            fs.clone(),
+            Arc::new(MemoryStream::default()),
+        )
+        .await?;
+        let file = storage
+            .stage(
+                OperationId::new(),
+                "ordinary",
+                b"original",
+                "text/plain",
+                "file",
+            )
+            .await?;
+        let structured = structured
+            .then(|| {
+                acyclic_fs::access::Capability::whole_volume(None, &FsAction::ALL).to_scope_label()
+            })
+            .transpose()
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let guest_capabilities = Capabilities::new(
+            storage
+                .scope
+                .capabilities()
+                .iter()
+                .chain(structured.as_deref()),
+        );
+        let capabilities = Capabilities::new(guest_capabilities.iter().chain(["role:control"]));
+        let owner = storage.issuer.bootstrap_scope(
+            "control-owner",
+            &capabilities,
+            Some(agent),
+            &mut None,
+        )?;
+        let guest = storage
+            .issuer
+            .attenuate(&owner, "guest", &guest_capabilities)?;
+        let verifier = storage.issuer.verifier(&mut None)?;
+        let read = |scope| {
+            ContentGrant::verify(
+                &verifier,
+                scope,
+                &storage.volume,
+                VolumeOperation::Read,
+                &mut None,
+            )
+        };
+        let owner_read = read(&owner)?;
+        let guest_read = read(&guest)?;
+        let mut restricted: Policy =
+            serde_json::from_slice(super::super::super::access::INITIAL_POLICY)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        restricted.version += 1;
+        restricted.layers[0][0].conditions.role = Some("control".into());
+        publish_policy(&fs, &storage, &restricted).await?;
+        let cancel = CancellationToken::new();
+        let budget = FINITE_CONTENT_BUDGET;
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let owned = PreparationIo::from_budget(budget, &cancel)?;
+        let original = PreparationIo::from_native_work(&native)?;
+        for io in [None, Some(&owned), Some(&original)] {
+            assert_eq!(
+                storage
+                    .host
+                    .read_content(&file, &owner_read, 4096, io)
+                    .await?
+                    .as_ref(),
+                b"original"
+            );
+            assert!(matches!(
+                storage.host.read_content(&file, &guest_read, 4096, io).await,
+                Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized
+            ));
+            // Removing the claim from a caller ceiling restricts an authenticated
+            // owner; adding it to an unprivileged caller never fabricates a role.
+            for (grant, ceiling) in [
+                (&owner_read, guest.capabilities()),
+                (&guest_read, owner.capabilities()),
+            ] {
+                assert!(matches!(
+                    storage.host.read_private_path(
+                        &storage.volume, grant, "ordinary", None, 4096,
+                        crate::conversation::ContentAccess { ceiling: Some(ceiling), io },
+                    ).await,
+                    Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized
+                ));
+            }
+        }
+        restricted.version += 1;
+        restricted.layers[0][0].conditions.role = None;
+        publish_policy(&fs, &storage, &restricted).await?;
+        assert_eq!(
+            storage
+                .host
+                .read_content(&file, &guest_read, 4096, None)
+                .await?
+                .as_ref(),
+            b"original"
+        );
+        // A deny-role is not safe with attenuatable claims. Both removing it in
+        // the signed scope and omitting it from a caller ceiling must refuse at
+        // the persisted-policy boundary, rather than disclose the same file.
+        restricted.version += 1;
+        let mut deny = restricted.layers[0][0].clone();
+        deny.id = "restricted-role".into();
+        deny.effect = Effect::Deny;
+        deny.actions = [FsAction::Read].into_iter().collect();
+        deny.conditions.role = Some("control".into());
+        restricted.layers[0].push(deny);
+        publish_policy(&fs, &storage, &restricted).await?;
+        for io in [None, Some(&owned), Some(&original)] {
+            for (grant, ceiling) in [
+                (&owner_read, None),
+                (&guest_read, None),
+                (&owner_read, Some(guest.capabilities())),
+            ] {
+                assert!(matches!(
+                    storage.host.read_private_path(
+                        &storage.volume, grant, "ordinary", None, 4096,
+                        crate::conversation::ContentAccess { ceiling, io },
+                    ).await,
+                    Err(error) if error.code() == crate::wire::ErrorCode::Unsupported
+                ));
+            }
+        }
+    }
     Ok(())
 }
 

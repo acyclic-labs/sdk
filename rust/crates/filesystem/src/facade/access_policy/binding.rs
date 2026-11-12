@@ -1,7 +1,5 @@
 use super::*;
-use crate::access::{
-    AccessBinding, AuthenticatedFacts, Generations, InvalidPolicy, PathTrie, Resource,
-};
+use crate::access::{AccessBinding, Generations, InvalidPolicy, PathTrie, Resource};
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// Load the authenticated policy revision, select generation facts, and
@@ -34,12 +32,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .compiled_access_policy_accounted(accounting, cancellation)
             .await?;
         accounting.charge_items(1)?;
-        let facts_supported = match binding.facts {
-            AuthenticatedFacts::Identity => policy.uses_only_authenticated_identity(),
-            AuthenticatedFacts::MetadataStream => policy.permits_metadata_stream(),
-            AuthenticatedFacts::Coarse => policy.permits_coarse_binding(),
-        };
-        if !facts_supported {
+        if !policy.accepts_facts(binding.facts) {
             return Err(FsError::UnauthenticatedAccessFacts);
         }
         let (generation, head) = self

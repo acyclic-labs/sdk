@@ -17,6 +17,10 @@ pub const COMPONENT_LABEL_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
 pub mod capability {
     use std::fmt::Display;
 
+    /// Signed role names for persisted filesystem policy. A caller ceiling can
+    /// remove these claims but cannot supply a role absent from its owner scope.
+    pub const FILESYSTEM_ROLE_PREFIX: &str = "role:";
+
     pub(crate) const CONVERSATION_BIND: &str = "conversation:bind";
     pub(crate) const CONVERSATION_APPEND: &str = "conversation:append";
     pub(crate) const CONVERSATION_SELECT_CONTEXT: &str = "conversation:select_context";

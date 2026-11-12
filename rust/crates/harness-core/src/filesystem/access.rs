@@ -1,4 +1,5 @@
 use super::*;
+use crate::store::history::HistoryIo as _;
 use acyclic_fs::access::{Action, Capability, Context, PathTrie, Principal, PrincipalKind};
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_stream::UnixMillisClock as _;
@@ -275,14 +276,14 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
         };
         let mut head = (head, head_hold);
         let policy_generation = head.0.generation_id();
-        let principal = authenticated_principal(scope, io)?;
+        let principal = authenticated_principal(scope, ceiling, io)?;
         let view = io.sdk(
             head.0
                 .compile_access(
                     acyclic_fs::access::AccessBinding {
                         principal: &principal.0,
                         capability: &capability.0,
-                        facts: acyclic_fs::access::AuthenticatedFacts::Identity,
+                        facts: acyclic_fs::access::AuthenticatedFacts::IdentityAndRoles,
                         generation,
                         context: Context {
                             now: access_now()?,
@@ -357,13 +358,31 @@ fn intersect_capabilities<'a>(
 
 fn authenticated_principal<'a>(
     scope: &Scope,
+    ceiling: Option<&crate::Capabilities>,
     io: &'a PreparationIo,
 ) -> Result<(Principal, DecodeReservation<'a>)> {
     let subject = crate::executor::with_history_io(Some(io), |work| match scope.agent() {
         Some(agent) => crate::executor::preparation_format(format_args!("{agent}"), work),
         None => crate::executor::preparation_format(format_args!("{}", scope.issuer()), work),
     })?;
-    let subject_hold = io.guard_owned(subject.capacity() as u64)?;
+    let mut hold = io.guard_owned(subject.capacity() as u64)?;
+    let mut roles = std::collections::BTreeSet::new();
+    let prefix = crate::contract::capability::FILESYSTEM_ROLE_PREFIX;
+    for label in scope.capabilities().with_prefix(prefix) {
+        io.charged(WorkCounters {
+            items_examined: 1,
+            ..Default::default()
+        })?;
+        if ceiling.is_some_and(|ceiling| !ceiling.contains(label)) {
+            continue;
+        }
+        let entry = io.reserve_decode(std::mem::size_of::<String>() as u64)?;
+        let role = io.history_io().clone_text(&label[prefix.len()..])?;
+        let text = io.guard_owned(role.capacity() as u64)?;
+        roles.insert(role);
+        hold.absorb(entry)?;
+        hold.absorb(text)?;
+    }
     let principal = (
         Principal {
             kind: if scope.agent().is_some() {
@@ -374,11 +393,11 @@ fn authenticated_principal<'a>(
             id: subject,
             lineage: vec![],
             groups: Default::default(),
-            roles: Default::default(),
+            roles,
             tags: Default::default(),
             attributes: Default::default(),
         },
-        subject_hold,
+        hold,
     );
     Ok(principal)
 }

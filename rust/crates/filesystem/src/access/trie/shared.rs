@@ -1,5 +1,7 @@
 use super::*;
-use crate::access::{Conditions, Effect, Generations, PrincipalKind, ResourcePattern, Rule};
+use crate::access::{
+    AuthenticatedFacts, Conditions, Effect, Generations, PrincipalKind, ResourcePattern, Rule,
+};
 use std::cell::RefCell;
 use std::sync::Arc;
 
@@ -91,9 +93,7 @@ pub struct CompiledPolicy {
     config: crate::VolumeConfig,
     needs_ordinal: bool,
     generation_sensitive: bool,
-    authenticated_facts: bool,
-    metadata_stream: bool,
-    coarse: bool,
+    required_facts: u8,
     constant: bool,
     expiries: Vec<u64>,
     pub(crate) cache_charge: Option<crate::facade::policy_cache::CacheCharge>,
@@ -150,32 +150,34 @@ impl CompiledPolicy {
         let generation_sensitive = policy.layers.iter().flatten().any(|rule| {
             rule.resource.generations != Generations::All || rule.conditions.generations.is_some()
         });
-        let authenticated_facts = policy.layers.iter().flatten().all(|rule| {
-            rule.principal.group.is_none()
-                && rule.principal.attributes.is_empty()
-                && rule.conditions.role.is_none()
-                && rule.conditions.tag.is_none()
-                && rule.conditions.relation.is_none()
-                && rule.conditions.approvals.is_none()
-                && rule.resource.lineage_root.is_none()
-        });
-        let coarse = policy.layers.iter().flatten().all(|rule| {
-            rule.principal == super::super::PrincipalPattern::default()
-                && rule.resource.lineage_root.is_none()
-                && rule.resource.generations == Generations::All
-                && rule.conditions.generations.is_none()
-                && rule.conditions.relation.is_none()
-                && rule.conditions.role.is_none()
-                && rule.conditions.tag.is_none()
-                && rule.conditions.approvals.is_none()
-        });
-        let metadata_stream = policy.layers.iter().flatten().all(|rule| {
-            rule.resource.lineage_root.is_none()
-                && rule.resource.generations == Generations::All
-                && rule.conditions.generations.is_none()
-                && rule.conditions.relation.is_none()
-                && rule.conditions.tag.is_none()
-                && rule.conditions.approvals.is_none()
+        let required_facts = policy.layers.iter().flatten().fold(0, |mut facts, rule| {
+            if rule.principal.kind.is_some() || rule.principal.id.is_some() {
+                facts |= AuthenticatedFacts::IDENTITY;
+            }
+            if rule.principal.group.is_some() || !rule.principal.attributes.is_empty() {
+                facts |= AuthenticatedFacts::CLAIMS;
+            }
+            if rule.conditions.role.is_some() {
+                facts |= AuthenticatedFacts::ROLES;
+                if rule.effect == Effect::Deny {
+                    facts |= AuthenticatedFacts::COMPLETE_ROLES;
+                }
+            }
+            if rule.conditions.tag.is_some() {
+                facts |= AuthenticatedFacts::TAGS;
+            }
+            if rule.conditions.relation.is_some() || rule.resource.lineage_root.is_some() {
+                facts |= AuthenticatedFacts::ANCESTRY;
+            }
+            if rule.conditions.approvals.is_some() {
+                facts |= AuthenticatedFacts::APPROVALS;
+            }
+            if rule.resource.generations != Generations::All
+                || rule.conditions.generations.is_some()
+            {
+                facts |= AuthenticatedFacts::GENERATIONS;
+            }
+            facts
         });
         let mut rules = Vec::with_capacity(count);
         let mut layers = Vec::with_capacity(policy.layers.len());
@@ -216,9 +218,7 @@ impl CompiledPolicy {
             config,
             needs_ordinal,
             generation_sensitive,
-            authenticated_facts,
-            metadata_stream,
-            coarse,
+            required_facts,
             constant,
             expiries,
             cache_charge: None,
@@ -232,13 +232,10 @@ impl CompiledPolicy {
     /// Whether all facts used by this policy are supplied by signed identity and
     /// generation alone; other facts require an embedding's authenticated source.
     pub const fn uses_only_authenticated_identity(&self) -> bool {
-        self.authenticated_facts
+        self.accepts_facts(AuthenticatedFacts::Identity)
     }
-    pub(crate) const fn permits_coarse_binding(&self) -> bool {
-        self.coarse
-    }
-    pub(crate) const fn permits_metadata_stream(&self) -> bool {
-        self.metadata_stream
+    pub(crate) const fn accepts_facts(&self, supplied: AuthenticatedFacts) -> bool {
+        self.required_facts & !supplied.supplied() == 0
     }
 
     /// Exact retained vector/string capacities, including the shared Arc header.

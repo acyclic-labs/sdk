@@ -1,5 +1,13 @@
 # Native execution capabilities
 
+Persisted filesystem policies can require a role authenticated by a signed
+`role:NAME` scope capability. The native harness supplies `NAME` only when the
+original scope and any caller ceiling both carry that capability. Ordinary
+attenuation removes the claim. Original filesystem capability layers, generation
+fences and live policy checks remain authoritative. These role bindings supply
+identity and roles; policy predicates requiring groups, attributes, tags,
+ancestry or approvals still require an adapter authenticating those facts.
+
 Automatic child-publication journals use payload format v2: source entries pin
 the completed generation, and cursors retain the acknowledged operation until
 its result is released. Version 1 journals cannot prove those facts. They are
@@ -469,3 +477,5 @@ native policy until its last owner retires. Neither path adds a per-agent
 process, mount, timer, watcher, thread or daemon.
 Landlock rule construction and seccomp installation buy filesystem, network
 and escape enforcement. Custody remains the existing host-loss/retirement owner.
+
+Filesystem roles derived from signed capabilities are attenuatable privileges. The shared persisted-policy binder accepts role-conditioned allows for that adapter and refuses role-conditioned denies, because removing a signed role or caller-ceiling label must never increase access. Metadata-stream bindings retain complete authenticated role facts and can enforce both effects. The one compiled fact-requirement mask enforces this distinction before decisions.

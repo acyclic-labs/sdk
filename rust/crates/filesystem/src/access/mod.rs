@@ -44,11 +44,38 @@ pub use trie::{CompiledPolicy, PathTrie, PinnedPath, PreparedPath};
 pub enum AuthenticatedFacts {
     /// Only the issuer/agent identity is verified (no groups or approvals).
     Identity,
+    /// Identity and attenuatable roles are authenticated; generations are fenced.
+    /// Roles may grant access but cannot condition denies: dropping a role must
+    /// never increase access. No groups, attributes, tags, ancestry or approvals.
+    IdentityAndRoles,
     /// The stream verifier authenticated principal claims, but no task ancestry
     /// or approvals, and cannot fence generation-sensitive disclosures.
     MetadataStream,
     /// A coarse adapter cannot enforce path or caller-specific restrictions.
     Coarse,
+}
+
+impl AuthenticatedFacts {
+    const IDENTITY: u8 = 1;
+    const CLAIMS: u8 = 2;
+    const ROLES: u8 = 4;
+    const TAGS: u8 = 8;
+    const ANCESTRY: u8 = 16;
+    const APPROVALS: u8 = 32;
+    const GENERATIONS: u8 = 64;
+    // A complete, non-attenuatable role set is required by role-conditioned denies.
+    const COMPLETE_ROLES: u8 = 128;
+
+    const fn supplied(self) -> u8 {
+        match self {
+            Self::Identity => Self::IDENTITY | Self::GENERATIONS,
+            Self::IdentityAndRoles => Self::IDENTITY | Self::ROLES | Self::GENERATIONS,
+            Self::MetadataStream => {
+                Self::IDENTITY | Self::CLAIMS | Self::ROLES | Self::COMPLETE_ROLES
+            }
+            Self::Coarse => 0,
+        }
+    }
 }
 
 /// Authenticated inputs for the filesystem's single persisted-policy binder.
