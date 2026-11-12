@@ -6,5 +6,4 @@
   <os>{os}</os>
   <current_date>{current_date}</current_date>
   <timezone>{timezone}</timezone>
-  <model>{model}</model>
 </environment_context>

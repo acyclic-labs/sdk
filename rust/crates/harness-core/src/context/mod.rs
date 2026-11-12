@@ -38,8 +38,6 @@ mod epoch;
 pub use epoch::{CONTEXT_CHANGED, ContextChange, ContextEpoch};
 mod manifest;
 pub use manifest::ContextManifest;
-#[doc(hidden)]
-pub use manifest::DEFAULT_CONVENTIONS_JSON;
 
 mod checkpoint;
 pub use checkpoint::*;
