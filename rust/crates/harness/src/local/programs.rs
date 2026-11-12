@@ -28,6 +28,10 @@ impl ToolSource for Programs {
         true
     }
 
+    fn capability(&self) -> Option<&str> {
+        Some("tool:call:shell")
+    }
+
     fn load<'a>(&'a self, name: &'a str) -> BoxProviderFuture<'a, Result<Option<Arc<Tool>>>> {
         Box::pin(async move {
             if !crate::contract::is_valid_component_label(name)
