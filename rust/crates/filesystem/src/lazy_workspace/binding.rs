@@ -383,6 +383,7 @@ impl<
             .workspace_operation_generation(
                 &self.workspace.volume,
                 key.operation_id(),
+                Some(self.workspace.limits().maximum_object_bytes),
                 ctx,
                 cancellation(ctx),
             )

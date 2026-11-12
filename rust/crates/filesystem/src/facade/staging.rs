@@ -139,6 +139,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .workspace_operation_generation(
                 workspace,
                 operation_id,
+                None,
                 &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
                 &cancellation,
             )

@@ -69,6 +69,26 @@ async fn exercise_original_publication<
         workspace.head(budget, &cancellation).await?.value.id(),
         current
     );
+    // Selected-import recovery supplies its configured bound to this same
+    // decoder. Refuse the envelope before decoding or hashing its evidence.
+    let mut bounded = KernelAccounting::standalone(budget, &cancellation);
+    let failure = filesystem
+        .workspace_operation_generation(
+            &workspace.volume,
+            key.operation_id(),
+            Some(1),
+            &mut bounded,
+            &cancellation,
+        )
+        .await
+        .err()
+        .ok_or("oversized publication evidence was admitted")?;
+    assert!(matches!(
+        failure,
+        WorkspaceError::Filesystem(crate::FsError::Decode(
+            crate::kernel::CanonicalDecodeError::ObjectTooLarge { maximum: 1, .. }
+        ))
+    ));
     #[cfg(not(target_arch = "wasm32"))]
     {
         crate::initialize_test_native_io();

@@ -51,6 +51,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 .workspace_operation_generation(
                     &self.volume,
                     key.operation_id(),
+                    None,
                     &mut accounting,
                     cancellation,
                 )
@@ -220,6 +221,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             .workspace_operation_generation(
                 &self.volume,
                 key.operation_id(),
+                None,
                 &mut accounting,
                 cancellation,
             )

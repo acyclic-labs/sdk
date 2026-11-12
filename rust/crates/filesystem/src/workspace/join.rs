@@ -215,6 +215,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinBuilde
                     .workspace_operation_generation(
                         &self.target.volume,
                         key.operation_id(),
+                        None,
                         &mut accounting,
                         cancellation,
                     )

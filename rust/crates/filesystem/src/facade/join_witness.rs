@@ -166,6 +166,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         workspace: &Volume<A, O>,
         operation_id: OperationId,
+        maximum_payload_bytes: Option<u64>,
         accounting: &mut KernelAccounting<'_>,
         _cancellation: &CancellationToken,
     ) -> Result<
@@ -201,7 +202,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 let decoded = crate::kernel::decode_publication_evidence_with_accounting(
                     &record.payload,
-                    record.payload.len() as u64,
+                    maximum_payload_bytes.unwrap_or(record.payload.len() as u64),
                     accounting,
                 )?;
                 if decoded.publication.volume_id != workspace.id {
