@@ -394,10 +394,10 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
-    /// The executor's existing per-part render allowance, if finite. Selection
-    /// chunks pending events under this same allowance before request admission.
-    fn render_bytes(&self) -> Option<u64> {
-        None
+    /// The executor's admitted content bounds. Selection chunks announcements
+    /// and pending events under these same bounds before request admission.
+    fn content_limits(&self) -> crate::conversation::Limits {
+        Default::default()
     }
 
     /// Executor for `agent`'s turn `turn` on `input`.
@@ -1479,8 +1479,9 @@ impl<'a> TurnContext<'a> {
         reader: &dyn ContentResidencyVerifier,
         input: &ModelContent,
         announcements: &[crate::agent::AnnouncedDocument],
-        render_bytes: Option<u64>,
+        content_limits: crate::conversation::Limits,
     ) -> Result<SelectedModelContext> {
+        let render_bytes = Some(content_limits.render_bytes);
         let Self {
             checkpoint,
             settled,
@@ -1567,7 +1568,7 @@ impl<'a> TurnContext<'a> {
             }
             if !announced.is_empty() {
                 for (part, content) in
-                    crate::agent::announcement_messages(&announced, reader, render_bytes)
+                    crate::agent::announcement_messages(&announced, reader, content_limits)
                         .await?
                         .into_iter()
                         .enumerate()
@@ -1612,7 +1613,7 @@ impl<'a> TurnContext<'a> {
         }
         if !announcements.is_empty() {
             for (part, content) in
-                crate::agent::announcement_messages(announcements, reader, render_bytes)
+                crate::agent::announcement_messages(announcements, reader, content_limits)
                     .await?
                     .into_iter()
                     .enumerate()
@@ -2020,7 +2021,7 @@ where
                     Arc::clone(bindings.content.writer.as_ref().ok_or_else(|| {
                         Error::Invalid("agent turn has no private writer".into())
                     })?),
-                    self.executors.render_bytes(),
+                    Some(self.executors.content_limits().render_bytes),
                 );
                 // Each call dispatches only once the effects of the turn's earlier
                 // calls committed, so it reaches what they created, and a `wait`
@@ -2039,7 +2040,7 @@ where
                         &*bindings.content.reader,
                         input,
                         &announcements,
-                        self.executors.render_bytes(),
+                        self.executors.content_limits(),
                     )
                     .await?;
                 // The original selection validator requires the current input to

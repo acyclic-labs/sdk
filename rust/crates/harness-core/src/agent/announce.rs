@@ -157,15 +157,15 @@ impl AnnouncedDocument {
 }
 
 /// Appended messages for this turn's changed documents and instructions.
-/// Each contains one source identity and at most one bounded text part, fitting
-/// even the smallest supported attachment allowance without a count ceiling.
+/// Small sources retain their original file parts. Larger sources use bounded
+/// text parts; messages are packed under the admitted attachment allowance.
 pub async fn announcement_messages(
     documents: &[AnnouncedDocument],
     reader: &dyn crate::conversation::ContentResidencyVerifier,
-    render_bytes: Option<u64>,
+    limits: crate::conversation::Limits,
 ) -> crate::Result<Vec<crate::model::ModelContent>> {
     use crate::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
-    let mut messages = Vec::new();
+    let mut parts = Vec::new();
     for document in documents {
         for file in std::iter::once(&document.file).chain(
             document
@@ -173,25 +173,43 @@ pub async fn announcement_messages(
                 .iter()
                 .map(|selection| &selection.content),
         ) {
-            // Retain the immutable selection's identity without requiring the
-            // aggregate body to fit a single file/render allowance.
-            let reference = ModelContentPart::File {
+            let complete = file.descriptor().byte_length() <= limits.file_bytes
+                && file.descriptor().byte_length() <= limits.render_bytes;
+            parts.push(ModelContentPart::File {
                 file: file.clone(),
-                policy: FileProjectionPolicy::Reference,
-            };
+                policy: if complete {
+                    FileProjectionPolicy::BoundedFull
+                } else {
+                    FileProjectionPolicy::Reference
+                },
+            });
+            if complete {
+                continue;
+            }
             let bytes = reader
                 .read(file, file.descriptor().byte_length(), None, None)?
                 .await?;
             let text = std::str::from_utf8(&bytes)
                 .map_err(|_| crate::Error::Invalid("announcement is not UTF-8".into()))?;
-            if text.is_empty() {
-                messages.push(ModelContent::Part(reference));
-            } else {
-                for part in ModelContent::bounded_text_parts(text, render_bytes)? {
-                    messages.push(ModelContent::Parts(vec![reference.clone(), part]));
-                }
-            }
+            parts.extend(ModelContent::bounded_text_parts(
+                text,
+                Some(limits.render_bytes),
+            )?);
         }
+    }
+    let maximum = limits
+        .attachments
+        .map_or(usize::MAX, |count| count.get().saturating_add(1));
+    let mut messages = Vec::new();
+    let mut message = Vec::new();
+    for part in parts {
+        if message.len() == maximum {
+            messages.push(ModelContent::Parts(std::mem::take(&mut message)));
+        }
+        message.push(part);
+    }
+    if !message.is_empty() {
+        messages.push(ModelContent::Parts(message));
     }
     Ok(messages)
 }

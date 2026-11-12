@@ -46,6 +46,7 @@ impl acyclic_harness_core::filesystem::TurnContext for InstructionTools {
                 acyclic_harness_core::runtime::RuntimeScope::new(
                     Capabilities::new([
                         "tool:call:wait".to_owned(),
+                        acyclic_harness_core::contract::capability::INTERACTION_ROUTE.to_owned(),
                         acyclic_harness_core::contract::capability::MODEL_GENERATE.to_owned(),
                         private.capability(VolumeOperation::Read, &mut None)?,
                         private.capability(VolumeOperation::Write, &mut None)?,
@@ -59,8 +60,8 @@ impl acyclic_harness_core::filesystem::TurnContext for InstructionTools {
 }
 
 impl TurnExecutors for Exposed {
-    fn render_bytes(&self) -> Option<u64> {
-        self.turns.render_bytes()
+    fn content_limits(&self) -> acyclic_harness_core::conversation::Limits {
+        self.turns.content_limits()
     }
 
     fn executor<'a>(
@@ -357,6 +358,7 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
     let grants = Capabilities::new([
         volume.capability(VolumeOperation::Write, &mut None)?,
         volume.capability(VolumeOperation::Read, &mut None)?,
+        volume.directory_read_capability("", &mut None)?,
     ]);
     let scope = issuer.bootstrap_scope("large-document", &grants, None, &mut None)?;
     let verifier = issuer.verifier(&mut None)?;
@@ -420,7 +422,7 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
             instructions: None,
         }],
         reader.as_ref(),
-        Some(limits.render_bytes),
+        limits,
     )
     .await?;
     for message in &delta {
@@ -798,15 +800,8 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
         let requests = model.requests();
         assert_eq!(requests.len(), 2);
         assert!(requests[1].messages.starts_with(&requests[0].messages));
-        let rendered = requests[0]
-            .messages
+        let rendered = requests[0].messages[..requests[0].messages.len() - 1]
             .iter()
-            .filter(|message| {
-                message
-                    .content
-                    .file_refs()
-                    .any(|file| *file == selection.content)
-            })
             .flat_map(|message| message.content.parts())
             .filter_map(|part| match part {
                 ModelContentPart::Text { text, .. } => Some(text.as_str()),

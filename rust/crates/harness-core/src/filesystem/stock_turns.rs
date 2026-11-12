@@ -298,8 +298,8 @@ impl TurnExecutors for StockExecutors {
     ) -> BoxProviderFuture<'a, Result<()>> {
         self.context.settle(agent, turn)
     }
-    fn render_bytes(&self) -> Option<u64> {
-        Some(self.limits.render_bytes)
+    fn content_limits(&self) -> Limits {
+        self.limits
     }
 
     fn templates(&self) -> bool {
