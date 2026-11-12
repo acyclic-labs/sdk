@@ -839,12 +839,16 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             .send(
                 &root,
                 &by,
-                &InboxRecord::Cancel(crate::agent::Cancellation {
-                    conversation: 0,
-                    input: 1,
-                    by: by.clone(),
+                &InboxRecord::Notice {
                     id: IntentId::try_from("release-revoked-query")?,
-                }),
+                    notice: crate::agent::NoticePayload::Quiet(crate::conversation::wire::Notice {
+                        source: "test".into(),
+                        kind: "test.control".into(),
+                        body: serde_json::Value::Null,
+                        wake: false,
+                        coalesce_key: None,
+                    }),
+                },
             )
             .await?,
         Delivered::Committed { .. }
