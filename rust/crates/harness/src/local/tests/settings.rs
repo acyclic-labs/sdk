@@ -684,6 +684,42 @@ async fn effective_skill_reads_stay_within_the_reader_allowance() -> Result<()> 
 }
 
 #[tokio::test]
+async fn initial_home_settings_apply_before_open_and_preserve_later_edits() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let project = volume(directory.path()).await?;
+    let config = || {
+        volume_config(directory.path(), project.clone(), text()).map(|config| {
+            config
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .home_file(
+                    "agent.ts",
+                    acyclic_stream::OwnedBytes::from_static(
+                        b"export default (base) => ({ ...base, sampling: { temperature: 0.25 } });",
+                    ),
+                )
+        })
+    };
+    let harness = LocalHarness::open(config()?).await?;
+    assert_eq!(
+        harness.sampling.as_ref().and_then(|s| s.temperature),
+        Some(0.25)
+    );
+    write(
+        &harness,
+        "agent.ts",
+        "export default (base) => ({ ...base, sampling: { temperature: 0.5 } });",
+    )
+    .await?;
+    drop(harness);
+    let harness = LocalHarness::open(config()?).await?;
+    assert_eq!(
+        harness.sampling.as_ref().and_then(|s| s.temperature),
+        Some(0.5)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let project = volume(directory.path()).await?;

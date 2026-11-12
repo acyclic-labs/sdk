@@ -156,10 +156,19 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
     );
     spec.authentication = Authentication::ApiKey;
     registry.register("ollama".into(), spec)?;
+    let required = registry.resolve("ollama/m")?;
+    let (request, dispatch) = crate::tests::request(&required)?;
+    let sent = script.sent.lock().expect("fixture").len();
+    let error = required
+        .generate(&request, dispatch)
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap_err();
     assert!(
-        registry.resolve("ollama/m").is_err(),
+        error.to_string().contains("API key is unavailable"),
         "built-in names do not bypass catalog policy"
     );
+    assert_eq!(script.sent.lock().expect("fixture").len(), sent);
     Ok(())
 }
 

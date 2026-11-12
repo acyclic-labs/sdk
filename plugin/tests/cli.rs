@@ -88,6 +88,127 @@ async fn model(directory: &Path) -> Model {
     model_response(directory, axum::http::StatusCode::OK, ANSWER).await
 }
 
+#[tokio::test]
+async fn explicit_home_module_configures_the_first_model_call() {
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
+    let source = fixture._directory.path().join("initial-settings.ts");
+    std::fs::write(
+        &source,
+        "export default (base) => ({ ...base, sampling: { temperature: 0.25 } });",
+    )
+    .unwrap();
+    let input = format!("agent.ts={}", source.display());
+    let mut endpoint = graphcoder_command(&fixture);
+    endpoint.args([
+        "--endpoint",
+        "http://127.0.0.1:1",
+        "--home-file",
+        &input,
+        "-p",
+        "reply",
+    ]);
+    let refused = capture(endpoint, "").await;
+    assert!(!refused.status.success());
+    let refusal = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        refusal.contains("--home-file") && refusal.contains("cannot be used with"),
+        "{refusal}"
+    );
+    assert_eq!(model.generated(), 0);
+    let output = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec![
+            "--default-config",
+            "--workspace-mounting",
+            "physical",
+            "--home-file",
+            &input,
+            "-p",
+            "reply",
+        ],
+        "",
+    )
+    .await;
+    succeeded(&output);
+    let requests = model.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["model"], "tiny");
+    assert_eq!(requests[0]["temperature"], json!(0.25));
+    model.close().await;
+}
+
+#[tokio::test]
+async fn home_model_selection_preserves_only_explicit_model_requirements() {
+    for (explicit, credentials_available) in [(false, true), (true, true), (false, false)] {
+        let fixture = fixture();
+        let model = model(fixture._directory.path()).await;
+        let mut catalog: Value =
+            serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
+        catalog["unused"] = catalog["graphcoder-qual"].clone();
+        catalog["unused"]["authentication"] = json!("api_key");
+        catalog["graphcoder-qual"]["authentication"] = json!("api_key");
+        catalog["default_model"] = json!("unused/tiny");
+        std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
+        let credentials = fixture._directory.path().join("credentials.json");
+        std::fs::write(
+            &credentials,
+            serde_json::to_vec(&json!({"api_keys": if credentials_available {
+                json!({"graphcoder-qual": "fixture-key"})
+            } else {
+                json!({})
+            }}))
+            .unwrap(),
+        )
+        .unwrap();
+        let source = fixture._directory.path().join("initial-settings.ts");
+        std::fs::write(
+            &source,
+            "export default (base) => ({ ...base, model: 'graphcoder-qual/drifted' });",
+        )
+        .unwrap();
+        let mut command = graphcoder_command(&fixture);
+        command
+            .args([
+                "--default-config",
+                "--workspace-mounting",
+                "physical",
+                "--catalog",
+            ])
+            .arg(&model.catalog)
+            .arg("--credentials")
+            .arg(&credentials)
+            .arg("--home-file")
+            .arg(format!("agent.ts={}", source.display()))
+            .args(["-p", "reply"]);
+        if explicit {
+            command.args(["--model", "graphcoder-qual/tiny"]);
+        }
+        let output = capture(command, "").await;
+        if !credentials_available {
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("API key is unavailable"),
+                "{output:?}"
+            );
+            assert_eq!(model.generated(), 0);
+        } else if explicit {
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("requested model"),
+                "{output:?}"
+            );
+            assert_eq!(model.generated(), 0);
+        } else {
+            succeeded(&output);
+            let requests = model.requests.lock().unwrap().clone();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0]["model"], "drifted");
+        }
+        model.close().await;
+    }
+}
 async fn model_response(
     directory: &Path,
     status: axum::http::StatusCode,
