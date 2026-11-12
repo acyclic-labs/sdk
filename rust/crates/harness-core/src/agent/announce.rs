@@ -165,7 +165,11 @@ pub async fn announcement_messages(
     limits: crate::conversation::Limits,
 ) -> crate::Result<Vec<crate::model::ModelContent>> {
     use crate::model::ModelContent;
-    let mut parts = Vec::new();
+    let maximum = limits
+        .attachments
+        .map_or(usize::MAX, |count| count.get().saturating_add(1));
+    let mut messages = Vec::new();
+    let mut message = Vec::new();
     for document in documents {
         for file in std::iter::once(&document.file).chain(
             document
@@ -178,22 +182,13 @@ pub async fn announcement_messages(
                 .await?;
             let text = std::str::from_utf8(&bytes)
                 .map_err(|_| crate::Error::Invalid("announcement is not UTF-8".into()))?;
-            parts.extend(ModelContent::bounded_text_parts(
-                text,
-                Some(limits.render_bytes),
-            )?);
+            for part in ModelContent::bounded_text_parts(text, Some(limits.render_bytes))? {
+                if message.len() == maximum {
+                    messages.push(ModelContent::Parts(std::mem::take(&mut message)));
+                }
+                message.push(part);
+            }
         }
-    }
-    let maximum = limits
-        .attachments
-        .map_or(usize::MAX, |count| count.get().saturating_add(1));
-    let mut messages = Vec::new();
-    let mut message = Vec::new();
-    for part in parts {
-        if message.len() == maximum {
-            messages.push(ModelContent::Parts(std::mem::take(&mut message)));
-        }
-        message.push(part);
     }
     if !message.is_empty() {
         messages.push(ModelContent::Parts(message));
