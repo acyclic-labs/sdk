@@ -91,6 +91,9 @@ pub(super) async fn command<P: StreamProvider + ?Sized>(
     let state = previous
         .state()
         .ok_or(Error::Invalid("actor state was never created"))?;
+    if state.deleted() {
+        return Err(Error::Deleted);
+    }
     let path = StreamPath::new(format!("{}/placement", previous.path()))?;
     let head = match store.provider().head(path.clone()).await {
         Ok(head) => Some(head),

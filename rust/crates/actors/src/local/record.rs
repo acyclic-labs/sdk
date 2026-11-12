@@ -10,7 +10,7 @@ use std::{collections::BTreeMap, sync::Arc};
 /// Framing bytes one record adds beyond its variable fields, at most: tags,
 /// lengths and the fixed integers and flags.
 pub const STATE_RECORD_OVERHEAD: usize =
-    130 + STATE_FORMAT_V1.len() + 2 + crate::escrow::MAX_RECORD_LEN;
+    152 + STATE_FORMAT_V1.len() + 2 + crate::escrow::MAX_RECORD_LEN;
 // The first byte has forbidden protobuf wire type 7: an older unversioned
 // decoder MUST fail rather than discard metadata and subsequently rewrite it.
 // Version 2 keeps funding in its host-owned field. Guest metadata from version
@@ -47,6 +47,10 @@ struct Record {
     escrow: Option<bytes::Bytes>,
     #[prost(bool, tag = "12")]
     custody: bool,
+    #[prost(uint64, optional, tag = "13")]
+    consumed_alarm_generation: Option<u64>,
+    #[prost(uint64, optional, tag = "14")]
+    consumed_alarm_deadline_unix_ms: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -67,39 +71,31 @@ struct SubscriptionRecord {
     cursor: u64,
 }
 
-/// The alarm fields of a state record; every other field is skipped unread.
+/// The consumed-alarm field of a state record; every other field is skipped
+/// unread.
 #[derive(Clone, PartialEq, prost::Message)]
-struct AlarmRecord {
-    #[prost(uint64, tag = "4")]
-    generation: u64,
-    #[prost(uint64, optional, tag = "5")]
-    deadline_unix_ms: Option<u64>,
-    #[prost(uint64, optional, tag = "6")]
-    delivered_generation: Option<u64>,
+struct ConsumedRecord {
+    #[prost(uint64, optional, tag = "14")]
+    consumed_alarm_deadline_unix_ms: Option<u64>,
 }
 
-/// The authority-side alarm rule: a state record that marks its alarm
-/// delivered is accepted only once the authority's own commit time reaches
-/// that alarm's deadline. State records are self-identifying by their format
-/// header, so one rule serves every actor root on a ledger; a later record
-/// still carrying that delivered alarm is always past its deadline, since the
-/// authority's commit time is monotonic. Install it with
-/// install_commit_admission on the provider that decides actor commits. It is
+/// The authority-side alarm rule: a state record written by an alarm
+/// delivery carries the consumed alarm's own deadline, whatever the handler
+/// answered (keep, clear or set), and is accepted only once the authority's
+/// own commit time reaches it. State records are self-identifying by their
+/// format header, so one rule serves every actor root on a ledger; a later
+/// control record still carrying that consumed alarm is always past its
+/// deadline, since the authority's commit time is monotonic. Install it with
+/// install_commit_admission on the provider that decides actor writes; an
+/// external authority decides with acyclic_stream::admit_commit. It is
 /// one process-wide rule, so every opener of a shared ledger installs it
 /// idempotently.
 #[must_use]
 pub fn alarm_admission() -> Arc<dyn acyclic_stream::CommitAdmission> {
     struct Alarms;
     impl acyclic_stream::CommitAdmission for Alarms {
-        fn not_before(&self, request: &acyclic_stream::CommitRequest) -> Option<u64> {
-            request
-                .mutations()
-                .flat_map(|mutation| match mutation {
-                    acyclic_stream::CommitMutation::Append { records, .. }
-                    | acyclic_stream::CommitMutation::Fork { records, .. } => records,
-                })
-                .filter_map(|record| delivered_deadline(&record.value))
-                .max()
+        fn not_before(&self, value: &[u8]) -> Option<u64> {
+            delivered_deadline(value)
         }
     }
     static ALARMS: std::sync::LazyLock<Arc<dyn acyclic_stream::CommitAdmission>> =
@@ -108,10 +104,9 @@ pub fn alarm_admission() -> Arc<dyn acyclic_stream::CommitAdmission> {
 }
 
 fn delivered_deadline(record: &[u8]) -> Option<u64> {
-    let alarm = AlarmRecord::decode(record.strip_prefix(STATE_FORMAT_V1)?).ok()?;
-    alarm
-        .deadline_unix_ms
-        .filter(|_| alarm.delivered_generation == Some(alarm.generation))
+    ConsumedRecord::decode(record.strip_prefix(STATE_FORMAT_V1)?)
+        .ok()?
+        .consumed_alarm_deadline_unix_ms
 }
 
 impl State {
@@ -150,6 +145,8 @@ impl State {
                 .collect(),
             journal_tail: self.journal_tail,
             custody: self.custody,
+            consumed_alarm_generation: self.consumed.map(|(generation, _)| generation),
+            consumed_alarm_deadline_unix_ms: self.consumed.map(|(_, deadline)| deadline),
             placement_branch: self
                 .placement_branch
                 .map(|commit| commit.as_bytes().to_vec()),
@@ -214,6 +211,14 @@ impl State {
             metadata: record.metadata,
             journal_tail: record.journal_tail,
             custody: record.custody,
+            consumed: match (
+                record.consumed_alarm_generation,
+                record.consumed_alarm_deadline_unix_ms,
+            ) {
+                (Some(generation), Some(deadline)) => Some((generation, deadline)),
+                (None, None) => None,
+                _ => return Err(Error::Invalid("partial consumed alarm")),
+            },
         })
     }
 
@@ -327,6 +332,7 @@ mod tests {
             metadata: BTreeMap::from([("durable".into(), bytes::Bytes::from_static(b"value"))]),
             journal_tail: u64::MAX,
             custody: true,
+            consumed: Some((u64::MAX, u64::MAX)),
             epoch: u64::MAX,
             checkpoint: Some(Checkpoint {
                 codec: CodecIdentity {
@@ -373,5 +379,90 @@ mod tests {
                     "durable".len() + "value".len() + METADATA_OVERHEAD
                 )
         );
+    }
+
+    /// The alarm rule holds on every write path that can carry a state
+    /// record: a plain append is decided exactly as a commit is, at the
+    /// authority's own time, so neither can consume an alarm early.
+    #[tokio::test]
+    async fn every_write_path_holds_the_alarm_rule() -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_stream::{
+            AppendRecord, AppendRequest, CommitEffect, CommitMutation, CommitRequest,
+            IdempotencyKey, MemoryStream, StreamError, StreamProviderExt as _,
+        };
+        use std::sync::atomic::{AtomicU64, Ordering};
+        struct Authority(AtomicU64);
+        impl acyclic_stream::UnixMillisClock for Authority {
+            fn now_unix_millis(&self) -> u64 {
+                self.0.load(Ordering::SeqCst)
+            }
+        }
+        let authority = Arc::new(Authority(AtomicU64::new(149)));
+        let provider =
+            MemoryStream::new_with_clock(Default::default(), Arc::clone(&authority) as _);
+        provider.install_commit_admission(alarm_admission())?;
+        let delivered = AppendRecord::from(bytes::Bytes::from(
+            State {
+                epoch: 1,
+                placement_branch: None,
+                escrow: None,
+                checkpoint: None,
+                subscriptions: BTreeMap::new(),
+                // The handler answered its alarm with Clear: only the
+                // consumed alarm still names the deadline.
+                alarm: Alarm {
+                    generation: 2,
+                    deadline_unix_ms: None,
+                    delivered_generation: None,
+                },
+                paused: false,
+                metadata: BTreeMap::new(),
+                journal_tail: 0,
+                custody: false,
+                consumed: Some((1, 150)),
+            }
+            .encode(),
+        ));
+        let path = StreamPath::new("actor/state")?;
+        let append = |label: &str| -> Result<AppendRequest, StreamError> {
+            Ok(AppendRequest {
+                path: path.clone(),
+                records: vec![delivered.clone()],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::new(label.as_bytes().to_vec())?,
+            })
+        };
+        let commit = |label: &str| -> Result<CommitRequest, StreamError> {
+            Ok(CommitRequest {
+                deadline_unix_millis: None,
+                effects: vec![CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: path.clone(),
+                        records: vec![delivered.clone()],
+                    }],
+                )],
+                idempotency_key: IdempotencyKey::new(label.as_bytes().to_vec())?,
+            })
+        };
+        let refusals = [
+            provider.append(append("append")?).await.err(),
+            provider.commit(commit("commit")?).await.err(),
+        ];
+        for refused in refusals {
+            assert_eq!(
+                refused.as_ref().and_then(StreamError::not_before_authority),
+                Some(149)
+            );
+        }
+        assert!(matches!(
+            provider.tail(path.clone()).await,
+            Err(StreamError::NotFound)
+        ));
+        authority.0.store(150, Ordering::SeqCst);
+        provider.append(append("append")?).await?;
+        provider.commit(commit("commit")?).await?;
+        assert_eq!(provider.tail(path).await?, 2);
+        Ok(())
     }
 }

@@ -43,6 +43,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 metadata: Default::default(),
                 journal_tail: 0,
                 custody: false,
+                consumed: None,
                 epoch: 0,
                 checkpoint: None,
                 alarm: Default::default(),

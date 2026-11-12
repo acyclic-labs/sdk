@@ -573,11 +573,14 @@ impl MemoryStream {
         crate::preparation::authority(&applied, |path| Ok(state.tail(path)))?;
         // The commit's own authority time, monotonic across this ledger. An
         // installed acceptance rule decides with it before any reservation.
-        let time = crate::preparation::committed_time(
-            state.last_committed_at_micros,
-            self.commit_clock.now_unix_millis(),
-        );
-        self.admit_at(request, time)?;
+        let time = self.admitted_time(
+            state,
+            applied.iter().flat_map(|mutation| match mutation {
+                CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
+                    records
+                }
+            }),
+        )?;
         admit_replay(state, self.limits)?;
         reserve_coordinated(state, &applied, self.limits)?;
         self.reserve_commit_index(&mut probes)?;

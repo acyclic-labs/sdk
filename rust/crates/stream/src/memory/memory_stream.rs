@@ -14,7 +14,7 @@ pub struct MemoryStream {
     clock: Arc<dyn UnixMillisClock>,
     /// Clock whose sampled commit time is recorded in each new record.
     commit_clock: Arc<dyn UnixMillisClock>,
-    /// Optional authority-side acceptance rule, decided at commit time.
+    /// Optional authority-side acceptance rule, decided at every write's time.
     /// Shared by every clone of this ledger, so a wrapper installs it once.
     admission: Arc<std::sync::OnceLock<Arc<dyn CommitAdmission>>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -70,11 +70,10 @@ impl MemoryStream {
             retain_pending_read: false,
         }
     }
-    /// Installs this ledger's authority-side time rule. At each new commit's
-    /// decision, after every condition holds and before anything is reserved,
-    /// that commit's own authority time must have reached the rule's
-    /// not-before time for it, else it is refused with [`StreamError::not_before`]
-    /// carrying that authority time. Replays never re-run it. A ledger has at
+    /// Installs this ledger's authority-side time rule. Every new write, an
+    /// append, commit or prepared publication alike, is decided by
+    /// [`admit_commit`] with its own authority time before anything is
+    /// reserved. Replays never re-run it. A ledger has at
     /// most one rule: installing that same rule again, as every opener of a
     /// shared ledger does, is a no-op; a different rule is `AlreadyExists`.
     pub fn install_commit_admission(
@@ -89,15 +88,27 @@ impl MemoryStream {
             })
     }
 
-    fn not_before(&self, request: &CommitRequest) -> Option<u64> {
-        self.admission
-            .get()
-            .and_then(|rule| rule.not_before(request))
-    }
-
-    /// Decides the installed rule with the commit's authority time in micros.
-    fn admit_at(&self, request: &CommitRequest, micros: u64) -> Result<(), StreamError> {
-        admit_not_before(self.not_before(request), micros)
+    /// The time of this ledger's next commit, in micros, writing `records`:
+    /// monotonic across the ledger and decided by the installed rule. It is
+    /// the only source of a new commit's time, so no write path can stamp a
+    /// record the rule has not admitted.
+    fn admitted_time<'a>(
+        &self,
+        state: &State,
+        records: impl IntoIterator<Item = &'a AppendRecord>,
+    ) -> Result<u64, StreamError> {
+        let time = crate::preparation::committed_time(
+            state.last_committed_at_micros,
+            self.commit_clock.now_unix_millis(),
+        );
+        if let Some(rule) = self.admission.get() {
+            admit_commit(
+                rule.as_ref(),
+                records.into_iter().map(|record| record.value.as_ref()),
+                time / 1_000,
+            )?;
+        }
+        Ok(time)
     }
     /// Rebinds to an externally owned authority: replicas replaying one shared
     /// journal in one order, or a store whose incarnation outlives a process,
@@ -136,18 +147,31 @@ impl MemoryStream {
     }
 }
 
-/// An authority-side time rule over new commits: the earliest authority time,
-/// in Unix milliseconds, at which a commit may be accepted. It reads only the
-/// request's own mutations; requests carry no time field for it.
+/// An authority-side time rule over written records: the earliest authority
+/// time, in Unix milliseconds, at which a record value may be committed. It
+/// reads only the value, so it holds on every write path alike; writes carry
+/// no time field for it.
 pub trait CommitAdmission: Send + Sync + 'static {
-    /// The earliest acceptance time of `request`, or `None` for any time.
-    fn not_before(&self, request: &CommitRequest) -> Option<u64>;
+    /// The earliest acceptance time of a record `value`, or `None` for any time.
+    fn not_before(&self, value: &[u8]) -> Option<u64>;
 }
 
-fn admit_not_before(not_before: Option<u64>, micros: u64) -> Result<(), StreamError> {
-    let authority = micros / 1_000;
-    match not_before {
-        Some(not_before) if authority < not_before => Err(StreamError::not_before(authority)),
-        _ => Ok(()),
+/// The one acceptance comparison of a [`CommitAdmission`] rule: a write of
+/// `values` is accepted only once the authority's own time reaches every
+/// value's not-before time, else it is refused with [`StreamError::not_before`]
+/// carrying that authority time. Every provider write path and every external
+/// authority decides with this function.
+pub fn admit_commit<'a>(
+    rule: &dyn CommitAdmission,
+    values: impl IntoIterator<Item = &'a [u8]>,
+    authority_unix_millis: u64,
+) -> Result<(), StreamError> {
+    if values.into_iter().any(|value| {
+        rule.not_before(value)
+            .is_some_and(|due| authority_unix_millis < due)
+    }) {
+        Err(StreamError::not_before(authority_unix_millis))
+    } else {
+        Ok(())
     }
 }

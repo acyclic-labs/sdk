@@ -125,12 +125,16 @@ pub enum Error {
         receipt: Box<InvocationReceipt>,
     },
     /// The authority refused an alarm consumption before its deadline: its
-    /// own commit time was uthority_unix_ms. Nothing was published.
+    /// own commit time was `authority_unix_ms`. Nothing was published.
     #[error("alarm not yet due at authority time {authority_unix_ms}")]
     AlarmNotDue {
         /// The authority's commit time at the refusal.
         authority_unix_ms: u64,
     },
+    /// The actor is deleted. Its terminal state admits no claim, publication,
+    /// control write or second deletion.
+    #[error("actor is deleted")]
+    Deleted,
     /// A request contradicts the durable state machine.
     #[error("invalid actor transition: {0}")]
     Invalid(&'static str),
@@ -157,6 +161,7 @@ impl Error {
             Self::Handler(_) => "handler",
             Self::InvocationFailed { .. } => "invocation_failed",
             Self::AlarmNotDue { .. } => "alarm_not_due",
+            Self::Deleted => "deleted",
             Self::Invalid(_) => "invalid",
         }
     }
@@ -201,6 +206,10 @@ pub struct State {
     /// Whether this state's publication appended a participant custody
     /// intent whose settlement a new owner must recover.
     custody: bool,
+    /// The alarm this state's own delivery consumed, as `(generation,
+    /// deadline)`, independent of the handler's new alarm: the authority's
+    /// alarm rule decides the commit from it. Only an alarm delivery sets it.
+    consumed: Option<(u64, u64)>,
 }
 impl State {
     /// Durable guest metadata, from this same checkpoint/epoch/commit cut.
@@ -245,7 +254,15 @@ impl State {
     pub const fn paused(&self) -> bool {
         self.paused
     }
+    /// Whether this is an actor's terminal deleted state.
+    pub const fn deleted(&self) -> bool {
+        self.epoch == DELETED
+    }
 }
+
+/// The deleted state's epoch. No claim can raise an epoch to it or past it,
+/// and no fence admits it, so nothing can follow a deletion.
+const DELETED: u64 = u64::MAX;
 
 /// Immutable exact-cut token. Publication compares both tail and commit anchor.
 pub struct Snapshot {
@@ -281,7 +298,9 @@ impl Snapshot {
 
     fn owns_epoch(&self, epoch: u64) -> bool {
         self.state.as_ref().is_some_and(|state| {
-            state.epoch == epoch && state.placement_branch == self.placement_branch()
+            state.epoch == epoch
+                && !state.deleted()
+                && state.placement_branch == self.placement_branch()
         })
     }
 
@@ -1044,6 +1063,50 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         )
     }
 
+    /// Delete the actor at `previous`'s exact cut: one terminal state record
+    /// at its own path, which callers may compose with their own effects
+    /// before submitting. It fences every in-flight claim and publication of
+    /// that cut, keeps the path occupied so the actor is never re-created,
+    /// and carries no input, alarm, checkpoint or funds, so scheduling entries
+    /// that still name it resolve to a no-op. A pending participant's custody
+    /// is settled first, as a new owner's claim would.
+    pub async fn delete(
+        &self,
+        previous: &Snapshot,
+        key: IdempotencyKey,
+    ) -> Result<PreparedPublish, Error> {
+        let state = previous
+            .state
+            .as_ref()
+            .ok_or(Error::Invalid("actor state was never created"))?;
+        if state.deleted() {
+            return Err(Error::Deleted);
+        }
+        self.recover_custody(previous).await?;
+        let deleted = State {
+            epoch: DELETED,
+            placement_branch: state.placement_branch,
+            escrow: None,
+            checkpoint: None,
+            subscriptions: BTreeMap::new(),
+            alarm: Alarm {
+                generation: state
+                    .alarm
+                    .generation
+                    .checked_add(1)
+                    .ok_or(Error::Invalid("alarm generation overflow"))?,
+                deadline_unix_ms: None,
+                delivered_generation: None,
+            },
+            paused: true,
+            metadata: BTreeMap::new(),
+            journal_tail: state.journal_tail,
+            custody: false,
+            consumed: None,
+        };
+        self.prepare(previous, deleted, Vec::new(), key)
+    }
+
     /// Atomically publish the checkpoint, consumed cursor, alarm and effects.
     /// `delivered` is the committed record `trigger` names, as the host read it.
     pub async fn publish(
@@ -1534,18 +1597,21 @@ fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Resu
             *cursor = cursor
                 .checked_add(1)
                 .ok_or(Error::Invalid("subscription cursor overflow"))?;
+            state.consumed = None;
         }
         Trigger::Alarm {
             generation,
             now_unix_ms,
         } => {
-            if original_alarm.generation != *generation
-                || !original_alarm
-                    .pending()
-                    .is_some_and(|deadline| deadline <= *now_unix_ms)
-            {
-                return Err(Error::Conflict);
-            }
+            let deadline = original_alarm
+                .pending()
+                .filter(|deadline| {
+                    original_alarm.generation == *generation && *deadline <= *now_unix_ms
+                })
+                .ok_or(Error::Conflict)?;
+            // The authority decides this commit from the consumed alarm
+            // itself, whatever the handler answers.
+            state.consumed = Some((*generation, deadline));
             // Delivery consumption is distinct from the desired alarm.
             // Keep preserves its generation/deadline without permitting a
             // second successful firing to publish another transition.
