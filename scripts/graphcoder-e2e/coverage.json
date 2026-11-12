@@ -35,7 +35,8 @@
         "shell-gemini-signed",
         "file-tools-responses",
         "file-tools-chat",
-        "file-tools-anthropic"
+        "file-tools-anthropic",
+        "self-projection-read"
       ]
     },
     "A3": {

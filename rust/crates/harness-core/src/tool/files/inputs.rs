@@ -16,6 +16,10 @@ pub struct ReadFileInput {
     /// combined with an immutable version.
     #[serde(default)]
     pub wait: bool,
+    /// Explicitly pull the body of this agent's own human-facing projection.
+    /// Omission returns a marked pointer rather than re-ingesting its context.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_body: bool,
     /// Opaque version from a prior read or publication. Omission reads the
     /// current path under the original directory read grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -250,6 +254,13 @@ pub struct FileResult {
 )]
 #[serde(deny_unknown_fields)]
 pub struct ReadFileResult {
+    /// The source is a human-facing projection of this task's own context.
+    #[serde(
+        default,
+        rename = "self-projection",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub self_projection: bool,
     /// Original immutable source, used for grant and replay validation.
     pub file: FileReadSource,
     /// Exact selected UTF-8 text.
@@ -289,6 +300,8 @@ pub struct NotebookOutput {
 /// Model-visible file identity; the version is opaque and grants no authority.
 #[derive(Serialize, schemars::JsonSchema)]
 pub(crate) struct FileView<'a> {
+    #[serde(rename = "self-projection", skip_serializing_if = "std::ops::Not::not")]
+    pub self_projection: bool,
     pub path: &'a str,
     pub version: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -330,7 +343,7 @@ mod codec_tests {
             let file = FileRef::new(volume, path.clone(), "version".into(),
                 FileDescriptor::new([1; 32], 128, "text/plain".into()).unwrap(), "file".into(), &mut None).unwrap();
             let version = super::super::version::encode_version(&file, None).unwrap().0;
-            round_trip(ReadFileInput { path: path.clone(), wait: false, version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), selection: None });
+            round_trip(ReadFileInput { path: path.clone(), wait: false, include_body: false, version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), selection: None });
             round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement, replace_all: endpoints.is_some(), notebook: None });
             round_trip(WriteFileInput { path, content: text, if_version: None });
         }
