@@ -9,6 +9,11 @@ use futures::TryStreamExt as _;
 
 #[tokio::test]
 async fn optional_source_versions_preserve_provider_requests() -> TestResult {
+    assert_eq!(
+        serde_json::to_vec(&acyclic_harness::preset::Preset::graphcoder())?.len(),
+        115,
+        "update the reviewed preset byte pin"
+    );
     for (adapter, path) in [
         (Adapter::Chat, "chat/completions"),
         (Adapter::Responses, "responses"),
