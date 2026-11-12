@@ -73,6 +73,40 @@ async fn materialized_baseline_ignores_host_defaults_and_keeps_content_edits()
             assert!(checkout.has_pending_mutations());
         }
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let file = host.path().join("file-4");
+        let original = std::fs::metadata(&file)?.permissions();
+        std::fs::set_permissions(
+            &file,
+            std::fs::Permissions::from_mode(original.mode() ^ 0o100),
+        )?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+                budget,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let receipt = capture_baseline(
+            &mut checkout,
+            &options,
+            &CapturePolicy::default(),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+        assert_eq!(
+            receipt.changed_paths, 1,
+            "permission edits must survive normalization"
+        );
+        assert!(checkout.has_pending_mutations());
+        std::fs::set_permissions(file, original)?;
+    }
     std::fs::write(host.path().join("file-3"), b"updated content")?;
     let mut checkout = workspace
         .checkout(
