@@ -18,12 +18,13 @@ pub struct SkillMetadata {
     pub source: PinnedContextPath,
 }
 
-/// The model's discovery surface; provenance and callable fields stay pinned
-/// in the manifest, where invocation and replay consume them.
+/// The model's discovery surface, including the exact lazy body location.
+/// Original source identity and callable fields stay pinned in the manifest.
 #[derive(Serialize)]
 pub(crate) struct SkillSummary<'a> {
     name: &'a str,
     description: &'a str,
+    source: &'a PinnedContextPath,
 }
 
 pub(super) struct SkillListing<'a>(pub &'a [SkillMetadata]);
@@ -52,6 +53,7 @@ impl SkillMetadata {
         SkillSummary {
             name: &self.name,
             description: &self.description,
+            source: &self.source,
         }
     }
 
