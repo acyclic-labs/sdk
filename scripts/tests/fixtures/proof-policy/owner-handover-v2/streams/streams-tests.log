@@ -1,4 +1,4 @@
-   Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+   Compiling acyclic-stream v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream)
 rust/crates/stream/src/session/sources.rs:277:19: warning: method `next` is never used
 rust/crates/stream/tests/wave1_recovery.rs:1:1: warning: missing documentation for the crate
 warning: `acyclic-stream` (test "wave1_recovery") generated 1 warning

@@ -1,9 +1,9 @@
 [local command Linux] 02:24:59 BUILD_SLOT_TREE=919e4dd4e5888c806a8c8f9b6643438a95a7583c 058ec24753d7bf9db66487e068e5ddcd36193ca4 3ac2f09fa75e0ef929c25dc93eebd0e61e99610b37c859db17df04b20fed9aeb (client /mnt/q/worktrees/redesign-verify)
 [local command Linux] 02:25:22 Linux: git 919e4dd4e588 + bundle 262839 B, diff 20296 B (3 new files), 269393 B sent, 15.8s; src wt-sdk/redesign-verify-f05f8f68.0-[execution-id-removed] target sdk/redesign-verify-f05f8f68; job [execution-id-removed]; python3 scripts/qualify-wave1-coverage.py
-BB_DISK_FREE [{"path": "/", "free_percent": 19.147651569932822, "free_bytes": 19700654080}, {"path": "/mnt/bb", "free_percent": 14.915851691785997, "free_bytes": 245882167296}]
+BB_DISK_FREE [{"path": "/", "free_percent": 19.147651569932822, "free_bytes": 19700654080}, {"path": "/work", "free_percent": 14.915851691785997, "free_bytes": 245882167296}]
 GATE_HOME_GUARD {"mechanism": "private-read-only-mount", "real_home": "/home/var", "writable": false, "recursive": true, "private_proc": true}
 [Linux] sccache startup: sccache: Starting the server...
-sccache: Listening on address /mnt/bb/jobs/job-v08r_s5v/sccache.sock
+sccache: Listening on address /work/jobs/job-v08r_s5v/sccache.sock
 [Linux] node_modules ensured for tracked lockfiles in 0.0s
 BUILD_SLOT_TREE=919e4dd4e5888c806a8c8f9b6643438a95a7583c 058ec24753d7bf9db66487e068e5ddcd36193ca4 3ac2f09fa75e0ef929c25dc93eebd0e61e99610b37c859db17df04b20fed9aeb
 [Linux] source clock: exact-content private targets

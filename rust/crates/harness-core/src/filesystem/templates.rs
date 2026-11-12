@@ -75,7 +75,14 @@ mod tests {
             issuer.clone(),
             TurnAdmission::LocalRoot,
         ));
-        let parent = crate::templates::root()?;
+        let mut parent = crate::templates::root()?;
+        parent.model = Some("example/session".into());
+        for role in ["orchestrator", "worker", "advisor", "reviewer"] {
+            let child = templates
+                .child(&parent, &path, &volumes, role, None)
+                .await?;
+            assert_eq!(child.model, parent.model);
+        }
         let orchestrator = templates
             .child(&parent, &path, &volumes, "orchestrator", None)
             .await?;

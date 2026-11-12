@@ -114,7 +114,7 @@ fn syscall_denials_are_typed_even_when_shell_masks_exit()
     if std::env::var_os("ACYCLIC_GC95_PROBE").is_some() {
         // This is a real denied syscall in a shell descendant, not an injected
         // status or mock. A shell can otherwise mask this child with exit 0.
-        let _ = std::os::unix::net::UnixStream::connect("gc95-no-host-service");
+        let _ = std::os::unix::net::UnixStream::connect("missing-host-service");
         panic!("denied Unix socket creation returned to guest code");
     }
     acyclic_native_runtime::initialize_native_io_services()?;
@@ -166,7 +166,7 @@ fn syscall_denials_are_typed_even_when_shell_masks_exit()
                         .map(|arg| (*arg).to_owned())
                         .chain([
                             source.into(),
-                            "gc95".into(),
+                            "missing-service".into(),
                             executable.to_string_lossy().into_owned(),
                         ])
                         .collect(),

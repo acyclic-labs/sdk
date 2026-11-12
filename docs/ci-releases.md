@@ -104,8 +104,7 @@ builds. A restored executable is build evidence; it is not a native-mount pass.
 
 A host can opt into the shared artifact cache by setting
 `SDK_RELEASE_BUILD_CONTEXT` to an admitted `artifact-build-context.v2` file.
-The adapter loads `/mnt/bb/cx/artifact-build.mjs`, or the absolute module named
-by `SDK_ARTIFACT_BUILD_MODULE`. Missing or invalid admitted infrastructure fails
+The adapter loads the absolute module named by `SDK_ARTIFACT_BUILD_MODULE`. Missing or invalid admitted infrastructure fails
 explicitly. Without a context, the original compiler command runs.
 
 The context declares a builder digest for OS, dependency sources and external

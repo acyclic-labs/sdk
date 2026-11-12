@@ -712,7 +712,7 @@ fn missing_shell_inputs_are_preflight_results_with_paths() -> Result<()> {
         ),
         (
             None,
-            crate::tools::ShellCommand::Argv(vec!["/missing-executable-gc65".into()]),
+            crate::tools::ShellCommand::Argv(vec!["/missing-executable".into()]),
         ),
     ] {
         let expected_cwd = cwd.clone();

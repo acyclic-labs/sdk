@@ -1,4 +1,4 @@
-   Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+   Compiling acyclic-stream v0.2.0 (/work/cx/wt/cx-streams/rust/crates/stream)
 warning: method `next` is never used
    --> rust/crates/stream/src/session/sources.rs:277:19
     |

@@ -8,7 +8,7 @@
         "--version",
         "--verbose"
       ],
-      "cwd": "/mnt/bb/verify-1697/f99f457/source",
+      "cwd": "/work/verify-1697/f99f457/source",
       "exit": 0,
       "seconds": 0.0321276239992585,
       "log_sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
@@ -27,7 +27,7 @@
         "-p",
         "acyclic-contract-derive"
       ],
-      "cwd": "/mnt/bb/verify-1697/f99f457/source",
+      "cwd": "/work/verify-1697/f99f457/source",
       "exit": 0,
       "seconds": 84.51488088299993,
       "log_sha256": "0fad35fffda0f14b051955c4faaeab0aabad5413135c4b6685984227f694c30c"
@@ -43,7 +43,7 @@
         "--features",
         "filesystem"
       ],
-      "cwd": "/mnt/bb/jobs/job-txp8lva6/tmp/verify-1697-missing-method",
+      "cwd": "/work/jobs/job-txp8lva6/tmp/verify-1697-missing-method",
       "exit": 101,
       "seconds": 50.49607950899917,
       "log_sha256": "b63630428c16618b7dd504fb0d3b85a4d00ea0cc71cdbaf5f933c00dc612d3c3"

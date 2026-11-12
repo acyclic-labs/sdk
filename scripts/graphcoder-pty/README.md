@@ -40,7 +40,7 @@ snapshots, returning both paths. `start` reports first-paint latency; `keys`
 reports transport write latency (not input echo latency). Compare frame
 timestamps to measure echo and redraw. No credentials or environment are saved
 by the driver. Provider credentials must stay in a host relay, outside guest
-processes, as in recon.
+processes.
 
 The deterministic real-binary regression is:
 
@@ -55,4 +55,4 @@ action runner and shares its transport and frame implementation.
 
 For continuous dogfooding, attach to the existing repo session with its owner
 state directory and `--continue`/`--agent`. Do not create another orchestrator.
-Claims and patch handoffs follow the recon work queue and dogfood policy.
+Claims and patch handoffs follow the configured work queue and review policy.

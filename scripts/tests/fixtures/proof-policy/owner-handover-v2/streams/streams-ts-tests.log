@@ -22,7 +22,7 @@ typescript/packages/stream/test/native-credential.test.ts:
 
 # Unhandled error between tests
 -------------------------------
-error: Cannot find module '../generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/native-credential.test.ts'
+error: Cannot find module '../generated/native/binding.cjs' from '/work/cx/wt/cx-streams/typescript/packages/stream/test/native-credential.test.ts'
 -------------------------------
 
 
@@ -111,7 +111,7 @@ error: expect(received).toEqual(expected)
 - Expected  - 0
 + Received  + 1
 
-      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/wire-records.test.ts:18:54)
+      at <anonymous> (/work/cx/wt/cx-streams/typescript/packages/stream/test/wire-records.test.ts:18:54)
 (fail) append and atomic commit encode record messages without losing opaque bytes [2.89ms]
 
 typescript/packages/stream/test/session-transports.test.ts:
@@ -125,13 +125,13 @@ typescript/packages/stream/test/head-condition.test.ts:
 (pass) HTTP rejects head conditions until the hosted capability is negotiated [0.42ms]
 
 typescript/packages/stream/test/native-session-pool.test.ts:
-error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+error: Cannot find module '/work/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/work/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
 (fail) native concurrent follows and follows share one Session per node with local cancellation [75.21ms]
-error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+error: Cannot find module '/work/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/work/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
 (fail) cancelling a follows during shared initialization preserves its sibling [0.97ms]
-error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+error: Cannot find module '/work/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/work/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
 (fail) a cancelled waiter cannot cancel a shared Session paused before Welcome [0.90ms]
-error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+error: Cannot find module '/work/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/work/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
 (fail) new follows abandons a cancelled home reconnect before its credential settles [0.95ms]
 
 typescript/packages/stream/test/stream.test.ts:
@@ -206,7 +206,7 @@ error: expect(received).toEqual(expected)
 - Expected  - 2
 + Received  + 37
 
-      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:279:22)
+      at <anonymous> (/work/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:279:22)
 (fail) website Stream contract > appends, forks an exact prefix, and follows typed JSON [2.98ms]
 (pass) website Stream contract > keeps the complete committed prefix readable after later appends and a fork [1.82ms]
 (pass) website Stream contract > uses exact uint64 positions, opaque identities, flattened receipts, and typed commit inputs [1.85ms]
@@ -240,7 +240,7 @@ error: expect(received).toEqual(expected)
 - Expected  - 3
 + Received  + 1
 
-      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:563:26)
+      at <anonymous> (/work/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:563:26)
 (fail) website Stream contract > hosted append sends the bytes and key validated at call time [0.74ms]
 580 |       value[0] = 9;
 581 |       retryKey[0] = 9;
@@ -270,7 +270,7 @@ error: expect(received).toEqual(expected)
 - Expected  - 2
 + Received  + 6
 
-      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:585:18)
+      at <anonymous> (/work/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:585:18)
 (fail) website Stream contract > default transport snapshots append inputs before delayed provider selection [1.30ms]
 (pass) website Stream contract > default transport snapshots token grants before delayed provider selection [0.83ms]
 (pass) website Stream contract > default transport snapshots lazy read cursors when the iterator is created [0.87ms]
@@ -303,7 +303,7 @@ error: expect(received).toEqual(expected)
 - Expected  - 2
 + Received  + 6
 
-      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:639:201)
+      at <anonymous> (/work/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:639:201)
 (fail) website Stream contract > Rust encodes every protobuf-backed hosted request shape [0.53ms]
 (pass) website Stream contract > hosted children pages use the Rust response contract [1.11ms]
 (pass) website Stream contract > public stream handles snapshot commit and iterator inputs at call time [0.89ms]
@@ -325,5 +325,5 @@ error: expect(received).toBe(expected)
 Expected: 1
 Received: 2
 
-      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:877:23)
+      at <anonymous> (/work/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:877:23)
 (fail) website Stream contract > hosted follow has no idle timers and clears cancellation resources [2.15ms]

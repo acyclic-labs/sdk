@@ -12,7 +12,8 @@ const log = line => {
 };
 try {
   if (!binary || !corpus || separator !== '--') throw Error('usage: node scripts/fuzz-smoke.mjs BINARY CORPUS -- LIBFUZZER_OPTIONS');
-  const {campaign} = await import(pathToFileURL(process.env.SDK_FUZZ_CAMPAIGN ?? '/mnt/bb/cx/fuzz-campaign.mjs').href);
+  if (!process.env.SDK_FUZZ_CAMPAIGN) throw Error('SDK_FUZZ_CAMPAIGN must name the campaign runner module');
+  const {campaign} = await import(pathToFileURL(process.env.SDK_FUZZ_CAMPAIGN).href);
   if (typeof campaign !== 'function') throw Error('campaign export must be a function');
   await campaign({binary, corpus, args, log});
   if (!terminal) throw Error('campaign returned without a terminal receipt');
