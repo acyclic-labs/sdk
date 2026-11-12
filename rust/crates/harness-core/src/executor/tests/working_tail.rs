@@ -184,8 +184,8 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
             .await?;
         assert!(response.bytes().len() < 17_000);
         assert!(
-            provider.requests().is_empty(),
-            "the backstop called a model"
+            provider.request_count() == 1,
+            "reopen repeated context management"
         );
         let mut changed = input.clone();
         changed.input = ModelContent::Text("different question".into());
