@@ -33,6 +33,7 @@ pub(super) struct Tree<'a> {
     volumes: &'a Volumes<'a>,
     read: ContentGrant,
     generation: crate::resources::GenerationRef,
+    io: Option<&'a crate::executor::PreparationIo>,
 }
 
 impl Tree<'_> {
@@ -46,7 +47,7 @@ impl Tree<'_> {
             },
             Layer {
                 name: "home",
-                generation: home.as_ref().map_or("", |(version, _)| version),
+                generation: home.as_ref().map_or("", |(file, _)| file.version()),
                 bytes: home.as_ref().map(|(_, bytes)| bytes.as_ref()),
             },
         ];
@@ -62,7 +63,10 @@ impl Tree<'_> {
         Ok(settings.model)
     }
 
-    async fn home(&self, path: &str) -> Result<Option<(String, acyclic_stream::OwnedBytes)>> {
+    async fn home(
+        &self,
+        path: &str,
+    ) -> Result<Option<(crate::conversation::FileRef, acyclic_stream::OwnedBytes)>> {
         Ok(self
             .volumes
             .files
@@ -72,14 +76,20 @@ impl Tree<'_> {
                 path,
                 Some(&self.generation),
                 self.volumes.maximum_bytes,
-                ContentAccess::default(),
+                ContentAccess {
+                    io: self.io,
+                    ..ContentAccess::default()
+                },
             )
             .await?
-            .map(|(file, bytes, _)| (file.version().to_owned(), bytes)))
+            .map(|(file, bytes, _)| (file, bytes)))
     }
 }
 
 impl config::Tree for Tree<'_> {
+    fn preparation_io(&self) -> Option<&crate::executor::PreparationIo> {
+        self.io
+    }
     fn read<'a>(
         &'a self,
         path: &'a str,
@@ -115,23 +125,24 @@ pub(super) async fn admit(
         bytes: crate::seed::file(config::AGENT),
     };
     let home = tree.home(config::AGENT).await?;
-    let Some((version, bytes)) = home else {
+    let Some((file, bytes)) = home else {
         return settle(&[seed], tree, started, resolve, base_model)
             .await
             .map_err(Refused::seed);
     };
+    let version = file.version();
     let layers = [
         seed,
         Layer {
             name: "home",
-            generation: &version,
+            generation: version,
             bytes: Some(&bytes),
         },
     ];
     admitted(
         tree.volumes,
         agent,
-        (config::AGENT, &version),
+        (config::AGENT, version),
         settle(&layers, tree, started, resolve, base_model).await,
         clock,
     )
@@ -139,31 +150,37 @@ pub(super) async fn admit(
 }
 
 impl<'a> Tree<'a> {
+    fn read_grant(
+        volumes: &Volumes<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<ContentGrant> {
+        crate::executor::with_history_io(io, |work| {
+            ContentGrant::verify_directory_read(
+                volumes.verifier,
+                volumes.signed,
+                volumes.home,
+                "",
+                work,
+            )
+        })
+    }
     pub(super) fn pinned(
         volumes: &'a Volumes<'a>,
         generation: crate::resources::GenerationRef,
     ) -> Result<Self> {
-        let read = ContentGrant::verify_directory_read(
-            volumes.verifier,
-            volumes.signed,
-            volumes.home,
-            "",
-            &mut None,
-        )?;
+        let read = Self::read_grant(volumes, None)?;
         Ok(Self {
             volumes,
             read,
             generation,
+            io: None,
         })
     }
-    pub(super) async fn new(volumes: &'a Volumes<'a>) -> Result<Self> {
-        let read = ContentGrant::verify_directory_read(
-            volumes.verifier,
-            volumes.signed,
-            volumes.home,
-            "",
-            &mut None,
-        )?;
+    pub(super) async fn new(
+        volumes: &'a Volumes<'a>,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<Self> {
+        let read = Self::read_grant(volumes, io)?;
         let generation = volumes
             .files
             .select_private_generation(
@@ -171,13 +188,17 @@ impl<'a> Tree<'a> {
                 &read,
                 config::AGENT,
                 None,
-                ContentAccess::default(),
+                ContentAccess {
+                    io,
+                    ..ContentAccess::default()
+                },
             )
             .await?;
         Ok(Self {
             volumes,
             read,
             generation,
+            io,
         })
     }
 }
@@ -281,16 +302,17 @@ pub(super) async fn plugins(
         }
         error => error,
     };
-    let Some((version, bytes)) = tree.home(MANIFEST).await? else {
+    let Some((file, bytes)) = tree.home(MANIFEST).await? else {
         return Ok(load_result(tree, &[seed, session], &enabler)
             .await?
             .map_err(seeded)?);
     };
+    let version = file.version();
     let layers = [
         seed,
         Layer {
             name: "home",
-            generation: &version,
+            generation: version,
             bytes: Some(&bytes),
         },
         session,
@@ -298,7 +320,7 @@ pub(super) async fn plugins(
     admitted(
         tree.volumes,
         agent,
-        (MANIFEST, &version),
+        (MANIFEST, version),
         load_result(tree, &layers, &enabler)
             .await?
             .map_err(Refused::evaluated),
@@ -476,7 +498,7 @@ mod tests {
             bytes: Some(b"import {sampling} from './options.ts'; export default base => ({...base, sampling});"),
         }];
         for prefix in ["", "allowed"] {
-            let mut tree = Tree::new(&volumes).await?;
+            let mut tree = Tree::new(&volumes, None).await?;
             tree.read = ContentGrant::verify_directory_read(
                 &harness.verifier,
                 &harness.signed,
@@ -546,7 +568,7 @@ mod tests {
             journal: &harness.journal,
             maximum_bytes: None,
         };
-        let original = Tree::new(&volumes).await?;
+        let original = Tree::new(&volumes, None).await?;
         for (path, source) in [
             ("switch.ts", "export const enabled = false;"),
             (
@@ -577,7 +599,7 @@ mod tests {
             Some(0.25),
             "settings admission refreshed its pinned home generation"
         );
-        let current = Tree::new(&volumes).await?;
+        let current = Tree::new(&volumes, None).await?;
         assert!(
             plugins(false, None, &current, harness.root, clock)
                 .await?
