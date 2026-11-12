@@ -37,6 +37,10 @@ pub struct Checkpoint {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
 #[serde(tag = "type", content = "detail", rename_all = "camelCase")]
 pub enum GuestError {
+    /// The handler's transport could not establish an outcome. Resume the
+    /// original delivery after transport backoff, retaining its checkpoint.
+    #[error("guest transport unavailable: {0}")]
+    Unavailable(String),
     /// A host compositor observed a changed external guard before submission.
     /// No part of its candidate committed; the original delivery is revalidated.
     #[error("composed transaction precondition changed")]

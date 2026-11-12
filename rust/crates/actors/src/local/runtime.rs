@@ -507,12 +507,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let root = self.store.root().clone();
         let provider = self.store.provider();
         let (dispatch_store, dispatch_actor) = self.dispatcher_store()?;
-        let dispatcher = self.dispatcher(&dispatch_store, &dispatch_actor).await?;
+        let dispatcher =
+            transport::retry(|| self.dispatcher(&dispatch_store, &dispatch_actor)).await?;
         // A cursor alone would forget all previously discovered subscriptions
         // and alarms. Rebuild residents from current state names, without
         // replaying their creation history. New creations race safely with the
         // enumeration: the follow starts at the checkpoint read BEFORE it.
-        self.restore().await?;
+        transport::retry(|| self.restore()).await?;
         let from = dispatcher
             .state()
             .and_then(|state| state.cursor("activation"))
@@ -628,7 +629,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 Event::Dispatched(result) => {
                     dispatching = None;
-                    dispatcher = Some(result?);
+                    dispatcher = Some(match result {
+                        Ok(snapshot) => snapshot,
+                        Err(error) if transport::unavailable(&error) => {
+                            sleep(10).await;
+                            transport::retry(|| self.dispatcher(&dispatch_store, &dispatch_actor))
+                                .await?
+                        }
+                        Err(error) => return Err(error),
+                    });
                 }
                 Event::Work(work) => {
                     let execution: BoxProviderFuture<'_, _> = Box::pin(self.execute(work));
@@ -654,10 +663,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::Idle => {
                     // No delivery can publish while this owner captures the cut.
                     // A newly observed prefix resumes the SAME activation follow.
-                    completion_tail = match provider.tail(self.store.root().clone()).await {
+                    completion_tail = match transport::retry(|| async {
+                        provider
+                            .tail(self.store.root().clone())
+                            .await
+                            .map_err(Error::from)
+                    })
+                    .await
+                    {
                         Ok(tail) => tail,
-                        Err(error) if error.category() == StreamError::NotFound => 0,
-                        Err(error) => return Err(error.into()),
+                        Err(Error::Stream(error)) if error.category() == StreamError::NotFound => 0,
+                        Err(error) => return Err(error),
                     };
                     if seen >= completion_tail
                         && self.ready.counts().1 == 0
@@ -703,7 +719,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let Some(slot) = self.slot(&actor) else {
             return Ok(());
         };
-        let result = self.deliver(&actor, &slot).await;
+        let result = transport::retry(|| self.deliver(&actor, &slot)).await;
         if let Err(Error::Conflict) = result {
             // Another placement owns the actor now; stop hosting it here.
             self.release(&actor);

@@ -183,7 +183,8 @@ async fn completed_source_cut_survives_pending_join_recovery() -> TestResult {
         || async {
             if let Some(pending) = GitCompatRepository::new(main.id(), store.clone())
                 .pending_transition()
-                .await?
+                .await
+                .map_err(super::super::errors::compat_error::<acyclic_fs::LocalCoreStateStore>)?
             {
                 if main
                     .operation_generation(

@@ -1,6 +1,27 @@
 //! Activation follows retain their accepted cursor through transport loss.
 use super::*;
 
+pub(super) fn unavailable(error: &Error) -> bool {
+    match error {
+        Error::Stream(error) => error.category() == StreamError::Unavailable,
+        Error::Handler(crate::guest::GuestError::Unavailable(_)) => true,
+        _ => false,
+    }
+}
+
+pub(super) async fn retry<T, F, Fut>(mut operation: F) -> Result<T, Error>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, Error>>,
+{
+    loop {
+        match operation().await {
+            Err(error) if unavailable(&error) => sleep(10).await,
+            result => return result,
+        }
+    }
+}
+
 pub(super) fn follow<P: StreamProvider + ?Sized + 'static>(
     provider: Arc<P>,
     path: StreamPath,

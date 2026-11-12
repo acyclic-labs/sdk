@@ -5,6 +5,7 @@ use super::*;
 struct RefusesFirstAlarm {
     package: Package,
     alarms: AtomicUsize,
+    transient: bool,
 }
 
 impl Handler for RefusesFirstAlarm {
@@ -21,6 +22,12 @@ impl Handler for RefusesFirstAlarm {
         if matches!(delivery.trigger, Trigger::Alarm { .. })
             && self.alarms.fetch_add(1, Ordering::SeqCst) == 0
         {
+            if self.transient {
+                return futures::future::ready(Err(crate::guest::GuestError::Unavailable(
+                    "transport interrupted".into(),
+                )))
+                .boxed();
+            }
             return futures::future::ready(Err(crate::guest::GuestError::Handler(
                 "refused alarm".into(),
             )))
@@ -46,6 +53,7 @@ async fn a_failed_alarm_delivery_waits_for_its_next_event() -> TestResult {
     let handler = Arc::new(RefusesFirstAlarm {
         package: Package::new()?,
         alarms: AtomicUsize::new(0),
+        transient: false,
     });
     let runtime = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
@@ -99,6 +107,44 @@ async fn a_failed_alarm_delivery_waits_for_its_next_event() -> TestResult {
     assert_eq!(
         records(&*provider, "out/refused-alarm").await?,
         vec![Bytes::from_static(b"a1"), Bytes::from_static(b"r1")]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unavailable_delivery_resumes_its_original_alarm_without_run_failure() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    spawn_with(&store, "resumed-alarm", &[b"set 10"]).await?;
+    let (clock, mut control) = ControlledClock::new(100);
+    let handler = Arc::new(RefusesFirstAlarm {
+        package: Package::new()?,
+        alarms: AtomicUsize::new(0),
+        transient: true,
+    });
+    let runtime = Runtime::new(
+        store.clone(),
+        handler.clone() as Arc<dyn Handler>,
+        Arc::new(clock),
+    );
+    let mut serving =
+        Box::pin(runtime.run(|actor, error| panic!("unexpected failure for {actor:?}: {error}")));
+    let address = actor("resumed-alarm")?;
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &address, |state| state.cursor("inbox") == Some(1)),
+    )
+    .await?;
+    control.advance_to(200)?;
+    observe_while_running(serving.as_mut(), async {
+        runtime.complete().await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?;
+    assert_eq!(handler.alarms.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        records(&*provider, "out/resumed-alarm").await?,
+        vec![Bytes::from_static(b"a1")]
     );
     Ok(())
 }
