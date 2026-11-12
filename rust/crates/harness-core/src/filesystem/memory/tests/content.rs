@@ -745,7 +745,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let path_io = crate::filesystem::PreparationIo::from_native_work(&path_work)?;
     let path_prefix = path_work.receipt();
-    for path in ["../outside", ".system/private", "turns/.canonical/private"] {
+    for path in ["../outside", ".system/private"] {
         let rejection = storage
             .host
             .put_content(
@@ -804,12 +804,13 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         }
     );
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    // The former reserved name is a regular file, not a host directory.
     let staged = storage
         .host
         .put_content(
             &storage.volume,
             &write,
-            "inputs/original.json",
+            "turns/.canonical",
             b"original",
             "application/json",
             "original.json",
@@ -828,7 +829,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         .put_content(
             &storage.volume,
             &write,
-            "inputs/original.json",
+            "turns/.canonical",
             b"later",
             "text/plain",
             "later.txt",
@@ -844,7 +845,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             &storage.volume,
             &write,
             &key,
-            "inputs/original.json",
+            "turns/.canonical",
             1024,
             crate::conversation::ContentAccess {
                 ceiling: None,
@@ -868,7 +869,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             .put_content(
                 &storage.volume,
                 &write,
-                "inputs/original.json",
+                "turns/.canonical",
                 b"original",
                 "text/plain",
                 "changed.txt",
@@ -908,7 +909,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &storage.volume,
                 &write,
                 &IdempotencyKey::new("proven-absent-operation")?,
-                "inputs/original.json",
+                "turns/.canonical",
                 1024,
                 crate::conversation::ContentAccess {
                     ceiling: None,
@@ -937,7 +938,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &storage.volume,
                 &write,
                 &key,
-                "inputs/original.json",
+                "turns/.canonical",
                 1024,
                 crate::conversation::ContentAccess {
                     ceiling: None,

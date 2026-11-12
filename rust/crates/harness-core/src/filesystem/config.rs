@@ -68,8 +68,6 @@ impl InternalContentClass {
                 !crate::conversation::is_internal_path(path)
                     && path != "tools/.results"
                     && !path.starts_with(Self::ToolResult.prefix())
-                    && path != "turns/.canonical"
-                    && !path.starts_with("turns/.canonical/")
             }
         };
         if permitted {

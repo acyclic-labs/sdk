@@ -693,9 +693,11 @@ impl PublicationCase<'_> {
         workspace: &WorkspaceRef,
         class: Option<InternalContentClass>,
     ) -> Result<()> {
+        // A former harness prefix is ordinary content; recovery never relies
+        // on the spelling of its path.
         let path = format!(
             "{}payload.json",
-            class.map_or("uploads/", |class| class.prefix())
+            class.map_or("turns/.canonical/", |class| class.prefix())
         );
         let key = IdempotencyKey::new(format!("first-{path}"))?;
         let original = self.put(&path, b"original", &key, class).await?;
