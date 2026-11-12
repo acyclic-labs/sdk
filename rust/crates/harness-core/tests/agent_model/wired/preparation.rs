@@ -14,6 +14,12 @@ use std::sync::{
 
 #[derive(Default)]
 struct Probe {
+    journal: Mutex<
+        Option<(
+            OperationId,
+            Arc<dyn acyclic_harness_core::executor::ExecutionJournal>,
+        )>,
+    >,
     reads: AtomicUsize,
     answers: Mutex<Vec<u64>>,
     answer_gate: Mutex<Option<oneshot::Receiver<()>>>,
@@ -111,6 +117,7 @@ impl TurnExecutors for Executors {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Arc<dyn Executor>>> {
         Box::pin(async move {
+            *self.probe.journal.lock().unwrap() = Some((turn, authority.journal.clone()));
             // Exercise the direct Allow path, which has no approval callback.
             // All files, grants, journal, effects and child reads remain real.
             let authority = TurnAuthority {
@@ -294,6 +301,7 @@ async fn observe(
         futures::future::Either::Left(_) => panic!("wait skipped original observation"),
     }
     assert_eq!(probe.reads.load(Ordering::SeqCst), 1);
+    pending_start(probe).await?;
     deliver(host, child, requested("advance-after-selection", child)).await?;
     let latest = settled(stream, &within(), child).await?.answer.unwrap();
     assert_ne!(old, latest);
@@ -327,11 +335,31 @@ async fn observe(
         "wait retained delivery instead of committing its condition"
     );
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 1);
+    let (operation, journal, started) = pending_start(probe).await?;
     // A later delivery consumes the persisted condition and its actual producer.
     host.drain(child).await?;
     host.drain(parent).await?;
     assert_eq!(host.state(parent).await?.phase, Phase::Idle);
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 1);
+    let records = journal.replay(operation, 0, 100, None)?.await?;
+    let starts = records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.event,
+                acyclic_harness_core::executor::ExecutionEvent::ToolStarted { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 1, "resuming a wait appended another start");
+    assert_eq!(
+        starts[0], &started,
+        "resuming a wait replaced its start position or timestamp"
+    );
+    assert!(records.iter().any(|record| matches!(
+        record.event,
+        acyclic_harness_core::executor::ExecutionEvent::ToolCompleted { .. }
+    )));
     assert_eq!(
         result(model)["settled"][0]["answer"],
         "child releases deferred wait"
@@ -363,6 +391,42 @@ async fn observe(
     };
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 1);
     dropped_answer(host, probe, model, parent, child).await
+}
+
+async fn pending_start(
+    probe: &Probe,
+) -> Result<(
+    OperationId,
+    Arc<dyn acyclic_harness_core::executor::ExecutionJournal>,
+    acyclic_harness_core::executor::ExecutionRecord,
+)> {
+    use acyclic_harness_core::executor::ExecutionEvent;
+    let (operation, journal) = probe
+        .journal
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("missing original journal")?;
+    let records = journal.replay(operation, 0, 100, None)?.await?;
+    assert!(
+        !records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::ToolCompleted { .. } | ExecutionEvent::ToolFailed { .. }
+        )),
+        "parked wait already has a settlement"
+    );
+    let mut starts = records
+        .into_iter()
+        .filter(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. }));
+    let started = starts
+        .next()
+        .ok_or("wait parked without committing its start")?;
+    assert!(starts.next().is_none(), "wait has duplicate starts");
+    assert!(
+        started.committed_at_micros.is_some(),
+        "start has no physical commit timestamp"
+    );
+    Ok((operation, journal, started))
 }
 
 async fn dropped_answer(
