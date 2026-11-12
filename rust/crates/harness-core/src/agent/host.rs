@@ -166,7 +166,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             agents: Agents::new(actor_store(&provider)?),
             // Agents of other bindings may share this stream's actor root;
             // this host claims only its own account and namespace.
-            runtime: Runtime::new(published, handler, clock).claiming(&within),
+            runtime: Runtime::new(published, handler, clock).within(&within),
             provider,
             within,
             lifecycle: None,
@@ -806,6 +806,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         self.runtime.track(actor.clone()).map_err(actor_error)?;
         self.runtime.wake(&actor);
         Ok(())
+    }
+
+    /// Admit execution through the actor-local placement command. Registration
+    /// and inbox delivery alone never authorize this host to claim an agent.
+    pub async fn place(&self, agent: &AgentPath, index: u64) -> Result<(), Error> {
+        self.runtime
+            .place(self.actor(agent)?, index)
+            .await
+            .map_err(actor_error)
     }
 
     /// Runs one agent's committed inputs to quiescence within this event.

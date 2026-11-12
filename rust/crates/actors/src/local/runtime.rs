@@ -15,6 +15,7 @@ mod dispatcher;
 mod interrupt;
 mod limits;
 mod pause;
+mod placement;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Transition, Trigger};
 #[cfg(test)]
@@ -88,7 +89,7 @@ impl Drop for RefreshOnDrop {
 struct Inner {
     /// A removed slot must not begin another publication through an older Arc.
     released: bool,
-    /// Placement this runtime owns; zero until the first claim.
+    /// Epoch admitted by an explicit placement command, never by delivery.
     epoch: u64,
     /// One receipt-backed cut per resident actor; never advances speculatively.
     observed: Option<Arc<Snapshot>>,
@@ -149,7 +150,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     store: Store<P>,
     /// The one account and namespace whose actors this runtime claims, when
     /// several hosts share the root; `None` claims every actor.
-    claims: Option<(AccountId, NamespaceId)>,
+    scope: Option<(AccountId, NamespaceId)>,
     handler: Arc<dyn Handler>,
     clock: Arc<dyn Clock>,
     ready: ReadySet<ActorReference>,
@@ -168,7 +169,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub fn new(store: Store<P>, handler: Arc<dyn Handler>, clock: Arc<dyn Clock>) -> Self {
         Self {
             store,
-            claims: None,
+            scope: None,
             handler,
             clock,
             ready: ReadySet::default(),
@@ -190,18 +191,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         self
     }
 
-    /// Claim only the actors of `within`'s account and namespace: discovery
-    /// skips every other actor and [`Self::track`] refuses it, so hosts that
-    /// share one state root never claim each other's actors.
+    /// Restrict discovery to an account and namespace. This grants no ownership:
+    /// only an explicit per-actor placement command admits execution.
     #[must_use]
-    pub fn claiming(mut self, within: &ActorReference) -> Self {
-        self.claims = Some((within.account().clone(), within.namespace().clone()));
+    pub fn within(mut self, within: &ActorReference) -> Self {
+        self.scope = Some((within.account().clone(), within.namespace().clone()));
         self
     }
 
-    /// Whether this runtime claims `actor`.
-    pub fn claims(&self, actor: &ActorReference) -> bool {
-        self.claims.as_ref().is_none_or(|(account, namespace)| {
+    /// Whether an actor belongs to this runtime's discovery scope.
+    pub fn includes(&self, actor: &ActorReference) -> bool {
+        self.scope.as_ref().is_none_or(|(account, namespace)| {
             actor.account() == account && actor.namespace() == namespace
         })
     }
@@ -216,11 +216,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         self.ready.counts()
     }
 
-    /// Start tracking an actor. Idempotent; the first delivery claims a new
-    /// epoch. An actor this runtime does not [claim](Self::claims) is refused.
+    /// Register a wake hint. Registration alone grants no execution ownership.
+    /// Unassigned actors cannot claim themselves when input arrives.
     pub fn track(&self, actor: ActorReference) -> Result<(), Error> {
-        if !self.claims(&actor) {
-            return Err(Error::Invalid("actor is outside this runtime's claims"));
+        if !self.includes(&actor) {
+            return Err(Error::Invalid("actor is outside this runtime's scope"));
         }
         let mut actors = self
             .shard(&actor)
@@ -618,7 +618,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     // Another host's actors are not discovered here. Tracking wakes an
                     // already resident actor: this is its producer's wake.
                     if let Ok(actor) = ActorReference::decode(record.value.as_ref())
-                        && self.claims(&actor)
+                        && self.includes(&actor)
                     {
                         self.track(actor)?;
                     }
@@ -781,7 +781,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 inner.observed = None;
                 return Ok(true);
             };
-            if inner.epoch != 0 && state.epoch() != inner.epoch {
+            if inner.epoch == 0 || state.epoch() != inner.epoch {
                 return Err(Error::Conflict);
             }
             if state.paused() {
@@ -820,43 +820,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     None => return Ok(true),
                 },
             };
-            // Claim only for an actual delivery. Idle events must not publish a
-            // new epoch and wake themselves through their own state path.
-            // Its durable fence precedes external handler work, so a recovered
-            // runtime cannot race effects from the previous placement epoch.
-            // The claim changes only the epoch; its receipt retains the exact
-            // subscriptions and alarm that selected this immutable input.
-            let snapshot = if inner.epoch == 0 {
-                let epoch = state
-                    .epoch()
-                    .checked_add(1)
-                    .ok_or(Error::Invalid("epoch overflow"))?;
-                match self
-                    .store
-                    .claim(
-                        &snapshot,
-                        epoch,
-                        key(&snapshot, &format!("claim-{epoch}-{}", self.instance))?,
-                    )
-                    .await
-                {
-                    Ok(claimed) => {
-                        inner.epoch = epoch;
-                        let claimed = Arc::new(claimed);
-                        inner.observed = Some(Arc::clone(&claimed));
-                        claimed
-                    }
-                    Err(error) => {
-                        inner.observed = None;
-                        return Err(error);
-                    }
-                }
-            } else {
-                snapshot
-            };
-            let state = snapshot
-                .state()
-                .ok_or(Error::Invalid("claim receipt has no state"))?;
             // A retained publication cut cannot admit external handler work:
             // another host may already have paused or replaced this placement.
             // Until canonical control invalidation is available, observe the

@@ -810,6 +810,18 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         paused: Option<bool>,
         key: IdempotencyKey,
     ) -> Result<Snapshot, Error> {
+        self.claim_control(previous, epoch, paused, Vec::new(), key)
+            .await
+    }
+
+    async fn claim_control(
+        &self,
+        previous: &Snapshot,
+        epoch: u64,
+        paused: Option<bool>,
+        effects: Vec<CommitEffect>,
+        key: IdempotencyKey,
+    ) -> Result<Snapshot, Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.claim",
             Error::kind,
@@ -832,7 +844,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 if let Some(paused) = paused {
                     state.paused = paused;
                 }
-                self.submit_retained(self.prepare(previous, state, Vec::new(), key)?)
+                self.submit_retained(self.prepare(previous, state, effects, key)?)
                     .await?
                     .ok_or(Error::Invalid("claim receipt has no state"))
             }
