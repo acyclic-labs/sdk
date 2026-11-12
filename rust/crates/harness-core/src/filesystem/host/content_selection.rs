@@ -52,13 +52,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         else {
             return Ok(None);
         };
-        let bytes = binding.evidence().ok_or_else(|| {
-            stock_boundary(
+        let stored;
+        let bytes = if let Some(bytes) = binding.evidence() {
+            bytes
+        } else {
+            let bytes = read_generation(
+                binding.generation(),
+                "/.system/harness-content-workspace",
+                Some(SELECTION_BYTES as u64),
                 Some(io),
-                crate::wire::ErrorCode::Storage,
-                "content workspace binding has no original evidence",
             )
-        })?;
+            .await?;
+            let hold = io.guard_bytes(&bytes)?;
+            stored = (bytes, hold);
+            stored.0.as_ref()
+        };
         if bytes.len() != SELECTION_BYTES || bytes[0] != 1 {
             return Err(stock_boundary(
                 Some(io),

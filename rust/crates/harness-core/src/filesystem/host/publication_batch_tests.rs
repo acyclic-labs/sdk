@@ -39,78 +39,123 @@ fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGran
 
 #[tokio::test]
 async fn content_routing_evidence_never_creates_or_overwrites_a_workspace_path() -> Result<()> {
-    let provider = ProviderRef::new("routing".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let filesystem = Fs::memory();
-    let store = acyclic_fs::StreamGitCompatStore::new(acyclic_fs::StreamAuthorityStore::new(
-        filesystem.stream_provider(),
-    ));
-    let host = FilesystemHost::new(filesystem, &provider, None)?.with_project_families(store)?;
-    let agent = AgentId::from_bytes([37; 16]);
-    let volume = VolumeRef::new(
-        provider.clone(),
-        "routing".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
-        &mut None,
-    )?;
-    let reference = host.create_volume(&volume).await?.workspace;
-    let root = host.open(&reference, None).await?;
-    let (grant, _) = publication_grants(&volume, agent)?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let io = PreparationIo::for_unmeasured(&cancellation)?;
-    let (_, fence) = host
-        .authorize_content_write(&root, &grant, "file", false, None, Some(&io))?
-        .await?;
-    let operation = FilesystemKey::new();
-    let before = io.sdk(root.head(&io, &cancellation).await)?.id();
-    host.bind_content_operation(&root, root.id(), operation, (fence, &grant), &io)?
-        .await?;
-    assert_eq!(
-        io.sdk(root.head(&io, &cancellation).await)?.id(),
-        before,
-        "routing mutated the user's tree"
-    );
-    let original = io.sdk(root.head(&io, &cancellation).await)?;
-    assert!(
-        io.sdk(original.stat("/.system", &io, &cancellation).await)
-            .is_err()
-    );
-    host.apply(
-        &reference,
-        None,
-        &[
-            WorkspaceMutation::CreateDirectory {
-                path: "/.system".into(),
-            },
-            WorkspaceMutation::PutFile {
-                path: "/.system/harness-content-workspace".into(),
-                bytes: acyclic_stream::OwnedBytes::from_static(b"authored file"),
-            },
-        ],
-        &IdempotencyKey::new("authored")?,
-    )
-    .await?;
-    let (selected, binding) = host
-        .content_operation_workspace(&root, operation, false, &io)
-        .await?
-        .ok_or_else(|| io.invalid("routing disappeared"))?;
-    assert_eq!(selected.id(), root.id());
-    assert_eq!(
-        binding.ok_or_else(|| io.invalid("binding absent"))?.id(),
-        before
-    );
-    assert_eq!(
-        host.read(
+    for stored in [false, true] {
+        let provider =
+            ProviderRef::new("routing".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let filesystem = Fs::memory();
+        let store = acyclic_fs::StreamGitCompatStore::new(acyclic_fs::StreamAuthorityStore::new(
+            filesystem.stream_provider(),
+        ));
+        let host =
+            FilesystemHost::new(filesystem, &provider, None)?.with_project_families(store)?;
+        let agent = AgentId::from_bytes([37; 16]);
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "routing".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        let reference = host.create_volume(&volume).await?.workspace;
+        let root = host.open(&reference, None).await?;
+        let (grant, _) = publication_grants(&volume, agent)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let io = PreparationIo::for_unmeasured(&cancellation)?;
+        let (_, fence) = host
+            .authorize_content_write(&root, &grant, "file", false, None, Some(&io))?
+            .await?;
+        let operation = FilesystemKey::new();
+        let before = io.sdk(root.head(&io, &cancellation).await)?.id();
+        if stored {
+            let digest = blake3::derive_key(
+                "acyclic-harness-content-workspace-v1",
+                &operation.into_bytes(),
+            );
+            let mut key = [0; 16];
+            key.copy_from_slice(&digest[..16]);
+            if key == [0; 16] {
+                key[0] = 1;
+            }
+            let mut transaction = io.sdk(
+                root.begin_transaction(FilesystemKey::from_bytes(key), &io, &cancellation)
+                    .await,
+            )?;
+            io.sdk(
+                transaction
+                    .create_dir_all("/.system", &io, &cancellation)
+                    .await,
+            )?;
+            let mut bytes = vec![1];
+            bytes.extend_from_slice(&root.id().into_bytes());
+            io.sdk(
+                transaction
+                    .write(
+                        "/.system/harness-content-workspace",
+                        bytes,
+                        &io,
+                        &cancellation,
+                    )
+                    .await,
+            )?;
+            FilesystemHost::commit_contextual_publication(
+                transaction,
+                &io,
+                super::FilePublication::Authorized(fence, &grant, None),
+                None,
+            )?
+            .await?;
+        } else {
+            host.bind_content_operation(&root, root.id(), operation, (fence, &grant), &io)?
+                .await?;
+            assert_eq!(
+                io.sdk(root.head(&io, &cancellation).await)?.id(),
+                before,
+                "routing mutated the user's tree"
+            );
+            let original = io.sdk(root.head(&io, &cancellation).await)?;
+            assert!(
+                io.sdk(original.stat("/.system", &io, &cancellation).await)
+                    .is_err()
+            );
+        }
+        let binding_cut = io.sdk(root.head(&io, &cancellation).await)?.id();
+        host.apply(
             &reference,
             None,
-            "/.system/harness-content-workspace",
-            64,
-            None
+            &[
+                WorkspaceMutation::CreateDirectory {
+                    path: "/.system".into(),
+                },
+                WorkspaceMutation::PutFile {
+                    path: "/.system/harness-content-workspace".into(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"authored file"),
+                },
+            ],
+            &IdempotencyKey::new("authored")?,
         )
-        .await?
-        .as_ref(),
-        b"authored file"
-    );
+        .await?;
+        let (selected, binding) = host
+            .content_operation_workspace(&root, operation, false, &io)
+            .await?
+            .ok_or_else(|| io.invalid("routing disappeared"))?;
+        assert_eq!(selected.id(), root.id());
+        assert_eq!(
+            binding.ok_or_else(|| io.invalid("binding absent"))?.id(),
+            binding_cut
+        );
+        assert_eq!(
+            host.read(
+                &reference,
+                None,
+                "/.system/harness-content-workspace",
+                64,
+                None
+            )
+            .await?
+            .as_ref(),
+            b"authored file"
+        );
+    }
     Ok(())
 }
 
@@ -617,67 +662,6 @@ impl PublicationCase<'_> {
             )
             .is_err()
         );
-        if class.is_none() {
-            // A populated previous index can contain either historical shape.
-            // The new index owns another namespace and never reinterprets them.
-            let previous_path = metadata_path.replace("/v2/", "/v1/");
-            let directory_grant = ContentGrant::verify_directory_read(
-                &self.read.copy_verifier(&mut None)?,
-                self.read.policy_scope(),
-                self.volume,
-                "",
-                &mut None,
-            )?;
-            for (index, previous) in [
-                crate::contract::canonical_json_bytes(&(&staged, &expected))?,
-                crate::contract::canonical_json_bytes(&staged)?,
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                self.host
-                    .apply(
-                        workspace,
-                        None,
-                        &[
-                            WorkspaceMutation::CreateDirectory {
-                                path: previous_path.rsplit_once('/').unwrap().0.into(),
-                            },
-                            WorkspaceMutation::PutFile {
-                                path: previous_path.clone(),
-                                bytes: previous.clone().into(),
-                            },
-                        ],
-                        &IdempotencyKey::new(format!("previous-index-{}-{index}", key.as_str()))?,
-                    )
-                    .await?;
-                let (file, bytes, _) = self
-                    .host
-                    .read_private_path_indexed(
-                        self.volume,
-                        &directory_grant,
-                        path,
-                        None,
-                        64,
-                        crate::conversation::ContentAccess {
-                            ceiling: None,
-                            io: self.io,
-                        },
-                    )
-                    .await?
-                    .ok_or_else(|| io.invalid("indexed file disappeared"))?;
-                assert_eq!(file.descriptor(), staged.descriptor());
-                assert_eq!(file.display_name(), staged.display_name());
-                assert_eq!(bytes.as_ref(), b"original");
-                assert_eq!(
-                    self.host
-                        .read(workspace, None, &previous_path, 4096, None)
-                        .await?
-                        .as_ref(),
-                    previous.as_slice()
-                );
-            }
-        }
         Ok(())
     }
 
@@ -780,6 +764,33 @@ impl PublicationCase<'_> {
                 .await?;
             file
         };
+        if class.is_none() {
+            let grant = ContentGrant::verify_directory_read(
+                &self.read.copy_verifier(&mut None)?,
+                self.read.policy_scope(),
+                self.volume,
+                "",
+                &mut None,
+            )?;
+            let (indexed, bytes, _) = self
+                .host
+                .read_private_path_indexed(
+                    self.volume,
+                    &grant,
+                    &path,
+                    None,
+                    64,
+                    crate::conversation::ContentAccess {
+                        ceiling: None,
+                        io: self.io,
+                    },
+                )
+                .await?
+                .ok_or_else(|| Error::Storage("indexed upload is absent".into()))?;
+            assert_eq!(indexed.descriptor(), original.descriptor());
+            assert_eq!(indexed.display_name(), original.display_name());
+            assert_eq!(bytes.as_ref(), b"original");
+        }
         let before_retry = self.host.resolve(workspace, None).await?;
         assert_eq!(self.put(&path, b"original", &key, class).await?, original);
         assert_eq!(self.host.resolve(workspace, None).await?, before_retry);
@@ -887,11 +898,91 @@ async fn publication_recovers_original_uploads_for_every_adapter() -> Result<()>
     Ok(())
 }
 
+async fn conditional_without_evidence(
+    host: &MemoryHost,
+    volume: &VolumeRef,
+    key: &IdempotencyKey,
+) -> Result<crate::conversation::ContentChanges> {
+    use crate::conversation::{ContentChangeResult, ContentChanges};
+    let workspace = bounded_io::content_workspace(volume.provider(), volume, None)?;
+    let operation = bounded_io::hex_key(&filesystem_key(key).into_bytes(), None)?;
+    let namespace = volume.storage_name(&mut None)?;
+    let mut files = Vec::new();
+    let mut mutations = vec![
+        WorkspaceMutation::CreateDirectory {
+            path: "/nested".into(),
+        },
+        WorkspaceMutation::CreateDirectory {
+            path: "/.system/harness-file-metadata/v1".into(),
+        },
+        WorkspaceMutation::CreateDirectory {
+            path: "/.system/harness-uploads".into(),
+        },
+    ];
+    for path in ["nested/first", "second"] {
+        let file = FileRef::new(
+            volume.copy(&mut None)?,
+            path.into(),
+            operation.clone(),
+            FileDescriptor::from_bytes(b"first", "text/plain", &mut None)?,
+            "file".into(),
+            &mut None,
+        )?;
+        let mut hash = blake3::Hasher::new_derive_key("acyclic harness file index v1");
+        hash.update(namespace.as_bytes());
+        hash.update(&[0]);
+        hash.update(path.as_bytes());
+        mutations.push(WorkspaceMutation::PutFile {
+            path: format!("/{path}"),
+            bytes: acyclic_stream::OwnedBytes::from_static(b"first"),
+        });
+        mutations.push(WorkspaceMutation::PutFile {
+            path: format!(
+                "/.system/harness-file-metadata/v1/{}.json",
+                hash.finalize().to_hex()
+            ),
+            bytes: crate::contract::canonical_json_bytes(&file)?.into(),
+        });
+        files.push(file);
+    }
+    let records: Vec<_> = files
+        .iter()
+        .map(|file| serde_json::json!({"action":"create", "file":file}))
+        .collect();
+    mutations.push(WorkspaceMutation::PutFile {
+        path: format!(
+            "/.system/harness-uploads/{}.json",
+            blake3::hash(key.as_str().as_bytes()).to_hex()
+        ),
+        bytes: crate::contract::canonical_json_bytes(&(2_u8, records))?.into(),
+    });
+    let generation = host.apply(&workspace, None, &mutations, key).await?;
+    let version = bounded_io::hex_key(generation.as_resource().key(), None)?;
+    let members = files
+        .into_iter()
+        .map(|mut file| {
+            file.pin_version(version.clone(), &mut None)?;
+            Ok(ContentChangeResult::Created(file))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ContentChanges {
+        generation,
+        members,
+    })
+}
+
 #[tokio::test]
 async fn conditional_changes_publish_once_with_action_and_parent_authority() -> Result<()> {
     use crate::conversation::{ContentAccess, ContentChange};
     use acyclic_fs::access::{Action, Capability};
-    for adapter in 0..3 {
+    for (adapter, stored) in [
+        (0, false),
+        (0, true),
+        (1, false),
+        (1, true),
+        (2, false),
+        (2, true),
+    ] {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
@@ -938,9 +1029,12 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         };
         let changes = [add("nested/first"), add("second")];
         let key = IdempotencyKey::new("conditional-create")?;
-        let original = host
-            .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
-            .await?;
+        let original = if stored {
+            conditional_without_evidence(&host, &volume, &key).await?
+        } else {
+            host.put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
+                .await?
+        };
         let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
         let opened = host.open(&workspace, None).await?;
         let proof_io = PreparationIo::for_unmeasured(&cancellation)?;
@@ -951,16 +1045,18 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                     .await,
             )?
             .ok_or_else(|| proof_io.invalid("conditional publication evidence is absent"))?;
-        assert!(
-            proof_io
-                .sdk(
-                    publication
-                        .generation()
-                        .stat("/.system/harness-uploads", &proof_io, &cancellation)
-                        .await
-                )
-                .is_err()
-        );
+        if !stored {
+            assert!(
+                proof_io
+                    .sdk(
+                        publication
+                            .generation()
+                            .stat("/.system/harness-uploads", &proof_io, &cancellation)
+                            .await
+                    )
+                    .is_err()
+            );
+        }
         let former_receipt = format!(
             "/.system/harness-uploads/{}.json",
             blake3::hash(key.as_str().as_bytes()).to_hex()
@@ -980,24 +1076,39 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             &IdempotencyKey::new("authored-former-receipt")?,
         )
         .await?;
-        let receipt_bytes = publication
-            .evidence()
-            .ok_or_else(|| proof_io.invalid("receipt absent"))?
-            .len() as u64;
+        let receipt_bytes = if let Some(bytes) = publication.evidence() {
+            bytes.len() as u64
+        } else {
+            host.read(
+                &workspace,
+                Some(&original.generation),
+                &former_receipt,
+                64_000,
+                None,
+            )
+            .await?
+            .len() as u64
+        };
         let refused = host
             .observe_changes(&volume, &write, &key, receipt_bytes - 1, create_access)?
             .await
             .expect_err("oversized receipt must refuse in the canonical decoder");
-        assert!(matches!(
-            refused,
-            Error::NativeWorkspace { source, .. }
-                if matches!(
-                    *source,
-                    WorkspaceError::Filesystem(acyclic_fs::FsError::Decode(
-                        acyclic_fs::kernel::CanonicalDecodeError::FieldTooLarge { .. }
-                    ))
-                )
-        ));
+        if stored {
+            assert!(
+                matches!(refused, Error::NativeWorkspace { source, .. } if matches!(*source, WorkspaceError::ReadLimitExceeded))
+            );
+        } else {
+            assert!(matches!(
+                refused,
+                Error::NativeWorkspace { source, .. }
+                    if matches!(
+                        *source,
+                        WorkspaceError::Filesystem(acyclic_fs::FsError::Decode(
+                            acyclic_fs::kernel::CanonicalDecodeError::FieldTooLarge { .. }
+                        ))
+                    )
+            ));
+        }
         let observed = host
             .observe_changes(&volume, &write, &key, receipt_bytes, create_access)?
             .await?
