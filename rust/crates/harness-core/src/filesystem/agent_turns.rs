@@ -288,13 +288,14 @@ impl<'v> AdmittedAgent<'v> {
     }
 
     /// Host authority over this agent's journal and retained conversation files.
-    async fn journal_authority(
+    async fn journal_authority<'a>(
         &self,
-        retained: &[FileRef],
+        retained: impl IntoIterator<Item = &'a FileRef>,
     ) -> Result<(VolumeRef, AgentAuthority<'v>)> {
         let content = Capabilities::new(
             retained
-                .iter()
+                .into_iter()
+                .filter(|file| file.volume() != &self.journal)
                 .map(|file| file.read_capability(&mut None))
                 .collect::<Result<Vec<_>>>()?,
         );
@@ -763,7 +764,7 @@ where
     async fn approvals(
         &self,
         agent: &AgentState,
-        content: &ContentBindings,
+        reader: &dyn ContentResidencyVerifier,
     ) -> Result<(AgentApprovalPolicy, ApprovalPolicy)> {
         let limits = crate::conversation::Limits {
             file_bytes: self.limits.maximum_bytes,
@@ -772,8 +773,7 @@ where
         let parent = agent.parent.as_ref().map(crate::agent::AgentPath::id);
         let bound = match &agent.policy {
             Some(file) => {
-                let bytes = content
-                    .reader
+                let bytes = reader
                     .read(file, file.descriptor().byte_length(), None, None)?
                     .await?;
                 AgentApprovalPolicy::from_file(
@@ -807,7 +807,9 @@ where
         reason: Option<String>,
     ) -> Result<()> {
         let (_, bindings, files) = self.approval_journal(agent).await?;
-        let (policy, _) = self.approvals(agent, &bindings.content).await?;
+        let (policy, _) = self
+            .approvals(agent, bindings.journal.reader.as_ref())
+            .await?;
         crate::approvals::decide(&*files, &policy, id, responder, verdict, reason).await
     }
 
@@ -862,7 +864,9 @@ where
         principal: &str,
     ) -> Result<Option<crate::interaction::Interaction>> {
         let (_, bindings, files) = self.approval_journal(agent).await?;
-        let (policy, _) = self.approvals(agent, &bindings.content).await?;
+        let (policy, _) = self
+            .approvals(agent, bindings.journal.reader.as_ref())
+            .await?;
         let Some(bytes) =
             crate::approvals::decided_request(&*files, &policy, id.as_str(), principal).await?
         else {
@@ -1037,7 +1041,7 @@ where
         let local_root = admitted.parent.is_none();
         let storage = crate::core::until_turn_stopped(
             stop.clone(),
-            self.journal_storage(&admitted, retained),
+            self.journal_storage(&admitted, external.iter().chain(retained)),
         )
         .await?;
         let AgentAuthority {
@@ -1065,7 +1069,9 @@ where
             crate::conversation::ContentGrant::verify_read(&verifier, &scope, file)?;
         }
         if let Some(context) = context {
-            context.expand_inputs(reader.as_ref()).await?;
+            // Decode selected host-owned envelopes before deriving the
+            // workload-visible content closure from their validated contents.
+            context.expand_inputs(storage.reader.as_ref()).await?;
             let mut inherited = Vec::new();
             for file in context.files() {
                 if let Err(error) =
@@ -1172,10 +1178,10 @@ where
     /// Retained documents are selected by the conversation, independently of
     /// current workspace roots.
     /// This reader and its journal write grant never enter the tool bindings.
-    async fn journal_storage(
+    async fn journal_storage<'a>(
         &self,
         admitted: &AdmittedAgent<'_>,
-        retained: &[FileRef],
+        retained: impl IntoIterator<Item = &'a FileRef>,
     ) -> Result<JournalStorage<A, O>> {
         let (volume, authority) = admitted.journal_authority(retained).await?;
         let AgentAuthority {
@@ -2247,7 +2253,9 @@ where
                     .map(|goal| Arc::new(goal) as Arc<dyn crate::agent::TurnGoal>),
                     None => None,
                 };
-                let (policy, resolved) = self.approvals(agent, &bindings.content).await?;
+                let (policy, resolved) = self
+                    .approvals(agent, bindings.journal.reader.as_ref())
+                    .await?;
                 let outputs = Arc::new(AgentTurnOutputs {
                     ui: Arc::clone(&files),
                     journal: Arc::clone(&bindings.journal.files),

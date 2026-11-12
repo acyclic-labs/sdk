@@ -90,6 +90,9 @@ pub use process_tree::{
 
 mod file;
 mod io_progress;
+/// Kernel-authenticated identities for owner-confined local connections.
+#[cfg(any(unix, windows))]
+pub mod ipc;
 #[cfg(all(target_os = "linux", not(any(test, feature = "test-support"))))]
 mod kernel_keyring;
 pub mod owner_record;

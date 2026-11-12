@@ -92,7 +92,9 @@ pub(super) fn create_directory(path: &Path) -> io::Result<()> {
     })
 }
 
-fn with_security<T>(action: impl FnOnce(&SECURITY_ATTRIBUTES) -> io::Result<T>) -> io::Result<T> {
+pub(super) fn with_security<T>(
+    action: impl FnOnce(&SECURITY_ATTRIBUTES) -> io::Result<T>,
+) -> io::Result<T> {
     let mut token = [0usize; 16];
     // SAFETY: GetCurrentProcess returns a borrowed pseudo-handle with no preconditions.
     let owner = user(unsafe { GetCurrentProcess() }, &mut token)?;
@@ -135,7 +137,6 @@ pub(super) fn process_user_id(process: *mut std::ffi::c_void) -> io::Result<Vec<
 
 /// Checks a file has a protected DACL granting full access only to its current user.
 pub(super) fn is_private(file: &File) -> io::Result<bool> {
-    use windows::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: the held file handle and initialized output are live for this call.
     unsafe {
@@ -146,13 +147,18 @@ pub(super) fn is_private(file: &File) -> io::Result<bool> {
     {
         return Ok(false);
     }
+    is_private_security(file.as_raw_handle())
+}
+
+pub(super) fn is_private_security(handle: *mut std::ffi::c_void) -> io::Result<bool> {
+    use windows::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     let mut acl = std::ptr::null_mut();
     let mut owner = PSID::default();
     // SAFETY: valid file handle and output pointers. GetSecurityInfo owns the returned descriptor.
     unsafe {
         GetSecurityInfo(
-            HANDLE(file.as_raw_handle()),
+            HANDLE(handle),
             SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
             Some(&mut owner),

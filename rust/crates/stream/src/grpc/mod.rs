@@ -263,10 +263,10 @@ impl Client {
         }
     }
 
-    pub(crate) fn from_channel_with_credential(
-        channel: Channel,
-        credential: CredentialProvider,
-    ) -> Self {
+    /// Adopt a channel whose transport identity the caller has authenticated.
+    /// The provider supplies per-request authorization; use transport identity
+    /// only when the receiving service admits that authenticated channel.
+    pub fn from_channel_with_credential(channel: Channel, credential: CredentialProvider) -> Self {
         Self {
             channel,
             authorization: None,

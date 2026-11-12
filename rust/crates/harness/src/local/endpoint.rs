@@ -38,6 +38,46 @@ fn exchange(error: impl std::fmt::Display) -> Error {
 }
 
 impl Connection {
+    /// Bind an OS-authenticated local channel using its in-memory capability.
+    pub(super) async fn connect_local(directory: super::service::Directory) -> Result<Self> {
+        let credential = Arc::new(std::sync::OnceLock::new());
+        let bootstrap = Arc::clone(&credential);
+        let channel = tonic::transport::Endpoint::from_static("http://local")
+            .connect_with_connector(tower::service_fn(move |_| {
+                let directory = directory.clone();
+                let bootstrap = Arc::clone(&bootstrap);
+                async move {
+                    let (connection, credential) = directory
+                        .connection()
+                        .await
+                        .map_err(|error| std::io::Error::other(error.to_string()))?;
+                    // The session retains its original authority across
+                    // authenticated transport reconnects. The server validates
+                    // that capability on every reopened session.
+                    bootstrap.get_or_init(|| credential);
+                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(connection))
+                }
+            }))
+            .await
+            .map_err(exchange)?;
+        let credential = credential
+            .get()
+            .ok_or_else(|| Error::Storage("local connection did not bootstrap".into()))?;
+        let bytes = acyclic_auth::credential::capability_from_text(credential)
+            .map_err(|_| Error::Unauthorized("credential is not a capability".into()))?;
+        let client = acyclic_stream::grpc::Client::from_channel_with_credential(
+            channel,
+            acyclic_auth::credential::CredentialProvider::transport_identity(),
+        );
+        Self::bind(
+            client.session_client().map_err(exchange)?,
+            bytes,
+            None,
+            false,
+        )
+        .await
+    }
+
     /// Refuse explicit launch requirements before creating a session or sending input.
     /// With no explicit requirement this performs no control request.
     pub async fn require_execution(&self, model: Option<&str>, no_compaction: bool) -> Result<()> {

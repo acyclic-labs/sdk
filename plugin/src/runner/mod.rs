@@ -372,7 +372,7 @@ async fn run_inner(
         )?;
         let existing = directory.clone();
         if tokio::task::spawn_blocking(move || existing.existing()).await?? {
-            require_existing_owner(&args, &directory)?;
+            require_existing_owner(&args, &directory).await?;
             // A running session needs only its existing capability and files;
             // attaching never asks the user for the owner's model credentials.
             return connected(
@@ -407,7 +407,7 @@ async fn run_inner(
         })
         .await??;
         if !started {
-            require_existing_owner(&args, &directory)?;
+            require_existing_owner(&args, &directory).await?;
         }
         let connection = directory.connect().await?;
         return connected(&args, connection, output, event_output, terminal).await;
@@ -614,12 +614,12 @@ fn catalog_identity(registry: &Registry) -> Result<[u8; 32], Box<dyn std::error:
     .as_bytes())
 }
 
-fn require_existing_owner(
+async fn require_existing_owner(
     args: &Args,
     directory: &acyclic_harness::local::service::Directory,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let catalog = if args.catalog.is_some() {
-        directory.configuration()?.get("catalog").copied()
+        directory.configuration().await?.get("catalog").copied()
     } else {
         None
     };

@@ -59,7 +59,7 @@ pub fn is_private(file: &File) -> io::Result<bool> {
     unsafe_code,
     reason = "geteuid reads the current process identity and has no pointer preconditions"
 )]
-fn effective_user() -> u32 {
+pub(crate) fn effective_user() -> u32 {
     // SAFETY: geteuid takes no arguments and returns the process effective uid.
     unsafe { libc::geteuid() }
 }
@@ -419,4 +419,19 @@ mod tests;
 #[cfg(windows)]
 pub fn process_user_id(process: *mut std::ffi::c_void) -> io::Result<Vec<u8>> {
     windows::process_user_id(process).map_err(windows::io_error)
+}
+
+/// Keeps the same protected owner-only descriptor live for a native object creation.
+#[cfg(windows)]
+pub(crate) fn with_private_security<T>(
+    action: impl FnOnce(*mut std::ffi::c_void) -> io::Result<T>,
+) -> io::Result<T> {
+    windows::with_security(|attributes| action(std::ptr::from_ref(attributes).cast_mut().cast()))
+        .map_err(windows::io_error)
+}
+
+/// Check the held file or pipe object's owner-only security descriptor.
+#[cfg(windows)]
+pub(crate) fn is_private_security(handle: *mut std::ffi::c_void) -> io::Result<bool> {
+    windows::is_private_security(handle).map_err(windows::io_error)
 }

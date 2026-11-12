@@ -522,6 +522,35 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
         1 << 20,
         None,
     )?;
+    // Exact content grants do not confer custody of host-owned envelopes.
+    assert!(
+        reader
+            .read(file, original.len() as u64, None, None)?
+            .await
+            .is_err()
+    );
+    let scope = bound
+        .issuer()
+        .issue(
+            None,
+            "notice-host",
+            &acyclic_harness_core::Capabilities::new([
+                acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
+                file.volume().capability(
+                    acyclic_harness_core::conversation::VolumeOperation::Read,
+                    &mut None,
+                )?,
+            ]),
+            Some(acyclic_harness_core::AgentId::from_bytes(agent.id_bytes())),
+        )
+        .await?;
+    let reader = FilesystemContentVerifier::new(
+        bound.volumes().clone(),
+        &bound.issuer().verifier(&mut None)?,
+        &scope,
+        1 << 20,
+        None,
+    )?;
     assert_eq!(
         reader
             .read(file, original.len() as u64, None, None)?

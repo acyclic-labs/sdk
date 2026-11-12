@@ -12,8 +12,10 @@ use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
 
 mod actors;
+mod listener;
 mod tls;
 pub use actors::{Actors, ActorsError, Execution, PendingActors, Runtime};
+pub use listener::{Listener, LocalConnection};
 
 /// This server's identity, announced in every [`Endpoint`]: a client or a
 /// test checks that an endpoint is served by this entry point.
@@ -182,20 +184,32 @@ pub struct Endpoint {
 /// When the harness cannot be opened or hosted, a non-loopback address has
 /// no TLS identity, or the listener fails.
 pub async fn serve<C: Composition>(
-    listener: tokio::net::TcpListener,
+    listener: impl Into<Listener>,
     config: ServerConfig<C>,
     ready: impl FnOnce(&Endpoint),
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::result::Result<(), C::Error> {
-    let address = listener
-        .local_addr()
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    if config.tls.is_none() && !address.ip().is_loopback() {
-        return Err(Error::Invalid(
-            "plain HTTP serves only a loopback address; give a TLS identity".into(),
-        )
-        .into());
-    }
+    let listener = listener.into();
+    let endpoint = match &listener {
+        Listener::Tcp(listener) => {
+            let address = listener.local_addr().map_err(failed)?;
+            if config.tls.is_none() && !address.ip().is_loopback() {
+                return Err(Error::Invalid(
+                    "plain HTTP serves only a loopback address; give a TLS identity".into(),
+                )
+                .into());
+            }
+            format!("http://{address}")
+        }
+        Listener::Local(_) => {
+            if config.tls.is_some() {
+                return Err(
+                    Error::Invalid("local IPC does not use a network TLS identity".into()).into(),
+                );
+            }
+            "ipc://local".into()
+        }
+    };
     let mut shutdown = std::pin::pin!(shutdown);
     let mut host = tokio::select! {
         biased;
@@ -240,7 +254,7 @@ pub async fn serve<C: Composition>(
     };
     let endpoint = match &tls {
         Some((_, url)) => url.clone(),
-        None => format!("http://{address}"),
+        None => endpoint,
     };
     let observation = config.verifier.observation(RootCredential(Box::pin(async {
         let minted = if server.serves_sessions() {
@@ -285,19 +299,27 @@ pub async fn serve<C: Composition>(
     let router =
         tonic::transport::Server::builder().add_service(StreamSessionServiceServer::new(service));
     let serving = async {
-        match tls {
-            Some((tls, _)) => {
+        match (listener, tls) {
+            (Listener::Tcp(listener), Some((tls, _))) => {
                 router
                     .serve_with_incoming_shutdown(tls::incoming(listener, tls), completion_shutdown)
                     .await
             }
-            None => {
+            (Listener::Tcp(listener), None) => {
                 router
                     .serve_with_incoming_shutdown(
                         tonic::transport::server::TcpIncoming::from(listener),
                         completion_shutdown,
                     )
                     .await
+            }
+            (Listener::Local(incoming), None) => {
+                router
+                    .serve_with_incoming_shutdown(incoming, completion_shutdown)
+                    .await
+            }
+            (Listener::Local(_), Some(_)) => {
+                unreachable!("local TLS was refused before opening the host")
             }
         }
         .map_err(failed)

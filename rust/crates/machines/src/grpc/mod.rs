@@ -93,6 +93,3 @@ pub use recovery::{
 mod credential_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
-
-#[cfg(all(test, target_os = "linux"))]
-use native::owner_private_socket;

@@ -58,26 +58,6 @@ pub struct NativeEndpoint {
     credential: Option<CredentialProvider>,
 }
 
-#[cfg(target_os = "linux")]
-pub(super) fn owner_private_socket(
-    path: &std::path::Path,
-    expected_uid: u32,
-) -> std::io::Result<std::fs::Metadata> {
-    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
-
-    let metadata = std::fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_socket()
-        || metadata.uid() != expected_uid
-        || metadata.mode() & 0o077 != 0
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "Machines socket is not an owner-private socket",
-        ));
-    }
-    Ok(metadata)
-}
-
 impl Provider<NativeEndpoint> {
     /// Resolve the current callback for each physical RPC, including watch reopenings.
     pub fn with_credential_provider(mut self, credential: CredentialProvider) -> Self {
@@ -166,8 +146,6 @@ impl Provider<NativeEndpoint> {
         path: &std::path::Path,
         token: Option<&str>,
     ) -> Result<Self, ProviderError> {
-        use std::os::unix::fs::MetadataExt as _;
-        use tokio::net::UnixStream;
         use tower::service_fn;
 
         let auth = token.map(BearerAuth::new).transpose()?.unwrap_or_default();
@@ -177,25 +155,17 @@ impl Provider<NativeEndpoint> {
             ));
         }
         let path = path.to_path_buf();
-        let expected_uid = rustix::process::geteuid().as_raw();
+        let owner = acyclic_native_runtime::ipc::PeerCredentials::current()
+            .map_err(|_| ProviderError::Unavailable)?;
         let channel = TonicEndpoint::from_static("http://[::]:50051")
             .connect_with_connector(service_fn(move |_| {
                 let path = path.clone();
+                let owner = owner.clone();
                 async move {
-                    let before = owner_private_socket(&path, expected_uid)?;
-                    let stream = UnixStream::connect(&path).await?;
-                    let peer = stream.peer_cred()?;
-                    let after = owner_private_socket(&path, expected_uid)?;
-                    if peer.uid() != expected_uid
-                        || after.dev() != before.dev()
-                        || after.ino() != before.ino()
-                    {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
-                            "Machines socket identity changed or peer is foreign",
-                        ));
-                    }
-                    Ok(hyper_util::rt::TokioIo::new(stream))
+                    owner
+                        .connect_unix(&path)
+                        .await
+                        .map(hyper_util::rt::TokioIo::new)
                 }
             }))
             .await

@@ -1,13 +1,13 @@
-//! Rendezvous for the one local `server::serve` owner. The endpoint is a
-//! disposable projection, usable only while the owner's OS lock is held.
+//! Rendezvous for the one local `server::serve` owner. Owner-private IPC
+//! checks kernel peer credentials and hands capabilities over the live channel.
 //! Startup waits on an OS lock and the native readiness pipe, never probes.
 use super::{Connection, LocalHarnessConfig, storage};
 use crate::{Error, Result};
 use acyclic_native_runtime::{FileLock, FileLockMode, ServiceStartOutcome, private_file};
 use std::{
     ffi::OsString,
-    io::Write as _,
     path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
 };
 
 /// The checkout's private service rendezvous, outside the repository.
@@ -18,7 +18,6 @@ pub struct Directory(PathBuf);
 #[serde(deny_unknown_fields)]
 struct Descriptor {
     version: u32,
-    endpoint: String,
     credential: String,
     // Optional negotiation metadata: absence grants no configuration match.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -80,6 +79,7 @@ impl Directory {
             configuration: Default::default(),
             _lock: lock,
             publication: std::sync::Mutex::new(Some(publication)),
+            bootstrap: Arc::new(OnceLock::new()),
         })
     }
 
@@ -138,30 +138,50 @@ impl Directory {
     /// Opens the owner's published capability through the ordinary client.
     /// Endpoint errors are returned as errors, never reinterpreted as death.
     pub async fn connect(&self) -> Result<Connection> {
-        let descriptor = self.descriptor()?;
-        let options = acyclic_harness_client::ConnectionOptions::from_env(
-            Some(&descriptor.endpoint),
-            Some(&descriptor.credential),
-        )
-        .map_err(|error| Error::Invalid(error.code().into()))?;
-        Connection::connect(&options).await
+        Connection::connect_local(self.clone()).await
     }
 
     /// Non-secret configuration identities published by the live owner.
     /// Call only after `existing` or `start` has waited for publication.
-    pub fn configuration(&self) -> Result<std::collections::BTreeMap<String, [u8; 32]>> {
-        Ok(self.descriptor()?.configuration)
+    pub async fn configuration(&self) -> Result<std::collections::BTreeMap<String, [u8; 32]>> {
+        Ok(self.descriptor().await?.1.configuration)
     }
 
-    fn descriptor(&self) -> Result<Descriptor> {
-        let file = private_file::open(&self.0.join("endpoint.json"), false).map_err(storage)?;
-        let descriptor: Descriptor = serde_json::from_reader(file).map_err(storage)?;
+    fn address(&self) -> Result<PathBuf> {
+        acyclic_native_runtime::ipc::endpoint(&self.0).map_err(storage)
+    }
+
+    pub(super) async fn connection(&self) -> Result<(crate::server::LocalConnection, String)> {
+        let (connection, descriptor) = self.descriptor().await?;
+        Ok((connection, descriptor.credential))
+    }
+    async fn descriptor(&self) -> Result<(crate::server::LocalConnection, Descriptor)> {
+        use acyclic_native_runtime::ipc::PeerCredentials;
+        use tokio::io::AsyncReadExt as _;
+        let owner = PeerCredentials::current().map_err(storage)?;
+        #[cfg(unix)]
+        let mut connection = owner
+            .connect_unix(&self.address()?)
+            .await
+            .map_err(storage)?;
+        #[cfg(windows)]
+        let mut connection = owner
+            .connect_pipe(self.address()?.as_os_str())
+            .await
+            .map_err(storage)?;
+        let length =
+            usize::try_from(connection.read_u64().await.map_err(storage)?).map_err(storage)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(storage)?;
+        bytes.resize(length, 0);
+        connection.read_exact(&mut bytes).await.map_err(storage)?;
+        let descriptor: Descriptor = serde_json::from_slice(&bytes).map_err(storage)?;
         if descriptor.version != 1 {
             return Err(Error::Unsupported(
                 "local service descriptor requires version 1".into(),
             ));
         }
-        Ok(descriptor)
+        Ok((crate::server::LocalConnection::new(connection), descriptor))
     }
 }
 
@@ -170,6 +190,7 @@ pub struct Owner {
     directory: Directory,
     configuration: std::collections::BTreeMap<String, [u8; 32]>,
     publication: std::sync::Mutex<Option<FileLock>>,
+    bootstrap: Arc<OnceLock<Arc<[u8]>>>,
     _lock: FileLock,
 }
 
@@ -183,26 +204,25 @@ impl Owner {
         self
     }
 
-    /// Publishes only after `server::serve` has admitted the runtime and client
-    /// capability. The startup lock and readiness event hide partial writes.
+    /// Publishes only in process, after `server::serve` admitted the runtime
+    /// and client capability. Readiness releases waiting starters afterward.
     pub fn publish(&self, endpoint: &crate::server::Endpoint) -> Result<()> {
         let observation = endpoint
             .observation
             .as_ref()
             .ok_or_else(|| Error::Invalid("local service requires a client credential".into()))?;
-        let mut file = self.directory.file("endpoint.json")?;
-        file.set_len(0).map_err(storage)?;
-        serde_json::to_writer(
-            &mut file,
-            &Descriptor {
-                version: 1,
-                endpoint: endpoint.endpoint.clone(),
-                credential: observation.credential.clone(),
-                configuration: self.configuration.clone(),
-            },
-        )
+        let bytes = serde_json::to_vec(&Descriptor {
+            version: 1,
+            credential: observation.credential.clone(),
+            configuration: self.configuration.clone(),
+        })
         .map_err(storage)?;
-        file.flush().map_err(storage)?;
+        let mut frame = Vec::with_capacity(8 + bytes.len());
+        frame.extend_from_slice(&u64::try_from(bytes.len()).map_err(storage)?.to_be_bytes());
+        frame.extend_from_slice(&bytes);
+        self.bootstrap
+            .set(frame.into())
+            .map_err(|_| Error::Conflict("local service was already published".into()))?;
         let publication = self
             .publication
             .lock()
@@ -210,6 +230,46 @@ impl Owner {
             .take();
         drop(publication);
         Ok(())
+    }
+
+    /// Bind the owner-private endpoint while retaining its exclusive lifetime.
+    pub fn listener(&self) -> Result<crate::server::Listener> {
+        use futures::StreamExt as _;
+        let address = self.directory.address()?;
+        #[cfg(unix)]
+        let listener = {
+            acyclic_native_runtime::ipc::PeerCredentials::current()
+                .and_then(|owner| owner.retire_unix(&address))
+                .map_err(storage)?;
+            acyclic_native_runtime::ipc::UnixListener::bind(&address).map_err(storage)?
+        };
+        #[cfg(windows)]
+        let listener = acyclic_native_runtime::ipc::PipeListener::bind(address.as_os_str())
+            .map_err(storage)?;
+        let bootstrap = Arc::clone(&self.bootstrap);
+        let incoming =
+            futures::stream::unfold((listener, bootstrap), |(listener, bootstrap)| async move {
+                #[cfg(windows)]
+                let mut listener = listener;
+                let accepted = loop {
+                    match listener.accept().await {
+                        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                            continue;
+                        }
+                        accepted => break accepted,
+                    }
+                };
+                let connection = accepted.and_then(|connection| {
+                    let prefix = bootstrap
+                        .get()
+                        .ok_or_else(|| std::io::Error::other("local service is not published"))?;
+                    Ok(crate::server::LocalConnection::new(connection)
+                        .with_prefix(Arc::clone(prefix)))
+                });
+                Some((connection, (listener, bootstrap)))
+            })
+            .boxed();
+        Ok(crate::server::Listener::Local(incoming))
     }
 }
 
@@ -221,7 +281,7 @@ pub async fn serve(
     ready: acyclic_native_runtime::ServiceReadySignal,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+    let listener = match owner.listener() {
         Ok(listener) => listener,
         Err(error) => {
             let _ = ready.fail(&error.to_string());
@@ -271,6 +331,10 @@ pub async fn serve(
     drop(owner);
     result.and(publication)
 }
+
+#[cfg(test)]
+#[path = "service_ipc_tests.rs"]
+mod ipc_tests;
 
 #[cfg(test)]
 mod tests {
@@ -937,9 +1001,7 @@ mod tests {
         let attachment = tokio::task::spawn_blocking(move || {
             attaching.start(Path::new("nonexistent-service-executable"), &[])
         });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(storage)?;
+        let listener = owner.listener()?;
         let (ready, readiness) = tokio::sync::oneshot::channel();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
@@ -961,7 +1023,11 @@ mod tests {
         let result = async {
             readiness.await.map_err(storage)??;
             assert!(!attachment.await.map_err(storage)??);
-            assert_eq!(directory.configuration()?, configuration);
+            let stray = directory.0.join("endpoint.json");
+            assert!(!stray.exists(), "capabilities must never be published to a file");
+            let untrusted = br#"{"version":1,"endpoint":"http://127.0.0.1:1","credential":"stray-write"}"#;
+            std::fs::write(&stray, untrusted).map_err(storage)?;
+            assert_eq!(directory.configuration().await?, configuration);
             // Reattachment observes the owner, never starts a replacement or
             // dispatches a model to decide whether that owner is ready.
             assert!(directory.existing()?);
@@ -1021,6 +1087,7 @@ mod tests {
             };
             assert_eq!(second.output_text(&entry).await?, "settled after detach");
             assert_eq!(provider.request_count(), 1);
+            assert_eq!(std::fs::read(&stray).map_err(storage)?, untrusted);
             loop {
                 if let super::super::Event::Status(status) = attached_events.next().await? {
                     assert_eq!(status.conversation, 1, "settlement publishes the new cut");

@@ -392,10 +392,15 @@ async fn local_socket_metadata_must_be_owner_private() -> Result<(), Box<dyn std
     let path = directory.join("service.sock");
     let listener = tokio::net::UnixListener::bind(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    let uid = rustix::process::geteuid().as_raw();
-    assert!(owner_private_socket(&path, uid).is_ok());
+    let owner = acyclic_native_runtime::ipc::PeerCredentials::current()?;
+    let connected = owner.connect_unix(&path).await?;
+    let (accepted, _) = listener.accept().await?;
+    acyclic_native_runtime::ipc::PeerCredentials::from_unix(&accepted)?
+        .require_same_user(&owner)?;
+    drop((connected, accepted));
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))?;
-    assert!(owner_private_socket(&path, uid).is_err());
+    assert!(matches!(owner.connect_unix(&path).await,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied));
     drop(listener);
     std::fs::remove_file(&path)?;
     std::fs::remove_dir(&directory)?;

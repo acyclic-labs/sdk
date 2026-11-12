@@ -652,9 +652,10 @@ where
     }
 
     /// Reads at most `maximum` bytes of `file` from `offset`, through
-    /// `agent`'s own authorized reader: only a file on one of `agent`'s
-    /// volumes, within its scope, or an exact file its adoption named, is
-    /// readable. Returns the bytes and the file's length.
+    /// `agent`'s authorized reader: its bound volumes, its own published
+    /// conversation files, or an exact adopted file.
+    /// Original scope and persisted policy still apply; control families stay
+    /// private. Returns the bytes and the file's length.
     ///
     /// # Errors
     /// When `agent` is absent, the file is outside its scope, or `offset` is
@@ -768,6 +769,19 @@ where
                 return Err(Error::Record(
                     "conversation file proof is outside the committed prefix",
                 ));
+            }
+            (None, Some(file))
+                if file.volume().is_agent_journal()
+                    && file.volume().provider() == &self.volumes.provider
+                    && file.volume().owner()
+                        == &crate::conversation::VolumeOwner::Agent(
+                            crate::AgentId::from_bytes(agent.id_bytes()),
+                        )
+                    && crate::conversation::is_inherited_context_path(file.path()) =>
+            {
+                // The selected session owns these published conversation files;
+                // other journal families and other roots require their original proof.
+                std::slice::from_ref(file)
             }
             (None, file) => file.map_or(&[][..], |file| state.adoption_grant(file)),
         };
