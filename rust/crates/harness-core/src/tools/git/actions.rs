@@ -554,11 +554,6 @@ where
         path: &str,
         offset: u64,
     ) -> Result<GitFilesystemResult, Error> {
-        // Host namespaces are never part of a commit, even one captured
-        // before they were kept out of the repository view.
-        if self.ignore.reserves(path) {
-            return Err(Error::NotFound(path.to_owned()));
-        }
         let generation = self.generation(tree).await?;
         let shown = format!("/{path}");
         let cancellation = acyclic_fs::CancellationToken::new();

@@ -249,8 +249,7 @@ async fn routed_forks_retain_both_layers_after_independent_provider_progress() {
     let mut other = CountingSource::new(Bytes::from_static(b"old context"));
     other.node.file_identity = [10; 32];
     let context = Arc::new(other);
-    let name =
-        |text: &str| LogicalName::new(NameEncoding::Utf8, text.as_bytes().to_vec(), 255).unwrap();
+    let name = |text: &str| LogicalName::new(NameEncoding::Utf8, text.as_bytes().to_vec()).unwrap();
     let source = Arc::new(Routed::new(
         Routed::new(
             Empty,
