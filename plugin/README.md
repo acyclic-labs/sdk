@@ -194,8 +194,10 @@ restoring it to `process.env`. This event stays within trusted host extensions;
 it is not a model-visible tool or a guest command environment.
 
 The coordination tools are `spawn`, `send`, `wait`, `cancel`, `archive` and
-`resume`. Each takes a parent-local `reference`; spawn/send/resume also take a
-`prompt`. They use the same child request, inbox, control, status, delivered
+`resume`. Spawn takes a parent-local `reference`; existing children can also be
+addressed by their full canonical AgentPath. Only the child's immediate parent
+can coordinate it. Spawn/send/resume also take a `prompt`. They use the same
+child request, inbox, control, status, delivered
 and result files as GraphCoder. Spawn and send return the prompt's committed
 `id` and `inbox`; wait answers through the harness's shared committed reply
 once that prompt's turn settles, is dropped, or can no longer run.
@@ -204,7 +206,9 @@ This is an object reference to bytes in the named volume. Resolve it through
 that volume when needed, preserving lazy access to large content and logs.
 Cancel stops and reaps the native child process tree before capturing partial
 writes. Resume re-launches the saved native session in the recreated view.
-Archive freezes the shared child reference permanently.
+Archive freezes the shared child reference permanently, including replay of its
+original spawn prompt. Spawn a new reference for further work. A child returns
+its result to its parent; the parent merges that child's changes.
 
 The MCP server process owns the native children it spawns. Closing its input
 interrupts and reaps its running children; death of that process also contains
@@ -265,8 +269,7 @@ node plugin/tests/hosts/sandbox-commands.mjs --host codex \
 Select `pi` for native RPC Bash and extension capture; that case explicitly
 reports Pi's unrestricted default. Each case checks agents, log, capture,
 merge, discard and the hook command, with an external-data mailbox negative
-control. The coordinator runs real Claude Code sandbox qualification after
-merge, with `--model claude-haiku-5-5`. These probes complement that live matrix.
+control. Live host qualification uses the caller's configured model and sandbox.
 
 On Linux, `--host pi --pi-sandbox-codex /path/to/codex` launches native Pi under
 that host's existing workspace-write sandbox. The same command contract then
@@ -340,7 +343,7 @@ harness owns the version-admission test. Malformed controls are explicit
 mutations of a real capture. The session stand-ins replay captured native
 initialization records for all three hosts from `tests/hosts/fixtures/native/`,
 with SHA-256 admission and capture provenance. Managed-model acceptance remains
-with the coordinator and the real-host owner.
+part of live host qualification.
 
 The no-model CLI admission regression uses the actual native Codex 0.146.0 and
 0.164.0 executables, checking their output against those captures. Provide
@@ -360,7 +363,7 @@ The no-model MCP framing probe runs all three host entry points without opening
 workspace state or native login files:
 
 ```sh
-python3 plugin/tests/hosts/mcp-framing.py ACYCLIC
+node plugin/tests/hosts/mcp-framing.mjs ACYCLIC
 ```
 
 It checks CRLF, buffered requests and an oversized peer that keeps its input

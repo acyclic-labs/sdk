@@ -44,7 +44,7 @@ impl Default for OperationClaims {
 pub struct OperationClaim<'a> {
     claims: Option<&'a OperationClaims>,
     key: [u8; 48],
-    observation: OperationObservation,
+    observation: Option<OperationObservation>,
 }
 
 /// Atomic acquisition or an observation pinned to the existing producer.
@@ -167,7 +167,7 @@ impl OperationClaims {
             OperationAttempt::Owned(OperationClaim {
                 claims: Some(self),
                 key,
-                observation,
+                observation: Some(observation),
             })
         } else {
             OperationAttempt::Observed(observation)
@@ -175,10 +175,27 @@ impl OperationClaims {
     }
 }
 
+impl OperationClaim<'static> {
+    /// Owns one funded producer event when the caller already provides keyed
+    /// exclusion. This reuses the normal retirement event without another index.
+    ///
+    /// # Errors
+    /// Returns the original funding refusal before allocating the event.
+    pub fn unindexed<H: Send + Sync + 'static, E>(
+        mut admit: impl FnMut(u64, u64) -> Result<H, E>,
+    ) -> Result<Self, E> {
+        Ok(Self {
+            claims: None,
+            key: [0; 48],
+            observation: Some(OperationObservation::create(&mut admit)?),
+        })
+    }
+}
+
 impl OperationClaim<'_> {
     /// Pins this producer's exact-generation termination event before handoff.
     pub fn observe(&self) -> OperationObservation {
-        self.observation.clone()
+        self.observation.as_ref().expect("live producer").clone()
     }
 
     /// Explicitly retires producer custody. This does not invent a durable result.
@@ -187,25 +204,26 @@ impl OperationClaim<'_> {
     }
 
     fn retire(&mut self, terminal: OperationTermination) {
-        let Some(claims) = self.claims.take() else {
+        let Some(observation) = self.observation.take() else {
             return;
         };
-        let removed = claims
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove_if(self.key, |registration| {
-                registration.observation.same_generation(&self.observation)
-            });
-        // Destroy the detached node before releasing its original funding.
-        // The guard's borrow excludes destruction of the provider owner.
-        if let Some(removed) = removed {
-            let (_, mut registration, storage) = removed.into_parts();
-            registration.armed = false;
-            drop(registration);
-            drop(storage);
+        if let Some(claims) = self.claims.take() {
+            let removed = claims
+                .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove_if(self.key, |registration| {
+                    registration.observation.same_generation(&observation)
+                });
+            // Retire index backing before releasing the original event funding.
+            if let Some(removed) = removed {
+                let (_, mut registration, storage) = removed.into_parts();
+                registration.armed = false;
+                drop(registration);
+                drop(storage);
+            }
         }
-        self.observation.publish(terminal);
+        observation.publish(terminal);
     }
 }
 

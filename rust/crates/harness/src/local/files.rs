@@ -159,7 +159,7 @@ impl LocalHarness {
         };
         let output = commands
             .invoke(
-                &command,
+                commands.fs_arguments(&command, &scope)?,
                 super::workspace::git::CommandContext {
                     owner: &owner,
                     operation,

@@ -116,7 +116,7 @@ async fn records(
         .await
     {
         Ok(records) => Ok(records.try_collect().await?),
-        Err(StreamError::NotFound) => Ok(Vec::new()),
+        Err(error) if error.category() == StreamError::NotFound => Ok(Vec::new()),
         Err(error) => Err(error.into()),
     }
 }

@@ -126,23 +126,10 @@ impl Connection {
         exchanged(&self.controls, command).await
     }
 
-    /// Select an existing descendant: a connection that drives and observes
-    /// it. A remote endpoint's credential already reaches the tree, so this
-    /// rebinds the same session. The local harness binds the descendant's own
-    /// scope and volumes, retaining its policy and observation lifetime.
+    /// Select an existing agent authorized by the same authenticated session.
+    /// Commands retain the original caller; a native host may enroll read-only
+    /// access to the selected child's private output on that same session.
     pub async fn select(&self, agent: AgentPath) -> Result<Self> {
-        if let Some(host) = &self._host
-            && !self.directory
-        {
-            if !self.root.contains(&agent) {
-                return Err(Error::Unauthorized(
-                    "a selected agent must be the root or its descendant".into(),
-                ));
-            }
-            // Boxed: the in-process connection is a deep future, and select
-            // sits inside every frontend's own future.
-            return Box::pin(host.connect_agent(Some(agent))).await;
-        }
         let (controls, tools) = self
             .controls
             .select(agent.clone())
@@ -344,7 +331,7 @@ impl LocalHarness {
                     .await
             } else {
                 bound
-                    .client_credential(selected, server.resource(), Arc::clone(&self.clock))
+                    .client_credential(server.root(), server.resource(), Arc::clone(&self.clock))
                     .await
             }
             .map_err(storage)?;

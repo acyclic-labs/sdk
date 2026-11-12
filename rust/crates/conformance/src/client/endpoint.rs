@@ -1,11 +1,11 @@
 //! Live agent vectors using only the public endpoint, credential and commands.
-use super::{Cause, Failure, Report, failure, stream_failure};
+use super::{Cause, Failure, Report, failure, observation_failure, stream_failure};
 use acyclic_harness_client::{
-    AgentBinding, AgentClient, AgentClientError, AgentCommand, AgentControls, AgentEvent,
-    AgentExchangeError, AgentReply, ConnectionOptions, Delivered, IntentId, ModelContent,
-    PreparedCommand, ReadTarget, Reply, WireSessionError,
+    AgentBinding, AgentClient, AgentCommand, AgentControls, AgentEvent, AgentExchangeError,
+    AgentReply, ConnectionOptions, Delivered, IntentId, ModelContent, PreparedCommand, ReadTarget,
+    Reply,
 };
-use acyclic_stream::{StreamError, session::Client};
+use acyclic_stream::session::Client;
 use serde::{Deserialize, Serialize};
 
 /// A disposable endpoint's model task and its independent answer oracle.
@@ -33,16 +33,6 @@ async fn execute(
 fn exchange_failure(case: &'static str, error: AgentExchangeError) -> Failure {
     match error {
         AgentExchangeError::Session(error) => stream_failure(case, error),
-        error => failure(case, error),
-    }
-}
-
-fn observation_failure(case: &'static str, error: AgentClientError) -> Failure {
-    match error {
-        AgentClientError::Session(WireSessionError::Stream(error)) => stream_failure(case, error),
-        AgentClientError::Refused { code, .. } => {
-            stream_failure(case, StreamError::from_session_close(&code))
-        }
         error => failure(case, error),
     }
 }

@@ -111,7 +111,7 @@ impl LocalWorkspace {
                 }
                 None => 0,
             },
-            Err(StreamError::NotFound) => 0,
+            Err(error) if error.category() == StreamError::NotFound => 0,
             Err(error) => return Err(storage(error)),
         };
         let mut records = match stream
@@ -125,7 +125,7 @@ impl LocalWorkspace {
             .await
         {
             Ok(records) => records,
-            Err(StreamError::NotFound) => return Ok(None),
+            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
             Err(error) => return Err(storage(error)),
         };
         let Some(record) = records.try_next().await.map_err(storage)? else {
@@ -252,7 +252,7 @@ mod tests {
             };
             commands
                 .invoke(
-                    "branch child",
+                    commands.fs_arguments("branch child", &scope)?,
                     context(OperationId::new()),
                     Box::pin(async { Ok(()) }),
                 )

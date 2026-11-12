@@ -1,0 +1,14 @@
+--- a/rust/crates/harness/src/local/workspace/bindings.rs
++++ b/rust/crates/harness/src/local/workspace/bindings.rs
+@@ -151,10 +151,7 @@ impl Selection {
+                 "binding result has no original producer".into(),
+             ));
+         };
+-        preparing
+-            .mounts
+-            .set(Arc::clone(mounts))
+-            .map_err(|_| Error::Conflict("original binding already published".into()))?;
++        let _ = preparing;
+         self.binding
+             .mounts
+             .set(Arc::downgrade(mounts))

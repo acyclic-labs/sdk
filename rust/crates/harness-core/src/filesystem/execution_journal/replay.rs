@@ -120,7 +120,7 @@ where
             .await?
             {
                 Ok(entries) => entries,
-                Err(StreamError::NotFound) => {
+                Err(error) if error.category() == StreamError::NotFound => {
                     if let Some(io) = io {
                         io.check_cancellation()?;
                     }

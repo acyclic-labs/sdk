@@ -456,7 +456,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
 async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_prefix() -> Result {
     use acyclic_harness_core::conversation::{ContentAccess, ContentPublisher};
     let stream = Arc::new(MemoryStream::default());
-    let path = super::create(&stream, id(216)).await?;
+    let path = super::create(stream.as_ref(), id(216)).await?;
     let (filesystem, binding) = private(&path).await?;
     let issuer = AuthorityRoot::new(
         "agents",
@@ -806,7 +806,7 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
         model::FileProjectionPolicy,
     };
     let stream = Arc::new(MemoryStream::default());
-    let path = super::create(&stream, id(221)).await?;
+    let path = super::create(stream.as_ref(), id(221)).await?;
     let (filesystem, binding) = private(&path).await?;
     let peer = VolumeRef::new(
         binding.volume()?.provider().clone(),
@@ -2319,7 +2319,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         b"---\nstatus: invalid\n---\nconcurrent body\n".as_slice(),
     ] {
         let stream = Arc::new(MemoryStream::default());
-        let path = super::create(&stream, id(3)).await?;
+        let path = super::create(stream.as_ref(), id(3)).await?;
         let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
             "done".into(),
         )]));
