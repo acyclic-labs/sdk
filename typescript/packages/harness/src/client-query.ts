@@ -2,6 +2,7 @@
 export {
   decodeClientJson,
   encodeCanonicalJson,
+  encodeAgentAppend,
   WasmAgentCommand as PreparedAgentCommand,
   WasmAgentControls as AgentControls,
   WasmAgentInvocation as PreparedAgentInvocation,

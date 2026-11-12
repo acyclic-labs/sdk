@@ -15,7 +15,7 @@ export async function exerciseAgents(stream: WasmStream, recover?: () => Promise
   const entry = (id: string) => conversation(id, inbox);
   for (const [agent, id] of [[root, rootId], [child, childId]] as const) {
     await append(`${agent}/conversation`, entry(id));
-    await append(`harness/status/${id}`, `{"phase":"running","cursor":${inbox}}`);
+    await append(agent.replace("harness/agents/", "harness/status/"), `{"phase":"running","cursor":${inbox}}`);
   }
   const client = new AgentClient(stream, root, 0n, 0n, 0);
   const record = (agent: string, index: number) => {
@@ -37,7 +37,7 @@ export async function exerciseAgents(stream: WasmStream, recover?: () => Promise
       && client.agentWindow(child).recordCount === 1n
       && client.agentStatus(root) !== null && client.agentStatus(child) !== null);
     check(record(child, 0).agent === child, "record lost its selected agent identity");
-    check(message(root, 0).inbox === inbox, "input receipt lost u64 precision");
+    check(record(root, 0).entry.inbox === inbox, "input receipt lost u64 precision");
     check(client.agentStatus(child)?.cursor === inbox, "status cursor lost u64 precision");
     const before = client.agentWindow(root), revision = client.viewRevision();
     selected([child, root]);

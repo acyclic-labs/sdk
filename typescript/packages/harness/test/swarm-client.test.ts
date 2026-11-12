@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { AgentClient, WasmStream, initializeClientQueries } from "../src/client.js";
+import { create, toBinary } from "@bufbuild/protobuf";
+import { SessionDelivery, SessionSubscriptionSchema } from "../../stream/generated/proto/stream/v1/session_pb.js";
+import { AgentClient, WasmStream, WireSession, initializeClientQueries } from "../src/client.js";
 import { exerciseAgents, root } from "./swarm-client.scenario.js";
 import { bindLocalSession } from "./session-authority.js";
 import { appendRecord, conversation, receiveUntil, statusPath } from "./actor-records.fixture.js";
@@ -12,25 +14,68 @@ test("native and browser agent views use the same bounded Rust session", async (
   finally { stream.free(); }
 });
 
-test("agent view admission refuses oversized and malformed input atomically", async () => {
+test("agent view admission shares duplicate interest and refuses malformed input atomically", async () => {
   await initializeClientQueries();
   const stream = new WasmStream();
   await bindLocalSession(stream);
+  await appendRecord(stream, `${root}/conversation`, conversation("retained", 0n));
+  await appendRecord(stream, statusPath, '{"phase":"idle","cursor":1}');
   const client = new AgentClient(stream, root, 0n, 0n, 0);
   try {
-    for (const agents of [[], Array(9).fill(root), ["outside/agent"]]) {
+    await receiveUntil(client, () => client.agentWindow(root).recordCount === 1n && client.agentStatus(root) !== null);
+    const { revision: beforeRevision, ...before } = client.agentWindow(root);
+    const repeated = Array<string>(257).fill(root);
+    client.setView(repeated, new BigUint64Array(repeated.length), new BigUint64Array(repeated.length));
+    expect(client.selectedAgents()).toEqual([root]);
+    const selected = client.agentWindow(root);
+    const { revision, ...retained } = selected;
+    expect(retained).toEqual(before);
+    expect(revision).toBeGreaterThan(beforeRevision);
+    for (const agents of [[], ["outside/agent"]]) {
       expect(() => client.setView(agents, new BigUint64Array(agents.length), new BigUint64Array(agents.length))).toThrow();
       expect(client.selectedAgents()).toEqual([root]);
+      expect(client.agentWindow(root)).toEqual(selected);
     }
     expect(() => client.setView([root], new BigUint64Array(0), new BigUint64Array(1))).toThrow();
     expect(client.selectedAgents()).toEqual([root]);
+    expect(client.agentWindow(root)).toEqual(selected);
   } finally { client.close(); client.free(); stream.free(); }
+});
+
+test("explicit view reservations count distinct stream paths", async () => {
+  await initializeClientQueries();
+  const stream = new WasmStream();
+  await bindLocalSession(stream);
+  const path = `${root}/conversation`;
+  await appendRecord(stream, path, conversation("original", 0n));
+  for (const invalid of [-1, 0, 1.5, 2 ** 32 + 1, NaN, Infinity, "1", true]) {
+    expect(() => new WireSession(stream, invalid as number, 1)).toThrow();
+    expect(() => new WireSession(stream, 1, invalid as number)).toThrow();
+  }
+  const unreserved = new WireSession(stream, undefined, undefined);
+  try {
+    unreserved.setView(Array.from({ length: 513 }, (_, index) => `view/${index}`), [], []);
+  } finally { unreserved.free(); }
+  const session = new WireSession(stream, 1, 1);
+  try {
+    session.setView([path, path], [], []);
+    session.openStream(path, toBinary(SessionSubscriptionSchema, create(SessionSubscriptionSchema, {
+      credential: 0, resume: { next: 0n },
+      kind: { case: "follow", value: { resource: `streams:/${path}`, delivery: SessionDelivery.ALL } },
+    })));
+    expect(session.followedAgents()).toBe(1);
+    expect(() => session.setView([path, `${root}/another`], [], [])).toThrow();
+    expect(session.followedAgents()).toBe(1);
+  } finally { session.free(); stream.free(); }
 });
 
 test("failed selected streams report once while healthy agents keep delivering", async () => {
   await initializeClientQueries();
   const stream = new WasmStream();
-  await bindLocalSession(stream);
+  await bindLocalSession(stream, [
+    { name: `streams:/${root}/conversation`, prefix: false, actions: ["streams/follow"] },
+    { name: `streams:/${statusPath}`, prefix: false, actions: ["streams/follow"] },
+  ]);
   await appendRecord(stream, `${root}/conversation`, conversation("before", 0n));
   await appendRecord(stream, statusPath, '{"phase":"idle","cursor":1}');
   const absent = `harness/agents/${"03".repeat(16)}`;

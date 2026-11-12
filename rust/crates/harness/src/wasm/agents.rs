@@ -80,6 +80,36 @@ pub fn decode_agent_record(bytes: &[u8]) -> std::result::Result<JsValue, JsValue
     to_js(&record)
 }
 
+/// Encodes an agent record and its indexed headers as a Streams AppendRecord.
+/// The native record writers retain versioning, admission and status attention.
+/// Publishing the result still requires the original stream authority.
+#[wasm_bindgen(js_name = encodeAgentAppend)]
+pub fn encode_agent_append(kind: &str, json: &[u8]) -> std::result::Result<Vec<u8>, JsValue> {
+    fn parse<T: serde::de::DeserializeOwned>(json: &[u8]) -> std::result::Result<T, JsValue> {
+        serde_json::from_slice(json).map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+    fn ordinary<T: crate::agent::AgentRecord>(
+        json: &[u8],
+    ) -> std::result::Result<acyclic_stream::AppendRecord, JsValue> {
+        parse::<T>(json)?
+            .encode()
+            .map(Into::into)
+            .map_err(agent_error)
+    }
+    let record = match kind {
+        "conversation" => ordinary::<crate::agent::ConversationEntry>(json)?,
+        "status" => parse::<crate::agent::StatusRecord>(json)?
+            .append_record()
+            .map_err(agent_error)?,
+        "inbox" => ordinary::<crate::agent::InboxRecord>(json)?,
+        "closed" => ordinary::<crate::agent::Closed>(json)?,
+        _ => return Err(JsValue::from_str("unknown agent record kind")),
+    };
+    Ok(prost::Message::encode_to_vec(
+        &acyclic_stream::wire_codec::append_record_wire(record),
+    ))
+}
+
 fn stream_error(error: StreamError) -> JsValue {
     acyclic_stream::wasm_error(error)
 }
