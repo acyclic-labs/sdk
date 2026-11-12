@@ -248,10 +248,16 @@ mod tests {
             large.view.reader_ref().issued()
         );
         assert_eq!(small_work, large_work);
-        // One root witness and page; each visible row admits its status,
-        // children's witness and first page. No request depends on total size.
+        // Root witness, page and immutable role; each visible row admits its
+        // status, children's witness, first page and immutable role. These
+        // empty-inbox fixtures need one request to learn each role's absence.
+        // No request depends on the total number of children.
+        let visible = u64::try_from(large.view.rows().len())?;
         assert!(
-            large.view.reader_ref().issued() <= 2 + 3 * u64::try_from(large.view.rows().len())?
+            large.view.reader_ref().issued() <= 3 + 4 * visible,
+            "initial visible work: {:?}, issued {}",
+            large_work,
+            large.view.reader_ref().issued()
         );
         let before = large.view.reader_ref().issued();
         large.view.scroll(64);
@@ -274,7 +280,9 @@ mod tests {
         }
         assert!(matches!(&large.view.rows()[0].0, Pos::Row { page: 1, .. }));
         assert!(
-            large.view.reader_ref().issued() - before <= 16,
+            // One next page, then the same four demands per newly visible
+            // child. The already observed root role is shared across pages.
+            large.view.reader_ref().issued() - before <= 1 + 4 * visible,
             "post-scroll requests: {}",
             large.view.reader_ref().issued() - before
         );
