@@ -51,7 +51,6 @@ enum AccountingFault {
     Digest,
     MissingMessage,
     ExtraMessage,
-    CompactedPressure,
 }
 
 fn counted_model(
@@ -112,51 +111,11 @@ fn counted_model(
                     count.message_tokens.pop();
                 }
                 Some(AccountingFault::ExtraMessage) => count.message_tokens.push(1),
-                Some(AccountingFault::CompactedPressure)
-                    if request.request().messages.first().is_some_and(|message| {
-                        matches!(
-                            message.content,
-                            ModelContent::Part(ModelContentPart::File { .. })
-                        )
-                    }) =>
-                {
-                    count.input_tokens = u64::from(capacity);
-                    count.fixed_tokens = capacity;
-                }
                 _ => {}
             }
             Ok(count)
         });
     (Arc::new(provider), calls)
-}
-
-struct ChangingCompactionSource(AtomicUsize);
-
-impl crate::context::ContextSource for ChangingCompactionSource {
-    fn load<'a>(
-        &'a self,
-        _: &'a ContextInput,
-        _: Limits,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
-        let revision = self.0.fetch_add(1, Ordering::SeqCst);
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            Ok(vec![
-                ModelMessage {
-                    role: ModelRole::System,
-                    content: ModelContent::Text(format!("keep-{revision}")),
-                },
-                ModelMessage {
-                    role: ModelRole::User,
-                    content: ModelContent::Text("o".repeat(28_000)),
-                },
-                ModelMessage {
-                    role: ModelRole::Assistant,
-                    content: ModelContent::Text("a".repeat(28_000)),
-                },
-            ])
-        })
-    }
 }
 
 use crate::{
