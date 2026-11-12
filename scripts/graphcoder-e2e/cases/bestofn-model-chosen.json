@@ -1,0 +1,435 @@
+{
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-0-spawn",
+            "arguments": {
+              "role": "worker",
+              "name": "alpha",
+              "task": "ATTEMPT_alpha"
+            },
+            "name": "spawn"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_alpha"
+        },
+        "tools": [
+          {
+            "id": "call-1-write",
+            "arguments": {
+              "content": "alpha\n",
+              "path": "selected.txt"
+            },
+            "name": "write"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_alpha"
+        },
+        "tools": [
+          {
+            "id": "call-2-read",
+            "arguments": {
+              "path": "selected.txt"
+            },
+            "name": "read"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_alpha"
+        },
+        "tools": [
+          {
+            "id": "call-3-write",
+            "arguments": {
+              "content": "{\"version\":1,\"command\":\"inspect selected.txt\",\"exit_status\":0,\"candidate\":\"alpha\"}",
+              "path": "volume:///private/results/alpha/tests.json"
+            },
+            "name": "write"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_alpha"
+        },
+        "text": [
+          "CANDIDATE_DONE_alpha"
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-5-spawn",
+            "arguments": {
+              "role": "worker",
+              "name": "beta",
+              "task": "ATTEMPT_beta"
+            },
+            "name": "spawn"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_beta"
+        },
+        "tools": [
+          {
+            "id": "call-6-write",
+            "arguments": {
+              "content": "beta\n",
+              "path": "selected.txt"
+            },
+            "name": "write"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_beta"
+        },
+        "tools": [
+          {
+            "id": "call-7-read",
+            "arguments": {
+              "path": "selected.txt"
+            },
+            "name": "read"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_beta"
+        },
+        "tools": [
+          {
+            "id": "call-8-write",
+            "arguments": {
+              "content": "{\"version\":1,\"command\":\"inspect selected.txt\",\"exit_status\":0,\"candidate\":\"beta\"}",
+              "path": "volume:///private/results/beta/tests.json"
+            },
+            "name": "write"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_beta"
+        },
+        "text": [
+          "CANDIDATE_DONE_beta"
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-10-spawn",
+            "arguments": {
+              "role": "worker",
+              "name": "gamma",
+              "task": "ATTEMPT_gamma"
+            },
+            "name": "spawn"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_gamma"
+        },
+        "tools": [
+          {
+            "id": "call-11-write",
+            "arguments": {
+              "content": "gamma\n",
+              "path": "selected.txt"
+            },
+            "name": "write"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_gamma"
+        },
+        "tools": [
+          {
+            "id": "call-12-read",
+            "arguments": {
+              "path": "selected.txt"
+            },
+            "name": "read"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_gamma"
+        },
+        "tools": [
+          {
+            "id": "call-13-write",
+            "arguments": {
+              "content": "{\"version\":1,\"command\":\"inspect selected.txt\",\"exit_status\":0,\"candidate\":\"gamma\"}",
+              "path": "volume:///private/results/gamma/tests.json"
+            },
+            "name": "write"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "ATTEMPT_gamma"
+        },
+        "text": [
+          "CANDIDATE_DONE_gamma"
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-15-wait",
+            "arguments": {
+              "agents": [
+                "alpha",
+                "beta",
+                "gamma"
+              ]
+            },
+            "name": "wait"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-16-fs",
+            "arguments": {
+              "command": "diff agents/alpha"
+            },
+            "name": "fs"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-17-fs",
+            "arguments": {
+              "command": "diff agents/beta"
+            },
+            "name": "fs"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-18-fs",
+            "arguments": {
+              "command": "diff agents/gamma"
+            },
+            "name": "fs"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-19-write",
+            "arguments": {
+              "content": "# Candidate comparison\n\nalpha: valid\nbeta: preferred by the parent\ngamma: valid\n\n```input pick-fork id=winner\n- alpha\n- beta\n- gamma\n```\n",
+              "path": "volume:///private/ui/compare.md"
+            },
+            "name": "write"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-20-read",
+            "arguments": {
+              "path": "volume:///private/ui/compare.md"
+            },
+            "name": "read"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-21-fs",
+            "arguments": {
+              "command": "merge agents/beta"
+            },
+            "name": "fs"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-22-archive",
+            "arguments": {
+              "agent": "alpha"
+            },
+            "name": "archive"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-23-archive",
+            "arguments": {
+              "agent": "gamma"
+            },
+            "name": "archive"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-24-wait",
+            "arguments": {
+              "agents": [
+                "alpha",
+                "gamma"
+              ]
+            },
+            "name": "wait"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "tools": [
+          {
+            "id": "call-25-read",
+            "arguments": {
+              "path": "selected.txt"
+            },
+            "name": "read"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPARE_CANDIDATES"
+        },
+        "text": [
+          "SEARCH_DONE"
+        ]
+      }
+    ]
+  },
+  "ntfs": true,
+  "physical": true,
+  "assert": {
+    "files": {
+      "selected.txt": "beta\n"
+    },
+    "requests": 27,
+    "tool_contains": [
+      "pick-fork",
+      "beta",
+      "archived"
+    ]
+  },
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "id": "bestofn-model-chosen",
+  "inputs": [
+    {
+      "mode": "service"
+    },
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "cursor": true,
+            "contains": [
+              "GraphCoder"
+            ]
+          },
+          "prompt": "COMPARE_CANDIDATES"
+        },
+        {
+          "when": {
+            "cursor": true,
+            "contains": [
+              "SEARCH_DONE",
+              "○"
+            ]
+          },
+          "prompt": "/merge "
+        },
+        {
+          "when": {
+            "contains": [
+              "Merged into checkout:"
+            ]
+          },
+          "prompt": "/quit "
+        }
+      ]
+    }
+  ]
+}
