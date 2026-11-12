@@ -140,6 +140,7 @@ where
             scope,
             input_verifier: None,
             bound_selection: None,
+            preceding_request: None,
             stop: None,
             boundary: None,
             agent_approvals: None,
@@ -176,6 +177,62 @@ where
         self.bound_selection = Some(selected);
         self.invalidate_execution_caches();
         self
+    }
+
+    /// Pins an original request through the existing authenticated execution index.
+    /// Reuse still requires the segment writer's complete prefix-digest match.
+    pub(in crate::filesystem) async fn with_preceding_turn(
+        mut self,
+        operation: Option<OperationId>,
+    ) -> Result<Self> {
+        self.preceding_request = None;
+        let Some(operation) = operation else {
+            return Ok(self);
+        };
+        let step = {
+            let mut cache = self.verified.lock().await;
+            self.refresh_cached_summary(operation, &mut cache, None)
+                .await?;
+            cache.summary().latest_response
+        };
+        let Some(step) = step else { return Ok(self) };
+        let select = |event: &ExecutionEvent| {
+            matches!(
+                event,
+                ExecutionEvent::ModelStarted {
+                    purpose: crate::executor::ModelPurpose::Response,
+                    ..
+                }
+            )
+        };
+        let (_, records) = self
+            .indexed_step(
+                crate::executor::ExecutionRecordQuery {
+                    operation,
+                    step,
+                    call_id: None,
+                    include_started: false,
+                    maximum_step_records: crate::executor::ExecutionRecordQuery::step_bound(
+                        Limits::default(),
+                    ),
+                    maximum: Some(1),
+                    select: &select,
+                },
+                None,
+            )
+            .await?
+            .ok_or_else(|| Error::Storage("preceding request index is unavailable".into()))?;
+        self.preceding_request = records.into_iter().find_map(|record| match record.event {
+            ExecutionEvent::ModelStarted { request, .. } => Some(request),
+            _ => None,
+        });
+        if self.preceding_request.is_none() {
+            return Err(Error::Storage(
+                "preceding response has no admitted request".into(),
+            ));
+        }
+        self.invalidate_execution_caches();
+        Ok(self)
     }
 
     /// Cancels model calls, tools and pending platform checkpoints when `stop` fires.
