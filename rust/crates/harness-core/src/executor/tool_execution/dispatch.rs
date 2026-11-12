@@ -317,7 +317,7 @@ impl<'io> StockExecution<'io> {
                 .complete_with_post_hook::<true>(
                     journal,
                     identity,
-                    invocation,
+                    (invocation, tool),
                     (&result.0, &projection, record_kind),
                     completion,
                 )
@@ -417,7 +417,7 @@ impl<'io> StockExecution<'io> {
         &self,
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),
-        invocation: &ToolInvocation,
+        (invocation, tool): (&ToolInvocation, &crate::tool::Tool),
         result: (&ToolResult, &Value, Option<ToolRecordKind>),
         phase: crate::executor::phase::PreparedPhase<'_>,
     ) -> Result<ToolSettlement<crate::hooks::HookOutput>> {
@@ -426,7 +426,7 @@ impl<'io> StockExecution<'io> {
         let feedback = self.tool_hook(
             identity.0,
             crate::hooks::HookSite::AfterTool,
-            invocation,
+            (invocation, Some(tool)),
             Some(result.0),
             false,
         );
@@ -701,7 +701,14 @@ impl<'io> StockExecution<'io> {
                 .tool_hook(
                     _operation,
                     crate::hooks::HookSite::AfterTool,
-                    _invocation,
+                    (
+                        _invocation,
+                        self.stock.tools.get(
+                            &definition.name,
+                            Some(&definition.revision),
+                            self.io,
+                        )?,
+                    ),
                     Some(&result.0),
                     false,
                 )

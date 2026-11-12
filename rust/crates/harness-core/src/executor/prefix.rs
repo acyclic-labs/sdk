@@ -91,7 +91,7 @@ impl StockExecution<'_> {
                 .tool_hook_output(
                     input.operation_id,
                     crate::hooks::HookSite::BeforeTool,
-                    &invocation,
+                    (&invocation, None),
                     None,
                     true,
                 )
@@ -171,7 +171,7 @@ impl StockExecution<'_> {
                 self.tool_hook(
                     input.operation_id,
                     crate::hooks::HookSite::AfterTool,
-                    &invocation,
+                    (&invocation, None),
                     None,
                     true,
                 )

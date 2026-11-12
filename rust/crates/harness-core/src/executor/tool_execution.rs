@@ -192,7 +192,7 @@ impl<'io> StockExecution<'io> {
                             .tool_hook(
                                 operation_id,
                                 crate::hooks::HookSite::BeforeTool,
-                                &invocation,
+                                (&invocation, None),
                                 None,
                                 true,
                             )
@@ -318,7 +318,7 @@ impl<'io> StockExecution<'io> {
                 .tool_hook(
                     operation_id,
                     crate::hooks::HookSite::BeforeTool,
-                    &invocation,
+                    (&invocation, Some(tool)),
                     None,
                     recorded.started().is_some(),
                 )
