@@ -162,9 +162,7 @@ async fn role_policies_require_authenticated_roles_and_fenced_generations()
 -> Result<(), Box<dyn std::error::Error>> {
     let workspace = workspace().await?;
     let cancel = CancellationToken::new();
-    workspace
-        .write_text("/.system/user.txt", "ordinary file")
-        .await?;
+    workspace.write_text("/file", "ordinary file").await?;
     let original = workspace
         .head(WorkBudget::UNBOUNDED, &cancel)
         .await?
@@ -223,7 +221,7 @@ async fn role_policies_require_authenticated_roles_and_fenced_generations()
                     let view = bound?.value;
                     for action in [Action::Read, Action::Write] {
                         assert_eq!(
-                            view.decide(action, ".system/user.txt", 10).allowed,
+                            view.decide(action, "file", 10).allowed,
                             authenticated_role && selected == head,
                         );
                     }
@@ -283,10 +281,7 @@ async fn role_policies_require_authenticated_roles_and_fenced_generations()
                 .await;
             if matches!(facts, AuthenticatedFacts::MetadataStream) {
                 assert_eq!(
-                    bound?
-                        .value
-                        .decide(Action::Read, ".system/user.txt", 10)
-                        .allowed,
+                    bound?.value.decide(Action::Read, "file", 10).allowed,
                     !has_role
                 );
             } else {

@@ -169,6 +169,11 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
         };
         let owner_read = read(&owner)?;
         let guest_read = read(&guest)?;
+        let directory_read = |scope| {
+            ContentGrant::verify_directory_read(&verifier, scope, &storage.volume, "", &mut None)
+        };
+        let owner_directory = directory_read(&owner)?;
+        let guest_directory = directory_read(&guest)?;
         let mut restricted: Policy =
             serde_json::from_slice(super::super::super::access::INITIAL_POLICY)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -185,6 +190,25 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
             assert_eq!(
                 storage
                     .host
+                    .read_private_path(
+                        &storage.volume,
+                        &owner_directory,
+                        "ordinary",
+                        None,
+                        4096,
+                        crate::conversation::ContentAccess {
+                            ceiling: Some(owner.capabilities()),
+                            io,
+                        },
+                    )
+                    .await?
+                    .1
+                    .as_ref(),
+                b"original"
+            );
+            assert_eq!(
+                storage
+                    .host
                     .read_content(&file, &owner_read, 4096, io)
                     .await?
                     .as_ref(),
@@ -197,16 +221,29 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
             // Removing the claim from a caller ceiling restricts an authenticated
             // owner; adding it to an unprivileged caller never fabricates a role.
             for (grant, ceiling) in [
-                (&owner_read, guest.capabilities()),
-                (&guest_read, owner.capabilities()),
+                (&owner_directory, guest.capabilities()),
+                (&guest_directory, owner.capabilities()),
             ] {
-                assert!(matches!(
-                    storage.host.read_private_path(
-                        &storage.volume, grant, "ordinary", None, 4096,
-                        crate::conversation::ContentAccess { ceiling: Some(ceiling), io },
-                    ).await,
-                    Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized
-                ));
+                let error = storage
+                    .host
+                    .read_private_path(
+                        &storage.volume,
+                        grant,
+                        "ordinary",
+                        None,
+                        4096,
+                        crate::conversation::ContentAccess {
+                            ceiling: Some(ceiling),
+                            io,
+                        },
+                    )
+                    .await
+                    .expect_err("a caller ceiling cannot supply an authenticated role");
+                assert_eq!(
+                    error.code(),
+                    crate::wire::ErrorCode::Unauthorized,
+                    "{error}"
+                );
             }
         }
         restricted.version += 1;
@@ -233,17 +270,23 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
         publish_policy(&fs, &storage, &restricted).await?;
         for io in [None, Some(&owned), Some(&original)] {
             for (grant, ceiling) in [
-                (&owner_read, None),
-                (&guest_read, None),
-                (&owner_read, Some(guest.capabilities())),
+                (&owner_directory, None),
+                (&guest_directory, None),
+                (&owner_directory, Some(guest.capabilities())),
             ] {
-                assert!(matches!(
-                    storage.host.read_private_path(
-                        &storage.volume, grant, "ordinary", None, 4096,
+                let error = storage
+                    .host
+                    .read_private_path(
+                        &storage.volume,
+                        grant,
+                        "ordinary",
+                        None,
+                        4096,
                         crate::conversation::ContentAccess { ceiling, io },
-                    ).await,
-                    Err(error) if error.code() == crate::wire::ErrorCode::Unsupported
-                ));
+                    )
+                    .await
+                    .expect_err("role-conditioned denies need complete role facts");
+                assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported, "{error}");
             }
         }
     }
