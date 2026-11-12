@@ -332,11 +332,15 @@ impl<
             LazyLookup::Authored { record, .. } => {
                 if record.kind == FileKind::Directory {
                     let state = self.state(ctx).await?;
-                    if let Some(LazyOverlayChange::Observe { node, .. }) =
+                    if let Some(LazyOverlayChange::Observe { source, node }) =
                         self.overlay_fact(state.overlay, path, ctx).await?
                         && node.kind == SourceNodeKind::Directory
                     {
-                        return self.source_file_id(&node.file_identity, ctx);
+                        return Ok(crate::demand::source_file_id(
+                            &source.identity,
+                            &node.file_identity,
+                            ctx,
+                        )?);
                     }
                 }
                 Ok(record.file_id)

@@ -298,6 +298,20 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     let parent = LazyWorkspace::bind(workspace, parent_source, store.clone(), &mut ctx).await?;
     let parent_status = parent.read("/ui/status.md", 4096, &mut ctx).await?;
     assert!(std::str::from_utf8(parent_status.bytes.as_slice())?.contains("parent.md"));
+    let directory_lookup = parent.lookup("/ui", &mut ctx).await?;
+    let directory_identity = parent
+        .stable_file_id_for_lookup("/ui", &directory_lookup.0, &mut ctx)
+        .await?;
+    parent.retire_lookup(directory_lookup, &mut ctx)?;
+    parent
+        .promote(
+            "/ui",
+            0,
+            FsKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut ctx,
+        )
+        .await?;
     parent
         .write(
             "/ui/title",
@@ -408,6 +422,15 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     assert_eq!(bound.selected_import_roots, original.selected_import_roots);
     let child_cut = child.snapshot(&mut ctx).await?;
     assert_ne!(child_cut.source.identity, parent_cut.source.identity);
+    let directory_lookup = child.lookup("/ui", &mut ctx).await?;
+    assert_eq!(
+        child
+            .stable_file_id_for_lookup("/ui", &directory_lookup.0, &mut ctx)
+            .await?,
+        directory_identity,
+        "rebinding cannot rename an inherited promoted directory"
+    );
+    child.retire_lookup(directory_lookup, &mut ctx)?;
     let child_page = child.read("/ui/turns/0.md", 4096, &mut ctx).await?;
     assert!(std::str::from_utf8(child_page.bytes.as_slice())?.contains("child-owned answer"));
     assert!(!std::str::from_utf8(child_page.bytes.as_slice())?.contains("parent-owned answer"));
