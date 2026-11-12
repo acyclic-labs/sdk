@@ -520,6 +520,8 @@ impl WasmAgents {
             unchecked_param_type = "(delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => Promise<Uint8Array>"
         )]
         on_record: Function,
+        #[wasm_bindgen(unchecked_param_type = "(query: Uint8Array) => boolean")]
+        on_interrupt: Function,
         #[wasm_bindgen(
             unchecked_param_type = "((actor: string, error: string) => void) | undefined"
         )]
@@ -528,7 +530,11 @@ impl WasmAgents {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let manifest = acyclic_actors::guest::wire::decode_manifest(manifest)
             .map_err(|error| js_error(Error::Invalid(error.to_string())))?;
-        let handler = acyclic_actors::guest::wire::Remote::new(manifest, guest::call(on_record));
+        let handler = acyclic_actors::guest::wire::Remote::new(
+            manifest,
+            guest::call(on_record),
+            guest::interrupt(on_interrupt),
+        );
         Self::host(
             options,
             owner,
@@ -749,9 +755,13 @@ impl WasmAgents {
         &self,
         agent: String,
         intent: String,
+        input: u64,
+        conversation: u64,
     ) -> std::result::Result<JsValue, JsValue> {
         let path = AgentPath::try_from(agent).map_err(agent_error)?;
-        let record = InboxRecord::Cancel(Control {
+        let record = InboxRecord::Cancel(crate::agent::Cancellation {
+            input,
+            conversation,
             by: self.sender.clone(),
             id: IntentId::try_from(intent).map_err(agent_error)?,
         });

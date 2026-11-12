@@ -71,6 +71,7 @@ pub use settled::{Settlement, TurnChildren, answer, settled};
 pub(crate) use settled::{named_child, select_children};
 pub(crate) mod spawn_names;
 pub use spawn_names::{SpawnResolution, resolve_spawn_name};
+mod cancellation;
 mod messaging;
 mod steering;
 pub use messaging::{
@@ -106,8 +107,8 @@ pub use commit::{
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, NOTICE_MEDIA_TYPE, OpenControl,
     OpenTurn, TurnHost, TurnOutcome, TurnOutputs, USER_INPUT_MEDIA_TYPE, approval_intent,
-    encode_user_input, expand_attachments, model_input, turn_announcements, turn_id, turn_notices,
-    turn_segment,
+    encode_user_input, expand_attachments, model_input, model_input_at, turn_announcements,
+    turn_id, turn_notices, turn_segment,
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, InputProgress, actor_store};
@@ -122,7 +123,7 @@ pub use machine::{
     TurnStep, Until, Wait, Wake, requested_child, step,
 };
 pub use records::{
-    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled,
+    AgentOutcome, AgentRecord, Approval, ApprovalRequested, Cancellation, ChildDone, ChildSettled,
     ChildSettlement, ChildWake, ChildWakes, Closed, ContextAction, ContextRequest, Control,
     CreationConfig, ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
     MAX_RECORD_BYTES, Membership, Message, NoticePayload, Phase, RECORD_VERSION, Sender,

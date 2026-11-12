@@ -56,6 +56,7 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
             "invalid wait published unchecked effects"
         );
         StatusRecord {
+            cancelled_input: None,
             child_settlement: None,
             child_wakes: None,
             phase: result.state.phase,

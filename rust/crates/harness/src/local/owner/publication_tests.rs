@@ -120,7 +120,7 @@ fn older_state_directory_is_refused_without_migration() -> Result<()> {
 async fn legacy_native_preparation_refuses_before_checkout_attachment() -> Result<()> {
     use acyclic_native_runtime::signing_key::MemorySigningStore;
 
-    for prior in ["owner.v3", "owner.v4"] {
+    for prior in ["owner.v3", "owner.v4", "owner.v5"] {
         let root = tempfile::tempdir().map_err(storage)?;
         let path = root.path().join("checkout");
         fs::create_dir(&path).map_err(storage)?;

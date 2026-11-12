@@ -25,7 +25,11 @@ impl ToolContext {
                 ]
                 .into_iter()
                 .map(|operation| content.volume.capability(operation, &mut None))
-                .collect::<Result<Vec<_>>>()?,
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                // This ceiling cannot grant a role the bound publisher lacks.
+                // Preserve its host role only inside this call's output owner.
+                .chain([crate::contract::capability::HARNESS_HOST.to_owned()]),
             );
             task.output_content = content;
             task.journal_output = None;

@@ -349,6 +349,11 @@ pub enum AgentCommand {
     },
     /// Stop the current input without reporting it as successfully settled.
     Cancel {
+        /// Original accepted input, never a selection of whichever turn runs later.
+        #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
+        input: u64,
+        /// Conversation frontier captured with the selected input.
+        conversation: u64,
         /// Exact recipient.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,

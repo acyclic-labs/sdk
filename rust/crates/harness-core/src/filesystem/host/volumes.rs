@@ -293,7 +293,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let name = volume.storage_name(&mut None)?;
         let domain = if volume.is_agent_journal() {
-            "acyclic harness protected journal initialization v1"
+            "acyclic harness protected journal initialization v2"
         } else {
             "acyclic harness volume initialization v1"
         };

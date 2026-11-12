@@ -398,6 +398,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             (
                 "status",
                 StatusRecord {
+                    cancelled_input: None,
                     child_settlement: None,
                     child_wakes: None,
                     phase: Phase::Idle,
@@ -599,6 +600,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 binding,
             };
             let status = StatusRecord {
+                cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
                 phase: state.phase.clone(),
@@ -692,6 +694,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         seeds.push((
             "complete-diagnostic-status-v2",
             written(&StatusRecord {
+                cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
                 phase: Phase::Done {

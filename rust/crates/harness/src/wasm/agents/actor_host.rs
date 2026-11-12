@@ -39,6 +39,8 @@ impl WasmActorHost {
             unchecked_param_type = "(delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => Promise<Uint8Array>"
         )]
         on_record: Function,
+        #[wasm_bindgen(unchecked_param_type = "(query: Uint8Array) => boolean")]
+        on_interrupt: Function,
         active: u32,
         work: u32,
     ) -> Result<WasmActorHost, JsValue> {
@@ -46,7 +48,11 @@ impl WasmActorHost {
         let root = StreamPath::new(root).map_err(failed)?;
         let manifest = wire::decode_manifest(manifest).map_err(failed)?;
         let limits = RuntimeLimits::new(active as usize, work as usize).map_err(failed)?;
-        let handler = wire::Remote::new(manifest, super::guest::call(on_record));
+        let handler = wire::Remote::new(
+            manifest,
+            super::guest::call(on_record),
+            super::guest::interrupt(on_interrupt),
+        );
         Ok(Self {
             host: Host::new(
                 Store::new(stream.provider(), root),

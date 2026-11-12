@@ -839,7 +839,9 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             .send(
                 &root,
                 &by,
-                &InboxRecord::Cancel(Control {
+                &InboxRecord::Cancel(crate::agent::Cancellation {
+                    conversation: 0,
+                    input: 1,
                     by: by.clone(),
                     id: IntentId::try_from("release-revoked-query")?,
                 }),
@@ -1204,6 +1206,8 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         &client,
         "agents",
         &AgentCommand::Cancel {
+            conversation: 0,
+            input: 1,
             agent: stranger,
             id: IntentId::try_from("c1")?,
         },

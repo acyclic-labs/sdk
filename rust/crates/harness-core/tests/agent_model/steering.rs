@@ -68,6 +68,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
             outs,
             // Soft delivery accompanies the sender's own durable publication.
             status: Some(StatusRecord {
+                cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
                 phase: Phase::Idle,
@@ -166,7 +167,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
 }
 
 #[tokio::test]
-async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
+async fn steering_keeps_reserved_turns_and_freezes_cancellation_notices() -> Result {
     let stream = MemoryStream::default();
     let path = create(&stream, id(1)).await?;
     let state = AgentState::adopted(path.clone(), &adopted(path.id())).expect("adopts");
@@ -194,7 +195,10 @@ async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
         acyclic_harness_core::agent::BoundaryEnd::Open,
     )
     .await?;
-    assert_eq!((first.from, first.through, first.inputs.len()), (1, 5, 3));
+    assert_eq!((first.from, first.through, first.inputs.len()), (1, 7, 5));
+    assert!(matches!(&first.inputs[3].1, InboxRecord::Notice {
+        notice: NoticePayload::Quiet(notice), ..
+    } if notice.kind == "harness.input_cancelled" && notice.body["input"] == 1));
     // An explicitly started follow-up can admit steering that arrived after it.
     let next = select_boundary(
         &stream,
@@ -203,7 +207,7 @@ async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
         acyclic_harness_core::agent::BoundaryEnd::Open,
     )
     .await?;
-    assert_eq!((next.through, next.inputs.len()), (5, 1));
+    assert_eq!((next.through, next.inputs.len()), (7, 3));
     assert_eq!(
         select_boundary(
             &stream,
@@ -213,7 +217,7 @@ async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
         )
         .await?
         .through,
-        5
+        7
     );
     // The frozen range cannot absorb records that arrived after preparation.
     assert_eq!(
@@ -231,7 +235,7 @@ async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
             &stream,
             &state.path,
             1,
-            acyclic_harness_core::agent::BoundaryEnd::Exact(6)
+            acyclic_harness_core::agent::BoundaryEnd::Exact(8)
         )
         .await
         .is_err()

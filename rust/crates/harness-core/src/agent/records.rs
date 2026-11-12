@@ -19,9 +19,10 @@ pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 pub const MAX_INTENT_BYTES: usize = 128;
 /// Inline failure packing threshold; longer terminal text uses a Diagnostic.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
-/// Version-three records use host-owned external interaction storage. Other formats are refused whole;
+/// Version-five records require input-scoped cancellation and selected-input journal policy.
+/// Other formats are refused whole;
 /// sessions must start fresh, with no migration or compatibility reader.
-pub const RECORD_VERSION: u32 = 3;
+pub const RECORD_VERSION: u32 = 5;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -36,9 +37,7 @@ pub struct Membership {
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "state format predates v1 table; start a fresh session (record {found}, expected {expected})"
-)]
+#[error("unsupported state record version {found}; start a fresh session (expected {expected})")]
 pub struct UnsupportedRecordVersion {
     /// The version the record carries.
     pub found: u32,
@@ -421,7 +420,7 @@ pub struct ApprovalRequested {
     pub id: IntentId,
 }
 
-/// Cancel or archive.
+/// Archive an agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Control {
@@ -429,6 +428,20 @@ pub struct Control {
     pub by: Sender,
     /// Stable intent identity.
     pub id: IntentId,
+}
+
+/// Cancel exactly one accepted input, without retargeting after delivery.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cancellation {
+    /// Requester.
+    pub by: Sender,
+    /// Stable cancellation identity.
+    pub id: IntentId,
+    /// Original input's inbox sequence, returned by its delivery.
+    pub input: u64,
+    /// Observed conversation frontier; a completed answer wins a concurrent cancel.
+    pub conversation: u64,
 }
 
 /// A host plugin hook event.
@@ -536,7 +549,7 @@ pub enum InboxRecord {
     /// A child delegates an approval.
     ApprovalRequested(ApprovalRequested),
     /// Stop the current turn; the agent stays open.
-    Cancel(Control),
+    Cancel(Cancellation),
     /// Close the agent.
     Archive(Control),
     /// A host plugin hook.
@@ -556,9 +569,7 @@ pub(super) fn interrupt_prefixes() -> Result<[Vec<u8>; 2], Error> {
         },
         id: "interrupt".try_into()?,
     };
-    let payload =
-        encode_payload(&control).map_err(|_| Error::Record("control payload is not encodable"))?;
-    let prefix = |record: InboxRecord| -> Result<Vec<u8>, Error> {
+    let prefix = |record: InboxRecord, payload: Vec<u8>| -> Result<Vec<u8>, Error> {
         let mut bytes = record.encode()?;
         let length = bytes
             .strip_suffix(payload.as_slice())
@@ -568,8 +579,22 @@ pub(super) fn interrupt_prefixes() -> Result<[Vec<u8>; 2], Error> {
         Ok(bytes)
     };
     Ok([
-        prefix(InboxRecord::Cancel(control.clone()))?,
-        prefix(InboxRecord::Archive(control))?,
+        {
+            let cancel = Cancellation {
+                by: control.by.clone(),
+                id: control.id.clone(),
+                input: 0,
+                conversation: 0,
+            };
+            let payload = encode_payload(&cancel)
+                .map_err(|_| Error::Record("control payload is not encodable"))?;
+            prefix(InboxRecord::Cancel(cancel), payload)?
+        },
+        {
+            let payload = encode_payload(&control)
+                .map_err(|_| Error::Record("control payload is not encodable"))?;
+            prefix(InboxRecord::Archive(control), payload)?
+        },
     ])
 }
 
@@ -758,6 +783,9 @@ impl ChildWakes {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct StatusRecord {
+    /// Exact input cancelled by this transition, independently of agent phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_input: Option<u64>,
     /// One admitted completion fact, durable before a waiting parent resumes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_settlement: Option<ChildSettlement>,
@@ -779,8 +807,12 @@ impl StatusRecord {
     /// Encoded status plus Streams' opaque LATEST metadata. Attention transitions
     /// survive conflation; every publisher uses this same record constructor.
     pub fn append_record(&self) -> Result<acyclic_stream::AppendRecord, Error> {
-        acyclic_stream::AppendRecord::latest(self.encode()?, "status", self.phase.attention())
-            .map_err(Error::Stream)
+        acyclic_stream::AppendRecord::latest(
+            self.encode()?,
+            "status",
+            self.phase.attention() || self.cancelled_input.is_some(),
+        )
+        .map_err(Error::Stream)
     }
 }
 
@@ -897,7 +929,7 @@ impl AgentRecord for InboxRecord {
             }
             Self::Message(Message { from, .. })
             | Self::FollowUp(Message { from, .. })
-            | Self::Cancel(Control { by: from, .. })
+            | Self::Cancel(Cancellation { by: from, .. })
             | Self::Archive(Control { by: from, .. }) => check_sender(from),
             Self::Context(ContextRequest { by, action, .. }) => {
                 check_sender(by)?;
