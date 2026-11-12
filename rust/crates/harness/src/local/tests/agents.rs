@@ -702,11 +702,21 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
     let client = Conversation::open(connection.clone());
-    let mut usage = client.usage_query();
-    while !usage.synchronized() {
-        usage.advance().await?;
+    let mut inspection = client.inspect().await?;
+    while !inspection.snapshot().synchronized {
+        inspection.advance().await?;
     }
-    assert_eq!(usage.totals().calls, 0);
+    assert_eq!(inspection.snapshot().usage.calls, 0);
+    let before = serde_json::to_value(inspection.snapshot()).map_err(agent)?;
+    assert_eq!(before["agent"], root.as_str());
+    assert_eq!(before["phase"], "idle");
+    assert_eq!(before["open_children"], 0);
+    assert!(matches!(
+        client
+            .children_page(acyclic_harness_client::AgentPageRequest::default())
+            .await?,
+        AgentReply::Children { items, next: None } if items.is_empty()
+    ));
     let inbox = client.send("hello", "hello").await?;
     let conversation = root.conversation().map_err(agent)?;
     let entries = settled(&harness, &root).await?;
@@ -750,20 +760,20 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert!(client.output_text(&output_only).await.is_err());
     // The same live query started before this input. Its exact completion
     // replaces the original admission, rather than counting another call.
-    while usage.totals().completed == 0 {
-        usage.advance().await?;
+    while inspection.snapshot().usage.completed == 0 {
+        inspection.advance().await?;
     }
-    assert_eq!(usage.totals().calls, 1);
-    assert_eq!(usage.totals().completed, 1);
-    assert_eq!(usage.model(), Some(("scripted", "test")));
-    assert_eq!(usage.open_children(), Some(0));
+    assert_eq!(inspection.snapshot().usage.calls, 1);
+    assert_eq!(inspection.snapshot().usage.completed, 1);
+    assert_eq!(inspection.snapshot().model, Some(("scripted", "test")));
+    assert_eq!(inspection.snapshot().open_children, Some(0));
     assert_eq!(
-        usage.context(),
+        inspection.snapshot().context,
         Some(crate::executor::ContextUsage::Unavailable),
         "ordinary disabled-compaction dispatch does not perform accounting"
     );
-    assert!(usage.totals().currency.is_none());
-    assert_eq!(usage.totals().token_nano_units.value(), None);
+    assert!(inspection.snapshot().usage.currency.is_none());
+    assert_eq!(inspection.snapshot().usage.token_nano_units.value(), None);
     // The file exporter must accept the same original completion, including
     // request settings when research diagnostics are disabled.
     let mut exported = Vec::new();
@@ -775,6 +785,16 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         .ok_or_else(|| Error::Storage("completed usage export is absent".into()))?
         .map_err(agent)?;
     assert!(completed.usage.completed);
+    assert_eq!(
+        inspection.snapshot().model_time_ns.value(),
+        completed.usage.latency_ns,
+        "inspection must retain the original monotonic duration"
+    );
+    assert_eq!(
+        &inspection.snapshot().providers["scripted"],
+        inspection.snapshot().usage,
+        "the admitted provider must receive the same original contribution"
+    );
     assert_eq!(
         completed.version,
         crate::executor::ModelUsageProjection::VERSION
@@ -1064,6 +1084,24 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     // The same intent replays its commit at the same sequence; no second turn runs.
     assert_eq!(client.send("hello", "hello").await?, inbox);
     assert_eq!(records(&**agents.provider(), conversation).await?.len(), 1);
+    // The status-only follow retains the opening frontier through later tool
+    // publications and observes archive without a conversation or output reader.
+    agents
+        .archive(
+            &root,
+            &crate::agent::Sender::User {
+                principal: crate::approvals::HUMAN_APPROVER.into(),
+            },
+            &crate::agent::IntentId::try_from("close-inspected-agent").map_err(agent)?,
+        )
+        .await
+        .map_err(agent)?;
+    while !matches!(
+        inspection.snapshot().phase,
+        crate::agent::Phase::Done { .. }
+    ) {
+        inspection.advance().await?;
+    }
     Ok(())
 }
 
@@ -2400,6 +2438,16 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
             entry.outcome,
             crate::agent::TurnOutcome::Completed
         ));
+        let mut inspection = conversation.inspect().await?;
+        while !inspection.snapshot().synchronized {
+            inspection.advance().await?;
+        }
+        assert_eq!(inspection.snapshot().tools.completed, 1);
+        assert_eq!(
+            inspection.snapshot().tools.failures.values().sum::<u64>(),
+            u64::from(id == "reader"),
+            "inspection must count the original missing-cwd refusal once"
+        );
     }
     assert_eq!(provider.request_count(), 5);
     let request = provider

@@ -207,6 +207,7 @@ fn replay_proofs_bind_operation_sequence_retry_and_complete_event() -> Result<()
         let (summary, io) = edit.parts();
         summary.accept(
             &ExecutionRecord {
+                committed_at_micros: None,
                 operation_id: operation,
                 sequence: 1,
                 idempotency_key: "original".into(),

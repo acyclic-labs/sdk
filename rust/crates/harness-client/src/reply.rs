@@ -764,6 +764,10 @@ fn validate_reply(
                     visited <= 32
                         && page.items.len() as u64 <= visited
                         && page
+                            .tools
+                            .observations()
+                            .is_some_and(|tools| tools <= visited - page.items.len() as u64)
+                        && page
                             .next
                             .is_none_or(|next| next == page.end && visited == 32)
                 })
@@ -1243,12 +1247,22 @@ mod tests {
                     open_children: 0,
                     page: Some(ModelUsagePage {
                         items: vec![],
+                        tools: Default::default(),
                         context: None,
                         end,
                         next: (visited == 32).then_some(end),
                     }),
                 };
                 let bytes = encode_agent_reply(&Ok(reply), &command)?;
+                let mut inflated_envelope = Envelope::decode(bytes.as_slice())?;
+                let Some(envelope::Value::Reply(inflated_body)) = &mut inflated_envelope.value
+                else {
+                    return Err("usage envelope lost its reply".into());
+                };
+                let mut inflated: serde_json::Value = serde_json::from_slice(inflated_body)?;
+                inflated["page"]["tools"]["started"] = (visited + 1).into();
+                *inflated_body = serde_json::to_vec(&inflated)?;
+                assert!(decode_agent_reply(&inflated_envelope.encode_to_vec(), &command).is_err());
                 assert!(matches!(decode_agent_reply(&bytes, &command)?,
                     Ok(AgentReply::Usage { page: Some(page), .. }) if page.end == end));
                 let live = AgentCommand::Usage {
@@ -1344,6 +1358,7 @@ mod tests {
                         next: (count == 8).then_some(end),
                         items: (0..count)
                             .map(|index| ExecutionRecord {
+                                committed_at_micros: None,
                                 operation_id: operation,
                                 sequence: after + index + 1,
                                 idempotency_key: index.to_string(),

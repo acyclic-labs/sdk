@@ -278,6 +278,8 @@ mod context_usage;
 pub struct ModelUsagePage {
     /// Admissions and completions in their original commit order.
     pub items: Vec<ModelUsageRecord>,
+    /// Compact tool observations from exactly this same source page.
+    pub tools: ToolUsage,
     /// Last context preparation in this page; absence preserves the prior cut.
     pub context: Option<ContextUsage>,
     /// Exclusive original journal position after every visited observation,
@@ -304,8 +306,10 @@ pub async fn usage_page(
     let records = journal.replay(operation, after, PAGE, None)?.await?;
     let (end, next) = super::event_page::page_continuation(after, records.len(), PAGE)?;
     let mut items = Vec::new();
+    let mut tools = ToolUsage::default();
     let mut context = None;
     for record in records {
+        tools.observe(operation, &record)?;
         if let ExecutionEvent::ContextPrepared { projection, .. }
         | ExecutionEvent::ContextCompacted { projection, .. } = &record.event
         {
@@ -334,6 +338,7 @@ pub async fn usage_page(
     }
     Ok(ModelUsagePage {
         items,
+        tools,
         context,
         end,
         next,

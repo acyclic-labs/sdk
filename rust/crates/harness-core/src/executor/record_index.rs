@@ -329,6 +329,7 @@ impl<'a> RecordIndex<'a> {
                     ));
                 }
                 let copied = ExecutionRecord {
+                    committed_at_micros: record.committed_at_micros,
                     operation_id: record.operation_id,
                     sequence: record.sequence,
                     idempotency_key: stock_string_copy(&record.idempotency_key, io)?,

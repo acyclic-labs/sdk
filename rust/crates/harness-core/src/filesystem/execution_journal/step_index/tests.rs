@@ -1,6 +1,7 @@
 use super::*;
 use crate::executor::{ToolErrorClass, ToolFailureCause, ToolFailureKind};
 use acyclic_stream::StreamProviderExt as _;
+use futures::TryStreamExt as _;
 
 fn refusal(step: u32) -> ExecutionEvent {
     ExecutionEvent::ToolFailed {
@@ -295,7 +296,24 @@ async fn cold_tool_admission_uses_the_step_chain_without_a_duplicate_state_tree(
 
 #[tokio::test]
 async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()> {
-    let (journal, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct CommitClock(AtomicU64);
+    impl acyclic_stream::UnixMillisClock for CommitClock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    let clock = Arc::new(CommitClock(AtomicU64::new(7)));
+    let stream = Arc::new(acyclic_stream::MemoryStream::new_with_clock(
+        Default::default(),
+        clock.clone(),
+    ));
+    let (journal, _issuer) =
+        crate::filesystem::execution_journal::test_support::journal_with_backends(
+            stream,
+            acyclic_fs::Fs::memory(),
+        )
+        .await?;
     let operation = OperationId::new();
     journal
         .append(
@@ -316,6 +334,7 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
         event: refusal(0),
     })
     .map_err(|_| invalid(None))?;
+    clock.0.store(9, Ordering::SeqCst);
     journal
         .stream
         .append(acyclic_stream::AppendRequest {
@@ -325,6 +344,7 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
             idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
+    clock.0.store(100, Ordering::SeqCst);
     let selection = journal
         .indexed_records(
             ExecutionRecordQuery {
@@ -358,6 +378,33 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
     ));
     let records = journal.replay(operation, 0, 10, None)?.await?;
     assert_eq!(records.len(), 2);
+    let usage = crate::executor::usage_page(&journal, operation, "unbound", 0).await?;
+    assert!(usage.items.is_empty());
+    assert_eq!((usage.tools.started, usage.tools.completed), (0, 0));
+    assert_eq!(usage.tools.failures.get(&ToolErrorClass::Invalid), Some(&1));
+    let source = journal
+        .stream
+        .read(acyclic_stream::ReadRequest {
+            path: path.clone(),
+            from: 0,
+            limit: 2,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await?;
+    let source = source.try_collect::<Vec<_>>().await?;
+    assert_eq!(source.len(), records.len());
+    for (original, replayed) in source.iter().zip(&records) {
+        assert_eq!(
+            replayed.committed_at_micros,
+            Some(original.committed_at_micros),
+            "replay must retain the original publication time"
+        );
+    }
+    assert_eq!(
+        selected, records,
+        "indexed selection must preserve the same original publication facts"
+    );
     // A record at the same storage path is not sufficient authority. It must
     // belong to this operation before it can enter the pending step chain.
     let forged = serde_json::to_vec(&Observation {

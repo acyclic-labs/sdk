@@ -2,7 +2,9 @@ use super::*;
 use std::fmt::{self, Write as _};
 
 /// Stable, credential-free category of the error behind a settled tool failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ToolErrorClass {

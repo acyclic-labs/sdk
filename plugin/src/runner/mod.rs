@@ -14,6 +14,7 @@ pub mod test_support {
     pub use super::headless::input::{Request, parse};
 }
 mod headless;
+mod inspect;
 mod lifecycle;
 mod sessions;
 mod setup;
@@ -350,6 +351,7 @@ async fn run_inner(
             args.command,
             Some(
                 Command::Sessions(_)
+                    | Command::Inspect(_)
                     | Command::NewSession { .. }
                     | Command::Name { .. }
                     | Command::Rename { .. }
@@ -374,6 +376,9 @@ async fn run_inner(
                 None,
             )
             .await;
+        }
+        if matches!(args.command, Some(Command::Inspect(_))) {
+            return Err("inspect requires an existing session service; select --workspace PATH or --endpoint ADDRESS for its owner".into());
         }
         Some(directory)
     } else {
@@ -782,6 +787,9 @@ async fn connected(
     event_output: Option<&mut headless::Output>,
     mut terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(Command::Inspect(inspect)) = &args.command {
+        return self::inspect::run(connection, inspect, args.agent.as_deref()).await;
+    }
     if let Some(Command::Sessions(list)) = &args.command {
         let page = acyclic_harness::local::sessions::page_filtered(
             &connection,

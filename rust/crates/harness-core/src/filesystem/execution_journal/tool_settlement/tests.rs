@@ -162,6 +162,10 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
                 outcome: ToolTerminalOutcome::Completed,
             })
         );
+        let usage = crate::executor::usage_page(&journal, turn, "unbound", 65).await?;
+        assert!(usage.items.is_empty());
+        assert_eq!((usage.tools.started, usage.tools.completed), (1, 1));
+        assert!(usage.tools.failures.is_empty());
         if native {
             assert_eq!(work.live_allocation_bytes(), baseline);
         }

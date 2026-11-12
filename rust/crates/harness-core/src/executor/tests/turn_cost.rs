@@ -35,6 +35,7 @@ async fn journal_lookups_do_not_replay_prefixes_from_one_to_a_thousand_turns() -
     let mut new_times = Vec::new();
     for step in 0..1_000 {
         journal.0.lock().unwrap().push(ExecutionRecord {
+            committed_at_micros: None,
             operation_id: operation,
             sequence: u64::from(step) + 2,
             idempotency_key: format!("step:{step}"),
@@ -130,6 +131,7 @@ async fn index_checks_new_pages_and_does_not_share_authority_or_operation() -> R
     let journal = Journal::default();
     let operation = OperationId::new();
     let record = |sequence, key: &str, operation_id| ExecutionRecord {
+        committed_at_micros: None,
         operation_id,
         sequence,
         idempotency_key: key.into(),
@@ -297,6 +299,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
     ];
     for (index, event) in events.into_iter().enumerate() {
         journal.0.lock().unwrap().push(ExecutionRecord {
+            committed_at_micros: None,
             operation_id: operation,
             sequence: index as u64 + 1,
             idempotency_key: format!("record:{index}"),

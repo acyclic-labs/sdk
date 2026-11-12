@@ -9,6 +9,7 @@ async fn replacing_a_journal_in_place_discards_its_cached_execution_prefix() -> 
     let address = std::ptr::from_ref(&journal) as usize;
     for digest in [[1; 32], [2; 32]] {
         journal.0.lock().unwrap().push(ExecutionRecord {
+            committed_at_micros: None,
             operation_id: operation,
             sequence: 1,
             idempotency_key: "started".into(),

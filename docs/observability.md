@@ -1,5 +1,46 @@
 # Observability
 
+## Live session inspection
+
+Execution observations expose `committed_at_micros` from their original Stream
+record. Replay and indexed selection preserve that publication timestamp; they
+never sample a new clock or add it to the stored execution payload. Journals
+without an original publication clock return `null`. This measures publication,
+not provider dispatch, tool execution or physical durability. The publication
+clock inherits Streams' ordering guarantees; it is not a monotonic elapsed-time
+sample and must not be mixed with a provider's monotonic durations.
+
+`acyclic inspect SESSION` writes a version-one JSON snapshot from the selected
+session's authenticated streams. SESSION is a canonical path, complete stable id
+or exact alias. `--agent PATH` selects an agent within that session; it never
+searches the tree. Inspection does not change the selected session or dispatch
+model work. It requires the existing session service, selected through
+`--workspace PATH` or `--endpoint ADDRESS`.
+
+`--follow` emits changed snapshots from the original status/usage event waits,
+without periodic reads. `--children` reads one direct-child page instead; use
+`--cursor`, `--page-size` and `--page-bytes` to continue discovery explicitly.
+Hidden descendants and their history are never visited. Follow and child-page
+selection are separate operations.
+
+The shared `Conversation::inspect` query exposes the last observed phase,
+original usage totals, those same contributions grouped by admitted provider,
+the sum of original completed-call monotonic durations, context occupancy and
+the direct open-child count. Tool admissions, successful settlements and typed
+failure counts come from those same journal pages, without retaining call
+history or copying tool/error bodies. Counting these facts requires no additional
+reads beyond the original journal page. Publication clocks are not tool execution
+durations; tool timing requires an original execution measurement.
+Unknown counters and durations retain their
+coverage; partial known subtotals must not be displayed as complete totals.
+Each completion replaces its matching admission. Status and usage retain their
+individual source frontiers, rather than claiming an atomic cross-stream cut.
+`synchronized` describes initial usage replay reaching the live frontier.
+
+Provider token counters retain their original billing conventions. Cache rates
+must account for inclusive/exclusive cache units; a raw division cannot establish
+that contract. A running phase alone is not evidence that an agent is stuck.
+
 Rust crates emit `tracing` spans and events; hosts and tests decide whether
 anything records them. `acyclic-observability` owns result recording and the
 operation lifecycle projection. Work accounting stays in `WorkCounters`, and

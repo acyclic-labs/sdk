@@ -291,6 +291,7 @@ where
                 }
                 result.push((
                     ExecutionRecord {
+                        committed_at_micros: Some(record.committed_at_micros),
                         operation_id,
                         sequence: record.sequence.checked_add(1).ok_or_else(|| {
                             stock_boundary(

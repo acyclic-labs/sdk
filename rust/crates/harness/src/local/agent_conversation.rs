@@ -16,6 +16,7 @@ pub use client_files::VisibleFiles;
 mod directory;
 mod events;
 mod history;
+mod inspect;
 mod recording;
 mod transcripts;
 mod tree;
@@ -37,6 +38,7 @@ use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
 pub use history::{HistoryPage, PreparedHistoryAction};
+pub use inspect::{InspectQuery, Inspection};
 use std::sync::Arc;
 pub use usage_query::UsageQuery;
 
