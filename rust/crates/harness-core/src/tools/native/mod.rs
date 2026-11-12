@@ -24,6 +24,7 @@ pub(crate) fn alias(
     mut definition: ToolDefinition,
     original: Arc<Tool>,
     template: Value,
+    custody: acyclic_fs::NativeCustody,
 ) -> Result<Tool> {
     let mut identity = blake3::Hasher::new_derive_key("acyclic.harness.tool-alias.v1");
     for revision in [&definition.revision, &original.definition.revision] {
@@ -38,6 +39,7 @@ pub(crate) fn alias(
         Arc::clone(&original),
         original,
         arguments,
+        custody,
     ))
 }
 
@@ -46,6 +48,7 @@ fn adapted(
     capability: Arc<Tool>,
     original: Arc<Tool>,
     arguments: Arc<arguments::Arguments>,
+    custody: acyclic_fs::NativeCustody,
 ) -> Tool {
     definition
         .output_schema
@@ -57,6 +60,7 @@ fn adapted(
         arguments,
         capability,
         original,
+        _custody: custody,
     });
     Tool {
         hook_names: adapter.original.hook_names,
@@ -266,7 +270,13 @@ impl NativeTools {
             let revision = definition.revision.clone();
             tools.register(
                 (
-                    adapted(definition, capability, original, Arc::clone(arguments)),
+                    adapted(
+                        definition,
+                        capability,
+                        original,
+                        Arc::clone(arguments),
+                        None,
+                    ),
                     None,
                 ),
                 &mut None,
