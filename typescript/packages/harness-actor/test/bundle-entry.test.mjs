@@ -1,13 +1,17 @@
-import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bundleHarnessActor } from "../../../../scripts/build-harness-actor.mjs";
 import { loadHostedArtifact } from "../../../../scripts/artifact-assets.mjs";
 import { fixtureAuthority, initializeFixtureAuthority } from "../../../../rust/crates/conformance/cloudflare/fixture-authority.mjs";
 import { HARNESS_BINDINGS, HARNESS_MODULE, MODEL_FETCH } from "../src/bindings.js";
 
-// Prepared by the same immutable artifact producer used for deployment.
-const directory = fileURLToPath(new URL("../dist/artifact/", import.meta.url));
+// Assembly consumes prepared bindings; no compiler runs in this test.
+const directory = mkdtempSync(join(tmpdir(), "harness-entry-"));
+beforeAll(() => bundleHarnessActor(fileURLToPath(new URL("./owner.json", import.meta.url)), directory));
+afterAll(() => rmSync(directory, { recursive: true, force: true }));
 test("built namespace bundle loads through manifest and onRecord with one admitted heap", async () => {
   const deployment = JSON.parse(readFileSync(join(directory, "agent-deploy.json"), "utf8"));
   const assets = deployment.environments[0].entries[0].assets;
