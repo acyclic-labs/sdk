@@ -7,12 +7,7 @@ pub(super) async fn selected_source_reference<D: DemandSource>(
 ) -> Result<SourceReference, LazyWorkspaceError> {
     match retained {
         Some(source) => Ok(source.clone()),
-        // An asynchronous source cut has its own birth-funded, erased frame.
-        // Its concrete provider state must not enter every lazy filesystem
-        // caller's generated future. Retained forks need no allocation or IO.
-        None => crate::heap_future::in_borrowed_frame!(ctx, |ctx| async move {
-            source.reference(ctx).await.map_err(Into::into)
-        }),
+        None => source.reference(ctx).await.map_err(Into::into),
     }
 }
 
@@ -33,7 +28,7 @@ impl<
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, crate::Generation<A, O>), LazyWorkspaceError> {
-        let original = selected_source_reference(source.as_ref(), None, ctx).await?;
+        let original = source.reference(ctx).await?;
         let generation = accounted!(ctx, |work, cancel| fs
             .create_workspace_with_operation::<_, (), WorkspaceError>(
                 name,
@@ -47,7 +42,7 @@ impl<
         lazy.state(ctx)
             .await?
             .validate_root_binding(lazy.workspace.id(), original.clone())?;
-        if selected_source_reference(lazy.source.as_ref(), None, ctx).await? != original {
+        if lazy.source.reference(ctx).await? != original {
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok((lazy, generation))
@@ -60,7 +55,7 @@ impl<
         store: S,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Self, LazyWorkspaceError> {
-        let reference = selected_source_reference(source.as_ref(), None, ctx).await?;
+        let reference = source.reference(ctx).await?;
         if store
             .load_lazy_workspace(workspace.id(), ctx)
             .await?
@@ -202,7 +197,7 @@ impl<
         if !bound && state.source != origin.snapshot.source {
             return Err(LazyWorkspaceError::Concurrent);
         }
-        let reference = selected_source_reference(source.as_ref(), None, ctx).await?;
+        let reference = source.reference(ctx).await?;
         if reference.identity != identity || (bound && !reference.follows(&state.source)) {
             return Err(LazyWorkspaceError::StaleSource);
         }

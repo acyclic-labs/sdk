@@ -2444,9 +2444,15 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     let mut observed = ObservedConversation::open(&harness).await?;
     let prompt = "inspect @mention.txt and @pixel.png then @mention.txt again";
     // A capture for one message replays its pinned manifest exactly.
-    let first = harness.prompt_attachments(b"direct", Some(prompt)).await?;
+    let first = harness
+        .clone()
+        .prompt_attachments(b"direct", Some(prompt))
+        .await?;
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .clone()
+            .prompt_attachments(b"direct", Some(prompt))
+            .await?,
         first
     );
     let inbox = observed.conversation.send("mention", prompt).await?;
@@ -2454,7 +2460,10 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     let client = observed.conversation;
     // Later publications on the private volume leave a replay unchanged.
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .clone()
+            .prompt_attachments(b"direct", Some(prompt))
+            .await?,
         first
     );
     let TurnInput::Message {
@@ -2516,12 +2525,16 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     std::fs::write(checkout.join("mention.txt"), "CHANGED\n").map_err(agent)?;
     std::fs::remove_file(checkout.join("pixel.png")).map_err(agent)?;
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .clone()
+            .prompt_attachments(b"direct", Some(prompt))
+            .await?,
         first
     );
     assert_eq!(client.send("mention", prompt).await?, inbox);
     // A new message sees the files as they are now.
     let fresh = harness
+        .clone()
         .prompt_attachments(b"fresh", Some("inspect @mention.txt"))
         .await?
         .expect("a manifest");
@@ -3032,13 +3045,14 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     assert_ne!(child_skills, parent_skills);
     for command in ["/context-checkpoint", "/CONTEXT-CHECKPOINT"] {
         assert!(matches!(
-            harness.resolve_prompt_command(command).await,
+            harness.clone().resolve_prompt_command(command).await,
             Err(Error::Conflict(_))
         ));
     }
     // An unambiguous name must still expand in the same catalog.
     assert!(
         harness
+            .clone()
             .resolve_prompt_command("/candidate-search")
             .await?
             .is_some()
