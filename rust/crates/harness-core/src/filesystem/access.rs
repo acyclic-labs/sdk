@@ -129,8 +129,7 @@ pub(in crate::filesystem) fn require(
     if decision.allowed {
         Ok(())
     } else {
-        // Preserve the shared policy engine's refusal class without formatting
-        // paths or rule identifiers into an unowned native error payload.
+        // Retain the shared policy decision; diagnostic text uses original custody.
         let reason = match decision.denial {
             Some(acyclic_fs::access::Denial::Rule) => "filesystem policy explicitly denied request",
             Some(acyclic_fs::access::Denial::NoAllow) => "filesystem policy has no matching allow",
@@ -139,11 +138,32 @@ pub(in crate::filesystem) fn require(
             Some(acyclic_fs::access::Denial::Invalid) => "filesystem access request is invalid",
             None => "filesystem access decision denied request",
         };
-        Err(stock_boundary(
-            Some(io),
-            crate::wire::ErrorCode::Unauthorized,
-            reason,
-        ))
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.original_native_work() {
+            let (message, custody) = work.display(&format_args!(
+                "{reason}: {action:?} {}/{} (policy {})",
+                view.volume(),
+                path,
+                decision.policy_version,
+            ))?;
+            return Err(Error::NativeDiagnostic {
+                code: crate::wire::ErrorCode::Unauthorized,
+                message,
+                custody,
+            });
+        }
+        let message = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(
+                format_args!(
+                    "{reason}: {action:?} {}/{} (policy {})",
+                    view.volume(),
+                    path,
+                    decision.policy_version
+                ),
+                work,
+            )
+        })?;
+        Err(Error::Unauthorized(message))
     }
 }
 
