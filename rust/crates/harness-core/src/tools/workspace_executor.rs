@@ -46,13 +46,12 @@ fn target(
                 ..Default::default()
             })?;
         }
-        if super::command::has_prefix(command, [&["grep", "--scope"], &["git", "grep", "--scope"]])?
-        {
+        if super::command::has_prefix(command, [&["grep"], &["git", "grep"]])? {
             let filesystem = context.task().harness.filesystem.as_ref().ok_or_else(|| {
                 boundary(
                     work,
                     crate::wire::ErrorCode::Unsupported,
-                    "scope search has no filesystem binding",
+                    "search has no filesystem binding",
                 )
             })?;
             return Ok(Workspace::Filesystem(Arc::clone(filesystem)));

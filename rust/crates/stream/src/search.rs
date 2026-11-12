@@ -87,7 +87,18 @@ pub trait Matcher: crate::ProviderPlatform {
 
 /// The same literal byte predicate used by record and linked-content adapters.
 pub fn contains(bytes: &[u8], pattern: &[u8]) -> bool {
-    pattern.is_empty() || bytes.windows(pattern.len()).any(|bytes| bytes == pattern)
+    find(bytes, pattern).is_some()
+}
+
+/// First literal occurrence, shared by record and file-range adapters.
+pub fn find(bytes: &[u8], pattern: &[u8]) -> Option<usize> {
+    if pattern.is_empty() {
+        Some(0)
+    } else {
+        bytes
+            .windows(pattern.len())
+            .position(|bytes| bytes == pattern)
+    }
 }
 
 struct Raw;
