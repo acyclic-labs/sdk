@@ -1,4 +1,4 @@
-//! Recorded GraphCoder calls through the real reader and both host projections.
+//! Version-pinned reads through the real reader and both host projections.
 use super::*;
 use crate::runtime::{Bindings, TaskContext, ToolContext};
 
@@ -78,12 +78,17 @@ async fn read_with_budget(
 async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), Some(2_000_000)).await?;
     let private = MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
-    // A multi-page file with fewer than 20,000 lines.
-    let mut source = vec![b'x'; 1_103_745];
-    for byte in source.chunks_mut(128) {
+    let page_bytes = 4096;
+    let line_bytes = 128;
+    let mut source = vec![b'x'; 4 * page_bytes + 17];
+    for byte in source.chunks_mut(line_bytes) {
         *byte.last_mut().unwrap() = b'\n';
     }
-    let path = "fixtures/source-index.txt";
+    let path = "inputs/source-index.txt";
+    let past_last_line = source.len().div_ceil(line_bytes) + 1;
+    let beyond_eof = source.len() + page_bytes;
+    let clipped_start = source.len() - 2 * page_bytes;
+    let tail_start = source.len() - line_bytes;
     let file = storage
         .stage(
             OperationId::new(),
@@ -94,8 +99,8 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
         )
         .await?;
     let limits = Limits {
-        file_bytes: Some(65_536),
-        render_bytes: Some(32_768),
+        file_bytes: Some(page_bytes as u64),
+        render_bytes: Some(2 * page_bytes as u64),
         ..Limits::default()
     };
     let task = Bindings {
@@ -117,7 +122,7 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
 
     let error = read_with_budget(
         &task,
-        json!({"path":path,"selection":{"kind":"lines","offset":20000}}),
+        json!({"path":path,"selection":{"kind":"lines","offset":past_last_line}}),
         acyclic_fs::WorkBudget {
             source_bytes_read: 0,
             ..acyclic_fs::performance::work_budget(1_000_000, 64_000_000)
@@ -138,8 +143,8 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
         }
     ));
 
-    // Replaying the same call also exercises an already published index.
-    for offset in [20000, 20000, source.len().div_ceil(128) + 1] {
+    // Repeating the selection also exercises an already published index.
+    for offset in [past_last_line + 1, past_last_line + 1, past_last_line] {
         let value = read(
             &task,
             json!({"path":path,"selection":{"kind":"lines","offset":offset}}),
@@ -152,14 +157,13 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
             "offset":offset,"total":source.len(),"eof":true})
         );
     }
-    // Preserve both authored and content version identity while clipping
-    // the recorded end (1,118,094) to the selected generation's actual EOF.
+    // Preserve authored and content version identity while clipping to EOF.
     let initial = read(
         &task,
-        json!({"path":path,"range":{"start":918094,"end":1118094}}),
+        json!({"path":path,"range":{"start":clipped_start,"end":beyond_eof}}),
     )
     .await?;
-    assert!(source[918094..].starts_with(initial["text"].as_str().unwrap().as_bytes()));
+    assert!(source[clipped_start..].starts_with(initial["text"].as_str().unwrap().as_bytes()));
     let authored = initial["version"].as_str().unwrap();
     let content = serde_json::to_string(&file).unwrap();
     storage
@@ -174,27 +178,27 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
     for version in [authored, &content] {
         let value = read(
             &task,
-            json!({"path":path,"version":version,"range":{"start":1100000,"end":1118094}}),
+            json!({"path":path,"version":version,"range":{"start":tail_start,"end":beyond_eof}}),
         )
         .await?;
         assert_eq!(
             value["text"].as_str().unwrap().as_bytes(),
-            &source[1100000..]
+            &source[tail_start..]
         );
         assert_eq!(value["page"]["total"], source.len());
         assert_eq!(value["page"]["eof"], true);
         assert!(value["page"].get("next").is_none());
         let empty = read(
             &task,
-            json!({"path":path,"version":version,"range":{"start":1118094,"end":u64::MAX}}),
+            json!({"path":path,"version":version,"range":{"start":beyond_eof,"end":u64::MAX}}),
         )
         .await?;
         assert_eq!(empty["text"], "");
         assert_eq!(empty["page"]["start"], source.len());
         assert_eq!(empty["page"]["eof"], true);
     }
-    // The first page is visibly incomplete; following only the
-    // returned cursor reconstructs the original generation exactly once.
+    // Following only the returned cursor reconstructs the original generation
+    // exactly once, across multiple full pages and a partial final page.
     let mut cursor = 0;
     let mut assembled = Vec::new();
     loop {
@@ -233,7 +237,7 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
         assert_eq!(value["page"]["eof"], true);
         let value = read(
             &task,
-            json!({"path":path,"selection":{"kind":"lines","offset":20000}}),
+            json!({"path":path,"selection":{"kind":"lines","offset":past_last_line}}),
         )
         .await?;
         assert_eq!(value["text"], "");
