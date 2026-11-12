@@ -11,6 +11,7 @@ struct WireCursor {
     pattern: Vec<u8>,
     cut: Option<(Vec<u8>, u128, u64)>,
     frontier: Vec<WireFrame>,
+    matcher: Option<[u8; 32]>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -20,6 +21,7 @@ struct WireFrame {
     sequence: u64,
     tail: Option<u64>,
     after: Option<StreamPath>,
+    content: Option<Vec<u8>>,
 }
 
 impl Serialize for Cursor {
@@ -27,6 +29,7 @@ impl Serialize for Cursor {
         WireCursor {
             version: 1,
             pattern: self.pattern.clone(),
+            matcher: self.matcher,
             cut: self
                 .at
                 .as_ref()
@@ -39,6 +42,7 @@ impl Serialize for Cursor {
                     sequence: frame.sequence,
                     tail: frame.tail,
                     after: frame.after.clone(),
+                    content: frame.content.clone(),
                 })
                 .collect(),
         }
@@ -57,6 +61,8 @@ impl<'de> Deserialize<'de> for Cursor {
                     || wire.frontier.iter().any(|frame| frame.after.is_some())))
             || wire.frontier.iter().any(|frame| {
                 frame.tail.is_some_and(|tail| frame.sequence > tail)
+                    || (frame.content.is_some()
+                        && frame.tail.is_none_or(|tail| frame.sequence >= tail))
                     || (frame.tail.is_none() && frame.sequence != 0)
                     || frame.after.as_ref().is_some_and(|after| {
                         after.as_str().rsplit_once('/').map(|(parent, _)| parent)
@@ -85,6 +91,7 @@ impl<'de> Deserialize<'de> for Cursor {
         Ok(Self {
             pattern: wire.pattern,
             at,
+            matcher: wire.matcher,
             frontier: wire
                 .frontier
                 .into_iter()
@@ -93,6 +100,7 @@ impl<'de> Deserialize<'de> for Cursor {
                     sequence: frame.sequence,
                     tail: frame.tail,
                     after: frame.after,
+                    content: frame.content,
                 })
                 .collect(),
         })

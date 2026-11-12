@@ -17,15 +17,17 @@ async fn append(
     path: &str,
     values: Vec<crate::AppendRecord>,
 ) -> Result<(), StreamError> {
-    let result = provider
-        .append(AppendRequest {
-            path: StreamPath::new(path)?,
-            records: values,
-            if_tail: None,
-            idempotency_key: IdempotencyKey::unique(),
-        })
-        .await?;
-    assert!(matches!(result, AppendOutcome::Committed(_)));
+    for values in values.chunks(crate::MAX_ITEMS) {
+        let result = provider
+            .append(AppendRequest {
+                path: StreamPath::new(path)?,
+                records: values.to_vec(),
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        assert!(matches!(result, AppendOutcome::Committed(_)));
+    }
     Ok(())
 }
 
@@ -58,6 +60,15 @@ async fn history_search_is_bounded_replayable_and_excludes_concurrent_appends()
         "one opening head pins the namespace cut"
     );
     let continuation = first.next.ok_or(StreamError::InvalidResponse)?;
+    let before = counted.requests();
+    let oversized = continuation
+        .page(
+            &counted,
+            NonZeroU32::new((crate::MAX_ITEMS * 2) as u32).ok_or(StreamError::InvalidArgument)?,
+        )
+        .await?;
+    assert_eq!(oversized.matches.len(), crate::MAX_ITEMS * 2);
+    assert_eq!(counted.requests().since(before).data(), 2);
     append(
         &provider,
         "session/history",
