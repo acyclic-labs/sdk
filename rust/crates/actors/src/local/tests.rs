@@ -1407,10 +1407,11 @@ fn actor_subscription_changes_keep_consumed_cursors_and_refuse_conflicts() -> Te
                 path: first.clone(),
                 cursor: 0,
             },
-        )]),
+        )])
+        .into(),
         alarm: Alarm::default(),
         paused: false,
-        metadata: BTreeMap::new(),
+        metadata: Default::default(),
         journal_tail: 0,
     };
     let add = |id: &str, path: &StreamPath, from| SubscriptionChange::Add {

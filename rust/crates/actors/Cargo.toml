@@ -27,6 +27,7 @@ test-support = [
     "acyclic-stream/test-support"]
 
 [dependencies]
+acyclic-collections = { version = "=0.2.0", path = "../collections" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 loom = { version = "0.7.3", features = ["futures"], optional = true }

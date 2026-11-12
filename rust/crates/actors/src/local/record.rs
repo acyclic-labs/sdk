@@ -25,7 +25,7 @@ pub(super) fn work() -> Work {
     WORK.with(std::cell::Cell::get)
 }
 
-fn copy_string(value: &str) -> String {
+pub(super) fn copy_string(value: &str) -> String {
     #[cfg(test)]
     WORK.with(|work| {
         let mut current = work.get();
@@ -59,24 +59,10 @@ impl Clone for State {
                 },
                 bytes: checkpoint.bytes.clone(),
             }),
-            subscriptions: self
-                .subscriptions
-                .iter()
-                .map(|(id, subscription)| {
-                    visit_entry();
-                    (copy_string(id), subscription.clone())
-                })
-                .collect(),
+            subscriptions: self.subscriptions.clone(),
             alarm: self.alarm.clone(),
             paused: self.paused,
-            metadata: self
-                .metadata
-                .iter()
-                .map(|(key, value)| {
-                    visit_entry();
-                    (copy_string(key), value.clone())
-                })
-                .collect(),
+            metadata: self.metadata.clone(),
             journal_tail: self.journal_tail,
         }
     }
@@ -239,14 +225,14 @@ impl State {
                 },
                 bytes: checkpoint.bytes,
             }),
-            subscriptions,
+            subscriptions: subscriptions.into(),
             alarm: Alarm {
                 generation: record.alarm_generation,
                 deadline_unix_ms: record.alarm_deadline_unix_ms,
                 delivered_generation: record.alarm_delivered_generation,
             },
             paused: record.paused,
-            metadata: record.metadata,
+            metadata: record.metadata.into(),
             journal_tail: record.journal_tail,
         })
     }
@@ -280,10 +266,10 @@ mod tests {
                 placement_branch: None,
                 escrow: None,
                 checkpoint: None,
-                subscriptions: BTreeMap::new(),
+                subscriptions: Default::default(),
                 alarm: Alarm::default(),
                 paused: false,
-                metadata: BTreeMap::new(),
+                metadata: Default::default(),
                 journal_tail: 0,
             };
             for index in 0..population {
@@ -301,6 +287,15 @@ mod tests {
             }
             let before = work();
             let copied = state.clone();
+            let cloned = work();
+            assert_eq!(
+                cloned.entries, before.entries,
+                "root clone must not visit retained fields"
+            );
+            assert_eq!(
+                cloned.copied_bytes, before.copied_bytes,
+                "root clone must not copy retained strings"
+            );
             let encoded = copied.encode();
             let after = work();
             let measured = Work {
@@ -315,8 +310,8 @@ mod tests {
             );
             assert_eq!(
                 measured.entries,
-                4 * population,
-                "clone and encode each visit both original maps"
+                2 * population,
+                "only full export visits both maps; root cloning must visit neither"
             );
             assert_eq!(State::decode(&encoded)?, state);
             let key = "entry-00000000";
@@ -346,7 +341,8 @@ mod tests {
                 crate::escrow::Escrow::new(Some(u64::MAX))
                     .in_branch(Some(acyclic_stream::CommitId::from_bytes([0x7f; 32]))),
             ),
-            metadata: BTreeMap::from([("durable".into(), bytes::Bytes::from_static(b"value"))]),
+            metadata: BTreeMap::from([("durable".into(), bytes::Bytes::from_static(b"value"))])
+                .into(),
             journal_tail: u64::MAX,
             epoch: u64::MAX,
             checkpoint: Some(Checkpoint {
@@ -362,7 +358,8 @@ mod tests {
                     path: path.clone(),
                     cursor: u64::MAX,
                 },
-            )]),
+            )])
+            .into(),
             alarm: Alarm {
                 generation: u64::MAX,
                 deadline_unix_ms: Some(u64::MAX),

@@ -11,8 +11,10 @@ mod overlay;
 pub mod ready;
 pub use overlay::{Branch, Creation};
 mod record;
+mod state_map;
 pub use applied::{Applied, AppliedCut};
 pub use record::{METADATA_OVERHEAD, STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
+pub use state_map::StateMap;
 mod runtime;
 mod scheduling;
 pub use crate::guest::Subscription;
@@ -183,10 +185,10 @@ pub struct State {
     placement_branch: Option<CommitId>,
     escrow: Option<crate::escrow::Escrow>,
     checkpoint: Option<Checkpoint>,
-    subscriptions: BTreeMap<String, Subscription>,
+    subscriptions: StateMap<Subscription>,
     alarm: Alarm,
     paused: bool,
-    metadata: BTreeMap<String, bytes::Bytes>,
+    metadata: StateMap<bytes::Bytes>,
     journal_tail: u64,
 }
 impl State {
@@ -210,7 +212,7 @@ impl State {
         self.checkpoint.as_ref()
     }
     /// Instance-bound subscriptions, keyed by manifest subscription id.
-    pub const fn subscriptions(&self) -> &BTreeMap<String, Subscription> {
+    pub const fn subscriptions(&self) -> &StateMap<Subscription> {
         &self.subscriptions
     }
     /// Next unconsumed sequence of a declared subscription.
@@ -1284,7 +1286,7 @@ fn next(
 /// Apply the actor's own subscription changes in order. A start the host has
 /// not resolved is refused, so every bound cursor is an explicit sequence.
 fn subscribe(
-    subscriptions: &mut BTreeMap<String, Subscription>,
+    subscriptions: &mut StateMap<Subscription>,
     own: &StreamPath,
     changes: &[crate::guest::SubscriptionChange],
 ) -> Result<(), Error> {

@@ -37,7 +37,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let state = State {
             placement_branch: None,
             escrow: None,
-            metadata: BTreeMap::new(),
+            metadata: Default::default(),
             journal_tail: 0,
             epoch: 0,
             checkpoint: None,
@@ -49,7 +49,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     path: self.store.scheduling_path(shard)?,
                     cursor: 0,
                 },
-            )]),
+            )])
+            .into(),
         };
         let request = store.prepare(
             &snapshot,

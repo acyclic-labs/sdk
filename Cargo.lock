@@ -19,6 +19,7 @@ name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-collections",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-host-platform",

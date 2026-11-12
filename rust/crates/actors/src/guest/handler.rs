@@ -81,7 +81,7 @@ pub struct Subscription {
 pub struct SubscriptionCuts {
     state_path: StreamPath,
     anchor: CommitId,
-    entries: BTreeMap<String, Subscription>,
+    entries: crate::local::StateMap<Subscription>,
 }
 
 impl SubscriptionCuts {
@@ -90,7 +90,7 @@ impl SubscriptionCuts {
     pub fn new(
         state_path: StreamPath,
         anchor: CommitId,
-        entries: BTreeMap<String, Subscription>,
+        entries: crate::local::StateMap<Subscription>,
     ) -> Self {
         Self {
             state_path,

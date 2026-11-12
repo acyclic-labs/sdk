@@ -626,7 +626,7 @@ pub fn actor_seeds()
         subscriptions: guest::SubscriptionCuts::new(
             StreamPath::new("codec/actors/state")?,
             CommitId::from_bytes([1; 32]),
-            BTreeMap::new(),
+            BTreeMap::new().into(),
         ),
     };
     let bytes = wire::encode_delivery(&delivery, Some(&checkpoint));

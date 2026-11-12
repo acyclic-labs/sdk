@@ -1121,10 +1121,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     ) -> Result<Option<(String, Record)>, Error> {
         use std::ops::Bound::{Excluded, Included, Unbounded};
         let subscriptions = state.subscriptions();
-        let later = subscriptions.range::<str, _>((after.map_or(Unbounded, Excluded), Unbounded));
+        let later = subscriptions.range((after.map_or(Unbounded, Excluded), Unbounded));
         let earlier = after
             .into_iter()
-            .flat_map(|last| subscriptions.range::<str, _>((Unbounded, Included(last))));
+            .flat_map(|last| subscriptions.range((Unbounded, Included(last))));
         for (id, subscription) in later.chain(earlier) {
             let records = self
                 .store

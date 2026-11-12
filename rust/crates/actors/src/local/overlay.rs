@@ -121,10 +121,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             placement_branch: None,
             escrow: creation.escrow,
             checkpoint: creation.checkpoint,
-            subscriptions: creation.subscriptions,
+            subscriptions: creation.subscriptions.into(),
             alarm,
             paused,
-            metadata: BTreeMap::new(),
+            metadata: Default::default(),
             journal_tail: 0,
         };
         match template {
@@ -164,7 +164,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             return Err(Error::Invalid("actor subscribes to its own state"));
         }
         let overlay = State {
-            subscriptions: branch.subscriptions,
+            subscriptions: branch.subscriptions.into(),
             escrow: Some(branch.escrow),
             paused: true,
             ..state.clone()

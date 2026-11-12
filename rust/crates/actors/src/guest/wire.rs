@@ -410,7 +410,7 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
                     .try_into()
                     .map_err(|_| invalid("state commit"))?,
             ),
-            subscriptions,
+            subscriptions.into(),
         ),
         record: wire
             .record
