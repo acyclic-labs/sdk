@@ -125,13 +125,24 @@ pub(in crate::filesystem) fn require(
     path: &str,
     io: &PreparationIo,
 ) -> Result<()> {
-    if view.decide(action, path, access_now()?).allowed {
+    let decision = view.decide(action, path, access_now()?);
+    if decision.allowed {
         Ok(())
     } else {
+        // Preserve the shared policy engine's refusal class without formatting
+        // paths or rule identifiers into an unowned native error payload.
+        let reason = match decision.denial {
+            Some(acyclic_fs::access::Denial::Rule) => "filesystem policy explicitly denied request",
+            Some(acyclic_fs::access::Denial::NoAllow) => "filesystem policy has no matching allow",
+            Some(acyclic_fs::access::Denial::Capability) => "filesystem capability denied request",
+            Some(acyclic_fs::access::Denial::Expired) => "filesystem capability has expired",
+            Some(acyclic_fs::access::Denial::Invalid) => "filesystem access request is invalid",
+            None => "filesystem access decision denied request",
+        };
         Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Unauthorized,
-            "filesystem access decision denied request",
+            reason,
         ))
     }
 }
