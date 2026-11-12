@@ -279,6 +279,23 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
         .await?;
     let refreshed = source.reference(&mut ctx).await?;
     assert_ne!(refreshed, frozen);
+    let current_page = source
+        .lookup(refreshed.clone(), &path, &native, &cancellation)
+        .await?
+        .ok_or("missing current turn page")?;
+    let current_bytes = source
+        .read_range(
+            refreshed,
+            &path,
+            current_page.version,
+            0,
+            u64::MAX,
+            &native,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(current_bytes.bytes, before.bytes);
+    assert!(std::str::from_utf8(&current_bytes.bytes)?.contains("[Current status](../status.md)"));
     let offset = before.bytes.len().saturating_sub(9) as u64;
     let interval = opened.read_range(offset, 7, &mut ctx)?;
     assert_eq!(

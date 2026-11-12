@@ -501,7 +501,11 @@ impl View {
             return Err(Error::Invalid("page beyond conversation"));
         }
         sink.write_all(b"# Conversation\n\n")?;
-        status(cut, if index { "" } else { "../" }, sink)?;
+        if index {
+            status(cut, "", sink)?;
+        } else {
+            sink.write_all(b"[Current status](../status.md)\n")?;
+        }
         sink.write_all(b"\n")?;
         for n in start..end {
             writeln!(sink, "## Turn {}\n\n{}\n", n + 1, cut.turn(n)?)?;
