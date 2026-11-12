@@ -106,3 +106,71 @@ impl<P: StreamProvider + ?Sized + 'static> NameIndex<P> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_stream::{
+        CommitOutcome, MemoryStream, StreamProviderExt as _,
+        testing::{Counted, RequestClass},
+    };
+    use acyclic_test_support::scale::{Bound, assert_scales};
+
+    #[tokio::test]
+    async fn alias_lookup_requests_do_not_grow_with_unrelated_bindings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut samples = Vec::new();
+        for size in [16_u64, 128] {
+            let provider = Arc::new(Counted::new(MemoryStream::default()));
+            let root = StreamPath::new("aliases")?;
+            let index = NameIndex::new(provider.clone(), root);
+            let agent = AgentPath::root(&super::super::AgentId::from_bytes([1; 16]));
+            for number in 0..size {
+                let name = format!("alias-{number:03}");
+                let mut request = CommitRequest {
+                    deadline_unix_millis: None,
+                    effects: Vec::new(),
+                    idempotency_key: super::super::intent_key("alias-test", &[&name])?,
+                };
+                let before = provider.requests();
+                index.bind(&name, &agent, &mut request)?;
+                assert_eq!(
+                    provider.requests(),
+                    before,
+                    "binding preparation dispatched IO"
+                );
+                assert!(matches!(
+                    provider.commit(request).await?,
+                    CommitOutcome::Committed(_)
+                ));
+            }
+            assert_eq!(
+                provider.requests().data(),
+                size,
+                "write counter is inactive"
+            );
+            let mut costs = Vec::new();
+            for (name, expected) in [
+                ("alias-000", Some(agent.clone())),
+                ("alias-015", Some(agent.clone())),
+                ("missing-alias", None),
+            ] {
+                let before = provider.requests();
+                assert_eq!(index.resolve(name).await?, expected);
+                let work = provider.requests().since(before);
+                assert_eq!(work.class(RequestClass::Head), 1);
+                assert_eq!(work.auxiliary(Some(RequestClass::Head)), Some(0));
+                costs.push(work.class(RequestClass::Head));
+            }
+            samples.push((size, costs));
+        }
+        for (small, large) in samples[0].1.iter().zip(&samples[1].1) {
+            assert_scales(
+                Bound::Constant,
+                (samples[0].0, *small),
+                (samples[1].0, *large),
+            );
+        }
+        Ok(())
+    }
+}
