@@ -185,3 +185,17 @@ test("onRecord cancellation fences an in-flight guest and its retained heap", as
   finish();
   await expect(activation.checkpoint()).rejects.toMatchObject({ code: "unavailable" });
 });
+test("onRecord refuses a transition when reply materialization revokes ownership", async () => {
+  const shared = JSON.parse(readFileSync(new URL("../../../../rust/crates/actors/tests/fixtures/guest-record.json", import.meta.url), "utf8"));
+  const { actor } = recordingActor({ name: "counter", version: "1" });
+  const cancellation = new AbortController();
+  const activation = new GuestActivation({ ...actor, event() {
+    return { type: "reply" as const, get payload() {
+      cancellation.abort(new Error("ownership revoked"));
+      return Uint8Array.of(1);
+    } };
+  } }, null, guestContext("one", "counter"));
+  await expect(activation.onRecord(Uint8Array.from(shared.delivery), cancellation.signal))
+    .rejects.toThrow("ownership revoked");
+  await expect(activation.checkpoint()).rejects.toMatchObject({ code: "unavailable" });
+});
