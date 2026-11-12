@@ -900,7 +900,7 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
         &complete,
         &spill_task,
         OperationId::new(),
-        4096,
+        Some(4096),
         None,
     ))?;
     let spill_file: crate::conversation::FileRef = serde_json::from_str(
@@ -1000,7 +1000,7 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
                 &complete,
                 &denied,
                 OperationId::new(),
-                4096,
+                Some(4096),
                 None,
             ))
             .unwrap_err()

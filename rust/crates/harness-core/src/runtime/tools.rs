@@ -622,7 +622,7 @@ impl ToolContext {
         }
         content
             .reader
-            .verify_publication(&file, file.descriptor().byte_length(), None)?
+            .verify_publication(&file, Some(file.descriptor().byte_length()), None)?
             .await?;
         Ok(file)
     }

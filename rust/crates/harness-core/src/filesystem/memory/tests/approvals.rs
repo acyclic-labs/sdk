@@ -230,7 +230,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
         &storage.volume,
         storage.internal_files.clone(),
         crate::preset::Preset::graphcoder().approval_policy,
-        65_536,
+        Some(65_536),
     )?;
     reopened.verify(id, *operation_id, *action_digest).await?;
     assert!(!owner.yielded());

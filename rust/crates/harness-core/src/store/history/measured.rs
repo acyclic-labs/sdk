@@ -254,7 +254,7 @@ impl HistoryIo for HistoryWork {
         }
         verifier.verify(
             reference,
-            reference.descriptor().byte_length(),
+            Some(reference.descriptor().byte_length()),
             Some(&self.io),
         )
     }
@@ -273,7 +273,7 @@ impl HistoryIo for HistoryWork {
         }
         verifier.read(
             reference,
-            reference.descriptor().byte_length(),
+            Some(reference.descriptor().byte_length()),
             None,
             Some(&self.io),
         )

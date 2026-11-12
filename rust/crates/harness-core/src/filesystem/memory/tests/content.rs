@@ -359,7 +359,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     assert_eq!(
         storage
             .content_verifier
-            .read(&replacement, 1024, None, Some(&committed_io))?
+            .read(&replacement, Some(1024), None, Some(&committed_io))?
             .await?
             .as_ref(),
         b"replacement"
@@ -486,7 +486,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     assert_eq!(
         storage
             .content_verifier
-            .read(&committed, 1024, None, Some(&read_io))?
+            .read(&committed, Some(1024), None, Some(&read_io))?
             .await?
             .as_ref(),
         b"original"

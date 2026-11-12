@@ -55,7 +55,7 @@ async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result
                 name.as_bytes(),
                 "text/plain",
                 "file",
-                1024,
+                Some(1024),
                 &crate::IdempotencyKey::new(name)?,
                 None,
                 Default::default(),
@@ -140,14 +140,17 @@ async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result
             host.clone(),
             &authority.verifier,
             &authority.scope,
-            1024,
+            Some(1024),
             None,
         )?;
         assert_eq!(
-            reader.read(&files[0], 1024, None, None)?.await?.as_ref(),
+            reader
+                .read(&files[0], Some(1024), None, None)?
+                .await?
+                .as_ref(),
             b"inside/file"
         );
-        let outside = reader.read(&files[1], 1024, None, None);
+        let outside = reader.read(&files[1], Some(1024), None, None);
         if rooted {
             assert!(outside.is_err(), "a root must not grant its sibling");
             // Retained conversation references remain exact even when a
@@ -164,11 +167,14 @@ async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result
                 host.clone(),
                 &resumed.verifier,
                 &resumed.scope,
-                1024,
+                Some(1024),
                 None,
             )?;
             assert_eq!(
-                reader.read(&files[1], 1024, None, None)?.await?.as_ref(),
+                reader
+                    .read(&files[1], Some(1024), None, None)?
+                    .await?
+                    .as_ref(),
                 b"outside/file"
             );
         } else {
@@ -231,7 +237,7 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
         admission: TurnAdmission::LocalRoot,
         agent: agent.clone(),
         volumes: volumes.clone(),
-        maximum_bytes: 64 * 1024,
+        maximum_bytes: Some(64 * 1024),
     };
     let first = agent
         .child(&AgentId::from_bytes([203; 16]))

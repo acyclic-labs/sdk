@@ -368,7 +368,7 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
                     background: false,
                     target: None,
                 },
-                1024,
+                Some(1024),
                 None,
             )
             .await

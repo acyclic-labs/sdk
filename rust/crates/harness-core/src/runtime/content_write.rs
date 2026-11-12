@@ -5,14 +5,17 @@ use crate::wire::ErrorCode;
 
 pub(super) struct PublicationSource<'a> {
     inner: &'a mut dyn crate::conversation::ContentSource,
-    maximum: u64,
+    maximum: Option<u64>,
     pub(super) bytes: u64,
     pub(super) eof: bool,
     pub(super) hash: sha2::Sha256,
 }
 
 impl<'a> PublicationSource<'a> {
-    pub(super) fn new(inner: &'a mut dyn crate::conversation::ContentSource, maximum: u64) -> Self {
+    pub(super) fn new(
+        inner: &'a mut dyn crate::conversation::ContentSource,
+        maximum: Option<u64>,
+    ) -> Self {
         use sha2::Digest as _;
         Self {
             inner,
@@ -31,21 +34,29 @@ impl futures::io::AsyncRead for PublicationSource<'_> {
         buffer: &mut [u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
         use sha2::Digest as _;
-        let length = buffer.len().min(
-            usize::try_from(self.maximum - self.bytes)
-                .unwrap_or(usize::MAX)
-                .saturating_add(1),
-        );
+        let length = self.maximum.map_or(buffer.len(), |maximum| {
+            buffer.len().min(
+                usize::try_from(maximum - self.bytes)
+                    .unwrap_or(buffer.len())
+                    .saturating_add(1),
+            )
+        });
         let read = std::task::ready!(
             std::pin::Pin::new(&mut *self.inner).poll_read(cx, &mut buffer[..length])
         )?;
-        if read as u64 > self.maximum - self.bytes {
+        let Some(bytes) = self.bytes.checked_add(read as u64) else {
+            return std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "stream byte count overflow",
+            )));
+        };
+        if self.maximum.is_some_and(|maximum| bytes > maximum) {
             return std::task::Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "stream exceeds task content limits",
             )));
         }
-        self.bytes += read as u64;
+        self.bytes = bytes;
         self.eof |= read == 0 && !buffer.is_empty();
         self.hash.update(&buffer[..read]);
         std::task::Poll::Ready(Ok(read))
@@ -63,13 +74,13 @@ mod stream_tests {
         #[test]
         fn publication_stream_enforces_the_scope_and_hashes_exact_bytes(
             bytes in proptest::collection::vec(any::<u8>(), 0..1024),
-            maximum in 0u64..1024,
+            maximum in proptest::option::of(0u64..1024),
         ) {
             let mut input = futures::io::Cursor::new(bytes.as_slice());
             let mut source = PublicationSource::new(&mut input, maximum);
             let mut output = Vec::new();
             let result = futures::executor::block_on(source.read_to_end(&mut output));
-            if bytes.len() as u64 <= maximum {
+            if maximum.is_none_or(|maximum| bytes.len() as u64 <= maximum) {
                 prop_assert!(result.is_ok());
                 prop_assert!(source.eof);
                 prop_assert_eq!(&output, &bytes);
@@ -78,7 +89,7 @@ mod stream_tests {
             } else {
                 prop_assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
                 prop_assert!(!source.eof);
-                prop_assert!(source.bytes <= maximum);
+                prop_assert!(maximum.is_some_and(|maximum| source.bytes <= maximum));
             }
         }
     }

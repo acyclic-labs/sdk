@@ -1,4 +1,4 @@
-//! Shared capture for consumers that need a bounded command result.
+//! Shared command capture under the caller's optional output allowance.
 use super::*;
 
 /// Exact command bytes and the producer's terminal outcome.
@@ -12,9 +12,10 @@ pub struct CapturedExec {
 
 /// Pulls the original execution stream without dispatching, polling or spawning
 /// a reader. Dropping this future drops the original stream and its RPC.
+/// An absent allowance preserves the complete stream; byte counts stay checked.
 pub async fn capture_exec(
     mut output: ExecStream,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 ) -> Result<CapturedExec, ProviderError> {
     let mut captured = CapturedExec {
         stdout: Vec::new(),
@@ -53,10 +54,10 @@ fn append(
     destination: &mut Vec<u8>,
     bytes: Vec<u8>,
     received: &mut u64,
-    maximum: u64,
+    maximum: Option<u64>,
 ) -> Result<(), ProviderError> {
     *received = received.checked_add(bytes.len() as u64)
-        .filter(|value| *value <= maximum)
+        .filter(|value| maximum.is_none_or(|maximum| *value <= maximum))
         .ok_or_else(|| ProviderError::Rejected("exec producer exceeded its output allowance; recovery: stop the original command and repair producer accounting".into()))?;
     if destination.is_empty() {
         *destination = bytes;

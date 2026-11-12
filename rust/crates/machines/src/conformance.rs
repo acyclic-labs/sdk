@@ -218,7 +218,7 @@ async fn exec_admitted(
         .exec(machine.id, probe(machine.contract.platform)?)
         .await
         .map_err(|error| error.to_string())?;
-    let output = crate::capture_exec(output, u64::MAX)
+    let output = crate::capture_exec(output, None)
         .await
         .map_err(|error| error.to_string())?;
     if output.exit_code != Some(0) || output.stop.is_some() {
