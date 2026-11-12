@@ -46,7 +46,7 @@ pub(super) fn content_metadata_path_in_namespace_io(
     absolute: bool,
     io: Option<&PreparationIo>,
 ) -> Result<String> {
-    const PREFIX: &str = ".system/harness-file-metadata/v1/";
+    const PREFIX: &str = ".system/harness-file-metadata/v2/";
     const SUFFIX: &str = ".json";
     let capacity = usize::from(absolute) + PREFIX.len() + 64 + SUFFIX.len();
     let hash_work = acyclic_fs::WorkCounters {
