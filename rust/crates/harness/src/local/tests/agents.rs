@@ -880,9 +880,14 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     // generation, then continues only at that immutable generation.
     let page =
         |after| acyclic_harness_client::AgentPageRequest::new(1, 64 * 1024, after).map_err(agent);
-    let first = client.directory_page("", None, page(None)?).await?;
+    let mut first = client.directory_page("", None, page(None)?).await?;
+    while first.entries.is_empty() && first.next.is_some() {
+        first = client
+            .directory_page("", Some(&first.generation), page(first.next.clone())?)
+            .await?;
+    }
     assert_eq!(first.entries.len(), 1);
-    assert!(first.has_more);
+    assert!(first.next.is_some());
     private
         .write_text("/directory-a", "changed after selection")
         .await
@@ -924,7 +929,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     let last = &first.entries[0].name;
     let second = client
-        .directory_page("", Some(&first.generation), page(Some(last.clone()))?)
+        .directory_page("", Some(&first.generation), page(first.next.clone())?)
         .await?;
     assert_eq!(second.generation, first.generation);
     assert_eq!(second.entries.len(), 1);
@@ -945,7 +950,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         agent: root.clone(),
         path: String::new(),
         generation: Some(first.generation.clone()),
-        page: page(Some(last.clone()))?,
+        page: page(first.next.clone())?,
     };
     assert!(
         acyclic_harness_client::encode_agent_reply(
@@ -981,7 +986,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     assert!(
         client
-            .directory_page("", None, page(Some(last.clone()))?)
+            .directory_page("", None, page(first.next.clone())?)
             .await
             .is_err()
     );

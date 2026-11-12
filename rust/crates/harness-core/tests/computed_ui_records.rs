@@ -630,6 +630,63 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     assert_eq!(ordinary_selection, selected);
     assert_eq!(ordinary_bytes.as_ref(), repeated.as_ref());
     drop((ordinary_selection, ordinary_bytes, ordinary_hold));
+    let native_directory = ContentResidencyVerifier::list_private_directory(
+        projected_reader.as_ref(),
+        &child_volume,
+        "",
+        "ui",
+        Some(&selected.generation),
+        None,
+        2,
+        None,
+        Some(&measured),
+    )?
+    .await?
+    .ok_or("computed UI directory missing")?;
+    let mut cursor = None;
+    let mut names = std::collections::BTreeSet::new();
+    let mut first_directory = true;
+    loop {
+        let after = cursor
+            .as_ref()
+            .map(|(bytes, _): &(Vec<u8>, _)| bytes.as_slice());
+        let (mut page, hold) = ContentResidencyVerifier::list_private_directory(
+            projected_reader.as_ref(),
+            &child_volume,
+            "",
+            "ui",
+            Some(&selected.generation),
+            after,
+            2,
+            None,
+            Some(&ordinary),
+        )?
+        .await?
+        .ok_or("frozen UI directory missing")?;
+        drop(cursor.take());
+        assert_eq!(page.generation, selected.generation);
+        page.validate()?;
+        if first_directory {
+            assert_eq!(page, native_directory.0);
+            first_directory = false;
+        }
+        for entry in &page.entries {
+            assert!(names.insert(entry.name.clone()));
+        }
+        let next = page.next.take();
+        drop(page);
+        match next {
+            Some(bytes) => cursor = Some((bytes, hold)),
+            None => {
+                drop(hold);
+                break;
+            }
+        }
+    }
+    assert!(names.contains("status.md"));
+    assert!(names.contains("title"));
+    assert!(!names.contains("model"));
+    drop(native_directory);
     ordinary.remaining()?;
     assert!(
         ordinary.take_owned_custody(1).is_err(),

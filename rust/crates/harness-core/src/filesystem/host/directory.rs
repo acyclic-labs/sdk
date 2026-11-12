@@ -1,13 +1,24 @@
 use super::*;
+use acyclic_fs::LazyDirectoryListing as DirectoryPage;
 use acyclic_fs::access::{Action, PreparedPath};
 
 /// Immutable pagination and authority limits for a private directory read.
+/// Admission of one row or empty cursor advance under a consumer's byte credit.
+pub type DirectoryCredit<'a> = dyn FnMut(
+        &GenerationRef,
+        Option<&crate::conversation::PrivateDirectoryEntry>,
+        Option<&[u8]>,
+    ) -> Result<bool>
+    + Send
+    + Sync
+    + 'a;
+
 #[derive(Clone, Copy)]
 pub struct DirectoryOptions<'a> {
     /// Exact selected generation, or the current head.
     pub generation: Option<&'a GenerationRef>,
-    /// Exclusive logical-name cursor.
-    pub after: Option<&'a LogicalName>,
+    /// Canonical provider continuation at the selected directory and cut.
+    pub after: Option<&'a [u8]>,
     /// Maximum visible entries in the returned page.
     pub maximum_entries: u32,
     /// Additional caller authority ceiling.
@@ -20,16 +31,16 @@ pub(in crate::filesystem) struct DirectoryListing<'a> {
     pub ceiling: Option<&'a crate::Capabilities>,
     pub path: &'a str,
     pub generation: Option<&'a GenerationRef>,
-    pub after: Option<&'a LogicalName>,
+    pub after: Option<&'a [u8]>,
     pub maximum_entries: u32,
 }
 
-fn owned_bytes(page: &DirectoryPage) -> Result<u64> {
+fn body_bytes(page: &DirectoryPage) -> Result<u64> {
     page.entries.iter().try_fold(
         (page.entries.capacity() as u64)
-            .checked_mul(std::mem::size_of::<acyclic_fs::kernel::TreeEntry>() as u64)
+            .checked_mul(std::mem::size_of::<acyclic_fs::LazyDirectoryEntry>() as u64)
             .and_then(|bytes| {
-                bytes.checked_add(std::mem::size_of::<(GenerationRef, DirectoryPage)>() as u64)
+                bytes.checked_add(page.next.as_ref().map_or(0, |next| next.capacity() as u64))
             })
             .ok_or_else(|| Error::Invalid("directory ownership overflow".into()))?,
         |total, entry| {
@@ -53,15 +64,27 @@ fn visible(parent: PreparedPath<'_>, name: &LogicalName, root: bool, now: u64) -
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    /// Lists visible names at one selected generation under the current policy.
-    /// `None` means only that the authorized directory is absent.
+    /// Lists one bounded private page under its current policy.
     pub async fn list_private_directory(
         &self,
         volume: &VolumeRef,
         grant: &ContentGrant,
         path: &str,
         options: crate::filesystem::DirectoryOptions<'_>,
-    ) -> Result<Option<(GenerationRef, DirectoryPage)>> {
+    ) -> Result<Option<PrivateDirectoryPage>> {
+        self.list_private_directory_with_credit(volume, grant, path, options, None)
+            .await
+    }
+    /// Lists visible names at one selected generation under the current policy.
+    /// `None` means only that the authorized directory is absent.
+    pub async fn list_private_directory_with_credit(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        options: crate::filesystem::DirectoryOptions<'_>,
+        credit: Option<&mut DirectoryCredit<'_>>,
+    ) -> Result<Option<PrivateDirectoryPage>> {
         let crate::filesystem::DirectoryOptions {
             generation: expected_generation,
             after,
@@ -82,6 +105,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     maximum_entries,
                 },
                 &io,
+                credit,
                 &mut || std::future::ready(Ok(())),
             )
             .await?;
@@ -99,14 +123,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         request: DirectoryListing<'_>,
         work: &acyclic_fs::NativeMaterializationWork,
         mut guard: F,
-    ) -> Result<((GenerationRef, DirectoryPage), acyclic_fs::NativeAllocation)>
+    ) -> Result<(PrivateDirectoryPage, acyclic_fs::NativeAllocation)>
     where
         F: FnMut() -> Fut + acyclic_stream::ProviderTask,
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
         let io = PreparationIo::from_native_work(work)?;
         let (page, hold) = self
-            .list_directory_page(request, &io, &mut guard)
+            .list_directory_page(request, &io, None, &mut guard)
             .await?
             .ok_or_else(|| {
                 stock_boundary(
@@ -148,9 +172,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         guard().await?;
         let workspace = self.open(&reference.0, Some(io)).await?;
         guard().await?;
-        let generation = match request.generation {
-            Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
-            None => self.current_generation(&workspace, io).await?,
+        #[cfg(not(target_arch = "wasm32"))]
+        let snapshot = self
+            .private_snapshot(&workspace, request.generation, io)
+            .await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let lazy_generation = snapshot.as_ref().map(|cut| cut.authored_generation);
+        #[cfg(target_arch = "wasm32")]
+        let lazy_generation: Option<acyclic_fs::GenerationId> = None;
+        let generation = match (lazy_generation, request.generation) {
+            (Some(generation), _) => self.select_generation(&workspace, generation, io).await?,
+            (None, Some(expected)) => self.generation(&workspace, expected, Some(io)).await?,
+            (None, None) => self.current_generation(&workspace, io).await?,
         };
         guard().await?;
         let scope = request.grant.policy_scope();
@@ -185,6 +218,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             generation,
             view,
             data_access,
+            #[cfg(not(target_arch = "wasm32"))]
+            snapshot,
         })
     }
 
@@ -192,8 +227,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         request: DirectoryListing<'_>,
         io: &'io PreparationIo,
+        mut credit: Option<&mut DirectoryCredit<'_>>,
         guard: &mut F,
-    ) -> Result<Option<((GenerationRef, DirectoryPage), DecodeReservation<'io>)>>
+    ) -> Result<Option<(PrivateDirectoryPage, DecodeReservation<'io>)>>
     where
         F: FnMut() -> Fut + acyclic_stream::ProviderTask,
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
@@ -218,74 +254,209 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let requested = (requested, requested_hold);
-        let mut cursor: Option<(LogicalName, DecodeReservation<'io>)> = None;
-        let mut spent = WorkCounters::default();
-        let selected = loop {
-            guard().await?;
-            let after = cursor.as_ref().map(|cursor| &cursor.0).or(request.after);
-            let Some((mut page, custody)) = io.sdk_if_present(
-                generation
-                    .list_directory(
-                        &requested.0,
-                        after,
-                        request.maximum_entries,
-                        io,
-                        io.cancellation(),
-                    )
-                    .await,
-            )?
-            else {
-                break None;
-            };
-            let page_bytes = owned_bytes(&page)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(custody) = custody {
-                io.absorb_native_custody(custody)?;
-                io.retain_owned(std::mem::size_of::<(GenerationRef, DirectoryPage)>() as u64)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let reference = match &selection.snapshot {
+            Some(cut) => self.private_generation_ref(cut, request.generation, io)?,
+            None => bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let reference = bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?;
+        let mut held = io.reserve_decode(std::mem::size_of::<PrivateDirectoryPage>() as u64)?;
+        held.adopt(reference.logical_owned_bytes()?)?;
+        let mut selected = (
+            PrivateDirectoryPage {
+                generation: reference,
+                entries: Vec::new(),
+                next: None,
+            },
+            held,
+        );
+        let chunk = if credit.is_some() {
+            1
+        } else {
+            request.maximum_entries
+        };
+        let mut first = true;
+        'pages: for _ in 0..if credit.is_some() {
+            request.maximum_entries
+        } else {
+            1
+        } {
+            let after = if first {
+                request.after
             } else {
-                io.retain_owned(page_bytes)?;
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                let _ = custody;
-                io.retain_owned(page_bytes)?;
-            }
-            let mut page_hold = io.guard_owned(page_bytes)?;
+                selected.0.next.as_deref()
+            };
+            let Some(mut incoming) = self
+                .read_directory_listing(&selection, (&requested.0, after, chunk), io)
+                .await?
+            else {
+                selection.require_current(io).await?;
+                request.grant.recheck(Some(io))?;
+                return Ok(None);
+            };
             guard().await?;
-            spent = spent
-                .checked_add(page.work)
-                .map_err(|_| io.invalid("directory work overflow"))?;
             io.charge(WorkCounters {
-                items_examined: page.entries.len() as u64,
+                items_examined: incoming.0.entries.len() as u64,
                 ..Default::default()
             })?;
             let now = super::super::access::access_now()?;
-            let (removed, successor) =
-                filter_page(&mut page, parent, data_parent, request.path.is_empty(), now);
-            page_hold.substitute(page_bytes - removed)?;
-            if page.entries.is_empty() && page.has_more {
-                let name = successor
-                    .ok_or_else(|| io.invalid("directory page made no cursor progress"))?;
-                if after.is_some_and(|after| &name <= after) {
-                    return Err(io.invalid("directory cursor did not advance"));
+            let removed = filter_page(
+                &mut incoming.0,
+                parent,
+                data_parent,
+                request.path.is_empty(),
+                now,
+            );
+            incoming.1.substitute(incoming.1.bytes() - removed)?;
+            if incoming.0.entries.is_empty()
+                && let Some(credit) = credit.as_mut()
+            {
+                if !credit(&selected.0.generation, None, incoming.0.next.as_deref())? {
+                    break;
                 }
-                page_hold.retain_part(name.logical_owned_bytes())?;
-                let hold = io.guard_owned(name.logical_owned_bytes())?;
-                drop(page);
-                drop(page_hold);
-                cursor = Some((name, hold));
-                continue;
             }
-            // Do not expose a physical prefetch hint for an unauthorized successor.
-            page.next_residency = None;
-            page.work = spent;
-            let reference = bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?;
-            page_hold.adopt(reference.logical_owned_bytes()?)?;
-            break Some(((reference, page), page_hold));
-        };
+            let mut entries = std::mem::take(&mut incoming.0.entries).into_iter();
+            while let Some(entry) = entries.next() {
+                let entry = crate::conversation::PrivateDirectoryEntry::from_filesystem(entry, io)?;
+                let offered = (entry, io.guard_owned(0)?);
+                let mut offered = offered;
+                offered.1.adopt(offered.0.name.capacity() as u64)?;
+                if let Some(credit) = credit.as_mut() {
+                    if !credit(
+                        &selected.0.generation,
+                        Some(&offered.0),
+                        incoming.0.next.as_deref(),
+                    )? {
+                        drop(offered);
+                        drop(entries);
+                        drop(incoming);
+                        break 'pages;
+                    }
+                }
+                let before = selected.0.entries.capacity();
+                crate::store::history::reserve(
+                    &mut selected.0.entries,
+                    1,
+                    &mut Some(&mut io.history_io()),
+                )?;
+                selected.1.adopt(
+                    ((selected.0.entries.capacity() - before)
+                        * std::mem::size_of::<crate::conversation::PrivateDirectoryEntry>())
+                        as u64,
+                )?;
+                selected.0.entries.push(offered.0);
+                selected.1.absorb(offered.1)?;
+            }
+            drop(entries);
+            let old = selected.0.next.take();
+            let bytes = old.as_ref().map_or(0, |next| next.capacity() as u64);
+            drop(old);
+            selected.1.substitute(selected.1.bytes() - bytes)?;
+            selected.0.next = incoming.0.next.take();
+            let bytes = selected
+                .0
+                .next
+                .as_ref()
+                .map_or(0, |next| next.capacity() as u64);
+            drop(incoming.0);
+            incoming.1.substitute(bytes)?;
+            selected.1.absorb(incoming.1)?;
+            first = false;
+            if selected.0.next.is_none() {
+                break;
+            }
+        }
+        io.account(|ctx| {
+            acyclic_fs::kernel::sort_by_with_accounting(
+                &mut selected.0.entries,
+                ctx,
+                |left, right| left.name.as_bytes().cmp(right.name.as_bytes()),
+            )
+        })?;
         selection.require_current(io).await?;
         request.grant.recheck(Some(io))?;
-        Ok(selected)
+        Ok(Some(selected))
+    }
+    async fn read_directory_listing<'io>(
+        &self,
+        selection: &DirectorySelection<'_, A, O>,
+        page: (&str, Option<&[u8]>, u32),
+        io: &'io PreparationIo,
+    ) -> Result<Option<(DirectoryPage, DecodeReservation<'io>)>> {
+        let (path, after, maximum) = page;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, NativeAccounting};
+            let owner = io.account(NativeAccounting::take)?;
+            let native_io = PreparationIo::from_native_work(&owner.work)?;
+            let mut ctx = KernelAccounting::NativeOriginal {
+                work: &owner.work,
+                cancellation: io.cancellation(),
+            };
+            let produced = async {
+                match &selection.snapshot {
+                    Some(cut) => {
+                        let view = self
+                            .private_view
+                            .as_ref()
+                            .ok_or_else(|| io.invalid("private source binding is unavailable"))?;
+                        view.directory(cut, path, after, maximum, &mut ctx, &native_io)?
+                            .await
+                    }
+                    None => selection
+                        .generation
+                        .list_directory_listing_with_accounting(path, after, maximum, &mut ctx)
+                        .await
+                        .map_err(Into::into),
+                }
+            }
+            .await;
+            let produced = produced.and_then(|(page, allocation)| {
+                let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
+                    return Err(io.invalid("directory output lost its original native custody"));
+                };
+                let bytes = body_bytes(&page)?;
+                let allocation = owner.return_allocation(allocation, bytes)?;
+                Ok((page, allocation, bytes))
+            });
+            drop(ctx);
+            drop(native_io);
+            io.account(|ctx| owner.restore(ctx))?;
+            let (page, allocation, bytes) = match produced {
+                Ok(value) => value,
+                Err(Error::NativeSource { source, .. })
+                    if matches!(*source, acyclic_fs::LazyWorkspaceError::NotFound) =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+            if let KernelOwnedAllocation::NativeOriginal(allocation) = allocation {
+                io.absorb_native_custody(allocation)?;
+            }
+            let hold = io.guard_owned(bytes)?;
+            Ok(Some((page, hold)))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let (result, recorded) = selection
+                .generation
+                .list_directory_listing(path, after, maximum, io, io.cancellation())
+                .await;
+            let result = match result {
+                Ok(page) => Ok(Some(page)),
+                Err(acyclic_fs::LazyWorkspaceError::NotFound) => Ok(None),
+                Err(error) => Err(error),
+            };
+            let Some(page) = io.sdk((result, recorded))? else {
+                return Ok(None);
+            };
+            let bytes = body_bytes(&page)?;
+            io.retain_owned(bytes)?;
+            let hold = io.guard_owned(bytes)?;
+            Ok(Some((page, hold)))
+        }
     }
 }
 
@@ -298,9 +469,7 @@ fn filter_page(
     data_parent: Option<PreparedPath<'_>>,
     root: bool,
     now: u64,
-) -> (u64, Option<LogicalName>) {
-    // Keep the physical successor by moving its name, never copying it.
-    let last = page.entries.pop();
+) -> u64 {
     let mut removed = 0;
     page.entries.retain(|entry| {
         let keep = visible(parent, &entry.name, root, now)
@@ -310,26 +479,15 @@ fn filter_page(
         }
         keep
     });
-    let mut successor = None;
-    if let Some(last) = last {
-        if visible(parent, &last.name, root, now)
-            && data_parent.is_none_or(|parent| visible(parent, &last.name, root, now))
-        {
-            page.entries.push(last);
-        } else if page.entries.is_empty() && page.has_more {
-            successor = Some(last.name);
-        } else {
-            removed += last.name.logical_owned_bytes();
-        }
-    }
-    (removed, successor)
+    removed
 }
-
 pub(super) struct DirectorySelection<'io, A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
     pub(super) generation: acyclic_fs::Generation<A, O>,
     view: super::super::access::CompiledAccess<'io>,
     data_access: Option<(Workspace<A, O>, super::super::access::CompiledAccess<'io>)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    snapshot: Option<acyclic_fs::kernel::Retained<acyclic_fs::LazySnapshotRef>>,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DirectorySelection<'_, A, O> {

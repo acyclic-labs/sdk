@@ -284,12 +284,10 @@ async fn mounted_listing_includes_dirty_authored_bindings() {
         .list_directory_in_checkout(&mut checkout, "/", source.next, 16, None, accounting!())
         .await
         .unwrap();
-    assert!(
-        authored
-            .entries
-            .iter()
-            .any(|e| e.authored && e.name.as_bytes() == b"new.txt")
-    );
+    assert!(authored.entries.iter().any(|e| matches!(
+        e.node,
+        crate::LazyDirectoryNode::Authored { .. }
+    ) && e.name.as_bytes() == b"new.txt"));
     assert!(
         root.workspace()
             .stat("/new.txt", WorkBudget::UNBOUNDED, &CancellationToken::new())

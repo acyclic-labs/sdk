@@ -270,10 +270,11 @@ pub use kernel::{
     decode_generation_export_manifest, encode_generation_export_manifest,
 };
 pub use lazy_workspace::{
-    LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyForkOrigin, LazyForkPhase,
-    LazyLookup, LazyOverlay, LazyOverlayId, LazyShadow, LazyShadowId, LazySnapshotId,
-    LazySnapshotRef, LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState,
-    LazyWorkspaceStore, MemoryLazyWorkspaceStore, NativePublicationSnapshot, SelectedImportPlan,
+    LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryListing, LazyDirectoryNode,
+    LazyDirectoryPage, LazyForkOrigin, LazyForkPhase, LazyLookup, LazyOverlay, LazyOverlayId,
+    LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef, LazyStat, LazyWorkspace,
+    LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore, MemoryLazyWorkspaceStore,
+    NativePublicationSnapshot, SelectedImportPlan,
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,

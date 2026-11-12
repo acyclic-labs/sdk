@@ -881,7 +881,40 @@ where
                 page: request,
             } => {
                 let agent = self.within_tree(agent)?;
-                let mut page = self
+                let mut credit = None;
+                let mut admit = |generation: &crate::resources::GenerationRef,
+                                 entry: Option<&crate::conversation::PrivateDirectoryEntry>,
+                                 next: Option<&[u8]>| {
+                    use crate::conversation::PrivateDirectoryPageView;
+                    if credit.is_none() {
+                        let end = AgentReply::Directory {
+                            page: PrivateDirectoryPageView {
+                                generation,
+                                entries: &[],
+                                next: None,
+                            },
+                        };
+                        let more = AgentReply::Directory {
+                            page: PrivateDirectoryPageView {
+                                generation,
+                                entries: &[],
+                                next: Some(&[]),
+                            },
+                        };
+                        credit = Some(PageCredit::from_envelopes(request, &end, &more)?);
+                    }
+                    let next = next
+                        .map(|next| page_json_bytes(&next).map(|bytes| bytes - 2))
+                        .transpose()?;
+                    let credit = credit
+                        .as_mut()
+                        .ok_or(Error::Record("directory credit is uninitialized"))?;
+                    match entry {
+                        Some(entry) => credit.accept(entry, next),
+                        None => credit.accept_boundary(next),
+                    }
+                };
+                let page = self
                     .bound
                     .directory_page(
                         agent,
@@ -889,24 +922,9 @@ where
                         generation.as_ref(),
                         request.cursor(),
                         request.items(),
+                        Some(&mut admit),
                     )
                     .await?;
-                let empty = |has_more| AgentReply::Directory {
-                    page: crate::conversation::PrivateDirectoryPage {
-                        generation: page.generation.clone(),
-                        entries: Vec::new(),
-                        has_more,
-                    },
-                };
-                let mut credit = PageCredit::from_envelopes(request, &empty(false), &empty(true))?;
-                for (index, entry) in page.entries.iter().enumerate() {
-                    let continues = index + 1 < page.entries.len() || page.has_more;
-                    if !credit.accept(entry, continues.then_some(0))? {
-                        break;
-                    }
-                }
-                page.has_more |= credit.items < page.entries.len();
-                page.entries.truncate(credit.items);
                 Ok(AgentReply::Directory { page })
             }
             AgentCommand::Read {
@@ -1595,10 +1613,10 @@ impl PageCredit {
         Self::from_envelopes(page, &empty(None), &empty(Some(String::new())))
     }
 
-    fn from_envelopes(
-        page: &AgentPageRequest,
-        end: &AgentReply,
-        next: &AgentReply,
+    fn from_envelopes<C>(
+        page: &AgentPageRequest<C>,
+        end: &impl serde::Serialize,
+        next: &impl serde::Serialize,
     ) -> Result<Self, Error> {
         let end_envelope = page_json_bytes(end)?;
         let maximum = u64::from(page.bytes());
@@ -1633,6 +1651,15 @@ impl PageCredit {
         Ok(true)
     }
 
+    fn accept_boundary(&self, next_bytes: Option<u64>) -> Result<bool, Error> {
+        let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
+        let accepted = acyclic_harness_client::encoded_agent_reply_size(self.bytes + envelope)
+            .is_ok_and(|encoded| encoded <= self.maximum);
+        if !accepted && self.items == 0 {
+            return Err(Error::Stream(StreamError::Capacity));
+        }
+        Ok(accepted)
+    }
     /// The page's row bytes with `item` appended, or `None` when it would
     /// exceed the requested credit.
     fn admits(

@@ -108,7 +108,7 @@ async fn frozen_views_and_write_replay_keep_the_original_generation() {
         authored.extend(
             page.entries
                 .iter()
-                .filter(|e| e.authored)
+                .filter(|e| matches!(e.node, crate::LazyDirectoryNode::Authored { .. }))
                 .map(|e| e.name.as_bytes().to_vec()),
         );
         cursor = page.next;
@@ -213,7 +213,14 @@ async fn fork_retains_available_source_and_authored_cuts() {
         .list_directory("/", None, 16, accounting!())
         .await
         .unwrap();
-    let listed = page.entries.iter().find_map(|entry| entry.source).unwrap();
+    let listed = page
+        .entries
+        .iter()
+        .find_map(|entry| match entry.node {
+            crate::LazyDirectoryNode::Source(node) => Some(node),
+            _ => None,
+        })
+        .unwrap();
     assert_eq!(
         listed.version,
         SourceVersion(*blake3::hash(b"source before").as_bytes())

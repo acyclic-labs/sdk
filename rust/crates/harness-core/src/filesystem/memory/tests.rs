@@ -253,46 +253,19 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
             "one.txt",
         )
         .await?;
-    let (generation, root) = storage.list_private_directory("", None, None, 8).await?;
-    assert!(root.entries.iter().any(|entry| {
-        entry
-            .name
-            .unicode_text(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .ok()
-            .map(|receipt| receipt.value)
-            .as_deref()
-            == Some("notes")
-    }));
-    assert!(!root.entries.iter().any(|entry| {
-        entry
-            .name
-            .unicode_text(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .ok()
-            .map(|receipt| receipt.value)
-            .as_deref()
-            == Some(".system")
-    }));
-    let (_, notes) = storage
+    let root = storage.list_private_directory("", None, None, 8).await?;
+    let generation = root.generation.clone();
+    assert!(root.entries.iter().any(|entry| { entry.name == "notes" }));
+    assert!(!root.entries.iter().any(|entry| { entry.name == ".system" }));
+    let notes = storage
         .list_private_directory("notes", Some(&generation), None, 8)
         .await?;
-    assert!(notes.entries.iter().any(|entry| {
-        entry
-            .name
-            .unicode_text(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .ok()
-            .map(|receipt| receipt.value)
-            .as_deref()
-            == Some("one.txt")
-    }));
+    assert!(
+        notes
+            .entries
+            .iter()
+            .any(|entry| { entry.name == "one.txt" })
+    );
     let limits = Limits {
         file_bytes: 4_096,
         render_bytes: 1_024,
@@ -317,23 +290,12 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
         )
         .await?;
     assert_eq!(tool.executor.reconcile(invocation, None).await?, Some(page));
-    let (_, pinned_notes) = storage
+    let pinned_notes = storage
         .list_private_directory("notes", Some(&generation), None, 8)
         .await?;
     assert_eq!(pinned_notes.entries.len(), 1);
-    assert_eq!(
-        pinned_notes.entries[0]
-            .name
-            .unicode_text(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .ok()
-            .map(|receipt| receipt.value)
-            .as_deref(),
-        Some("one.txt")
-    );
-    let (_, current_notes) = storage
+    assert_eq!(Some(pinned_notes.entries[0].name.as_str()), Some("one.txt"));
+    let current_notes = storage
         .list_private_directory("notes", None, None, 8)
         .await?;
     assert_eq!(current_notes.entries.len(), 2);

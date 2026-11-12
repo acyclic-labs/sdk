@@ -30,6 +30,7 @@ record!(
 record!(
     DirectoryReadResult,
     self,
+    self.next.as_ref().map_or(0, String::capacity),
     self.entries.capacity() * std::mem::size_of::<DirectoryEntry>(),
     self.entries.iter().try_fold(0u64, |n, entry| {
         n.checked_add(entry.name.capacity() as u64)

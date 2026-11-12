@@ -129,7 +129,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
                 })),
             };
             let cursor = LazyDirectoryCursor {
-                cut: cut.clone(),
+                cut: DirectoryCut::Computed(cut.clone()),
                 directory,
                 phase,
                 allocation,

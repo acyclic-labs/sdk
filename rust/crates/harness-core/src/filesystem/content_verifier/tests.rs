@@ -206,7 +206,26 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
         after: None,
         maximum_entries: 1,
     };
-    let (page, _hold) = context.list_tool_directory(request, None).await?;
+    let (mut page, mut hold) = context.list_tool_directory(request, None).await?;
+    while page.entries.is_empty() && page.next.is_some() {
+        let next = page
+            .next
+            .take()
+            .ok_or_else(|| Error::Invalid("directory cursor disappeared".into()))?;
+        let selected = page.generation.clone();
+        drop(page);
+        drop(hold);
+        (page, hold) = context
+            .list_tool_directory(
+                crate::conversation::DirectoryRead {
+                    generation: Some(&selected),
+                    after: Some(&next),
+                    ..request
+                },
+                None,
+            )
+            .await?;
+    }
     assert_eq!(page.generation, generation);
     assert_eq!(
         page.entries
@@ -223,7 +242,7 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
         .list_tool_directory(
             crate::conversation::DirectoryRead {
                 generation: Some(&head),
-                after: Some("later"),
+                after: Some(b"later"),
                 ..request
             },
             None,

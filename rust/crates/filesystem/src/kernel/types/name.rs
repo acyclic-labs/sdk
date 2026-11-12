@@ -243,8 +243,18 @@ impl LogicalName {
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<String, crate::FsError> {
         let mut accounting = work.accounting(cancellation);
+        let result = self.unicode_text_with_accounting(&mut accounting, cancellation);
+        work.finish_owned::<_, crate::FsError>(result, &accounting)
+    }
+
+    /// Projects a Unicode name on the caller's existing ledger, without another allowance.
+    pub fn unicode_text_with_accounting(
+        &self,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(String, crate::kernel::KernelOwnedAllocation), crate::FsError> {
         let result = (|| {
-            let mut owned = OriginalReadAccounting::new(&mut accounting)?;
+            let mut owned = OriginalReadAccounting::new(accounting)?;
             let result = (|| {
                 let check = || {
                     cancellation
@@ -306,7 +316,7 @@ impl LogicalName {
             })();
             finish_owned(owned, result)
         })();
-        work.finish_owned::<_, crate::FsError>(result, &accounting)
+        result
     }
 
     pub(crate) fn retained_bytes(&self) -> usize {

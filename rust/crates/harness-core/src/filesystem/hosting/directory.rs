@@ -64,8 +64,9 @@ where
         agent: &AgentPath,
         path: &str,
         generation: Option<&GenerationRef>,
-        after: Option<&str>,
+        after: Option<&[u8]>,
         limit: u32,
+        credit: Option<&mut crate::filesystem::DirectoryCredit<'_>>,
     ) -> Result<PrivateDirectoryPage, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
@@ -86,36 +87,24 @@ where
             &mut None,
         )
         .map_err(turn)?;
-        let after = after
-            .map(|name| {
-                acyclic_fs::kernel::LogicalName::new(
-                    acyclic_fs::kernel::NameEncoding::Utf8,
-                    name.as_bytes().to_vec(),
-                    u32::MAX,
-                )
-            })
-            .transpose()
-            .map_err(|_| Error::Record("invalid directory continuation name"))?;
         let options = super::super::DirectoryOptions {
             generation,
-            after: after.as_ref(),
+            after,
             maximum_entries: limit,
             ceiling: None,
         };
-        let (generation, page) = self
+        let page = self
             .volumes
-            .list_private_directory(authority.private.volume()?, &grant, path, options)
+            .list_private_directory_with_credit(
+                authority.private.volume()?,
+                &grant,
+                path,
+                options,
+                credit,
+            )
             .await
             .map_err(turn)?
             .ok_or(Error::Record("selected directory does not exist"))?;
-        let ledger =
-            crate::filesystem::PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())
-                .map_err(turn)?;
-        let source = ledger
-            .reserve_decode(generation.logical_owned_bytes().map_err(turn)?)
-            .map_err(turn)?;
-        PrivateDirectoryPage::from_filesystem(generation, page, source, &ledger)
-            .map(|(page, _custody)| page)
-            .map_err(turn)
+        Ok(page)
     }
 }

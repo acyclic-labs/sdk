@@ -5,7 +5,7 @@ use super::*;
 struct ListFilesInput {
     path: String,
     expected_generation: Option<GenerationRef>,
-    after: Option<String>,
+    after: Option<Vec<u8>>,
     maximum_entries: u32,
 }
 
@@ -21,76 +21,6 @@ pub(super) struct ListFilesObservation {
     result: ToolResult,
     #[cfg(not(target_arch = "wasm32"))]
     _custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-#[derive(serde::Serialize)]
-struct ListFilesPageWire<'a> {
-    generation: &'a GenerationRef,
-    entries: ListFilesEntries<'a>,
-    has_more: bool,
-    next_after: Option<&'a str>,
-}
-
-struct ListFilesEntries<'a>(&'a [acyclic_fs::TreeEntry]);
-
-impl serde::Serialize for ListFilesEntries<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::{Error as _, SerializeSeq};
-        #[derive(serde::Serialize)]
-        struct Entry<'a> {
-            name: &'a str,
-            kind: &'static str,
-        }
-        let mut entries = serializer.serialize_seq(Some(self.0.len()))?;
-        for entry in self.0 {
-            let name = std::str::from_utf8(entry.name.as_bytes())
-                .map_err(|_| S::Error::custom("local file name is not UTF-8"))?;
-            let kind = match entry.kind {
-                FileKind::Regular => "file",
-                FileKind::Directory => "directory",
-                FileKind::SymbolicLink => "symlink",
-                FileKind::Fifo => "fifo",
-                FileKind::Socket => "socket",
-                FileKind::CharacterDevice => "character_device",
-                FileKind::BlockDevice => "block_device",
-                FileKind::ReparsePoint => "reparse_point",
-                FileKind::MountBoundary => "mount_boundary",
-            };
-            entries.serialize_element(&Entry { name, kind })?;
-        }
-        entries.end()
-    }
-}
-
-fn list_files_page_wire<'a>(
-    generation: &'a GenerationRef,
-    page: &'a DirectoryPage,
-) -> Result<ListFilesPageWire<'a>> {
-    for entry in &page.entries {
-        if entry.name.encoding() != NameEncoding::Utf8
-            || std::str::from_utf8(entry.name.as_bytes()).is_err()
-        {
-            #[cfg(not(target_arch = "wasm32"))]
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "local file name is not UTF-8",
-            });
-            #[cfg(target_arch = "wasm32")]
-            return Err(Error::Unsupported("local file name is not UTF-8".into()));
-        }
-    }
-    Ok(ListFilesPageWire {
-        generation,
-        entries: ListFilesEntries(&page.entries),
-        has_more: page.has_more,
-        next_after: page
-            .entries
-            .last()
-            .and_then(|entry| std::str::from_utf8(entry.name.as_bytes()).ok()),
-    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -184,7 +114,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             });
         }
         let _page_custody;
-        let ((generation, page), custody) = self
+        let (page, custody) = self
             .verifier
             .list_private_directory_with_native_work(
                 context,
@@ -198,8 +128,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             )?
             .await?;
         _page_custody = custody;
-        let wire = list_files_page_wire(&generation, &page)?;
-        let (value, custody) = crate::tool::value(&wire, maximum_bytes, Some(work))?;
+        let (value, custody) = crate::tool::value(&page, maximum_bytes, Some(work))?;
         let output = (
             ToolResult { value },
             custody.ok_or(Error::NativeBoundary {
@@ -333,7 +262,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
         pinned: Option<&GenerationRef>,
     ) -> Result<ToolResult> {
         if let Some(context) = context {
-            for key in ["path", "after"] {
+            for key in ["path"] {
                 if invocation
                     .arguments
                     .get(key)
@@ -361,14 +290,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
                 "list_files requires a bounded, generation-pinned page".into(),
             ));
         }
-        let after = input
-            .after
-            .map(|name| {
-                LogicalName::new(NameEncoding::Utf8, name.into_bytes(), u32::MAX)
-                    .map_err(|error| Error::Invalid(error.to_string()))
-            })
-            .transpose()?;
-        let (generation, page) = self
+        let page = self
             .verifier
             .list_private_directory(
                 &self.volume,
@@ -376,19 +298,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
                 &input.path,
                 crate::filesystem::DirectoryOptions {
                     generation: pinned.or(input.expected_generation.as_ref()),
-                    after: after.as_ref(),
+                    after: input.after.as_deref(),
                     maximum_entries: input.maximum_entries,
                     ceiling: context.map(|context| context.effective_scope().grants()),
                 },
             )
             .await?
             .ok_or_else(|| Error::NotFound("selected directory does not exist".into()))?;
-        let wire = list_files_page_wire(&generation, &page)?;
         let maximum_bytes = context.map_or(self.maximum_bytes, |context| {
             self.maximum_bytes
                 .min(context.effective_scope().limits().render_bytes)
         });
-        let (value, _) = crate::tool::value(&wire, maximum_bytes, None)?;
+        let (value, _) = crate::tool::value(&page, maximum_bytes, None)?;
         Ok(ToolResult { value })
     }
 
@@ -449,7 +370,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
                     });
                 }
                 let maximum_path_bytes = context.effective_scope().limits().path_bytes;
-                for key in ["path", "after"] {
+                for key in ["path"] {
                     if invocation
                         .arguments
                         .get(key)

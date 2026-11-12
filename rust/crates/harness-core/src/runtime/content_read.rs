@@ -254,7 +254,7 @@ impl TaskContext {
         granted_prefix: &str,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-        after: Option<&str>,
+        after: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<PrivateDirectoryPage> {
         let (page, _hold) = self
@@ -341,6 +341,7 @@ impl TaskContext {
         if page.generation.as_resource().provider() != volume.provider()
             || expected_generation.is_some_and(|expected| &page.generation != expected)
             || page.entries.len() > maximum_entries as usize
+            || (after.is_some() && page.next.as_deref() == after)
         {
             return Err(content_error(
                 io,
@@ -349,9 +350,7 @@ impl TaskContext {
             ));
         }
         for entry in &page.entries {
-            if (path.is_empty() && entry.name == ".system")
-                || after.is_some_and(|cursor| entry.name.as_bytes() <= cursor.as_bytes())
-            {
+            if (path.is_empty() && entry.name == ".system") {
                 return Err(content_error(
                     io,
                     ErrorCode::Conflict,

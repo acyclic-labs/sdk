@@ -4,12 +4,13 @@ use crate::kernel::{
     Encoder, ReadAllocationStep,
 };
 const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v4\0";
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[path = "directory_cursor_fuzz.rs"]
 /// On-demand checks of the funded directory continuation codec.
 pub mod codec_fuzz;
 impl LazyDirectoryCursor {
     /// Encodes a frozen continuation on its original native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn encode(
         &self,
         work: &crate::NativeMaterializationWork,
@@ -18,20 +19,28 @@ impl LazyDirectoryCursor {
             work,
             cancellation: work.cancellation(),
         };
-        let directory = self
-            .directory
-            .unicode_text_with_accounting(&mut ctx, work.cancellation())?;
-        let encoded = encode_fields(self, &directory.0, &mut ctx);
-        let bytes = directory.0.capacity() as u64;
-        drop(directory.0);
-        crate::kernel::retire_allocation(directory.1, bytes, &mut ctx)?;
+        let encoded = self.encode_with_accounting(&mut ctx);
         let (value, allocation) = encoded?;
         let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
             return Err(LazyWorkspaceError::NativeLedgerMismatch);
         };
         Ok((value, allocation))
     }
+    /// Encodes the same continuation on any original filesystem accounting context.
+    pub fn encode_with_accounting(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(Vec<u8>, KernelOwnedAllocation), LazyWorkspaceError> {
+        let cxl = cancellation(ctx).clone();
+        let directory = self.directory.unicode_text_with_accounting(ctx, &cxl)?;
+        let encoded = encode_fields(self, &directory.0, ctx);
+        let bytes = directory.0.capacity() as u64;
+        drop(directory.0);
+        crate::kernel::retire_allocation(directory.1, bytes, ctx)?;
+        encoded.map_err(Into::into)
+    }
     /// Decodes a bounded frozen continuation on the supplied native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn decode(
         bytes: &[u8],
         profile: crate::FilesystemProfile,
@@ -42,30 +51,37 @@ impl LazyDirectoryCursor {
             work,
             cancellation: work.cancellation(),
         };
-        let mut input = crate::kernel::decode_owned(&mut ctx, |mut observe| {
+        Self::decode_with_accounting(bytes, profile, limits, &mut ctx)
+    }
+    /// Decodes without introducing another allowance or cursor registry.
+    pub fn decode_with_accounting(
+        bytes: &[u8],
+        profile: crate::FilesystemProfile,
+        limits: crate::VolumeLimits,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Self, LazyWorkspaceError> {
+        let cxl = cancellation(ctx).clone();
+        let mut input = crate::kernel::decode_owned(ctx, |mut observe| {
             decode_fields(bytes, limits, &mut observe)
         })?;
-        input.0.0.source.retain_decoded(&mut input.1, &mut ctx)?;
+        if let DirectoryCut::Computed(cut) = &mut input.0.0 {
+            cut.source.retain_decoded(&mut input.1, ctx)?;
+        }
         match &mut input.0.2 {
             LazyDirectoryPhase::Source(Some(cursor)) => {
-                cursor.source.retain_decoded(&mut input.1, &mut ctx)?;
+                cursor.source.retain_decoded(&mut input.1, ctx)?;
             }
             LazyDirectoryPhase::Authored(Some(position)) => {
-                crate::kernel::retain_decoded_bytes(&mut position.path, &mut input.1, &mut ctx)?;
+                crate::kernel::retain_decoded_bytes(&mut position.path, &mut input.1, ctx)?;
             }
             _ => {}
         }
-        let mut directory = NamespacePath::parse_in_profile(
-            &input.0.1,
-            profile,
-            limits,
-            &mut ctx,
-            work.cancellation(),
-        )?;
+        let mut directory =
+            NamespacePath::parse_in_profile(&input.0.1, profile, limits, ctx, &cxl)?;
         let bytes = input.0.1.capacity() as u64;
         let temporary = crate::kernel::split_allocation(&mut input.1, bytes)?;
         drop(input.0.1);
-        crate::kernel::retire_allocation(temporary, bytes, &mut ctx)?;
+        crate::kernel::retire_allocation(temporary, bytes, ctx)?;
         input.1.absorb(&mut directory.1)?;
         Ok(Self {
             cut: input.0.0,
@@ -82,9 +98,12 @@ fn encode_fields(
 ) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
     let size = DOMAIN.len()
         + 2
-        + 85
-        + cursor.cut.source.encoded_len()
-        + cursor.cut.authored_generation.object_id().encoded_len()
+        + 22
+        + match &cursor.cut {
+            DirectoryCut::Authored { .. } => 0,
+            DirectoryCut::Computed(cut) => 64 + cut.source.encoded_len(),
+        }
+        + cursor.cut.generation().object_id().encoded_len()
         + directory.len()
         + match &cursor.phase {
             LazyDirectoryPhase::Source(Some(source)) => source.source.encoded_len() + 8,
@@ -125,11 +144,17 @@ fn encode_fields(
         };
         observe(EncodeWorkStep::Admit(body))?;
         let cut = &cursor.cut;
-        encoder.fixed(&cut.workspace_id.into_bytes());
-        encoder.object(cut.authored_generation.object_id());
-        cut.source.encode(|part| encoder.fixed(part));
-        encoder.fixed(&cut.overlay.into_bytes());
-        encoder.fixed(&cut.shadows.into_bytes());
+        encoder.u8(match cut {
+            DirectoryCut::Authored { .. } => 0,
+            DirectoryCut::Computed(_) => 1,
+        });
+        encoder.fixed(&cut.workspace().into_bytes());
+        encoder.object(cut.generation().object_id());
+        if let DirectoryCut::Computed(cut) = cut {
+            cut.source.encode(|part| encoder.fixed(part));
+            encoder.fixed(&cut.overlay.into_bytes());
+            encoder.fixed(&cut.shadows.into_bytes());
+        }
         encoder.bounded_bytes(directory.as_bytes())?;
         match &cursor.phase {
             LazyDirectoryPhase::Source(None) => encoder.u8(0),
@@ -155,19 +180,36 @@ fn decode_fields(
     bytes: &[u8],
     limits: crate::VolumeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), crate::FsError>,
-) -> Result<(LazySnapshotRef, String, LazyDirectoryPhase), crate::FsError> {
+) -> Result<(DirectoryCut, String, LazyDirectoryPhase), crate::FsError> {
     let maximum = bytes.len() as u64;
     let mut decoder = Decoder::new(bytes, DOMAIN, 1, maximum, observe)?;
+    let kind = decoder.u8(observe)?;
     let workspace = WorkspaceId::from_bytes(decoder.fixed::<16, crate::FsError>(observe)?);
     let generation =
         crate::GenerationId::from_root(decoder.object(crate::ObjectKind::GenerationRoot, observe)?);
-    let source = SourceReference::decode(&mut decoder, observe)?;
-    let overlay = LazyOverlayId::from_bytes(decoder.fixed::<32, crate::FsError>(observe)?);
-    let shadows = LazyShadowId::from_bytes(decoder.fixed::<32, crate::FsError>(observe)?);
-    let hash_bytes = LazySnapshotRef::hash_bytes(generation, &source);
-    observe(ReadAllocationStep::BeforeHash(hash_bytes))?;
-    let cut = LazySnapshotRef::new(workspace, generation, source, overlay, shadows);
-    observe(ReadAllocationStep::Hashed(hash_bytes))?;
+    let cut = match kind {
+        0 => DirectoryCut::Authored {
+            workspace,
+            generation,
+        },
+        1 => {
+            let source = SourceReference::decode(&mut decoder, observe)?;
+            let overlay = LazyOverlayId::from_bytes(decoder.fixed::<32, crate::FsError>(observe)?);
+            let shadows = LazyShadowId::from_bytes(decoder.fixed::<32, crate::FsError>(observe)?);
+            let hash_bytes = LazySnapshotRef::hash_bytes(generation, &source);
+            observe(ReadAllocationStep::BeforeHash(hash_bytes))?;
+            let cut = LazySnapshotRef::new(workspace, generation, source, overlay, shadows);
+            observe(ReadAllocationStep::Hashed(hash_bytes))?;
+            DirectoryCut::Computed(cut)
+        }
+        tag => {
+            return Err(CanonicalDecodeError::UnknownTag {
+                field: "directory cut",
+                tag,
+            }
+            .into());
+        }
+    };
     let directory = String::from_utf8(decoder.bounded_bytes(limits.maximum_path_bytes, observe)?)
         .map_err(|_| {
         CanonicalDecodeError::Invariant(CanonicalInvariant::Static("cursor directory is not UTF-8"))
@@ -203,6 +245,14 @@ fn decode_fields(
             .into());
         }
     };
+    if matches!(cut, DirectoryCut::Authored { .. })
+        && matches!(phase, LazyDirectoryPhase::Source(_))
+    {
+        return Err(CanonicalDecodeError::Invariant(CanonicalInvariant::Static(
+            "authored directory cursor has a source phase",
+        ))
+        .into());
+    }
     decoder.finish()?;
     Ok((cut, directory, phase))
 }

@@ -14,7 +14,7 @@ impl NativeAccounting {
     /// Returns a completed output to the same caller without another admission.
     /// Ordinary callers resume ownership of the already charged scratch; native
     /// callers keep the same original allocation guard.
-    pub(crate) fn return_allocation(
+    pub fn return_allocation(
         &self,
         mut allocation: crate::NativeAllocation,
         bytes: u64,

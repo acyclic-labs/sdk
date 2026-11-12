@@ -48,7 +48,7 @@ impl Conversation {
     }
 
     /// Read visible private names. Continue with the returned immutable
-    /// generation and the last child name as the exclusive cursor.
+    /// generation and opaque continuation.
     ///
     /// # Errors
     /// Original credential, policy, source or shared reply validation failure.
@@ -56,7 +56,7 @@ impl Conversation {
         &self,
         path: &str,
         generation: Option<&GenerationRef>,
-        page: AgentPageRequest,
+        page: AgentPageRequest<Vec<u8>>,
     ) -> Result<PrivateDirectoryPage> {
         match self
             .connection

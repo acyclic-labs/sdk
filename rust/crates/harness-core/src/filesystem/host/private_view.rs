@@ -28,6 +28,23 @@ pub(super) trait PrivateView: Send + Sync {
         ctx: &'a mut KernelAccounting<'_>,
         io: &'a PreparationIo,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>>;
+    fn directory<'a>(
+        &'a self,
+        cut: &'a LazySnapshotRef,
+        path: &'a str,
+        after: Option<&'a [u8]>,
+        maximum: u32,
+        ctx: &'a mut KernelAccounting<'_>,
+        io: &'a PreparationIo,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                acyclic_fs::LazyDirectoryListing,
+                acyclic_fs::kernel::KernelOwnedAllocation,
+            ),
+        >,
+    >;
 }
 
 impl<A, O, D, S> PrivateView for LazyWorkspace<A, O, D, S>
@@ -76,6 +93,29 @@ where
                 .logical_bytes
                 .ok_or(acyclic_fs::LazyWorkspaceError::NotRegularFile)?;
             Ok((bytes.bytes, length))
+        })
+    }
+    fn directory<'a>(
+        &'a self,
+        cut: &'a LazySnapshotRef,
+        path: &'a str,
+        after: Option<&'a [u8]>,
+        maximum: u32,
+        ctx: &'a mut KernelAccounting<'_>,
+        io: &'a PreparationIo,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                acyclic_fs::LazyDirectoryListing,
+                acyclic_fs::kernel::KernelOwnedAllocation,
+            ),
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            self.list_directory_listing_at_snapshot(cut, path, after, maximum, ctx)
+                .await
+                .map_err(Into::into)
         })
     }
 }

@@ -215,7 +215,7 @@ pub(in crate::filesystem) use reads::{read_generation, read_generation_if_presen
 
 use crate::executor::stock_boundary;
 
-pub use directory::DirectoryOptions;
+pub use directory::{DirectoryCredit, DirectoryOptions};
 
 impl PublicationDomain {
     fn new(work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<Arc<Self>> {

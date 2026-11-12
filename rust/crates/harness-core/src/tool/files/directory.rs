@@ -1,4 +1,4 @@
-//! Directory selections use the same authenticated reader and version codec as files.
+//! Directory selections preserve provider continuations on the authenticated reader.
 use super::*;
 
 /// A name's kind at the selected immutable generation.
@@ -13,13 +13,22 @@ use super::*;
     schemars::JsonSchema,
     crate::HeapLayout,
 )]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum DirectoryEntryKind {
     /// Regular file.
     File,
     /// Child directory.
     Dir,
+    /// Symbolic link, without following its target.
+    Symlink,
+    Fifo,
+    Socket,
+    CharacterDevice,
+    BlockDevice,
+    ReparsePoint,
+    MountBoundary,
+    Unsupported,
 }
 
 /// One selected name; its version does not confer authority.
@@ -35,7 +44,7 @@ pub struct DirectoryEntry {
     pub path: String,
     /// Selected namespace kind.
     pub kind: DirectoryEntryKind,
-    /// Opaque namespace version, also the exclusive continuation cursor.
+    /// Opaque namespace version for reading this entry.
     pub version: String,
 }
 
@@ -48,8 +57,8 @@ pub struct DirectoryEntry {
 pub struct DirectoryReadResult {
     /// Ordered children.
     pub entries: Vec<DirectoryEntry>,
-    /// Continue from the last returned entry's version.
-    pub has_more: bool,
+    /// Opaque continuation for this directory at the same immutable selection.
+    pub next: Option<String>,
 }
 
 /// Canonical results for file and directory selections.
@@ -103,7 +112,9 @@ fn public_parent(path: &str) -> &str {
 #[serde(rename_all = "camelCase")]
 struct Page<'a> {
     entries: Vec<Entry<'a>>,
-    has_more: bool,
+    next: Option<String>,
+    #[serde(skip)]
+    _next_hold: acyclic_fs::NativeCustody,
 }
 
 #[derive(Serialize)]
@@ -127,38 +138,24 @@ pub(super) async fn read(
     validate_input(input, limit, work)?;
     let (volume, path) = context.authorize_tool_directory_read(&input.path, io)?;
     let selected = after
-        .map(|cursor| version::decode_selection(cursor, work))
+        .map(|cursor| decode_cursor(cursor, work))
         .transpose()?;
-    let cursor = match &selected {
-        Some((version::SelectedVersion::Authored(selected), _)) => {
-            let (parent, name) = selected
-                .path
-                .rsplit_once('/')
-                .unwrap_or(("", &selected.path));
-            if &selected.volume != volume || parent != path || name.is_empty() {
-                return Err(executor::rejection(
-                    work,
-                    "directory cursor belongs to another selection",
-                ));
-            }
-            Some((&selected.generation, name))
-        }
-        Some(_) => {
+    if let Some((cursor, _)) = &selected {
+        if &cursor.volume != volume || cursor.path != path {
             return Err(executor::rejection(
                 work,
-                "directory cursor requires a namespace selection",
+                "directory cursor belongs to another selection",
             ));
         }
-        None => None,
-    };
+    }
     let (page, _page_hold) = context
         .list_tool_directory(
             crate::conversation::DirectoryRead {
                 volume,
                 granted_prefix: &path,
                 path: &path,
-                generation: cursor.map(|c| c.0),
-                after: cursor.map(|c| c.1),
+                generation: selected.as_ref().map(|(cursor, _)| &cursor.generation),
+                after: selected.as_ref().map(|(cursor, _)| cursor.after.as_slice()),
                 maximum_entries: limit,
             },
             io,
@@ -181,14 +178,55 @@ pub(super) async fn read(
                 crate::conversation::PrivateDirectoryEntryKind::Directory => {
                     DirectoryEntryKind::Dir
                 }
+                crate::conversation::PrivateDirectoryEntryKind::SymbolicLink => {
+                    DirectoryEntryKind::Symlink
+                }
+                crate::conversation::PrivateDirectoryEntryKind::Fifo => DirectoryEntryKind::Fifo,
+                crate::conversation::PrivateDirectoryEntryKind::Socket => {
+                    DirectoryEntryKind::Socket
+                }
+                crate::conversation::PrivateDirectoryEntryKind::CharacterDevice => {
+                    DirectoryEntryKind::CharacterDevice
+                }
+                crate::conversation::PrivateDirectoryEntryKind::BlockDevice => {
+                    DirectoryEntryKind::BlockDevice
+                }
+                crate::conversation::PrivateDirectoryEntryKind::ReparsePoint => {
+                    DirectoryEntryKind::ReparsePoint
+                }
+                crate::conversation::PrivateDirectoryEntryKind::MountBoundary => {
+                    DirectoryEntryKind::MountBoundary
+                }
+                crate::conversation::PrivateDirectoryEntryKind::Unsupported => {
+                    DirectoryEntryKind::Unsupported
+                }
             },
             _holds: [public_hold, version_hold],
         });
     }
+    let (next, next_hold) = match &page.next {
+        Some(after) => {
+            let (text, hold) = version::encode_token(
+                &DirectoryCursorView {
+                    selection: crate::conversation::PathSelectionView {
+                        volume,
+                        path: &path,
+                        generation: &page.generation,
+                    },
+                    after,
+                },
+                DIRECTORY,
+                work,
+            )?;
+            (Some(text), hold)
+        }
+        None => (None, None),
+    };
     let encoded = value(
         &Page {
             entries,
-            has_more: page.has_more,
+            next,
+            _next_hold: next_hold,
         },
         context.effective_scope().limits().file_bytes,
         work,
@@ -205,18 +243,19 @@ pub(super) fn project(
 ) -> Result<(Value, acyclic_fs::NativeCustody)> {
     validate_input(input, limit, work)?;
     let (result, _hold) = decode::<DirectoryReadResult>(&result.value, work)?;
-    if result.entries.len() > limit as usize || (result.has_more && result.entries.is_empty()) {
+    if result.entries.len() > limit as usize {
         return Err(executor::rejection(
             work,
             "directory result exceeds its selection or cannot advance",
         ));
     }
-    let cursor = after
-        .map(|cursor| version::decode_selection(cursor, work))
-        .transpose()?;
-    let mut previous = cursor
-        .as_ref()
-        .map(|(selected, _)| selected.path().rsplit('/').next().unwrap_or(""));
+    if let Some(after) = after {
+        decode_cursor(after, work)?;
+    }
+    if let Some(next) = &result.next {
+        decode_cursor(next, work)?;
+    }
+    let mut previous: Option<&str> = None;
     for entry in &result.entries {
         if entry.name.is_empty()
             || entry.name.contains('/')
@@ -238,4 +277,83 @@ pub(super) fn project(
         previous = Some(&entry.name);
     }
     schema::project_json(&result, work)
+}
+
+const DIRECTORY: &str = "directory-v1:";
+
+#[derive(Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+struct DirectoryCursor {
+    volume: crate::conversation::VolumeRef,
+    path: String,
+    generation: crate::resources::GenerationRef,
+    after: Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct DirectoryCursorView<'a> {
+    #[serde(flatten)]
+    selection: crate::conversation::PathSelectionView<'a>,
+    after: &'a [u8],
+}
+
+impl crate::filesystem::PreparationRecord for DirectoryCursor {
+    fn diagnostic_label_bytes() -> u64 {
+        crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
+    }
+}
+
+fn decode_cursor(
+    text: &str,
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(DirectoryCursor, acyclic_fs::NativeCustody)> {
+    let bytes = text
+        .strip_prefix(DIRECTORY)
+        .ok_or_else(|| executor::rejection(work, "invalid directory continuation"))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = work {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let (cursor, mut reservation) = io.decode::<DirectoryCursor>(
+            std::marker::PhantomData,
+            bytes.as_bytes(),
+            crate::wire::ErrorCode::Invalid,
+        )?;
+        let mut history = io.history_io();
+        cursor.validate(&mut Some(&mut history))?;
+        let retained = crate::core::owned_sum([
+            std::mem::size_of::<DirectoryCursor>() as u64,
+            cursor.volume.logical_owned_bytes()?,
+            cursor.path.capacity() as u64,
+            cursor.generation.logical_owned_bytes()?,
+            cursor.after.capacity() as u64,
+        ])?;
+        reservation.substitute(retained)?;
+        reservation.into_retained()?;
+        return Ok((cursor, Some(io.into_native_custody(retained)?)));
+    }
+    let cursor: DirectoryCursor =
+        serde_json::from_str(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    cursor.validate(&mut None)?;
+    Ok((cursor, None))
+}
+
+impl DirectoryCursor {
+    fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
+        self.volume.validate(work)?;
+        self.generation.validate(work)?;
+        if !self.path.is_empty() {
+            crate::conversation::validate_content_path(&self.path, work)?;
+        }
+        if self.after.is_empty()
+            || self.generation.as_resource().provider() != self.volume.provider()
+            || crate::conversation::is_internal_path(&self.path)
+        {
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "directory continuation belongs to an invalid namespace",
+            ));
+        }
+        Ok(())
+    }
 }

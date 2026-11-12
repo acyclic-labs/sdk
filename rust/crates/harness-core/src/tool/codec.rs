@@ -115,6 +115,7 @@ pub(crate) const TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES: u64 = {
         "ReadFileInput",
         "ReadFileResult",
         "DirectoryReadResult",
+        "DirectoryCursor",
         "DirectoryEntry",
         "DirectoryEntryKind",
         "ReadPage",

@@ -82,7 +82,7 @@ struct ContextDirectoryQuery {
     path: String,
     #[tsify(type = "(WasmResourceRefWire & { kind: 'generation' }) | null")]
     expected_generation: Option<GenerationRef>,
-    after: Option<String>,
+    after: Option<Vec<u8>>,
     maximum_entries: u32,
 }
 
@@ -193,7 +193,7 @@ impl ContentResidencyVerifier for BrowserReader {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a GenerationRef>,
-        after: Option<&'a str>,
+        after: Option<&'a [u8]>,
         maximum_entries: u32,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'io ContentIo>,
@@ -218,7 +218,7 @@ impl ContentResidencyVerifier for BrowserReader {
                 },
                 path: path.into(),
                 expected_generation: generation.cloned(),
-                after: after.map(str::to_owned),
+                after: after.map(<[u8]>::to_vec),
                 maximum_entries,
             };
             let result = self.invoke(&self.list, &query).await?;
@@ -239,15 +239,14 @@ impl ContentResidencyVerifier for BrowserReader {
                 Reflect::get(&result, &JsValue::from_str("generation")).map_err(platform_error)?,
             )
             .map_err(platform_error)?;
-            let has_more = Reflect::get(&result, &JsValue::from_str("hasMore"))
-                .map_err(platform_error)?
-                .as_bool()
-                .ok_or_else(|| Error::Storage("context page requires hasMore".into()))?;
+            let next =
+                from_js(Reflect::get(&result, &JsValue::from_str("next")).map_err(platform_error)?)
+                    .map_err(platform_error)?;
             Ok(Some((
                 PrivateDirectoryPage {
                     generation,
                     entries,
-                    has_more,
+                    next,
                 },
                 None,
             )))

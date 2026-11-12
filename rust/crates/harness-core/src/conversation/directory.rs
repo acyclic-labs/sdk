@@ -11,8 +11,8 @@ pub struct DirectoryRead<'a> {
     pub path: &'a str,
     /// Pinned generation, or current head for the first page.
     pub generation: Option<&'a GenerationRef>,
-    /// Exclusive child name from the previous page.
-    pub after: Option<&'a str>,
+    /// Opaque provider continuation from the previous page.
+    pub after: Option<&'a [u8]>,
     /// Page chunk size.
     pub maximum_entries: u32,
 }
@@ -26,6 +26,22 @@ pub enum PrivateDirectoryEntryKind {
     File,
     /// A named child directory.
     Directory,
+    /// Symbolic link; the listing does not follow its target.
+    SymbolicLink,
+    /// Named pipe.
+    Fifo,
+    /// Socket node.
+    Socket,
+    /// Character device.
+    CharacterDevice,
+    /// Block device.
+    BlockDevice,
+    /// Native reparse point.
+    ReparsePoint,
+    /// Mounted namespace boundary.
+    MountBoundary,
+    /// Source kind that cannot be projected losslessly.
+    Unsupported,
 }
 
 /// One lazily discovered name, without eager byte or ref transfer.
@@ -40,7 +56,7 @@ pub struct PrivateDirectoryEntry {
 }
 
 /// A bounded page from one exact owner-private generation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PrivateDirectoryPage {
@@ -52,8 +68,8 @@ pub struct PrivateDirectoryPage {
     pub generation: GenerationRef,
     /// Ordered entries returned for the requested directory segment.
     pub entries: Vec<PrivateDirectoryEntry>,
-    /// Whether another page may be requested with the returned cursor.
-    pub has_more: bool,
+    /// Opaque continuation at the same directory and generation.
+    pub next: Option<Vec<u8>>,
 }
 
 /// Maximum number of entries admitted in one private-directory page.
@@ -69,7 +85,7 @@ impl PrivateDirectoryPage {
         crate::executor::with_history_io(io, |history| {
             self.generation.validate(history)?;
             if self.entries.len() as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64
-                || (self.has_more && self.entries.is_empty())
+                || self.next.as_ref().is_some_and(Vec::is_empty)
             {
                 return Err(crate::store::guarded_boundary(
                     history,
@@ -93,5 +109,29 @@ impl PrivateDirectoryPage {
             }
             Ok(())
         })
+    }
+}
+
+/// Borrowed wire projection over the same directory record.
+#[doc(hidden)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateDirectoryPageView<'a> {
+    pub generation: &'a GenerationRef,
+    pub entries: &'a [PrivateDirectoryEntry],
+    pub next: Option<&'a [u8]>,
+}
+
+impl Serialize for PrivateDirectoryPage {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        PrivateDirectoryPageView {
+            generation: &self.generation,
+            entries: &self.entries,
+            next: self.next.as_deref(),
+        }
+        .serialize(serializer)
     }
 }
