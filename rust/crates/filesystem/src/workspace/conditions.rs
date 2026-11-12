@@ -145,6 +145,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                 ..crate::WorkCounters::UNCHARGED
             })?;
             sha2::Digest::update(&mut hasher, read.bytes.as_ref());
+            read.retire(accounting)?;
             offset += range.length;
         }
         Ok(sha2::Digest::finalize(hasher).into())
