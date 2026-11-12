@@ -177,7 +177,7 @@ async fn creation_overlay_forks_a_template_into_a_dormant_actor() -> TestResult 
             escrow: Some(Escrow::new(Some(0))),
         },
     )?)?;
-    publication.join(store.activation(&pinned))?;
+    publication.join(store.activation(&pinned)?)?;
     store.submit(publication).await?;
     assert!(
         store

@@ -848,9 +848,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     ) -> Result<Delivered, Error> {
         let inbox = to.inbox()?;
         let actor = self.actor(to)?;
-        request
-            .effects
-            .push(self.runtime.store().activation(&actor));
+        request.effects.push(
+            self.runtime
+                .store()
+                .activation(&actor)
+                .map_err(actor_error)?,
+        );
         match submit(&*self.provider, request).await? {
             Submitted::Committed(receipt) => {
                 let append = receipt

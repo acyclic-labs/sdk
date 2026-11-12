@@ -291,7 +291,7 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
                 escrow: None,
             },
         )?,
-        setup.activation(&actor),
+        setup.activation(&actor)?,
     ] {
         create.join(effect)?;
     }

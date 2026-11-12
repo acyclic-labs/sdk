@@ -349,7 +349,7 @@ async fn commit_close<P: StreamProvider + ?Sized>(
     let mut effects = vec![
         append(socket, vec![input.value.clone().into()], conditions),
         append(target.inbox.clone(), vec![input], Vec::new()),
-        store.activation(&target.actor),
+        store.activation(&target.actor)?,
     ];
     if let Some(segment) = segment {
         effects.push(append(
@@ -386,7 +386,7 @@ pub(crate) async fn commit_message<P: StreamProvider + ?Sized>(
                     expected: 1,
                 }],
             ),
-            store.activation(&target.actor),
+            store.activation(&target.actor)?,
         ],
     )
     .await

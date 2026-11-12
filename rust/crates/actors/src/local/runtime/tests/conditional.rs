@@ -112,11 +112,11 @@ fn runtime_with(
 async fn dispatcher_creation_returns_the_competing_owners_actual_result() -> TestResult {
     let runtime = runtime()?;
     let provider = runtime.store().provider();
-    let (store, address) = runtime.dispatcher_store()?;
+    let (store, address) = runtime.dispatcher_store(0)?;
     *provider.inner().before_write.lock().unwrap() = Some(Competing::SameProposal);
     let before = provider.requests();
     assert!(matches!(
-        runtime.dispatcher(&store, &address).await,
+        runtime.dispatcher(&store, &address, 0).await,
         Err(Error::Conflict)
     ));
     let original = provider.requests().since(before);
@@ -125,7 +125,7 @@ async fn dispatcher_creation_returns_the_competing_owners_actual_result() -> Tes
     // The competitor committed. A second invocation observes that state once,
     // without creating another checkpoint or replaying the losing proposal.
     let before = provider.requests();
-    let opened = runtime.dispatcher(&store, &address).await?;
+    let opened = runtime.dispatcher(&store, &address, 0).await?;
     assert_eq!(opened.tail, 1);
     assert_eq!(
         opened.state().and_then(|state| state.cursor("activation")),

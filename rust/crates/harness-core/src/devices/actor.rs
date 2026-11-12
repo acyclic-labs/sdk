@@ -660,7 +660,9 @@ pub async fn attach<P: StreamProvider + ?Sized>(
     prepared
         .join(store.create(None, &actor, creation).map_err(actors)?)
         .map_err(actors)?;
-    prepared.join(store.activation(&actor)).map_err(actors)?;
+    prepared
+        .join(store.activation(&actor).map_err(actors)?)
+        .map_err(actors)?;
     prepared.join(state.status()?).map_err(actors)?;
     let outcome = store
         .provider()

@@ -255,7 +255,7 @@ async fn shared_input_invocations_execute_only_under_the_original_store_root() -
                     escrow: None,
                 },
             )?,
-            right.activation(&actor),
+            right.activation(&actor)?,
         ],
     )
     .await?;

@@ -65,7 +65,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
                 escrow: None,
             },
         )?,
-        store.activation(&address),
+        store.activation(&address)?,
     ] {
         create.join(effect)?;
     }
@@ -293,7 +293,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
                 escrow: None,
             },
         )?,
-        store.activation(&cancelled_actor),
+        store.activation(&cancelled_actor)?,
     ] {
         create.join(effect)?;
     }

@@ -76,8 +76,11 @@ async fn clock_schedule(
         assert_eq!(state.alarm().deadline_unix_ms, Some(deadline));
         assert_eq!(state.alarm().delivered_generation, None);
     }
-    let activation_tail = provider.tail(root()?).await?;
-    let (dispatch_store, dispatch_actor) = runtime.dispatcher_store()?;
+    let activation_tail = provider
+        .tail(store.scheduling_path(crate::local::scheduling_shard(&first))?)
+        .await?;
+    let (dispatch_store, dispatch_actor) =
+        runtime.dispatcher_store(crate::local::scheduling_shard(&first))?;
     observe_while_running(
         serving.as_mut(),
         state_after(&dispatch_store, &dispatch_actor, |state| {
@@ -394,8 +397,11 @@ fn running_dispatcher_reports_its_original_clock_retirement() -> TestResult {
                     assert!(state.alarm().pending().is_some());
                     assert_eq!(state.alarm().delivered_generation, None);
                 }
-                let tail = provider.tail(root()?).await?;
-                let (dispatcher_store, dispatcher_actor) = runtime.dispatcher_store()?;
+                let tail = provider
+                    .tail(store.scheduling_path(crate::local::scheduling_shard(&first))?)
+                    .await?;
+                let (dispatcher_store, dispatcher_actor) =
+                    runtime.dispatcher_store(crate::local::scheduling_shard(&first))?;
                 observe_while_running(
                     serving.as_mut(),
                     state_after(&dispatcher_store, &dispatcher_actor, |state| {

@@ -14,10 +14,12 @@ mod record;
 pub use applied::{Applied, AppliedCut};
 pub use record::{METADATA_OVERHEAD, STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
 mod runtime;
+mod scheduling;
 pub use crate::guest::Subscription;
 pub use runtime::{
     Clock, ClockControl, ClockError, ControlledClock, Runtime, RuntimeLimits, SystemClock,
 };
+pub use scheduling::scheduling_shard;
 mod sockets;
 pub use sockets::Sockets;
 #[cfg(feature = "test-support")]
@@ -604,23 +606,23 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self.provider
     }
 
-    /// The state root. Its own stream is the activation log: every commit that
-    /// creates actor state appends that actor's address to it.
+    /// The state root. Actor records and stable scheduling shards are children
+    /// of this root; producers never broadcast wake records on its own stream.
     pub const fn root(&self) -> &StreamPath {
         &self.root
     }
 
     /// The activation-log append that rides in every state-creating commit.
     /// It is unconditioned, so concurrent creations never contend on it.
-    pub fn activation(&self, actor: &ActorReference) -> CommitEffect {
-        let (path, record) = self.activation_record(actor);
-        acyclic_stream::CommitEffect::hard(
+    pub fn activation(&self, actor: &ActorReference) -> Result<CommitEffect, Error> {
+        let (path, record) = self.activation_record(actor)?;
+        Ok(acyclic_stream::CommitEffect::hard(
             Vec::new(),
             vec![CommitMutation::Append {
                 path,
                 records: vec![record.into()],
             }],
-        )
+        ))
     }
 
     /// Original wake record for composition with a producer's delivery commit.
@@ -628,8 +630,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     pub fn activation_record(
         &self,
         actor: &ActorReference,
-    ) -> (StreamPath, acyclic_stream::OwnedBytes) {
-        (self.root.clone(), actor.encode().into())
+    ) -> Result<(StreamPath, acyclic_stream::OwnedBytes), Error> {
+        Ok((
+            self.scheduling_path(scheduling_shard(actor))?,
+            actor.encode().into(),
+        ))
     }
 
     /// The actor's state stream.
@@ -705,7 +710,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let cut = self.load(&parent).await?;
         let mut commit = PreparedPublish::foreign(key.clone());
         commit.join(self.branch(&cut, &child, Branch::unfunded(subscriptions))?)?;
-        commit.join(self.activation(&child))?;
+        commit.join(self.activation(&child)?)?;
         match self.submit(commit).await {
             Ok(()) => {}
             Err(
@@ -1184,7 +1189,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 CommitCondition::Absent {
                     path: previous.path.clone(),
                 },
-                Some(self.activation(&self.actor(&previous.path)?)),
+                Some(self.activation(&self.actor(&previous.path)?)?),
             ),
         };
         let encoded = state.encode();
