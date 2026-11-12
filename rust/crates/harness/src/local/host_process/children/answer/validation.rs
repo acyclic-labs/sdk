@@ -3,7 +3,7 @@ use crate::Outcome;
 use acyclic_native_runtime::lines::LineBuffer;
 use serde_json::Value;
 
-use super::{ANSWER_LIMIT, NativeAnswer};
+use super::NativeAnswer;
 use crate::local::host_process::EVENT_LINE_BYTES;
 
 fn copy(answer: &NativeAnswer) -> NativeAnswer {
@@ -12,7 +12,6 @@ fn copy(answer: &NativeAnswer) -> NativeAnswer {
         outcome: answer.outcome.clone(),
         omitted: answer.omitted,
         last_part: answer.last_part.clone(),
-        truncated: answer.truncated,
     }
 }
 
@@ -21,18 +20,6 @@ fn same(left: &NativeAnswer, right: &NativeAnswer) {
     assert_eq!(left.outcome, right.outcome);
     assert_eq!(left.omitted, right.omitted);
     assert_eq!(left.last_part, right.last_part);
-    assert_eq!(left.truncated, right.truncated);
-}
-
-fn prefix(original: &str, retained: &str) {
-    assert!(original.starts_with(retained));
-    assert!(retained.len() <= ANSWER_LIMIT);
-    if let Some(next) = original
-        .get(retained.len()..)
-        .and_then(|tail| tail.chars().next())
-    {
-        assert!(retained.len() + next.len_utf8() > ANSWER_LIMIT);
-    }
 }
 
 /// Original pipe bytes pass through the deployed framer and reducer. Vary read
@@ -75,10 +62,6 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
         same(&current, &after);
 
         check_event(&event, &current, before);
-        if let Some(Outcome::Succeeded(text)) = &current.outcome {
-            assert!(text.len() <= ANSWER_LIMIT);
-        }
-
         // Apply loss to a copy: later JSONL events still exercise the original
         // sequence. Loss revokes success/preview, retains failure/cancellation,
         // and is idempotent. It cannot fabricate a successful terminal.
@@ -97,30 +80,13 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
     (current, accepted)
 }
 
-/// Preserve the original unique cost control alongside the wider corpus property.
-///
-/// # Panics
-/// Panics if bounded truncation reads beyond the retained prefix.
-pub fn check_prefix_work() {
-    let original = "a".repeat(ANSWER_LIMIT - 1);
-    let mut visits = 0;
-    let retained = super::bounded(
-        [original.as_str(), "😀"]
-            .into_iter()
-            .chain(std::iter::repeat_n("unread", 100_000))
-            .inspect(|_| visits += 1),
-    );
-    assert_eq!(retained, original);
-    assert_eq!(visits, 2, "truncation visited the unread tail");
-}
-
-fn successful_prefix(text: &str, current: &NativeAnswer, message: &str) {
+fn successful_answer(text: &str, current: &NativeAnswer, message: &str) {
     assert!(
         matches!(&current.outcome, Some(Outcome::Succeeded(_))),
         "{message}"
     );
     if let Some(Outcome::Succeeded(retained)) = &current.outcome {
-        prefix(text, retained);
+        assert_eq!(retained, text, "successful native answer was truncated");
     }
 }
 
@@ -150,7 +116,7 @@ fn check_event(event: &Value, current: &NativeAnswer, before: NativeAnswer) {
                     Some(text) => {
                         assert!(current.pending.is_some(), "lost preview");
                         if let Some(retained) = current.pending.as_deref() {
-                            prefix(text, retained);
+                            assert_eq!(retained, text, "native preview was truncated");
                         }
                     }
                     None => assert!(current.pending.is_none()),
@@ -232,7 +198,6 @@ fn check_text(event: &Value, current: &NativeAnswer, before: &NativeAnswer) {
     let text = event.pointer("/part/text").and_then(Value::as_str);
     if before.outcome.is_none()
         && !before.omitted
-        && !before.truncated
         && event
             .pointer("/part/time/end")
             .and_then(Value::as_u64)
@@ -248,8 +213,7 @@ fn check_text(event: &Value, current: &NativeAnswer, before: &NativeAnswer) {
             .collect();
         assert!(current.pending.is_some(), "lost native text");
         if let Some(retained) = current.pending.as_deref() {
-            prefix(&joined, retained);
-            assert_eq!(current.truncated, joined.len() > retained.len());
+            assert_eq!(retained, &joined, "incremental native answer was truncated");
         }
         assert_eq!(current.last_part.as_deref(), Some(id));
     } else {
@@ -264,7 +228,7 @@ fn check_agy_result(result: &Value, current: &NativeAnswer) {
             if result.get("error").is_none() && result.get("finished_reason").is_none() =>
         {
             match result.get("response").and_then(Value::as_str) {
-                Some(text) => successful_prefix(text, current, "successful native result lost"),
+                Some(text) => successful_answer(text, current, "successful native result lost"),
                 None => assert!(current.outcome.is_none()),
             }
         }
@@ -291,7 +255,7 @@ fn check_result(event: &Value, current: &NativeAnswer) {
         && event.get("is_error").and_then(Value::as_bool) == Some(false)
     {
         match event.get("result").and_then(Value::as_str) {
-            Some(text) => successful_prefix(text, current, "successful native result lost"),
+            Some(text) => successful_answer(text, current, "successful native result lost"),
             None => assert!(current.outcome.is_none()),
         }
     } else {
@@ -315,7 +279,7 @@ fn check_message(event: &Value, current: &NativeAnswer) {
                     .iter()
                     .filter_map(|part| part.get("text").and_then(Value::as_str))
                     .collect();
-                successful_prefix(&text, current, "successful native message lost");
+                successful_answer(&text, current, "successful native message lost");
             } else {
                 assert!(current.outcome.is_none());
             }

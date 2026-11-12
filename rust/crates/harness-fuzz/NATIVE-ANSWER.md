@@ -1,16 +1,16 @@
 The `native_answer` target calls the shared oracle through
 `acyclic_harness::test_support::native_answer`. The oracle lives beside the shipping
 `harness/src/local/host_process/children/answer.rs` reducer and uses its
-original `Outcome` type and answer bound. Input uses the production `LineBuffer`
+original `Outcome` type and complete answer. Input uses the production `LineBuffer`
 and event bound used by `children::output`. The same semantic oracle compares
 fragmented pipe reads with full pages, including malformed and incomplete frames;
 no EOF delimiter is invented for an open pipe. It does not model process execution
-or physical retirement. The old recorded-terminal
-example is subsumed by this same corpus property; its unique lazy truncation
-work assertion remains in the replay control.
+or physical retirement. The old recorded-terminal example is subsumed by this
+same corpus property. The answer prefix selector and its work assertion are
+removed: replies retain every part, and incremental parts append to one buffer.
 
 The oracle checks event redelivery, previews without terminals, original
-failure/cancellation, reset, unknown events, maximal UTF-8 answer prefixes and
+failure/cancellation, reset, unknown events, complete UTF-8 answers and
 loss of a preview or successful terminal. It checks every prefix of each
 JSONL input. Invalid UTF-8 passes through the original framer's error path and
 exercises the reducer loss transition; invalid JSON has no reducer effect.
@@ -89,8 +89,8 @@ positive result.
 
 `opencode-derived-transitions.jsonl` selects its original step/text parts and
 wraps them in the CLI formatter's event shape, then mutates completion timestamps,
-repeats a text part, and adds a multipart UTF-8 boundary: after a truncated emoji,
-a later ASCII part cannot fill the remaining byte and skip the emoji.
+repeats a text part, and adds a multipart UTF-8 boundary: both the emoji and a
+later ASCII part must survive beyond the former answer ceiling.
 These derived inputs exercise the reducer; they do not
 establish that the native CLI delivered those lines. `agy-derived-transitions.jsonl`
 mutates the captured refusal's statuses, response and optional failure fields.
