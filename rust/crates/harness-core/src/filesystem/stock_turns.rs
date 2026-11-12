@@ -21,6 +21,14 @@ use std::sync::Arc;
 /// What one host adds to a stock turn once its model, tools, limits and
 /// compaction are composed: at least the turn's tool authority.
 pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
+    /// Saves the workspace before the delivery parks on `operation`.
+    fn park<'a>(
+        &'a self,
+        _agent: &'a AgentState,
+        _operation: OperationId,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Publishes the workspace before this turn's terminal record.
     fn settle<'a>(
         &'a self,
@@ -92,6 +100,13 @@ impl Tasks {
 }
 
 impl TurnContext for Tasks {
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        self.settle(agent, operation)
+    }
     fn settle(&self, _: &AgentState, turn: OperationId) -> BoxProviderFuture<'_, Result<()>> {
         Box::pin(async move {
             if let Some(targets) = self.0.targets() {
@@ -290,6 +305,13 @@ impl StockExecutors {
 }
 
 impl TurnExecutors for StockExecutors {
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        self.context.park(agent, operation)
+    }
     fn question_plugin(&self) -> bool {
         self.question_plugin
     }

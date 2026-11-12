@@ -40,7 +40,7 @@ test("one guest heap admits distinct Machines for two actors and re-admits every
   const providers = WasmAgentProviders.memory(fixture.options);
   const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry);
   expect(admitted).toEqual([]);
-  const host = WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry, authority, {
+  const openHost = () => WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry, authority, {
     manifest: guest.manifest(), async onRecord(bytes, signal, interrupt) {
       const delivery = codec.decodeDelivery(bytes);
       const actor = Array.from(delivery.actor).join(",");
@@ -51,19 +51,20 @@ test("one guest heap admits distinct Machines for two actors and re-admits every
       finally { attempts.delete(delivery.request); }
     }, policy: () => true, admitted: async () => {},
   });
+  const firstHost = openHost(), secondHost = openHost();
   try {
-    const first = await host.create("first"), second = await host.create("second");
-    for (const [agent, id] of [[first, "first-turn"], [second, "second-turn"], [first, "next-attempt"]]) {
+    const first = await firstHost.create("first"), second = await secondHost.create("second");
+    for (const [host, agent, id] of [[firstHost, first, "first-turn"], [secondHost, second, "second-turn"], [firstHost, first, "next-attempt"]] as const) {
       await host.command({ kind: "prompt", agent, id, body: "hello" }, credential);
       await host.drain(agent);
     }
-    expect(await host.read(first, "conversation", 0n, 16)).toHaveLength(2);
-    expect(await host.read(second, "conversation", 0n, 16)).toHaveLength(1);
+    expect(await firstHost.read(first, "conversation", 0n, 16)).toHaveLength(2);
+    expect(await secondHost.read(second, "conversation", 0n, 16)).toHaveLength(1);
     expect(new Set(admitted.map(value => value.machine)).size).toBe(2);
     expect(admitted).toHaveLength(deliveries);
     expect(new Set(admitted.map(value => value.request)).size).toBe(deliveries);
     expect(attempts.size).toBe(0);
   } finally {
-    host.close(); host.free(); guest.free(); providers.free(); authority.free(); fixture.free(); credential.fill(0);
+    firstHost.close(); firstHost.free(); secondHost.close(); secondHost.free(); guest.free(); providers.free(); authority.free(); fixture.free(); credential.fill(0);
   }
 });
