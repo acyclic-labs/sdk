@@ -195,7 +195,7 @@ impl<P: NativeStreamProvider + ?Sized, S: AsyncObjectStore> FoldCache<P, S> {
         while from < tail {
             // The protocol record bound chunks one finite read; it is not a
             // history limit. The selected prefix never includes later appends.
-            let limit = (tail - from).min(u64::from(u32::MAX)) as u32;
+            let limit = (tail - from).min(acyclic_stream::MAX_ITEMS as u64) as u32;
             let _floor = RetainedAllocation::claim(std::mem::size_of::<Revision>() as u64, 1, ctx)?;
             let mut records = output(
                 self.streams

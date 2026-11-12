@@ -178,6 +178,76 @@ impl Fold for CountedSum {
 }
 
 #[tokio::test]
+async fn cold_fold_crosses_the_stream_request_page_boundary() -> Result {
+    use acyclic_fs::demand::{FoldCache, FoldCacheIdentity};
+    use acyclic_stream::{
+        AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, StreamPath,
+        StreamProviderExt as _,
+    };
+    let cancellation = CancellationToken::new();
+    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut ctx = KernelAccounting::NativeOriginal {
+        work: &original,
+        cancellation: &cancellation,
+    };
+    let streams = Arc::new(MemoryStream::default());
+    let path = StreamPath::new("usage/cold")?;
+    let count = acyclic_stream::MAX_ITEMS as u64 + 1;
+    let mut revision = None;
+    for range in [0..count - 1, count - 1..count] {
+        let outcome = streams
+            .append(AppendRequest {
+                path: path.clone(),
+                records: range
+                    .clone()
+                    .map(|_| 1u64.to_le_bytes().to_vec().into())
+                    .collect(),
+                if_tail: Some(range.start),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        let AppendOutcome::Committed(receipt) = outcome else {
+            return Err("fixture append refused".into());
+        };
+        revision = Some(receipt.revision);
+    }
+    let at = revision.ok_or("fixture has no revision")?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let cache = FoldCache::new(
+        streams,
+        Arc::new(objects()),
+        FoldCacheIdentity {
+            input: path,
+            authority: at.clone(),
+            view: [17; 32],
+            generation: [4; 32],
+            chunk: NonZeroU64::new(count + 1).ok_or("invalid checkpoint chunk")?,
+        },
+        &mut ctx,
+    )?;
+    let seed = serde_json::to_vec(&FoldCheckpoint {
+        version: 1,
+        view: [17; 32],
+        sequence: 0,
+        generation: [4; 32],
+        state: 0u64,
+    })?;
+    let folded = cache
+        .fold_at(
+            CountedSum(Arc::clone(&calls)),
+            at,
+            |ctx| ctx.decode_json(&seed).map_err(FoldObjectError::from),
+            &mut ctx,
+        )
+        .await?;
+    assert_eq!(folded.state, count);
+    assert_eq!(calls.load(Ordering::Relaxed), count as usize);
+    ctx.remaining()?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn checkpoint_catalog_reopens_nearest_prefix_and_reads_only_new_events() -> Result {
     use acyclic_fs::demand::{FoldCache, FoldCacheIdentity};
     use acyclic_stream::{

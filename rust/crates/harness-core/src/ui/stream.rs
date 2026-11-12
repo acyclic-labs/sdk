@@ -450,7 +450,7 @@ where
         let io = PreparationIo::from_native_work(original).map_err(content_error)?;
         let mut from = range.start;
         while from < range.end {
-            let limit = (range.end - from).min(u64::from(u32::MAX)) as u32;
+            let limit = (range.end - from).min(acyclic_stream::MAX_ITEMS as u64) as u32;
             let _floor = RetainedAllocation::claim(std::mem::size_of::<Revision>() as u64, 1, ctx)?;
             let mut opened = native_result(
                 self.streams

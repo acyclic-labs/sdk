@@ -246,6 +246,7 @@ export class NativeStreamProvider implements StreamProvider {
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const authored = { kind: "children_page" as const,
+      ...(request.offset === undefined ? {} : { offset: request.offset }),
       ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), limit: request.limit,
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),

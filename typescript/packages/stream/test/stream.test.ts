@@ -87,6 +87,9 @@ describe("website Stream contract", () => {
     }
     const first = await client.childrenPage({ parent: "seek", limit: 1 });
     expect(first.nextAfter).toBe("seek/a");
+    const ranked = await client.childrenPage({ parent: "seek", offset: 1n, limit: 1 });
+    expect(ranked.children.map(child => child.path)).toEqual(["seek/b"]);
+    expect((await client.childrenPage({ parent: "seek", offset: 2n, limit: 1 })).children).toEqual([]);
     await client.bytes("unrelated/entry").append(new Uint8Array([2]), { idempotencyKey: key("seek-unrelated") });
     const next = await client.childrenPage({ parent: "seek", after: first.nextAfter!, limit: 1 });
     expect(next.children.map(child => child.path)).toEqual(["seek/b"]);
