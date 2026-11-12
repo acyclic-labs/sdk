@@ -382,6 +382,176 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             VolumeOperation::Write,
             &mut None,
         )?;
+        // Reopening existing storage must re-admit the kernel's current
+        // policy, without rewriting any original input or granting guest writes.
+        let workspace = host
+            .filesystem
+            .open_workspace(
+                journal.storage_name(&mut None)?,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| Error::from(failure.error))?
+            .value;
+        let mut policy: acyclic_fs::access::Policy =
+            serde_json::from_slice(include_bytes!("../host/journal-policy.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        policy.layers[0].retain(|rule| rule.id != "published-input");
+        let mut checkout = workspace
+            .checkout(
+                acyclic_fs::model::GenerationSelector::Head,
+                acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| Error::from(failure.error))?
+            .value;
+        checkout
+            .write_access_policy(
+                &serde_json::to_vec(&policy).map_err(|error| Error::Invalid(error.to_string()))?,
+                acyclic_fs::NamedAttributeWriteMode::Replace,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| Error::from(failure.error))?;
+        let changed = checkout
+            .commit::<acyclic_fs::FsError, _, _>(
+                acyclic_fs::OperationId::new(),
+                None,
+                None,
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+                |_| {
+                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    }))
+                },
+            )
+            .await
+            .map_err(|failure| Error::from(failure.error))?
+            .value;
+        assert!(matches!(
+            changed,
+            acyclic_fs::LivePublicationObservation::Committed { .. }
+        ));
+        let refused = async { selected_reader.read(&input, 4096, None, None)?.await }
+            .await
+            .expect_err("the saved policy did not exercise input refusal");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+        let before = host
+            .resolve(
+                &workspace_ref(
+                    journal.provider().clone(),
+                    &journal.storage_name(&mut None)?,
+                )?,
+                None,
+            )
+            .await?;
+        let refused = host
+            .enforce_journal_policy(
+                &journal,
+                &guest.verifier,
+                &guest.scope,
+                || std::future::ready(Ok(guest_write.clone())),
+                None,
+            )?
+            .await
+            .expect_err("a guest replaced journal enforcement");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+        let reopened = FilesystemHost::new(host.filesystem.clone(), journal.provider(), None)?;
+        let allowed: Vec<_> = acyclic_fs::access::Action::ALL
+            .into_iter()
+            .filter(|action| *action != acyclic_fs::access::Action::Admin)
+            .collect();
+        let limited = root.bootstrap_scope(
+            "policy-without-admin",
+            &Capabilities::new([
+                HARNESS_HOST.to_owned(),
+                journal.capability(VolumeOperation::Write, &mut None)?,
+                acyclic_fs::access::Capability::whole_volume(None, &allowed)
+                    .to_scope_label()
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            ]),
+            Some(owner),
+            &mut None,
+        )?;
+        let limited_grant = ContentGrant::verify(
+            &guest.verifier,
+            &limited,
+            &journal,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        let refused = reopened
+            .enforce_journal_policy(
+                &journal,
+                &guest.verifier,
+                &control_scope,
+                || std::future::ready(Ok(limited_grant)),
+                None,
+            )?
+            .await
+            .expect_err("journal admission bypassed the administrator ceiling");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+        assert_eq!(
+            reopened
+                .resolve(
+                    &workspace_ref(
+                        journal.provider().clone(),
+                        &journal.storage_name(&mut None)?
+                    )?,
+                    None,
+                )
+                .await?
+                .generation,
+            before.generation
+        );
+        let reopened_admission = AdmittedAgent::verify(&issuer, &admission, &path, &volumes)?;
+        reopened_admission
+            .journal_authority(&reopened, &[input.clone()], &[])
+            .await?;
+        let reference = workspace_ref(
+            journal.provider().clone(),
+            &journal.storage_name(&mut None)?,
+        )?;
+        let repaired = reopened.resolve(&reference, None).await?;
+        assert_ne!(repaired.generation, before.generation);
+        reopened
+            .enforce_journal_policy(
+                &journal,
+                &guest.verifier,
+                &control_scope,
+                || std::future::ready(Err(Error::Unauthorized("no policy writer selected".into()))),
+                None,
+            )?
+            .await?;
+        assert_eq!(
+            selected_reader
+                .read(&input, 4096, None, None)?
+                .await?
+                .as_ref(),
+            b"accepted input"
+        );
+        reopened_admission
+            .journal_authority(&reopened, &[input.clone()], &[])
+            .await?;
+        assert_eq!(
+            reopened.resolve(&reference, None).await?.generation,
+            repaired.generation
+        );
+        assert_eq!(
+            async { reader.read(&control, 4096, None, None)?.await }
+                .await
+                .expect_err("policy admission exposed unrelated control data")
+                .code(),
+            crate::wire::ErrorCode::Unauthorized,
+        );
         for path in ["forged.json", "inputs/forged.json"] {
             let denied = host
                 .put_content(

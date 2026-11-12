@@ -288,10 +288,16 @@ impl<'v> AdmittedAgent<'v> {
     }
 
     /// Host authority over this agent's journal and retained conversation files.
-    async fn journal_authority(
+    async fn journal_authority<A, O>(
         &self,
+        host: &FilesystemHost<A, O>,
         retained: &[FileRef],
-    ) -> Result<(VolumeRef, AgentAuthority<'v>)> {
+        external: &[FileRef],
+    ) -> Result<(VolumeRef, AgentAuthority<'v>)>
+    where
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
         let content = Capabilities::new(
             retained
                 .iter()
@@ -299,11 +305,43 @@ impl<'v> AdmittedAgent<'v> {
                 .collect::<Result<Vec<_>>>()?,
         );
         let scope = self.control_scope(&content).await?;
+        let verifier = self.issuer.verifier(&mut None)?;
+        let journals: std::collections::BTreeSet<&VolumeRef> = std::iter::once(&self.journal)
+            .chain(retained.iter().chain(external).map(FileRef::volume))
+            .filter(|volume| volume.is_agent_journal())
+            .collect();
+        for journal in journals {
+            host.enforce_journal_policy(
+                journal,
+                &verifier,
+                &scope,
+                || async {
+                    let source_scope;
+                    let policy_scope = if journal == &self.journal {
+                        &scope
+                    } else {
+                        source_scope = self
+                            .control_scope_for(journal, &Capabilities::default())
+                            .await?;
+                        &source_scope
+                    };
+                    crate::conversation::ContentGrant::verify(
+                        &verifier,
+                        policy_scope,
+                        journal,
+                        VolumeOperation::Write,
+                        &mut None,
+                    )
+                },
+                None,
+            )?
+            .await?;
+        }
         Ok((
             self.journal.clone(),
             AgentAuthority {
                 issuer: self.issuer.clone(),
-                verifier: self.issuer.verifier(&mut None)?,
+                verifier,
                 grants: scope.capabilities().clone(),
                 scope,
                 private: self.private,
@@ -313,6 +351,22 @@ impl<'v> AdmittedAgent<'v> {
 
     async fn control_scope(&self, content: &Capabilities) -> Result<Scope> {
         self.authorize_host_volume(&self.journal)?;
+        self.control_scope_for(&self.journal, content).await
+    }
+
+    async fn control_scope_for(
+        &self,
+        journal: &VolumeRef,
+        content: &Capabilities,
+    ) -> Result<Scope> {
+        if !journal.is_agent_journal() || journal.provider() != self.journal.provider() {
+            return Err(Error::Unauthorized(
+                "journal policy belongs to another host".into(),
+            ));
+        }
+        let VolumeOwner::Agent(owner) = journal.owner() else {
+            return Err(Error::Invalid("journal has no agent owner".into()));
+        };
         let parent = if self.issuer.native().is_some() {
             None
         } else {
@@ -320,16 +374,16 @@ impl<'v> AdmittedAgent<'v> {
                 .or_else(|| self.issuer.caller().map(|(_, scope)| scope))
         };
         if let Some(parent) = parent
-            && parent.agent() == Some(self.owner)
+            && parent.agent() == Some(*owner)
         {
             return Ok(parent.clone());
         }
         let grants = match parent {
             Some(parent) => parent.capabilities().clone(),
-            None => journal_grants(&self.journal, content)?,
+            None => journal_grants(journal, content)?,
         };
         self.issuer
-            .issue(parent, "host-journal", &grants, Some(self.owner))
+            .issue(parent, "host-journal", &grants, Some(*owner))
             .await
     }
 
@@ -903,7 +957,9 @@ where
         &'a self,
         agent: &'a AgentState,
     ) -> Result<(VolumeRef, AgentAuthority<'a>)> {
-        self.admit(agent)?.journal_authority(&[]).await
+        self.admit(agent)?
+            .journal_authority(&self.host, &[], &[])
+            .await
     }
 
     /// Read current project roots through the agent's signed grant and persisted
@@ -1037,7 +1093,7 @@ where
         let local_root = admitted.parent.is_none();
         let storage = crate::core::until_turn_stopped(
             stop.clone(),
-            self.journal_storage(&admitted, retained),
+            self.journal_storage(&admitted, retained, external),
         )
         .await?;
         let AgentAuthority {
@@ -1176,8 +1232,11 @@ where
         &self,
         admitted: &AdmittedAgent<'_>,
         retained: &[FileRef],
+        external: &[FileRef],
     ) -> Result<JournalStorage<A, O>> {
-        let (volume, authority) = admitted.journal_authority(retained).await?;
+        let (volume, authority) = admitted
+            .journal_authority(&self.host, retained, external)
+            .await?;
         let AgentAuthority {
             scope, verifier, ..
         } = authority;
@@ -1973,9 +2032,11 @@ where
             } else {
                 None
             };
-            let storage =
-                crate::core::until_turn_stopped(Some(stop), self.journal_storage(&admitted, &[]))
-                    .await?;
+            let storage = crate::core::until_turn_stopped(
+                Some(stop),
+                self.journal_storage(&admitted, &[], &[]),
+            )
+            .await?;
             Ok(crate::agent::OpenControl {
                 outputs: storage.files,
                 checkpoint,
