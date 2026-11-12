@@ -528,15 +528,15 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
         2,
         "duplicate control did not select its own lock twice"
     );
-    // One view per volume, however many names bind it.
+    // One view per volume, however many names bind it: every alias names it.
     native_scope(&duplicate, async |claims| {
-        let roots: Vec<_> = claims
+        let roots: std::collections::BTreeSet<_> = claims
             .mounts()
             .mounts()
             .filter_map(|(_, mount)| mount.native_root.override_path().cloned())
             .collect();
         assert_eq!(roots.len(), 1);
-        assert_ne!(roots[0], first.destination);
+        assert!(!roots.contains(&first.destination));
         Ok(((), claims))
     })
     .await?;
