@@ -117,7 +117,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         &'a self,
         volume: &'a VolumeRef,
         operation: OperationId,
-        maximum: u64,
+        maximum: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<BoundedContentFuture<'a, (Option<ContentChanges>, Option<ContentHold<'io>>)>> {
         if volume != &self.volume {

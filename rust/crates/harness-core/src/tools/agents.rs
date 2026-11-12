@@ -261,23 +261,31 @@ impl AgentTool {
                     let exhausted =
                         || Error::tool_rejected("selected files exceed the send byte budget");
                     remaining = remaining
-                        .checked_sub(
-                            destination.len() as u64
-                                + std::mem::size_of::<(
-                                    String,
-                                    crate::conversation::FileRef,
-                                    acyclic_stream::OwnedBytes,
-                                )>() as u64,
-                        )
-                        .ok_or_else(exhausted)?;
+                        .map(|remaining| {
+                            remaining
+                                .checked_sub(
+                                    destination.len() as u64
+                                        + std::mem::size_of::<(
+                                            String,
+                                            crate::conversation::FileRef,
+                                            acyclic_stream::OwnedBytes,
+                                        )>() as u64,
+                                )
+                                .ok_or_else(exhausted)
+                        })
+                        .transpose()?;
                     let (file, bytes, _) = context
                         .read_tool_path_bounded(path, None, remaining, None)
                         .await?;
                     let metadata_bytes = file.logical_owned_bytes()?;
                     remaining = remaining
-                        .checked_sub(bytes.len() as u64)
-                        .and_then(|remaining| remaining.checked_sub(metadata_bytes))
-                        .ok_or_else(exhausted)?;
+                        .map(|remaining| {
+                            remaining
+                                .checked_sub(bytes.len() as u64)
+                                .and_then(|remaining| remaining.checked_sub(metadata_bytes))
+                                .ok_or_else(exhausted)
+                        })
+                        .transpose()?;
                     sources.push((destination, file, bytes));
                 }
                 let changes = sources

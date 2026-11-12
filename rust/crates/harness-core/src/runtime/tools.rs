@@ -828,8 +828,7 @@ impl ToolContext {
         super::content_write::authorize_volume_write(volume, self.effective_scope(), io)?;
         let maximum = io
             .map(|io| io.remaining().map(|work| work.bytes_encoded))
-            .transpose()?
-            .unwrap_or(u64::MAX);
+            .transpose()?;
         let (files, hold) = writer
             .observe_changes(
                 volume,
@@ -1359,7 +1358,7 @@ impl ToolContext {
         &self,
         path: &str,
         expected_generation: Option<&crate::resources::GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;

@@ -795,7 +795,7 @@ impl PublicationCase<'_> {
                 io: self.io,
             };
             assert!(matches!(
-                self.host.observe_changes(self.volume, self.write, &old_key, 4096, access)?.await,
+                self.host.observe_changes(self.volume, self.write, &old_key, Some(4096), access)?.await,
                 Err(error) if error.code() == crate::wire::ErrorCode::Unsupported
             ));
             let changes = [crate::conversation::ContentChange::CreateAbsent {
@@ -988,7 +988,13 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             .ok_or_else(|| proof_io.invalid("receipt absent"))?
             .len() as u64;
         let refused = host
-            .observe_changes(&volume, &write, &key, receipt_bytes - 1, create_access)?
+            .observe_changes(
+                &volume,
+                &write,
+                &key,
+                Some(receipt_bytes - 1),
+                create_access,
+            )?
             .await
             .expect_err("oversized receipt must refuse in the canonical decoder");
         assert!(matches!(
@@ -1002,7 +1008,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 )
         ));
         let observed = host
-            .observe_changes(&volume, &write, &key, receipt_bytes, create_access)?
+            .observe_changes(&volume, &write, &key, Some(receipt_bytes), create_access)?
             .await?
             .ok_or_else(|| proof_io.invalid("conditional receipt absent"))?;
         assert_eq!(observed.generation, original.generation);
@@ -1152,7 +1158,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 assert_eq!(host.resolve(&workspace, None).await?, before);
             }
             let denied = host
-                .observe_changes(&volume, &write, &key, 64_000, delete_access)?
+                .observe_changes(&volume, &write, &key, Some(64_000), delete_access)?
                 .await
                 .expect_err("a delete ceiling cannot recover a creation receipt");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
@@ -1188,7 +1194,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 .await?;
             assert_eq!(replay, removed);
             let observed = host
-                .observe_changes(&volume, &write, &delete_key, 64_000, delete_access)?
+                .observe_changes(&volume, &write, &delete_key, Some(64_000), delete_access)?
                 .await?
                 .expect("the delete ceiling can recover its deletion receipt");
             assert_eq!(observed.generation, removed.generation);

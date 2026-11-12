@@ -57,7 +57,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         volume: &'a VolumeRef,
         grant: &'a ContentGrant,
         key: &'a IdempotencyKey,
-        maximum_receipt_bytes: u64,
+        maximum_receipt_bytes: Option<u64>,
         access: ContentAccess<'a, 'a>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<ContentChanges>>> {
         grant.require(volume, VolumeOperation::Write, access.io)?;
@@ -80,12 +80,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let Some(publication) = io.sdk(
                 opened
-                    .operation_publication(
-                        operation,
-                        Some(maximum_receipt_bytes),
-                        io,
-                        io.cancellation(),
-                    )
+                    .operation_publication(operation, maximum_receipt_bytes, io, io.cancellation())
                     .await,
             )?
             else {
