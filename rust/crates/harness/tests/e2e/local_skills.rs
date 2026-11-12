@@ -37,6 +37,7 @@ fn config(
     .state_directory(state)
     .without_default_tools()
     .compaction(CompactionPolicy::Disabled)
+    .feedback_plugin(false)
     .goal_continuations(None)
     .settings(SettingsConfig::new(root, home).codex_home(home.join(".codex"))))
 }
