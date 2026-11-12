@@ -100,6 +100,7 @@ does not need access to client filesystem paths.
 
 ```sh
 docker pull node:24-trixie
+bun install --cwd scripts/graphcoder-pty --frozen-lockfile
 E2E_FILESYSTEM_BINARY=/absolute/path/to/harness-filesystem-fixture \
 node scripts/qualify-docker-no-fuse.mjs node:24-trixie \
   /absolute/graphcoder /absolute/harness-mock-model /fresh/absolute/evidence

@@ -92,6 +92,8 @@ async function outside(image, binary, mock, output, ...requested) {
   assert.ok(image && [binary, mock, output].every(path => path && isAbsolute(path)), recovery);
   const filesystem = process.env.E2E_FILESYSTEM_BINARY;
   assert.ok(filesystem && isAbsolute(filesystem), "E2E_FILESYSTEM_BINARY must name the built harness-filesystem-fixture");
+  const ptyModules = join(root, "scripts/graphcoder-pty/node_modules");
+  assert.ok(existsSync(ptyModules), "install the locked scripts/graphcoder-pty dependencies before qualification");
   await mkdir(output); // Evidence is fresh; an earlier PASS can never qualify this run.
   await mkdir(join(output, "transcripts"));
   const processes = new Processes({ transcripts: join(output, "transcripts") });
@@ -152,6 +154,7 @@ async function outside(image, binary, mock, output, ...requested) {
       await docker(["cp", "--archive", "--follow-link", binary, `${name}:/graphcoder`]);
       await docker(["cp", "--archive", "--follow-link", mock, `${name}:/harness-mock-model`]);
       await docker(["cp", "--archive", "--follow-link", filesystem, `${name}:/harness-filesystem-fixture`]);
+      await docker(["cp", "--archive", "--follow-link", ptyModules, `${name}:/sdk/scripts/graphcoder-pty/node_modules`]);
       // Inspect only the contract's fields: unrelated daemon configuration
       // (for example logging-driver credentials) must not enter evidence.
       const format = '{"Privileged":{{json .HostConfig.Privileged}},"CapAdd":{{json .HostConfig.CapAdd}},'
