@@ -53,7 +53,11 @@ impl ToolSource for Programs {
         Some("tool:call:shell")
     }
 
-    fn load<'a>(&'a self, name: &'a str) -> BoxProviderFuture<'a, Result<Option<Arc<Tool>>>> {
+    fn load<'a>(
+        &'a self,
+        name: &'a str,
+        _io: Option<&'a PreparationIo>,
+    ) -> BoxProviderFuture<'a, Result<Option<Arc<Tool>>>> {
         Box::pin(async move {
             let program = crate::plugins::load_program(self, &format!("tools/{name}")).await?;
             program.bind(self.shell.clone()).map(Arc::new).map(Some)
