@@ -2954,9 +2954,13 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             agents.state(&child).await,
         )));
     }
-    assert_eq!(provider.request_count(), 2);
-    let child_file = publication(&connection, &child, 0).await?;
     let child_state = agents.state(&child).await.map_err(agent)?;
+    assert_eq!(
+        provider.request_count(),
+        2,
+        "child task did not reach its bound model: {child_state:?}"
+    );
+    let child_file = publication(&connection, &child, 0).await?;
     let child_project = child_state
         .volumes
         .iter()
