@@ -63,9 +63,13 @@ impl AgentGuest {
 
     /// Test a candidate control against the guest's original active input.
     #[wasm_bindgen(js_name = acceptsInterrupt)]
-    pub async fn accepts_interrupt(&self, query: Vec<u8>) -> Result<bool, JsValue> {
-        wire::accepts_interrupt(&self.handler, &query)
-            .await
+    pub async fn accepts_interrupt(
+        &self,
+        query: Vec<u8>,
+        #[wasm_bindgen(unchecked_param_type = "AbortSignal")] signal: JsValue,
+    ) -> Result<bool, JsValue> {
+        Listening::run(&signal, wire::accepts_interrupt(&self.handler, &query))
+            .await?
             .map_err(guest_error)
     }
 
@@ -85,16 +89,13 @@ impl AgentGuest {
         let cancellation = CancellationToken::new();
         let token = cancellation.clone();
         let _interrupt = Listening::abort(&interrupt, move || token.cancel())?;
-        let (turn, handle) = futures::future::abortable(self.handler.on_record(
-            delivery,
-            checkpoint.as_ref(),
-            cancellation,
-        ));
-        let _listening = Listening::abort(&signal, move || handle.abort())?;
-        let transition = turn
-            .await
-            .map_err(|_| guest_error(GuestError::Handler("delivery was aborted".into())))?
-            .map_err(guest_error)?;
+        let transition = Listening::run(
+            &signal,
+            self.handler
+                .on_record(delivery, checkpoint.as_ref(), cancellation),
+        )
+        .await?
+        .map_err(guest_error)?;
         wire::encode_transition(&transition).map_err(guest_error)
     }
 }
@@ -148,15 +149,92 @@ pub(super) fn call(
 /// The host forwards the original predicate without running a second delivery.
 pub(super) fn interrupt(callback: Function) -> impl Fn(Vec<u8>) -> GuestFuture<'static, bool> {
     move |query| {
-        let result = callback.call1(&JsValue::UNDEFINED, &Uint8Array::from(query.as_slice()));
+        let callback = callback.clone();
         Box::pin(async move {
-            JsFuture::from(Promise::resolve(&result.map_err(rejected)?))
+            let mut cancel = Cancel::new().map_err(|error| GuestError::Handler(error.into()))?;
+            let result = callback
+                .call2(
+                    &JsValue::UNDEFINED,
+                    &Uint8Array::from(query.as_slice()),
+                    &cancel.signal,
+                )
+                .map_err(rejected)?;
+            let result = JsFuture::from(Promise::resolve(&result))
                 .await
-                .map_err(rejected)?
-                .as_bool()
-                .ok_or_else(|| {
-                    GuestError::Decode("interrupt predicate must return a boolean".into())
-                })
+                .map_err(rejected)?;
+            cancel.finish();
+            result.as_bool().ok_or_else(|| {
+                GuestError::Decode("interrupt predicate must return a boolean".into())
+            })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_stream::{
+        AppendRequest, FollowRequest, IdempotencyKey, MemoryStream, StreamPath,
+        StreamProvider as _, StreamProviderExt as _,
+    };
+    use futures::{TryStreamExt as _, channel::oneshot};
+    use std::{cell::RefCell, rc::Rc};
+    use wasm_bindgen::JsCast as _;
+
+    struct Reading(Option<oneshot::Sender<()>>);
+    impl Drop for Reading {
+        fn drop(&mut self) {
+            if let Some(closed) = self.0.take() {
+                let _ = closed.send(());
+            }
+        }
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn dropping_an_interrupt_call_releases_a_pending_guest_stream() {
+        let provider = Rc::new(MemoryStream::default());
+        let path = StreamPath::new("guest/interrupt").unwrap();
+        provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![b"seed".to_vec().into()],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::new(b"seed".to_vec()).unwrap(),
+            })
+            .await
+            .unwrap();
+        let (started, starting) = oneshot::channel();
+        let (closed, closing) = oneshot::channel();
+        let channels = RefCell::new(Some((started, closed)));
+        let callback =
+            Closure::<dyn FnMut(Uint8Array, JsValue) -> Promise>::new(move |_, signal| {
+                let provider = provider.clone();
+                let path = path.clone();
+                let (started, closed) = channels.borrow_mut().take().unwrap();
+                wasm_bindgen_futures::future_to_promise(async move {
+                    Listening::run(&signal, async move {
+                        let _reading = Reading(Some(closed));
+                        let mut cursor = acyclic_stream::records_only(
+                            provider
+                                .follow(FollowRequest::new(path, 1))
+                                .await
+                                .map_err(|error| JsValue::from_str(&error.to_string()))?,
+                        );
+                        started.send(()).unwrap();
+                        let _ = cursor
+                            .try_next()
+                            .await
+                            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+                        Ok::<_, JsValue>(JsValue::FALSE)
+                    })
+                    .await?
+                })
+            });
+        let callback_function = callback.as_ref().unchecked_ref::<Function>().clone();
+        let mut pending = interrupt(callback_function)(Vec::new());
+        assert!(futures::poll!(pending.as_mut()).is_pending());
+        starting.await.unwrap();
+        drop(pending);
+        closing.await.unwrap();
     }
 }

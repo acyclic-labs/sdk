@@ -1,9 +1,7 @@
 use super::*;
 use crate::agent::{ApprovalRequested, Cancellation, Queued, Sender, TurnFuture, TurnStep, Wait};
 use acyclic_actors::guest::{CancellationToken, SubscriptionCuts, wire};
-use acyclic_stream::{
-    AppendRequest, CommitOutcome, MemoryStream, StreamPath, StreamProviderExt as _,
-};
+use acyclic_stream::{AppendRequest, CommitOutcome, MemoryStream, StreamProviderExt as _};
 use tokio::sync::oneshot;
 
 struct Opening(Mutex<Option<oneshot::Sender<u64>>>);
@@ -51,7 +49,7 @@ async fn alarm_opening_from_overflow_accepts_only_its_selected_input_interrupt()
     };
     let created = crate::agent::create_root(&"create".try_into()?, adopted.clone())?;
     let path = created.child;
-    let CommitOutcome::Committed(receipt) = provider.commit(created.request).await? else {
+    let CommitOutcome::Committed(_) = provider.commit(created.request).await? else {
         panic!("creation refused");
     };
     provider
@@ -75,8 +73,38 @@ async fn alarm_opening_from_overflow_accepts_only_its_selected_input_interrupt()
     let checkpoint =
         crate::agent::checkpoint::from_encoded(crate::agent::checkpoint::encode(&state)?)?;
     let actor = ActorReference::new(b"account", b"agents", id.as_str().as_bytes())?;
+    let store = crate::agent::actor_store(&provider)?;
+    let subscriptions = BTreeMap::from([(
+        INBOX.into(),
+        Subscription {
+            path: path.inbox()?,
+            cursor: 3,
+        },
+    )]);
+    let CommitOutcome::Committed(receipt) = provider
+        .commit(acyclic_stream::CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![store.create(
+                None,
+                &actor,
+                Creation {
+                    checkpoint: Some(checkpoint.clone()),
+                    subscriptions: subscriptions.clone(),
+                    ..Creation::default()
+                },
+            )?],
+            idempotency_key: crate::agent::intent_key("checkpoint", &[])?,
+        })
+        .await?
+    else {
+        panic!("actor checkpoint refused");
+    };
+    let current = crate::agent::settled(&provider, &actor, &path).await?;
+    assert_eq!(current.input, Some(2));
+    assert_eq!(current.phase, crate::agent::Phase::Running);
+    assert!(!current.settled);
     let delivery = Delivery {
-        actor,
+        actor: actor.clone(),
         epoch: 1,
         now_unix_ms: 100,
         trigger: Trigger::Alarm {
@@ -84,21 +112,11 @@ async fn alarm_opening_from_overflow_accepts_only_its_selected_input_interrupt()
             now_unix_ms: 100,
         },
         record: None,
-        subscriptions: SubscriptionCuts::new(
-            StreamPath::new("actors/state")?,
-            receipt.commit_id,
-            BTreeMap::from([(
-                INBOX.into(),
-                Subscription {
-                    path: path.inbox()?,
-                    cursor: 3,
-                },
-            )]),
-        ),
+        subscriptions: SubscriptionCuts::new(store.path(&actor)?, receipt.commit_id, subscriptions),
     };
     let (started, starting) = oneshot::channel();
     let handler = AgentHandler::new(
-        Store::new(provider.clone(), StreamPath::new("actors")?),
+        store,
         Opening(Mutex::new(Some(started))),
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
     )?;

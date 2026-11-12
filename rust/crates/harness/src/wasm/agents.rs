@@ -520,7 +520,9 @@ impl WasmAgents {
             unchecked_param_type = "(delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => Promise<Uint8Array>"
         )]
         on_record: Function,
-        #[wasm_bindgen(unchecked_param_type = "(query: Uint8Array) => Promise<boolean>")]
+        #[wasm_bindgen(
+            unchecked_param_type = "(query: Uint8Array, signal: AbortSignal) => Promise<boolean>"
+        )]
         on_interrupt: Function,
         #[wasm_bindgen(
             unchecked_param_type = "((actor: string, error: string) => void) | undefined"
