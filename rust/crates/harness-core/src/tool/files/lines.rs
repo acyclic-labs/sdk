@@ -135,7 +135,14 @@ pub(super) async fn read(
             )
             .await?;
     }
-    let budget = super::read::encoded_text_budget(&version, &input.path, maximum, work, io)?;
+    let budget = super::read::encoded_text_budget(
+        &version,
+        &input.path,
+        context.is_self_projection(&input.path, io)?,
+        maximum,
+        work,
+        io,
+    )?;
     let mut hold = edit::allocation(work, std::mem::size_of::<Vec<u8>>())?;
     let mut selected = Vec::new();
     let mut selector = Lines {

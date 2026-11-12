@@ -97,7 +97,7 @@ struct SelfProjectionView<'a> {
 enum MediaPart<'a> {
     Text {
         #[schemars(with = "str")]
-        text: MediaText<'a>,
+        text: MarkedMediaText<'a>,
     },
     File {
         file: &'a FileRef,
@@ -113,7 +113,6 @@ struct NativePolicy {
 
 #[derive(Clone, Copy)]
 enum MediaText<'a> {
-    SelfProjection,
     Version(&'a str),
     Notebook {
         path: &'a str,
@@ -123,19 +122,44 @@ enum MediaText<'a> {
     },
 }
 
-impl Serialize for MediaText<'_> {
+impl std::fmt::Display for MediaText<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Version(version) => formatter.write_str(version),
+            Self::Notebook {
+                path,
+                version,
+                page,
+                text,
+            } => write!(
+                formatter,
+                "{version}\nFile {path}; cells from {}; source bytes {}..{} of {}; eof {}; next byte {:?}\n{text}",
+                page.offset, page.start, page.end, page.total, page.eof, page.next,
+            ),
+        }
+    }
+}
+
+struct MarkedMediaText<'a> {
+    self_projection: bool,
+    text: MediaText<'a>,
+}
+
+impl Serialize for MarkedMediaText<'_> {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        match self {
-            Self::SelfProjection => serializer.serialize_str("self-projection: true"),
-            Self::Version(version) => serializer.serialize_str(version),
-            Self::Notebook { path, version, page, text } => serializer.collect_str(&format_args!(
-                "{version}\nFile {path}; cells from {}; source bytes {}..{} of {}; eof {}; next byte {:?}\n{text}",
-                page.offset, page.start, page.end, page.total, page.eof, page.next,
-            )),
+        serializer.collect_str(self)
+    }
+}
+
+impl std::fmt::Display for MarkedMediaText<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.self_projection {
+            formatter.write_str("self-projection: true\n")?;
         }
+        std::fmt::Display::fmt(&self.text, formatter)
     }
 }
 
@@ -174,6 +198,7 @@ fn output_part(file: &FileRef) -> MediaPart<'_> {
 pub(super) fn notebook_text_budget(
     path: &str,
     version: &str,
+    self_projection: bool,
     maximum: Option<u64>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
@@ -187,7 +212,7 @@ pub(super) fn notebook_text_budget(
     };
     let empty = ReadProjection::Parts {
         parts: MediaParts {
-            self_projection: false,
+            self_projection,
             text: MediaText::Notebook {
                 path,
                 version,
@@ -223,17 +248,15 @@ impl Serialize for MediaParts<'_> {
         let length = self
             .outputs
             .len()
-            .checked_add(
-                1 + usize::from(self.primary.is_some()) + usize::from(self.self_projection),
-            )
+            .checked_add(1 + usize::from(self.primary.is_some()))
             .ok_or_else(|| S::Error::custom("native read part count overflow"))?;
         let mut parts = serializer.serialize_seq(Some(length))?;
-        if self.self_projection {
-            parts.serialize_element(&MediaPart::Text {
-                text: MediaText::SelfProjection,
-            })?;
-        }
-        parts.serialize_element(&MediaPart::Text { text: self.text })?;
+        parts.serialize_element(&MediaPart::Text {
+            text: MarkedMediaText {
+                self_projection: self.self_projection,
+                text: self.text,
+            },
+        })?;
         if let Some((file, selection)) = self.primary {
             let intent = match selection {
                 ReadSelection::Image { detail } => {

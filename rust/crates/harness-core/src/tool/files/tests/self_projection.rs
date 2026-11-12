@@ -80,30 +80,35 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
             ranges: Mutex::new(Vec::new()),
         });
         own_content.reader = reader.clone();
-        let task = crate::runtime::Bindings {
-            scope: RuntimeScope::new(
-                Capabilities::new([
-                    own_content
-                        .volume
-                        .directory_read_capability("", &mut None)?,
-                    project_content
-                        .volume
-                        .directory_read_capability("", &mut None)?,
-                    "tool:call:read".into(),
-                    original.read_capability(&mut None)?,
-                ]),
-                Limits {
-                    file_bytes: 4096,
-                    render_bytes: Some(4096),
-                    ..Limits::default()
-                },
-            )?,
-            content: Some(project_content),
-            ..crate::runtime::Bindings::local()
-        }
-        .build()?
-        .agent_context(&Capabilities::default(), own_content)?;
-        let task = Arc::new(task);
+        let build = |render_bytes| -> Result<_> {
+            Ok(Arc::new(
+                crate::runtime::Bindings {
+                    scope: RuntimeScope::new(
+                        Capabilities::new([
+                            own_content
+                                .volume
+                                .directory_read_capability("", &mut None)?,
+                            project_content
+                                .volume
+                                .directory_read_capability("", &mut None)?,
+                            "tool:call:read".into(),
+                            original.read_capability(&mut None)?,
+                        ]),
+                        Limits {
+                            file_bytes: 4096,
+                            render_bytes: Some(render_bytes),
+                            attachments: 1,
+                            ..Limits::default()
+                        },
+                    )?,
+                    content: Some(project_content.clone()),
+                    ..crate::runtime::Bindings::local()
+                }
+                .build()?
+                .agent_context(&Capabilities::default(), own_content.clone())?,
+            ))
+        };
+        let task = build(4096)?;
         let tool = read()?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
@@ -181,6 +186,105 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
                     assert_eq!(result.value["text"], "SOURCE_BODY");
                     assert!(encoded.contains("SOURCE_BODY"));
                 }
+            }
+        }
+        own.stage(
+            OperationId::new(),
+            "ui/boundary.txt",
+            &vec![b'x'; 2048],
+            "text/plain",
+            "text",
+        )
+        .await?;
+        for (path, selection, media) in [
+            (
+                "ui/image.png",
+                Some(json!({"kind":"image","detail":"auto"})),
+                "image/png",
+            ),
+            (
+                "ui/document.pdf",
+                Some(json!({"kind":"pdf"})),
+                "application/pdf",
+            ),
+            ("ui/boundary.txt", None, "text/plain"),
+        ] {
+            if selection.is_some() {
+                own.stage(OperationId::new(), path, b"media", media, "media")
+                    .await?;
+            }
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "bounded-view".into(),
+                name: "read".into(),
+                arguments: json!({"path":format!("volume:///private/{path}"),"include_body":true,"selection":selection}),
+            };
+            let execute = |task: Arc<crate::runtime::TaskContext>| {
+                let invocation = invocation.clone();
+                let tool = &tool;
+                let work = &work;
+                async move {
+                    let context =
+                        ToolContext::new(task, invocation.operation_id, &invocation.call_id)?;
+                    let (result, custody) = if native {
+                        let (result, custody) = tool
+                            .executor
+                            .execute_with_native_context(&context, &invocation, work)?
+                            .await?;
+                        (result, Some(custody))
+                    } else {
+                        (
+                            tool.executor
+                                .execute(invocation.clone(), Some(context))
+                                .await?,
+                            None,
+                        )
+                    };
+                    let (projection, projection_custody) = tool.projection.project(
+                        &invocation,
+                        &result,
+                        if native { Some(work) } else { None },
+                    )?;
+                    Ok::<_, Error>((projection, custody, projection_custody))
+                }
+            };
+            let (projection, _custody, _projection_custody) = execute(task.clone()).await?;
+            // A complete ordinary page fits exactly; the self-view marker must
+            // cause pagination rather than rejection at the same credit.
+            let credit = if selection.is_none() {
+                let mut without_marker = projection.clone();
+                without_marker["value"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("self-projection");
+                serde_json::to_vec(&without_marker).unwrap().len() as u64
+            } else {
+                4096
+            };
+            let (projection, _custody, _projection_custody) = execute(build(credit)?).await?;
+            tool.definition.validate_projection(
+                &projection,
+                Limits {
+                    render_bytes: Some(credit),
+                    attachments: 1,
+                    ..Limits::default()
+                },
+                None,
+            )?;
+            if selection.is_some() {
+                assert_eq!(projection["parts"].as_array().unwrap().len(), 2);
+                assert!(
+                    projection["parts"][0]["text"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("self-projection: true\n")
+                );
+            } else {
+                let shown = projection["value"]["text"].as_str().unwrap();
+                assert!(!shown.is_empty());
+                assert!(shown.len() < 2048);
+                assert_eq!(projection["value"]["page"]["next"], shown.len());
+                assert!(serde_json::to_vec(&projection).unwrap().len() as u64 <= credit);
             }
         }
     }
