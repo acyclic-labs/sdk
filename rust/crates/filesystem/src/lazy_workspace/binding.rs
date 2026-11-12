@@ -384,6 +384,7 @@ impl<
                 &self.workspace.volume,
                 key.operation_id(),
                 Some(self.workspace.limits().maximum_object_bytes),
+                None,
                 ctx,
                 cancellation(ctx),
             )

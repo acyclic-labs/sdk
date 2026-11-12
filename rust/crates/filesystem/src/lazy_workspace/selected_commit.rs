@@ -37,6 +37,7 @@ impl<
                 &self.workspace.volume,
                 operation,
                 Some(self.workspace.limits().maximum_object_bytes),
+                None,
                 ctx,
                 cancellation(ctx),
             )

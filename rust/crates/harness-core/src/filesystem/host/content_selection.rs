@@ -41,8 +41,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let operation = selection_key(operation, io)?;
         let Some(binding) = io.sdk(
-            root.operation_publication(operation, io, io.cancellation())
-                .await,
+            root.operation_publication(
+                operation,
+                Some(SELECTION_BYTES as u64),
+                io,
+                io.cancellation(),
+            )
+            .await,
         )?
         else {
             return Ok(None);

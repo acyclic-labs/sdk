@@ -316,8 +316,12 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     {
         let mut accounting =
             crate::kernel::allocation::KernelAccounting::native(&reopened, &cancellation);
-        let decoded =
-            decode_publication_evidence_with_accounting(&commit.payload, 4_096, &mut accounting)?;
+        let decoded = decode_publication_evidence_with_accounting(
+            &commit.payload,
+            4_096,
+            None,
+            &mut accounting,
+        )?;
         assert_eq!(
             decoded.original_evidence,
             Some(b"immutable original operation data".as_slice())

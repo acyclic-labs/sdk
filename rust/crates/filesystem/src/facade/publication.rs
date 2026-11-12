@@ -738,6 +738,7 @@ fn original_publication_head(
     let decoded = crate::kernel::decode_publication_evidence_with_accounting(
         &record.payload,
         record.payload.len() as u64,
+        None,
         accounting,
     )?;
     Ok(decoded.origin.map_or(
