@@ -21,7 +21,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let io = match io {
                 Some(io) => io,
                 None => {
-                    owned = PreparationIo::for_unmeasured(&CancellationToken::new())?;
+                    owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
                     &owned
                 }
             };
@@ -43,7 +43,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let workspace = self.open(&reference, Some(io)).await?;
             let head = self.current_generation(&workspace, io).await?;
             let bytes = crate::executor::with_history_io(Some(io), |work| {
-                crate::core::copy_copy_vector(acyclic_fs::access::POLICY_METADATA_KEY, work)
+                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+                crate::core::copy_copy_vector(acyclic_fs::access::POLICY_METADATA_KEY, &mut quota)
             })?;
             let _key = io.guard_owned(bytes.capacity() as u64)?;
             let name = AttributeName::new(AttributeClass::PosixXattr, bytes)
