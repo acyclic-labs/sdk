@@ -135,6 +135,11 @@ pub enum Error {
     /// control write or second deletion.
     #[error("actor is deleted")]
     Deleted,
+    /// Participant custody names a record its stream no longer holds as
+    /// committed: the stream was replaced or forked over since. Recovery
+    /// refuses rather than settle the composer with different bytes.
+    #[error("actor custody record was replaced")]
+    CustodyReplaced,
     /// A request contradicts the durable state machine.
     #[error("invalid actor transition: {0}")]
     Invalid(&'static str),
@@ -162,6 +167,7 @@ impl Error {
             Self::InvocationFailed { .. } => "invocation_failed",
             Self::AlarmNotDue { .. } => "alarm_not_due",
             Self::Deleted => "deleted",
+            Self::CustodyReplaced => "custody_replaced",
             Self::Invalid(_) => "invalid",
         }
     }
@@ -955,14 +961,17 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 ));
             }
         };
-        let previous = match own.start.checked_sub(1) {
-            Some(sequence) => {
-                State::decode(&self.record(&snapshot.path, sequence).await?.value)?.checkpoint
+        // Both reads resolve the exact committed records custody names.
+        let previous = match (own.start.checked_sub(1), intent.replaced) {
+            (Some(sequence), Some(commit)) => {
+                State::decode(&self.exact(&snapshot.path, sequence, commit).await?.value)?
+                    .checkpoint
             }
-            None => None,
+            (None, None) => None,
+            _ => return Err(Error::CustodyReplaced),
         };
         let delivered = match &intent.delivered {
-            Some((path, sequence)) => Some(self.record(path, *sequence).await?),
+            Some((path, sequence, commit)) => Some(self.exact(path, *sequence, *commit).await?),
             None => None,
         };
         let appends = envelope
@@ -989,6 +998,24 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             .settle(Ok(&CommitOutcome::Committed(receipt)))
             .await
             .map_err(Error::Handler)
+    }
+
+    /// The record at `sequence` of `path` exactly as `commit` introduced it,
+    /// never a later replacement's.
+    async fn exact(
+        &self,
+        path: &StreamPath,
+        sequence: u64,
+        commit: acyclic_stream::CommitId,
+    ) -> Result<Record, Error> {
+        match self.record(path, sequence).await {
+            Ok(record) if record.commit_id == commit => Ok(record),
+            Ok(_) | Err(Error::Invalid("custody names a missing record")) => {
+                Err(Error::CustodyReplaced)
+            }
+            Err(Error::Stream(StreamError::NotFound)) => Err(Error::CustodyReplaced),
+            Err(error) => Err(error),
+        }
     }
 
     /// The one record at `sequence` of `path`.
@@ -1239,9 +1266,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                             .path
                             .clone(),
                         record.sequence,
+                        record.commit_id,
                     )),
                     _ => None,
                 },
+                replaced: previous.anchor,
             }),
         };
         let mut state = next(state, &previous.path, original_alarm, trigger, &transition)?;

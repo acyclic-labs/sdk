@@ -995,9 +995,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     let carried = if carry { failed } else { Vec::new() };
                     for actor in &carried {
                         // Its fresh entry lands at or past the cursor.
-                        if let Some(slot) = self.slot(actor) {
-                            slot.entry
-                                .fetch_max(cursor.saturating_add(1), Ordering::AcqRel);
+                        match self.slot(actor) {
+                            Some(slot) => {
+                                slot.entry
+                                    .fetch_max(cursor.saturating_add(1), Ordering::AcqRel);
+                            }
+                            // Released: this one entry is its handoff, which
+                            // the next placer's wake owns; the mark ends here.
+                            None => self.ready.forget(actor),
                         }
                     }
                     let store = &stores[&shard];
@@ -1073,14 +1078,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             Error::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                self.handler.manifest().validate_interrupts()?;
                 // Every delivery counts in flight in the shared ready index,
                 // whichever consumer started it, until it settles; a failed
                 // one keeps its actor's wake past every later checkpoint.
                 let flight = self.ready.flight(actor);
                 // Duplicate events for one actor wait outside global admission. Only
                 // an actor that can make progress may occupy an active delivery slot.
-                let inner = slot.inner.lock().await;
+                let mut inner = slot.inner.lock().await;
                 let result = match &self.admission {
                     Some(admission) => admission
                         .acquire()
@@ -1089,10 +1093,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         .map_err(|_| Error::Invalid("runtime admission is closed")),
                     None => Ok(None),
                 };
-                let result = match result {
+                let result = match result.and_then(|admission| {
+                    self.handler.manifest().validate_interrupts()?;
+                    Ok(admission)
+                }) {
                     Ok(_admission) => {
                         let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
-                        let result = self.deliver_retained(actor, slot, inner).await;
+                        let result = self.deliver_retained(actor, slot, &mut inner).await;
                         // Cancellation can interrupt a committed publication before its
                         // receipt is retained. A completed attempt handles its outcome.
                         refresh.0 = None;
@@ -1100,16 +1107,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                     Err(error) => Err(error),
                 };
-                let failed = result
-                    .as_ref()
-                    .is_err_and(|error| !matches!(error, Error::Conflict));
+                // Every failure keeps a wake, a conflict's included: one that
+                // releases the actor leaves its single carried entry behind.
+                let failed = result.is_err();
                 if failed {
                     // The carried wake, not a resident token, now retains its
                     // alarm: a later delivery observes it again.
                     slot.refresh.store(true, Ordering::Release);
                     slot.registration.suspend_alarm();
                 }
+                // Recorded under the actor's delivery lock, so an earlier
+                // delivery's outcome never overwrites a later one's.
                 flight.finish(failed);
+                drop(inner);
                 result
             }
         )
@@ -1125,11 +1135,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self,
         actor: &ActorReference,
         slot: &Slot,
-        mut inner: tokio::sync::MutexGuard<'_, Inner>,
+        inner: &mut Inner,
     ) -> Result<bool, Error> {
         let mut replayed = None;
         let done = self
-            .deliver_admitted(actor, slot, &mut inner, &mut replayed)
+            .deliver_admitted(actor, slot, inner, &mut replayed)
             .await?;
         if done
             && inner.epoch == 0

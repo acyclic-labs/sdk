@@ -507,3 +507,130 @@ async fn a_poisoned_actor_is_carried_through_checkpoints_and_restart() -> TestRe
     assert_eq!(records(&*provider, "out/healthy").await?.len(), ROUNDS + 1);
     Ok(())
 }
+
+/// Fails once `actor` has more than `bound` entries in `log` from `from`.
+async fn carried_beyond<P: StreamProvider + ?Sized>(
+    provider: &P,
+    log: StreamPath,
+    from: u64,
+    actor: &[u8],
+    bound: usize,
+) -> Box<dyn std::error::Error> {
+    use futures::StreamExt as _;
+    let mut records = match provider
+        .follow(acyclic_stream::FollowRequest::new(log, from))
+        .await
+    {
+        Ok(follow) => acyclic_stream::records_only(follow),
+        Err(error) => return error.into(),
+    };
+    let mut count = 0;
+    while let Some(record) = records.next().await {
+        match record {
+            Ok(record) if record.value[..] == *actor => {
+                count += 1;
+                if count > bound {
+                    return format!("{count} entries carried for a released actor").into();
+                }
+            }
+            Ok(_) => {}
+            Err(error) => return error.into(),
+        }
+    }
+    "activation follow ended".into()
+}
+
+/// An externally placed host releases its failed actor: it carries that
+/// actor's wake exactly once, then no more however many checkpoints pass,
+/// and the input stays unconsumed for the next placer, which delivers it.
+///
+/// Negative control: keeping the released actor's failure mark carried a
+/// fresh entry at every checkpoint, each one's observation forcing the next.
+#[tokio::test]
+async fn a_released_failed_actor_is_carried_once() -> TestResult {
+    const ROUNDS: usize = 4;
+    let one = std::num::NonZeroU16::MIN;
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one);
+    let poisoned = spawn_with(&store, "released", &[b"emit"]).await?;
+    let healthy = spawn_with(&store, "resident", &[b"emit"]).await?;
+    let log = store.scheduling_path(0)?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
+        Arc::new(Poisons {
+            package: Package::new()?,
+            poisoned: poisoned.clone(),
+        }),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement();
+    runtime.place(poisoned.clone(), 1).await?;
+    runtime.place(healthy.clone(), 1).await?;
+    let mut serving = Box::pin(runtime.run(|actor, error| {
+        assert_eq!(actor, &poisoned, "{error}");
+    }));
+    let poisoned_entry = poisoned.encode();
+    let mut from = None;
+    for round in 0..=ROUNDS {
+        if round > 0 {
+            let mut input = PreparedPublish::foreign(key(&format!("released/input-{round}"))?);
+            input.join(CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: StreamPath::new("agents/resident")?,
+                    records: vec![Bytes::from_static(b"emit").into()],
+                }],
+            ))?;
+            input.join(store.activation(&healthy)?)?;
+            PreparedPublish::settle(&provider.commit(input.into_request()?).await?)?;
+        }
+        let completed = observe_while_running(serving.as_mut(), async {
+            match from {
+                None => Ok(runtime.complete().await),
+                Some(from) => tokio::select! {
+                    completed = runtime.complete() => Ok(completed),
+                    grown = carried_beyond(&*provider, log.clone(), from, &poisoned_entry, 1) => {
+                        Err(grown)
+                    }
+                },
+            }
+        })
+        .await?;
+        assert!(matches!(completed, Err(Error::CompletionFailed(_))));
+        if round == 0 {
+            assert!(runtime.release(&poisoned), "the failed actor stays hosted");
+            from = Some(provider.tail(log.clone()).await?);
+        }
+    }
+    drop(serving);
+    let from = usize::try_from(from.ok_or("no release")?)?;
+    let entries = records(&*provider, log.as_str()).await?;
+    assert_eq!(
+        entries[from..]
+            .iter()
+            .filter(|entry| entry[..] == poisoned_entry[..])
+            .count(),
+        1,
+        "the released actor's wake was not carried exactly once"
+    );
+    assert_eq!(records(&*provider, "out/resident").await?.len(), ROUNDS + 1);
+    assert_eq!(
+        store
+            .load(&poisoned)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(0)
+    );
+    // The next placer delivers the retained input.
+    let next = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement();
+    next.place(poisoned.clone(), 2).await?;
+    next.drain_actor(&poisoned).await?;
+    assert_eq!(records(&*provider, "out/released").await?.len(), 1);
+    Ok(())
+}

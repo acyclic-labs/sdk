@@ -13,6 +13,8 @@ struct Counts {
     rejected: AtomicUsize,
     refused: AtomicUsize,
     dropped: AtomicUsize,
+    /// The delivered input bytes each opened participant was handed.
+    delivered: std::sync::Mutex<Vec<Option<Vec<u8>>>>,
 }
 
 struct Participant {
@@ -305,10 +307,15 @@ impl Composer for Participants {
         &self,
         _: &ActorReference,
         _: Option<&Checkpoint>,
-        _: Option<&acyclic_stream::Record>,
+        delivered: Option<&acyclic_stream::Record>,
         _: &Checkpoint,
         participant: &crate::guest::Participant,
     ) -> Result<Box<dyn Composition>, GuestError> {
+        self.0
+            .delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(delivered.map(|record| record.value.to_vec()));
         Ok(Box::new(Participant {
             counts: self.0.clone(),
             remove_actor_fence: participant.plan.as_ref() == [1],
@@ -333,7 +340,7 @@ async fn placed(
                 subscriptions: BTreeMap::from([(
                     "inbox".to_owned(),
                     Subscription {
-                        path: path("participant/inbox")?,
+                        path: path("mail/inbox")?,
                         cursor: 0,
                     },
                 )]),
@@ -503,7 +510,7 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
         assert_eq!(committed.response().as_ref(), b"original-response");
         assert_eq!(reopened.invoke(&invocation).await?, committed);
         assert_eq!(reopened.enqueue_invoke(&invocation).await?, ticket);
-        assert_eq!(provider.inner.tail(path("participant/inbox")?).await?, 1);
+        assert_eq!(provider.inner.tail(path("mail/inbox")?).await?, 1);
         assert_eq!(provider.inner.tail(path("participant/child")?).await?, 1);
         assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
         assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
@@ -900,6 +907,130 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
             .and_then(|state| state.cursor("inbox")),
         Some(0)
     );
+    Ok(())
+}
+
+/// The owner dies after its composed publication applied, and its input
+/// stream is then targeted for replacement at the delivered sequence.
+/// Recovery hands the composer the original delivered bytes, or refuses with
+/// a typed failure; never other bytes. Custody also checks the delivered
+/// record's commit, so a provider that broke append-only history would
+/// refuse rather than compose.
+#[tokio::test]
+async fn custody_recovery_never_reads_a_replaced_input() -> Result<(), Failure> {
+    for replaced in [false, true] {
+        let provider = Arc::new(Faulty {
+            inner: MemoryStream::default(),
+            plan: vec![Fault::None, Fault::None, Fault::LoseAck],
+            calls: AtomicUsize::new(0),
+        });
+        let counts = Arc::new(Counts::default());
+        let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+        let append = |stream: &str, value: &'static [u8], name: &str| {
+            let mut input = PreparedPublish::foreign(key(name)?);
+            input.join(CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: path(stream)?,
+                    records: vec![bytes::Bytes::from_static(value).into()],
+                }],
+            ))?;
+            Ok::<_, Failure>(input.into_request()?)
+        };
+        PreparedPublish::settle(
+            &provider
+                .inner
+                .commit(append("mail/inbox", b"original", "input")?)
+                .await?,
+        )?;
+        let delivered = {
+            use futures::StreamExt as _;
+            provider
+                .inner
+                .read(acyclic_stream::ReadRequest {
+                    key: None,
+                    path: path("mail/inbox")?,
+                    from: 0,
+                    limit: 1,
+                    at_least: Default::default(),
+                })
+                .await?
+                .next()
+                .await
+                .ok_or("the input was not committed")??
+        };
+        let result = store
+            .publish(
+                &store.load(&actor).await?,
+                1,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: 0,
+                },
+                Some(&delivered),
+                transition(false)?,
+                key("delivered")?,
+            )
+            .await;
+        let Err(Error::Unknown { publication, .. }) = result else {
+            return Err("publication must commit without settling custody".into());
+        };
+        drop(publication);
+        let opened = counts
+            .delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        if replaced {
+            // Try to replace the input: fork other bytes over the stream
+            // itself and over its namespace parent. The primitive refuses
+            // both, since a fork destination must be absent.
+            for (stream, value) in [("forged", &b"seed"[..]), ("forged/inbox", &b"forged"[..])] {
+                PreparedPublish::settle(
+                    &provider
+                        .inner
+                        .commit(append(stream, value, stream)?)
+                        .await?,
+                )?;
+            }
+            for (source, destination) in [("forged/inbox", "mail/inbox"), ("forged", "mail")] {
+                let mut fork = PreparedPublish::foreign(key(destination)?);
+                fork.join(CommitEffect::hard(
+                    vec![CommitCondition::Absent {
+                        path: path(destination)?,
+                    }],
+                    vec![CommitMutation::Fork {
+                        exclude: Vec::new(),
+                        source: path(source)?,
+                        destination: path(destination)?,
+                        at_tail: 1,
+                        records: Vec::new(),
+                    }],
+                ))?;
+                let applied = match provider.inner.commit(fork.into_request()?).await {
+                    Ok(outcome) => PreparedPublish::settle(&outcome).is_ok(),
+                    Err(_) => false,
+                };
+                assert!(!applied, "the input at {destination} was replaced");
+            }
+        }
+        let claimed = store
+            .claim(&store.load(&actor).await?, 2, key("next-owner")?)
+            .await?;
+        let recovered = store.recover_custody(&claimed).await;
+        let seen = counts
+            .delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .split_off(opened);
+        match recovered {
+            Err(Error::CustodyReplaced) => assert!(seen.is_empty(), "composer saw {seen:?}"),
+            recovered => {
+                recovered?;
+                assert_eq!(seen, [Some(b"original".to_vec())]);
+            }
+        }
+    }
     Ok(())
 }
 
