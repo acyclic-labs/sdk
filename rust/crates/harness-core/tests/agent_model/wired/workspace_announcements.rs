@@ -156,7 +156,6 @@ async fn fixture() -> Result<Fixture> {
             &scope,
             &volume,
             VolumeOperation::Write,
-            LIMITS.maximum_bytes,
             &mut None,
         )?;
         let file = files
@@ -309,7 +308,6 @@ async fn large_instruction_selection(
         &scope,
         volume,
         VolumeOperation::Write,
-        LIMITS.maximum_bytes,
         &mut None,
     )?;
     let prefix = vec!["r".repeat(240); 9].join("/");
@@ -417,14 +415,7 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    let grant = ContentGrant::verify(
-        &verifier,
-        &scope,
-        volume,
-        VolumeOperation::Write,
-        bytes.len() as u64,
-        &mut None,
-    )?;
+    let grant = ContentGrant::verify(&verifier, &scope, volume, VolumeOperation::Write, &mut None)?;
     let file = files
         .put_content(
             volume,

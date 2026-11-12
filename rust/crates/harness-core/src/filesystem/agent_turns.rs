@@ -178,7 +178,6 @@ impl<'v> AdmittedAgent<'v> {
                 owner,
                 private.volume()?,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?;
             require_structured_write(scope, owner, private.volume()?)?;
@@ -237,7 +236,6 @@ impl<'v> AdmittedAgent<'v> {
                 self.owner,
                 volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?;
             require_structured_write(scope, self.owner, volume)?;
@@ -784,7 +782,6 @@ where
                 &authority.scope,
                 binding.volume()?,
                 operation,
-                u64::MAX,
                 &mut None,
             )?;
             let workspace = self
@@ -978,7 +975,6 @@ where
                 scope,
                 volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?,
         )))

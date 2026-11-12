@@ -38,7 +38,6 @@ async fn revocation_during_staging_prevents_content_publication() -> Result<()> 
         &scope,
         &volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let workspace = bounded_io::content_workspace(&provider, &volume, None)?;

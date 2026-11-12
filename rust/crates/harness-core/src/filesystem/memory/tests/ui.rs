@@ -9,7 +9,6 @@ async fn ui_agent_override_and_turn_receipts_ignore_old_asks() -> Result<()> {
         &storage.scope,
         &storage.volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let files = AgentInternalFiles::new(storage.host.clone(), storage.volume.clone(), grant);

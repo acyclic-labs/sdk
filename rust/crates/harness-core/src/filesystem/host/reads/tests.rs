@@ -36,22 +36,8 @@ fn grants(volume: &VolumeRef) -> Result<Grants> {
     )?;
     let verifier = issuer.verifier(&mut None)?;
     let read = ContentGrant::verify_directory_read(&verifier, &scope, volume, "", &mut None)?;
-    let write = ContentGrant::verify(
-        &verifier,
-        &scope,
-        volume,
-        VolumeOperation::Write,
-        u64::MAX,
-        &mut None,
-    )?;
-    let whole = ContentGrant::verify(
-        &verifier,
-        &scope,
-        volume,
-        VolumeOperation::Read,
-        u64::MAX,
-        &mut None,
-    )?;
+    let write = ContentGrant::verify(&verifier, &scope, volume, VolumeOperation::Write, &mut None)?;
+    let whole = ContentGrant::verify(&verifier, &scope, volume, VolumeOperation::Read, &mut None)?;
     Ok(Grants {
         _issuer: issuer,
         directory: read,

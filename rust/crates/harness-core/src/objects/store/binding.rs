@@ -18,7 +18,6 @@ impl ObjectContentStore {
             &owner_scope,
             &volume,
             VolumeOperation::Write,
-            maximum_bytes,
             &mut None,
         )?;
         if maximum_bytes == 0
@@ -34,7 +33,6 @@ impl ObjectContentStore {
                 &scope,
                 &volume,
                 VolumeOperation::Write,
-                maximum_bytes,
                 &mut None,
             )?)
         } else {

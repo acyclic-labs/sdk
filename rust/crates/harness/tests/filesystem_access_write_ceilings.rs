@@ -46,7 +46,6 @@ async fn direct_writer_rejects_empty_and_unrelated_callers() -> Result<(), Box<d
         &fixture.scope,
         &fixture.volume,
         VolumeOperation::Write,
-        4096,
         &mut None,
     )?;
     let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
@@ -190,7 +189,6 @@ async fn structured_service_grant_is_governed_by_policy_and_its_resource()
             &scope,
             &fixture.volume,
             VolumeOperation::Write,
-            4096,
             &mut None,
         )?;
         let result = fixture

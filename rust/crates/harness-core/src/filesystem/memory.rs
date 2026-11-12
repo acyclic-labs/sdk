@@ -276,7 +276,6 @@ impl<
                     &scope,
                     &volume,
                     VolumeOperation::Write,
-                    u64::MAX,
                     &mut None,
                 )?,
             ));

@@ -163,7 +163,6 @@ async fn imports_reject_expiring_source_authority() -> Result<(), Box<dyn Error>
         &scope,
         &fixture.volume,
         VolumeOperation::Read,
-        65536,
         &mut None,
     )?;
     let result = fixture

@@ -211,7 +211,6 @@ mod tests {
             &authority.scope,
             &home,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )?;
         let files = Arc::new(super::super::agent_internal::AgentInternalFiles::new(

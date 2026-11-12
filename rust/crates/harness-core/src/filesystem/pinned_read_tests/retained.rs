@@ -58,7 +58,6 @@ fn grant(file: &FileRef) -> Result<(AuthorityRoot, ContentGrant)> {
         &scope,
         file.volume(),
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     Ok((issuer, grant))

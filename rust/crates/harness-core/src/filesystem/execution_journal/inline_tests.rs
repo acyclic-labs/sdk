@@ -345,7 +345,6 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         &journal.scope,
         &journal.volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let read = ContentGrant::verify(
@@ -353,7 +352,6 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         &journal.scope,
         &journal.volume,
         VolumeOperation::Read,
-        u64::MAX,
         &mut None,
     )?;
     let path = ".system/interactions/approvals/approval-test/request.json";

@@ -238,7 +238,6 @@ impl WasmAgentAuthority {
             &scope,
             &volume,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )
         .map_err(js_error)?;

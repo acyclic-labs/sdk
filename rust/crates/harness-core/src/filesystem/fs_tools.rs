@@ -117,14 +117,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         }
         self.verifier.verify(&self.scope, &mut None)?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            ContentGrant::verify(
-                &self.verifier,
-                &self.scope,
-                volume,
-                operation,
-                u64::MAX,
-                &mut None,
-            )?;
+            ContentGrant::verify(&self.verifier, &self.scope, volume, operation, &mut None)?;
             if !context
                 .effective_scope()
                 .grants()

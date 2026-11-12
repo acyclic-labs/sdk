@@ -42,7 +42,6 @@ async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result
         &seed,
         &project,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let mut files = Vec::new();
@@ -120,7 +119,6 @@ async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result
                 &authority.scope,
                 &project,
                 VolumeOperation::Write,
-                1024,
                 &mut None
             )
             .is_err()
@@ -131,7 +129,6 @@ async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result
                 &authority.scope,
                 hidden.volume()?,
                 VolumeOperation::Read,
-                1024,
                 &mut None
             )
             .is_err()
@@ -217,7 +214,6 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
         &authority.scope,
         &volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let files = Arc::new(AgentInternalFiles::new(host.clone(), volume, grant));

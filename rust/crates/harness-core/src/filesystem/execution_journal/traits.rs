@@ -291,7 +291,6 @@ where
                     &self.scope,
                     &self.volume,
                     VolumeOperation::Read,
-                    reference.descriptor().byte_length(),
                     work,
                 )
             })?;

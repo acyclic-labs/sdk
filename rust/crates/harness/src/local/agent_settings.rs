@@ -188,7 +188,6 @@ async fn record(
                 volumes.signed,
                 volumes.journal,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?,
             &record,
@@ -434,7 +433,6 @@ mod tests {
             &harness.signed,
             &harness.scratch,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )?;
         harness

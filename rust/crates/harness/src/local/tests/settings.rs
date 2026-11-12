@@ -31,7 +31,6 @@ pub(in crate::local) async fn write(
         &harness.signed,
         &harness.scratch,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let file = harness
@@ -178,7 +177,6 @@ async fn effective_media_versions_require_current_source_authority() -> Result<(
         &harness.signed,
         &harness.scratch,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     // Reuse the recorded encoder output and its provenance in notebook-output.md.
@@ -321,7 +319,6 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
             &harness.signed,
             &selected.volume,
             VolumeOperation::Write,
-            1,
             &mut None,
         )
         .is_err()

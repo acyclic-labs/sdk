@@ -264,7 +264,6 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
             &authority.scope,
             binding.volume()?,
             VolumeOperation::Write,
-            LIMITS.maximum_bytes,
             &mut None,
         )?;
         let file = filesystem
@@ -2362,7 +2361,6 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
                 &scope,
                 &volume,
                 VolumeOperation::Write,
-                LIMITS.maximum_bytes,
                 &mut None,
             )?,
             volume: volume.clone(),

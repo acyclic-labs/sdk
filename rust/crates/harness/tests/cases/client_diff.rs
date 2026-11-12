@@ -269,7 +269,6 @@ impl Fixture {
             &scope,
             &volume,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )?;
         let files = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 1 << 20, None)?;

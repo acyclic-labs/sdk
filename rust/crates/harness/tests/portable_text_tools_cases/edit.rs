@@ -56,7 +56,6 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         &scope,
         &volume,
         VolumeOperation::Read,
-        u64::MAX,
         &mut None,
     )?;
     let write = ContentGrant::verify(
@@ -64,7 +63,6 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         &scope,
         &volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let foreign = ContentGrant::verify(
@@ -72,7 +70,6 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         &scope,
         &other,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let source = host

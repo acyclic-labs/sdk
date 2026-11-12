@@ -7,7 +7,6 @@ fn writer(fixture: &Fixture, scope: &Scope) -> Result<ContentGrant, Box<dyn Erro
         scope,
         &fixture.volume,
         VolumeOperation::Write,
-        4096,
         &mut None,
     )?)
 }

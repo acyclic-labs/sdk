@@ -110,12 +110,8 @@ where
             return Err(invalid("execution journal requires a private volume"));
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            let maximum = io
-                .map(|io| io.remaining().map(|budget| budget.bytes_encoded))
-                .transpose()?
-                .unwrap_or(u64::MAX);
             crate::executor::with_history_io(io, |work| {
-                ContentGrant::authorize_volume(verifier, scope, volume, operation, maximum, work)
+                ContentGrant::authorize_volume(verifier, scope, volume, operation, work)
             })?;
         }
         if !matches!(

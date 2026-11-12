@@ -66,7 +66,6 @@ fn grant(volume: &VolumeRef, operation: VolumeOperation) -> Result<(AuthorityRoo
             &scope,
             volume,
             operation,
-            u64::MAX,
             &mut None,
         )?
     };

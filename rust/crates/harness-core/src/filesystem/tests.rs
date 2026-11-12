@@ -197,20 +197,12 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    let read = ContentGrant::verify(
-        &verifier,
-        &scope,
-        &volume,
-        VolumeOperation::Read,
-        u64::MAX,
-        &mut None,
-    )?;
+    let read = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read, &mut None)?;
     let write = ContentGrant::verify(
         &verifier,
         &scope,
         &volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     // A real upload receipt larger than the former name-derived record bound.
@@ -617,15 +609,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         &mut None,
     )?;
     assert!(
-        ContentGrant::verify(
-            &verifier,
-            &scope,
-            &other,
-            VolumeOperation::Read,
-            u64::MAX,
-            &mut None
-        )
-        .is_err()
+        ContentGrant::verify(&verifier, &scope, &other, VolumeOperation::Read, &mut None).is_err()
     );
     Ok(())
 }

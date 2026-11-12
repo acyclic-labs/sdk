@@ -74,7 +74,6 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
         &scope,
         &volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     for path in ["unrelated", "wanted"] {
@@ -102,14 +101,8 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
 
     // Removing a physical suppression file exposes the pinned seed. The
     // public waiting read must re-resolve that view on the deletion event.
-    let seed_grant = ContentGrant::verify(
-        &verifier,
-        &scope,
-        &seed,
-        VolumeOperation::Write,
-        u64::MAX,
-        &mut None,
-    )?;
+    let seed_grant =
+        ContentGrant::verify(&verifier, &scope, &seed, VolumeOperation::Write, &mut None)?;
     host.put_content(
         &seed,
         &seed_grant,

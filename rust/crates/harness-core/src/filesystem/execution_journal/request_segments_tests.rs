@@ -225,3 +225,66 @@ where
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn private_journal_ranges_authorize_small_payloads_and_reject_missing_grants() -> Result<()> {
+    let (mut journal, issuer) = test_support::journal().await?;
+    let original = journal.scope.clone();
+    let operation = OperationId::new();
+    for bytes in [b"".as_slice(), b"x".as_slice(), b"small payload".as_slice()] {
+        let reference = journal
+            .stage(
+                operation,
+                &format!("payload:{}", bytes.len()),
+                bytes,
+                "application/octet-stream",
+                None,
+            )?
+            .await?;
+        let read = journal
+            .load_range(
+                &reference,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: bytes.len() as u64,
+                },
+                None,
+            )?
+            .await?;
+        assert_eq!(read.as_ref(), bytes);
+        let end = journal
+            .load_range(
+                &reference,
+                acyclic_fs::ByteRange {
+                    offset: bytes.len() as u64,
+                    length: 0,
+                },
+                None,
+            )?
+            .await?;
+        assert!(end.is_empty());
+        journal.scope = issuer.bootstrap_scope(
+            "write-only",
+            &crate::Capabilities::new([journal
+                .volume
+                .capability(VolumeOperation::Write, &mut None)?]),
+            Some(crate::AgentId::from_bytes([81; 16])),
+            &mut None,
+        )?;
+        assert!(matches!(
+            journal
+                .load_range(
+                    &reference,
+                    acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: bytes.len() as u64
+                    },
+                    None,
+                )?
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        journal.scope = original.clone();
+    }
+    Ok(())
+}

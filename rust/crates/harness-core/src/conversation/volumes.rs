@@ -486,16 +486,16 @@ impl ContentGrant {
     }
 
     /// Verifies signed authority and copies the exact granted volume.
+    /// Payload byte bounds belong to content operations, not authority identity hashing.
     pub fn verify(
         verifier: &AuthorityVerifier,
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         crate::wire_codec::CodecQuota::produce(work, |quota| {
-            Self::verify_in_quota(verifier, scope, volume, operation, maximum_bytes, quota)
+            Self::verify_in_quota(verifier, scope, volume, operation, quota)
         })
         .map(|(grant, _)| grant)
     }
@@ -505,11 +505,10 @@ impl ContentGrant {
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<Self> {
         Self::build_in_quota(verifier, scope, quota, |scope, quota| {
-            Self::check_volume(scope, volume, operation, maximum_bytes, quota.work())?;
+            Self::check_volume(scope, volume, operation, quota.work())?;
             Ok(Boundary {
                 volume: volume.clone_in_quota(quota)?,
                 operation,
@@ -547,11 +546,10 @@ impl ContentGrant {
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         verifier.verify(scope, work)?;
-        Self::check_volume(scope, volume, operation, maximum_bytes, work)
+        Self::check_volume(scope, volume, operation, work)
     }
 
     /// Validate a proposed acting agent against its committed volume owner,
@@ -563,7 +561,6 @@ impl ContentGrant {
         agent: AgentId,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         verifier.verify(scope, work)?;
@@ -572,17 +569,16 @@ impl ContentGrant {
                 "admission belongs to another acting agent".into(),
             ));
         }
-        Self::check_agent_volume(scope, Some(agent), volume, operation, maximum_bytes, work)
+        Self::check_agent_volume(scope, Some(agent), volume, operation, work)
     }
 
     fn check_volume(
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        Self::check_agent_volume(scope, scope.agent(), volume, operation, maximum_bytes, work)
+        Self::check_agent_volume(scope, scope.agent(), volume, operation, work)
     }
 
     fn check_agent_volume(
@@ -590,7 +586,6 @@ impl ContentGrant {
         agent: Option<AgentId>,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         volume.validate(work)?;
@@ -602,9 +597,8 @@ impl ContentGrant {
         if operation != VolumeOperation::Read {
             volume.require_writer(agent, work)?;
         }
-        volume.validate(work)?;
         let digest = volume.identity_digest(
-            maximum_bytes.min(crate::store::default_projection_read_limits().maximum_bytes),
+            crate::store::default_projection_read_limits().maximum_bytes,
             work,
         )?;
         if !contains_content_label(scope.capabilities(), operation.capability_prefix(), digest) {

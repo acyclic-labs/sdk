@@ -726,7 +726,6 @@ fn typed_private_delegation_preserves_owner_policy_and_never_widens_attenuation(
                 &child,
                 &volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None
             )
             .is_err()
@@ -833,7 +832,6 @@ fn exact_child_revocation_refuses_retained_access_through_every_verifier() -> Re
             &child,
             &volume,
             VolumeOperation::Read,
-            u64::MAX,
             &mut None,
         )?;
         retained.require(&volume, VolumeOperation::Read, None)?;
@@ -902,7 +900,6 @@ fn shared_runtime_checkpoint_owner_loss_refuses_without_fabricating_custody() ->
             runtime.caller().expect("admitted caller").1,
             &volume,
             VolumeOperation::Read,
-            u64::MAX,
             &mut None,
         )?;
         retained.require(&volume, VolumeOperation::Read, None)?;
