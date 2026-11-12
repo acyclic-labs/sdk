@@ -14,6 +14,7 @@ use super::Connection;
 mod client_files;
 pub use client_files::VisibleFiles;
 mod directory;
+pub use directory::ProjectDirectory;
 mod events;
 mod history;
 mod inspect;

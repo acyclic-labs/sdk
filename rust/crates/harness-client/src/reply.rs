@@ -874,6 +874,7 @@ fn validate_reply(
         (
             AgentReply::Directory { page },
             AgentCommand::Directory {
+                target: crate::DirectoryTarget::Private,
                 generation,
                 page: request,
                 ..

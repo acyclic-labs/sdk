@@ -11,6 +11,7 @@ use crate::{
 #[cfg(any(test, not(target_arch = "wasm32")))]
 mod checkout;
 mod commands;
+mod directory;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 mod environment;
 pub(super) mod skills;

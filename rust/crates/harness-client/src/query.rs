@@ -10,6 +10,8 @@ pub enum QueryProjection {
     Diff(DiffProjection),
     /// Last accepted input in the selected History context.
     Input(InputSelection),
+    /// Paged project names, owned by the original Directory invocation.
+    Directory,
 }
 
 impl QueryProjection {
@@ -23,6 +25,7 @@ impl QueryProjection {
             Self::Diff(DiffProjection::Summary) => 1,
             Self::Input(InputSelection::Latest) => 2,
             Self::Input(InputSelection::Pending) => 3,
+            Self::Directory => 4,
         };
         let mut bytes = Vec::with_capacity(invocation.len() + 2);
         bytes.extend_from_slice(&[1, kind]);
@@ -40,6 +43,7 @@ impl QueryProjection {
             [1, 1] => Self::Diff(DiffProjection::Summary),
             [1, 2] => Self::Input(InputSelection::Latest),
             [1, 3] => Self::Input(InputSelection::Pending),
+            [1, 4] => Self::Directory,
             _ => return Err(CommandError::Invalid),
         };
         Ok((projection, &bytes[2..]))

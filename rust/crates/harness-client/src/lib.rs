@@ -19,6 +19,8 @@ pub use control::{
 };
 
 mod diff_query;
+mod directory_query;
+pub use directory_query::DirectoryQuery;
 mod query;
 pub use query::QueryProjection;
 mod input_query;
@@ -27,8 +29,9 @@ pub use input_query::{InputPreview, InputPreviewStep, InputQuery, InputSelection
 
 mod command;
 pub use command::{
-    AgentCommand, AgentPageRequest, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
-    MAX_READ_BYTES, PreparedCommand, ReadTarget, SessionsScope,
+    AgentCommand, AgentPageRequest, CommandError, DirectoryTarget,
+    MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES, MAX_READ_BYTES, PreparedCommand, ReadTarget,
+    SessionsScope,
 };
 mod reply;
 pub use reply::{

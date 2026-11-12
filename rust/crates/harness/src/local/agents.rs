@@ -133,6 +133,20 @@ impl crate::hosting::Platform for LocalUser {
         Box::pin(async move { self.harness()?.resolve_prompt_command(text).await })
     }
 
+    fn project_directory_source<'a>(
+        &'a self,
+        _: &'a acyclic_stream::session::CallAuthorization,
+        agent: &'a AgentPath,
+        path: &'a str,
+        rows: u32,
+    ) -> BoxProviderFuture<'a, Result<crate::hosting::DirectorySource>> {
+        Box::pin(async move {
+            self.harness()?
+                .project_directory_source(agent, path, rows)
+                .await
+        })
+    }
+
     fn attachments<'a>(
         &'a self,
         key: &'a [u8],

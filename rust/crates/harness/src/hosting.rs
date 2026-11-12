@@ -37,6 +37,13 @@ pub use diff::{DIFF_FILE_BYTES, DiffSource};
 pub type InputPreviewSource =
     acyclic_stream::BoxProviderStream<'static, crate::Result<crate::agent::InputPreviewStep>>;
 
+/// Credited names from one original directory. Empty pages represent consumed
+/// source work, never readiness probes or completion.
+pub type DirectorySource = acyclic_stream::BoxProviderStream<
+    'static,
+    crate::Result<Vec<crate::conversation::PrivateDirectoryEntry>>,
+>;
+
 use crate::{
     agent::{
         AgentPath, AgentRecord, ContextAction, ContextRequest, Control, Delivered, Error,
@@ -184,6 +191,23 @@ pub trait Platform: ProviderPlatform + 'static {
         Box::pin(async {
             Err(crate::Error::Unsupported(
                 "input preview source is unavailable".into(),
+            ))
+        })
+    }
+
+    /// A project directory at the selected agent's original read authority.
+    /// The source owns its native or volume cursor until its consumer closes.
+    fn project_directory_source<'a>(
+        &'a self,
+        authorization: &'a CallAuthorization,
+        agent: &'a AgentPath,
+        path: &'a str,
+        rows: u32,
+    ) -> BoxProviderFuture<'a, crate::Result<DirectorySource>> {
+        let _ = (authorization, agent, path, rows);
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "project directory source is unavailable".into(),
             ))
         })
     }
@@ -986,10 +1010,16 @@ where
             }
             AgentCommand::Directory {
                 agent,
+                target,
                 path,
                 generation,
                 page: request,
             } => {
+                if *target != acyclic_harness_client::DirectoryTarget::Private {
+                    return Err(Error::Turn(Box::new(crate::Error::Unsupported(
+                        "project directory requires its original query socket".into(),
+                    ))));
+                }
                 let agent = self.within_tree(agent)?;
                 let mut page = self
                     .bound

@@ -30,6 +30,16 @@ where
         let (agent, page) = match (projection, call.command()) {
             (QueryProjection::Diff(_), AgentCommand::Diff { agent, page })
             | (QueryProjection::Input(_), AgentCommand::History { agent, page }) => (agent, page),
+            (
+                QueryProjection::Directory,
+                AgentCommand::Directory {
+                    agent,
+                    target: acyclic_harness_client::DirectoryTarget::Project,
+                    generation: None,
+                    page,
+                    ..
+                },
+            ) => (agent, page),
             _ => return Err(StreamError::InvalidArgument),
         };
         if page.cursor().is_some() {
@@ -41,6 +51,7 @@ where
             QueryProjection::Input(crate::agent::InputSelection::Latest) => 8,
             QueryProjection::Input(crate::agent::InputSelection::Pending) => 28,
             QueryProjection::Diff(_) => 0,
+            QueryProjection::Directory => 0,
         };
         if page.bytes() < minimum {
             return Err(StreamError::Capacity);
@@ -80,6 +91,7 @@ where
             let command = self.call.command();
             let selected = match command {
                 AgentCommand::Diff { agent, page } | AgentCommand::History { agent, page } => Some((agent, page)),
+                AgentCommand::Directory { agent, page, .. } => Some((agent, page)),
                 _ => None,
             };
             let (agent, page) = selected.ok_or(StreamError::InvalidArgument)?;
@@ -99,6 +111,14 @@ where
                         crate::agent::InputSelection::Pending => 24,
                     }), selection,
                 ).await.map(|source| input_frames(source, page.clone())),
+                QueryProjection::Directory => {
+                    if let AgentCommand::Directory { path, .. } = command {
+                        self.server.platform.project_directory_source(&authorization, agent, path, page.items()).await
+                        .map(|source| directory_frames(source, page.clone()))
+                    } else {
+                        Err(crate::Error::Invalid("directory projection has no directory command".into()))
+                    }
+                }
             };
             // Neither a read's data nor its source error bypasses revocation
             // while admission, endpoint selection or source IO was suspended.
@@ -127,6 +147,37 @@ where
             inbound: Box::new(ReadOnly),
         })
     }
+}
+
+fn directory_frames(
+    mut source: DirectorySource,
+    page: AgentPageRequest,
+) -> acyclic_stream::BoxProviderStream<'static, crate::Result<Bytes>> {
+    Box::pin(async_stream::try_stream! {
+        while let Some(entries) = source.next().await {
+            let entries = entries?;
+            if entries.is_empty() { yield diff::frame(4, Vec::new(), &page)?; continue; }
+            let mut body = vec![b'['];
+            let mut count = 0;
+            for entry in entries {
+                let encoded = serde_json::to_vec(&entry).map_err(|error| crate::Error::Storage(error.to_string()))?;
+                let separator = usize::from(count != 0);
+                if body.len() + separator + encoded.len() + 1 > page.bytes() as usize || count == page.items() {
+                    if count == 0 { Err(crate::Error::Invalid("directory name exceeds page byte credit".into()))?; }
+                    body.push(b']');
+                    yield diff::frame(10, body, &page)?;
+                    body = vec![b'['];
+                    count = 0;
+                }
+                if body.len() + encoded.len() + 1 > page.bytes() as usize { Err(crate::Error::Invalid("directory name exceeds page byte credit".into()))?; }
+                if count != 0 { body.push(b','); }
+                body.extend_from_slice(&encoded);
+                count += 1;
+            }
+            if count != 0 { body.push(b']'); yield diff::frame(10, body, &page)?; }
+        }
+        yield diff::frame(9, Vec::new(), &page)?;
+    })
 }
 
 fn input_frames(
