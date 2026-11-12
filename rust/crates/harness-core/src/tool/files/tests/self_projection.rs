@@ -13,6 +13,31 @@ struct ObservedReader {
 }
 
 impl ContentResidencyVerifier for ObservedReader {
+    fn read_private_path<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        prefix: &'a str,
+        path: &'a str,
+        generation: Option<&'a GenerationRef>,
+        maximum_bytes: u64,
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            Option<(
+                crate::conversation::FileRef,
+                acyclic_stream::OwnedBytes,
+                Option<ContentHold<'io>>,
+            )>,
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        self.inner
+            .read_private_path(volume, prefix, path, generation, maximum_bytes, access)
+    }
+
     fn read_range<'a>(
         &'a self,
         reference: &'a crate::conversation::FileRef,
