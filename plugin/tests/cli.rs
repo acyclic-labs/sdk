@@ -623,11 +623,22 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     let model = model(fixture._directory.path()).await;
     let plugins = task_plugins(&fixture);
     let run = |operation: &'static str, initialize: bool| {
-        let mut arguments = vec!["--operation", operation, "-p", "hello"];
+        let mut command = graphcoder_command(&fixture);
+        command.arg("--catalog").arg(&model.catalog).args([
+            "--model",
+            "morph/morph-kimik31",
+            "--operation",
+            operation,
+            "-p",
+            "hello",
+        ]);
         if initialize {
-            arguments.extend(["--home-file", plugins.as_str()]);
+            command
+                .arg("--settings-root")
+                .arg(&fixture.settings)
+                .args(["--home-file", plugins.as_str()]);
         }
-        graphcoder(&fixture, &model.catalog, arguments, "")
+        capture(command, "")
     };
     assert_eq!(succeeded(&run("first", true).await), "fixture answer\n");
     assert_eq!(model.generated(), 1);
@@ -651,34 +662,23 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     let mut previous_transcript = None;
     let explicit_plugins = task_plugins(&explicit);
     for attempt in 0..2 {
-        assert_eq!(
-            succeeded(
-                &graphcoder(
-                    &explicit,
-                    &model.catalog,
-                    {
-                        let mut arguments = vec![
-                            "--default-config",
-                            "--usage-jsonl",
-                            usage.to_str().unwrap(),
-                            "--transcripts",
-                            transcripts.to_str().unwrap(),
-                            "--operation",
-                            "explicit-defaults",
-                            "-p",
-                            "hello",
-                        ];
-                        if attempt == 0 {
-                            arguments.extend(["--home-file", explicit_plugins.as_str()]);
-                        }
-                        arguments
-                    },
-                    "",
-                )
-                .await
-            ),
-            "fixture answer\n"
-        );
+        let mut command = graphcoder_command(&explicit);
+        command
+            .arg("--catalog")
+            .arg(&model.catalog)
+            .args(["--model", "morph/morph-kimik31", "--usage-jsonl"])
+            .arg(&usage)
+            .arg("--transcripts")
+            .arg(&transcripts)
+            .args(["--operation", "explicit-defaults", "-p", "hello"]);
+        if attempt == 0 {
+            command
+                .arg("--default-config")
+                .arg("--settings-root")
+                .arg(&explicit.settings)
+                .args(["--home-file", explicit_plugins.as_str()]);
+        }
+        assert_eq!(succeeded(&capture(command, "").await), "fixture answer\n");
         assert_eq!(model.generated(), 3);
         let files = std::fs::read_dir(&transcripts)
             .unwrap()
