@@ -116,7 +116,7 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
             output: file,
             outcome: Default::default(),
             goal: None,
-            targets: None,
+            announcements: None,
             tool_results: None,
             steering: None,
             notices: None,
@@ -215,7 +215,7 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
         output: file,
         outcome: Default::default(),
         goal: None,
-        targets: None,
+        announcements: None,
         tool_results: None,
         steering: None,
         notices: None,
@@ -325,7 +325,7 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
         |agent, navigation_identity, reader: Arc<dyn ContentResidencyVerifier>| -> Result<_> {
             Ok(Arc::new(Routed::new(
                 Empty,
-                LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255)?,
+                LogicalName::new(NameEncoding::Utf8, b"ui".to_vec())?,
                 StreamUiProvider::new(
                     streams.clone(),
                     reader,
@@ -467,7 +467,7 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
             output,
             outcome: Default::default(),
             goal: None,
-            targets: None,
+            announcements: None,
             tool_results: None,
             steering: None,
             notices: None,
