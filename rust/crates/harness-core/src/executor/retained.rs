@@ -44,6 +44,7 @@ pub(crate) async fn completed_tool_projection(
                 call_id,
                 result,
                 projection,
+                ..
             } if *recorded == step && call_id == &expected.call_id => Some((result, projection)),
             _ => None,
         })

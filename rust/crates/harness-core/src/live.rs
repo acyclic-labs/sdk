@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+pub mod feedback;
+
 /// A projection cannot supply the requested original fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {

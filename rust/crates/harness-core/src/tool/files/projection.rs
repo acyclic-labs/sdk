@@ -44,7 +44,16 @@ impl FileProjection {
     }
 
     pub(crate) fn model_schema(mode: ProjectionMode) -> Result<Value> {
-        mode.schema::<FileView<'_>>()
+        // A record acknowledgement already has the ordinary path/version view.
+        if mode == ProjectionMode::Full {
+            return mode.schema::<FileView<'_>>();
+        }
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator();
+        let file = generator.subschema_for::<schema::ReferenceProjection<'_>>();
+        let record = generator.subschema_for::<schema::JsonProjection<super::record::Ack<'_>>>();
+        Ok(json!({"oneOf":[file,record],"$defs":generator.take_definitions(true)}))
     }
 
     pub(crate) fn read_schema(mode: ProjectionMode) -> Result<Value> {
@@ -496,6 +505,17 @@ impl ToolProjection for FileProjection {
                 )
             }
             Self::Publication(mode) => {
+                if invocation.name == "write" && super::record::selected(invocation) {
+                    let result = decode::<RecordResult>(&result.value, work)?;
+                    result.0.report.validate()?;
+                    return schema::project_json(
+                        &super::record::Ack {
+                            path: crate::live::feedback::PATH,
+                            version: invocation.operation_id,
+                        },
+                        work,
+                    );
+                }
                 let value = decode::<FileResult>(&result.value, work)?;
                 match mode {
                     schema::ProjectionMode::Full => {

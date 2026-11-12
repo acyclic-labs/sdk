@@ -5,7 +5,7 @@ use crate::{
         JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolProjection,
         files::{
             EditFileInput, FileProjection, FileResult, FileTool, ReadFileInput, ReadResult,
-            RemoveFileInput, WriteFileInput,
+            RemoveFileInput, WriteFileInput, WriteResult,
         },
         schema::{self, ProjectionMode},
     },
@@ -182,12 +182,12 @@ pub(crate) static READ: ToolSpec = ToolSpec {
 
 pub(crate) static WRITE: ToolSpec = ToolSpec {
     name: "write",
-    revision: "portable-7",
-    description: "Write UTF-8 content to a workspace path. ifVersion any replaces unconditionally; absent creates only when missing; an opaque read version replaces only that source",
+    revision: "portable-8",
+    description: "Write UTF-8 content to a workspace path. The self feedback file appends one original execution record. Other paths use ifVersion: any replaces unconditionally; absent creates only when missing; an opaque read version replaces only that source",
     hook_names: &["Write"],
     binding: ToolBinding::Volume,
     input: schema::input::<WriteFileInput>,
-    output: schema::output::<FileResult>,
+    output: schema::output::<WriteResult>,
     projection_schema: FileProjection::model_schema,
     executor: |_| Arc::new(FileTool::Write),
     projection: |mode| Arc::new(FileProjection::Publication(mode)),

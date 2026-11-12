@@ -76,6 +76,7 @@ async fn ui_agent_override_and_turn_receipts_ignore_old_asks() -> Result<()> {
                 call_id: "write-ui".into(),
                 result: result.clone(),
                 projection: result,
+                record_kind: None,
             },
             None,
         )?

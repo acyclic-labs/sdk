@@ -137,6 +137,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
                     call_id: "call".into(),
                     result: payload.clone(),
                     projection: payload,
+                    record_kind: None,
                 },
                 None,
             )?
@@ -166,6 +167,10 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
         assert!(usage.items.is_empty());
         assert_eq!((usage.tools.started, usage.tools.completed), (1, 1));
         assert!(usage.tools.failures.is_empty());
+        assert!(
+            usage.tools.feedback.is_empty(),
+            "unmarked opaque results are not decoded as feedback"
+        );
         if native {
             assert_eq!(work.live_allocation_bytes(), baseline);
         }

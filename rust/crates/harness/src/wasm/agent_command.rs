@@ -316,3 +316,74 @@ impl WasmAgentCommand {
         }
     }
 }
+
+/// One selected agent's bounded original-record projection on existing controls.
+#[wasm_bindgen]
+pub struct WasmUsageQuery {
+    controls: Rc<AgentControls>,
+    query: acyclic_harness_client::UsageQuery,
+}
+
+#[wasm_bindgen]
+impl WasmAgentControls {
+    /// No connection, source subscription or history is duplicated.
+    #[wasm_bindgen(js_name = usageQuery)]
+    pub fn usage_query(&self, agent: js_sys::JsString) -> Result<WasmUsageQuery, JsValue> {
+        Ok(WasmUsageQuery {
+            controls: self.controls.clone(),
+            query: acyclic_harness_client::UsageQuery::new(
+                super::agent_client::agent_path(agent)?,
+                std::sync::Arc::default(),
+            ),
+        })
+    }
+}
+
+#[wasm_bindgen(typescript_custom_section)]
+const FEEDBACK_SNAPSHOT: &str = r#"
+export interface WasmFeedbackSnapshot {
+    readonly synchronized: boolean;
+    readonly feedback: Partial<Record<'defect' | 'slow' | 'unclear' | 'limit' | 'other', bigint>>;
+}
+"#;
+
+#[wasm_bindgen]
+impl WasmUsageQuery {
+    /// Wait on the existing journal continuation; cancellation keeps the frontier.
+    pub async fn advance(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "AbortSignal | undefined")] signal: JsValue,
+    ) -> Result<bool, JsValue> {
+        let (advance, handle) = futures::future::abortable(self.query.advance(&self.controls));
+        let _listening = super::cancel::Listening::abort(&signal, move || handle.abort())?;
+        advance
+            .await
+            .map_err(|_| JsValue::from(js_sys::Error::new("usage query aborted")))?
+            .map_err(|error| match error {
+                acyclic_harness_client::UsageQueryError::Exchange(error) => exchange_error(error),
+                acyclic_harness_client::UsageQueryError::Projection(error) => {
+                    super::js_error(error)
+                }
+            })
+    }
+
+    /// Render only admitted totals; an unsynchronized snapshot is still loading.
+    #[wasm_bindgen(unchecked_return_type = "WasmFeedbackSnapshot")]
+    pub fn snapshot(&self) -> Result<JsValue, JsValue> {
+        use serde::Serialize as _;
+        #[derive(serde::Serialize)]
+        struct Snapshot<'a> {
+            synchronized: bool,
+            feedback: &'a std::collections::BTreeMap<crate::live::feedback::Kind, u64>,
+        }
+        Snapshot {
+            synchronized: self.query.synchronized(),
+            feedback: &self.query.tools().feedback,
+        }
+        .serialize(
+            &serde_wasm_bindgen::Serializer::json_compatible()
+                .serialize_large_number_types_as_bigints(true),
+        )
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+}

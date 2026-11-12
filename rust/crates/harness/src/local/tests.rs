@@ -36,6 +36,17 @@ pub(super) fn text() -> Arc<ScriptedModelProvider> {
     scripted([ScriptedTurn::Text("done".into())])
 }
 
+/// Finite scripts model the task's requests, without optional settlement
+/// followups. Settlement coverage opens the default composition directly.
+pub(super) async fn open_scripted(config: LocalHarnessConfig) -> Result<LocalHarness> {
+    let mut harness = LocalHarness::open(config).await?;
+    Arc::get_mut(&mut harness.plugin_set)
+        .expect("the fixture owns the unopened agent composition")
+        .after
+        .clear();
+    Ok(harness)
+}
+
 /// One conversation and its observation, which reports each settled entry.
 struct ObservedConversation {
     conversation: Arc<Conversation>,

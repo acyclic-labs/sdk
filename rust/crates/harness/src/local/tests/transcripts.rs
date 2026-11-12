@@ -2,6 +2,7 @@
 use super::*;
 use acyclic_harness_client::{AgentCommand, AgentReply, ExecutionPosition};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use futures::TryStreamExt as _;
 use serde_json::Value;
 
 #[tokio::test]
@@ -9,8 +10,27 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
     use crate::model::{ModelContent, ModelEvent, ToolCall};
     use crate::test_support::ScriptedEvent;
 
+    let report = |count| {
+        let mut events = Vec::new();
+        for number in 0..count {
+            events.push(ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                format!("feedback-{number}"),
+                "write".into(),
+                json!({
+                    "path": crate::live::feedback::PATH,
+                    "content": "{\"version\":1,\"kind\":\"slow\",\"what\":\"Waited for a result\",\"evidence\":\"shell step 3\"}"
+                }),
+            ))));
+        }
+        events.push(ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: json!({}),
+        }));
+        ScriptedTurn::Events(events)
+    };
     let provider = scripted([
         ScriptedTurn::Text("root answer".into()),
+        report(2),
+        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
                 "child-error".into(),
@@ -22,7 +42,11 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
             }),
         ]),
         ScriptedTurn::Text("child answer after error".into()),
+        report(1),
+        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("grandchild answer".into()),
+        report(1),
+        ScriptedTurn::Text("none".into()),
     ]);
     let directory = tempfile::tempdir().map_err(crate::local::storage)?;
     let project = volume(directory.path()).await?;
@@ -40,6 +64,7 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
     let run = async {
         conversation.send("root-input", "root task").await?;
         agents::settled(&harness, &root).await?;
+        conversation.send("root-input", "root task").await?;
         let mut paths = vec![root.clone()];
         for name in ["child", "grandchild"] {
             let parent = paths.last().expect("root or child").clone();
@@ -122,6 +147,9 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
         "a child mapped to its parent must fail"
     );
     eprintln!("TRANSCRIPTS_IDENTITY_NEGATIVE_CONTROL=PASS (child mapped to parent rejected)");
+    let inspections = conversation.inspect_tree();
+    futures::pin_mut!(inspections);
+    let mut aggregate = crate::executor::ToolUsage::default();
     for (path, mapping) in paths.into_iter().zip(index) {
         let original_usage = &usage
             .iter()
@@ -140,6 +168,20 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
             })
         );
         let selected = Conversation::open(connection.select(path.clone()).await?);
+        let mut inspection = inspections
+            .try_next()
+            .await?
+            .expect("each tree member is inspected");
+        assert_eq!(inspection.snapshot().agent, &path);
+        while !inspection.snapshot().synchronized {
+            inspection.advance().await?;
+        }
+        assert_eq!(
+            inspection.snapshot().tools.feedback[&crate::live::feedback::Kind::Slow],
+            if path.depth() == 0 { 2 } else { 1 },
+            "live inspection counts only this agent's original reports"
+        );
+        aggregate = aggregate.merged(inspection.snapshot().tools)?;
         let bytes = std::fs::read(output.join(format!("{}.jsonl", path.id())))
             .map_err(crate::local::storage)?;
         let rows = serde_json::Deserializer::from_slice(&bytes)
@@ -232,6 +274,8 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
             "inherited or duplicate calls exported"
         );
     }
-    assert_eq!(provider.request_count(), 4);
+    assert!(inspections.try_next().await?.is_none());
+    assert_eq!(aggregate.feedback[&crate::live::feedback::Kind::Slow], 4);
+    assert_eq!(provider.request_count(), 10);
     Ok(())
 }

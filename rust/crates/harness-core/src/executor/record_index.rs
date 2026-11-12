@@ -157,11 +157,13 @@ impl ExecutionEvent {
                 call_id,
                 result,
                 projection,
+                record_kind,
             } => ToolCompleted {
                 step: *step,
                 call_id: text(call_id)?,
                 result: file(result)?,
                 projection: file(projection)?,
+                record_kind: *record_kind,
             },
             ToolFailed {
                 step,

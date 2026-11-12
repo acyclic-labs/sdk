@@ -206,7 +206,7 @@ async fn record(
     Ok(())
 }
 
-/// The before-hook rules of the plugins `plugins.ts` enables, read as the
+/// The plugin set `plugins.ts` enables, read as the
 /// session starts, recording the home module's admission. Invalid enforcement
 /// manifests refuse the session rather than remove its guards.
 #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -215,7 +215,7 @@ pub(super) async fn plugins(
     tree: &Tree<'_>,
     agent: AgentId,
     clock: &dyn acyclic_stream::UnixMillisClock,
-) -> Result<crate::hooks::Hooks> {
+) -> Result<crate::plugins::Enabled> {
     use crate::plugins::{MANIFEST, load_result};
     let enabler = agent.to_string();
     let selection =
@@ -239,8 +239,7 @@ pub(super) async fn plugins(
     let Some((version, bytes)) = tree.home(MANIFEST).await? else {
         return Ok(load_result(tree, &[seed, session], &enabler)
             .await?
-            .map_err(seeded)?
-            .rules);
+            .map_err(seeded)?);
     };
     let layers = [
         seed,
@@ -257,7 +256,6 @@ pub(super) async fn plugins(
         (MANIFEST, &version),
         load_result(tree, &layers, &enabler)
             .await?
-            .map(|enabled| enabled.rules)
             .map_err(Refused::evaluated),
         clock,
     )
@@ -557,7 +555,7 @@ mod tests {
         let clock = harness.clock.as_ref();
         let enabled = plugins(false, &original, harness.root, clock).await?;
         assert!(
-            !enabled.is_empty(),
+            !enabled.rules.is_empty(),
             "plugin admission refreshed its pinned home generation"
         );
         let settings = admit(
@@ -578,6 +576,7 @@ mod tests {
         assert!(
             plugins(false, &current, harness.root, clock)
                 .await?
+                .rules
                 .is_empty()
         );
         let settings = admit(

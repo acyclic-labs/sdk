@@ -70,6 +70,17 @@ pub type ToolPreparationFuture<'a> =
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Classify an already validated completion at its original producer.
+    /// Result JSON cannot independently supply a trusted record marker.
+    fn record_kind(
+        &self,
+        _invocation: &ToolInvocation,
+        _result: &ToolResult,
+        _work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<Option<crate::executor::ToolRecordKind>> {
+        Ok(None)
+    }
+
     /// A provisional result whose recorded actor effects must commit before
     /// this invocation can return its original receipt. The stock caller
     /// publishes nothing, yields through the journal, and reconciles the same

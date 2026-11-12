@@ -297,6 +297,9 @@ impl<'io> StockExecution<'io> {
             Ok(projected) => projected,
             Err(content) => return Ok(ToolInvocationOutcome::Settled(content, None)),
         };
+        let record_kind = tool
+            .executor
+            .record_kind(invocation, &result.0, self.native_work())?;
         #[cfg(not(target_arch = "wasm32"))]
         {
             match self
@@ -304,8 +307,7 @@ impl<'io> StockExecution<'io> {
                     journal,
                     identity,
                     invocation,
-                    &result.0,
-                    &projection,
+                    (&result.0, &projection, record_kind),
                     completion,
                 )
                 .await?
@@ -322,8 +324,7 @@ impl<'io> StockExecution<'io> {
                     journal,
                     identity,
                     &invocation.call_id,
-                    &result.0,
-                    &projection,
+                    (&result.0, &projection, record_kind),
                     completion,
                 )
                 .await?;
@@ -406,23 +407,16 @@ impl<'io> StockExecution<'io> {
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),
         invocation: &ToolInvocation,
-        result: &ToolResult,
-        projection: &Value,
+        result: (&ToolResult, &Value, Option<ToolRecordKind>),
         phase: crate::executor::phase::PreparedPhase<'_>,
     ) -> Result<ToolSettlement<crate::hooks::HookOutput>> {
-        let completion = self.publish_tool_completion(
-            journal,
-            identity,
-            &invocation.call_id,
-            result,
-            projection,
-            phase,
-        );
+        let completion =
+            self.publish_tool_completion(journal, identity, &invocation.call_id, result, phase);
         let feedback = self.tool_hook(
             identity.0,
             crate::hooks::HookSite::AfterTool,
             invocation,
-            Some(result),
+            Some(result.0),
             false,
         );
         if COMMIT_FIRST {
@@ -589,19 +583,15 @@ impl<'io> StockExecution<'io> {
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),
         call_id: &str,
-        result: &ToolResult,
-        projection: &Value,
+        result: (&ToolResult, &Value, Option<ToolRecordKind>),
         completion: crate::executor::phase::PreparedPhase<'_>,
     ) -> Result<ToolSettlement<()>> {
         crate::executor::phase::Publication::ToolSettlement
             .observe(
                 identity.0,
                 identity.1,
-                completion.run(
-                    self.publish_tool_completion_inner(
-                        journal, identity, call_id, result, projection,
-                    ),
-                ),
+                completion
+                    .run(self.publish_tool_completion_inner(journal, identity, call_id, result)),
             )
             .await
     }
@@ -611,10 +601,10 @@ impl<'io> StockExecution<'io> {
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),
         call_id: &str,
-        result: &ToolResult,
-        projection: &Value,
+        result: (&ToolResult, &Value, Option<ToolRecordKind>),
     ) -> Result<ToolSettlement<()>> {
         let (operation_id, step) = identity;
+        let (result, projection, record_kind) = result;
         let result = match self
             .publish_tool_payload(journal, operation_id, step, call_id, "result", result)
             .await?
@@ -654,6 +644,7 @@ impl<'io> StockExecution<'io> {
             call_id: stock_string_copy(call_id, self.io)?,
             result,
             projection,
+            record_kind,
         };
         match journal
             .append_if_tail(operation_id, tail, &key, &event, self.io)?

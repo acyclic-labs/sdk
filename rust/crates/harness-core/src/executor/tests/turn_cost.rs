@@ -283,6 +283,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
             call_id: "a".into(),
             result: file.clone(),
             projection: file,
+            record_kind: None,
         },
         ToolFailed {
             step: 1,

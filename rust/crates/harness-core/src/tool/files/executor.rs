@@ -97,6 +97,10 @@ impl FileTool {
             work,
         )?;
 
+        if matches!(self, Self::Write) && super::record::selected(invocation) {
+            return super::record::prepare(context, invocation, work);
+        }
+
         let file = match self {
             Self::Search {
                 options,
@@ -363,6 +367,19 @@ impl FileTool {
 }
 
 impl ToolExecutor for FileTool {
+    fn record_kind(
+        &self,
+        invocation: &ToolInvocation,
+        result: &ToolResult,
+        _work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<Option<crate::executor::ToolRecordKind>> {
+        Ok((matches!(self, Self::Write)
+            && invocation.name == "write"
+            && super::record::selected(invocation)
+            && result.value.get("report").is_some())
+        .then_some(crate::executor::ToolRecordKind::Feedback))
+    }
+
     fn cancellable_on_drop(&self) -> bool {
         self.is_read()
     }
@@ -395,6 +412,24 @@ impl ToolExecutor for FileTool {
             return Err(unauthorized());
         }
         let (file, _custody) = self.preflight(scope, context, invocation, work)?;
+        if super::record::selected(invocation) {
+            let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
+            if !matches!(self, Self::Write)
+                || context.and_then(|context| context.agent()).is_none()
+                || !scope.grants().contains("tool:call:write")
+                || input
+                    .0
+                    .if_version
+                    .as_deref()
+                    .is_some_and(|version| version != "any")
+            {
+                return Err(rejection(
+                    work,
+                    "self records require an agent write without a replacement condition",
+                ));
+            }
+            return Ok(());
+        }
         if matches!(self, Self::Read)
             && invocation
                 .arguments
@@ -526,6 +561,13 @@ impl ToolExecutor for FileTool {
                         code: crate::wire::ErrorCode::Storage,
                         reason: "native file result lacks custody",
                     })?,
+                ));
+            }
+            if matches!(self, Self::Write) && super::record::selected(invocation) {
+                let (result, custody) = super::record::prepare(context, invocation, Some(work))?;
+                return Ok((
+                    Some(result),
+                    custody.ok_or(rejection(Some(work), "record result lacks native custody"))?,
                 ));
             }
             // Observe uncertain publications without redispatch.

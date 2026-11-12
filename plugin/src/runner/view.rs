@@ -22,7 +22,7 @@ use acyclic_harness::{
         Action, AppAction, BlockKind, Editor, InputEffect, PromptInput, QueryController, QueryPage,
         Screen, Thinking, TranscriptRows, Viewport,
         config::Token,
-        context_summary,
+        context_summary, feedback_summary,
         key_event::InputEvent,
         ratatui::{
             layout::{Position, Rect, Size},
@@ -1257,7 +1257,7 @@ async fn run_current(
                         if changed && query.synchronized() {
                             let mut cost = usage_summary(query.totals());
                             cost.spans.insert(0, Span::raw("This agent · "));
-                            usage_page = QueryPage::new(vec![context_summary(query.model(), query.context(), query.open_children()), cost], None, false);
+                            usage_page = QueryPage::new(vec![context_summary(query.model(), query.context(), query.open_children()), cost, feedback_summary(&query.tools().feedback)], None, false);
                         }
                         usage_future.set(Some(usage(query)));
                     }

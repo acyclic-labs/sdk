@@ -798,6 +798,8 @@ impl LocalHarness {
                 .with_agent_tools(&self.agent_tools)
                 .with_question_plugin(self.question_plugin)
                 .with_templates();
+                #[cfg(not(target_arch = "wasm32"))]
+                let executors = executors.with_plugins(Arc::clone(&self.plugin_set));
                 let executors = match &self.models {
                     Some(models) => executors.with_models(models.clone()),
                     None => executors,

@@ -50,6 +50,22 @@ pub struct Inspection<'a> {
 }
 
 impl Conversation {
+    /// Lazily enumerate this tree through the shared children-page walk.
+    /// Membership is a finite traversal, not an atomic tree cut. Each yielded
+    /// query remains live independently; retain only the agents being displayed.
+    pub fn inspect_tree(self: &Arc<Self>) -> impl futures::Stream<Item = Result<InspectQuery>> {
+        let connection = self.connection().clone();
+        let tree = super::tree::TreeWalk::new(self.agent());
+        futures::stream::try_unfold((connection, tree), |(connection, mut tree)| async move {
+            let Some(agent) = tree.next(&connection).await? else {
+                return Ok(None);
+            };
+            let selected = Conversation::open(connection.select(agent).await?);
+            let query = selected.inspect().await?;
+            Ok(Some((query, (connection, tree))))
+        })
+    }
+
     /// Open a read-only query for this agent. The opening status and subsequent
     /// status-only follow share a frontier, so an update during opening is retained.
     /// Conversation entries and tool-output history are never subscribed.

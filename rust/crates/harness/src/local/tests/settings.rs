@@ -13,7 +13,7 @@ async fn open(
     directory: &std::path::Path,
     project: &crate::conversation::VolumeRef,
 ) -> Result<LocalHarness> {
-    LocalHarness::open(
+    super::open_scripted(
         volume_config(directory, project.clone(), text())?
             .compaction(crate::context::CompactionPolicy::Disabled),
     )
@@ -275,7 +275,7 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
     let config =
         volume_config(directory.path(), project, text())?.system_file(path, original.clone());
     let metadata = config.system_files.clone();
-    let harness = LocalHarness::open(config).await?;
+    let harness = super::open_scripted(config).await?;
     let private = || -> Result<_> {
         Ok(ContentBindings {
             volume: harness.journal.clone(),
@@ -633,7 +633,7 @@ async fn effective_skill_reads_stay_within_the_reader_allowance() -> Result<()> 
     assert!(crate::seed::file(skill_path).expect("built-in skill").len() as u64 > FILE_BYTES);
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let project = volume(directory.path()).await?;
-    let harness = LocalHarness::open(volume_config(directory.path(), project, text())?.limits(
+    let harness = super::open_scripted(volume_config(directory.path(), project, text())?.limits(
         crate::conversation::Limits {
             file_bytes: FILE_BYTES,
             ..Default::default()
@@ -691,14 +691,14 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
         volume_config(directory.path(), project.clone(), text())
             .map(|config| config.compaction(crate::context::CompactionPolicy::Disabled))
     };
-    let harness = LocalHarness::open(config()?).await?;
+    let harness = super::open_scripted(config()?).await?;
     // The seed's default passes the started model through, untouched.
     assert_eq!(harness.sampling, None);
     let source = "import type { AgentConfig } from 'sys/types/config';\n\
          export default (base: AgentConfig): AgentConfig => ({ ...base, sampling: { temperature: 0.25 } });";
     let applied = write(&harness, "agent.ts", source).await?;
     drop(harness);
-    let harness = LocalHarness::open(config()?).await?;
+    let harness = super::open_scripted(config()?).await?;
     let sampling = Sampling {
         temperature: Some(0.25),
         ..Sampling::default()
@@ -834,7 +834,7 @@ async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts()
         volume_config(directory.path(), volume.clone(), provider.clone())
             .map(|config| config.compaction(crate::context::CompactionPolicy::Disabled))
     };
-    let mut harness = Arc::new(LocalHarness::open(config()?).await?);
+    let mut harness = Arc::new(super::open_scripted(config()?).await?);
     for (sampling, expected) in [
         ("{maxOutputTokens: 256}", AdmissionStatus::Applied),
         ("{temperature: 0.25}", AdmissionStatus::Applied),
@@ -847,7 +847,7 @@ async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts()
         )
         .await?;
         drop(harness);
-        harness = Arc::new(match LocalHarness::open(config()?).await {
+        harness = Arc::new(match super::open_scripted(config()?).await {
             Ok(harness) if expected == AdmissionStatus::Applied => harness,
             Ok(_) => panic!("conflicting sampling cannot open a profile-bound session"),
             Err(error) if expected == AdmissionStatus::Rejected => {

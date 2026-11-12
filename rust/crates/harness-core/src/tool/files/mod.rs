@@ -53,6 +53,8 @@ pub fn patch_file(maximum_work: u64, maximum_hunks: u32) -> Result<Tool> {
 
 mod directory;
 mod inputs;
+mod record;
+pub use record::{RecordResult, WriteResult};
 mod source;
 pub use directory::{DirectoryEntry, DirectoryEntryKind, DirectoryReadResult, ReadResult};
 pub(crate) use inputs::FileView;

@@ -57,6 +57,8 @@ const FILES: &[(&str, &[u8])] = &[
     seed_file!("plugins/approvals/plugin.ts"),
     seed_file!("plugins/compaction/hooks/after-usage.ts"),
     seed_file!("plugins/compaction/plugin.ts"),
+    seed_file!("plugins/feedback/hooks/after-settlement.ts"),
+    seed_file!("plugins/feedback/plugin.ts"),
     seed_file!("plugins/question/plugin.ts"),
     seed_file!("plugins/question/policy/attention.md"),
     seed_file!("plugins/question/skills/ui/SKILL.md"),

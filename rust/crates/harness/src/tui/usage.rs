@@ -4,6 +4,28 @@ use crate::executor::{ContextUsage, ModelUsageTotals, UsageTotal};
 use acyclic_harness_tui::ratatui::text::Line;
 use std::fmt::Write as _;
 
+/// Format this agent's already-folded authored reports without source reads.
+pub fn feedback_summary(
+    counts: &std::collections::BTreeMap<crate::live::feedback::Kind, u64>,
+) -> Line<'static> {
+    use crate::live::feedback::Kind;
+    let mut text = String::from("feedback");
+    for (label, kind) in [
+        ("defect", Kind::Defect),
+        ("slow", Kind::Slow),
+        ("unclear", Kind::Unclear),
+        ("limit", Kind::Limit),
+        ("other", Kind::Other),
+    ] {
+        let _ = write!(
+            text,
+            " · {label} {}",
+            counts.get(&kind).copied().unwrap_or(0)
+        );
+    }
+    Line::raw(text)
+}
+
 /// Format one already-folded usage total for [`super::Screen::usage`].
 ///
 /// Unknown observations stay unknown, including partial known subtotals. The
