@@ -301,7 +301,7 @@ async fn step<T: TurnDriver + ?Sized>(
     clock: (u64, u64),
     wake: Wake,
     stop: acyclic_actors::guest::CancellationToken,
-) -> Result<Step> {
+) -> std::result::Result<Step, Error> {
     let selected = match &state {
         Some(state) => turn_announcements(state)?.is_some(),
         None => false,

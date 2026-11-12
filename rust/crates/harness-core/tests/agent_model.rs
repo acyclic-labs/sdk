@@ -18,6 +18,12 @@ mod awaiting;
 mod control_trace;
 #[path = "agent_model/corpus.rs"]
 mod corpus;
+#[path = "agent_model/corpus_version.rs"]
+mod corpus_version;
+const _: () = assert!(
+    corpus_version::RECORD_VERSION == RECORD_VERSION,
+    "stale agent corpus version; run bun scripts/generate-contracts.mjs write harness"
+);
 #[path = "agent_model/driver.rs"]
 mod driver;
 #[path = "agent_model/failed_publication.rs"]
