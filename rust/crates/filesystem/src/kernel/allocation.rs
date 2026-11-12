@@ -410,7 +410,8 @@ impl AllocationLedger {
             _ => self.with_state(|state| state.release(bytes)),
         }
     }
-    pub(crate) fn scratch_bytes(&self) -> u64 {
+    /// Bytes owned by the current scratch scope, excluding independent leases.
+    pub fn scratch_bytes(&self) -> u64 {
         match &self.state {
             LedgerState::Shared(state) | LedgerState::Suspended(state, ..) => {
                 let state = state

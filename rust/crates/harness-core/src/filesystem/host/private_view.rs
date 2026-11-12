@@ -125,7 +125,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let result = async {
             match expected {
                 Some(expected) => {
-                    expected.validate(&mut Some(&mut io.history_io()))?;
+                    expected.validate(&mut Some(&mut native_io.history_io()))?;
                     if expected.as_resource().provider() != &self.provider {
                         return Err(io.invalid("lazy generation belongs to another provider"));
                     }
@@ -162,13 +162,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(super) fn private_generation_ref(
         &self,
         cut: &LazySnapshotRef,
+        expected: Option<&GenerationRef>,
         io: &PreparationIo,
     ) -> Result<GenerationRef> {
-        let bytes = io.encode(cut, io.remaining()?.bytes_encoded, false)?;
+        let bytes;
+        let key = match expected {
+            Some(expected) => expected.as_resource().key(),
+            None => {
+                bytes = io.encode(cut, io.remaining()?.bytes_encoded, false)?;
+                &bytes
+            }
+        };
         crate::executor::with_history_io(Some(io), |work| {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let provider = crate::core::copy_provider(&self.provider, &mut quota)?;
-            let key = crate::core::copy_copy_vector(&bytes, &mut quota)?;
+            let key = crate::core::copy_copy_vector(key, &mut quota)?;
             let version = crate::core::copy_text(FORMAT, &mut quota)?;
             let resource = crate::resources::ResourceRef::new(
                 crate::resources::ResourceKind::Generation,

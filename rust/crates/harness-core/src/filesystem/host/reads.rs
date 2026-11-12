@@ -123,7 +123,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(cut) = &selected.snapshot {
             self.validate_private_snapshot(cut, io).await?;
             selected.recheck(grant, io).await?;
-            return self.private_generation_ref(cut, io);
+            return self.private_generation_ref(cut, expected_generation, io);
         }
         self.generation_ref_id(selected.generation.id(), access.io)
     }
@@ -463,7 +463,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .read_private_snapshot(cut, &requested, range, io)
                 .await?;
             selected.recheck(grant, io).await?;
-            return Ok((bytes, self.private_generation_ref(cut, io)?, length));
+            return Ok((
+                bytes,
+                self.private_generation_ref(cut, expected_generation, io)?,
+                length,
+            ));
         }
         let stat = io
             .sdk(generation.stat(&requested, io, io.cancellation()).await)

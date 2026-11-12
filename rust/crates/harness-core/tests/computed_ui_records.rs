@@ -554,6 +554,37 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
         .await?;
     assert_eq!(reselected, selected);
     assert_eq!(repeated.as_ref(), &projected[1..8]);
+    // A finite ordinary caller lends the same ledger and can resume it after
+    // native production. Independently retained credit never belongs to its
+    // scratch scope, including after all returned values have retired.
+    let ordinary = acyclic_harness_core::filesystem::PreparationIo::from_budget(
+        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        &cancellation,
+    )?;
+    let (ordinary_selection, ordinary_bytes, ordinary_hold) = projected_reader
+        .read_private_range(
+            &child_volume,
+            "",
+            "ui/status.md",
+            Some(&selected.generation),
+            acyclic_fs::ByteRange {
+                offset: 1,
+                length: 7,
+            },
+            ContentAccess {
+                ceiling: None,
+                io: Some(&ordinary),
+            },
+        )?
+        .await?;
+    assert_eq!(ordinary_selection, selected);
+    assert_eq!(ordinary_bytes.as_ref(), repeated.as_ref());
+    drop((ordinary_selection, ordinary_bytes, ordinary_hold));
+    ordinary.remaining()?;
+    assert!(
+        ordinary.take_owned_custody(1).is_err(),
+        "retired ordinary scratch cannot own independent lease credit"
+    );
     let (_, current, _) = projected_reader
         .read_private_range(
             &child_volume,
