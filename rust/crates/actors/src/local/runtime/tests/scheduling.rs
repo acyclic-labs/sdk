@@ -80,9 +80,10 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
     Ok(())
 }
 
-/// The checkpoint of the store's only shard, once it passes `tail`.
+/// The checkpoint of the store's only shard, once its `cursor` reaches `tail`.
 async fn checkpointed<P: StreamProvider + ?Sized>(
     runtime: &Runtime<P>,
+    cursor: &str,
     tail: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use futures::StreamExt as _;
@@ -92,7 +93,7 @@ async fn checkpointed<P: StreamProvider + ?Sized>(
     let mut records =
         acyclic_stream::records_only(runtime.store().provider().follow(follow).await?);
     while let Some(record) = records.next().await {
-        if State::decode(&record?.value)?.cursor("activation") >= Some(tail) {
+        if State::decode(&record?.value)?.cursor(cursor) >= Some(tail) {
             return Ok(());
         }
     }
@@ -111,7 +112,7 @@ async fn serve_to_checkpoint<P: StreamProvider + ?Sized>(
     let mut serving = Box::pin(runtime.run(|_, error| panic!("delivery failed: {error}")));
     tokio::select! {
         stopped = &mut serving => Err(format!("host stopped: {stopped:?}").into()),
-        result = checkpointed(runtime, tail) => result,
+        result = checkpointed(runtime, "activation", tail) => result,
     }
 }
 
@@ -171,6 +172,207 @@ async fn restart_work_is_independent_of_the_dormant_population() -> TestResult {
         (small.control(), small.data()),
         (large.control(), large.data()),
         "restart work grew with dormant actors"
+    );
+    Ok(())
+}
+
+/// The first instant of deadline window 10.
+const WINDOW_TEN: u64 = 600_000;
+
+/// Complete `runtime`'s current work while it serves.
+async fn completed(
+    runtime: &Runtime<MemoryStream>,
+    serving: std::pin::Pin<&mut impl Future<Output = Result<Infallible, Error>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    observe_while_running(serving, async {
+        runtime.complete().await.map_err(Into::into)
+    })
+    .await
+}
+
+/// One single-shard store, and `name` spawned with `commands` and delivered
+/// by an earlier host, so the next host finds its alarm window at startup.
+async fn armed_before_start(
+    clock: &Arc<ControlledClock>,
+    name: &str,
+    commands: &[&'static [u8]],
+) -> Result<(Arc<MemoryStream>, Store<MemoryStream>, ActorReference), Box<dyn std::error::Error>> {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?)
+        .with_scheduling_shards(std::num::NonZeroU16::MIN);
+    let actor = spawn_with(&store, name, commands).await?;
+    let earlier = Runtime::new(
+        store.clone(),
+        Arc::new(Package::new()?),
+        Arc::clone(clock) as Arc<dyn Clock>,
+    );
+    earlier.track(actor.clone())?;
+    earlier.drain_actor(&actor).await?;
+    Ok((provider, store, actor))
+}
+
+/// Hibernating never drops an armed alarm, whether its window was already
+/// opened (the host takes the alarm over) or was armed after the host
+/// started and never discovered (the host learns the window).
+#[tokio::test]
+async fn hibernated_alarms_fire_in_the_running_host() -> TestResult {
+    let (clock, mut time) = ControlledClock::new(WINDOW_TEN);
+    let clock = Arc::new(clock);
+    let (provider, store, near) =
+        armed_before_start(&clock, "hibernate-near", &[b"set 30000"]).await?;
+    let runtime = Runtime::new(
+        store.clone(),
+        Arc::new(Package::new()?),
+        Arc::clone(&clock) as Arc<dyn Clock>,
+    );
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("delivery failed: {error}")));
+    // Window ten opens at once and wakes `near`, and no later window exists.
+    completed(&runtime, serving.as_mut()).await?;
+    // `far` then arms window twelve, which the host never discovered.
+    let far = spawn_with(&store, "hibernate-far", &[b"set 150000"]).await?;
+    completed(&runtime, serving.as_mut()).await?;
+    for actor in [&near, &far] {
+        assert!(runtime.release(actor), "an idle actor did not hibernate");
+    }
+    time.advance_to(WINDOW_TEN + 150_000)?;
+    completed(&runtime, serving.as_mut()).await?;
+    for name in ["hibernate-near", "hibernate-far"] {
+        assert_eq!(
+            records(provider.as_ref(), &format!("out/{name}")).await?,
+            vec![Bytes::from_static(b"a1")],
+            "{name} lost its alarm when it hibernated"
+        );
+    }
+    Ok(())
+}
+
+/// A resumed alarm whose window passed while it was paused fires after a
+/// restart that follows the resume commit, before any host delivered it.
+#[tokio::test]
+async fn a_resumed_alarm_survives_a_restart_past_its_window() -> TestResult {
+    let (clock, mut time) = ControlledClock::new(WINDOW_TEN);
+    let clock = Arc::new(clock);
+    let (provider, store, actor) = armed_before_start(&clock, "resumed", &[b"set 1000"]).await?;
+    {
+        let host = Runtime::new(
+            store.clone(),
+            Arc::new(Package::new()?),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        );
+        let mut serving = Box::pin(host.run(|_, error| panic!("delivery failed: {error}")));
+        completed(&host, serving.as_mut()).await?;
+        observe_while_running(serving.as_mut(), async {
+            host.pause(&actor, true).await.map_err(Into::into)
+        })
+        .await?;
+        time.advance_to(WINDOW_TEN + 120_000)?;
+        // The host checkpoints past the paused alarm's window, then stops.
+        observe_while_running(
+            serving.as_mut(),
+            checkpointed(
+                &host,
+                "deadline",
+                crate::local::scheduling::window(WINDOW_TEN) + 1,
+            ),
+        )
+        .await?;
+    }
+    let snapshot = store.load(&actor).await?;
+    let epoch = snapshot.state().ok_or("missing actor state")?.epoch();
+    store
+        .set_paused(&snapshot, epoch, false, key("resumed/resume")?)
+        .await?;
+    let host = Runtime::new(store, Arc::new(Package::new()?), clock);
+    let mut serving = Box::pin(host.run(|_, error| panic!("delivery failed: {error}")));
+    completed(&host, serving.as_mut()).await?;
+    assert_eq!(
+        records(provider.as_ref(), "out/resumed").await?,
+        vec![Bytes::from_static(b"a1")],
+        "the restarted host lost the resumed alarm"
+    );
+    Ok(())
+}
+
+/// Deleting a resident actor with an armed alarm is finished work for its
+/// running host: completion keeps working for every other actor.
+#[tokio::test]
+async fn deleting_a_resident_actor_keeps_its_host_completing() -> TestResult {
+    let (clock, mut time) = ControlledClock::new(WINDOW_TEN);
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let runtime = Runtime::new(store.clone(), Arc::new(Package::new()?), Arc::new(clock));
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("delivery failed: {error}")));
+    let doomed = spawn_with(&store, "doomed", &[b"set 60000"]).await?;
+    completed(&runtime, serving.as_mut()).await?;
+    let snapshot = store.load(&doomed).await?;
+    store
+        .submit(store.delete(&snapshot, key("doomed/delete")?).await?)
+        .await?;
+    time.advance_to(WINDOW_TEN + 60_000)?;
+    spawn_with(&store, "survivor", &[b"emit"]).await?;
+    completed(&runtime, serving.as_mut()).await?;
+    assert!(records(provider.as_ref(), "out/doomed").await?.is_empty());
+    assert_eq!(
+        records(provider.as_ref(), "out/survivor").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    Ok(())
+}
+
+/// Pause control admits an inherited branch with the store's own
+/// configuration, so its inherited alarm lands in the store's own shard.
+#[tokio::test]
+async fn pause_control_files_an_inherited_alarm_in_the_stores_shard() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?)
+        .with_scheduling_shards(std::num::NonZeroU16::MIN);
+    let unconfigured = Store::new(Arc::clone(&provider), root()?);
+    let parent = spawn_with(&store, "inherit-parent", &[b"set 600000"]).await?;
+    let runtime = Runtime::new(
+        store.clone(),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
+    runtime.track(parent.clone())?;
+    runtime.drain_actor(&parent).await?;
+    // A child that a default-partitioned store would file elsewhere.
+    let mut index = 0_u32;
+    let child = loop {
+        let candidate = actor(&format!("inherit-child-{index}"))?;
+        if unconfigured.scheduling_shard(&candidate) != 0 {
+            break candidate;
+        }
+        index += 1;
+    };
+    let cut = store.load(&parent).await?;
+    let mut fork = PreparedPublish::foreign(key("inherit/fork")?);
+    fork.join(
+        store.branch(
+            &cut,
+            &child,
+            crate::local::Branch::unfunded(
+                cut.state()
+                    .ok_or("missing parent state")?
+                    .subscriptions()
+                    .clone(),
+            ),
+        )?,
+    )?;
+    store.submit(fork).await?;
+    // The branch is born paused; resuming it is its first placement.
+    runtime.pause(&child, false).await?;
+    let deadline = store
+        .load(&child)
+        .await?
+        .state()
+        .and_then(|state| state.alarm().pending())
+        .ok_or("the child did not inherit its parent's alarm")?;
+    let (filed, _) = store
+        .window_actors(0, crate::local::scheduling::window(deadline), 0)
+        .await?;
+    assert!(
+        filed.contains(&child),
+        "the inherited alarm was filed outside the store's own shard"
     );
     Ok(())
 }

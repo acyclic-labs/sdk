@@ -616,6 +616,19 @@ pub struct Store<P: StreamProvider + ?Sized> {
     composer: Option<Arc<dyn Composer>>,
     scheduling_shards: std::num::NonZeroU16,
 }
+
+/// The same store with its whole configuration, so a copy cannot disagree
+/// with the original on its scheduling partitions or composer.
+impl<P: StreamProvider + ?Sized> Clone for Store<P> {
+    fn clone(&self) -> Self {
+        Self {
+            provider: Arc::clone(&self.provider),
+            root: self.root.clone(),
+            composer: self.composer.clone(),
+            scheduling_shards: self.scheduling_shards,
+        }
+    }
+}
 impl<P: StreamProvider + ?Sized> Store<P> {
     /// Retain the caller's admitted provider session. Actor state lives at
     /// `<root>/<encoded actor>`, inside the caller's consistency domain.
@@ -1441,6 +1454,16 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             })
             .map(|deadline| self.deadline(&self.actor(&previous.path)?, deadline))
             .transpose()?;
+        // A pause withdraws the alarm from scheduling, and the dispatcher may
+        // pass its window meanwhile. Resuming a pending alarm therefore
+        // appends the actor's activation, which a restart replays until the
+        // resumed actor's delivery holds the alarm again.
+        let resumed = (created.is_none()
+            && !state.paused
+            && state.alarm.pending().is_some()
+            && previous.state().is_some_and(|state| state.paused))
+        .then(|| self.activation(&self.actor(&previous.path)?))
+        .transpose()?;
         let encoded = state.encode();
         let mut prepared = PreparedPublish {
             own: Some(previous.path.clone()),
@@ -1464,7 +1487,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 idempotency_key: key,
             },
         };
-        for effect in created.into_iter().chain(armed).chain(effects) {
+        for effect in created
+            .into_iter()
+            .chain(armed)
+            .chain(resumed)
+            .chain(effects)
+        {
             prepared.join(effect)?;
         }
         Ok(prepared)
