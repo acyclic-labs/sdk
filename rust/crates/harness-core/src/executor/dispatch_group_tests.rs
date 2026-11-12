@@ -15,6 +15,36 @@ struct HeldJournal {
     active: AtomicUsize,
 }
 
+struct VisiblePublisher {
+    inner: Arc<dyn crate::conversation::ContentPublisher>,
+    stages: AtomicUsize,
+}
+
+impl crate::conversation::ContentPublisher for VisiblePublisher {
+    fn volume(&self) -> &crate::conversation::VolumeRef {
+        self.inner.volume()
+    }
+
+    fn stage_once<'a>(
+        &'a self,
+        operation: OperationId,
+        path: &'a str,
+        bytes: &'a [u8],
+        media: &'a str,
+        display: &'a str,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (FileRef, Option<crate::conversation::ContentHold<'a>>),
+        >,
+    > {
+        self.stages.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .stage_once(operation, path, bytes, media, display, access)
+    }
+}
+
 impl ExecutionJournal for HeldJournal {
     fn cache_identity(&self) -> Option<ExecutionJournalCacheId> {
         self.inner.cache_identity()
@@ -118,6 +148,10 @@ async fn provider_drains_during_publication_and_groups_without_payload_reloads()
         inline_tests::initialize(&journal, operation).await?;
         let prepared = inline_tests::request()?;
         let model = &prepared.request().model;
+        let publisher = Arc::new(VisiblePublisher {
+            inner: test_support::live_publisher(&journal)?,
+            stages: AtomicUsize::new(0),
+        });
         let (release, held) = futures::channel::oneshot::channel();
         let (entered, entry) = futures::channel::oneshot::channel();
         let journal = HeldJournal {
@@ -132,13 +166,17 @@ async fn provider_drains_during_publication_and_groups_without_payload_reloads()
             Arc::new(crate::test_support::ScriptedModelProvider::new([])),
             ContextPipeline::default(),
             ToolRegistry::default(),
-        );
+        )
+        .with_live_reply(LiveReply::new(publisher.clone(), "live".into()));
         let execution = StockExecution::ordinary(&executor);
         let mut events: Vec<_> = (0..count)
             .map(|_| ModelEvent::Reasoning {
                 delta: "thought".into(),
             })
             .collect();
+        // A restart publishes an empty live-answer marker as well as text.
+        // It must obey the same durable-publication boundary as every delta.
+        events.insert(0, ModelEvent::Restarted);
         // Also exercise staged content: a fresh file must not be reloaded.
         events.push(ModelEvent::Content {
             delta: "x".repeat(acyclic_stream::MAX_RECORD_BYTES),
@@ -181,18 +219,23 @@ async fn provider_drains_during_publication_and_groups_without_payload_reloads()
             entered = entry => entered.expect("original publication entry"),
         }
         assert!(result.as_mut().now_or_never().is_none());
-        assert_eq!(consumed.load(Ordering::SeqCst), count + 2);
+        assert_eq!(consumed.load(Ordering::SeqCst), count + 3);
+        assert_eq!(publisher.stages.load(Ordering::SeqCst), 0);
         assert_eq!(journal.groups.load(Ordering::SeqCst), 1);
         assert_eq!(journal.active.load(Ordering::SeqCst), 1);
         release.send(()).expect("original pending publication");
         assert_eq!(result.await?, events);
         assert_eq!(journal.groups.load(Ordering::SeqCst), 2);
         assert_eq!(journal.active.load(Ordering::SeqCst), 0);
+        assert!(
+            publisher.stages.load(Ordering::SeqCst) > 0,
+            "live publication counter is inactive"
+        );
         assert_eq!(work(&seen, "journal_publications"), 2);
-        assert_eq!(work(&seen, "journal_appends"), (count + 2) as u64);
+        assert_eq!(work(&seen, "journal_appends"), (count + 3) as u64);
         assert_eq!(
             work(&seen, "payload_stages"),
-            (count + 3) as u64,
+            (count + 4) as u64,
             "private events plus terminal usage"
         );
         assert_eq!(work(&seen, "payload_loads"), 0);

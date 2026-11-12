@@ -1,5 +1,23 @@
 use super::*;
 
+pub(crate) fn live_publisher<P, A, O>(
+    journal: &FilesystemExecutionJournal<P, A, O>,
+) -> Result<Arc<dyn crate::conversation::ContentPublisher>>
+where
+    P: crate::store::JournalProvider + ?Sized,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    Ok(crate::filesystem::FilesystemContentPublisher::new(
+        journal.host.clone(),
+        &journal.volume,
+        &journal.verifier,
+        &journal.scope,
+        16 * 1024 * 1024,
+        None,
+    )?)
+}
+
 pub(crate) async fn journal() -> Result<(
     FilesystemExecutionJournal<
         acyclic_stream::MemoryStream,

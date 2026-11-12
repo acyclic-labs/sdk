@@ -74,68 +74,68 @@ fn write_model_group<'a>(
     mut text: Option<super::live_reply::LiveText<'a>>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, WrittenModelGroup<'a>>> {
     let io = execution.io;
-    crate::conversation::BoundedContentFuture::new(io, || async move {
-        if let Some(text) = text.as_mut() {
-            for event in &events {
-                text.observe(event);
-                if matches!(event, ModelEvent::Restarted) {
-                    text.flush().await?;
+    crate::conversation::BoundedContentFuture::new(io, || {
+        super::phase::claim(async move {
+            let terminal = matches!(events.last(), Some(ModelEvent::Completed { .. }));
+            let usage = match (events.last(), timing.as_ref()) {
+                (Some(ModelEvent::Completed { metadata }), Some(timing)) => {
+                    Some(super::model_usage::ModelCallUsage {
+                        version: ModelUsageRecord::VERSION,
+                        completed: true,
+                        dispatch: call.dispatch,
+                        purpose: call.purpose,
+                        provider: &call.model.provider,
+                        model: &call.model.name,
+                        agent_path: call.agent_path,
+                        sampling: call.sampling,
+                        max_output_tokens: call.max_output_tokens,
+                        tokens: super::model_usage::ModelTokenUsage::reported(metadata),
+                        started_at: call.started_at,
+                        completed_at: timing.completed_at,
+                        latency_ns: timing.latency_ns,
+                        #[cfg(feature = "research")]
+                        provider_request_id: metadata["provider_request_id"].as_str(),
+                        #[cfg(feature = "research")]
+                        system_fingerprint: metadata["system_fingerprint"].as_str(),
+                        #[cfg(feature = "research")]
+                        ttft_ns: timing.ttft_ns,
+                        #[cfg(feature = "research")]
+                        cache: ModelCacheObservation::reported(metadata),
+                    })
                 }
-            }
-        }
-        let terminal = matches!(events.last(), Some(ModelEvent::Completed { .. }));
-        let usage = match (events.last(), timing.as_ref()) {
-            (Some(ModelEvent::Completed { metadata }), Some(timing)) => {
-                Some(super::model_usage::ModelCallUsage {
-                    version: ModelUsageRecord::VERSION,
-                    completed: true,
-                    dispatch: call.dispatch,
-                    purpose: call.purpose,
-                    provider: &call.model.provider,
-                    model: &call.model.name,
-                    agent_path: call.agent_path,
-                    sampling: call.sampling,
-                    max_output_tokens: call.max_output_tokens,
-                    tokens: super::model_usage::ModelTokenUsage::reported(metadata),
-                    started_at: call.started_at,
-                    completed_at: timing.completed_at,
-                    latency_ns: timing.latency_ns,
-                    #[cfg(feature = "research")]
-                    provider_request_id: metadata["provider_request_id"].as_str(),
-                    #[cfg(feature = "research")]
-                    system_fingerprint: metadata["system_fingerprint"].as_str(),
-                    #[cfg(feature = "research")]
-                    ttft_ns: timing.ttft_ns,
-                    #[cfg(feature = "research")]
-                    cache: ModelCacheObservation::reported(metadata),
-                })
-            }
-            _ => None,
-        };
-        let writer = execution.journal_writes.lock().await;
-        let receipt = crate::obs::waiting(
-            "journal-commit",
-            call.operation,
-            super::model_observation::append_many(
-                journal,
+                _ => None,
+            };
+            let writer = execution.journal_writes.lock().await;
+            let receipt = crate::obs::waiting(
+                "journal-commit",
                 call.operation,
-                (call.dispatch.step, call.purpose),
-                first,
-                &events,
-                usage.as_ref(),
-                io,
-            ),
-        )
-        .await?;
-        drop(writer);
-        if let Some(text) = text.as_mut() {
-            text.flush().await?;
-        }
-        Ok(WrittenModelGroup {
-            events,
-            text,
-            receipt,
-            terminal,
+                super::model_observation::append_many(
+                    journal,
+                    call.operation,
+                    (call.dispatch.step, call.purpose),
+                    first,
+                    &events,
+                    usage.as_ref(),
+                    io,
+                ),
+            )
+            .await?;
+            drop(writer);
+            if let Some(text) = text.as_mut() {
+                for event in &events {
+                    text.observe(event);
+                    if matches!(event, ModelEvent::Restarted) {
+                        text.flush().await?;
+                    }
+                }
+                text.flush().await?;
+            }
+            Ok(WrittenModelGroup {
+                events,
+                text,
+                receipt,
+                terminal,
+            })
         })
     })
 }
@@ -169,25 +169,22 @@ impl StockExecution<'_> {
         purpose: ModelPurpose,
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
-        let completion = super::phase::PreparedPhase::new(journal, self.io)?;
-        completion
-            .run(async {
-                // Construct and retire provider custody inside the completion body.
-                let cancellation = journal.model_cancellation();
-                let execution =
-                    self.dispatch_model_step(journal, input, step, request, purpose, phase);
-                futures::pin_mut!(execution);
-                match futures::future::select(cancellation, execution).await {
-                    Either::Left((result, _)) => {
-                        result?;
-                        Err(Error::InteractionRejected(
-                            crate::InteractionRejection::Cancelled,
-                        ))
-                    }
-                    Either::Right((result, _)) => result,
+        super::phase::claim(async {
+            // Construct and retire provider custody inside the completion body.
+            let cancellation = journal.model_cancellation();
+            let execution = self.dispatch_model_step(journal, input, step, request, purpose, phase);
+            futures::pin_mut!(execution);
+            match futures::future::select(cancellation, execution).await {
+                Either::Left((result, _)) => {
+                    result?;
+                    Err(Error::InteractionRejected(
+                        crate::InteractionRejection::Cancelled,
+                    ))
                 }
-            })
-            .await
+                Either::Right((result, _)) => result,
+            }
+        })
+        .await
     }
 
     /// Replays or resolves one model step.

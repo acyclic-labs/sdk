@@ -137,7 +137,7 @@ impl DispatchPhase {
     }
 }
 
-/// Dispatch claims use the provider's pre-admitted durable publication. A
+/// Dispatch claims and visible model groups use durable publication. A
 /// barrier constructed after a committed start could strand an unissued effect.
 pub(crate) fn claim<T>(
     future: impl std::future::Future<Output = Result<T>>,

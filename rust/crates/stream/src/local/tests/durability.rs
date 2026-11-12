@@ -2,6 +2,101 @@ use super::*;
 use crate::NativeStreamProviderExt as _;
 use futures::TryFutureExt as _;
 
+#[test]
+fn concurrent_streams_share_syncs_before_acknowledging_their_records()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_test_support::scale::{Bound, assert_scales};
+    use futures::TryStreamExt as _;
+
+    let _serial = PERSIST_BLOCKER_TESTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let mut samples = Vec::new();
+        for agents in [13_u64, 26] {
+            for deltas in [16_u64, 128] {
+                let directory = tempfile::tempdir()?;
+                let provider =
+                    LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+                let meter = Arc::new(Meter::local());
+                let (entered, entry) = tokio::sync::oneshot::channel();
+                let mut entry = Some(entry);
+                let (release, held) = std::sync::mpsc::sync_channel(0);
+                *JOURNAL_FLUSHED_BLOCKER.lock().unwrap() = Some((
+                    Arc::as_ptr(&provider.inner.journal) as usize,
+                    entered,
+                    held,
+                ));
+                let mut writers = Vec::new();
+                for agent in 0..agents {
+                    let path = StreamPath::new(format!("agents/{agent}"))?;
+                    let mut follow = FollowRequest::new(path.clone(), 0);
+                    follow.when_absent = crate::WhenAbsent::Wait;
+                    let mut records = crate::records_only(provider.follow(follow).await?);
+                    let request = AppendRequest {
+                        path,
+                        records: (0..deltas)
+                            .map(|delta| OwnedBytes::from(delta.to_le_bytes().to_vec()).into())
+                            .collect(),
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::unique(),
+                    };
+                    let mut writer = tokio::spawn({
+                        let provider = provider.clone();
+                        let meter = meter.clone();
+                        async move { provider.native_append(request, meter.original()).await }
+                    });
+                    if agent == 0 {
+                        // Hold completion after the first physical sync. Every
+                        // later accepted write must join the next covering sync.
+                        journal_started(entry.take().unwrap(), &mut writer).await?;
+                    }
+                    for delta in 0..deltas {
+                        let record = tokio::select! {
+                            record = records.try_next() => record?.ok_or("accepted stream ended")?,
+                            result = &mut writer => {
+                                drop(result???);
+                                return Err("write acknowledged before its held covering sync".into());
+                            }
+                        };
+                        assert_eq!(record.sequence, delta);
+                        assert_eq!(record.value.as_ref(), delta.to_le_bytes());
+                    }
+                    writers.push(writer);
+                }
+                let before = meter.durability_operations.load(Ordering::SeqCst);
+                let acknowledged = writers.iter().any(tokio::task::JoinHandle::is_finished);
+                release.send(())?;
+                for writer in writers {
+                    drop(writer.await???);
+                }
+                assert!(!acknowledged, "accepted records escaped their durability cut");
+                assert_eq!(before, 1, "physical sync counter is inactive");
+                let syncs = meter.durability_operations.load(Ordering::SeqCst);
+                assert_eq!(syncs, 2, "pending streams did not share their covering sync");
+                for agent in 0..agents {
+                    assert_eq!(
+                        provider
+                            .watermarks(StreamPath::new(format!("agents/{agent}"))?)
+                            .await?
+                            .durable,
+                        deltas
+                    );
+                }
+                meter.assert_refunded();
+                samples.push((agents, deltas, syncs));
+            }
+        }
+        assert_scales(Bound::Constant, (samples[0].1, samples[0].2), (samples[1].1, samples[1].2));
+        assert_scales(Bound::Constant, (samples[0].0, samples[0].2), (samples[2].0, samples[2].2));
+        Ok(())
+    })
+}
+
 #[tokio::test]
 async fn dispatch_publication_admits_durability_before_accepting_a_start()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -115,77 +210,67 @@ async fn phase_barrier_preserves_live_delivery_and_reopens_the_accepted_prefix()
 #[tokio::test]
 async fn native_phase_barrier_admits_before_io_and_flushes_append_and_guarded_commit()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_test_support::scale::{Bound, assert_scales};
-    let mut samples = Vec::new();
-    for count in [16_u64, 128] {
-        let directory = tempfile::tempdir()?;
-        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-        let meter = Arc::new(Meter::local());
-        let path = StreamPath::new("native-phase")?;
-        meter.deny_durability.store(true, Ordering::SeqCst);
-        drop(
-            provider
-                .native_durability_barrier(meter.original())
-                .await??,
-        );
-        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
-        meter.deny_durability.store(false, Ordering::SeqCst);
-        deferring_durability(async {
-            for tail in 0..count {
-                let output = provider
-                    .native_append(keyed_append("native-phase", tail)?, meter.original())
-                    .await??;
-                drop(output);
-            }
-            let request = CommitRequest {
-                deadline_unix_millis: None,
-                effects: vec![crate::CommitEffect::hard(
-                    vec![crate::CommitCondition::Tail {
-                        path: path.clone(),
-                        expected: count,
-                    }],
-                    vec![crate::CommitMutation::Append {
-                        path: path.clone(),
-                        records: vec![OwnedBytes::from_static(b"committed").into()],
-                    }],
-                )],
-                idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(
-                    b"native-phase-commit",
-                ))?,
-            };
-            let output = provider
-                .native_commit_with_guard::<NativeGuardFailure, _, _>(
-                    request,
-                    None,
-                    meter.original(),
-                    || async { Ok(()) },
-                )
-                .await??;
-            drop(output);
-            Ok::<_, Box<dyn std::error::Error>>(())
-        })
-        .await?;
-        assert_eq!(provider.watermarks(path.clone()).await?.durable, 0);
-        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
-        meter.deny_durability.store(true, Ordering::SeqCst);
-        let error = provider
+    let directory = tempfile::tempdir()?;
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    let meter = Arc::new(Meter::local());
+    let path = StreamPath::new("native-phase")?;
+    meter.deny_durability.store(true, Ordering::SeqCst);
+    drop(
+        provider
             .native_durability_barrier(meter.original())
-            .await
-            .err()
-            .ok_or("unfunded durability barrier succeeded")?;
-        assert_original_denial(&error, "durability");
-        assert_eq!(provider.watermarks(path.clone()).await?.durable, 0);
-        meter.deny_durability.store(false, Ordering::SeqCst);
-        drop(
-            provider
-                .native_durability_barrier(meter.original())
-                .await??,
-        );
-        assert_eq!(provider.watermarks(path).await?.durable, count + 1);
-        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
-        samples.push((count, meter.durability_operations.load(Ordering::SeqCst)));
-        meter.assert_refunded();
-    }
-    assert_scales(Bound::Constant, samples[0], samples[1]);
+            .await??,
+    );
+    assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
+    meter.deny_durability.store(false, Ordering::SeqCst);
+    deferring_durability(async {
+        let output = provider
+            .native_append(keyed_append("native-phase", 0)?, meter.original())
+            .await??;
+        drop(output);
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![crate::CommitEffect::hard(
+                vec![crate::CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 1,
+                }],
+                vec![crate::CommitMutation::Append {
+                    path: path.clone(),
+                    records: vec![OwnedBytes::from_static(b"committed").into()],
+                }],
+            )],
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"native-phase-commit"))?,
+        };
+        let output = provider
+            .native_commit_with_guard::<NativeGuardFailure, _, _>(
+                request,
+                None,
+                meter.original(),
+                || async { Ok(()) },
+            )
+            .await??;
+        drop(output);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?;
+    assert_eq!(provider.watermarks(path.clone()).await?.durable, 0);
+    assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
+    meter.deny_durability.store(true, Ordering::SeqCst);
+    let error = provider
+        .native_durability_barrier(meter.original())
+        .await
+        .err()
+        .ok_or("unfunded durability barrier succeeded")?;
+    assert_original_denial(&error, "durability");
+    assert_eq!(provider.watermarks(path.clone()).await?.durable, 0);
+    meter.deny_durability.store(false, Ordering::SeqCst);
+    drop(
+        provider
+            .native_durability_barrier(meter.original())
+            .await??,
+    );
+    assert_eq!(provider.watermarks(path).await?.durable, 2);
+    assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
+    meter.assert_refunded();
     Ok(())
 }
