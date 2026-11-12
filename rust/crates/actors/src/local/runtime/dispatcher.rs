@@ -57,8 +57,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             Vec::new(),
             key(&snapshot, "dispatcher-open")?,
         )?;
-        store
-            .submit_retained(request)
+        transport::submit(store, request)
             .await?
             .ok_or(Error::Invalid("dispatcher receipt has no state"))
     }
@@ -90,10 +89,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             Vec::new(),
             key(&previous, &format!("dispatch/{seen}"))?,
         )?;
-        // Conflict returns the original conditional result. Unknown retains
-        // the exact publication and participant custody in the returned error.
-        store
-            .submit_retained(publication)
+        // Conflicts retain their original conditional result. Lost transport
+        // acknowledgements resubmit the same retained publication and custody.
+        transport::submit(store, publication)
             .await?
             .ok_or(Error::Invalid("dispatcher receipt has no state"))
     }

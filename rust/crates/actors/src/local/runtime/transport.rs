@@ -22,6 +22,24 @@ where
     }
 }
 
+pub(super) async fn submit<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    mut publication: PreparedPublish,
+) -> Result<Option<Snapshot>, Error> {
+    loop {
+        match store.submit_retained(publication).await {
+            Err(Error::Unknown {
+                publication: original,
+                source,
+            }) if source.category() == StreamError::Unavailable => {
+                publication = *original;
+                sleep(10).await;
+            }
+            result => return result,
+        }
+    }
+}
+
 pub(super) fn follow<P: StreamProvider + ?Sized + 'static>(
     provider: Arc<P>,
     path: StreamPath,

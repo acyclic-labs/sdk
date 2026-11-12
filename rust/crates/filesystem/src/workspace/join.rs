@@ -245,7 +245,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinBuilde
                     .fs
                     .workspace_head_state(&self.target.volume, &mut accounting, cancellation)
                     .await?;
-                if key.is_none() && target.id != id {
+                if target.id != id {
                     return Err(WorkspaceError::StaleTarget);
                 }
                 head
